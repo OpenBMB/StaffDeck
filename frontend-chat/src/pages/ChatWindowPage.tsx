@@ -80,6 +80,13 @@ function normalizeMessageText(value?: string): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
+function parseMessageTime(value?: string): number {
+  if (!value) return 0;
+  const normalized = /(?:z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`;
+  const time = Date.parse(normalized);
+  return Number.isFinite(time) ? time : 0;
+}
+
 function hasEquivalentServerMessage(messageItem: ChatMessage, serverMessages: ChatMessage[]): boolean {
   const content = normalizeMessageText(messageItem.content);
   if (!content) return false;
@@ -93,34 +100,51 @@ function hasEquivalentServerMessage(messageItem: ChatMessage, serverMessages: Ch
   });
 }
 
+function hasServerMessageForTurn(messageItem: ChatMessage, serverMessages: ChatMessage[]): boolean {
+  if (!messageItem.turnId) return false;
+  return serverMessages.some(
+    (serverMessage) => serverMessage.turnId === messageItem.turnId && serverMessage.role === messageItem.role,
+  );
+}
+
 function attachTurnIdsToServerMessages(
   serverMessages: ChatMessage[],
   realtimeMessages: ChatMessage[],
   previousMessages: ChatMessage[] = [],
 ): ChatMessage[] {
   const pendingTurns = realtimeMessages.filter((item) => item.turnId && item.role === 'user').reverse();
+  const realtimeTurnIds = new Set(
+    realtimeMessages
+      .map((item) => item.turnId)
+      .filter((turnId): turnId is string => Boolean(turnId)),
+  );
+  const pendingTurnIdsByServerId = new Map<string, string>();
+  const matchedServerMessageIds = new Set<string>();
   const previousTurnIds = new Map(
     previousMessages
-      .filter((item) => item.turnId)
+      .filter((item) => item.turnId && (item.turnId === item.id || realtimeTurnIds.has(item.turnId)))
       .map((item) => [item.id, item.turnId as string]),
   );
-  const usedTurnIds = new Set<string>();
+
+  pendingTurns.forEach((pendingTurn) => {
+    const pendingContent = normalizeMessageText(pendingTurn.content);
+    if (!pendingTurn.turnId || !pendingContent) return;
+    for (let index = serverMessages.length - 1; index >= 0; index -= 1) {
+      const serverMessage = serverMessages[index];
+      if (serverMessage.role !== 'user' || matchedServerMessageIds.has(serverMessage.id)) continue;
+      if (normalizeMessageText(serverMessage.content) !== pendingContent) continue;
+      pendingTurnIdsByServerId.set(serverMessage.id, pendingTurn.turnId);
+      matchedServerMessageIds.add(serverMessage.id);
+      return;
+    }
+  });
+
   let activeTurnId: string | undefined;
 
   return serverMessages.map((messageItem) => {
     const previousTurnId = previousTurnIds.get(messageItem.id);
     if (messageItem.role === 'user') {
-      const serverContent = normalizeMessageText(messageItem.content);
-      const pendingMatch = pendingTurns.find(
-        (item) =>
-          item.turnId &&
-          !usedTurnIds.has(item.turnId) &&
-          normalizeMessageText(item.content) === serverContent,
-      );
-      if (pendingMatch?.turnId) {
-        usedTurnIds.add(pendingMatch.turnId);
-      }
-      activeTurnId = previousTurnId || pendingMatch?.turnId || messageItem.turnId || messageItem.id;
+      activeTurnId = pendingTurnIdsByServerId.get(messageItem.id) || previousTurnId || messageItem.turnId || messageItem.id;
       return { ...messageItem, turnId: activeTurnId };
     }
     if (messageItem.role === 'assistant' && activeTurnId) {
@@ -130,17 +154,40 @@ function attachTurnIdsToServerMessages(
   });
 }
 
-function computeMergedMessages(slot: SessionSlot): ChatMessage[] {
+function shouldKeepRealtimeMessage(
+  messageItem: ChatMessage,
+  serverMessages: ChatMessage[],
+  latestServerTime: number,
+  activeTurnId?: string | null,
+): boolean {
+  if (messageItem.isStreaming) {
+    return !messageItem.turnId || !activeTurnId || messageItem.turnId === activeTurnId;
+  }
+  if (hasEquivalentServerMessage(messageItem, serverMessages)) return false;
+  if (hasServerMessageForTurn(messageItem, serverMessages)) return false;
+  if (messageItem.turnId && activeTurnId && messageItem.turnId === activeTurnId) return true;
+  if (!latestServerTime) return true;
+  return parseMessageTime(messageItem.created_at) > latestServerTime;
+}
+
+function computeMergedMessages(slot: SessionSlot, activeTurnId?: string | null): ChatMessage[] {
   const serverIds = new Set(slot.serverMessages.map((item) => item.id));
+  const latestServerTime = Math.max(0, ...slot.serverMessages.map((item) => parseMessageTime(item.created_at)));
   const extras = slot.realtimeMessages.filter((item) => {
     if (serverIds.has(item.id)) return false;
-    if (item.id.startsWith('local_') || item.turnId || item.role === 'assistant') {
-      return !hasEquivalentServerMessage(item, slot.serverMessages);
-    }
-    return true;
+    return shouldKeepRealtimeMessage(item, slot.serverMessages, latestServerTime, activeTurnId);
   });
+  const combined = [
+    ...slot.serverMessages.map((messageItem, index) => ({ messageItem, index })),
+    ...extras.map((messageItem, index) => ({ messageItem, index: slot.serverMessages.length + index })),
+  ];
 
-  return [...slot.serverMessages, ...extras];
+  return combined
+    .sort((left, right) => (
+      parseMessageTime(left.messageItem.created_at) - parseMessageTime(right.messageItem.created_at) ||
+      left.index - right.index
+    ))
+    .map((item) => item.messageItem);
 }
 
 function publicStreamPhase(data: Record<string, unknown>): string {
@@ -300,20 +347,20 @@ export default function ChatWindowPage() {
 
   const pruneRealtime = useCallback((id: string) => {
     const slot = getSlot(id);
+    const stream = getStreamSlot(id);
+    const latestServerTime = Math.max(0, ...slot.serverMessages.map((item) => parseMessageTime(item.created_at)));
     slot.realtimeMessages = slot.realtimeMessages.filter((item) => {
-      if (item.isStreaming) return true;
-      if (item.id.startsWith('local_') || item.turnId || item.role === 'assistant') {
-        return !hasEquivalentServerMessage(item, slot.serverMessages);
-      }
-      return true;
+      if (slot.serverMessages.some((serverMessage) => serverMessage.id === item.id)) return false;
+      return shouldKeepRealtimeMessage(item, slot.serverMessages, latestServerTime, stream.turnId);
     });
-  }, [getSlot]);
+  }, [getSlot, getStreamSlot]);
 
   const displayedMessages = useMemo(() => {
     if (!sessionId) return [];
     void storeTick;
-    return computeMergedMessages(getSlot(sessionId));
-  }, [getSlot, sessionId, storeTick]);
+    void streamTick;
+    return computeMergedMessages(getSlot(sessionId), getStreamSlot(sessionId).turnId);
+  }, [getSlot, getStreamSlot, sessionId, storeTick, streamTick]);
 
   const currentStream = useMemo(() => {
     void streamTick;
