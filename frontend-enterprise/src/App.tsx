@@ -68,7 +68,6 @@ function Shell() {
           </div>
           <div className="topbar-actions">
             <Button icon={<UserOutlined />} onClick={() => navigate('/enterprise/persona')}>人设</Button>
-            <div className="tenant-pill">tenant_demo</div>
           </div>
         </Header>
         <Content className="content">
