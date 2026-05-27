@@ -15,6 +15,7 @@ class SkillRuntime:
         }
 
         if decision.decision == "start_skill":
+            session.skill_stack_json = _without_skill(session.skill_stack_json, decision.target_skill_id)
             session.active_skill_id = decision.target_skill_id
             session.active_step_id = decision.target_step_id
             session.slots_json = {}
@@ -39,13 +40,12 @@ class SkillRuntime:
                 session.active_step_id = decision.target_step_id
 
         elif decision.decision == "suspend_current_and_start_new_skill":
-            stack = list(session.skill_stack_json or [])
-            target_frame = None
-            for index in range(len(stack) - 1, -1, -1):
-                if stack[index].get("skill_id") == decision.target_skill_id:
-                    target_frame = stack.pop(index)
-                    break
-            if current_frame["skill_id"]:
+            target_frame, stack = _pop_last_skill_frame(
+                session.skill_stack_json, decision.target_skill_id
+            )
+            current_skill_id = current_frame["skill_id"]
+            if current_skill_id and current_skill_id != decision.target_skill_id:
+                stack = _without_skill(stack, str(current_skill_id))
                 stack.append(current_frame)
             session.skill_stack_json = stack
             if target_frame:
@@ -61,20 +61,11 @@ class SkillRuntime:
             session.resume_after_answer_json = None
 
         elif decision.decision == "exit_current_skill":
-            stack = list(session.skill_stack_json or [])
-            if stack:
-                frame = stack.pop()
-                session.skill_stack_json = stack
-                session.active_skill_id = frame.get("skill_id")
-                session.active_step_id = frame.get("step_id")
-                session.slots_json = frame.get("slots") or {}
-                session.summary = frame.get("summary")
-                session.last_agent_question = frame.get("last_agent_question")
-            else:
-                session.active_skill_id = None
-                session.active_step_id = None
-                session.slots_json = {}
-                session.resume_after_answer_json = None
+            session.skill_stack_json = _without_skill(session.skill_stack_json, session.active_skill_id)
+            session.active_skill_id = None
+            session.active_step_id = None
+            session.slots_json = {}
+            session.resume_after_answer_json = None
 
         elif decision.decision == "handoff_human":
             session.status = "handoff"
@@ -83,20 +74,11 @@ class SkillRuntime:
         return session
 
     def complete_current_skill(self, session: ChatSession) -> ChatSession:
-        stack = list(session.skill_stack_json or [])
-        if stack:
-            frame = stack.pop()
-            session.skill_stack_json = stack
-            session.active_skill_id = frame.get("skill_id")
-            session.active_step_id = frame.get("step_id")
-            session.slots_json = frame.get("slots") or {}
-            session.summary = frame.get("summary")
-            session.last_agent_question = frame.get("last_agent_question")
-        else:
-            session.active_skill_id = None
-            session.active_step_id = None
-            session.slots_json = {}
-            session.resume_after_answer_json = None
+        session.skill_stack_json = _without_skill(session.skill_stack_json, session.active_skill_id)
+        session.active_skill_id = None
+        session.active_step_id = None
+        session.slots_json = {}
+        session.resume_after_answer_json = None
         session.updated_at = utc_now()
         return session
 
@@ -105,6 +87,27 @@ class SkillRuntime:
         if resume:
             session.active_skill_id = resume.get("skill_id")
             session.active_step_id = resume.get("step_id")
+            session.skill_stack_json = _without_skill(session.skill_stack_json, session.active_skill_id)
             session.resume_after_answer_json = None
             session.updated_at = utc_now()
         return session
+
+
+def _pop_last_skill_frame(
+    stack_json: list[dict] | None,
+    skill_id: str | None,
+) -> tuple[dict | None, list[dict]]:
+    stack = list(stack_json or [])
+    if not skill_id:
+        return None, stack
+    for index in range(len(stack) - 1, -1, -1):
+        if stack[index].get("skill_id") == skill_id:
+            frame = stack.pop(index)
+            return frame, _without_skill(stack, skill_id)
+    return None, stack
+
+
+def _without_skill(stack_json: list[dict] | None, skill_id: str | None) -> list[dict]:
+    if not skill_id:
+        return list(stack_json or [])
+    return [frame for frame in list(stack_json or []) if frame.get("skill_id") != skill_id]

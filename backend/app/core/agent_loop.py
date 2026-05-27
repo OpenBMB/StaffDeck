@@ -881,6 +881,8 @@ class AgentLoop:
             return False
         if tool_result and not tool_result.success:
             return False
+        if not step_result.next_step_id and not step_result.tool_call:
+            return True
         return self._is_terminal_skill_state(skill, chat_session)
 
     def _is_terminal_skill_state(self, skill: Skill, chat_session: ChatSession) -> bool:

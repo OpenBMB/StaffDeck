@@ -77,7 +77,7 @@ def test_stale_terminal_skill_is_removed_from_suspended_stack() -> None:
     assert loop.events.records[0][3]["reason"] == "stale_suspended_terminal_state"
 
 
-def test_non_terminal_step_is_not_completed() -> None:
+def test_intermediate_step_with_next_step_is_not_completed() -> None:
     loop = object.__new__(AgentLoop)
     session = ChatSession(
         id="session_test",
@@ -90,7 +90,25 @@ def test_non_terminal_step_is_not_completed() -> None:
     assert not loop._should_complete_skill(
         _repair_skill(),
         session,
-        StepAgentResult(is_step_completed=True),
+        StepAgentResult(is_step_completed=True, next_step_id="reply_ticket_result"),
+        None,
+    )
+
+
+def test_model_can_complete_non_terminal_skill_when_no_next_action() -> None:
+    loop = object.__new__(AgentLoop)
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="repair_ticket",
+        active_step_id="collect_repair_info",
+        slots_json={"reporter_name": "hm"},
+    )
+
+    assert loop._should_complete_skill(
+        _repair_skill(),
+        session,
+        StepAgentResult(reply="好的，已取消本次报修流程。", is_step_completed=True),
         None,
     )
 
