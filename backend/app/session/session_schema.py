@@ -18,6 +18,7 @@ RouterDecisionValue = Literal[
     "handoff_human",
     "clarify",
 ]
+MessageFeedbackValue = Literal["up", "down"]
 
 
 class RouterDecision(BaseModel):
@@ -108,5 +109,11 @@ class MessageRead(BaseModel):
     role: str
     content: str
     created_at: str
+    feedback_rating: Optional[MessageFeedbackValue] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class MessageFeedbackRequest(BaseModel):
+    tenant_id: str
+    rating: MessageFeedbackValue

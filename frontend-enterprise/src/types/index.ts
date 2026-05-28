@@ -108,3 +108,36 @@ export type TraceSummary = {
   status: string;
   updated_at: string;
 };
+
+export type FeedbackSessionRead = {
+  session_id: string;
+  tenant_id: string;
+  user_id?: string;
+  username?: string;
+  display_name?: string;
+  title?: string;
+  summary?: string;
+  status: string;
+  feedback_count: number;
+  latest_feedback_at: string;
+  latest_message_id: string;
+  latest_message: string;
+  updated_at: string;
+};
+
+export type FeedbackMessageRead = {
+  id: string;
+  tenant_id: string;
+  session_id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  created_at: string;
+  feedback_rating?: 'up' | 'down' | null;
+  feedback_updated_at?: string;
+};
+
+export type FeedbackSessionDetailRead = {
+  session: Record<string, unknown>;
+  messages: FeedbackMessageRead[];
+  feedback: Array<Record<string, unknown>>;
+};

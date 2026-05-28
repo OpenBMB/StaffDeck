@@ -2,8 +2,10 @@ import {
   BranchesOutlined,
   CloudSyncOutlined,
   DeleteOutlined,
+  DislikeOutlined,
   DownOutlined,
   EditOutlined,
+  LikeOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -277,6 +279,17 @@ function traceDetails(lines: TraceLine[]): TraceLine[] {
   return details.length > 0 ? details : lines.filter((line) => line.text !== '已完成思考');
 }
 
+function canRateMessage(item: ChatMessage): boolean {
+  return (
+    item.role === 'assistant'
+    && !item.isStreaming
+    && !item.isError
+    && !item.id.startsWith('__')
+    && !item.id.startsWith('text_')
+    && !item.id.startsWith('error_')
+  );
+}
+
 export default function ChatWindowPage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
@@ -460,6 +473,20 @@ export default function ChatWindowPage() {
     notifyStore();
   }, [getSlot, notifyStore]);
 
+  const updateMessageFeedback = useCallback((
+    id: string,
+    messageId: string,
+    rating: ChatMessage['feedback_rating'],
+  ) => {
+    const slot = getSlot(id);
+    const update = (item: ChatMessage) => (
+      item.id === messageId ? { ...item, feedback_rating: rating } : item
+    );
+    slot.serverMessages = slot.serverMessages.map(update);
+    slot.realtimeMessages = slot.realtimeMessages.map(update);
+    notifyStore();
+  }, [getSlot, notifyStore]);
+
   const updateStreaming = useCallback((id: string, text: string, turnId?: string) => {
     const slot = getSlot(id);
     const stream = getStreamSlot(id);
@@ -623,6 +650,26 @@ export default function ChatWindowPage() {
     stream.loading = false;
     stream.phase = '';
     notifyStream();
+  }
+
+  async function rateMessage(item: ChatMessage, rating: 'up' | 'down') {
+    if (!sessionId || !canRateMessage(item)) return;
+    const previous = item.feedback_rating || null;
+    const next = previous === rating ? null : rating;
+    updateMessageFeedback(sessionId, item.id, next);
+    try {
+      if (next) {
+        await api.post(`/api/chat/messages/${item.id}/feedback`, {
+          tenant_id: tenantId,
+          rating: next,
+        });
+      } else {
+        await api.delete(`/api/chat/messages/${item.id}/feedback?tenant_id=${tenantId}`);
+      }
+    } catch (error) {
+      updateMessageFeedback(sessionId, item.id, previous);
+      message.error(error instanceof Error ? error.message : '反馈提交失败');
+    }
   }
 
   async function send() {
@@ -941,6 +988,26 @@ export default function ChatWindowPage() {
                       ) : item.role === 'assistant' && item.isStreaming && !summary ? (
                         <span className="typing-caret" />
                       ) : null}
+                      {canRateMessage(item) && (
+                        <div className="message-feedback">
+                          <Button
+                            type="text"
+                            size="small"
+                            className={item.feedback_rating === 'up' ? 'active' : ''}
+                            icon={<LikeOutlined />}
+                            aria-label="点赞"
+                            onClick={() => rateMessage(item, 'up')}
+                          />
+                          <Button
+                            type="text"
+                            size="small"
+                            className={item.feedback_rating === 'down' ? 'active danger' : ''}
+                            icon={<DislikeOutlined />}
+                            aria-label="点踩"
+                            onClick={() => rateMessage(item, 'down')}
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

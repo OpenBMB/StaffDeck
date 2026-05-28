@@ -16,6 +16,7 @@ export type ChatMessage = {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   created_at: string;
+  feedback_rating?: 'up' | 'down' | null;
   turnId?: string;
   isStreaming?: boolean;
   isError?: boolean;

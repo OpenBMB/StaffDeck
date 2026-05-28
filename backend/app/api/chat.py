@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 
 from app.core import AgentLoop
 from app.db import engine, get_session
-from app.db.models import AgentEvent, ChatSession, Message, Skill, User, new_id, utc_now
+from app.db.models import AgentEvent, ChatSession, Message, MessageFeedback, Skill, User, new_id, utc_now
 from app.security.auth import get_current_user
 from app.security.tenant import ensure_tenant
 from app.session.session_schema import (
@@ -18,6 +18,7 @@ from app.session.session_schema import (
     ChatSessionUpdateRequest,
     ChatTurnRequest,
     ChatTurnResponse,
+    MessageFeedbackRequest,
     MessageRead,
 )
 
@@ -40,7 +41,7 @@ def session_read(row: ChatSession) -> ChatSessionRead:
     )
 
 
-def message_read(row: Message) -> MessageRead:
+def message_read(row: Message, feedback_rating: str | None = None) -> MessageRead:
     return MessageRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -48,6 +49,7 @@ def message_read(row: Message) -> MessageRead:
         role=row.role,
         content=row.content,
         created_at=row.created_at.isoformat(),
+        feedback_rating=feedback_rating,
     )
 
 
@@ -164,10 +166,15 @@ def delete_chat_session(
     events = db.exec(
         select(AgentEvent).where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == session_id)
     ).all()
+    feedback_rows = db.exec(
+        select(MessageFeedback).where(MessageFeedback.tenant_id == tenant_id, MessageFeedback.session_id == session_id)
+    ).all()
     for message in messages:
         db.delete(message)
     for event in events:
         db.delete(event)
+    for feedback in feedback_rows:
+        db.delete(feedback)
     db.delete(row)
     db.commit()
     return {"status": "deleted"}
@@ -190,7 +197,90 @@ def list_chat_messages(
         .where(Message.tenant_id == tenant_id, Message.session_id == session_id)
         .order_by(Message.created_at)
     ).all()
-    return [message_read(row) for row in rows]
+    feedback_by_message = _feedback_by_message(db, tenant_id, current_user.id, [row.id for row in rows])
+    return [message_read(row, feedback_by_message.get(row.id)) for row in rows]
+
+
+@router.post("/messages/{message_id}/feedback")
+def upsert_message_feedback(
+    message_id: str,
+    request: MessageFeedbackRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> dict:
+    _ensure_request_tenant(request.tenant_id, current_user)
+    message_row = _get_feedback_target_message(db, request.tenant_id, current_user.id, message_id)
+    existing = db.exec(
+        select(MessageFeedback).where(
+            MessageFeedback.tenant_id == request.tenant_id,
+            MessageFeedback.message_id == message_id,
+            MessageFeedback.user_id == current_user.id,
+        )
+    ).first()
+    now = utc_now()
+    if existing:
+        existing.rating = request.rating
+        existing.updated_at = now
+        row = existing
+    else:
+        row = MessageFeedback(
+            tenant_id=request.tenant_id,
+            session_id=message_row.session_id,
+            message_id=message_row.id,
+            user_id=current_user.id,
+            rating=request.rating,
+            created_at=now,
+            updated_at=now,
+        )
+    db.add(row)
+    db.add(
+        AgentEvent(
+            tenant_id=request.tenant_id,
+            session_id=message_row.session_id,
+            event_type="message_feedback_changed",
+            payload_json={"message_id": message_row.id, "rating": request.rating, "user_id": current_user.id},
+        )
+    )
+    db.commit()
+    db.refresh(row)
+    return {
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "session_id": row.session_id,
+        "message_id": row.message_id,
+        "rating": row.rating,
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+@router.delete("/messages/{message_id}/feedback")
+def delete_message_feedback(
+    message_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> dict:
+    _ensure_request_tenant(tenant_id, current_user)
+    message_row = _get_feedback_target_message(db, tenant_id, current_user.id, message_id)
+    existing = db.exec(
+        select(MessageFeedback).where(
+            MessageFeedback.tenant_id == tenant_id,
+            MessageFeedback.message_id == message_id,
+            MessageFeedback.user_id == current_user.id,
+        )
+    ).first()
+    if existing:
+        db.delete(existing)
+        db.add(
+            AgentEvent(
+                tenant_id=tenant_id,
+                session_id=message_row.session_id,
+                event_type="message_feedback_changed",
+                payload_json={"message_id": message_row.id, "rating": None, "user_id": current_user.id},
+            )
+        )
+        db.commit()
+    return {"status": "deleted"}
 
 
 @router.get("/sessions/{session_id}/trace")
@@ -230,6 +320,35 @@ def _ensure_chat_session_available(db: Session, tenant_id: str, user_id: str, se
     row = db.get(ChatSession, session_id)
     if row and (row.tenant_id != tenant_id or row.user_id != user_id):
         raise HTTPException(status_code=404, detail="Session not found")
+
+
+def _get_feedback_target_message(db: Session, tenant_id: str, user_id: str, message_id: str) -> Message:
+    ensure_tenant(db, tenant_id)
+    row = db.get(Message, message_id)
+    if not row or row.tenant_id != tenant_id or row.role != "assistant":
+        raise HTTPException(status_code=404, detail="Message not found")
+    chat_session = db.get(ChatSession, row.session_id)
+    if not chat_session or chat_session.tenant_id != tenant_id or chat_session.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return row
+
+
+def _feedback_by_message(
+    db: Session,
+    tenant_id: str,
+    user_id: str,
+    message_ids: list[str],
+) -> dict[str, str]:
+    if not message_ids:
+        return {}
+    rows = db.exec(
+        select(MessageFeedback).where(
+            MessageFeedback.tenant_id == tenant_id,
+            MessageFeedback.user_id == user_id,
+            MessageFeedback.message_id.in_(message_ids),  # type: ignore[attr-defined]
+        )
+    ).all()
+    return {row.message_id: row.rating for row in rows}
 
 
 def _ensure_request_tenant(tenant_id: str, current_user: User) -> None:

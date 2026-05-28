@@ -8,6 +8,8 @@ Base URL: `http://localhost:8000`
 - `POST /api/chat/sessions`
 - `GET /api/chat/sessions?tenant_id=&user_id=`
 - `GET /api/chat/sessions/{session_id}/messages?tenant_id=`
+- `POST /api/chat/messages/{message_id}/feedback`
+- `DELETE /api/chat/messages/{message_id}/feedback?tenant_id=`
 
 ## Enterprise Skills
 
@@ -40,6 +42,8 @@ Base URL: `http://localhost:8000`
 - `GET /api/enterprise/sessions?tenant_id=`
 - `GET /api/enterprise/sessions/{session_id}?tenant_id=`
 - `POST /api/enterprise/sessions/{session_id}/reset?tenant_id=`
+- `GET /api/enterprise/feedback/sessions?tenant_id=&rating=down`
+- `GET /api/enterprise/feedback/sessions/{session_id}?tenant_id=`
 - `GET /api/enterprise/traces?tenant_id=`
 - `GET /api/enterprise/traces/{session_id}?tenant_id=`
 

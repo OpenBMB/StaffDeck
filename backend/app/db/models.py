@@ -145,6 +145,20 @@ class Message(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class MessageFeedback(SQLModel, table=True):
+    __tablename__ = "message_feedback"
+    __table_args__ = (UniqueConstraint("tenant_id", "message_id", "user_id", name="uq_feedback_message_user"),)
+
+    id: str = Field(default_factory=lambda: new_id("fb"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    session_id: str = Field(index=True)
+    message_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    rating: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class AgentEvent(SQLModel, table=True):
     __tablename__ = "agent_events"
 

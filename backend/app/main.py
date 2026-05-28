@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
-from app.api import auth, chat, memories, mock, model_configs, persona, sessions, skills, tools, traces, ui_config
+from app.api import auth, chat, feedback, memories, mock, model_configs, persona, sessions, skills, tools, traces, ui_config
 from app.config import get_settings
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
@@ -40,6 +40,7 @@ app.include_router(auth.router)
 app.include_router(skills.router)
 app.include_router(model_configs.router)
 app.include_router(memories.router)
+app.include_router(feedback.router)
 app.include_router(persona.router)
 app.include_router(ui_config.enterprise_router)
 app.include_router(tools.router)

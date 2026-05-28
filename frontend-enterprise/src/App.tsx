@@ -2,6 +2,7 @@ import {
   ApiOutlined,
   DashboardOutlined,
   DatabaseOutlined,
+  DislikeOutlined,
   MessageOutlined,
   ProfileOutlined,
   ToolOutlined,
@@ -11,6 +12,7 @@ import { Button, ConfigProvider, Layout, Menu, Typography } from 'antd';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import DashboardPage from './pages/DashboardPage';
 import DistillPage from './pages/DistillPage';
+import FeedbackPage from './pages/FeedbackPage';
 import MemoriesPage from './pages/MemoriesPage';
 import ModelsPage from './pages/ModelsPage';
 import PersonaPage from './pages/PersonaPage';
@@ -42,6 +44,7 @@ function Shell() {
           items={[
             { key: '/enterprise/dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
             { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: 'Memory 查询' },
+            { key: '/enterprise/feedback', icon: <DislikeOutlined />, label: '负反馈会话' },
             {
               key: 'skills',
               type: 'group',
@@ -75,6 +78,7 @@ function Shell() {
             <Route path="/enterprise" element={<Navigate to="/enterprise/dashboard" replace />} />
             <Route path="/enterprise/dashboard" element={<DashboardPage />} />
             <Route path="/enterprise/memories" element={<MemoriesPage />} />
+            <Route path="/enterprise/feedback" element={<FeedbackPage />} />
             <Route path="/enterprise/skills" element={<SkillsPage />} />
             <Route path="/enterprise/skills/distill" element={<DistillPage />} />
             <Route path="/enterprise/models" element={<ModelsPage />} />

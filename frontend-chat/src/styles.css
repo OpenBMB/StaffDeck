@@ -478,6 +478,33 @@ textarea,
   padding: 0;
 }
 
+.message-feedback {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  min-height: 26px;
+}
+
+.message-feedback .ant-btn {
+  width: 28px;
+  height: 28px;
+  color: var(--muted);
+  border-radius: 8px;
+}
+
+.message-feedback .ant-btn:hover,
+.message-feedback .ant-btn.active {
+  color: var(--foreground) !important;
+  background: var(--surface-muted) !important;
+}
+
+.message-feedback .ant-btn.danger,
+.message-feedback .ant-btn.danger:hover {
+  color: var(--danger) !important;
+  background: #fee2e2 !important;
+}
+
 .turn-trace-summary,
 .turn-trace-line {
   min-width: 0;
