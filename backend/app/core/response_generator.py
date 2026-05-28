@@ -11,6 +11,24 @@ from app.tools.tool_schema import ToolResult
 
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "llm" / "prompts" / "response_generator_prompt.md"
 FALLBACK_REPLY = "抱歉，我暂时无法处理这个问题。您可以换个说法，或者我可以帮您转人工。"
+PENDING_ACTION_TERMS = (
+    "请稍候",
+    "请稍等",
+    "稍候",
+    "稍等",
+    "稍后",
+    "正在为您",
+    "正在帮您",
+    "正在处理",
+    "正在创建",
+    "正在查询",
+    "正在核实",
+    "处理中",
+    "创建中",
+    "查询中",
+    "核实中",
+    "稍后反馈",
+)
 
 
 class ResponseGenerator:
@@ -34,15 +52,9 @@ class ResponseGenerator:
         try:
             text = LLMClient(model_config).generate_text(self._system_prompt(persona_prompt), payload)
             reply = text.strip() or step_result.reply or FALLBACK_REPLY
-            if self._is_user_safe(reply):
-                return reply
-            if step_result.reply and self._is_user_safe(step_result.reply):
-                return step_result.reply
-            return self._fallback_for_session(session)
+            return self._visible_reply_or_fallback(reply, session, step_result, tool_result)
         except LLMError:
-            if step_result.reply:
-                return step_result.reply
-            return FALLBACK_REPLY
+            return self._visible_reply_or_fallback(step_result.reply or "", session, step_result, tool_result)
 
     def generate_stream(
         self,
@@ -64,16 +76,23 @@ class ResponseGenerator:
         payload = self._payload(message, session, skill, router_decision, step_result, tool_result, memory_context)
         try:
             emitted = False
-            for chunk in LLMClient(model_config).generate_text_stream(
-                self._system_prompt(persona_prompt),
-                payload,
-            ):
+            stream = LLMClient(model_config).generate_text_stream(self._system_prompt(persona_prompt), payload)
+            if tool_result is None:
+                chunks = [chunk for chunk in stream]
+                reply = self._visible_reply_or_fallback("".join(chunks).strip(), session, step_result, tool_result)
+                yield from self.chunk_text(reply)
+                return
+            for chunk in stream:
                 emitted = True
                 yield chunk
             if not emitted:
-                yield from self.chunk_text(step_result.reply or FALLBACK_REPLY)
+                yield from self.chunk_text(
+                    self._visible_reply_or_fallback(step_result.reply or "", session, step_result, tool_result)
+                )
         except LLMError:
-            yield from self.chunk_text(step_result.reply or FALLBACK_REPLY)
+            yield from self.chunk_text(
+                self._visible_reply_or_fallback(step_result.reply or "", session, step_result, tool_result)
+            )
 
     def chunk_text(self, text: str, chunk_size: int = 8) -> Iterator[str]:
         stripped = text.strip()
@@ -145,6 +164,37 @@ class ResponseGenerator:
             "session_state",
         )
         return not any(term in text for term in internal_terms)
+
+    def _is_unverified_pending_reply(self, text: str, tool_result: ToolResult | None) -> bool:
+        if tool_result is not None:
+            return False
+        normalized = text.replace(" ", "")
+        return any(term in normalized for term in PENDING_ACTION_TERMS)
+
+    def _visible_reply_or_fallback(
+        self,
+        reply: str,
+        session: ChatSession,
+        step_result: StepAgentResult,
+        tool_result: ToolResult | None,
+    ) -> str:
+        candidates = (
+            reply,
+            step_result.reply or "",
+            session.last_agent_question or "",
+            self._fallback_for_session(session),
+            FALLBACK_REPLY,
+        )
+        for candidate in candidates:
+            stripped = candidate.strip()
+            if not stripped:
+                continue
+            if not self._is_user_safe(stripped):
+                continue
+            if self._is_unverified_pending_reply(stripped, tool_result):
+                continue
+            return stripped
+        return FALLBACK_REPLY
 
     def _fallback_for_session(self, session: ChatSession) -> str:
         return "请您再补充一下具体诉求，我会继续帮您处理。"
