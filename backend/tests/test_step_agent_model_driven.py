@@ -37,6 +37,7 @@ def test_step_agent_uses_model_json_for_slots_and_tool(monkeypatch):
             tenant_id="tenant_demo",
             active_skill_id="repair_ticket",
             active_step_id="collect_issue",
+            last_agent_question="请描述设备问题。",
         ),
         _repair_skill(),
         [_ticket_tool()],
@@ -45,6 +46,8 @@ def test_step_agent_uses_model_json_for_slots_and_tool(monkeypatch):
 
     assert captured["payload"]["active_skill"]["skill_id"] == "repair_ticket"
     assert captured["payload"]["active_step"]["step_id"] == "collect_issue"
+    assert captured["payload"]["last_agent_question"] == "请描述设备问题。"
+    assert "repair_context" in captured["payload"]
     assert result.slot_updates["asset_id"] == "EQ-9"
     assert result.tool_call is not None
     assert result.tool_call.name == "ticket.create"

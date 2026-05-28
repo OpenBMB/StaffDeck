@@ -18,12 +18,16 @@ class StepAgent:
         skill: Skill | None,
         tools: list[Tool],
         model_config: ModelConfig,
+        repair_context: dict[str, object] | None = None,
     ) -> StepAgentResult:
         payload = {
             "user_message": message,
             "active_skill": skill.content_json if skill else None,
             "active_step": _active_step(skill, session.active_step_id),
             "slots": session.slots_json or {},
+            "last_agent_question": session.last_agent_question,
+            "skill_stack": session.skill_stack_json or [],
+            "repair_context": repair_context,
             "available_tools": [
                 {
                     "name": tool.name,

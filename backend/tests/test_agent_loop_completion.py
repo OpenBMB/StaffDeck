@@ -248,6 +248,90 @@ def test_context_repair_does_not_infer_tool_when_router_is_clarifying() -> None:
     )
 
 
+def test_model_slot_validation_retry_can_complete_missed_quantity() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    loop.step_agent = _FakeStepAgent(
+        [
+            StepAgentResult(
+                reply="好的，hm。请问您想购买多少件 A1？",
+                slot_updates={"user_name": "hm", "product_id": "A1"},
+                next_step_id="collect_user_name",
+            ),
+            StepAgentResult(
+                reply="正在为您创建订单，请稍候。",
+                slot_updates={"quantity": 1},
+                next_step_id="collect_user_name",
+            ),
+            StepAgentResult(reply="正在为您创建订单，请稍候。"),
+        ]
+    )
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="purchase",
+        active_step_id="collect_user_name",
+        slots_json={},
+    )
+
+    step_result = loop._run_step_agent_with_context_repair(
+        _request("我要买一个A1，我叫hm"),
+        session,
+        _purchase_skill(),
+        [_purchase_tool()],
+        _model_config(),
+        RouterDecision(decision="suspend_current_and_start_new_skill", target_skill_id="purchase"),
+    )
+
+    assert loop.step_agent.calls == 3
+    assert session.slots_json["user_name"] == "hm"
+    assert session.slots_json["product_id"] == "A1"
+    assert session.slots_json["quantity"] == 1
+    assert step_result.tool_call is not None
+    assert step_result.tool_call.name == "product.purchase"
+    assert any(
+        event_type == "step_agent_result_repaired"
+        and payload.get("mode") == "slot_validation"
+        for _, _, event_type, payload in loop.events.records
+    )
+
+
+def test_model_slot_validation_retry_does_not_fill_without_model_progress() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    loop.step_agent = _FakeStepAgent(
+        [
+            StepAgentResult(reply="请问您想购买多少件 A1？", next_step_id="collect_user_name"),
+            StepAgentResult(reply="请问您想购买多少件 A1？", next_step_id="collect_user_name"),
+        ]
+    )
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="purchase",
+        active_step_id="collect_user_name",
+        slots_json={"product_id": "A1", "user_name": "hm"},
+    )
+
+    step_result = loop._run_step_agent_with_context_repair(
+        _request("随便看看"),
+        session,
+        _purchase_skill(),
+        [_purchase_tool()],
+        _model_config(),
+        RouterDecision(decision="continue_current_skill", target_skill_id="purchase"),
+    )
+
+    assert loop.step_agent.calls == 2
+    assert "quantity" not in session.slots_json
+    assert step_result.tool_call is None
+    assert not any(
+        event_type == "step_agent_result_repaired"
+        and payload.get("mode") == "slot_validation"
+        for _, _, event_type, payload in loop.events.records
+    )
+
+
 def test_tool_step_self_loop_advances_to_reply_and_completes_after_success() -> None:
     loop = object.__new__(AgentLoop)
     loop.events = FakeEvents()

@@ -863,6 +863,15 @@ class AgentLoop:
             request, chat_session, active_skill, tools, model_config
         )
         self._apply_step_result(request.tenant_id, chat_session, step_result)
+        step_result = self._retry_slot_validation_if_needed(
+            request,
+            chat_session,
+            active_skill,
+            tools,
+            model_config,
+            router_decision,
+            step_result,
+        )
 
         advanced = self._advance_past_satisfied_collection_steps(
             request.tenant_id, chat_session, active_skill
@@ -917,6 +926,86 @@ class AgentLoop:
 
         return step_result
 
+    def _retry_slot_validation_if_needed(
+        self,
+        request: ChatTurnRequest,
+        chat_session: ChatSession,
+        active_skill: Skill | None,
+        tools: list[Tool],
+        model_config: ModelConfig,
+        router_decision: RouterDecision,
+        step_result: StepAgentResult,
+    ) -> StepAgentResult:
+        missing_fields = self._missing_expected_fields(active_skill, chat_session)
+        if (
+            not missing_fields
+            or step_result.tool_call
+            or step_result.handoff
+            or not self._router_allows_schema_tool_repair(router_decision, chat_session)
+            or not self._slot_validation_retry_is_worthwhile(router_decision, step_result)
+        ):
+            return step_result
+
+        validation_result = self._run_step_agent_once(
+            request,
+            chat_session,
+            active_skill,
+            tools,
+            model_config,
+            "slot_validation",
+            {
+                "reason": "slot_validation",
+                "missing_expected_user_info": missing_fields,
+                "previous_step_result": step_result.model_dump(mode="json"),
+            },
+        )
+        if not self._step_result_has_progress(validation_result):
+            return step_result
+        if not validation_result.reply and step_result.reply:
+            validation_result.reply = step_result.reply
+        self._apply_step_result(request.tenant_id, chat_session, validation_result)
+        self.events.record(
+            request.tenant_id,
+            chat_session.id,
+            "step_agent_result_repaired",
+            {
+                "mode": "slot_validation",
+                "active_skill_id": chat_session.active_skill_id,
+                "active_step_id": chat_session.active_step_id,
+                "missing_expected_user_info": missing_fields,
+                "slot_updates": validation_result.slot_updates,
+                "tool_call": validation_result.tool_call.model_dump()
+                if validation_result.tool_call
+                else None,
+            },
+        )
+        return validation_result
+
+    def _slot_validation_retry_is_worthwhile(
+        self, router_decision: RouterDecision, step_result: StepAgentResult
+    ) -> bool:
+        if step_result.slot_updates:
+            return True
+        return router_decision.decision in {"continue_current_skill", "jump_within_current_skill"}
+
+    def _step_result_has_progress(self, step_result: StepAgentResult) -> bool:
+        return bool(step_result.slot_updates or step_result.tool_call or step_result.handoff)
+
+    def _missing_expected_fields(
+        self, skill: Skill | None, chat_session: ChatSession
+    ) -> list[str]:
+        if not skill:
+            return []
+        step = self._current_skill_step(skill, chat_session.active_step_id)
+        if not step:
+            return []
+        slots = chat_session.slots_json or {}
+        return [
+            str(field)
+            for field in step.get("expected_user_info", [])
+            if not self._skill_slot_satisfied(slots, str(field))
+        ]
+
     def _router_allows_schema_tool_repair(
         self, router_decision: RouterDecision, chat_session: ChatSession
     ) -> bool:
@@ -943,8 +1032,16 @@ class AgentLoop:
         tools: list[Tool],
         model_config: ModelConfig,
         repair_reason: str | None = None,
+        repair_context: dict[str, object] | None = None,
     ) -> StepAgentResult:
-        step_result = self.step_agent.run(request.message, chat_session, active_skill, tools, model_config)
+        step_result = self.step_agent.run(
+            request.message,
+            chat_session,
+            active_skill,
+            tools,
+            model_config,
+            repair_context,
+        )
         payload = step_result.model_dump()
         if repair_reason:
             payload["repair_reason"] = repair_reason
