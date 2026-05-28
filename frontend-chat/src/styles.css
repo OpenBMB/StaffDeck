@@ -144,6 +144,10 @@ textarea,
   gap: 6px !important;
 }
 
+.chat-layout.sidebar-collapsed .sidebar-logout {
+  display: none;
+}
+
 .brand-block {
   min-width: 0;
   display: flex;
@@ -386,27 +390,6 @@ textarea,
 
 .chat-header > div:first-child {
   min-width: 0;
-}
-
-.stream-pill {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  color: var(--muted);
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.stream-pill.active {
-  color: var(--foreground);
-  border-color: var(--border-strong);
-  background: #eeeeee;
 }
 
 .chat-messages {

@@ -1,5 +1,4 @@
 import {
-  ArrowLeftOutlined,
   BranchesOutlined,
   CloudSyncOutlined,
   DeleteOutlined,
@@ -819,10 +818,9 @@ export default function ChatWindowPage() {
             </div>
           </div>
           <div className="sidebar-actions">
-            <Button className="icon-button" icon={<ArrowLeftOutlined />} aria-label="返回会话列表" onClick={() => navigate('/chat')} />
             <Button className="icon-button primary" icon={<PlusOutlined />} onClick={createSession} />
             <Button
-              className="icon-button"
+              className="icon-button sidebar-logout"
               icon={<LogoutOutlined />}
               onClick={() => {
                 clearAuthSession();

@@ -116,7 +116,7 @@ export default function SessionListPage() {
             <Button className="icon-button" icon={<ReloadOutlined />} onClick={load} />
             <Button className="icon-button primary" icon={<PlusOutlined />} onClick={createSession} />
             <Button
-              className="icon-button"
+              className="icon-button sidebar-logout"
               icon={<LogoutOutlined />}
               onClick={() => {
                 clearAuthSession();
@@ -184,9 +184,6 @@ export default function SessionListPage() {
           <div>
             <Typography.Text strong>Skill Agent Chat</Typography.Text>
             <div className="header-subtitle">选择会话或新建会话</div>
-          </div>
-          <div className="stream-pill">
-            <span>ready</span>
           </div>
         </div>
         <div className="chat-messages">
