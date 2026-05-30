@@ -730,10 +730,6 @@ select,
   justify-content: flex-start;
 }
 
-.skill-warning {
-  margin-bottom: 10px;
-}
-
 .skill-source-md {
   height: calc(100% - 44px);
   min-height: 0;

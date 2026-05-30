@@ -9,7 +9,7 @@ import {
   SendOutlined,
   StopOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Card, Empty, Input, Modal, Space, Typography, message } from 'antd';
+import { Button, Card, Empty, Input, Modal, Space, Typography, message } from 'antd';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, streamPost, TENANT_ID } from '../api/client';
@@ -58,7 +58,6 @@ export default function DistillPage() {
   const [draft, setDraft] = useState<SkillCard | null>(null);
   const [loadedSkill, setLoadedSkill] = useState<SkillRead | null>(null);
   const [lastSavedDraft, setLastSavedDraft] = useState<SkillCard | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
   const [messages, setMessages] = useState<ChatItem[]>([
     {
       id: 'welcome',
@@ -89,7 +88,6 @@ export default function DistillPage() {
       setDraft(null);
       setLoadedSkill(null);
       setLastSavedDraft(null);
-      setWarnings([]);
       setSelectedPaths(DEFAULT_TARGET_PATHS);
       setPendingChange(null);
       setHighlightedPaths([]);
@@ -186,11 +184,13 @@ export default function DistillPage() {
             const nextWarnings = Array.isArray(item.data.warnings) ? item.data.warnings.map(String) : [];
             appendThinkingDetail(assistantId, `已生成技能草稿：${draftSkill.name}`);
             animateDraftChange(blankSkillForAnimation(draftSkill), draftSkill, allTargetPaths(draftSkill), 120);
-            setWarnings(nextWarnings);
             setSelectedPaths(DEFAULT_TARGET_PATHS);
             updateMessage(
               assistantId,
-              `已生成「${draftSkill.name}」草稿。你可以在右侧选择一个或多个区域继续改写。`,
+              withModelWarnings(
+                `已生成「${draftSkill.name}」草稿。你可以在右侧选择一个或多个区域继续改写。`,
+                nextWarnings,
+              ),
               { thinking: 'done' },
             );
             setStreamStatus('生成完成');
@@ -261,14 +261,19 @@ export default function DistillPage() {
             animateDraftChange(previousDraft, nextDraft, changedPaths);
             setPendingChange({ assistantId, previousDraft, nextDraft, changedPaths });
             setSelectedPaths((current) => reconcileSelectedPaths(current, nextDraft));
-            setWarnings(nextWarnings);
             setStreamStatus('改写完成');
             if (!receivedMessageChunk) {
-              updateMessage(assistantId, String(item.data.assistant_message || '已完成局部改写。'), {
-                thinking: 'done',
-                actionState: 'pending',
-              });
+              updateMessage(
+                assistantId,
+                withModelWarnings(String(item.data.assistant_message || '已完成局部改写。'), nextWarnings),
+                {
+                  thinking: 'done',
+                  actionState: 'pending',
+                },
+              );
             } else {
+              const warningText = formatModelWarnings(nextWarnings);
+              if (warningText) appendMessage(assistantId, warningText);
               updateMessage(assistantId, undefined, { thinking: 'done', actionState: 'pending' });
             }
           }
@@ -587,9 +592,6 @@ export default function DistillPage() {
               </Button>
             </Space>
           </div>
-          {warnings.map((warning) => (
-            <Alert key={warning} type="warning" message={warning} showIcon className="skill-warning" />
-          ))}
           {!draft ? (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无技能草稿" />
           ) : viewMode === 'source' ? (
@@ -945,6 +947,16 @@ function asStringList(value: unknown): string[] {
 
 function hasSelectedText(): boolean {
   return Boolean(window.getSelection()?.toString().trim());
+}
+
+function withModelWarnings(content: string, warnings: string[]): string {
+  return `${content}${formatModelWarnings(warnings)}`;
+}
+
+function formatModelWarnings(warnings: string[]): string {
+  const items = warnings.map((warning) => warning.trim()).filter(Boolean);
+  if (items.length === 0) return '';
+  return `\n\n模型提示：\n${items.map((warning) => `- ${warning}`).join('\n')}`;
 }
 
 function allTargetPaths(skill: SkillCard): string[] {
