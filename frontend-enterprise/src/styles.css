@@ -764,6 +764,41 @@ select,
   background: #f7f7f7;
 }
 
+.skill-source-code {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.skill-source-line {
+  min-height: 1.7em;
+}
+
+.skill-inline-remove,
+.skill-inline-add {
+  padding: 1px 2px;
+  border-radius: 4px;
+  font-weight: 780;
+  transition: background 420ms ease, color 420ms ease;
+}
+
+.skill-inline-remove {
+  color: #713f12;
+  background: #fef3c7;
+  animation: skill-inline-remove 520ms ease both;
+}
+
+.skill-inline-add {
+  color: #14532d;
+  background: #dcfce7;
+}
+
+.skill-inline-add.settled {
+  animation: skill-inline-settle 1.8s ease forwards;
+}
+
 .skill-source-section.changed,
 .skill-flow-node.changed {
   border-color: #0f766e;
@@ -775,6 +810,28 @@ select,
 .skill-source-section.updating,
 .skill-flow-node.updating {
   animation: skill-change-pulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes skill-inline-remove {
+  0% {
+    background: #fde68a;
+    color: #422006;
+  }
+
+  100% {
+    background: #fef3c7;
+    color: #713f12;
+  }
+}
+
+@keyframes skill-inline-settle {
+  0% {
+    background: #dcfce7;
+  }
+
+  100% {
+    background: transparent;
+  }
 }
 
 .selection-mark {

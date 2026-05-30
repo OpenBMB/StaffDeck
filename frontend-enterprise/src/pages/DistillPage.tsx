@@ -10,7 +10,7 @@ import {
   StopOutlined,
 } from '@ant-design/icons';
 import { Alert, Button, Card, Empty, Input, Space, Typography, message } from 'antd';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, streamPost, TENANT_ID } from '../api/client';
 import type { SkillCard, SkillRead } from '../types';
@@ -37,6 +37,18 @@ type PendingChange = {
   nextDraft: SkillCard;
   changedPaths: string[];
 };
+type TextDiffPhase = 'mark' | 'type' | 'settled';
+type TextDiffAnimation = {
+  key: string;
+  path: string;
+  field: string;
+  prefix: string;
+  removed: string;
+  inserted: string;
+  suffix: string;
+  phase: TextDiffPhase;
+  progress: number;
+};
 
 const DEFAULT_TARGET_PATHS = ['basic'];
 
@@ -57,6 +69,7 @@ export default function DistillPage() {
   const [selectedPaths, setSelectedPaths] = useState<string[]>(DEFAULT_TARGET_PATHS);
   const [highlightedPaths, setHighlightedPaths] = useState<string[]>([]);
   const [updatingPaths, setUpdatingPaths] = useState<string[]>([]);
+  const [textDiffs, setTextDiffs] = useState<TextDiffAnimation[]>([]);
   const [pendingChange, setPendingChange] = useState<PendingChange | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('source');
   const [loading, setLoading] = useState(false);
@@ -73,6 +86,7 @@ export default function DistillPage() {
       setPendingChange(null);
       setHighlightedPaths([]);
       setUpdatingPaths([]);
+      setTextDiffs([]);
       return;
     }
     api
@@ -84,6 +98,7 @@ export default function DistillPage() {
         setPendingChange(null);
         setHighlightedPaths([]);
         setUpdatingPaths([]);
+        setTextDiffs([]);
         setMessages([
           {
             id: 'loaded',
@@ -339,6 +354,7 @@ export default function DistillPage() {
     setDraft(pendingChange.nextDraft);
     setHighlightedPaths([]);
     setUpdatingPaths([]);
+    setTextDiffs([]);
     updateMessage(pendingChange.assistantId, undefined, { actionState: 'confirmed' });
     setPendingChange(null);
     if (showToast) message.success('已确认改写');
@@ -350,6 +366,7 @@ export default function DistillPage() {
     setDraft(pendingChange.previousDraft);
     setHighlightedPaths([]);
     setUpdatingPaths([]);
+    setTextDiffs([]);
     updateMessage(pendingChange.assistantId, undefined, { actionState: 'rejected' });
     setPendingChange(null);
     message.info('已拒绝改写并还原');
@@ -362,29 +379,38 @@ export default function DistillPage() {
       setDraft(nextDraft);
       setHighlightedPaths([]);
       setUpdatingPaths([]);
+      setTextDiffs([]);
       return;
     }
+    const nextTextDiffs = collectTextDiffs(previousDraft, nextDraft, paths);
     setHighlightedPaths(paths);
     setUpdatingPaths(paths);
+    setTextDiffs(nextTextDiffs);
     setDraft(previousDraft);
     const startTimer = window.setTimeout(() => {
-      const steps = 18;
+      setTextDiffs((current) => current.map((diff) => ({ ...diff, phase: 'type', progress: 0 })));
+      const steps = 24;
       let tick = 0;
       const interval = window.setInterval(() => {
         tick += 1;
         const progress = Math.min(tick / steps, 1);
-        setDraft(typedDraft(previousDraft, nextDraft, paths, progress));
+        setTextDiffs((current) => current.map((diff) => ({ ...diff, phase: 'type', progress })));
+        setDraft(typedDraft(previousDraft, nextDraft, nextTextDiffs, progress));
         if (progress >= 1) {
           window.clearInterval(interval);
           animationTimersRef.current = animationTimersRef.current.filter((timer) => timer !== interval);
+          setTextDiffs((current) => current.map((diff) => ({ ...diff, phase: 'settled', progress: 1 })));
           setDraft(nextDraft);
           setUpdatingPaths([]);
-          const clearTimer = window.setTimeout(() => setHighlightedPaths([]), 1800);
+          const clearTimer = window.setTimeout(() => {
+            setHighlightedPaths([]);
+            setTextDiffs([]);
+          }, 1800);
           animationTimersRef.current.push(clearTimer);
         }
       }, 38);
       animationTimersRef.current.push(interval);
-    }, 220);
+    }, 520);
     animationTimersRef.current.push(startTimer);
   }
 
@@ -513,6 +539,7 @@ export default function DistillPage() {
               selectedPaths={selectedPaths}
               highlightedPaths={highlightedPaths}
               updatingPaths={updatingPaths}
+              textDiffs={textDiffs}
               onToggle={toggleTarget}
             />
           ) : (
@@ -521,6 +548,7 @@ export default function DistillPage() {
               selectedPaths={selectedPaths}
               highlightedPaths={highlightedPaths}
               updatingPaths={updatingPaths}
+              textDiffs={textDiffs}
               onToggle={toggleTarget}
             />
           )}
@@ -535,12 +563,14 @@ function SkillSource({
   selectedPaths,
   highlightedPaths,
   updatingPaths,
+  textDiffs,
   onToggle,
 }: {
   skill: SkillCard;
   selectedPaths: string[];
   highlightedPaths: string[];
   updatingPaths: string[];
+  textDiffs: TextDiffAnimation[];
   onToggle: (target: TargetSelection) => void;
 }) {
   return (
@@ -552,7 +582,18 @@ function SkillSource({
         onClick={() => onToggle({ path: 'basic', label: '基础信息' })}
       >
         {selectedPaths.includes('basic') && <span className="selection-mark"><CheckOutlined /></span>}
-        <pre>{basicToMarkdown(skill)}</pre>
+        <div className="skill-source-code">
+          <div className="skill-source-line"># <InlineDiffText path="basic" field="name" value={skill.name} diffs={textDiffs} /></div>
+          <SourceTextLine path="basic" field="skill_id" label="- skill_id: `" value={skill.skill_id} suffix="`" diffs={textDiffs} />
+          <SourceTextLine path="basic" field="version" label="- version: `" value={skill.version} suffix="`" diffs={textDiffs} />
+          <SourceTextLine path="basic" field="business_domain" label="- business_domain: " value={skill.business_domain || '-'} diffs={textDiffs} />
+          <SourceTextLine path="basic" field="description" label="- description: " value={skill.description || '-'} diffs={textDiffs} />
+          <SourceListLine label="- trigger_intents: " values={skill.trigger_intents} />
+          <SourceListLine label="- user_utterance_examples: " values={skill.user_utterance_examples} />
+          <SourceListLine label="- goal: " values={skill.goal} />
+          <SourceListLine label="- required_info: " values={skill.required_info} />
+          <SourceListLine label="- response_rules: " values={skill.response_rules} />
+        </div>
       </button>
       <div className="skill-source-group-title">详细步骤</div>
       <div className="skill-source-steps">
@@ -567,7 +608,15 @@ function SkillSource({
               onClick={() => onToggle({ path, label: `步骤 ${index + 1}：${step.name || stepId}` })}
             >
               {selectedPaths.includes(path) && <span className="selection-mark"><CheckOutlined /></span>}
-              <pre>{stepToMarkdown(step, index)}</pre>
+              <div className="skill-source-code">
+                <div className="skill-source-line">
+                  ### Step {index + 1}: <InlineDiffText path={path} field="name" value={String(step.name || '-')} diffs={textDiffs} />
+                </div>
+                <SourceTextLine path={path} field="step_id" label="- step_id: `" value={stepId} suffix="`" diffs={textDiffs} />
+                <SourceTextLine path={path} field="instruction" label="- instruction: " value={String(step.instruction || '-')} diffs={textDiffs} />
+                <SourceListLine label="- expected_user_info: " values={asStringList(step.expected_user_info)} />
+                <SourceListLine label="- allowed_actions: " values={asStringList(step.allowed_actions)} />
+              </div>
             </button>
           );
         })}
@@ -581,12 +630,14 @@ function SkillFlow({
   selectedPaths,
   highlightedPaths,
   updatingPaths,
+  textDiffs,
   onToggle,
 }: {
   skill: SkillCard;
   selectedPaths: string[];
   highlightedPaths: string[];
   updatingPaths: string[];
+  textDiffs: TextDiffAnimation[];
   onToggle: (target: TargetSelection) => void;
 }) {
   return (
@@ -598,9 +649,9 @@ function SkillFlow({
       >
         {selectedPaths.includes('basic') && <span className="selection-mark"><CheckOutlined /></span>}
         <span>基础信息</span>
-        <strong>{skill.name}</strong>
+        <strong><InlineDiffText path="basic" field="name" value={skill.name} diffs={textDiffs} /></strong>
         <small>{skill.skill_id}</small>
-        <p>{skill.description || '暂无描述'}</p>
+        <p><InlineDiffText path="basic" field="description" value={skill.description || '暂无描述'} diffs={textDiffs} /></p>
         <div className="skill-flow-meta">
           <em>业务域 {skill.business_domain || '-'}</em>
           <em>必填 {joinPlain(skill.required_info)}</em>
@@ -623,9 +674,9 @@ function SkillFlow({
             >
               {selectedPaths.includes(path) && <span className="selection-mark"><CheckOutlined /></span>}
               <span>Step {index + 1}</span>
-              <strong>{String(step.name || stepId)}</strong>
+              <strong><InlineDiffText path={path} field="name" value={String(step.name || stepId)} diffs={textDiffs} /></strong>
               <small>{stepId}</small>
-              <p>{String(step.instruction || '暂无说明')}</p>
+              <p><InlineDiffText path={path} field="instruction" value={String(step.instruction || '暂无说明')} diffs={textDiffs} /></p>
               <div className="skill-flow-meta">
                 <em>字段 {joinPlain(asStringList(step.expected_user_info))}</em>
                 <em>动作 {joinPlain(asStringList(step.allowed_actions))}</em>
@@ -647,6 +698,71 @@ function SkillFlow({
   );
 }
 
+function SourceTextLine({
+  path,
+  field,
+  label,
+  value,
+  suffix = '',
+  diffs,
+}: {
+  path: string;
+  field: string;
+  label: string;
+  value: string;
+  suffix?: string;
+  diffs: TextDiffAnimation[];
+}) {
+  return (
+    <div className="skill-source-line">
+      <span>{label}</span>
+      <InlineDiffText path={path} field={field} value={value} diffs={diffs} />
+      <span>{suffix}</span>
+    </div>
+  );
+}
+
+function SourceListLine({ label, values }: { label: string; values: string[] | undefined }) {
+  return (
+    <div className="skill-source-line">
+      <span>{label}</span>
+      <span>{joinList(values)}</span>
+    </div>
+  );
+}
+
+function InlineDiffText({
+  path,
+  field,
+  value,
+  diffs,
+}: {
+  path: string;
+  field: string;
+  value: string;
+  diffs: TextDiffAnimation[];
+}): ReactNode {
+  const diff = diffs.find((item) => item.path === path && item.field === field);
+  if (!diff) return value;
+  if (diff.phase === 'mark') {
+    return (
+      <>
+        {diff.prefix}
+        {diff.removed ? <span className="skill-inline-remove">{diff.removed}</span> : null}
+        {diff.suffix}
+      </>
+    );
+  }
+  const typedInsert = diff.inserted.slice(0, Math.ceil(diff.inserted.length * diff.progress));
+  return (
+    <>
+      {diff.prefix}
+      {typedInsert ? <span className={`skill-inline-add ${diff.phase}`}>{typedInsert}</span> : null}
+      {diff.suffix}
+    </>
+  );
+}
+
 function parseInitialSkillPrompt(text: string): { title: string; raw_content: string } {
   const titleMatch = text.match(/标题[:：]\s*([^\n，,]+)/);
   const rawMatch = text.match(/原始(?:SOP|技能)?文本[:：]?\s*([\s\S]+)/);
@@ -654,32 +770,6 @@ function parseInitialSkillPrompt(text: string): { title: string; raw_content: st
   const title = titleMatch?.[1]?.trim() || lines[0]?.slice(0, 32) || '新技能';
   const rawContent = rawMatch?.[1]?.trim() || lines.slice(titleMatch ? 0 : 1).join('\n') || text;
   return { title, raw_content: rawContent };
-}
-
-function basicToMarkdown(skill: SkillCard): string {
-  return [
-    `# ${skill.name}`,
-    '',
-    `- skill_id: \`${skill.skill_id}\``,
-    `- version: \`${skill.version}\``,
-    `- business_domain: ${skill.business_domain || '-'}`,
-    `- description: ${skill.description || '-'}`,
-    `- trigger_intents: ${joinList(skill.trigger_intents)}`,
-    `- user_utterance_examples: ${joinList(skill.user_utterance_examples)}`,
-    `- goal: ${joinList(skill.goal)}`,
-    `- required_info: ${joinList(skill.required_info)}`,
-    `- response_rules: ${joinList(skill.response_rules)}`,
-  ].join('\n');
-}
-
-function stepToMarkdown(step: Record<string, unknown>, index: number): string {
-  return [
-    `### Step ${index + 1}: ${String(step.name || '-')}`,
-    `- step_id: \`${String(step.step_id || '-')}\``,
-    `- instruction: ${String(step.instruction || '-')}`,
-    `- expected_user_info: ${joinList(asStringList(step.expected_user_info))}`,
-    `- allowed_actions: ${joinList(asStringList(step.allowed_actions))}`,
-  ].join('\n');
 }
 
 function joinList(values: string[] | undefined): string {
@@ -712,14 +802,12 @@ function targetClass(
   baseClass: string,
   path: string,
   selectedPaths: string[],
-  highlightedPaths: string[],
-  updatingPaths: string[],
+  _highlightedPaths: string[],
+  _updatingPaths: string[],
 ): string {
   return [
     baseClass,
     selectedPaths.includes(path) ? 'active' : '',
-    highlightedPaths.includes(path) ? 'changed' : '',
-    updatingPaths.includes(path) ? 'updating' : '',
   ].filter(Boolean).join(' ');
 }
 
@@ -753,70 +841,84 @@ function sectionSignature(skill: SkillCard, path: string): string {
   return JSON.stringify(skill.steps[stepIndex] || null);
 }
 
-function typedDraft(previousDraft: SkillCard, nextDraft: SkillCard, changedPaths: string[], progress: number): SkillCard {
-  const next = cloneSkill(nextDraft);
-  const output = cloneSkill(previousDraft);
-  if (changedPaths.includes('basic')) {
-    output.skill_id = typeString(next.skill_id, progress);
-    output.name = typeString(next.name, progress);
-    output.version = typeString(next.version, progress);
-    output.business_domain = typeString(next.business_domain || '', progress);
-    output.description = typeString(next.description, progress);
-    output.trigger_intents = typeStringList(next.trigger_intents, progress);
-    output.user_utterance_examples = typeStringList(next.user_utterance_examples, progress);
-    output.goal = typeStringList(next.goal, progress);
-    output.required_info = typeStringList(next.required_info, progress);
-    output.response_rules = typeStringList(next.response_rules, progress);
-    output.interruption_policy = progress >= 1 ? next.interruption_policy : output.interruption_policy;
-  }
-  changedPaths.forEach((path) => {
+function collectTextDiffs(previousDraft: SkillCard, nextDraft: SkillCard, changedPaths: string[]): TextDiffAnimation[] {
+  const diffs: TextDiffAnimation[] = [];
+  const paths = changedPaths.includes('all') ? allTargetPaths(nextDraft) : changedPaths;
+  paths.forEach((path) => {
+    if (path === 'basic') {
+      ['skill_id', 'name', 'version', 'business_domain', 'description'].forEach((field) => {
+        const diff = makeTextDiff(path, field, getTextField(previousDraft, path, field), getTextField(nextDraft, path, field));
+        if (diff) diffs.push(diff);
+      });
+      return;
+    }
     const stepIndex = stepIndexFromPath(path);
     if (stepIndex === null) return;
-    const nextStep = next.steps[stepIndex];
-    if (!nextStep) return;
-    const previousStep = (previousDraft.steps[stepIndex] || {}) as Record<string, unknown>;
-    output.steps[stepIndex] = typedStep(previousStep, nextStep, progress);
+    ['step_id', 'name', 'instruction'].forEach((field) => {
+      const diff = makeTextDiff(path, field, getTextField(previousDraft, path, field), getTextField(nextDraft, path, field));
+      if (diff) diffs.push(diff);
+    });
   });
-  return output;
+  return diffs;
 }
 
-function typedStep(
-  previousStep: Record<string, unknown>,
-  nextStep: Record<string, unknown>,
-  progress: number,
-): Record<string, unknown> {
-  const output: Record<string, unknown> = { ...previousStep };
-  Object.entries(nextStep).forEach(([key, value]) => {
-    if (typeof value === 'string') {
-      output[key] = typeString(value, progress);
-      return;
-    }
-    if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
-      output[key] = typeStringList(value as string[], progress);
-      return;
-    }
-    output[key] = progress >= 1 ? value : previousStep[key];
+function makeTextDiff(path: string, field: string, oldText: string, newText: string): TextDiffAnimation | null {
+  if (oldText === newText) return null;
+  let prefixLength = 0;
+  const maxPrefix = Math.min(oldText.length, newText.length);
+  while (prefixLength < maxPrefix && oldText[prefixLength] === newText[prefixLength]) {
+    prefixLength += 1;
+  }
+  let suffixLength = 0;
+  const maxSuffix = Math.min(oldText.length - prefixLength, newText.length - prefixLength);
+  while (
+    suffixLength < maxSuffix &&
+    oldText[oldText.length - 1 - suffixLength] === newText[newText.length - 1 - suffixLength]
+  ) {
+    suffixLength += 1;
+  }
+  return {
+    key: `${path}:${field}`,
+    path,
+    field,
+    prefix: newText.slice(0, prefixLength),
+    removed: oldText.slice(prefixLength, oldText.length - suffixLength),
+    inserted: newText.slice(prefixLength, newText.length - suffixLength),
+    suffix: newText.slice(newText.length - suffixLength),
+    phase: 'mark',
+    progress: 0,
+  };
+}
+
+function getTextField(skill: SkillCard, path: string, field: string): string {
+  if (path === 'basic') {
+    const value = (skill as unknown as Record<string, unknown>)[field];
+    return typeof value === 'string' ? value : '';
+  }
+  const stepIndex = stepIndexFromPath(path);
+  if (stepIndex === null) return '';
+  const value = (skill.steps[stepIndex] || {})[field];
+  return typeof value === 'string' ? value : '';
+}
+
+function setTextField(skill: SkillCard, path: string, field: string, value: string): void {
+  if (path === 'basic') {
+    (skill as unknown as Record<string, unknown>)[field] = value;
+    return;
+  }
+  const stepIndex = stepIndexFromPath(path);
+  if (stepIndex === null || !skill.steps[stepIndex]) return;
+  skill.steps[stepIndex][field] = value;
+}
+
+function typedDraft(previousDraft: SkillCard, nextDraft: SkillCard, diffs: TextDiffAnimation[], progress: number): SkillCard {
+  const output = cloneSkill(previousDraft);
+  diffs.forEach((diff) => {
+    const typedInsert = diff.inserted.slice(0, Math.ceil(diff.inserted.length * progress));
+    setTextField(output, diff.path, diff.field, `${diff.prefix}${typedInsert}${diff.suffix}`);
   });
+  if (progress >= 1) return cloneSkill(nextDraft);
   return output;
-}
-
-function typeString(value: string, progress: number): string {
-  const safeValue = value || '';
-  if (progress <= 0) return '';
-  return safeValue.slice(0, Math.ceil(safeValue.length * progress));
-}
-
-function typeStringList(values: string[] | undefined, progress: number): string[] {
-  if (!values || values.length === 0) return [];
-  const totalChars = values.join('\n').length;
-  let remaining = Math.ceil(totalChars * progress);
-  return values.reduce<string[]>((acc, value) => {
-    if (remaining <= 0) return acc;
-    const next = value.slice(0, Math.min(value.length, remaining));
-    remaining -= value.length + 1;
-    if (next) acc.push(next);
-    return acc;
-  }, []);
 }
 
 function targetLabel(paths: string[], skill: SkillCard): string {
