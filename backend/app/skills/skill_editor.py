@@ -40,14 +40,16 @@ class SkillEditor:
     ) -> Iterator[dict[str, object]]:
         chunks: list[str] = []
         try:
+            yield {"event": "status", "data": {"text": "模型正在分析改写范围"}}
             for chunk in LLMClient(model_config).generate_text_stream(
                 PROMPT_PATH.read_text(encoding="utf-8"), self._payload(request)
             ):
                 chunks.append(chunk)
-                yield {"event": "status", "data": {"text": "正在改写选中部分"}}
+            yield {"event": "status", "data": {"text": "正在校验局部改写结果"}}
             raw = json.loads(_extract_json("".join(chunks)))
             response = self._normalize_response(raw, request)
         except (LLMError, json.JSONDecodeError, ValueError) as exc:
+            yield {"event": "status", "data": {"text": "模型改写失败，正在保留原版本"}}
             response = SkillRewriteResponse(
                 draft_skill=request.current_skill,
                 assistant_message="改写失败，已保留当前技能内容。",

@@ -224,7 +224,7 @@ def distill_skill_stream(request: SkillDistillRequest) -> StreamingResponse:
             ensure_tenant(db, request.tenant_id)
             model_config = _get_default_model(db, request.tenant_id)
             enriched_request = _with_available_tools(db, request)
-            yield _sse("status", {"text": "正在改写技能"})
+            yield _sse("status", {"text": "正在调用模型生成新技能"})
             for item in SkillDistiller().stream_text(enriched_request, model_config):
                 yield _sse(item["event"], item["data"])
 
@@ -240,7 +240,7 @@ def rewrite_skill_stream(skill_id: str, request: SkillRewriteRequest) -> Streami
         with Session(get_session_engine()) as db:
             ensure_tenant(db, request.tenant_id)
             model_config = _get_default_model(db, request.tenant_id)
-            yield _sse("status", {"text": "正在改写选中部分"})
+            yield _sse("status", {"text": "正在调用模型分析改写要求"})
             for item in SkillEditor().stream_text(request, model_config):
                 yield _sse(item["event"], item["data"])
 

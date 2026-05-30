@@ -4,8 +4,11 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.api.chat import _active_skill_for_assistant_message
 from app.api.skills import _skill_stats, list_skill_versions, skill_read
 from app.db.models import AgentEvent, Message, Skill, SkillFeedback, Tenant
+from app.db.models import ModelConfig
+from app.skills.skill_distiller import SkillDistiller
 from app.skills.skill_editor import SkillEditor
-from app.skills.skill_schema import SkillCard, SkillRewriteRequest
+from app.skills.skill_schema import SkillCard, SkillDistillRequest, SkillRewriteRequest
+from app.security.encryption import encrypt_secret
 
 
 def test_skill_editor_only_merges_selected_step() -> None:
@@ -295,6 +298,69 @@ def test_skill_read_normalizes_duplicate_step_ids() -> None:
     assert step_ids == ["collect_info", "collect_info_2"]
 
 
+def test_skill_distiller_stream_uses_generation_status(monkeypatch) -> None:
+    def fake_stream(self, _system_prompt: str, _payload: dict):  # noqa: ANN001
+        yield """
+        {
+          "draft_skill": {
+            "skill_id": "skill_compare_price",
+            "name": "商品比价",
+            "version": "1.0.0",
+            "business_domain": "ecommerce",
+            "description": "比较两个商品价格。",
+            "trigger_intents": ["compare_price"],
+            "user_utterance_examples": ["比较 A 和 B"],
+            "goal": ["收集两个商品名称", "反馈比价结果"],
+            "required_info": ["product_name_1", "product_name_2"],
+            "slot_filling_policy": {
+              "enabled": true,
+              "multi_slot_per_turn": true,
+              "extract_scope": "all_skill_expected_user_info",
+              "skip_satisfied_steps": true,
+              "target_info": ["product_name_1", "product_name_2"]
+            },
+            "steps": [
+              {
+                "step_id": "collect_names",
+                "name": "收集商品名称",
+                "instruction": "收集两个商品名称。",
+                "expected_user_info": ["product_name_1", "product_name_2"],
+                "allowed_actions": ["ask_user"]
+              },
+              {
+                "step_id": "reply_result",
+                "name": "反馈结果",
+                "instruction": "反馈明确结果。",
+                "expected_user_info": [],
+                "allowed_actions": ["answer_user"]
+              }
+            ],
+            "interruption_policy": {},
+            "response_rules": []
+          },
+          "warnings": []
+        }
+        """
+
+    monkeypatch.setattr("app.skills.skill_distiller.LLMClient.generate_text_stream", fake_stream)
+    events = list(
+        SkillDistiller().stream_text(
+            SkillDistillRequest(
+                tenant_id="tenant_demo",
+                title="商品比价",
+                raw_content="用户提供两个商品的名称，系统根据商品价格进行比价",
+            ),
+            _model_config(),
+        )
+    )
+    status_texts = [event["data"]["text"] for event in events if event["event"] == "status"]
+
+    assert "正在改写技能" not in status_texts
+    assert "模型正在规划技能结构" in status_texts
+    assert "正在校验模型输出结构" in status_texts
+    assert "已完成 Skill Card 结构化" in status_texts
+
+
 def _skill_card() -> SkillCard:
     return SkillCard(
         skill_id="purchase",
@@ -324,6 +390,15 @@ def _skill_card() -> SkillCard:
         ],
         interruption_policy={},
         response_rules=[],
+    )
+
+
+def _model_config() -> ModelConfig:
+    return ModelConfig(
+        tenant_id="tenant_demo",
+        name="mock",
+        api_key_encrypted=encrypt_secret("mock"),
+        model="mock-model",
     )
 
 

@@ -167,7 +167,7 @@ export default function DistillPage() {
     setStreamStatus('正在生成技能草稿');
     const assistantId = pushMessage('assistant', '', {
       thinking: 'running',
-      thinkingDetails: ['准备生成技能草稿'],
+      thinkingDetails: ['正在理解技能目标与输入信息'],
       thinkingOpen: false,
     });
     const controller = new AbortController();
@@ -867,7 +867,7 @@ function SourceListLine({
   path: string;
   field: string;
   label: string;
-  values: string[] | undefined;
+  values: unknown;
   diffs: TextDiffAnimation[];
 }) {
   return (
@@ -919,16 +919,28 @@ function parseInitialSkillPrompt(text: string): { title: string; raw_content: st
   return { title, raw_content: rawContent };
 }
 
-function joinList(values: string[] | undefined): string {
-  return values && values.length > 0 ? values.map((item) => `\`${item}\``).join(', ') : '-';
+function joinList(values: unknown): string {
+  if (Array.isArray(values)) {
+    const items = values.map(String).filter(Boolean);
+    return items.length > 0 ? items.map((item) => `\`${item}\``).join(', ') : '-';
+  }
+  if (typeof values === 'string' && values.trim()) return values;
+  return '-';
 }
 
-function joinPlain(values: string[] | undefined): string {
-  return values && values.length > 0 ? values.join('、') : '-';
+function joinPlain(values: unknown): string {
+  if (Array.isArray(values)) {
+    const items = values.map(String).filter(Boolean);
+    return items.length > 0 ? items.join('、') : '-';
+  }
+  if (typeof values === 'string' && values.trim()) return values;
+  return '-';
 }
 
 function asStringList(value: unknown): string[] {
-  return Array.isArray(value) ? value.map(String) : [];
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === 'string' && value.trim()) return [value];
+  return [];
 }
 
 function hasSelectedText(): boolean {
@@ -1104,6 +1116,7 @@ function getDisplayField(skill: SkillCard, path: string, field: string): string 
 }
 
 function setTextField(skill: SkillCard, path: string, field: string, value: string): void {
+  if (isListField(field)) return;
   if (path === 'basic') {
     (skill as unknown as Record<string, unknown>)[field] = value;
     return;
@@ -1111,6 +1124,18 @@ function setTextField(skill: SkillCard, path: string, field: string, value: stri
   const stepIndex = stepIndexFromPath(path);
   if (stepIndex === null || !skill.steps[stepIndex]) return;
   skill.steps[stepIndex][field] = value;
+}
+
+function isListField(field: string): boolean {
+  return [
+    'trigger_intents',
+    'user_utterance_examples',
+    'goal',
+    'required_info',
+    'response_rules',
+    'expected_user_info',
+    'allowed_actions',
+  ].includes(field);
 }
 
 function typedDraft(previousDraft: SkillCard, nextDraft: SkillCard, diffs: TextDiffAnimation[], progress: number): SkillCard {

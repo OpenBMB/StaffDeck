@@ -82,15 +82,19 @@ class SkillDistiller:
         payload = self._payload(request)
         chunks: list[str] = []
         try:
+            yield {"event": "status", "data": {"text": "模型正在规划技能结构"}}
             for chunk in LLMClient(model_config).generate_text_stream(PROMPT_PATH.read_text(encoding="utf-8"), payload):
                 chunks.append(chunk)
                 yield {"event": "chunk", "data": {"content": chunk}}
+            yield {"event": "status", "data": {"text": "正在校验模型输出结构"}}
             response = self._normalize_response(json.loads(_extract_json("".join(chunks))), request)
         except (LLMError, json.JSONDecodeError, ValueError) as exc:
+            yield {"event": "status", "data": {"text": "模型输出需修复，正在生成可用草稿"}}
             response = self._fallback_response(request, f"模型输出未能直接解析，已使用规则兜底生成：{exc}")
             for chunk in _chunk_text(json.dumps(response.draft_skill.model_dump(), ensure_ascii=False, indent=2)):
                 yield {"event": "chunk", "data": {"content": chunk}}
                 sleep(STREAM_INTERVAL_SECONDS)
+        yield {"event": "status", "data": {"text": "已完成 Skill Card 结构化"}}
         yield {"event": "complete", "data": response.model_dump(mode="json")}
 
     def _payload(self, request: SkillDistillRequest) -> dict[str, Any]:
