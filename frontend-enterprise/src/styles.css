@@ -750,22 +750,22 @@ body.skill-distill-fixed .content {
 }
 
 .skill-chat-row.user .skill-chat-bubble.editing {
-  width: min(760px, 92%);
-  max-width: 92%;
-  padding: 14px;
+  min-width: min(360px, 72vw);
+  max-width: 84%;
+  padding: 12px 14px;
   background: var(--surface-muted);
   border-color: transparent;
-  border-radius: 18px;
+  border-radius: 16px;
 }
 
 .skill-chat-edit-panel {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .skill-chat-edit-panel .ant-input {
   padding: 0;
-  min-height: 48px;
+  min-height: 34px;
   color: var(--foreground);
   background: transparent;
   border: 0;
@@ -784,7 +784,12 @@ body.skill-distill-fixed .content {
 .skill-chat-edit-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 7px;
+}
+
+.skill-chat-edit-actions .ant-btn {
+  height: 30px;
+  padding-inline: 12px;
 }
 
 .skill-chat-edit-actions .ant-btn-primary {
