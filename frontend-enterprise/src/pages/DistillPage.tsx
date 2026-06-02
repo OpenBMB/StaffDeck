@@ -1486,11 +1486,49 @@ function SourceActionLine({
       <span className="skill-source-key">{fieldLabel('allowed_actions')}</span>
       <span className="skill-source-value">
         {activeDiff ? (
-          <InlineDiffText path={path} field="allowed_actions" value={joinPlain(values)} diffs={diffs} />
+          <ActionDiffList diff={activeDiff} currentActions={values} toolDescriptions={toolDescriptions} />
         ) : (
           <ActionList actions={values} toolDescriptions={toolDescriptions} />
         )}
       </span>
+    </div>
+  );
+}
+
+function ActionDiffList({
+  diff,
+  currentActions,
+  toolDescriptions,
+}: {
+  diff: TextDiffAnimation;
+  currentActions: string[];
+  toolDescriptions: ToolDescriptionMap;
+}) {
+  const oldActions = actionsFromDiffText(diffFullOldValue(diff));
+  const newActions = actionsFromDiffText(diffFullNewValue(diff));
+  const visibleActions = currentActions.length > 0 ? currentActions : newActions;
+  const inserted = new Set(newActions.filter((action) => !oldActions.includes(action)));
+  const removed = oldActions.filter((action) => !newActions.includes(action));
+  const phaseClass = diff.phase === 'mark' ? 'marked' : diff.phase === 'type' ? 'typing' : 'settled';
+  if (visibleActions.length === 0 && removed.length === 0) return <span className="skill-action-empty">-</span>;
+  return (
+    <div className="skill-action-list">
+      {removed.map((action, index) => (
+        <ActionChip
+          action={action}
+          toolDescriptions={toolDescriptions}
+          className="removed"
+          key={`removed_${action}_${index}`}
+        />
+      ))}
+      {visibleActions.map((action, index) => (
+        <ActionChip
+          action={action}
+          toolDescriptions={toolDescriptions}
+          className={inserted.has(action) ? `added ${phaseClass}` : ''}
+          key={`${action}_${index}`}
+        />
+      ))}
     </div>
   );
 }

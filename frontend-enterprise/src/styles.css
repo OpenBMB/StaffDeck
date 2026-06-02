@@ -1416,6 +1416,27 @@ body.skill-distill-fixed .content {
   cursor: help;
 }
 
+.skill-action-chip.added {
+  color: #135f36;
+  background: #e8f6ee;
+  border-color: #9bd3b0;
+}
+
+.skill-action-chip.added.typing {
+  box-shadow: inset 0 -2px 0 rgba(19, 95, 54, 0.22);
+}
+
+.skill-action-chip.added.settled {
+  background: #eef9f2;
+}
+
+.skill-action-chip.removed {
+  color: #8c2b2b;
+  background: #fff1f0;
+  border-color: #f0b7b2;
+  text-decoration: line-through;
+}
+
 .skill-flow-tools {
   width: min(720px, 100%);
   margin-top: 8px;
