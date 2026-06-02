@@ -669,6 +669,7 @@ body.skill-distill-fixed .content {
 
 .skill-chat-row.user {
   justify-content: flex-end;
+  margin-bottom: 28px;
 }
 
 .skill-chat-bubble {
@@ -692,31 +693,94 @@ body.skill-distill-fixed .content {
   background: var(--surface-muted);
 }
 
-.skill-chat-edit-button {
+.skill-chat-hover-actions {
   position: absolute;
-  top: 6px;
-  left: -30px;
-  width: 24px;
-  height: 24px;
+  right: 10px;
+  bottom: -30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.skill-chat-row.user .skill-chat-bubble:hover .skill-chat-hover-actions,
+.skill-chat-row.user .skill-chat-bubble:focus-within .skill-chat-hover-actions {
+  opacity: 1;
+}
+
+.skill-chat-time {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.skill-chat-hover-actions button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  background: transparent;
+  border: 0;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.16s ease, color 0.16s ease;
+  font-size: 16px;
+  line-height: 1;
 }
 
-.skill-chat-row.user .skill-chat-bubble:hover .skill-chat-edit-button,
-.skill-chat-edit-button:focus-visible {
-  opacity: 1;
-}
-
-.skill-chat-edit-button:hover {
+.skill-chat-hover-actions button:hover {
   color: var(--foreground);
+}
+
+.skill-chat-hover-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.skill-chat-row.user .skill-chat-bubble.editing {
+  width: min(760px, 92%);
+  max-width: 92%;
+  padding: 14px;
+  background: var(--surface-muted);
+  border-color: transparent;
+  border-radius: 18px;
+}
+
+.skill-chat-edit-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.skill-chat-edit-panel .ant-input {
+  padding: 0;
+  min-height: 48px;
+  color: var(--foreground);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  resize: none;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.skill-chat-edit-panel .ant-input:focus,
+.skill-chat-edit-panel .ant-input-focused {
+  border: 0;
+  box-shadow: none;
+}
+
+.skill-chat-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.skill-chat-edit-actions .ant-btn-primary {
+  background: #1f2023;
+  border-color: #1f2023;
 }
 
 .skill-chat-thinking-block {

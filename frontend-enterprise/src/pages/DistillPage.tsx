@@ -3,6 +3,7 @@ import {
   CheckOutlined,
   CodeOutlined,
   CloseOutlined,
+  CopyOutlined,
   DownOutlined,
   EditOutlined,
   FileTextOutlined,
@@ -36,6 +37,7 @@ type ChatItem = {
   role: 'user' | 'assistant';
   content: string;
   outgoingText?: string;
+  createdAt?: string;
   thinking?: 'running' | 'done';
   thinkingDetails?: string[];
   thinkingOpen?: boolean;
@@ -137,6 +139,11 @@ type DistillHistorySnapshot = {
   streamStatus: string;
 };
 
+type EditingMessage = {
+  id: string;
+  text: string;
+};
+
 export default function DistillPage() {
   const [searchParams] = useSearchParams();
   const skillId = searchParams.get('skill_id');
@@ -167,6 +174,7 @@ export default function DistillPage() {
   const [toolDetail, setToolDetail] = useState<ToolSuggestionItem | null>(null);
   const [tools, setTools] = useState<ToolRead[]>([]);
   const [streamStatus, setStreamStatus] = useState('');
+  const [editingMessage, setEditingMessage] = useState<EditingMessage | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const uploadControllersRef = useRef<Record<string, AbortController>>({});
   const dragDepthRef = useRef(0);
@@ -444,6 +452,7 @@ export default function DistillPage() {
     currentDraft: SkillCard | null = draft,
     targetPathsOverride?: string[],
     initialThinkingDetails?: string[],
+    conversationOverride?: ChatItem[],
   ) {
     if (!currentDraft) return;
     const previousDraft = cloneSkill(currentDraft);
@@ -473,7 +482,7 @@ export default function DistillPage() {
           target_path: targets[0],
           target_paths: targets,
           target_label: scopeLabel,
-          conversation: messages.map((item) => ({ role: item.role, content: item.content })),
+          conversation: (conversationOverride || messages).map((item) => ({ role: item.role, content: item.content })),
         },
         (item) => {
           if (item.event === 'status') {
@@ -820,7 +829,7 @@ export default function DistillPage() {
 
   function pushMessage(role: ChatItem['role'], content: string, extra: Partial<ChatItem> = {}) {
     const id = `${role}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    setMessages((current) => [...current, { id, role, content, ...extra }]);
+    setMessages((current) => [...current, { id, role, content, createdAt: new Date().toISOString(), ...extra }]);
     return id;
   }
 
@@ -957,14 +966,42 @@ export default function DistillPage() {
 
   function requestEditHistoryMessage(item: ChatItem, index: number) {
     if (loading || item.role !== 'user') return;
+    setEditingMessage({ id: item.id, text: item.outgoingText || item.content });
+  }
+
+  async function copyHistoryMessage(item: ChatItem) {
+    const text = item.outgoingText || item.content;
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success('已复制');
+    } catch {
+      message.error('复制失败');
+    }
+  }
+
+  function cancelEditingMessage() {
+    setEditingMessage(null);
+  }
+
+  function submitEditingMessage() {
+    if (!editingMessage || loading) return;
+    const text = editingMessage.text.trim();
+    if (!text) return;
+    const index = messages.findIndex((item) => item.id === editingMessage.id);
+    const item = index >= 0 ? messages[index] : null;
+    if (!item || item.role !== 'user') {
+      setEditingMessage(null);
+      return;
+    }
     const snapshot = item.snapshotBefore;
     if (!snapshot) {
-      setInput(item.outgoingText || item.content);
+      updateMessage(item.id, text, { outgoingText: text });
+      setEditingMessage(null);
       return;
     }
     const rollbackOperations = collectRollbackOperations(messages.slice(index + 1));
     if (rollbackOperations.length === 0) {
-      void rollbackAndEditMessage(item, index, snapshot, rollbackOperations);
+      void rerunEditedMessage(index, snapshot, rollbackOperations, text);
       return;
     }
     Modal.confirm({
@@ -983,22 +1020,43 @@ export default function DistillPage() {
       ),
       okText: '确认回退',
       cancelText: '取消',
-      onOk: () => rollbackAndEditMessage(item, index, snapshot, rollbackOperations),
+      onOk: () => rerunEditedMessage(index, snapshot, rollbackOperations, text),
     });
   }
 
-  async function rollbackAndEditMessage(
-    item: ChatItem,
+  async function rerunEditedMessage(
     index: number,
     snapshot: DistillHistorySnapshot,
     operations: DistillHistoryOperation[],
+    text: string,
   ) {
     try {
       await rollbackPersistedOperations(snapshot, operations);
-      restoreHistorySnapshot(snapshot);
-      setMessages((current) => current.slice(0, index));
-      setInput(item.outgoingText || item.content);
-      message.info('已回退到该消息发送前，可以重新编辑并发送');
+      const confirmedDraft = snapshot.pendingChange?.nextDraft || snapshot.draft;
+      restoreHistorySnapshot({
+        ...snapshot,
+        draft: confirmedDraft ? cloneSkill(confirmedDraft) : null,
+        pendingChange: null,
+        updatingPaths: [],
+        textDiffs: [],
+      });
+      const editedUser: ChatItem = {
+        id: `user_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        role: 'user',
+        content: text,
+        outgoingText: text,
+        createdAt: new Date().toISOString(),
+        snapshotBefore: snapshot,
+      };
+      const previousMessages = messages.slice(0, index);
+      const nextMessages = [...previousMessages, editedUser];
+      setMessages(nextMessages);
+      setEditingMessage(null);
+      if (!confirmedDraft) {
+        await createDraftFromText(text);
+        return;
+      }
+      await rewriteSelectedTarget(text, confirmedDraft, undefined, undefined, nextMessages);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '回退失败');
     }
@@ -1114,17 +1172,7 @@ export default function DistillPage() {
             <div className="skill-chat-messages" ref={chatMessagesRef}>
               {messages.map((item, index) => (
                 <div key={item.id} className={`skill-chat-row ${item.role}`}>
-                  <div className="skill-chat-bubble">
-                    {item.role === 'user' && (
-                      <button
-                        type="button"
-                        className="skill-chat-edit-button"
-                        title="重新编辑并回退后续推理"
-                        onClick={() => requestEditHistoryMessage(item, index)}
-                      >
-                        <EditOutlined />
-                      </button>
-                    )}
+                  <div className={`skill-chat-bubble ${editingMessage?.id === item.id ? 'editing' : ''}`}>
                     {item.role === 'assistant' && item.thinking && (
                       <div className={`skill-chat-thinking-block ${item.thinking}`}>
                         <button
@@ -1147,7 +1195,48 @@ export default function DistillPage() {
                         )}
                       </div>
                     )}
-                    {item.content ? <div className="skill-chat-content">{item.content}</div> : item.thinking === 'running' ? null : '正在处理...'}
+                    {item.role === 'user' && editingMessage?.id === item.id ? (
+                      <div className="skill-chat-edit-panel">
+                        <Input.TextArea
+                          value={editingMessage.text}
+                          autoSize={{ minRows: 2, maxRows: 8 }}
+                          autoFocus
+                          onChange={(event) => setEditingMessage({ id: item.id, text: event.target.value })}
+                          onPressEnter={(event) => {
+                            if (!event.shiftKey && !event.nativeEvent.isComposing) {
+                              event.preventDefault();
+                              submitEditingMessage();
+                            }
+                          }}
+                        />
+                        <div className="skill-chat-edit-actions">
+                          <Button onClick={cancelEditingMessage}>取消</Button>
+                          <Button type="primary" onClick={submitEditingMessage} disabled={!(editingMessage?.text || '').trim()}>
+                            发送
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {item.content ? <div className="skill-chat-content">{item.content}</div> : item.thinking === 'running' ? null : '正在处理...'}
+                        {item.role === 'user' && (
+                          <div className="skill-chat-hover-actions">
+                            <span className="skill-chat-time">{formatMessageTime(item.createdAt)}</span>
+                            <button type="button" title="复制" onClick={() => void copyHistoryMessage(item)}>
+                              <CopyOutlined />
+                            </button>
+                            <button
+                              type="button"
+                              title="修改"
+                              onClick={() => requestEditHistoryMessage(item, index)}
+                              disabled={loading}
+                            >
+                              <EditOutlined />
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    )}
                     {item.warnings && item.warnings.length > 0 && (
                       <div className="skill-chat-warning">
                         <div className="skill-chat-warning-title">
@@ -2251,6 +2340,13 @@ function buildDisplayText(input: string, attachments: UploadAttachment[]): strin
   if (text && fileNames) return `${text}\n\n附件：${fileNames}`;
   if (fileNames) return `附件：${fileNames}`;
   return text;
+}
+
+function formatMessageTime(value?: string): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 function normalizeToolSuggestions(value: unknown): ToolSuggestionItem[] {
