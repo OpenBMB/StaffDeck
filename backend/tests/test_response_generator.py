@@ -114,8 +114,7 @@ def test_pending_step_reply_without_tool_result_does_not_fall_back_to_last_quest
         model_config=None,  # type: ignore[arg-type]
     )
 
-    assert reply == "请您再补充一下具体诉求，我会继续帮您处理。"
-    assert "稍候" not in reply
+    assert reply == "正在为您提交，请稍候。"
     assert reply != "请提供您的订单号。"
 
 

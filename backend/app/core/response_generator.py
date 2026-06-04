@@ -205,18 +205,10 @@ class ResponseGenerator:
         completion_ready: bool,
     ) -> tuple[tuple[str, bool], ...]:
         if completion_ready:
-            if tool_result is None:
-                return (
-                    (completion_fallback, False),
-                    (step_reply, True),
-                    (model_reply, True),
-                    (session_fallback, False),
-                    (FALLBACK_REPLY, False),
-                )
             return (
                 (model_reply, True),
                 (completion_fallback, False),
-                (step_reply, False),
+                (step_reply, tool_result is None),
                 (session_fallback, False),
                 (FALLBACK_REPLY, False),
             )
@@ -229,8 +221,8 @@ class ResponseGenerator:
                 (FALLBACK_REPLY, False),
             )
         return (
-            (step_reply, True),
             (model_reply, True),
+            (step_reply, False),
             (completion_fallback, False),
             (session_fallback, False),
             (FALLBACK_REPLY, False),

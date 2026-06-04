@@ -2388,7 +2388,7 @@ class AgentLoop:
 
     def _finalize_turn(self, chat_session: ChatSession, tenant_id: str, reply: str) -> None:
         chat_session.updated_at = utc_now()
-        chat_session.last_agent_question = reply.strip() if _is_agent_question(reply) else None
+        chat_session.last_agent_question = reply.strip() or None
         chat_session.summary = f"最近回复：{reply[:120]}"
         self._append_message(tenant_id, chat_session.id, "assistant", reply)
         self.events.record(
@@ -2403,7 +2403,3 @@ class AgentLoop:
             "session_state_changed",
             public_session(chat_session).model_dump(),
         )
-
-
-def _is_agent_question(reply: str) -> bool:
-    return "？" in reply or "?" in reply
