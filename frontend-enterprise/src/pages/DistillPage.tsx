@@ -1707,37 +1707,42 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
                     })()}
                     {item.toolSuggestions && item.toolSuggestions.length > 0 && (
                       <div className="skill-tool-suggestions">
-                        {item.toolSuggestions.map((suggestion) => (
-                          <div className="skill-tool-suggestion" key={`${item.id}_${suggestion.name}`}>
-                            <div className="skill-tool-suggestion-main">
-                              <div className="skill-tool-suggestion-head">
-                                <div className="skill-tool-suggestion-title">{toolSuggestionTitle(suggestion)}</div>
-                                <span className={`skill-tool-status ${toolSuggestionStatusClass(suggestion)}`}>
-                                  {toolSuggestionStatusText(suggestion)}
-                                </span>
+                        {item.toolSuggestions.map((suggestion) => {
+                          const canResolveSuggestion =
+                            toolSuggestionResolution(suggestion) === 'new_candidate' &&
+                            suggestion.status !== 'accepted' &&
+                            suggestion.status !== 'created' &&
+                            suggestion.status !== 'rejected';
+                          return (
+                            <div className={`skill-tool-suggestion ${canResolveSuggestion ? 'has-actions' : ''}`} key={`${item.id}_${suggestion.name}`}>
+                              <div className="skill-tool-suggestion-main">
+                                <div className="skill-tool-suggestion-head">
+                                  <div className="skill-tool-suggestion-title">{toolSuggestionTitle(suggestion)}</div>
+                                  <span className={`skill-tool-status ${toolSuggestionStatusClass(suggestion)}`}>
+                                    {toolSuggestionStatusText(suggestion)}
+                                  </span>
+                                </div>
+                                <div className="skill-tool-suggestion-desc">
+                                  {suggestion.reason || suggestion.description || suggestion.name}
+                                </div>
+                                <div className="skill-tool-suggestion-meta">
+                                  <span className="skill-tool-method">{suggestion.method || 'POST'}</span>
+                                  <span>{suggestion.url || '-'}</span>
+                                </div>
                               </div>
-                              <div className="skill-tool-suggestion-desc">
-                                {suggestion.reason || suggestion.description || suggestion.name}
+                              <div className="skill-tool-suggestion-actions top">
+                                <Tooltip title="查看详情">
+                                  <Button
+                                    className="skill-tool-action"
+                                    size="small"
+                                    type="text"
+                                    icon={<InfoCircleOutlined />}
+                                    onClick={() => openToolDetail(item.id, suggestion)}
+                                  />
+                                </Tooltip>
                               </div>
-                              <div className="skill-tool-suggestion-meta">
-                                <span className="skill-tool-method">{suggestion.method || 'POST'}</span>
-                                <span>{suggestion.url || '-'}</span>
-                              </div>
-                            </div>
-                            <div className="skill-tool-suggestion-actions top">
-                              <Tooltip title="查看详情">
-                                <Button
-                                  className="skill-tool-action"
-                                  size="small"
-                                  type="text"
-                                  icon={<InfoCircleOutlined />}
-                                  onClick={() => openToolDetail(item.id, suggestion)}
-                                />
-                              </Tooltip>
-                            </div>
-                            <div className="skill-tool-suggestion-actions bottom">
-                              {toolSuggestionResolution(suggestion) === 'new_candidate' && suggestion.status !== 'accepted' && suggestion.status !== 'created' && suggestion.status !== 'rejected' && (
-                                <>
+                              {canResolveSuggestion && (
+                                <div className="skill-tool-suggestion-actions bottom">
                                   <Tooltip title="确认新增">
                                     <Button
                                       className="skill-tool-action confirm"
@@ -1757,11 +1762,11 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
                                       onClick={() => rejectToolSuggestion(item.id, suggestion.name)}
                                     />
                                   </Tooltip>
-                                </>
+                                </div>
                               )}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                     {item.actionState === 'pending' && (

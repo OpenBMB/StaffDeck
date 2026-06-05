@@ -1107,26 +1107,29 @@ body.skill-distill-fixed .content {
 
 .skill-tool-suggestion {
   position: relative;
-  min-height: 136px;
-  padding: 16px;
+  padding: 12px 12px 11px;
   background: #fffdf9;
   border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: 0 10px 24px rgba(45, 39, 30, 0.035);
+  border-radius: 10px;
+  box-shadow: 0 6px 16px rgba(45, 39, 30, 0.026);
 }
 
 .skill-tool-suggestion-main {
   min-width: 0;
-  padding-right: 104px;
-  padding-bottom: 44px;
+  padding-right: 72px;
+  padding-bottom: 0;
+}
+
+.skill-tool-suggestion.has-actions .skill-tool-suggestion-main {
+  padding-bottom: 34px;
 }
 
 .skill-tool-suggestion-head {
   min-width: 0;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 7px;
 }
 
 .skill-tool-suggestion-title {
@@ -1135,7 +1138,7 @@ body.skill-distill-fixed .content {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--foreground);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 780;
 }
 
@@ -1179,24 +1182,24 @@ body.skill-distill-fixed .content {
 
 .skill-tool-suggestion-desc {
   color: var(--muted);
-  font-size: 13px;
-  line-height: 1.65;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .skill-tool-suggestion-meta {
-  margin-top: 12px;
+  margin-top: 7px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   min-width: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 11px;
 }
 
 .skill-tool-method {
   flex: 0 0 auto;
-  min-width: 54px;
-  padding: 3px 10px;
+  min-width: 44px;
+  padding: 1px 7px;
   color: var(--foreground);
   text-align: center;
   border: 1px solid var(--border);
@@ -1214,47 +1217,36 @@ body.skill-distill-fixed .content {
 
 .skill-tool-suggestion-actions {
   position: absolute;
-  right: 16px;
+  right: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
-  padding: 4px;
+  gap: 4px;
+  padding: 2px;
   border: 1px solid rgba(226, 218, 205, 0.8);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 4px 12px rgba(45, 39, 30, 0.04);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
 .skill-tool-suggestion-actions.top {
-  top: 16px;
-  padding: 5px;
+  top: 10px;
 }
 
 .skill-tool-suggestion-actions.bottom {
-  right: 16px;
-  bottom: 16px;
-}
-
-.skill-tool-suggestion-actions.bottom:empty {
-  display: none;
+  right: 12px;
+  bottom: 8px;
+  gap: 10px;
+  padding: 3px 8px;
 }
 
 .skill-tool-action.ant-btn {
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
   padding: 0;
   color: var(--muted);
   border-radius: 999px;
-}
-
-.skill-tool-suggestion-actions.top .skill-tool-action.ant-btn {
-  width: 34px;
-  height: 34px;
-  min-width: 34px;
 }
 
 .skill-tool-action.ant-btn:hover {
