@@ -510,17 +510,25 @@ def _active_skill_context_for_assistant_message(
     ).all()
     collecting = False
     last_context: dict[str, str | None] | None = None
+    skill_hint: str | None = None
     for event in events:
         payload = event.payload_json or {}
         if event.event_type == "user_message_received":
             collecting = str(payload.get("message") or "") == user_message.content
             last_context = None if collecting else last_context
+            skill_hint = None if collecting else skill_hint
             continue
         if not collecting:
             continue
-        event_context = _skill_context_from_event(event)
+        if event.event_type == "router_decision_created":
+            target_skill_id = str(payload.get("target_skill_id") or "").strip()
+            if target_skill_id:
+                skill_hint = target_skill_id
+        event_context = _skill_context_from_event(event, skill_hint=skill_hint)
         if event_context:
             last_context = event_context
+            if event_context.get("skill_id"):
+                skill_hint = event_context["skill_id"]
         if event.event_type == "assistant_message_created" and str(payload.get("reply") or "") == message_row.content:
             return _fill_skill_context_version(db, tenant_id, last_context)
     return _fill_skill_context_version(db, tenant_id, last_context)
@@ -531,10 +539,10 @@ def _skill_id_from_event(event: AgentEvent) -> str | None:
     return context["skill_id"] if context else None
 
 
-def _skill_context_from_event(event: AgentEvent) -> dict[str, str | None] | None:
+def _skill_context_from_event(event: AgentEvent, skill_hint: str | None = None) -> dict[str, str | None] | None:
     payload = event.payload_json or {}
     if event.event_type in {"skill_started", "skill_suspended", "skill_resumed", "skill_step_changed"}:
-        skill_id = str(payload.get("to_skill_id") or payload.get("from_skill_id") or "") or None
+        skill_id = str(payload.get("to_skill_id") or payload.get("from_skill_id") or skill_hint or "") or None
         if not skill_id:
             return None
         skill_version = str(payload.get("to_skill_version") or payload.get("from_skill_version") or "") or None
@@ -636,7 +644,7 @@ def _build_turn_traces(
         lines = _event_trace_lines(event, skill_names, skill_hint)
         for line in lines:
             _upsert_trace_line(current["lines"], line)
-        event_context = _skill_context_from_event(event)
+        event_context = _skill_context_from_event(event, skill_hint=skill_hint)
         if event_context and event_context.get("skill_id"):
             skill_hint = event_context["skill_id"]
         if event.event_type == "assistant_message_created":

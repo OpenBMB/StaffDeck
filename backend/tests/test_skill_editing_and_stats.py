@@ -770,6 +770,62 @@ def test_message_feedback_attribution_uses_turn_active_skill() -> None:
     assert context == {"skill_id": "refund", "skill_version": None, "step_id": "collect_order"}
 
 
+def test_message_feedback_attribution_uses_router_skill_hint_for_legacy_step_event() -> None:
+    with _test_session() as db:
+        db.add(Message(id="msg_user", tenant_id="tenant_demo", session_id="session_1", role="user", content="继续下单"))
+        assistant = Message(
+            id="msg_assistant",
+            tenant_id="tenant_demo",
+            session_id="session_1",
+            role="assistant",
+            content="已为您下单。",
+        )
+        db.add(assistant)
+        db.add(
+            AgentEvent(
+                tenant_id="tenant_demo",
+                session_id="session_1",
+                event_type="user_message_received",
+                payload_json={"message": "继续下单"},
+            )
+        )
+        db.add(
+            AgentEvent(
+                tenant_id="tenant_demo",
+                session_id="session_1",
+                event_type="router_decision_created",
+                payload_json={
+                    "decision": "continue_current_skill",
+                    "target_skill_id": "purchase",
+                    "target_step_id": "create_order",
+                },
+            )
+        )
+        db.add(
+            AgentEvent(
+                tenant_id="tenant_demo",
+                session_id="session_1",
+                event_type="skill_step_changed",
+                payload_json={"from_step_id": "confirm_purchase", "to_step_id": "create_order"},
+            )
+        )
+        db.add(
+            AgentEvent(
+                tenant_id="tenant_demo",
+                session_id="session_1",
+                event_type="assistant_message_created",
+                payload_json={"reply": "已为您下单。"},
+            )
+        )
+        db.commit()
+
+        skill_id = _active_skill_for_assistant_message(db, "tenant_demo", assistant)
+        context = _active_skill_context_for_assistant_message(db, "tenant_demo", assistant)
+
+    assert skill_id == "purchase"
+    assert context == {"skill_id": "purchase", "skill_version": None, "step_id": "create_order"}
+
+
 def test_skill_read_normalizes_duplicate_step_ids() -> None:
     content = _skill_card()
     content.steps[1].step_id = content.steps[0].step_id
