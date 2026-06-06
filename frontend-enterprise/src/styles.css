@@ -1497,8 +1497,40 @@ body.skill-distill-fixed .content {
   box-shadow: none;
 }
 
-.skill-source-action-preview {
-  margin-top: 6px;
+.skill-source-action-editor {
+  min-height: 30px;
+  padding: 4px 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: text;
+}
+
+.skill-source-action-editor:hover,
+.skill-source-action-editor:focus-visible {
+  background: #fff;
+  border-color: var(--border);
+  outline: none;
+}
+
+.skill-source-action-editor.editing {
+  padding: 0;
+  display: block;
+  border-color: transparent;
+}
+
+.skill-source-edit-hint {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  opacity: 0;
+}
+
+.skill-source-action-editor:hover .skill-source-edit-hint,
+.skill-source-action-editor:focus-visible .skill-source-edit-hint {
+  opacity: 1;
 }
 
 .skill-inline-remove,

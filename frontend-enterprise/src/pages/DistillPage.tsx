@@ -2422,19 +2422,38 @@ function EditableSourceActionLine({
   toolStatuses: ToolStatusMap;
   onChange: (value: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
   return (
     <div className="skill-source-line">
       <span className="skill-source-key">{fieldLabel('allowed_actions')}</span>
       <span className="skill-source-value">
         <EditableSourceField>
-          <Input.TextArea
-            className="skill-source-edit-input"
-            value={values.join('\n')}
-            autoSize={{ minRows: 1, maxRows: 8 }}
-            onChange={(event) => onChange(event.target.value)}
-          />
-          <div className="skill-source-action-preview">
-            <ActionList actions={values} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} />
+          <div
+            className={`skill-source-action-editor ${editing ? 'editing' : ''}`}
+            onClick={() => setEditing(true)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setEditing(true);
+              }
+            }}
+          >
+            {editing ? (
+              <Input.TextArea
+                className="skill-source-edit-input"
+                value={values.join('\n')}
+                autoFocus
+                autoSize={{ minRows: 1, maxRows: 8 }}
+                onChange={(event) => onChange(event.target.value)}
+              />
+            ) : (
+              <>
+                <ActionList actions={values} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} />
+                <span className="skill-source-edit-hint">点击修改</span>
+              </>
+            )}
           </div>
         </EditableSourceField>
       </span>
