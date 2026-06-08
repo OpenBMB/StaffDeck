@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from time import sleep
+from types import SimpleNamespace
 from typing import Any
 
 from sqlmodel import Session, select
@@ -292,10 +295,58 @@ class AgentLoop:
                     "正在运行通用技能",
                     {"skill_slug": skill.slug, "skill_name": skill.name},
                 )
-                run_response = self.general_skill_runner.run(skill, request.message, model_config, request.user_id)
+                general_skill_events: queue.Queue[tuple[str, Any] | None] = queue.Queue()
+                skill_snapshot = SimpleNamespace(
+                    slug=skill.slug,
+                    name=skill.name,
+                    description=skill.description,
+                    homepage=skill.homepage,
+                    skill_markdown=skill.skill_markdown,
+                    status=skill.status,
+                )
+                model_snapshot = SimpleNamespace(
+                    api_key_encrypted=model_config.api_key_encrypted,
+                    base_url=model_config.base_url,
+                    model=model_config.model,
+                    temperature=model_config.temperature,
+                    max_output_tokens=model_config.max_output_tokens,
+                )
+
+                def general_skill_sink(trace_item: dict[str, Any]) -> None:
+                    general_skill_events.put(("trace", trace_item))
+
+                def general_skill_worker() -> None:
+                    try:
+                        response = GeneralSkillRunner().run(
+                            skill_snapshot,
+                            request.message,
+                            model_snapshot,
+                            request.user_id,
+                            event_sink=general_skill_sink,
+                        )
+                        general_skill_events.put(("complete", response))
+                    except Exception as exc:  # pragma: no cover - defensive stream boundary
+                        general_skill_events.put(("error", exc))
+                    finally:
+                        general_skill_events.put(None)
+
+                threading.Thread(target=general_skill_worker, daemon=True).start()
+                run_response: GeneralSkillRunResponse | None = None
+                while True:
+                    queued = general_skill_events.get()
+                    if queued is None:
+                        break
+                    event_name, payload = queued
+                    if event_name == "trace":
+                        yield self._stream_event("general_skill_trace", chat_session, payload)
+                    elif event_name == "complete":
+                        run_response = payload
+                    elif event_name == "error":
+                        raise payload
+
+                if run_response is None:
+                    raise LLMError("General skill stream ended without a result")
                 self._record_general_skill_run_events(request.tenant_id, chat_session, run_response)
-                for trace_item in run_response.execution_trace:
-                    yield self._stream_event("general_skill_trace", chat_session, trace_item)
                 yield self._stream_status(chat_session, "responding", "正在生成回复")
                 reply = run_response.reply
                 for chunk in self.response_generator.chunk_text(reply):

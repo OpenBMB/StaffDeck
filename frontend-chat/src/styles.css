@@ -697,14 +697,53 @@ textarea,
   line-height: 1.45;
 }
 
-.turn-trace-code {
+.turn-trace-code-wrap {
   width: min(760px, 100%);
-  max-height: 320px;
-  margin: 8px 0 0;
-  padding: 12px 14px;
-  overflow: auto;
+  margin-top: 8px;
+  overflow: hidden;
   border: 1px solid rgba(229, 229, 229, 0.95);
   border-radius: 12px;
+  background: #fbfaf7;
+}
+
+.turn-trace-code-wrap > summary {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.turn-trace-code-wrap > summary::-webkit-details-marker {
+  display: none;
+}
+
+.turn-trace-code-wrap > summary::after {
+  content: '展开';
+  margin-left: auto;
+  color: var(--muted-soft);
+}
+
+.turn-trace-code-wrap[open] > summary {
+  border-bottom: 1px solid rgba(229, 229, 229, 0.9);
+}
+
+.turn-trace-code-wrap[open] > summary::after {
+  content: '收起';
+}
+
+.turn-trace-code {
+  max-height: 320px;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
   background: #fbfaf7;
   color: #1f2328;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -729,7 +768,18 @@ textarea,
 
 .turn-trace-summary.running .anticon:first-child,
 .turn-trace-line.running .anticon {
-  animation: spin-soft 1.2s linear infinite;
+  animation: none;
+  color: #7e8b86;
+}
+
+.turn-trace-summary.running > span:first-of-type,
+.turn-trace-line.running > span > span:first-child {
+  color: transparent;
+  background: linear-gradient(90deg, #8d8d8d 0%, #1f1f1f 42%, #8d8d8d 84%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: trace-text-flow 1.65s ease-in-out infinite;
 }
 
 .turn-trace-summary.completed .anticon:first-child,
@@ -818,12 +868,30 @@ textarea,
 
 .process-live .anticon {
   color: var(--muted);
-  animation: spin-soft 1.2s linear infinite;
+  animation: none;
+}
+
+.process-live span {
+  color: transparent;
+  background: linear-gradient(90deg, #8d8d8d 0%, #1f1f1f 42%, #8d8d8d 84%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: trace-text-flow 1.65s ease-in-out infinite;
 }
 
 @keyframes spin-soft {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes trace-text-flow {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
   }
 }
 

@@ -62,6 +62,7 @@ type TraceLine = {
   code?: string;
   language?: string;
   state: 'running' | 'completed' | 'failed';
+  collapsible?: boolean;
 };
 
 type TurnTrace = {
@@ -554,7 +555,7 @@ export default function ChatWindowPage() {
       trace.lines = [...trace.lines];
       trace.lines[index] = line;
     } else {
-      trace.lines = [...trace.lines, line].slice(-24);
+      trace.lines = [...trace.lines, line].slice(-80);
     }
     notifyTrace();
   }, [getTurnTrace, notifyTrace]);
@@ -915,21 +916,38 @@ export default function ChatWindowPage() {
           const phase = typeof item.data.phase === 'string' ? item.data.phase : 'trace';
           const text = typeof item.data.message === 'string' ? item.data.message : '执行通用技能';
           const code = typeof item.data.code === 'string' ? item.data.code : '';
-          const detail = typeof item.data.rationale === 'string'
+          const attempt = typeof item.data.attempt === 'number' || typeof item.data.attempt === 'string'
+            ? String(item.data.attempt)
+            : '';
+          const trace = getTurnTrace(turnId);
+          const sequence = trace.lines.length;
+          const isOutputChunk = phase === 'stdout_chunk' || phase === 'stderr_chunk';
+          const id = isOutputChunk
+            ? `general_skill_trace_${phase}_${attempt || 'current'}`
+            : `general_skill_trace_${phase}_${attempt || sequence}`;
+          const rawDetail = typeof item.data.rationale === 'string'
             ? item.data.rationale
-            : typeof item.data.stdout_preview === 'string'
-              ? item.data.stdout_preview
-              : typeof item.data.stderr_preview === 'string'
-                ? item.data.stderr_preview
-                : undefined;
+            : typeof item.data.text === 'string'
+              ? item.data.text
+              : typeof item.data.stdout_preview === 'string'
+                ? item.data.stdout_preview
+                : typeof item.data.stderr_preview === 'string'
+                  ? item.data.stderr_preview
+                  : undefined;
+          const existing = trace.lines.find((line) => line.id === id);
+          const detail = isOutputChunk && existing?.detail && rawDetail
+            ? `${existing.detail}${rawDetail}`
+            : rawDetail;
+          const runningPhases = new Set(['planning', 'repair_planning', 'attempt_started', 'running_code', 'replying']);
           upsertTraceLine(turnId, {
-            id: `general_skill_trace_${phase}`,
+            id,
             kind: 'decision',
             text,
             detail,
             code: code || undefined,
             language: code ? 'python' : undefined,
-            state: 'completed',
+            state: runningPhases.has(phase) ? 'running' : phase.includes('failed') ? 'failed' : 'completed',
+            collapsible: Boolean(code),
           });
           return;
         }
@@ -1228,9 +1246,12 @@ export default function ChatWindowPage() {
                                       <span>{line.text}</span>
                                       {line.detail && <span className="turn-trace-detail">{line.detail}</span>}
                                       {line.code && (
-                                        <pre className="turn-trace-code">
-                                          <code data-language={line.language || undefined}>{line.code}</code>
-                                        </pre>
+                                        <details className="turn-trace-code-wrap" open>
+                                          <summary>查看代码</summary>
+                                          <pre className="turn-trace-code">
+                                            <code data-language={line.language || undefined}>{line.code}</code>
+                                          </pre>
+                                        </details>
                                       )}
                                     </span>
                                   </div>
