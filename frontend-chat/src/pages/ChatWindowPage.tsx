@@ -239,10 +239,10 @@ function MarkdownMessage({ content }: { content: string }) {
 
 function TerminalTraceIcon() {
   return (
-    <svg className="trace-terminal-icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
-      <rect x="2.5" y="3.5" width="13" height="11" rx="2.2" />
-      <path d="M5.4 7.1L7.6 9l-2.2 1.9" />
-      <path d="M9.2 11.1h3.4" />
+    <svg className="trace-terminal-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="3.5" y="5" width="17" height="14" rx="2.8" />
+      <path d="M7.5 9.5L10.2 12l-2.7 2.5" />
+      <path d="M12.4 14.5h4.2" />
     </svg>
   );
 }
@@ -1204,7 +1204,8 @@ export default function ChatWindowPage() {
               <div className="session-card-content">
                 <div className="session-meta">
                   <div className="session-title" title={sessionTitle}>
-                    <MessageOutlined /> {sessionTitle}
+                    <span className="session-title-icon"><MessageOutlined /></span>
+                    <span className="session-title-text">{sessionTitle}</span>
                   </div>
                   <div className="session-summary" title={sessionSummary}>
                     {sessionSummary}

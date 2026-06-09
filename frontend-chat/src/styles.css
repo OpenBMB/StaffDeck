@@ -293,6 +293,24 @@ textarea,
   box-shadow: none;
 }
 
+.icon-button .anticon,
+.ant-btn.icon-button .anticon,
+.session-action .anticon,
+.message-feedback .anticon {
+  display: inline-grid;
+  width: 1em;
+  height: 1em;
+  place-items: center;
+  line-height: 0;
+}
+
+.icon-button .anticon svg,
+.ant-btn.icon-button .anticon svg,
+.session-action .anticon svg,
+.message-feedback .anticon svg {
+  display: block;
+}
+
 .icon-button:hover,
 .ant-btn.icon-button:hover {
   color: var(--foreground) !important;
@@ -395,6 +413,36 @@ textarea,
   letter-spacing: 0;
 }
 
+.session-title-icon {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  line-height: 0;
+}
+
+.session-title-icon .anticon {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  line-height: 0;
+}
+
+.session-title-icon .anticon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.session-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chat-layout.sidebar-collapsed .session-title {
   width: 100%;
   height: 100%;
@@ -404,11 +452,22 @@ textarea,
   font-size: 0;
 }
 
-.chat-layout.sidebar-collapsed .session-title .anticon {
+.chat-layout.sidebar-collapsed .session-title-icon,
+.chat-layout.sidebar-collapsed .session-title-icon .anticon {
+  width: 100%;
+  height: 100%;
   display: grid;
   place-items: center;
-  font-size: 17px;
   line-height: 1;
+}
+
+.chat-layout.sidebar-collapsed .session-title-icon .anticon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.chat-layout.sidebar-collapsed .session-title-text {
+  display: none;
 }
 
 .session-summary {
@@ -940,8 +999,24 @@ textarea,
 .turn-trace-line .anticon,
 .trace-terminal-icon {
   flex: 0 0 auto;
-  margin-top: 4px;
+  margin-top: 3px;
   color: #7e8b86;
+}
+
+.turn-trace-summary > .anticon,
+.turn-trace-line > .anticon {
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  line-height: 0;
+}
+
+.turn-trace-summary > .anticon svg,
+.turn-trace-line > .anticon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
 }
 
 .turn-trace-summary.running .anticon:first-child,
@@ -952,17 +1027,14 @@ textarea,
 }
 
 .trace-terminal-icon {
-  width: 17px;
-  height: 17px;
-  padding: 1.5px;
-  border: 1.6px solid currentColor;
-  border-radius: 4px;
-  fill: var(--surface);
+  width: 20px;
+  height: 20px;
+  display: block;
+  fill: none;
   stroke: currentColor;
-  stroke-width: 1.7;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
-  background: var(--surface);
 }
 
 .trace-primary-text {
@@ -1600,11 +1672,22 @@ textarea,
     font-size: 0;
   }
 
-  .session-title .anticon {
+  .session-title-icon,
+  .session-title-icon .anticon {
+    width: 100%;
+    height: 100%;
     display: grid;
     place-items: center;
-    font-size: 17px;
     line-height: 1;
+  }
+
+  .session-title-icon .anticon svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .session-title-text {
+    display: none;
   }
 
   .chat-header {
