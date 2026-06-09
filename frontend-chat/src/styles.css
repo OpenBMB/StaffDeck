@@ -778,16 +778,28 @@ textarea,
 }
 
 .turn-trace-summary .anticon,
-.turn-trace-line .anticon {
+.turn-trace-line .anticon,
+.trace-terminal-icon {
   flex: 0 0 auto;
   margin-top: 4px;
   color: #7e8b86;
 }
 
 .turn-trace-summary.running .anticon:first-child,
-.turn-trace-line.running .anticon {
+.turn-trace-line.running .anticon,
+.turn-trace-line.running .trace-terminal-icon {
   animation: none;
   color: #7e8b86;
+}
+
+.trace-terminal-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .trace-primary-text {

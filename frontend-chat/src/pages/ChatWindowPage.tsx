@@ -1,7 +1,6 @@
 import {
   BranchesOutlined,
   CloudSyncOutlined,
-  ConsoleSqlOutlined,
   DeleteOutlined,
   DislikeOutlined,
   DownOutlined,
@@ -236,6 +235,16 @@ function renderMarkdownBlocks(content: string): ReactNode[] {
 
 function MarkdownMessage({ content }: { content: string }) {
   return <div className="assistant-answer markdown-message">{renderMarkdownBlocks(content)}</div>;
+}
+
+function TerminalTraceIcon() {
+  return (
+    <svg className="trace-terminal-icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+      <rect x="2.5" y="3.5" width="13" height="11" rx="2.2" />
+      <path d="M5.4 7.1L7.6 9l-2.2 1.9" />
+      <path d="M9.2 11.1h3.4" />
+    </svg>
+  );
 }
 
 function parseMessageTime(value?: string): number {
@@ -1263,7 +1272,7 @@ export default function ChatWindowPage() {
                                   ) : line.kind === 'tool' ? (
                                     <ToolOutlined />
                                   ) : line.kind === 'code' ? (
-                                    <ConsoleSqlOutlined />
+                                    <TerminalTraceIcon />
                                   ) : (
                                     <CloudSyncOutlined />
                                   )}
