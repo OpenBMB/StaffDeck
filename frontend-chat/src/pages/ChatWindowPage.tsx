@@ -21,6 +21,8 @@ import type { MouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { SHOW_DEBUG, TENANT_ID, api, clearAuthSession, getAuthSession, streamChatTurn } from '../api/client';
+import CodeBlock from '../components/CodeBlock';
+import { ThemeToggleButton } from '../theme';
 import type { ChatMessage, ChatSession, ChatTurnResponse, TurnTraceRead, UIConfigRead } from '../types';
 
 type SessionSlot = {
@@ -169,9 +171,7 @@ function renderMarkdownBlocks(content: string): ReactNode[] {
       }
       if (index < lines.length) index += 1;
       blocks.push(
-        <pre key={key} className="md-code-block">
-          <code data-language={language || undefined}>{codeLines.join('\n')}</code>
-        </pre>,
+        <CodeBlock key={key} className="md-code-block" code={codeLines.join('\n')} language={language || undefined} />,
       );
       blockIndex += 1;
       continue;
@@ -1236,6 +1236,9 @@ export default function ChatWindowPage() {
             <Typography.Text strong>在线客服</Typography.Text>
             <div className="header-subtitle">{sessionId}</div>
           </div>
+          <div className="chat-header-actions">
+            <ThemeToggleButton />
+          </div>
         </div>
         <div className="chat-messages" ref={chatMessagesRef}>
           {displayedMessages.length === 0 && <div className="chat-empty-state">暂无消息，发送一句开始</div>}
@@ -1282,9 +1285,7 @@ export default function ChatWindowPage() {
                                       {line.code && (
                                         <details className="turn-trace-code-wrap" open>
                                           <summary>查看代码</summary>
-                                          <pre className="turn-trace-code">
-                                            <code data-language={line.language || undefined}>{line.code}</code>
-                                          </pre>
+                                          <CodeBlock className="turn-trace-code" code={line.code} language={line.language || 'python'} />
                                         </details>
                                       )}
                                     </span>

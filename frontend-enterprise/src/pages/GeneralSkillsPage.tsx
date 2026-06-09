@@ -4,7 +4,6 @@ import {
   CloseCircleOutlined,
   ExperimentOutlined,
   FileTextOutlined,
-  FunctionOutlined,
   PlayCircleOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
@@ -12,6 +11,7 @@ import { Button, Card, Empty, Input, Select, Space, Tabs, Tag, Typography, Uploa
 import type { UploadFile } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { api, streamPost, TENANT_ID } from '../api/client';
+import CodeBlock from '../components/CodeBlock';
 import type { GeneralSkillRead, GeneralSkillRunResponse } from '../types';
 
 const DEFAULT_MARKDOWN = `# 技能说明
@@ -391,11 +391,8 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
                             {detail && <pre className="general-trace-detail">{detail}</pre>}
                             {code && (
                               <details className="general-trace-code" open={index === latestCodeIndex}>
-                                <summary>
-                                  <FunctionOutlined />
-                                  <span>{codeTitle}</span>
-                                </summary>
-                                <pre className="general-code-block"><code>{code}</code></pre>
+                                <summary>{codeTitle}</summary>
+                                <CodeBlock className="general-code-block" code={code} language="python" />
                               </details>
                             )}
                           </div>
@@ -413,17 +410,17 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
                       {
                         key: 'structured',
                         label: '结构化结果',
-                        children: <pre className="general-json-block">{formatJson(activeResult.structured_result) || '无结构化结果'}</pre>,
+                        children: <CodeBlock className="general-json-block" code={formatJson(activeResult.structured_result) || '无结构化结果'} language="json" />,
                       },
                       {
                         key: 'stdout',
                         label: 'stdout',
-                        children: <pre className="general-json-block">{formatJson(activeResult.stdout) || '无 stdout'}</pre>,
+                        children: <CodeBlock className="general-json-block" code={formatJson(activeResult.stdout) || '无 stdout'} language="text" />,
                       },
                       {
                         key: 'stderr',
                         label: 'stderr',
-                        children: <pre className="general-json-block">{formatJson(activeResult.stderr) || '无 stderr'}</pre>,
+                        children: <CodeBlock className="general-json-block" code={formatJson(activeResult.stderr) || '无 stderr'} language="text" />,
                       },
                     ]}
                   />

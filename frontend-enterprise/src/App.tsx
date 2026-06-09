@@ -8,7 +8,8 @@ import {
   ToolOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { Button, ConfigProvider, Layout, Menu, Typography } from 'antd';
+import { Button, ConfigProvider, Layout, Menu, Typography, theme as antdTheme } from 'antd';
+import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import DashboardPage from './pages/DashboardPage';
@@ -20,10 +21,11 @@ import ModelsPage from './pages/ModelsPage';
 import PersonaPage from './pages/PersonaPage';
 import SkillsPage from './pages/SkillsPage';
 import ToolsPage from './pages/ToolsPage';
+import { ThemeToggleButton, useThemeController, type EffectiveTheme } from './theme';
 
 const { Header, Sider, Content } = Layout;
 
-function Shell() {
+function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
   const navigate = useNavigate();
   const location = useLocation();
   const selected = location.pathname === '/enterprise' ? '/enterprise/dashboard' : location.pathname;
@@ -40,7 +42,7 @@ function Shell() {
 
   return (
     <Layout className="app-shell">
-      <Sider width={232} theme="light" className="sidebar">
+      <Sider width={232} theme={effectiveTheme} className="sidebar">
         <div className="brand">
           <span className="brand-mark">UR</span>
           <div>
@@ -83,6 +85,7 @@ function Shell() {
             <div className="topbar-subtitle">Skill, tool, memory and persona workspace</div>
           </div>
           <div className="topbar-actions">
+            <ThemeToggleButton />
             <Button icon={<UserOutlined />} onClick={() => navigate('/enterprise/persona')}>人设</Button>
           </div>
         </Header>
@@ -111,23 +114,30 @@ function Shell() {
 }
 
 export default function App() {
+  const { effectiveTheme } = useThemeController();
+  const isDark = effectiveTheme === 'dark';
+
   return (
     <ConfigProvider
+      locale={zhCN}
       button={{ autoInsertSpace: false }}
       theme={{
+        algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         token: {
           colorPrimary: '#04756f',
           borderRadius: 8,
-          colorText: '#1d1d1b',
-          colorTextSecondary: '#737373',
-          colorBorder: '#e7e1d8',
+          colorBgBase: isDark ? '#111315' : '#fbfaf6',
+          colorBgContainer: isDark ? '#181b1a' : '#ffffff',
+          colorText: isDark ? '#e8e2d8' : '#1d1d1b',
+          colorTextSecondary: isDark ? '#a7aaa5' : '#737373',
+          colorBorder: isDark ? '#303634' : '#e7e1d8',
           fontFamily:
             '"Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif',
         },
       }}
     >
       <BrowserRouter>
-        <Shell />
+        <Shell effectiveTheme={effectiveTheme} />
       </BrowserRouter>
     </ConfigProvider>
   );

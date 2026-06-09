@@ -13,6 +13,7 @@ import type { MouseEvent } from 'react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, clearAuthSession, getAuthSession } from '../api/client';
+import { ThemeToggleButton } from '../theme';
 import type { ChatSession } from '../types';
 
 export default function SessionListPage() {
@@ -184,6 +185,9 @@ export default function SessionListPage() {
           <div>
             <Typography.Text strong>Skill Agent Chat</Typography.Text>
             <div className="header-subtitle">选择会话或新建会话</div>
+          </div>
+          <div className="chat-header-actions">
+            <ThemeToggleButton />
           </div>
         </div>
         <div className="chat-messages">
