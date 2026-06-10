@@ -178,9 +178,16 @@ class Router:
         self, decision: RouterDecision, session: ChatSession, available_skills: list[Skill]
     ) -> RouterDecision:
         skills = {skill.skill_id: skill for skill in available_skills}
+        if decision.target_skill_id and decision.target_skill_id not in skills:
+            decision.target_skill_id = None
+            decision.target_step_id = None
+        if decision.awaiting_input and decision.awaiting_input.skill_id not in {None, *skills.keys()}:
+            decision.awaiting_input = None
         if decision.decision in {"start_skill", "start_new_task", "suspend_current_and_start_new_skill"}:
             if not decision.target_skill_id or decision.target_skill_id not in skills:
                 decision.decision = "clarify"
+                decision.target_skill_id = None
+                decision.target_step_id = None
                 decision.clarification_question = "请问您想办理哪类业务？"
                 return decision
         if decision.decision == "switch_to_pending":

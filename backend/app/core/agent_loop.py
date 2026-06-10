@@ -314,15 +314,22 @@ class AgentLoop:
         )
 
     def _scene_router_deferred_to_general(self, router_decision: RouterDecision) -> bool:
-        if router_decision.selected_task_id:
+        return False
+
+    def _should_run_step_agent(
+        self, router_decision: RouterDecision, active_skill: Skill | None
+    ) -> bool:
+        if active_skill is None:
             return False
-        if router_decision.pending_tasks or router_decision.created_tasks or router_decision.task_updates:
-            return False
-        return router_decision.decision in {
+        return router_decision.decision not in {
             "answer_only",
             "clarify",
-            "answer_related_question_then_resume",
-            "answer_chitchat_then_resume",
+            "create_pending",
+            "update_pending",
+            "complete_task",
+            "exit_current_skill",
+            "handoff",
+            "handoff_human",
         }
 
     def _stream_general_skill_response(
@@ -680,13 +687,40 @@ class AgentLoop:
             )
             persona_prompt = self._get_persona_prompt(request.tenant_id)
             if not skills:
-                selected_general_skill = self._select_general_skill(request.message, model_config)
-                if selected_general_skill:
-                    yield from self._stream_general_skill_response(
-                        request, chat_session, model_config, selected_general_skill
-                    )
-                    return
-                raise AgentLoopPreconditionError("missing_published_skill", "没有已发布技能。")
+                router_decision = RouterDecision(
+                    decision="answer_only",
+                    reason="No published scene skills are available; answer as chat.",
+                )
+                yield self._stream_status(chat_session, "responding", "正在生成回复")
+                reply = ""
+                for chunk in self._generate_reply_stream_segment(
+                    request.message,
+                    chat_session,
+                    None,
+                    router_decision,
+                    StepAgentResult(),
+                    None,
+                    model_config,
+                    persona_prompt,
+                    [],
+                    self._conversation_context(chat_session),
+                ):
+                    reply += chunk
+                    yield self._stream_event("stream_delta", chat_session, {"content": chunk})
+                    self._pace_stream()
+                yield self._stream_event("stream_end", chat_session, {})
+                self._finalize_turn(chat_session, request.tenant_id, reply)
+                self.db.commit()
+                self.db.refresh(chat_session)
+                result = ChatTurnResponse(
+                    reply=reply,
+                    session_id=chat_session.id,
+                    router_decision=router_decision,
+                    step_result=StepAgentResult(),
+                    session_state=public_session(chat_session),
+                )
+                yield self._stream_event("complete", chat_session, result.model_dump(mode="json"))
+                return
             self._finish_stale_completed_skill(request.tenant_id, chat_session, skills)
             memory_context = [
                 memory_read(row)
@@ -735,6 +769,37 @@ class AgentLoop:
             self.db.refresh(chat_session)
 
             active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id)
+            if not self._should_run_step_agent(router_decision, active_skill):
+                yield self._stream_status(chat_session, "responding", "正在生成回复")
+                for chunk in self._generate_reply_stream_segment(
+                    request.message,
+                    chat_session,
+                    active_skill,
+                    router_decision,
+                    step_result,
+                    tool_result,
+                    model_config,
+                    persona_prompt,
+                    memory_context,
+                    conversation_context,
+                ):
+                    reply += chunk
+                    yield self._stream_event("stream_delta", chat_session, {"content": chunk})
+                    self._pace_stream()
+                yield self._stream_event("stream_end", chat_session, {})
+                self._finalize_turn(chat_session, request.tenant_id, reply)
+                self.db.commit()
+                self.db.refresh(chat_session)
+                result = ChatTurnResponse(
+                    reply=reply,
+                    session_id=chat_session.id,
+                    router_decision=router_decision,
+                    step_result=step_result,
+                    tool_result=tool_result,
+                    session_state=public_session(chat_session),
+                )
+                yield self._stream_event("complete", chat_session, result.model_dump(mode="json"))
+                return
             yield self._stream_event(
                 "skill_state",
                 chat_session,
@@ -995,23 +1060,19 @@ class AgentLoop:
         if not model_config:
             raise AgentLoopPreconditionError("missing_model_config", "没有默认模型配置。")
         if not skills:
-            router_decision = RouterDecision(decision="clarify", reason="No published scene skills are available")
-            general_response = self._try_handle_general_skill_after_scene_router(
-                request, chat_session, model_config, router_decision
+            return PreparedTurn(
+                chat_session=chat_session,
+                model_config=model_config,
+                active_skill=None,
+                router_decision=RouterDecision(
+                    decision="answer_only",
+                    reason="No published scene skills are available; answer as chat.",
+                ),
+                step_result=StepAgentResult(),
+                tool_result=None,
+                memory_context=[],
+                conversation_context=self._conversation_context(chat_session),
             )
-            if general_response:
-                return PreparedTurn(
-                    chat_session=chat_session,
-                    model_config=model_config,
-                    active_skill=None,
-                    router_decision=router_decision,
-                    step_result=StepAgentResult(),
-                    tool_result=None,
-                    memory_context=[],
-                    conversation_context=self._conversation_context(chat_session),
-                    general_response=general_response,
-                )
-            raise AgentLoopPreconditionError("missing_published_skill", "没有已发布技能。")
         self._finish_stale_completed_skill(request.tenant_id, chat_session, skills)
         memory_context = [
             memory_read(row)
@@ -1068,6 +1129,17 @@ class AgentLoop:
         self.db.refresh(chat_session)
 
         active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id)
+        if not self._should_run_step_agent(router_decision, active_skill):
+            return PreparedTurn(
+                chat_session=chat_session,
+                model_config=model_config,
+                active_skill=active_skill,
+                router_decision=router_decision,
+                step_result=StepAgentResult(),
+                tool_result=None,
+                memory_context=memory_context,
+                conversation_context=conversation_context,
+            )
         status(
             "stepping",
             {"active_skill_id": chat_session.active_skill_id, "active_step_id": chat_session.active_step_id},
@@ -2142,7 +2214,7 @@ class AgentLoop:
             request.message,
             chat_session,
             active_skill,
-            tools,
+            self._step_agent_tools(active_skill, tools),
             model_config,
             router_decision,
             repair_context,
@@ -2160,6 +2232,11 @@ class AgentLoop:
             payload,
         )
         return step_result
+
+    def _step_agent_tools(self, active_skill: Skill | None, tools: list[Tool]) -> list[Tool]:
+        if active_skill is None:
+            return []
+        return tools
 
     def _apply_step_result(
         self,
@@ -2346,6 +2423,29 @@ class AgentLoop:
         self.db.commit()
         self.db.refresh(chat_session)
         if tool_call.name.startswith(GENERAL_SKILL_TOOL_PREFIX):
+            if not chat_session.active_skill_id:
+                tool_result = ToolResult(
+                    tool_name=tool_call.name,
+                    success=False,
+                    data=None,
+                    error=ToolError(
+                        code="GENERAL_SKILL_REQUIRES_SCENE_SKILL",
+                        message="通用技能只能作为当前场景技能的辅助工具调用。",
+                    ),
+                )
+                finished_payload = tool_result.model_dump(mode="json")
+                if tool_call_id:
+                    finished_payload["tool_call_id"] = tool_call_id
+                finished_payload["tool_call"] = tool_call.model_dump(mode="json")
+                self.events.record(
+                    request.tenant_id,
+                    chat_session.id,
+                    "tool_call_finished",
+                    finished_payload,
+                )
+                self.db.commit()
+                self.db.refresh(chat_session)
+                return tool_result
             tool_result = self._execute_general_skill_tool_call(request, tool_call)
         else:
             tool_result = self.tool_executor.execute(

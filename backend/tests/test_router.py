@@ -17,7 +17,7 @@ def test_router_payload_exposes_step_details_and_allows_compound_interrupt(monke
         assert purchase["steps"][0]["instruction"] == "收集姓名、商品和数量。"
         assert purchase["steps"][0]["expected_user_info"] == ["user_name", "product_id", "quantity"]
         assert purchase["steps"][0]["allowed_actions"] == ["ask_user", "continue_flow"]
-        assert "不要让原则9吞掉复合意图" in system_prompt
+        assert "不要让原则10吞掉复合意图" in system_prompt
         assert "不要输出纯 clarify" in system_prompt
         assert "应放入 slot_hints" in system_prompt
         return {
@@ -206,6 +206,36 @@ def test_router_downgrades_unknown_decision_to_clarify(monkeypatch):
 
     assert decision.decision == "clarify"
     assert decision.clarification_question
+
+
+def test_router_removes_hallucinated_target_skill_from_non_matching_flow(monkeypatch):
+    def fake_init(self, model_config):  # noqa: ANN001
+        return None
+
+    def fake_generate_json(self, system_prompt, payload):  # noqa: ANN001
+        assert "不要编造 target_skill_id" in system_prompt
+        return {
+            "decision": "clarify",
+            "target_skill_id": "skill_weather_query",
+            "target_step_id": "step_query_weather",
+            "confidence": 0.85,
+            "user_intent": "查询海淀区天气",
+            "reason": "模型错误地假设存在天气流程。",
+        }
+
+    monkeypatch.setattr(LLMClient, "__init__", fake_init)
+    monkeypatch.setattr(LLMClient, "generate_json", fake_generate_json)
+
+    decision = Router().decide(
+        "我想看下海淀区的天气",
+        ChatSession(id="session_test", tenant_id="tenant_demo"),
+        [_purchase_skill()],
+        model_config=None,  # type: ignore[arg-type]
+    )
+
+    assert decision.decision == "clarify"
+    assert decision.target_skill_id is None
+    assert decision.target_step_id is None
 
 
 def _purchase_skill() -> Skill:
