@@ -1,7 +1,7 @@
 from app.core.agent_loop import AgentLoop
 from app.core.skill_runtime import SkillRuntime
 from app.db.models import ChatSession, Message, Skill, Tool
-from app.session.session_schema import RouterDecision, StepAgentResult
+from app.session.session_schema import PendingTask, RouterDecision, StepAgentResult
 from app.tools.tool_schema import ToolCall, ToolResult
 
 
@@ -84,6 +84,63 @@ def test_tool_call_start_event_is_committed_before_external_execute() -> None:
         "tool_call_started",
         "tool_call_finished",
     ]
+
+
+def test_compound_turn_seeds_primary_and_created_tasks_for_scheduler() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.runtime = SkillRuntime()
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="purchase",
+        active_step_id="collect_user_name",
+        slots_json={"user_name": "hm"},
+    )
+    router_decision = RouterDecision(
+        decision="continue_current_skill",
+        target_skill_id="purchase",
+        target_step_id="collect_user_name",
+        confidence=0.91,
+        user_intent="继续购买 A1，并比较 A1 和 A3",
+        reason="用户补充购买目标，同时提出独立比价任务。",
+        source_message="我买 A1 前跟 A3 比一下价格",
+        slot_hints={"product_id": "A1", "quantity": 1},
+        created_tasks=[
+            PendingTask(
+                task_id="task_price_compare_a1_a3",
+                target_skill_id="price_compare",
+                target_step_id="collect_products",
+                user_intent="比较 A1 和 A3 的价格",
+                source_message="我买 A1 前跟 A3 比一下价格",
+                slot_hints={"product_name_1": "A1", "product_name_2": "A3"},
+            )
+        ],
+    )
+
+    queue_decision = loop._initial_scheduler_queue_decision(
+        _request("我买 A1 前跟 A3 比一下价格"),
+        session,
+        router_decision,
+    )
+
+    assert queue_decision is not None
+    assert queue_decision.decision == "create_pending"
+    assert len(queue_decision.pending_tasks) == 2
+    primary, created = queue_decision.pending_tasks
+    assert primary.target_skill_id == "purchase"
+    assert primary.target_step_id == "collect_user_name"
+    assert primary.slot_hints == {"user_name": "hm", "product_id": "A1", "quantity": 1}
+    assert created.task_id == "task_price_compare_a1_a3"
+    assert created.target_skill_id == "price_compare"
+
+    loop.runtime.apply_decision(session, queue_decision)
+    loop._release_active_task_to_scheduler(session, queue_decision)
+
+    assert session.active_skill_id is None
+    assert session.active_step_id is None
+    assert [frame["skill_id"] for frame in session.pending_tasks_json] == ["purchase", "price_compare"]
+    assert session.pending_tasks_json[0]["slots"] == {"user_name": "hm", "product_id": "A1", "quantity": 1}
+    assert session.pending_tasks_json[1]["slots"] == {"product_name_1": "A1", "product_name_2": "A3"}
 
 
 def test_finalize_turn_clears_stale_last_question_for_non_question_reply() -> None:
