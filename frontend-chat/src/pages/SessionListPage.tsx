@@ -7,7 +7,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
-import { Button, Empty, Input, Modal, Space, Typography, message } from 'antd';
+import { Button, Empty, Input, Modal, Typography, message } from 'antd';
 import type { MouseEvent } from 'react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -121,7 +121,7 @@ export default function SessionListPage() {
               <div className="brand-subtitle">{auth?.user.display_name || auth?.user.username}</div>
             </div>
           </div>
-          <Space>
+          <div className="sidebar-actions">
             <Button className="icon-button" icon={<ReloadOutlined />} onClick={load} />
             <Button className="icon-button primary" icon={<PlusOutlined />} onClick={createSession} />
             <Button
@@ -132,7 +132,7 @@ export default function SessionListPage() {
                 navigate('/login', { replace: true });
               }}
             />
-          </Space>
+          </div>
         </div>
         <div className="session-section-label">Sessions</div>
         {sessions.length === 0 ? (

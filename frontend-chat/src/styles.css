@@ -200,23 +200,25 @@ textarea,
 
 .sidebar-head {
   min-height: 48px;
-  display: flex;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   margin-bottom: 4px;
 }
 
 .chat-layout.sidebar-collapsed .sidebar-head {
   min-height: 0;
-  flex-direction: column;
-  justify-content: flex-start;
+  grid-template-columns: 32px;
+  justify-content: center;
+  justify-items: center;
   gap: 8px;
 }
 
 .sidebar-actions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
 }
 
@@ -235,6 +237,13 @@ textarea,
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.brand-block > div {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 1px;
 }
 
 .chat-layout.sidebar-collapsed .brand-block {
@@ -306,6 +315,11 @@ textarea,
   height: 100%;
   place-items: center;
   line-height: 0;
+}
+
+.icon-button .ant-btn-icon,
+.ant-btn.icon-button .ant-btn-icon {
+  margin-inline-end: 0 !important;
 }
 
 .icon-button .ant-btn-icon > *,
@@ -1665,8 +1679,9 @@ textarea,
 
   .sidebar-head {
     min-height: auto;
-    flex-direction: column;
-    justify-content: flex-start;
+    grid-template-columns: 32px;
+    justify-content: center;
+    justify-items: center;
     gap: 6px;
   }
 
