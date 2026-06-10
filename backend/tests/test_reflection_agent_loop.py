@@ -1,5 +1,6 @@
 from app.core.agent_loop import AgentLoop
 from app.core.reflection_agent import ReflectionDecision
+from app.core.skill_runtime import SkillRuntime
 from app.db.models import ChatSession, ModelConfig, Skill, Tool
 from app.session.session_schema import ChatTurnRequest, RouterDecision, StepAgentResult, ToolCall
 from app.tools.tool_schema import ToolResult
@@ -213,6 +214,87 @@ def test_successful_expected_tool_result_can_pass_reflection() -> None:
     assert returned == (None, decision, step_result, tool_result)
 
 
+def test_reflection_target_skill_is_scheduled_instead_of_skipped() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.db = _FakeDb()
+    loop.events = _FakeEvents()
+    loop.runtime = SkillRuntime()
+    loop.reflection_agent = _TargetSkillReflectionAgent("price_compare")
+    skills = [_purchase_skill(), _price_compare_skill()]
+    skills_by_id = {skill.skill_id: skill for skill in skills}
+    captured: dict[str, object] = {}
+
+    def run_step(
+        request: ChatTurnRequest,
+        chat_session: ChatSession,
+        active_skill: Skill | None,
+        tools: list[Tool],
+        model_config: ModelConfig,
+        router_decision: RouterDecision,
+        **_: object,
+    ) -> StepAgentResult:
+        captured["active_skill_id"] = active_skill.skill_id if active_skill else None
+        captured["router_decision"] = router_decision.model_dump(mode="json")
+        captured["tool_names"] = [tool.name for tool in loop._step_agent_tools(active_skill, tools)]
+        return StepAgentResult(reply="已切换到比价流程。", is_step_completed=True)
+
+    loop._get_active_skill = lambda tenant_id, skill_id: skills_by_id.get(skill_id)  # type: ignore[method-assign]
+    loop._run_step_agent_with_context_repair = run_step  # type: ignore[method-assign]
+    loop._skill_version = lambda tenant_id, skill_id: None  # type: ignore[method-assign]
+
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="purchase",
+        active_step_id="collect_purchase",
+        slots_json={"product_name_1": "A1", "product_name_2": "A3"},
+    )
+    previous_decision = RouterDecision(
+        decision="continue_current_skill",
+        target_skill_id="purchase",
+        user_intent="购买前比价",
+    )
+    previous_step = StepAgentResult(
+        tool_call=ToolCall(name="product.price_query", arguments={"product_name": "A1"}),
+        is_step_completed=True,
+    )
+    previous_tool_result = ToolResult(
+        tool_name="product.price_query",
+        success=False,
+        error={"code": "NOT_ALLOWED", "message": "当前技能不允许调用该工具。"},
+    )
+
+    active_skill, router_decision, step_result, tool_result, retried = loop._reflect_and_retry(
+        ChatTurnRequest(tenant_id="tenant_demo", message="买 A1 前跟 A3 比下价格"),
+        session,
+        skills,
+        [_price_query_tool()],
+        ModelConfig(tenant_id="tenant_demo", name="demo", api_key_encrypted="", model="demo"),
+        _purchase_skill(),
+        previous_decision,
+        previous_step,
+        previous_tool_result,
+        conversation_context={},
+    )
+
+    assert retried is True
+    assert active_skill is not None
+    assert active_skill.skill_id == "price_compare"
+    assert router_decision.decision == "start_skill"
+    assert router_decision.target_skill_id == "price_compare"
+    assert session.active_skill_id == "price_compare"
+    assert session.active_step_id == "collect_products"
+    assert step_result.reply == "已切换到比价流程。"
+    assert tool_result is None
+    assert captured["active_skill_id"] == "price_compare"
+    assert captured["tool_names"] == ["product.price_query"]
+    assert not any(record[2] == "reflection_retry_skipped" for record in loop.events.records)
+    assert any(
+        record[2] == "reflection_retry_started" and record[3]["mode"] == "skill"
+        for record in loop.events.records
+    )
+
+
 class _FakeDb:
     def commit(self) -> None:
         pass
@@ -248,6 +330,19 @@ class _PassingReflectionAgent:
         return ReflectionDecision(action="pass", needs_retry=False)
 
 
+class _TargetSkillReflectionAgent:
+    def __init__(self, target_skill_id: str) -> None:
+        self.target_skill_id = target_skill_id
+
+    def review(self, *args: object, **kwargs: object) -> ReflectionDecision:
+        return ReflectionDecision(
+            action="try_other_tool",
+            needs_retry=True,
+            reason="当前技能不能调用目标工具，切到可执行技能。",
+            target_skill_id=self.target_skill_id,
+        )
+
+
 def _skill(skill_id: str) -> Skill:
     return Skill(
         tenant_id="tenant_demo",
@@ -259,6 +354,68 @@ def _skill(skill_id: str) -> Skill:
             "steps": [{"step_id": "start", "name": "开始", "allowed_actions": ["ask_user"]}],
         },
         status="published",
+    )
+
+
+def _purchase_skill() -> Skill:
+    return Skill(
+        tenant_id="tenant_demo",
+        skill_id="purchase",
+        name="购买商品",
+        content_json={
+            "skill_id": "purchase",
+            "name": "购买商品",
+            "steps": [
+                {
+                    "step_id": "collect_purchase",
+                    "name": "收集购买信息",
+                    "allowed_actions": ["ask_user", "continue_flow"],
+                }
+            ],
+        },
+        status="published",
+    )
+
+
+def _price_compare_skill() -> Skill:
+    return Skill(
+        tenant_id="tenant_demo",
+        skill_id="price_compare",
+        name="商品比价",
+        content_json={
+            "skill_id": "price_compare",
+            "name": "商品比价",
+            "steps": [
+                {
+                    "step_id": "collect_products",
+                    "name": "收集待比价商品",
+                    "allowed_actions": ["ask_user", "continue_flow"],
+                },
+                {
+                    "step_id": "query_prices",
+                    "name": "查询商品价格",
+                    "allowed_actions": ["call_tool:product.price_query", "continue_flow"],
+                },
+            ],
+        },
+        status="published",
+    )
+
+
+def _price_query_tool() -> Tool:
+    return Tool(
+        tenant_id="tenant_demo",
+        name="product.price_query",
+        display_name="商品价格查询",
+        method="POST",
+        url="http://localhost:8000/api/mock/product/price-query",
+        input_schema={
+            "type": "object",
+            "properties": {"product_name": {"type": "string"}},
+            "required": ["product_name"],
+        },
+        allowed_skills_json=["price_compare"],
+        enabled=True,
     )
 
 

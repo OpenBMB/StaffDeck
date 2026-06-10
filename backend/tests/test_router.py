@@ -158,6 +158,64 @@ def test_task_scheduler_selects_multiple_existing_task_frames(monkeypatch):
     assert decision.selected_task_ids == ["task_purchase_a3", "task_purchase_a1"]
 
 
+def test_task_scheduler_can_continue_price_compare_after_purchase_completion(monkeypatch):
+    def fake_init(self, model_config):  # noqa: ANN001
+        return None
+
+    def fake_generate_json(self, system_prompt, payload):  # noqa: ANN001
+        assert "task scheduler" in system_prompt
+        assert payload["completed_reply"] == "购买流程已完成。"
+        assert len(payload["candidate_task_frames"]) == 1
+        candidate = payload["candidate_task_frames"][0]
+        assert candidate["source"] == "pending"
+        assert candidate["task_id"] == "task_price_compare_a1_a3"
+        assert candidate["skill_id"] == "price_compare"
+        assert candidate["step_id"] == "collect_products"
+        assert candidate["intent_summary"] == "购买前对比 A1 和 A3 的价格"
+        assert candidate["source_message"] == "买 A1 前跟 A3 比下价格"
+        assert candidate["slots"] == {"product_name_1": "A1", "product_name_2": "A3"}
+        price_compare = next(
+            item for item in payload["available_skills"] if item["skill_id"] == "price_compare"
+        )
+        assert price_compare["steps"][0]["step_id"] == "collect_products"
+        return {
+            "action": "run_tasks",
+            "selected_task_ids": ["task_price_compare_a1_a3"],
+            "confidence": 0.95,
+            "reason": "购买任务完成后继续执行用户已提出的比价任务。",
+        }
+
+    monkeypatch.setattr(LLMClient, "__init__", fake_init)
+    monkeypatch.setattr(LLMClient, "generate_json", fake_generate_json)
+
+    decision = Router().schedule_tasks_after_completion(
+        "买 A1 前跟 A3 比下价格",
+        ChatSession(
+            id="session_test",
+            tenant_id="tenant_demo",
+            pending_tasks_json=[
+                {
+                    "task_id": "task_price_compare_a1_a3",
+                    "status": "pending",
+                    "skill_id": "price_compare",
+                    "target_skill_id": "price_compare",
+                    "step_id": "collect_products",
+                    "target_step_id": "collect_products",
+                    "intent_summary": "购买前对比 A1 和 A3 的价格",
+                    "source_message": "买 A1 前跟 A3 比下价格",
+                    "slots": {"product_name_1": "A1", "product_name_2": "A3"},
+                }
+            ],
+        ),
+        [_purchase_skill(), _price_compare_skill()],
+        model_config=None,  # type: ignore[arg-type]
+        completed_reply="购买流程已完成。",
+    )
+
+    assert decision.action == "run_tasks"
+    assert decision.selected_task_ids == ["task_price_compare_a1_a3"]
+
+
 def test_router_coerces_answer_alias_before_schema_validation(monkeypatch):
     def fake_init(self, model_config):  # noqa: ANN001
         return None
