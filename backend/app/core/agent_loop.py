@@ -20,6 +20,8 @@ from app.core.step_agent import StepAgent
 from app.db.models import ChatSession, GeneralSkill, Message, ModelConfig, PersonaConfig, Skill, Tool, UIConfig, new_id, utc_now
 from app.general_skills import GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import GeneralSkillRunResponse, GeneralSkillSelection
+from app.knowledge import KnowledgeService
+from app.knowledge.schema import KnowledgeSearchRequest
 from app.llm import LLMError
 from app.memory.jobs import enqueue_memory_capture
 from app.memory.service import MemoryService, memory_read
@@ -61,6 +63,23 @@ def _normalize_action(action: object) -> str:
         "escalate_to_human": "handoff_human",
     }
     return aliases.get(text, text)
+
+
+def _node_as_step(node: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "step_id": node.get("node_id"),
+        "node_id": node.get("node_id"),
+        "type": node.get("type"),
+        "name": node.get("name"),
+        "instruction": node.get("instruction"),
+        "optional": node.get("optional", False),
+        "condition": node.get("condition"),
+        "expected_user_info": node.get("expected_user_info") or [],
+        "allowed_actions": node.get("allowed_actions") or [],
+        "knowledge_scope": node.get("knowledge_scope") or {},
+        "retry_policy": node.get("retry_policy") or {},
+        "metadata": node.get("metadata") or {},
+    }
 
 
 class AgentLoopPreconditionError(Exception):
@@ -1012,6 +1031,24 @@ class AgentLoop:
             for event_name, payload in repair_stream_events:
                 yield self._stream_event(event_name, chat_session, payload)
 
+            if step_result.knowledge_query:
+                knowledge_stream_events: list[tuple[str, dict[str, object]]] = []
+                step_result = self._execute_knowledge_query_cycle(
+                    request,
+                    chat_session,
+                    active_skill,
+                    tools,
+                    model_config,
+                    step_result,
+                    memory_context,
+                    conversation_context,
+                    knowledge_stream_events,
+                )
+                self.db.commit()
+                self.db.refresh(chat_session)
+                for event_name, payload in knowledge_stream_events:
+                    yield self._stream_event(event_name, chat_session, payload)
+
             if step_result.tool_call:
                 tool_stream_events: list[tuple[str, dict[str, object]]] = []
                 step_result, tool_result = self._execute_tool_action_cycle(
@@ -1417,6 +1454,20 @@ class AgentLoop:
         tool_result: ToolResult | None = None
         self.db.commit()
         self.db.refresh(chat_session)
+        if step_result.knowledge_query:
+            step_result = self._execute_knowledge_query_cycle(
+                request,
+                chat_session,
+                active_skill,
+                tools,
+                model_config,
+                step_result,
+                memory_context,
+                conversation_context,
+                status_callback=status,
+            )
+            self.db.commit()
+            self.db.refresh(chat_session)
         if step_result.tool_call:
             step_result, tool_result = self._execute_tool_action_cycle(
                 request,
@@ -2315,6 +2366,86 @@ class AgentLoop:
             break
         return step_result, tool_result
 
+    def _execute_knowledge_query_cycle(
+        self,
+        request: ChatTurnRequest,
+        chat_session: ChatSession,
+        active_skill: Skill | None,
+        tools: list[Tool],
+        model_config: ModelConfig,
+        step_result: StepAgentResult,
+        memory_context: list[dict[str, object]] | None = None,
+        conversation_context: dict[str, object] | None = None,
+        stream_events: list[tuple[str, dict[str, object]]] | None = None,
+        status_callback: StatusCallback | None = None,
+    ) -> StepAgentResult:
+        query = step_result.knowledge_query
+        if not query or not query.query.strip():
+            return step_result
+        payload = {
+            "phase": "knowledge",
+            "text": "正在检索知识",
+            "query": query.model_dump(mode="json"),
+            "active_skill_id": chat_session.active_skill_id,
+            "active_step_id": chat_session.active_step_id,
+        }
+        self.events.record(request.tenant_id, chat_session.id, "knowledge_query_started", payload)
+        if stream_events is not None:
+            stream_events.append(("status", payload))
+        if status_callback is not None:
+            status_callback("knowledge", payload)
+
+        search_response = KnowledgeService(self.db).search(
+            KnowledgeSearchRequest(
+                tenant_id=request.tenant_id,
+                query=query.query,
+                max_chunks=max(1, min(query.max_chunks, 12)),
+                max_buckets=4,
+            ),
+            model_config,
+        )
+        knowledge_items = {
+            "query": query.model_dump(mode="json"),
+            "selected_buckets": [item.model_dump(mode="json") for item in search_response.selected_buckets],
+            "chunks": [item.model_dump(mode="json") for item in search_response.chunks],
+            "trace": search_response.trace,
+        }
+        self._record_knowledge_results(chat_session, knowledge_items)
+        self.events.record(
+            request.tenant_id,
+            chat_session.id,
+            "knowledge_query_finished",
+            knowledge_items,
+        )
+        if stream_events is not None:
+            for trace in search_response.trace:
+                stream_events.append(("status", {"phase": "knowledge", **trace}))
+            stream_events.append(("knowledge_result", knowledge_items))
+
+        continuation_result = self._run_step_agent_once(
+            request,
+            chat_session,
+            active_skill,
+            tools,
+            model_config,
+            repair_reason="knowledge_continuation",
+            repair_context={
+                "reason": "knowledge_continuation",
+                "knowledge_results": knowledge_items,
+                "instruction": "基于知识结果继续判断下一步动作；如果知识足够，推进、调用工具或回复；如果不足，由模型决定是否继续追问或停止。",
+            },
+            memory_context=memory_context,
+            conversation_context=conversation_context,
+        )
+        continuation_result.knowledge_results = [knowledge_items]
+        self._apply_step_result(request.tenant_id, chat_session, continuation_result, active_skill)
+        return continuation_result
+
+    def _record_knowledge_results(self, chat_session: ChatSession, item: dict[str, Any]) -> None:
+        history = list(chat_session.knowledge_context_json or [])
+        history.append(item)
+        chat_session.knowledge_context_json = history[-12:]
+
     def _tool_continuation_context(
         self,
         tenant_id: str,
@@ -2535,7 +2666,12 @@ class AgentLoop:
         }
 
     def _step_result_has_progress(self, step_result: StepAgentResult) -> bool:
-        return bool(step_result.slot_updates or step_result.tool_call or step_result.handoff)
+        return bool(
+            step_result.slot_updates
+            or step_result.tool_call
+            or step_result.knowledge_query
+            or step_result.handoff
+        )
 
     def _step_result_has_reply_repair(
         self, previous_result: StepAgentResult, validation_result: StepAgentResult
@@ -2749,6 +2885,8 @@ class AgentLoop:
         return (
             self._actions_allow_final_reply(actions)
             or "handoff_human" in actions
+            or "query_knowledge" in actions
+            or "knowledge_query" in actions
             or any(action.startswith("call_tool:") for action in actions)
         )
 
@@ -2981,7 +3119,7 @@ class AgentLoop:
     ) -> str | None:
         if not active_step_id:
             return None
-        steps = [step for step in (skill.content_json or {}).get("steps", []) if isinstance(step, dict)]
+        steps = self._skill_steps(skill)
         start_index = next(
             (index for index, step in enumerate(steps) if step.get("step_id") == active_step_id),
             -1,
@@ -3085,7 +3223,11 @@ class AgentLoop:
         return first_step.get("step_id") if first_step else None
 
     def _skill_steps(self, skill: Skill) -> list[dict[str, Any]]:
-        return [step for step in (skill.content_json or {}).get("steps", []) if isinstance(step, dict)]
+        content = skill.content_json or {}
+        nodes = [node for node in content.get("nodes", []) if isinstance(node, dict)]
+        if nodes:
+            return [_node_as_step(node) for node in nodes]
+        return [step for step in content.get("steps", []) if isinstance(step, dict)]
 
     def _get_or_create_session(self, request: ChatTurnRequest) -> ChatSession:
         session_id = request.session_id or new_id("session")
@@ -3224,7 +3366,7 @@ class AgentLoop:
     def _current_skill_step(self, skill: Skill, active_step_id: str | None) -> dict[str, Any] | None:
         if not active_step_id:
             return None
-        for step in (skill.content_json or {}).get("steps", []):
+        for step in self._skill_steps(skill):
             if isinstance(step, dict) and step.get("step_id") == active_step_id:
                 return step
         return None

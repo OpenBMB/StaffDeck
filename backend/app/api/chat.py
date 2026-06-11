@@ -920,6 +920,26 @@ def _event_trace_line(
             "detail": None,
             "state": "running",
         }
+    if event.event_type == "knowledge_query_started":
+        query = payload.get("query") if isinstance(payload.get("query"), dict) else {}
+        text = str(query.get("query") if isinstance(query, dict) else payload.get("text") or "").strip()
+        return {
+            "id": f"knowledge_{event.id}_started",
+            "kind": "knowledge",
+            "text": "正在检索知识",
+            "detail": text or None,
+            "state": "running",
+        }
+    if event.event_type == "knowledge_query_finished":
+        chunks = payload.get("chunks") if isinstance(payload.get("chunks"), list) else []
+        buckets = payload.get("selected_buckets") if isinstance(payload.get("selected_buckets"), list) else []
+        return {
+            "id": f"knowledge_{event.id}_finished",
+            "kind": "knowledge",
+            "text": "读取知识片段",
+            "detail": f"展开 {len(buckets)} 个知识桶，读取 {len(chunks)} 个片段",
+            "state": "completed",
+        }
     if event.event_type == "tool_call_finished":
         name = str(payload.get("tool_name") or "")
         tool_call_id = str(payload.get("tool_call_id") or name or event.id)

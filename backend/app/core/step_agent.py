@@ -31,6 +31,7 @@ class StepAgent:
             "memory_context": memory_context or [],
             "active_skill": skill.content_json if skill else None,
             "active_step": _active_step(skill, session.active_step_id),
+            "knowledge_context": session.knowledge_context_json or [],
             "router_decision": router_decision.model_dump() if router_decision else None,
             "slots": session.slots_json or {},
             "awaiting_input": session.awaiting_input_json,
@@ -61,7 +62,27 @@ class StepAgent:
 def _active_step(skill: Skill | None, active_step_id: str | None) -> dict[str, object] | None:
     if not skill or not active_step_id:
         return None
-    for step in skill.content_json.get("steps", []):
+    content = skill.content_json or {}
+    for node in content.get("nodes", []):
+        if isinstance(node, dict) and node.get("node_id") == active_step_id:
+            return _node_as_step(node)
+    for step in content.get("steps", []):
         if isinstance(step, dict) and step.get("step_id") == active_step_id:
             return step
     return None
+
+
+def _node_as_step(node: dict[str, object]) -> dict[str, object]:
+    return {
+        "step_id": node.get("node_id"),
+        "node_id": node.get("node_id"),
+        "type": node.get("type"),
+        "name": node.get("name"),
+        "instruction": node.get("instruction"),
+        "optional": node.get("optional"),
+        "condition": node.get("condition"),
+        "expected_user_info": node.get("expected_user_info") or [],
+        "allowed_actions": node.get("allowed_actions") or [],
+        "knowledge_scope": node.get("knowledge_scope") or {},
+        "retry_policy": node.get("retry_policy") or {},
+    }

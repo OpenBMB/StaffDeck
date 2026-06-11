@@ -3561,6 +3561,90 @@ pre {
   }
 }
 
+.knowledge-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.knowledge-card {
+  border-color: var(--border-soft);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.05);
+}
+
+.knowledge-jobs {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.knowledge-job {
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  color: var(--accent);
+}
+
+.knowledge-bucket-body {
+  display: grid;
+  gap: 8px;
+}
+
+.knowledge-discovery-list {
+  width: 100%;
+}
+
+.knowledge-discovery {
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--surface-elevated);
+}
+
+.knowledge-discovery.tool {
+  border-color: rgba(16, 185, 129, 0.32);
+}
+
+.knowledge-discovery.skill {
+  border-color: rgba(4, 117, 111, 0.32);
+}
+
+.knowledge-discovery.warning {
+  border-color: rgba(245, 158, 11, 0.32);
+}
+
+.knowledge-discovery-header {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.knowledge-json {
+  max-height: 260px;
+  padding: 12px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-size: 12px;
+}
+
 @media (max-width: 420px) {
   .content {
     padding: 10px;

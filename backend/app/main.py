@@ -9,6 +9,7 @@ from app.api import (
     chat,
     feedback,
     general_skills,
+    knowledge,
     memories,
     mock,
     model_configs,
@@ -58,6 +59,7 @@ app.include_router(chat.router)
 app.include_router(ui_config.chat_router)
 app.include_router(auth.router)
 app.include_router(general_skills.router)
+app.include_router(knowledge.router)
 app.include_router(skills.router)
 app.include_router(model_configs.router)
 app.include_router(memories.router)

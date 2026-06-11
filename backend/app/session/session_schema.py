@@ -103,10 +103,19 @@ class RouterDecision(BaseModel):
     awaiting_input: Optional[AwaitingInput] = None
 
 
+class KnowledgeQuery(BaseModel):
+    query: str
+    reason: Optional[str] = None
+    scope: dict[str, Any] = Field(default_factory=dict)
+    max_chunks: int = 6
+
+
 class StepAgentResult(BaseModel):
     reply: Optional[str] = None
     slot_updates: dict[str, Any] = Field(default_factory=dict)
     tool_call: Optional[ToolCall] = None
+    knowledge_query: Optional[KnowledgeQuery] = None
+    knowledge_results: list[dict[str, Any]] = Field(default_factory=list)
     next_step_id: Optional[str] = None
     is_step_completed: bool = False
     handoff: bool = False
@@ -124,6 +133,7 @@ class SessionPublic(BaseModel):
     pending_tasks: list[dict[str, Any]] = Field(default_factory=list)
     resume_after_answer: Optional[dict[str, Any]] = None
     awaiting_input: Optional[dict[str, Any]] = None
+    knowledge_context: list[dict[str, Any]] = Field(default_factory=list)
     summary: Optional[str] = None
     last_agent_question: Optional[str] = None
     status: str = "active"

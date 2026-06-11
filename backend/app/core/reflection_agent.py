@@ -56,6 +56,16 @@ class ReflectionAgent:
                     "description": skill.description,
                     "trigger_intents": skill.content_json.get("trigger_intents", []),
                     "required_info": skill.content_json.get("required_info", []),
+                    "nodes": [
+                        {
+                            "node_id": node.get("node_id"),
+                            "type": node.get("type"),
+                            "name": node.get("name"),
+                            "allowed_actions": node.get("allowed_actions", []),
+                        }
+                        for node in skill.content_json.get("nodes", [])
+                        if isinstance(node, dict)
+                    ],
                     "steps": [
                         {
                             "step_id": step.get("step_id"),
@@ -113,10 +123,12 @@ def action_needs_reflection(
     tool_result: ToolResult | None,
 ) -> bool:
     if router_decision.decision in {"clarify", "answer_only", "answer_chitchat_then_resume"}:
-        return bool(tool_result or step_result.tool_call)
+        return bool(tool_result or step_result.tool_call or step_result.knowledge_query)
     return bool(
         tool_result
         or step_result.tool_call
+        or step_result.knowledge_query
+        or step_result.knowledge_results
         or step_result.slot_updates
         or step_result.next_step_id
         or step_result.is_step_completed

@@ -17,6 +17,7 @@ def public_session(session: ChatSession) -> SessionPublic:
         pending_tasks=session.pending_tasks_json or [],
         resume_after_answer=session.resume_after_answer_json,
         awaiting_input=session.awaiting_input_json,
+        knowledge_context=session.knowledge_context_json or [],
         summary=session.summary,
         last_agent_question=session.last_agent_question,
         status=session.status,

@@ -9,8 +9,71 @@ export type SkillCard = {
   goal: string[];
   required_info: string[];
   steps: Array<Record<string, unknown>>;
+  nodes?: Array<Record<string, unknown>>;
+  edges?: Array<Record<string, unknown>>;
+  start_node_id?: string;
+  terminal_node_ids?: string[];
   interruption_policy: Record<string, string>;
   response_rules: string[];
+};
+
+export type KnowledgeIngestJobRead = {
+  id: string;
+  tenant_id: string;
+  document_id?: string;
+  filename: string;
+  status: string;
+  stage: string;
+  progress: number;
+  error?: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at: string;
+};
+
+export type KnowledgeDocumentRead = {
+  id: string;
+  tenant_id: string;
+  filename: string;
+  file_type: string;
+  title?: string;
+  status: string;
+  bucket_count: number;
+  chunk_count: number;
+  metadata: Record<string, unknown>;
+  error?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KnowledgeBucketRead = {
+  id: string;
+  tenant_id: string;
+  document_id: string;
+  bucket_key: string;
+  title: string;
+  summary: string;
+  token_estimate: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KnowledgeDiscoveryRead = {
+  id: string;
+  tenant_id: string;
+  document_id: string;
+  bucket_id?: string;
+  suggestion_type: 'skill' | 'tool' | 'warning';
+  title: string;
+  status: string;
+  payload: Record<string, unknown>;
+  source_refs: Array<Record<string, unknown>>;
+  reason?: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type ToolSuggestion = {

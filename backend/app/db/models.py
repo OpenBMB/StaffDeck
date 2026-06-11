@@ -92,6 +92,89 @@ class GeneralSkill(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class KnowledgeDocument(SQLModel, table=True):
+    __tablename__ = "knowledge_documents"
+
+    id: str = Field(default_factory=lambda: new_id("kdoc"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    filename: str
+    file_type: str = Field(index=True)
+    title: Optional[str] = None
+    status: str = Field(default="processing", index=True)
+    bucket_count: int = 0
+    chunk_count: int = 0
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    error: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class KnowledgeBucket(SQLModel, table=True):
+    __tablename__ = "knowledge_buckets"
+
+    id: str = Field(default_factory=lambda: new_id("kbucket"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    document_id: str = Field(index=True)
+    bucket_key: str = Field(index=True)
+    title: str
+    summary: str
+    token_estimate: int = 0
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class KnowledgeChunk(SQLModel, table=True):
+    __tablename__ = "knowledge_chunks"
+
+    id: str = Field(default_factory=lambda: new_id("kchunk"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    document_id: str = Field(index=True)
+    bucket_id: str = Field(index=True)
+    chunk_index: int = Field(index=True)
+    content: str
+    summary: Optional[str] = None
+    source_ref: Optional[str] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class KnowledgeDiscoverySuggestion(SQLModel, table=True):
+    __tablename__ = "knowledge_discovery_suggestions"
+
+    id: str = Field(default_factory=lambda: new_id("kdisc"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    document_id: str = Field(index=True)
+    bucket_id: Optional[str] = Field(default=None, index=True)
+    suggestion_type: str = Field(index=True)
+    title: str
+    status: str = Field(default="pending", index=True)
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    source_refs_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class KnowledgeIngestJob(SQLModel, table=True):
+    __tablename__ = "knowledge_ingest_jobs"
+
+    id: str = Field(default_factory=lambda: new_id("kjob"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    document_id: Optional[str] = Field(default=None, index=True)
+    filename: str
+    status: str = Field(default="queued", index=True)
+    stage: str = "queued"
+    progress: float = 0.0
+    error: Optional[str] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class ModelConfig(SQLModel, table=True):
     __tablename__ = "model_configs"
 
@@ -187,6 +270,7 @@ class ChatSession(SQLModel, table=True):
     pending_tasks_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     resume_after_answer_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
     awaiting_input_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    knowledge_context_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     summary: Optional[str] = None
     last_agent_question: Optional[str] = None
     status: str = "active"
