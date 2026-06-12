@@ -143,12 +143,17 @@ select,
 .app-shell {
   height: 100vh;
   min-height: 0;
+  min-width: 0;
   background: var(--background);
   overflow: hidden;
 }
 
 .sidebar {
   position: relative;
+  flex: 0 0 232px !important;
+  width: 232px !important;
+  min-width: 232px !important;
+  max-width: 232px !important;
   height: 100vh;
   background: rgba(248, 247, 244, 0.92) !important;
   border-right: 1px solid var(--border);
@@ -1274,16 +1279,17 @@ body.skill-distill-fixed .content {
 
 .skill-workbench {
   display: grid;
-  grid-template-columns: minmax(360px, 0.92fr) minmax(0, 1.08fr);
+  grid-template-columns: minmax(420px, 0.9fr) minmax(760px, 1.1fr);
   gap: 16px;
   align-items: stretch;
   min-height: calc(100vh - 136px);
+  min-width: 1180px;
 }
 
 .skill-distill-page .skill-workbench {
   min-height: 0;
   height: 100%;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .skill-distill-page .skill-chat-card,
@@ -2392,7 +2398,7 @@ body.skill-distill-fixed .content {
   height: calc(100% - 44px);
   min-height: 0;
   overflow: auto;
-  padding: 26px 20px 44px;
+  padding: 30px 28px 52px;
   display: grid;
   align-content: start;
   justify-items: center;
@@ -2400,13 +2406,12 @@ body.skill-distill-fixed .content {
 }
 
 .skill-flow-graph-canvas {
-  width: 100%;
-  min-width: min(760px, 100%);
+  width: max-content;
+  min-width: 920px;
   display: grid;
   align-content: start;
   justify-items: center;
-  gap: 16px;
-  overflow-x: auto;
+  gap: 18px;
   padding: 2px 0 18px;
 }
 
@@ -2431,7 +2436,8 @@ body.skill-distill-fixed .content {
 }
 
 .skill-flow-edge-row {
-  max-width: min(820px, calc(100vw - 80px));
+  width: 100%;
+  max-width: 980px;
   display: flex;
   justify-content: center;
   flex-wrap: wrap;
@@ -2453,7 +2459,7 @@ body.skill-distill-fixed .content {
 }
 
 .skill-flow-node-shell {
-  width: clamp(320px, 36vw, 520px);
+  width: clamp(380px, 32vw, 540px);
   display: grid;
   justify-items: center;
   gap: 8px;
@@ -2856,9 +2862,12 @@ code {
 .app-shell,
 .content,
 .skill-distill-page,
-.skill-workbench,
 .general-skill-workbench {
   max-width: 100%;
+}
+
+.skill-workbench {
+  max-width: none;
 }
 
 .app-shell {
@@ -2872,6 +2881,10 @@ code {
 .content {
   overflow-x: hidden;
   scrollbar-gutter: stable;
+}
+
+body.skill-distill-fixed .content {
+  overflow: auto hidden;
 }
 
 .brand-title,
@@ -3018,7 +3031,7 @@ code {
 }
 
 .skill-flow-node {
-  width: min(760px, 100%);
+  width: 100%;
   min-width: 0;
 }
 
@@ -3432,35 +3445,36 @@ pre {
 
 @media (max-width: 1180px) {
   body.skill-distill-fixed {
-    overflow: auto;
+    overflow: hidden;
   }
 
   body.skill-distill-fixed .content {
-    overflow: auto;
+    overflow: auto hidden;
   }
 
   .persistent-distill.active,
   .skill-distill-page {
-    height: auto;
+    height: 100%;
     min-height: 0;
-    overflow: visible;
+    overflow: visible hidden;
   }
 
   .skill-distill-page {
-    display: block;
+    display: grid;
   }
 
   .skill-workbench,
   .skill-distill-page .skill-workbench {
-    height: auto;
+    height: 100%;
     min-height: 0;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(420px, 0.9fr) minmax(760px, 1.1fr);
+    min-width: 1180px;
     overflow: visible;
   }
 
   .skill-distill-page .skill-chat-card,
   .skill-distill-page .skill-source-card {
-    height: auto;
+    height: 100%;
     min-height: 0;
   }
 
@@ -3468,18 +3482,18 @@ pre {
   .skill-distill-page .skill-source-card .ant-card-body {
     height: auto;
     min-height: 0;
-    overflow: visible;
+    overflow: hidden;
   }
 
   .skill-chat-panel {
-    height: min(720px, calc(100vh - 168px));
-    min-height: 520px;
+    height: 100%;
+    min-height: 0;
   }
 
   .skill-source-md,
   .skill-flow {
-    height: min(680px, 72vh);
-    min-height: 420px;
+    height: calc(100% - 44px);
+    min-height: 0;
   }
 
   .skill-tool-suggestion-main {
@@ -3536,7 +3550,51 @@ pre {
   }
 
   .sidebar {
+    flex: 0 0 72px !important;
+    width: 72px !important;
+    min-width: 72px !important;
+    max-width: 72px !important;
+    display: flex;
+  }
+
+  .brand {
+    height: 62px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .brand > div,
+  .nav-menu .ant-menu-item-group-title,
+  .nav-menu .ant-menu-title-content,
+  .agent-dock-main {
     display: none;
+  }
+
+  .nav-menu {
+    padding: 10px;
+  }
+
+  .nav-menu .ant-menu-item,
+  .nav-menu .ant-menu-submenu-title {
+    width: 48px;
+    height: 42px;
+    margin: 4px 0;
+    padding-inline: 0 !important;
+    display: grid;
+    place-items: center;
+  }
+
+  .nav-menu .ant-menu-item-icon,
+  .nav-menu .ant-menu-submenu-title .ant-menu-item-icon {
+    margin-inline-end: 0 !important;
+    font-size: 17px !important;
+  }
+
+  .agent-dock {
+    margin: 10px;
+    padding: 8px;
+    grid-template-columns: 34px;
+    justify-content: center;
   }
 
   .grid-2 {
@@ -3561,7 +3619,7 @@ pre {
   }
 
   .content {
-    padding: 16px;
+    padding: 14px;
   }
 
   .topbar {
@@ -3574,8 +3632,8 @@ pre {
   }
 
   .skill-chat-panel {
-    height: min(680px, calc(100vh - 150px));
-    min-height: 500px;
+    height: 100%;
+    min-height: 0;
     gap: 10px;
   }
 
@@ -3668,8 +3726,8 @@ pre {
 
   .skill-source-md,
   .skill-flow {
-    height: min(620px, 70vh);
-    min-height: 360px;
+    height: calc(100% - 44px);
+    min-height: 0;
   }
 
   .skill-source-section,
@@ -3683,7 +3741,7 @@ pre {
   }
 
   .skill-flow {
-    padding: 14px 8px 24px;
+    padding: 22px 20px 40px;
   }
 
   .skill-flow-node {
