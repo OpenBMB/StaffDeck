@@ -35,6 +35,10 @@
   --code-bg: #ffffff;
   --code-fg: #1f1f1f;
   --code-border: #e5e5e5;
+  --code-sidebar-bg: #f3f3f3;
+  --code-sidebar-active: #e8e8e8;
+  --code-tab-bg: #f3f3f3;
+  --code-selection: rgba(0, 120, 215, 0.24);
   --code-comment: #008000;
   --code-string: #a31515;
   --code-number: #098658;
@@ -79,6 +83,10 @@
   --code-bg: #1e1e1e;
   --code-fg: #d4d4d4;
   --code-border: #333333;
+  --code-sidebar-bg: #252526;
+  --code-sidebar-active: #37373d;
+  --code-tab-bg: #2d2d2d;
+  --code-selection: rgba(38, 79, 120, 0.86);
   --code-comment: #6a9955;
   --code-string: #ce9178;
   --code-number: #b5cea8;
@@ -868,28 +876,42 @@ body.skill-distill-fixed .content {
   padding: 18px 20px;
   border: 0;
   border-radius: 0 !important;
-  background: var(--surface-subtle);
-  color: var(--foreground);
+  background: var(--code-bg);
+  color: var(--code-fg);
+  caret-color: var(--accent);
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.7;
   resize: vertical;
+  tab-size: 2;
+}
+
+.general-skill-source-input.ant-input::selection {
+  background: var(--code-selection);
+}
+
+.general-skill-source-input.ant-input:hover,
+.general-skill-source-input.ant-input:focus {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  box-shadow: none;
 }
 
 .general-skill-file-editor {
   display: grid;
   grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
   min-height: 560px;
-  background: var(--surface-subtle);
-  border-top: 1px solid var(--line);
+  overflow: hidden;
+  background: var(--code-bg);
+  border-top: 1px solid var(--code-border);
 }
 
 .general-skill-file-tree {
   min-width: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  border-right: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 92%, var(--surface-subtle));
+  border-right: 1px solid var(--code-border);
+  background: var(--code-sidebar-bg);
 }
 
 .general-skill-file-tree-title,
@@ -900,7 +922,8 @@ body.skill-distill-fixed .content {
   gap: 8px;
   padding: 0 14px;
   color: var(--muted);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--code-border);
+  background: var(--code-tab-bg);
   font-size: 12px;
   font-weight: 760;
 }
@@ -936,15 +959,16 @@ body.skill-distill-fixed .content {
 
 .general-skill-file-node:hover,
 .general-skill-file-node.active {
-  color: var(--foreground);
-  background: var(--surface);
+  color: var(--code-fg);
+  background: var(--code-sidebar-active);
 }
 
 .general-skill-file-actions {
   display: flex;
   gap: 8px;
   padding: 10px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--code-border);
+  background: var(--code-sidebar-bg);
 }
 
 .general-skill-file-pane {
@@ -956,7 +980,7 @@ body.skill-distill-fixed .content {
 .general-skill-file-tab span {
   min-width: 0;
   overflow: hidden;
-  color: var(--foreground);
+  color: var(--code-fg);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3498,8 +3522,7 @@ pre {
 :root[data-theme='dark'] .skill-chat-warning,
 :root[data-theme='dark'] .general-trace-list,
 :root[data-theme='dark'] .skill-source-md,
-:root[data-theme='dark'] .skill-flow,
-:root[data-theme='dark'] .general-skill-source-input.ant-input {
+:root[data-theme='dark'] .skill-flow {
   background:
     linear-gradient(180deg, rgba(17, 24, 39, 0.94), rgba(11, 18, 32, 0.96)),
     var(--surface-subtle);
@@ -3649,13 +3672,24 @@ pre {
 :root[data-theme='dark'] .general-skill-file-editor,
 :root[data-theme='dark'] .general-skill-file-tree,
 :root[data-theme='dark'] .general-skill-file-tab {
-  background: var(--surface);
-  border-color: var(--line);
+  border-color: var(--code-border);
+}
+
+:root[data-theme='dark'] .general-skill-file-editor {
+  background: var(--code-bg);
+}
+
+:root[data-theme='dark'] .general-skill-file-tree {
+  background: var(--code-sidebar-bg);
+}
+
+:root[data-theme='dark'] .general-skill-file-tab {
+  background: var(--code-tab-bg);
 }
 
 :root[data-theme='dark'] .general-skill-file-node:hover,
 :root[data-theme='dark'] .general-skill-file-node.active {
-  background: rgba(248, 250, 252, 0.07);
+  background: var(--code-sidebar-active);
 }
 
 :root[data-theme='dark'] .skill-action-chip.tool.existing,
@@ -3732,9 +3766,8 @@ pre {
 }
 
 .general-skill-source-input.ant-input {
-  background:
-    linear-gradient(90deg, rgba(15, 118, 110, 0.035), transparent 18%),
-    #fcfbf7;
+  background: var(--code-bg);
+  color: var(--code-fg);
 }
 
 .general-trace-list {
