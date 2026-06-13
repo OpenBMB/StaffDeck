@@ -11,9 +11,8 @@ class AgentProfileCreateRequest(BaseModel):
     description: Optional[str] = None
     persona_prompt: Optional[str] = None
     is_overall: bool = False
-    source_mode: Literal["copy", "blank", "json"] = "copy"
+    source_mode: Literal["copy", "blank"] = "copy"
     copy_from_agent_id: Optional[str] = None
-    definition: Optional[dict[str, Any]] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

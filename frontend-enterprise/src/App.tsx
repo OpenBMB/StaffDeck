@@ -33,14 +33,13 @@ import type { AgentProfileRead } from './types';
 const { Header, Sider, Content } = Layout;
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
-type AgentCreateMode = 'copy' | 'blank' | 'json';
+type AgentCreateMode = 'copy' | 'blank';
 
 type AgentCreateFormState = {
   name: string;
   description: string;
   sourceMode: AgentCreateMode;
   copyFromAgentId: string;
-  definitionText: string;
 };
 
 const EMPTY_AGENT_FORM: AgentCreateFormState = {
@@ -48,25 +47,7 @@ const EMPTY_AGENT_FORM: AgentCreateFormState = {
   description: '',
   sourceMode: 'copy',
   copyFromAgentId: '',
-  definitionText: '',
 };
-
-const AGENT_DEFINITION_PLACEHOLDER = `{
-  "agent": {
-    "name": "售后专家",
-    "description": "只处理售后、退款和换货问题",
-    "persona_prompt": "你是专业、克制、可验证的售后客服。"
-  },
-  "resources": {
-    "skill_ids": ["after_sales_refund"],
-    "general_skill_slugs": ["weather-zh"],
-    "knowledge_base_ids": ["售后政策库"]
-  },
-  "model_bindings": {
-    "default": "model_xxx",
-    "router": "model_xxx"
-  }
-}`;
 
 function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
   const navigate = useNavigate();
@@ -127,22 +108,7 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
   }
 
   async function saveAgentCreateModal() {
-    let definition: Record<string, unknown> | undefined;
-    let definitionAgent: Record<string, unknown> | undefined;
-    if (agentForm.sourceMode === 'json') {
-      if (!agentForm.definitionText.trim()) {
-        message.error('请先粘贴智能体 JSON');
-        return;
-      }
-      try {
-        definition = JSON.parse(agentForm.definitionText) as Record<string, unknown>;
-        definitionAgent = (typeof definition.agent === 'object' && definition.agent ? definition.agent : definition) as Record<string, unknown>;
-      } catch {
-        message.error('JSON 格式不正确');
-        return;
-      }
-    }
-    const name = agentForm.name.trim() || (typeof definitionAgent?.name === 'string' ? definitionAgent.name.trim() : '');
+    const name = agentForm.name.trim();
     if (!name) {
       message.error('请填写智能体名称');
       return;
@@ -153,31 +119,10 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
       description: agentForm.description || undefined,
       source_mode: agentForm.sourceMode,
       copy_from_agent_id: agentForm.sourceMode === 'copy' ? agentForm.copyFromAgentId || undefined : undefined,
-      definition,
     });
     await loadAgents();
     changeAgentScope(created.id);
     setAgentCreateOpen(false);
-  }
-
-  function hydrateAgentDefinition() {
-    if (!agentForm.definitionText.trim()) {
-      message.error('请先粘贴智能体 JSON');
-      return;
-    }
-    try {
-      const definition = JSON.parse(agentForm.definitionText) as Record<string, unknown>;
-      const agent = (typeof definition.agent === 'object' && definition.agent ? definition.agent : definition) as Record<string, unknown>;
-      setAgentForm((prev) => ({
-        ...prev,
-        name: typeof agent.name === 'string' ? agent.name : prev.name,
-        description: typeof agent.description === 'string' ? agent.description : prev.description,
-        copyFromAgentId: typeof agent.copy_from_agent_id === 'string' ? agent.copy_from_agent_id : prev.copyFromAgentId,
-      }));
-      message.success('已读取 JSON 中的基础信息');
-    } catch {
-      message.error('JSON 格式不正确');
-    }
   }
 
   return (
@@ -319,7 +264,6 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
               options={[
                 { label: '复制已有智能体', value: 'copy' },
                 { label: '空白智能体', value: 'blank' },
-                { label: 'JSON 装载', value: 'json' },
               ]}
             />
           </label>
@@ -339,21 +283,6 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
           )}
           {agentForm.sourceMode === 'blank' && (
             <div className="agent-definition-note">空白智能体不会继承技能、知识库、通用技能、人设或模型绑定。</div>
-          )}
-          {agentForm.sourceMode === 'json' && (
-            <label>
-              智能体 JSON
-              <Input.TextArea
-                rows={9}
-                className="agent-definition-input"
-                placeholder={AGENT_DEFINITION_PLACEHOLDER}
-                value={agentForm.definitionText}
-                onChange={(event) => setAgentForm((prev) => ({ ...prev, definitionText: event.target.value }))}
-              />
-              <Button className="agent-definition-read" onClick={hydrateAgentDefinition}>
-                读取 JSON
-              </Button>
-            </label>
           )}
           <label>
             名称

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
@@ -68,9 +66,7 @@ def list_agents(tenant_id: str = Query(...), db: Session = Depends(get_session))
 @enterprise_router.post("", response_model=AgentProfileRead)
 def create_agent(request: AgentProfileCreateRequest, db: Session = Depends(get_session)) -> AgentProfileRead:
     ensure_tenant(db, request.tenant_id)
-    definition = request.definition or {}
-    agent_definition = _agent_definition(definition)
-    name = str(request.name or agent_definition.get("name") or "").strip()
+    name = str(request.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Agent name cannot be empty")
     existing = db.exec(
@@ -81,25 +77,23 @@ def create_agent(request: AgentProfileCreateRequest, db: Session = Depends(get_s
     row = AgentProfile(
         tenant_id=request.tenant_id,
         name=name,
-        description=request.description if request.description is not None else _optional_str(agent_definition.get("description")),
-        persona_prompt=request.persona_prompt if request.persona_prompt is not None else _optional_str(agent_definition.get("persona_prompt")),
+        description=request.description,
+        persona_prompt=request.persona_prompt,
         is_overall=request.is_overall,
         status="active",
-        metadata_json=_merged_metadata(request.metadata, agent_definition.get("metadata")),
+        metadata_json=request.metadata or {},
     )
     db.add(row)
     db.flush()
     if not row.is_overall:
-        copy_from_agent_id = request.copy_from_agent_id or _optional_str(agent_definition.get("copy_from_agent_id"))
-        if request.source_mode == "blank" or agent_definition.get("blank") is True:
+        copy_from_agent_id = request.copy_from_agent_id
+        if request.source_mode == "blank":
             pass
         elif copy_from_agent_id:
             source_agent = _get_agent(db, request.tenant_id, copy_from_agent_id)
             if not row.persona_prompt:
                 row.persona_prompt = source_agent.persona_prompt
             _copy_agent_scope_from_source(db, request.tenant_id, source_agent, row)
-        elif request.source_mode == "json":
-            pass
         else:
             overall = get_overall_agent(db, request.tenant_id)
             if overall and not row.persona_prompt:
@@ -107,8 +101,6 @@ def create_agent(request: AgentProfileCreateRequest, db: Session = Depends(get_s
             copy_overall_scope_to_agent(db, request.tenant_id, row)
             if overall:
                 _copy_agent_models_from_source(db, request.tenant_id, overall, row)
-        if request.source_mode == "json" or request.definition:
-            _apply_agent_definition(db, request.tenant_id, row, definition)
     db.commit()
     db.refresh(row)
     return agent_read(row, _bindings_by_agent(db, request.tenant_id).get(row.id, []))
@@ -443,28 +435,6 @@ def binding_read(row: AgentResourceBinding) -> AgentResourceBindingRead:
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
-
-
-def _agent_definition(definition: dict[str, Any]) -> dict[str, Any]:
-    nested = definition.get("agent")
-    if isinstance(nested, dict):
-        return nested
-    return definition if isinstance(definition, dict) else {}
-
-
-def _optional_str(value: object) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _merged_metadata(request_metadata: dict[str, Any], definition_metadata: object) -> dict[str, Any]:
-    merged: dict[str, Any] = {}
-    if isinstance(definition_metadata, dict):
-        merged.update(definition_metadata)
-    merged.update(request_metadata or {})
-    return merged
 
 
 def _copy_agent_scope_from_source(db: Session, tenant_id: str, source: AgentProfile, target: AgentProfile) -> None:
@@ -812,147 +782,6 @@ def _copy_knowledge_branch(db: Session, tenant_id: str, source_agent_id: str, ta
             metadata_json=dict(source_branch.metadata_json or {}),
         )
     )
-
-
-def _apply_agent_definition(db: Session, tenant_id: str, agent: AgentProfile, definition: dict[str, Any]) -> None:
-    if not definition:
-        return
-    if isinstance(definition.get("resources"), (dict, list)) or any(
-        key in definition for key in ("skills", "skill_ids", "general_skills", "general_skill_slugs", "knowledge_bases", "knowledge_base_ids")
-    ):
-        _replace_agent_resources_from_definition(db, tenant_id, agent, definition)
-    model_bindings = definition.get("model_bindings") or definition.get("models")
-    if isinstance(model_bindings, dict):
-        _replace_model_bindings_from_definition(db, tenant_id, agent, model_bindings)
-
-
-def _replace_agent_resources_from_definition(db: Session, tenant_id: str, agent: AgentProfile, definition: dict[str, Any]) -> None:
-    existing = db.exec(
-        select(AgentResourceBinding).where(
-            AgentResourceBinding.tenant_id == tenant_id,
-            AgentResourceBinding.agent_id == agent.id,
-        )
-    ).all()
-    for row in existing:
-        db.delete(row)
-    resources = definition.get("resources")
-    resource_items = []
-    if isinstance(resources, dict):
-        resource_items.extend(("skill", item) for item in resources.get("skills", []) or resources.get("skill_ids", []) or [])
-        resource_items.extend(("general_skill", item) for item in resources.get("general_skills", []) or resources.get("general_skill_slugs", []) or [])
-        resource_items.extend(("knowledge_base", item) for item in resources.get("knowledge_bases", []) or resources.get("knowledge_base_ids", []) or [])
-    elif isinstance(resources, list):
-        for item in resources:
-            resource_type = _definition_resource_type(item)
-            if resource_type:
-                resource_items.append((resource_type, item))
-    resource_items.extend(("skill", item) for item in definition.get("skills", []) or definition.get("skill_ids", []) or [])
-    resource_items.extend(("general_skill", item) for item in definition.get("general_skills", []) or definition.get("general_skill_slugs", []) or [])
-    resource_items.extend(("knowledge_base", item) for item in definition.get("knowledge_bases", []) or definition.get("knowledge_base_ids", []) or [])
-    for resource_type, raw_item in resource_items:
-        _create_resource_from_definition_item(db, tenant_id, agent, resource_type, raw_item)
-
-
-def _definition_resource_type(raw_item: object) -> str | None:
-    if not isinstance(raw_item, dict):
-        return None
-    raw_type = str(raw_item.get("resource_type") or raw_item.get("type") or "").strip()
-    normalized = {
-        "skill": "skill",
-        "scenario_skill": "skill",
-        "scene_skill": "skill",
-        "general_skill": "general_skill",
-        "common_skill": "general_skill",
-        "knowledge_base": "knowledge_base",
-        "knowledge": "knowledge_base",
-    }.get(raw_type)
-    return normalized
-
-
-def _create_resource_from_definition_item(
-    db: Session,
-    tenant_id: str,
-    agent: AgentProfile,
-    resource_type: str,
-    raw_item: object,
-) -> None:
-    if isinstance(raw_item, dict):
-        identifier = raw_item.get("resource_id") or raw_item.get("id") or raw_item.get("skill_id") or raw_item.get("slug") or raw_item.get("name")
-        status = str(raw_item.get("status") or "active")
-        metadata = raw_item.get("metadata") if isinstance(raw_item.get("metadata"), dict) else {}
-    else:
-        identifier = raw_item
-        status = "active"
-        metadata = {}
-    if not identifier:
-        return
-    resolved = _resolve_resource(db, tenant_id, resource_type, str(identifier))
-    if not resolved:
-        raise HTTPException(status_code=404, detail=f"Resource not found: {resource_type}:{identifier}")
-    db.add(
-        AgentResourceBinding(
-            tenant_id=tenant_id,
-            agent_id=agent.id,
-            resource_type=resource_type,
-            resource_id=resolved.id,
-            status=status,
-            metadata_json=dict(metadata),
-        )
-    )
-    if resource_type == "skill":
-        ensure_agent_skill_branch(db, tenant_id, agent.id, resolved)
-    elif resource_type == "knowledge_base":
-        existing_branch = db.exec(
-            select(AgentKnowledgeBranch).where(
-                AgentKnowledgeBranch.tenant_id == tenant_id,
-                AgentKnowledgeBranch.agent_id == agent.id,
-                AgentKnowledgeBranch.knowledge_base_id == resolved.id,
-            )
-        )
-        branch = existing_branch.first()
-        if branch:
-            branch.status = status
-            branch.updated_at = utc_now()
-            db.add(branch)
-        else:
-            db.add(
-                AgentKnowledgeBranch(
-                    tenant_id=tenant_id,
-                    agent_id=agent.id,
-                    knowledge_base_id=resolved.id,
-                    base_version="1.0.0",
-                    head_version="1.0.0",
-                    status=status,
-                    sync_state="synced",
-                )
-            )
-
-
-def _replace_model_bindings_from_definition(
-    db: Session,
-    tenant_id: str,
-    agent: AgentProfile,
-    model_bindings: dict[str, Any],
-) -> None:
-    existing = db.exec(
-        select(AgentModelBinding).where(
-            AgentModelBinding.tenant_id == tenant_id,
-            AgentModelBinding.agent_id == agent.id,
-        )
-    ).all()
-    for row in existing:
-        db.delete(row)
-    for role, model_config_id in model_bindings.items():
-        if not model_config_id:
-            continue
-        db.add(
-            AgentModelBinding(
-                tenant_id=tenant_id,
-                agent_id=agent.id,
-                role=str(role),
-                model_config_id=str(model_config_id),
-            )
-        )
 
 
 def _resolve_resource(db: Session, tenant_id: str, resource_type: str, identifier: str) -> Skill | GeneralSkill | KnowledgeBase | None:
