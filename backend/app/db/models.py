@@ -376,10 +376,12 @@ class Tool(SQLModel, table=True):
     display_name: Optional[str] = None
     description: Optional[str] = None
     bucket: str = Field(default="未分桶", index=True)
+    tool_type: str = Field(default="http", index=True)
     method: str
     url: str
     headers_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     auth_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     input_schema: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     output_schema: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     allowed_skills_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))

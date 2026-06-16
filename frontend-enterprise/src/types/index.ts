@@ -147,8 +147,10 @@ export type ToolSuggestion = {
   display_name?: string;
   description?: string;
   bucket: string;
+  tool_type?: 'http' | 'mcp' | string;
   method: string;
   url: string;
+  mcp_config?: Record<string, unknown>;
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
   sample_arguments?: Record<string, unknown>;
@@ -296,10 +298,12 @@ export type ToolRead = {
   display_name?: string;
   description?: string;
   bucket: string;
+  tool_type: 'http' | 'mcp' | string;
   method: string;
   url: string;
   headers: Record<string, unknown>;
   auth: Record<string, unknown>;
+  mcp_config: Record<string, unknown>;
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
   allowed_skills: string[];

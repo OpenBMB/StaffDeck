@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 
 from app.config import get_settings
 from app.db.models import Tool
+from app.tools.mcp_builtin import BuiltinMCPError, execute_builtin_mcp
 from app.tools.tool_schema import ToolCall, ToolError, ToolResult
 
 
@@ -37,6 +38,11 @@ class ToolExecutor:
         if active_skill_id and tool.allowed_skills_json and active_skill_id not in tool.allowed_skills_json:
             return self._error(tool.name, "NOT_ALLOWED", "当前技能不允许调用该工具。")
 
+        if (tool.tool_type or "http") == "mcp":
+            return self._execute_mcp_tool(tool, tool_call.arguments)
+        if (tool.tool_type or "http") != "http":
+            return self._error(tool.name, "UNSUPPORTED_TOOL_TYPE", f"不支持的工具类型：{tool.tool_type}")
+
         headers = self._resolve_headers(tool.headers_json or {}, tool.auth_json or {})
         try:
             with httpx.Client(timeout=self.settings.tool_timeout_seconds) as client:
@@ -49,7 +55,7 @@ class ToolExecutor:
                         tool.method.upper(), tool.url, headers=headers, json=tool_call.arguments
                     )
                 response.raise_for_status()
-                return ToolResult(tool_name=tool.name, success=True, data=response.json(), error=None)
+                return ToolResult(tool_name=tool.name, success=True, data=self._response_data(response), error=None)
         except httpx.TimeoutException:
             return self._error(tool.name, "TIMEOUT", "工具调用超时。")
         except httpx.HTTPStatusError as exc:
@@ -60,6 +66,21 @@ class ToolExecutor:
             )
         except Exception as exc:
             return self._error(tool.name, "EXECUTION_ERROR", str(exc))
+
+    def _execute_mcp_tool(self, tool: Tool, arguments: dict[str, Any]) -> ToolResult:
+        try:
+            data = execute_builtin_mcp(tool.config_json or {}, arguments)
+            return ToolResult(tool_name=tool.name, success=True, data=data, error=None)
+        except BuiltinMCPError as exc:
+            return self._error(tool.name, "MCP_ERROR", str(exc))
+        except Exception as exc:
+            return self._error(tool.name, "MCP_EXECUTION_ERROR", str(exc))
+
+    def _response_data(self, response: httpx.Response) -> Any:
+        try:
+            return response.json()
+        except Exception:
+            return response.text
 
     def _resolve_headers(self, headers: dict[str, Any], auth: dict[str, Any]) -> dict[str, str]:
         resolved = {key: self._resolve_secret(str(value)) for key, value in headers.items()}

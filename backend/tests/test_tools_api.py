@@ -97,6 +97,54 @@ def test_probe_tool_success_infers_output_schema(monkeypatch: pytest.MonkeyPatch
         assert result.inferred_output_schema["properties"]["missing_benefits"]["type"] == "array"
 
 
+def test_probe_mcp_tool_success_infers_output_schema() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+
+        result = probe_tool(
+            ToolProbeRequest(
+                tenant_id="tenant_demo",
+                name="mcp.demo_sum",
+                tool_type="mcp",
+                method="POST",
+                url="mcp://builtin.demo/sum",
+                mcp_config={"server": "builtin.demo", "tool": "sum"},
+                sample_arguments={"numbers": [1, 2, 3]},
+            ),
+            db,
+        )
+
+        assert result.success is True
+        assert result.status_code == 200
+        assert result.data_preview == {"numbers": [1, 2, 3], "total": 6, "count": 3}
+        assert result.inferred_output_schema["properties"]["total"]["type"] == "integer"
+
+
+def test_probe_mcp_tool_error_is_stable() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+
+        result = probe_tool(
+            ToolProbeRequest(
+                tenant_id="tenant_demo",
+                name="mcp.bad",
+                tool_type="mcp",
+                method="POST",
+                url="mcp://builtin.demo/missing",
+                mcp_config={"server": "builtin.demo", "tool": "missing"},
+                sample_arguments={},
+            ),
+            db,
+        )
+
+        assert result.success is False
+        assert result.status_code == 400
+        assert result.error is not None
+        assert result.error.code == "MCP_ERROR"
+
+
 def test_probe_tool_relative_url_uses_configured_tool_base(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TOOL_BASE_URL", "http://127.0.0.1:10086/")
     get_settings.cache_clear()

@@ -16,6 +16,7 @@ export default function ToolsPage() {
   const [bucketFilter, setBucketFilter] = useState('__all__');
   const [searchText, setSearchText] = useState('');
   const [form] = Form.useForm();
+  const toolType = Form.useWatch('tool_type', form) || 'http';
   const [testJson, setTestJson] = useState('{}');
   const [testResult, setTestResult] = useState('');
 
@@ -69,8 +70,10 @@ export default function ToolsPage() {
     form.setFieldsValue({
       ...row,
       bucket: row.bucket || '未分桶',
+      tool_type: row.tool_type || 'http',
       headers: JSON.stringify(row.headers, null, 2),
       auth: JSON.stringify(row.auth, null, 2),
+      mcp_config: JSON.stringify(row.mcp_config || {}, null, 2),
       input_schema: JSON.stringify(row.input_schema, null, 2),
       output_schema: JSON.stringify(row.output_schema, null, 2),
       allowed_skills: row.allowed_skills.join(','),
@@ -92,10 +95,12 @@ export default function ToolsPage() {
       display_name: values.display_name,
       description: values.description,
       bucket: values.bucket || '未分桶',
+      tool_type: values.tool_type || 'http',
       method: values.method,
       url: values.url,
       headers: parseJson(values.headers, {}),
       auth: parseJson(values.auth, {}),
+      mcp_config: values.tool_type === 'mcp' ? parseJson(values.mcp_config, {}) : {},
       input_schema: parseJson(values.input_schema, {}),
       output_schema: parseJson(values.output_schema, {}),
       allowed_skills: String(values.allowed_skills || '').split(',').map((item) => item.trim()).filter(Boolean),
@@ -166,6 +171,12 @@ export default function ToolsPage() {
       dataIndex: 'bucket',
       width: 130,
       render: (value) => <Tag className="tool-bucket-tag">{value || '未分桶'}</Tag>,
+    },
+    {
+      title: '类型',
+      dataIndex: 'tool_type',
+      width: 88,
+      render: (value) => <Tag color={value === 'mcp' ? 'geekblue' : undefined}>{value === 'mcp' ? 'MCP' : 'HTTP'}</Tag>,
     },
     { title: 'Method', dataIndex: 'method', width: 96 },
     { title: 'URL', dataIndex: 'url', width: 280, ellipsis: true },
@@ -268,9 +279,31 @@ export default function ToolsPage() {
               </Space>
             )}
           >
-            <Form form={form} layout="vertical" initialValues={{ method: 'POST', enabled: true, bucket: '未分桶', headers: '{}', auth: '{}', input_schema: '{}', output_schema: '{}' }}>
+            <Form
+              form={form}
+              layout="vertical"
+              initialValues={{
+                tool_type: 'http',
+                method: 'POST',
+                enabled: true,
+                bucket: '未分桶',
+                headers: '{}',
+                auth: '{}',
+                mcp_config: '{}',
+                input_schema: '{}',
+                output_schema: '{}',
+              }}
+            >
               <Form.Item name="name" label="工具名称" rules={[{ required: true }]}><Input prefix={<ToolOutlined />} /></Form.Item>
               <Form.Item name="display_name" label="展示名称"><Input /></Form.Item>
+              <Form.Item name="tool_type" label="工具类型" rules={[{ required: true }]}>
+                <Select
+                  options={[
+                    { value: 'http', label: 'HTTP 工具' },
+                    { value: 'mcp', label: 'MCP 工具' },
+                  ]}
+                />
+              </Form.Item>
               <Form.Item name="bucket" label="工具分桶">
                 <AutoComplete
                   placeholder="选择或输入分桶"
@@ -278,10 +311,22 @@ export default function ToolsPage() {
                 />
               </Form.Item>
               <Form.Item name="description" label="描述"><Input.TextArea rows={2} /></Form.Item>
-              <Form.Item name="method" label="HTTP Method"><Select options={['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((value) => ({ value, label: value }))} /></Form.Item>
-              <Form.Item name="url" label="URL" rules={[{ required: true }]}><Input /></Form.Item>
-              <Form.Item name="headers" label="Headers JSON"><Input.TextArea rows={4} /></Form.Item>
-              <Form.Item name="auth" label="Auth JSON"><Input.TextArea rows={3} /></Form.Item>
+              <Form.Item name="method" label={toolType === 'mcp' ? 'Method 标记' : 'HTTP Method'}>
+                <Select options={['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((value) => ({ value, label: value }))} />
+              </Form.Item>
+              <Form.Item name="url" label={toolType === 'mcp' ? 'MCP URL 标记' : 'URL'} rules={[{ required: true }]}>
+                <Input placeholder={toolType === 'mcp' ? 'mcp://builtin.demo/echo' : '/api/mock/order/query'} />
+              </Form.Item>
+              {toolType === 'mcp' ? (
+                <Form.Item name="mcp_config" label="MCP Config JSON" rules={[{ required: true }]}>
+                  <Input.TextArea rows={4} placeholder={'{\n  "server": "builtin.demo",\n  "tool": "echo"\n}'} />
+                </Form.Item>
+              ) : (
+                <>
+                  <Form.Item name="headers" label="Headers JSON"><Input.TextArea rows={4} /></Form.Item>
+                  <Form.Item name="auth" label="Auth JSON"><Input.TextArea rows={3} /></Form.Item>
+                </>
+              )}
               <Form.Item name="input_schema" label="Input Schema"><Input.TextArea rows={5} /></Form.Item>
               <Form.Item name="output_schema" label="Output Schema"><Input.TextArea rows={5} /></Form.Item>
               <Form.Item name="allowed_skills" label="Allowed Skills"><Input placeholder="skill_id_1,skill_id_2" /></Form.Item>

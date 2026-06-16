@@ -12,6 +12,7 @@ from app.db import get_session
 from app.db.models import Tool, utc_now
 from app.security.tenant import ensure_tenant
 from app.tools import ToolExecutor
+from app.tools.mcp_builtin import BuiltinMCPError, execute_builtin_mcp
 from app.tools.tool_schema import (
     ToolBucketRead,
     ToolCall,
@@ -36,10 +37,12 @@ def tool_read(row: Tool) -> ToolRead:
         display_name=row.display_name,
         description=row.description,
         bucket=row.bucket or "未分桶",
+        tool_type=row.tool_type or "http",
         method=row.method,
         url=row.url,
         headers=row.headers_json or {},
         auth=row.auth_json or {},
+        mcp_config=row.config_json or {},
         input_schema=row.input_schema or {},
         output_schema=row.output_schema or {},
         allowed_skills=row.allowed_skills_json or [],
@@ -94,10 +97,12 @@ def create_tool(request: ToolCreateRequest, db: Session = Depends(get_session)) 
         display_name=request.display_name,
         description=request.description,
         bucket=_normalize_bucket(request.bucket),
+        tool_type=request.tool_type,
         method=request.method,
         url=request.url,
         headers_json=request.headers,
         auth_json=request.auth,
+        config_json=request.mcp_config,
         input_schema=request.input_schema,
         output_schema=request.output_schema,
         allowed_skills_json=request.allowed_skills,
@@ -112,6 +117,28 @@ def create_tool(request: ToolCreateRequest, db: Session = Depends(get_session)) 
 @router.post("/probe", response_model=ToolProbeResponse)
 def probe_tool(request: ToolProbeRequest, db: Session = Depends(get_session)) -> ToolProbeResponse:
     ensure_tenant(db, request.tenant_id)
+    if request.tool_type == "mcp":
+        try:
+            data = execute_builtin_mcp(request.mcp_config, request.sample_arguments)
+        except BuiltinMCPError as exc:
+            return ToolProbeResponse(
+                success=False,
+                status_code=400,
+                error=ToolError(code="MCP_ERROR", message=str(exc)),
+            )
+        except Exception as exc:
+            return ToolProbeResponse(
+                success=False,
+                status_code=500,
+                error=ToolError(code="MCP_PROBE_ERROR", message=str(exc)),
+            )
+        return ToolProbeResponse(
+            success=True,
+            status_code=200,
+            data_preview=data,
+            inferred_output_schema=_infer_json_schema(data),
+            error=None,
+        )
     headers = ToolExecutor(db)._resolve_headers(request.headers, request.auth)  # noqa: SLF001
     url = _normalize_probe_url(request.url)
     try:
@@ -157,10 +184,12 @@ def update_tool(tool_id: str, request: ToolUpdateRequest, db: Session = Depends(
     row.display_name = request.display_name
     row.description = request.description
     row.bucket = _normalize_bucket(request.bucket)
+    row.tool_type = request.tool_type
     row.method = request.method
     row.url = request.url
     row.headers_json = request.headers
     row.auth_json = request.auth
+    row.config_json = request.mcp_config
     row.input_schema = request.input_schema
     row.output_schema = request.output_schema
     row.allowed_skills_json = request.allowed_skills

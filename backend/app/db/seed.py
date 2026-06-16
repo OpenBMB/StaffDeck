@@ -608,12 +608,40 @@ PRODUCT_PRICE_QUERY_TOOL = {
     "enabled": True,
 }
 
+MCP_DEMO_ECHO_TOOL = {
+    "name": "mcp.demo_echo",
+    "display_name": "MCP Demo Echo",
+    "description": "内置 MCP demo 工具，模拟 MCP server 的 echo tool，用于验证 MCP 工具配置、测试和 Agent 调用链路。",
+    "bucket": "MCP 工具",
+    "tool_type": "mcp",
+    "method": "POST",
+    "url": "mcp://builtin.demo/echo",
+    "headers_json": {},
+    "auth_json": {},
+    "config_json": {"server": "builtin.demo", "tool": "echo"},
+    "input_schema": {
+        "type": "object",
+        "properties": {"text": {"type": "string", "description": "要回显的文本", "example": "hello mcp"}},
+        "required": ["text"],
+    },
+    "output_schema": {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string"},
+            "length": {"type": "integer"},
+        },
+    },
+    "allowed_skills_json": [],
+    "enabled": True,
+}
+
 DEMO_TOOLS = (
     ORDER_QUERY_TOOL,
     ORDER_ARCHIVE_QUERY_TOOL,
     PRODUCT_PURCHASE_TOOL,
     ORDER_ADD_TOOL,
     PRODUCT_PRICE_QUERY_TOOL,
+    MCP_DEMO_ECHO_TOOL,
 )
 DEFAULT_PERSONA_PROMPT = (
     "你是面壁智能的智能客服，语气专业、清晰、友好。"
@@ -686,8 +714,10 @@ def seed_demo_data(session: Session) -> None:
             tool.description = tool_config.get("description") or tool.description
             tool.method = tool_config.get("method") or tool.method
             tool.url = tool_config.get("url") or tool.url
+            tool.tool_type = tool_config.get("tool_type") or getattr(tool, "tool_type", None) or "http"
             tool.headers_json = tool_config.get("headers_json") or tool.headers_json
             tool.auth_json = tool_config.get("auth_json") or tool.auth_json
+            tool.config_json = tool_config.get("config_json") or tool.config_json
             tool.input_schema = tool_config.get("input_schema") or tool.input_schema
             tool.output_schema = tool_config.get("output_schema") or tool.output_schema
             tool.allowed_skills_json = tool_config.get("allowed_skills_json") or tool.allowed_skills_json

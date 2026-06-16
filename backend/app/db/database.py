@@ -92,6 +92,11 @@ def _migrate_sqlite_skill_schema() -> None:
             tool_columns = {column["name"] for column in inspector.get_columns("tools")}
             if "bucket" not in tool_columns:
                 conn.execute(text("ALTER TABLE tools ADD COLUMN bucket VARCHAR NOT NULL DEFAULT '未分桶'"))
+            if "tool_type" not in tool_columns:
+                conn.execute(text("ALTER TABLE tools ADD COLUMN tool_type VARCHAR NOT NULL DEFAULT 'http'"))
+            if "config_json" not in tool_columns:
+                conn.execute(text("ALTER TABLE tools ADD COLUMN config_json JSON"))
+                conn.execute(text("UPDATE tools SET config_json = '{}' WHERE config_json IS NULL"))
             if "allowed_skills_json" not in tool_columns:
                 conn.execute(text("ALTER TABLE tools ADD COLUMN allowed_skills_json JSON"))
                 if legacy_allowed_column in tool_columns:
