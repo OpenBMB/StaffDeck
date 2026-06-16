@@ -47,6 +47,7 @@ def test_reflection_tool_payload_keeps_existing_allowed_skill_only() -> None:
             "name": "product.price_query",
             "display_name": "商品价格查询",
             "description": "根据商品名称查询价格。",
+            "bucket": "未分桶",
             "input_schema": {"type": "object"},
             "allowed_skills": ["skill_price_compare_001"],
         }

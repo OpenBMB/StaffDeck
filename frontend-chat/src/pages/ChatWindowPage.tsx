@@ -1216,6 +1216,18 @@ export default function ChatWindowPage() {
           notifyStream();
           return;
         }
+        if (item.event === 'stream_replace') {
+          const next = typeof item.data.content === 'string' ? item.data.content : '';
+          const eventStream = getStreamSlot(eventSessionId);
+          if (eventStream.timer) {
+            window.clearTimeout(eventStream.timer);
+            eventStream.timer = null;
+          }
+          eventStream.accumulated = next;
+          updateStreaming(eventSessionId, next);
+          notifyStream();
+          return;
+        }
         if (item.event === 'stream_delta' || item.event === 'token') {
           const piece = typeof item.data.content === 'string' ? item.data.content : '';
           if (!piece) return;

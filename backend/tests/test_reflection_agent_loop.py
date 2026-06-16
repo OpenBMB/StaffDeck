@@ -31,6 +31,62 @@ def test_reflection_switches_wrong_active_skill_without_suspending() -> None:
     assert decision.target_skill_id == "repair_ticket"
 
 
+def test_reflection_does_not_restart_completed_skill_in_same_turn() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = _FakeEvents()
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id=None,
+        active_step_id=None,
+    )
+
+    decision = loop._router_decision_from_reflection(
+        ReflectionDecision(
+            needs_retry=True,
+            reason="同一轮已经完成过该技能，不应再次启动。",
+            target_skill_id="price_compare",
+        ),
+        session,
+        [_skill("price_compare")],
+        previous_decision=RouterDecision(decision="answer_only"),
+        completed_skill_ids_this_turn={"price_compare"},
+    )
+
+    assert decision is None
+    assert any(
+        record[2] == "reflection_retry_skipped_completed_task"
+        and record[3]["target_skill_id"] == "price_compare"
+        for record in loop.events.records
+    )
+
+
+def test_reflection_can_continue_completed_skill_when_still_active() -> None:
+    loop = object.__new__(AgentLoop)
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="price_compare",
+        active_step_id="start",
+    )
+
+    decision = loop._router_decision_from_reflection(
+        ReflectionDecision(
+            needs_retry=True,
+            reason="当前 active skill 需要继续修正。",
+            target_skill_id="price_compare",
+        ),
+        session,
+        [_skill("price_compare")],
+        previous_decision=RouterDecision(decision="continue_current_skill"),
+        completed_skill_ids_this_turn={"price_compare"},
+    )
+
+    assert decision is not None
+    assert decision.decision == "continue_current_skill"
+    assert decision.target_skill_id == "price_compare"
+
+
 def test_reflection_builds_tool_call_from_slots() -> None:
     loop = object.__new__(AgentLoop)
     session = ChatSession(

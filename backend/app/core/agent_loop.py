@@ -157,6 +157,7 @@ class AgentLoop:
             tool_result = prepared.tool_result
             memory_context = prepared.memory_context
             conversation_context = prepared.conversation_context
+            completed_skill_ids_this_turn: set[str] = set()
             if prepared.reply_override is not None:
                 reply = prepared.reply_override
             else:
@@ -181,6 +182,8 @@ class AgentLoop:
                     tool_result,
                 )
                 if completed:
+                    if prepared.active_skill:
+                        completed_skill_ids_this_turn.add(prepared.active_skill.skill_id)
                     self.events.record(
                         request.tenant_id,
                         chat_session.id,
@@ -201,9 +204,10 @@ class AgentLoop:
                         memory_context,
                         conversation_context,
                         reply,
+                        completed_skill_ids_this_turn,
                     )
                     if continuation:
-                        reply = f"{reply}\n\n{continuation.reply}".strip()
+                        reply = continuation.reply.strip() or reply
                         active_skill = continuation.active_skill
                         router_decision = continuation.router_decision
                         step_result = continuation.step_result
@@ -575,12 +579,16 @@ class AgentLoop:
         memory_context: list[dict[str, object]],
         conversation_context: dict[str, object],
         completed_reply: str,
+        completed_skill_ids_this_turn: set[str] | None = None,
+        replace_existing_reply: bool = False,
     ) -> Iterator[dict[str, object]]:
         if not (chat_session.pending_tasks_json or chat_session.skill_stack_json):
             return None
         max_actions = max(1, self._get_agent_loop_max_actions(request.tenant_id))
         executed_actions = 0
         replies: list[str] = []
+        completed_skill_ids_this_turn = completed_skill_ids_this_turn or set()
+        replaced_current_reply = False
         active_skill: Skill | None = None
         router_decision = RouterDecision(decision="answer_only", reason="No pending task selected")
         step_result = StepAgentResult()
@@ -713,6 +721,7 @@ class AgentLoop:
                     reflection_max_rounds,
                     conversation_context,
                     reflection_stream_events,
+                    completed_skill_ids_this_turn,
                 )
                 for event_name, payload in reflection_stream_events:
                     yield self._stream_event(event_name, chat_session, payload)
@@ -732,12 +741,18 @@ class AgentLoop:
                     conversation_context,
                 ):
                     chunks.append(chunk)
+                    if replace_existing_reply and not replaced_current_reply:
+                        yield self._stream_event("stream_replace", chat_session, {"content": ""})
+                        replaced_current_reply = True
                     yield self._stream_event("stream_delta", chat_session, {"content": chunk})
                     self._pace_stream()
                 segment = "".join(chunks).strip() or FALLBACK_REPLY
                 if not chunks:
                     for chunk in self.response_generator.chunk_text(segment):
                         chunks.append(chunk)
+                        if replace_existing_reply and not replaced_current_reply:
+                            yield self._stream_event("stream_replace", chat_session, {"content": ""})
+                            replaced_current_reply = True
                         yield self._stream_event("stream_delta", chat_session, {"content": chunk})
                         self._pace_stream()
                 replies.append(segment)
@@ -750,6 +765,8 @@ class AgentLoop:
                     step_result,
                     tool_result,
                 )
+                if completed and active_skill:
+                    completed_skill_ids_this_turn.add(active_skill.skill_id)
                 if not completed:
                     return self._scheduled_continuation(
                         replies, active_skill, router_decision, step_result, tool_result
@@ -1143,7 +1160,10 @@ class AgentLoop:
                 step_result,
                 tool_result,
             )
+            completed_skill_ids_this_turn: set[str] = set()
             if completed:
+                if active_skill:
+                    completed_skill_ids_this_turn.add(active_skill.skill_id)
                 self.events.record(
                     request.tenant_id,
                     chat_session.id,
@@ -1160,9 +1180,11 @@ class AgentLoop:
                     memory_context,
                     conversation_context,
                     reply,
+                    completed_skill_ids_this_turn,
+                    True,
                 )
                 if continuation:
-                    reply = f"{reply}\n\n{continuation.reply}".strip()
+                    reply = continuation.reply.strip() or reply
                     active_skill = continuation.active_skill
                     router_decision = continuation.router_decision
                     step_result = continuation.step_result
@@ -1737,12 +1759,14 @@ class AgentLoop:
         memory_context: list[dict[str, object]],
         conversation_context: dict[str, object],
         completed_reply: str,
+        completed_skill_ids_this_turn: set[str] | None = None,
     ) -> TaskScheduleContinuation | None:
         if not (chat_session.pending_tasks_json or chat_session.skill_stack_json):
             return None
         max_actions = max(1, self._get_agent_loop_max_actions(request.tenant_id))
         executed_actions = 0
         replies: list[str] = []
+        completed_skill_ids_this_turn = completed_skill_ids_this_turn or set()
         active_skill: Skill | None = None
         router_decision = RouterDecision(decision="answer_only", reason="No pending task selected")
         step_result = StepAgentResult()
@@ -1830,6 +1854,7 @@ class AgentLoop:
                     tool_result,
                     self._get_reflection_max_rounds(request.tenant_id),
                     conversation_context,
+                    completed_skill_ids_this_turn=completed_skill_ids_this_turn,
                 )
                 segment = self._generate_reply_segment(
                     request.message,
@@ -1854,6 +1879,8 @@ class AgentLoop:
                     step_result,
                     tool_result,
                 )
+                if completed and active_skill:
+                    completed_skill_ids_this_turn.add(active_skill.skill_id)
                 if not completed:
                     return self._scheduled_continuation(
                         replies, active_skill, router_decision, step_result, tool_result
@@ -1937,8 +1964,10 @@ class AgentLoop:
         max_rounds: int,
         conversation_context: dict[str, object] | None = None,
         stream_events: list[tuple[str, dict[str, object]]] | None = None,
+        completed_skill_ids_this_turn: set[str] | None = None,
     ) -> tuple[Skill | None, RouterDecision, StepAgentResult, ToolResult | None]:
         conversation_context = conversation_context or self._conversation_context(chat_session)
+        completed_skill_ids_this_turn = completed_skill_ids_this_turn or set()
         rounds = max(0, min(max_rounds, REFLECTION_MAX_ROUNDS_LIMIT))
         if rounds <= 0:
             if self._should_try_reflection(router_decision, step_result, tool_result):
@@ -1990,6 +2019,7 @@ class AgentLoop:
                 tool_result,
                 conversation_context,
                 stream_events,
+                completed_skill_ids_this_turn,
             )
             if not retried:
                 break
@@ -2008,8 +2038,10 @@ class AgentLoop:
         tool_result: ToolResult | None,
         conversation_context: dict[str, object] | None = None,
         stream_events: list[tuple[str, dict[str, object]]] | None = None,
+        completed_skill_ids_this_turn: set[str] | None = None,
     ) -> tuple[Skill | None, RouterDecision, StepAgentResult, ToolResult | None, bool]:
         conversation_context = conversation_context or self._conversation_context(chat_session)
+        completed_skill_ids_this_turn = completed_skill_ids_this_turn or set()
         if not self._should_try_reflection(router_decision, step_result, tool_result):
             return active_skill, router_decision, step_result, tool_result, False
 
@@ -2077,7 +2109,11 @@ class AgentLoop:
             return (*retry_result, True)
 
         retry_router_decision = self._router_decision_from_reflection(
-            reflection, chat_session, skills, router_decision
+            reflection,
+            chat_session,
+            skills,
+            router_decision,
+            completed_skill_ids_this_turn,
         )
         if retry_router_decision:
             retry_result = self._retry_with_router_decision(
@@ -3187,8 +3223,25 @@ class AgentLoop:
         chat_session: ChatSession,
         skills: list[Skill],
         previous_decision: RouterDecision,
+        completed_skill_ids_this_turn: set[str] | None = None,
     ) -> RouterDecision | None:
         if not reflection.target_skill_id:
+            return None
+        completed_skill_ids_this_turn = completed_skill_ids_this_turn or set()
+        if (
+            reflection.target_skill_id in completed_skill_ids_this_turn
+            and chat_session.active_skill_id != reflection.target_skill_id
+        ):
+            self.events.record(
+                chat_session.tenant_id,
+                chat_session.id,
+                "reflection_retry_skipped_completed_task",
+                {
+                    "reason": reflection.reason,
+                    "target_skill_id": reflection.target_skill_id,
+                    "active_skill_id": chat_session.active_skill_id,
+                },
+            )
             return None
         target_skill = next(
             (skill for skill in skills if skill.skill_id == reflection.target_skill_id),
