@@ -36,7 +36,7 @@ export default function LoginPage() {
         <div className="login-brand">
           <span className="brand-mark">SA</span>
           <div>
-            <Typography.Title level={3}>Skill Agent</Typography.Title>
+            <Typography.Title level={3}>数字员工工作台</Typography.Title>
           </div>
         </div>
         <Form<LoginValues>

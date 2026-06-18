@@ -1664,7 +1664,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
   return (
     <div className="skill-distill-page">
       <div className="page-title">
-        <Typography.Title level={3}>技能改写</Typography.Title>
+        <Typography.Title level={3}>SOP 学习</Typography.Title>
       </div>
       <div className="skill-workbench">
         <Card
@@ -1692,7 +1692,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
                           onClick={() => toggleThinking(item.id)}
                         >
                           {item.thinking === 'running' ? <LoadingOutlined /> : <CheckOutlined />}
-                          <span>{item.thinking === 'running' ? '正在思考' : '已完成思考'}</span>
+                          <span>{item.thinking === 'running' ? '正在学习' : '学习记录'}</span>
                           {item.thinkingOpen ? <DownOutlined /> : <RightOutlined />}
                         </button>
                         {item.thinkingOpen && (

@@ -11,20 +11,19 @@ import {
   SyncOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import { Button, Card, Col, Descriptions, Dropdown, Input, Modal, Row, Segmented, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd';
+import { Button, Card, Col, Descriptions, Dropdown, Input, Modal, Row, Segmented, Select, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, TENANT_ID } from '../api/client';
 import type { AgentProfileRead, SkillRead, SkillVersionRead } from '../types';
-import GeneralSkillsPage from './GeneralSkillsPage';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
 const STATUS_LABELS: Record<SkillRead['status'], { text: string; color: string }> = {
   draft: { text: '草稿', color: 'blue' },
-  published: { text: '已发布', color: 'green' },
-  archived: { text: '已下线', color: 'default' },
+  published: { text: '已启用', color: 'green' },
+  archived: { text: '已停用', color: 'default' },
 };
 
 type RankingMode = 'calls' | 'positive' | 'negative';
@@ -125,16 +124,16 @@ export default function SkillsPage() {
 
   const columns: ColumnsType<SkillRead> = useMemo(
     () => [
-      { title: '技能名称', dataIndex: 'name', width: 180, ellipsis: true },
-      { title: '技能 ID', dataIndex: 'skill_id', width: 190, ellipsis: true },
+      { title: 'SOP 名称', dataIndex: 'name', width: 180, ellipsis: true },
+      { title: 'SOP ID', dataIndex: 'skill_id', width: 190, ellipsis: true },
       { title: '业务域', dataIndex: 'business_domain', width: 140, ellipsis: true },
       { title: '版本', dataIndex: 'version', width: 90 },
       {
-        title: '分支',
+        title: '员工版本',
         width: 120,
         render: (_, row) => {
-          if (isOverallAgent) return <Tag>主干</Tag>;
-          if (row.branch_status === 'inactive') return <Tag>已下线</Tag>;
+          if (isOverallAgent) return <Tag>组织版</Tag>;
+          if (row.branch_status === 'inactive') return <Tag>已停用</Tag>;
           const state = row.branch_sync_state || 'synced';
           return <Tag color={state === 'diverged' ? 'gold' : 'green'}>{state === 'diverged' ? '专属版本' : '已同步'}</Tag>;
         },
@@ -170,23 +169,23 @@ export default function SkillsPage() {
             trigger={['click']}
             menu={{
               items: [
-                { key: 'edit', icon: <EditOutlined />, label: isOverallAgent ? '编辑' : '编辑分支' },
+                { key: 'edit', icon: <EditOutlined />, label: isOverallAgent ? '编辑' : '编辑员工版本' },
                 { key: 'versions', icon: <HistoryOutlined />, label: '版本管理' },
                 row.status === 'published'
-                  ? { key: 'archive', icon: <StopOutlined />, label: isOverallAgent ? '下线' : '分支下线' }
-                  : { key: 'publish', icon: <CheckCircleOutlined />, label: isOverallAgent ? '发布/上线' : '分支上线' },
+                  ? { key: 'archive', icon: <StopOutlined />, label: isOverallAgent ? '停用' : '停用学习结果' }
+                  : { key: 'publish', icon: <CheckCircleOutlined />, label: isOverallAgent ? '启用' : '启用学习结果' },
                 ...(!isOverallAgent
                   ? [
-                      { key: 'sync', icon: <SyncOutlined />, label: '同步整体' },
-                      { key: 'promote', icon: <UploadOutlined />, label: '推送到整体' },
-                      { key: 'delete', icon: <DeleteOutlined />, label: '从当前智能体移除', danger: true },
+                      { key: 'sync', icon: <SyncOutlined />, label: '同步组织版' },
+                      { key: 'promote', icon: <UploadOutlined />, label: '沉淀到组织' },
+                      { key: 'delete', icon: <DeleteOutlined />, label: '从当前员工移除', danger: true },
                     ]
                   : [{ key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true }]),
               ] as any,
               onClick: ({ key }) => handleAction(key, row),
             }}
           >
-            <Button type="text" icon={<MoreOutlined />} aria-label="技能操作" />
+            <Button type="text" icon={<MoreOutlined />} aria-label="SOP 操作" />
           </Dropdown>
         ),
       },
@@ -212,8 +211,8 @@ export default function SkillsPage() {
   const rankingModalColumns = useMemo<ColumnsType<RankedSkill>>(
     () => [
       { title: '排名', dataIndex: 'rank', width: 80 },
-      { title: '技能名称', dataIndex: 'name', ellipsis: true },
-      { title: '技能 ID', dataIndex: 'skill_id', ellipsis: true },
+      { title: 'SOP 名称', dataIndex: 'name', ellipsis: true },
+      { title: 'SOP ID', dataIndex: 'skill_id', ellipsis: true },
       {
         title: rankingModal?.scope === 'current' ? '版本' : '版本范围',
         width: 130,
@@ -267,7 +266,7 @@ export default function SkillsPage() {
         setImportSourceSkills([]);
       }
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载智能体失败');
+      message.error(error instanceof Error ? error.message : '加载员工失败');
     }
   }
 
@@ -279,21 +278,21 @@ export default function SkillsPage() {
       const sourceRows = await api.get<SkillRead[]>(`/api/enterprise/agents/${sourceAgentId}/skills?tenant_id=${TENANT_ID}`);
       setImportSourceSkills(sourceRows);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载来源技能失败');
+      message.error(error instanceof Error ? error.message : '加载来源 SOP 失败');
     }
   }
 
   async function submitImportSkills() {
     if (!agentId) {
-      message.warning('请先选择目标智能体');
+      message.warning('请先选择目标员工');
       return;
     }
     if (!importSourceAgentId) {
-      message.warning('请选择来源智能体');
+      message.warning('请选择学习来源员工');
       return;
     }
     if (importSelectedSkillIds.length === 0) {
-      message.warning('请选择要导入的技能');
+      message.warning('请选择要学习的 SOP');
       return;
     }
     setImportLoading(true);
@@ -309,11 +308,11 @@ export default function SkillsPage() {
       );
       const importedCount = result.imported?.length || 0;
       const missingCount = result.missing?.length || 0;
-      message.success(`已导入 ${importedCount} 个技能${missingCount ? `，${missingCount} 个未导入` : ''}`);
+      message.success(`已学习 ${importedCount} 个 SOP${missingCount ? `，${missingCount} 个未学习` : ''}`);
       setImportOpen(false);
       await load();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '导入失败');
+      message.error(error instanceof Error ? error.message : '学习失败');
     } finally {
       setImportLoading(false);
     }
@@ -326,13 +325,13 @@ export default function SkillsPage() {
 
   async function publish(row: SkillRead) {
     await api.post(`/api/enterprise/skills/${row.skill_id}/publish?tenant_id=${TENANT_ID}${agentQuery()}`);
-    message.success('已发布');
+    message.success('已启用');
     load();
   }
 
   async function archive(row: SkillRead) {
     await api.post(`/api/enterprise/skills/${row.skill_id}/archive?tenant_id=${TENANT_ID}${agentQuery()}`);
-    message.success('已下线');
+    message.success('已停用');
     load();
   }
 
@@ -364,7 +363,7 @@ export default function SkillsPage() {
   function rollbackVersion(row: SkillVersionRead) {
     Modal.confirm({
       title: `回滚到版本 ${row.version}？`,
-      content: `当前技能将切换为「${row.name}」的 ${row.version} 版本内容，历史版本记录和历史反馈数据不会被删除。`,
+      content: `当前 SOP 将切换为「${row.name}」的 ${row.version} 版本内容，历史对话和反馈数据不会被删除。`,
       okText: '回滚',
       cancelText: '取消',
       onOk: async () => {
@@ -381,16 +380,16 @@ export default function SkillsPage() {
   function remove(row: SkillRead) {
     const branchMode = !isOverallAgent;
     Modal.confirm({
-      title: branchMode ? `从当前智能体移除「${row.name}」？` : `删除技能「${row.name}」？`,
+      title: branchMode ? `从当前员工移除 SOP「${row.name}」？` : `删除 SOP「${row.name}」？`,
       content: branchMode
-        ? '这只会在当前分支智能体中隐藏该技能；整体智能体和其他分支仍然保留。'
-        : '删除后不会移除历史会话记录，但整体技能列表中将不再显示该技能。',
+        ? '这只会在当前员工的工作域中隐藏该 SOP；组织资源库和其他员工仍然保留。'
+        : '删除后不会移除历史对话记录，但组织 SOP 列表中将不再显示该流程。',
       okText: branchMode ? '移除' : '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
         await api.delete(`/api/enterprise/skills/${row.skill_id}?tenant_id=${TENANT_ID}${agentQuery()}`);
-        message.success(branchMode ? '已从当前智能体移除' : '已删除');
+        message.success(branchMode ? '已从当前员工移除' : '已删除');
         load();
       },
     });
@@ -409,20 +408,20 @@ export default function SkillsPage() {
   async function syncFromOverall(row: SkillRead) {
     if (!agentId) return;
     await api.post(`/api/enterprise/agents/${agentId}/skills/${encodeURIComponent(row.skill_id)}/sync-from-overall?tenant_id=${TENANT_ID}`);
-    message.success('已同步整体版本');
+    message.success('已同步组织版');
     load();
   }
 
   async function promoteToOverall(row: SkillRead) {
     if (!agentId) return;
     Modal.confirm({
-      title: `将「${row.name}」推送到整体？`,
-      content: '这会在整体智能体中生成一个新的技能版本。',
+      title: `将「${row.name}」沉淀到组织资源库？`,
+      content: '这会把当前员工的学习结果沉淀为组织级 SOP 新版本。',
       okText: '推送',
       cancelText: '取消',
       onOk: async () => {
         await api.post(`/api/enterprise/agents/${agentId}/skills/${encodeURIComponent(row.skill_id)}/promote-to-overall?tenant_id=${TENANT_ID}`);
-        message.success('已推送到整体');
+        message.success('已沉淀到组织资源库');
         load();
       },
     });
@@ -435,123 +434,102 @@ export default function SkillsPage() {
   return (
     <>
       <div className="page-title">
-        <Typography.Title level={3}>技能管理</Typography.Title>
+        <Typography.Title level={3}>SOP管理</Typography.Title>
       </div>
-      <Tabs
-        className="skill-tabs"
-        defaultActiveKey="scenario"
-        items={[
-          {
-            key: 'scenario',
-            label: '场景化技能',
-            children: (
-              <>
-                <Card
-                  className="data-card"
-                  title="场景化技能列表"
-                  extra={(
-                    <Space>
-                      <Button onClick={() => void openImport()}>从智能体导入</Button>
-                      <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-                        新建
-                      </Button>
-                    </Space>
-                  )}
-                >
-                  <div className="skill-table-toolbar">
-                    <div className="skill-filter-combo">
-                      <Input.Search
-                        allowClear
-                        placeholder="搜索技能名称、ID、业务域"
-                        value={searchText}
-                        onChange={(event) => setSearchText(event.target.value)}
-                        className="skill-filter-search"
-                      />
-                      <Select<SkillStatusFilter>
-                        value={statusFilter}
-                        onChange={setStatusFilter}
-                        className="skill-filter-select skill-filter-select-status"
-                        options={[
-                          { label: '全部状态', value: 'all' },
-                          { label: '已发布', value: 'published' },
-                          { label: '草稿', value: 'draft' },
-                          { label: '已下线', value: 'archived' },
-                        ]}
-                      />
-                      {!isOverallAgent && (
-                        <>
-                          <Select<BranchFilter>
-                            value={branchFilter}
-                            onChange={setBranchFilter}
-                            className="skill-filter-select skill-filter-select-branch"
-                            options={[
-                              { label: '全部分支', value: 'all' },
-                              { label: '已同步', value: 'synced' },
-                              { label: '专属版本', value: 'diverged' },
-                              { label: '分支下线', value: 'inactive' },
-                            ]}
-                          />
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <Table
-                    rowKey="id"
-                    columns={columns}
-                    dataSource={filteredRows}
-                    loading={loading}
-                    pagination={{ pageSize: 10 }}
-                    scroll={{ x: 1080 }}
-                    size="middle"
-                  />
-                </Card>
-                <Row gutter={[16, 16]} className="skill-rank-row">
-                  <Col xs={24} lg={8}>
-                    <RankingCard
-                      title="调用排行榜"
-                      rows={rankingRows.calls.slice(0, 5)}
-                      value={(row) => `${row.total_call_count || 0} 次`}
-                      onMore={() => setRankingModal({ mode: 'calls', scope: 'total' })}
-                    />
-                  </Col>
-                  <Col xs={24} lg={8}>
-                    <RankingCard
-                      title="好评排行榜"
-                      rows={positiveRankingRows.slice(0, 5)}
-                      value={(row) => percent(positiveScope === 'current' ? row.positive_rate : row.total_positive_rate)}
-                      version={(row) => rankingVersionText(row, positiveScope)}
-                      scope={positiveScope}
-                      onScopeChange={setPositiveScope}
-                      onMore={() => setRankingModal({ mode: 'positive', scope: positiveScope })}
-                    />
-                  </Col>
-                  <Col xs={24} lg={8}>
-                    <RankingCard
-                      title="差评排行榜"
-                      rows={negativeRankingRows.slice(0, 5)}
-                      value={(row) => percent(negativeScope === 'current' ? row.negative_rate : row.total_negative_rate)}
-                      version={(row) => rankingVersionText(row, negativeScope)}
-                      scope={negativeScope}
-                      onScopeChange={setNegativeScope}
-                      onMore={() => setRankingModal({ mode: 'negative', scope: negativeScope })}
-                    />
-                  </Col>
-                </Row>
-              </>
-            ),
-          },
-          {
-            key: 'general',
-            label: '通用技能',
-            children: <GeneralSkillsPage embedded />,
-          },
-        ]}
-      />
+      <Card
+        className="data-card"
+        title="员工已学习的业务 SOP"
+        extra={(
+          <Space>
+            <Button onClick={() => void openImport()}>向其他员工学习 SOP</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建 SOP
+            </Button>
+          </Space>
+        )}
+      >
+        <div className="skill-table-toolbar">
+          <div className="skill-filter-combo">
+            <Input.Search
+              allowClear
+              placeholder="搜索 SOP 名称、ID、业务域"
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+              className="skill-filter-search"
+            />
+            <Select<SkillStatusFilter>
+              value={statusFilter}
+              onChange={setStatusFilter}
+              className="skill-filter-select skill-filter-select-status"
+              options={[
+                { label: '全部状态', value: 'all' },
+                { label: '已启用', value: 'published' },
+                { label: '学习中', value: 'draft' },
+                { label: '已停用', value: 'archived' },
+              ]}
+            />
+            {!isOverallAgent && (
+              <Select<BranchFilter>
+                value={branchFilter}
+                onChange={setBranchFilter}
+                className="skill-filter-select skill-filter-select-branch"
+                options={[
+                  { label: '全部员工版本', value: 'all' },
+                  { label: '已同步', value: 'synced' },
+                  { label: '员工版本', value: 'diverged' },
+                  { label: '已停用', value: 'inactive' },
+                ]}
+              />
+            )}
+          </div>
+        </div>
+        <Table
+          rowKey="id"
+          columns={columns}
+          dataSource={filteredRows}
+          loading={loading}
+          pagination={{ pageSize: 10 }}
+          scroll={{ x: 1080 }}
+          size="middle"
+        />
+      </Card>
+      <Row gutter={[16, 16]} className="skill-rank-row">
+        <Col xs={24} lg={8}>
+          <RankingCard
+            title="执行排行榜"
+            rows={rankingRows.calls.slice(0, 5)}
+            value={(row) => `${row.total_call_count || 0} 次`}
+            onMore={() => setRankingModal({ mode: 'calls', scope: 'total' })}
+          />
+        </Col>
+        <Col xs={24} lg={8}>
+          <RankingCard
+            title="好评 SOP"
+            rows={positiveRankingRows.slice(0, 5)}
+            value={(row) => percent(positiveScope === 'current' ? row.positive_rate : row.total_positive_rate)}
+            version={(row) => rankingVersionText(row, positiveScope)}
+            scope={positiveScope}
+            onScopeChange={setPositiveScope}
+            onMore={() => setRankingModal({ mode: 'positive', scope: positiveScope })}
+          />
+        </Col>
+        <Col xs={24} lg={8}>
+          <RankingCard
+            title="待改进 SOP"
+            rows={negativeRankingRows.slice(0, 5)}
+            value={(row) => percent(negativeScope === 'current' ? row.negative_rate : row.total_negative_rate)}
+            version={(row) => rankingVersionText(row, negativeScope)}
+            scope={negativeScope}
+            onScopeChange={setNegativeScope}
+            onMore={() => setRankingModal({ mode: 'negative', scope: negativeScope })}
+          />
+        </Col>
+      </Row>
       <Modal
         open={importOpen}
-        title="从其他智能体导入技能"
+        title="向其他员工学习 SOP"
         width={720}
-        okText="导入"
+        okText="学习"
         cancelText="取消"
         confirmLoading={importLoading}
         onOk={() => void submitImportSkills()}
@@ -560,7 +538,7 @@ export default function SkillsPage() {
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Select
             value={importSourceAgentId || undefined}
-            placeholder="选择来源智能体"
+            placeholder="选择学习来源员工"
             onChange={(value) => {
               setImportSourceAgentId(value);
               void loadImportSourceSkills(value);
@@ -569,14 +547,14 @@ export default function SkillsPage() {
               .filter((item) => item.id !== agentId)
               .map((item) => ({
                 value: item.id,
-                label: `${item.name}${item.is_overall ? '（整体）' : ''}`,
+                label: `${item.name}${item.is_overall ? '（组织资源库）' : ''}`,
               }))}
             style={{ width: '100%' }}
           />
           <Select
             mode="multiple"
             value={importSelectedSkillIds}
-            placeholder="选择一个或多个技能"
+            placeholder="选择一个或多个 SOP"
             onChange={setImportSelectedSkillIds}
             options={importSourceSkills.map((item) => ({
               value: item.id,
@@ -586,7 +564,7 @@ export default function SkillsPage() {
             style={{ width: '100%' }}
           />
           <Typography.Text type="secondary">
-            导入会复制来源智能体中的技能分支内容和上下线状态；目标为整体智能体时，会把来源分支推送为整体新版本。
+            学习会复制来源员工中的 SOP 版本和启用状态；目标为组织资源库时，会把员工版本沉淀为组织 SOP 新版本。
           </Typography.Text>
         </Space>
       </Modal>
@@ -623,7 +601,7 @@ export default function SkillsPage() {
           size="small"
           columns={[
             { title: '版本', dataIndex: 'version', width: 100 },
-            { title: '技能名称', dataIndex: 'name', ellipsis: true },
+            { title: 'SOP 名称', dataIndex: 'name', ellipsis: true },
             { title: '业务域', dataIndex: 'business_domain', width: 140, ellipsis: true },
             { title: '调用次数', dataIndex: 'call_count', width: 100 },
             { title: '好评率', dataIndex: 'positive_rate', width: 100, render: (value: number) => percent(value) },
@@ -669,7 +647,7 @@ export default function SkillsPage() {
         {detailVersion && (
           <div className="version-detail">
             <Descriptions column={2} size="small" bordered>
-              <Descriptions.Item label="技能 ID">{detailVersion.skill_id}</Descriptions.Item>
+              <Descriptions.Item label="SOP ID">{detailVersion.skill_id}</Descriptions.Item>
               <Descriptions.Item label="版本">{detailVersion.version}</Descriptions.Item>
               <Descriptions.Item label="业务域">{detailVersion.business_domain || '-'}</Descriptions.Item>
               <Descriptions.Item label="状态">{statusText(detailVersion.status)}</Descriptions.Item>

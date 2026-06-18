@@ -782,6 +782,32 @@ textarea,
   font-weight: 820;
 }
 
+.new-session-agent-logo.tone-teal,
+.chat-agent-mark.tone-teal {
+  background: #0f766e;
+}
+
+.new-session-agent-logo.tone-copper,
+.chat-agent-mark.tone-copper {
+  background: #a85d32;
+}
+
+.new-session-agent-logo.tone-olive,
+.chat-agent-mark.tone-olive {
+  background: #65743a;
+}
+
+.new-session-agent-logo.tone-ink,
+.chat-agent-mark.tone-ink {
+  background: #29323a;
+}
+
+.new-session-agent-logo.tone-gold,
+.chat-agent-mark.tone-gold {
+  color: #191713;
+  background: #d6aa4f;
+}
+
 .new-session-agent-info {
   min-width: 0;
   display: grid;

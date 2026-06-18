@@ -1,22 +1,23 @@
 import {
   ApiOutlined,
+  CommentOutlined,
   DashboardOutlined,
   DatabaseOutlined,
-  DislikeOutlined,
-  FileAddOutlined,
   FileSearchOutlined,
   MessageOutlined,
   PlusOutlined,
   ProfileOutlined,
   RobotOutlined,
+  SolutionOutlined,
+  TeamOutlined,
   ToolOutlined,
-  UserOutlined,
 } from '@ant-design/icons';
 import { Button, ConfigProvider, Input, Layout, Menu, Modal, Radio, Select, Typography, message, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { api, TENANT_ID } from './api/client';
+import { EMPLOYEE_TEMPLATES, employeeDisplayName, employeeMetadataFromTemplate, employeeProfile } from './employee';
 import AgentsPage from './pages/AgentsPage';
 import DashboardPage from './pages/DashboardPage';
 import DistillPage from './pages/DistillPage';
@@ -25,7 +26,6 @@ import GeneralSkillsPage from './pages/GeneralSkillsPage';
 import KnowledgeManagePage, { KnowledgeAddPage } from './pages/KnowledgePage';
 import MemoriesPage from './pages/MemoriesPage';
 import ModelsPage from './pages/ModelsPage';
-import PersonaPage from './pages/PersonaPage';
 import SkillsPage from './pages/SkillsPage';
 import ToolsPage from './pages/ToolsPage';
 import { ThemeToggleButton, useThemeController, type EffectiveTheme } from './theme';
@@ -39,6 +39,7 @@ type AgentCreateMode = 'copy' | 'blank';
 type AgentCreateFormState = {
   name: string;
   description: string;
+  roleKey: string;
   sourceMode: AgentCreateMode;
   copyFromAgentId: string;
 };
@@ -46,6 +47,7 @@ type AgentCreateFormState = {
 const EMPTY_AGENT_FORM: AgentCreateFormState = {
   name: '',
   description: '',
+  roleKey: EMPLOYEE_TEMPLATES[0].key,
   sourceMode: 'copy',
   copyFromAgentId: '',
 };
@@ -59,8 +61,8 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
   const [agentForm, setAgentForm] = useState<AgentCreateFormState>(EMPTY_AGENT_FORM);
   const selected = location.pathname === '/enterprise'
     ? '/enterprise/dashboard'
-    : location.pathname.startsWith('/enterprise/knowledge/new')
-      ? '/enterprise/knowledge/new'
+    : location.pathname.startsWith('/enterprise/knowledge')
+      ? '/enterprise/knowledge'
       : location.pathname;
   const isDistillRoute = location.pathname === '/enterprise/skills/distill';
   const [lastDistillSearch, setLastDistillSearch] = useState(() => (isDistillRoute ? location.search : ''));
@@ -108,12 +110,6 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
 
   const selectedAgent = agents.find((item) => item.id === selectedAgentId);
 
-  useEffect(() => {
-    if (location.pathname === '/enterprise/agents' && selectedAgent && !selectedAgent.is_overall) {
-      navigate('/enterprise/dashboard', { replace: true });
-    }
-  }, [location.pathname, navigate, selectedAgent]);
-
   function openCreateAgentModal() {
     setAgentForm({
       ...EMPTY_AGENT_FORM,
@@ -125,15 +121,19 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
   async function saveAgentCreateModal() {
     const name = agentForm.name.trim();
     if (!name) {
-      message.error('请填写智能体名称');
+      message.error('请填写员工姓名');
       return;
     }
+    const template = EMPLOYEE_TEMPLATES.find((item) => item.key === agentForm.roleKey) || EMPLOYEE_TEMPLATES[0];
     const created = await api.post<AgentProfileRead>('/api/enterprise/agents', {
       tenant_id: TENANT_ID,
       name,
-      description: agentForm.description || undefined,
+      description: agentForm.description || template.description,
       source_mode: agentForm.sourceMode,
       copy_from_agent_id: agentForm.sourceMode === 'copy' ? agentForm.copyFromAgentId || undefined : undefined,
+      metadata: employeeMetadataFromTemplate(agentForm.roleKey, {
+        system_prompt_summary: agentForm.description || template.description,
+      }),
     });
     await loadAgents();
     changeAgentScope(created.id);
@@ -147,7 +147,7 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
           <span className="brand-mark">UR</span>
           <div>
             <div className="brand-title">UltraRAG4</div>
-            <div className="brand-subtitle">Skill Studio</div>
+            <div className="brand-subtitle">数字员工运营台</div>
           </div>
         </div>
         <Menu
@@ -159,58 +159,56 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
             {
               key: 'workspace',
               type: 'group',
-              label: '工作区',
+              label: '员工运营',
               children: [
                 { key: '/enterprise/dashboard', icon: <DashboardOutlined />, label: '看板' },
-                ...(selectedAgent?.is_overall
-                  ? [{ key: '/enterprise/agents', icon: <RobotOutlined />, label: '智能体' }]
-                  : []),
-                { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: '记忆查询' },
-                { key: '/enterprise/feedback', icon: <DislikeOutlined />, label: '负反馈会话' },
+                { key: '/enterprise/agents', icon: <TeamOutlined />, label: '员工名册' },
+                { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: '成长轨迹' },
+                { key: '/enterprise/feedback', icon: <CommentOutlined />, label: '对话日志' },
               ],
             },
             {
               key: 'knowledge',
               type: 'group',
-              label: '知识',
+              label: '能力建设',
               children: [
-                { key: '/enterprise/knowledge', icon: <FileSearchOutlined />, label: '知识管理' },
-                { key: '/enterprise/knowledge/new', icon: <FileAddOutlined />, label: '新增知识' },
+                { key: '/enterprise/knowledge', icon: <FileSearchOutlined />, label: '业务资料库' },
+                { key: '/enterprise/general-skills', icon: <SolutionOutlined />, label: '已掌握技能' },
+                { key: '/enterprise/skills', icon: <ProfileOutlined />, label: 'SOP管理' },
+                { key: '/enterprise/skills/distill', icon: <MessageOutlined />, label: 'SOP学习' },
+                { key: '/enterprise/tools', icon: <ToolOutlined />, label: '工具箱' },
               ],
             },
             {
-              key: 'skills',
+              key: 'governance',
               type: 'group',
-              label: '技能',
+              label: '治理设置',
               children: [
-                { key: '/enterprise/skills', icon: <ProfileOutlined />, label: '技能管理' },
-                { key: '/enterprise/skills/distill', icon: <MessageOutlined />, label: '技能改写' },
-                { key: '/enterprise/tools', icon: <ToolOutlined />, label: '工具配置' },
+                { key: '/enterprise/models', icon: <ApiOutlined />, label: '模型配置' },
               ],
             },
-            { key: '/enterprise/models', icon: <ApiOutlined />, label: '模型配置' },
           ]}
         />
         <div className="agent-dock">
           <button
             type="button"
             className="agent-dock-mark"
-            title="新增智能体"
-            aria-label="新增智能体"
+            title="新员工入职"
+            aria-label="新员工入职"
             onClick={openCreateAgentModal}
           >
             <RobotOutlined />
           </button>
           <div className="agent-dock-main">
-            <div className="agent-dock-label">智能体</div>
+            <div className="agent-dock-label">当前员工</div>
             <Select
               className="agent-dock-select"
               value={selectedAgentId || undefined}
-              placeholder="选择智能体"
+              placeholder="选择员工"
               popupMatchSelectWidth={260}
               options={agents.map((agent) => ({
                 value: agent.id,
-                label: agent.is_overall ? `整体 · ${agent.name}` : agent.name,
+                label: agent.is_overall ? '组织资源库' : `${employeeDisplayName(agent)} · ${employeeProfile(agent).roleName}`,
               }))}
               onChange={changeAgentScope}
               popupRender={(menu) => (
@@ -218,7 +216,7 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
                   {menu}
                   <div className="agent-dock-dropdown-footer" onMouseDown={(event) => event.preventDefault()}>
                     <Button type="text" block icon={<PlusOutlined />} onClick={openCreateAgentModal}>
-                      新增智能体
+                      新员工入职
                     </Button>
                   </div>
                 </>
@@ -230,14 +228,13 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
       <Layout>
         <Header className="topbar">
           <div className="topbar-scope">
-            <Typography.Text strong>{selectedAgent?.name || '智能体'}</Typography.Text>
+            <Typography.Text strong>{employeeDisplayName(selectedAgent)}</Typography.Text>
             <div className="topbar-subtitle">
-              {selectedAgent?.is_overall ? '整体资源池' : selectedAgent?.description || '分支工作域'}
+              {selectedAgent?.is_overall ? '组织资源库' : `${employeeProfile(selectedAgent).roleName} · ${selectedAgent?.description || '员工工作域'}`}
             </div>
           </div>
           <div className="topbar-actions">
             <ThemeToggleButton />
-            <Button icon={<UserOutlined />} onClick={() => navigate('/enterprise/persona')}>人设</Button>
           </div>
         </Header>
         <Content className="content">
@@ -257,14 +254,14 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
               <Route path="/enterprise/general-skills" element={<GeneralSkillsPage />} />
               <Route path="/enterprise/models" element={<ModelsPage />} />
               <Route path="/enterprise/tools" element={<ToolsPage />} />
-              <Route path="/enterprise/persona" element={<PersonaPage />} />
+              <Route path="/enterprise/persona" element={<Navigate to="/enterprise/dashboard" replace />} />
               <Route path="*" element={<Navigate to="/enterprise/dashboard" replace />} />
             </Routes>
           )}
         </Content>
       </Layout>
       <Modal
-        title="新增智能体"
+        title="新员工入职"
         open={agentCreateOpen}
         onCancel={() => setAgentCreateOpen(false)}
         onOk={saveAgentCreateModal}
@@ -273,7 +270,7 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
       >
         <div className="agent-editor-form">
           <label>
-            创建方式
+            入职方式
             <Radio.Group
               className="agent-create-mode"
               value={agentForm.sourceMode}
@@ -281,38 +278,57 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
               optionType="button"
               buttonStyle="solid"
               options={[
-                { label: '复制已有智能体', value: 'copy' },
-                { label: '空白智能体', value: 'blank' },
+                { label: '继承组织资源', value: 'copy' },
+                { label: '空白入职', value: 'blank' },
               ]}
+            />
+          </label>
+          <label>
+            岗位模板
+            <Select
+              value={agentForm.roleKey}
+              options={EMPLOYEE_TEMPLATES.map((template) => ({
+                value: template.key,
+                label: `${template.avatarText} · ${template.roleName}`,
+              }))}
+              onChange={(value) => setAgentForm((prev) => {
+                const template = EMPLOYEE_TEMPLATES.find((item) => item.key === value);
+                return {
+                  ...prev,
+                  roleKey: value,
+                  description: prev.description || template?.description || '',
+                };
+              })}
             />
           </label>
           {agentForm.sourceMode === 'copy' && (
             <label>
-              复制来源
+              学习来源
               <Select
                 value={agentForm.copyFromAgentId || undefined}
-                placeholder="选择一个已有智能体"
+                placeholder="选择组织资源库或已有员工"
                 options={agents.map((agent) => ({
                   value: agent.id,
-                  label: agent.is_overall ? `整体 · ${agent.name}` : agent.name,
+                  label: agent.is_overall ? '组织资源库' : `${employeeDisplayName(agent)} · ${employeeProfile(agent).roleName}`,
                 }))}
                 onChange={(value) => setAgentForm((prev) => ({ ...prev, copyFromAgentId: value }))}
               />
             </label>
           )}
           {agentForm.sourceMode === 'blank' && (
-            <div className="agent-definition-note">空白智能体不会继承技能、知识库、通用技能、人设或模型绑定。</div>
+            <div className="agent-definition-note">空白入职不会继承业务资料、SOP、技能、岗位人设或模型绑定。</div>
           )}
           <label>
-            名称
+            员工姓名
             <Input value={agentForm.name} onChange={(event) => setAgentForm((prev) => ({ ...prev, name: event.target.value }))} />
           </label>
           <label>
-            描述
+            岗位人设摘要
             <Input.TextArea
               rows={3}
               value={agentForm.description}
               onChange={(event) => setAgentForm((prev) => ({ ...prev, description: event.target.value }))}
+              placeholder="概括这个员工的岗位边界、服务风格和执行重点"
             />
           </label>
         </div>

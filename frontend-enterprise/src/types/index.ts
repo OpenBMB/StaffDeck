@@ -341,6 +341,32 @@ export type ChatTurnResponse = {
   session_state: Record<string, unknown>;
 };
 
+export type EnterpriseChatSessionRead = {
+  id: string;
+  tenant_id: string;
+  user_id?: string;
+  agent_id?: string;
+  title?: string;
+  active_skill_id?: string;
+  active_step_id?: string;
+  status: string;
+  summary?: string;
+  last_agent_question?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type EnterpriseSessionDetailRead = {
+  session: EnterpriseChatSessionRead;
+  messages: FeedbackMessageRead[];
+  events: Array<{
+    id: string;
+    event_type: string;
+    payload: Record<string, unknown>;
+    created_at: string;
+  }>;
+};
+
 export type TraceSummary = {
   session_id: string;
   user_id?: string;

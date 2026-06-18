@@ -21,6 +21,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { SHOW_DEBUG, TENANT_ID, api, clearAuthSession, getAuthSession, isAuthError, streamChatTurn } from '../api/client';
 import CodeBlock from '../components/CodeBlock';
+import { employeeDisplayName, employeeProfile } from '../employee';
 import { ThemeToggleButton } from '../theme';
 import type { AgentProfileRead, ChatMessage, ChatSession, ChatTurnResponse, TurnTraceRead, UIConfigRead } from '../types';
 
@@ -540,22 +541,22 @@ function traceLineAllowed(line: TraceLine, config: UIConfigRead): boolean {
 
 function traceSummary(trace: TurnTrace, lines: TraceLine[]): { text: string; state: TraceLine['state'] } {
   if (lines.some((line) => line.state === 'running')) {
-    return { text: '正在思考', state: 'running' };
+    return { text: '正在执行', state: 'running' };
   }
   if (lines.some((line) => line.state === 'failed')) {
-    return { text: '思考遇到问题', state: 'failed' };
+    return { text: '执行遇到问题', state: 'failed' };
   }
-  return { text: '已完成思考', state: 'completed' };
+  return { text: '执行记录', state: 'completed' };
 }
 
 function traceDetails(lines: TraceLine[]): TraceLine[] {
-  const hiddenPlaceholders = new Set(['正在思考', '已完成思考']);
+  const hiddenPlaceholders = new Set(['正在思考', '已完成思考', '正在执行', '执行记录']);
   const details = lines.filter((line) => {
     if (line.kind === 'thinking') return false;
     if (hiddenPlaceholders.has(line.text) && !line.detail && !line.code && !line.output) return false;
     return true;
   });
-  return details.length > 0 ? details : lines.filter((line) => line.text !== '已完成思考');
+  return details.length > 0 ? details : lines.filter((line) => line.text !== '已完成思考' && line.text !== '执行记录');
 }
 
 function canRateMessage(item: ChatMessage): boolean {
@@ -629,11 +630,13 @@ export default function ChatWindowPage() {
   }, []);
 
   const currentSession = sessions.find((item) => item.id === sessionId) || null;
-  const defaultAgent = agents.find((agent) => agent.id === selectedAgentId) || agents[0] || null;
+  const availableAgents = agents.filter((agent) => !agent.is_overall);
+  const defaultAgent = availableAgents.find((agent) => agent.id === selectedAgentId) || availableAgents[0] || null;
   const sessionAgent = currentSession?.agent_id
     ? agents.find((agent) => agent.id === currentSession.agent_id) || null
     : null;
   const displayedAgent = sessionAgent || defaultAgent;
+  const displayedProfile = displayedAgent ? employeeProfile(displayedAgent) : null;
 
   const changeAgent = useCallback((value: string) => {
     setSelectedAgentId(value);
@@ -643,18 +646,19 @@ export default function ChatWindowPage() {
   useEffect(() => {
     api
       .get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`)
-      .then((rows) => {
+          .then((rows) => {
         setAgents(rows);
         setSelectedAgentId((current) => {
-          if (current && rows.some((item) => item.id === current)) return current;
-          const next = rows[0]?.id || '';
+          const employeeRows = rows.filter((item) => !item.is_overall);
+          if (current && employeeRows.some((item) => item.id === current)) return current;
+          const next = employeeRows[0]?.id || '';
           if (next) window.localStorage.setItem('skill_agent_selected_agent', next);
           return next;
         });
         setNewSessionAgentId((current) => (
-          current && rows.some((item) => item.id === current)
+          current && rows.some((item) => !item.is_overall && item.id === current)
             ? current
-            : (rows.find((item) => item.id === selectedAgentId)?.id || rows[0]?.id || '')
+            : (rows.find((item) => !item.is_overall && item.id === selectedAgentId)?.id || rows.find((item) => !item.is_overall)?.id || '')
         ));
       })
       .catch(() => setAgents([]));
@@ -919,17 +923,17 @@ export default function ChatWindowPage() {
   }, []);
 
   function openCreateSession() {
-    const fallbackAgentId = selectedAgentId && agents.some((agent) => agent.id === selectedAgentId)
+    const fallbackAgentId = selectedAgentId && availableAgents.some((agent) => agent.id === selectedAgentId)
       ? selectedAgentId
-      : agents[0]?.id || '';
+      : availableAgents[0]?.id || '';
     setNewSessionAgentId(fallbackAgentId);
     setNewSessionOpen(true);
   }
 
   async function createSession() {
-    const agentId = newSessionAgentId || selectedAgentId || agents[0]?.id || '';
+    const agentId = newSessionAgentId || selectedAgentId || availableAgents[0]?.id || '';
     if (!agentId) {
-      message.warning('请先选择智能体');
+      message.warning('请先选择接单员工');
       return;
     }
     const session = await api.post<ChatSession>('/api/chat/sessions', {
@@ -953,7 +957,7 @@ export default function ChatWindowPage() {
     if (!renameSession) return;
     const title = renameTitle.trim();
     if (!title) {
-      message.warning('请输入会话名称');
+      message.warning('请输入任务名称');
       return;
     }
     const updated = await api.put<ChatSession>(`/api/chat/sessions/${renameSession.id}`, {
@@ -969,8 +973,8 @@ export default function ChatWindowPage() {
   function confirmDelete(event: MouseEvent<HTMLElement>, target: ChatSession) {
     event.stopPropagation();
     Modal.confirm({
-      title: '删除会话',
-      content: `确定删除「${target.title || target.id}」吗？此操作会同时删除该会话的消息记录。`,
+      title: '删除任务记录',
+      content: `确定删除「${target.title || target.id}」吗？此操作会同时删除该任务的消息记录。`,
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -1036,12 +1040,12 @@ export default function ChatWindowPage() {
     const currentSessionId = sessionId;
     const activeSession = sessions.find((item) => item.id === currentSessionId);
     if (!activeSession) {
-      message.warning('会话信息还在加载，请稍后再发送');
+      message.warning('任务信息还在加载，请稍后再发送');
       return;
     }
     const sessionAgentId = activeSession?.agent_id || selectedAgentId || '';
     if (!sessionAgentId) {
-      message.warning('该会话没有绑定智能体，请新建会话后再发送');
+      message.warning('该任务没有绑定接单员工，请新建任务后再发送');
       return;
     }
     const stream = getStreamSlot(currentSessionId);
@@ -1103,7 +1107,7 @@ export default function ChatWindowPage() {
           upsertTraceLine(turnId, {
             id: `general_skill_${skillSlug || skillName || 'selected'}`,
             kind: 'skill',
-            text: `选择通用技能 ${skillName || skillSlug || ''}`.trim(),
+            text: `选择技能 ${skillName || skillSlug || ''}`.trim(),
             detail: skillSlug || undefined,
             state: 'running',
           });
@@ -1111,7 +1115,7 @@ export default function ChatWindowPage() {
         }
         if (item.event === 'general_skill_trace') {
           const phase = typeof item.data.phase === 'string' ? item.data.phase : 'trace';
-          const text = typeof item.data.message === 'string' ? item.data.message : '执行通用技能';
+          const text = typeof item.data.message === 'string' ? item.data.message : '执行技能';
           const code = typeof item.data.code === 'string' ? item.data.code : '';
           const runtime = typeof item.data.runtime === 'string' ? item.data.runtime : '';
           const attempt = typeof item.data.attempt === 'number' || typeof item.data.attempt === 'string'
@@ -1280,7 +1284,7 @@ export default function ChatWindowPage() {
         }
         if (item.event === 'stream_end') {
           finishTrace(turnId);
-          upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '已完成思考', state: 'completed' });
+          upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
           finalizeStreaming(eventSessionId);
           return;
         }
@@ -1298,7 +1302,7 @@ export default function ChatWindowPage() {
             });
           }
           finishTrace(turnId);
-          upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '已完成思考', state: 'completed' });
+          upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
           finalizeStreaming(eventSessionId);
           setLastTurn(result);
           const eventStream = getStreamSlot(eventSessionId);
@@ -1377,13 +1381,13 @@ export default function ChatWindowPage() {
             />
           </div>
         </div>
-        <div className="session-section-label">Sessions</div>
+        <div className="session-section-label">任务记录</div>
         {sessions.map((session) => {
           const itemStream = getStreamSlot(session.id);
           const sessionTitle = session.title || session.id;
           const sessionSummary = itemStream.loading
             ? itemStream.phase || '正在思考'
-            : session.summary || session.last_agent_question || '新会话';
+            : session.summary || session.last_agent_question || '新任务';
           return (
             <div
               key={session.id}
@@ -1414,7 +1418,7 @@ export default function ChatWindowPage() {
                     size="small"
                     type="text"
                     icon={<EditOutlined />}
-                    aria-label="重命名会话"
+                    aria-label="重命名任务"
                     onClick={(event) => openRename(event, session)}
                   />
                   <Button
@@ -1422,7 +1426,7 @@ export default function ChatWindowPage() {
                     size="small"
                     type="text"
                     icon={<DeleteOutlined />}
-                    aria-label="删除会话"
+                    aria-label="删除任务"
                     onClick={(event) => confirmDelete(event, session)}
                   />
                 </div>
@@ -1431,19 +1435,25 @@ export default function ChatWindowPage() {
           );
         })}
         <div className="chat-agent-dock">
-          <span className="chat-agent-mark">UR</span>
+          <span className={`chat-agent-mark tone-${displayedProfile?.avatarTone || 'teal'}`}>
+            {displayedProfile?.avatarText || 'UR'}
+          </span>
           <div className="chat-agent-main">
             <span className="chat-agent-label">
-              {sessionId ? '当前会话智能体' : '新会话默认智能体'}
+              {sessionId ? '当前接单员工' : '新任务默认员工'}
             </span>
-            <span className="chat-agent-name">{displayedAgent?.name || '暂无可用智能体'}</span>
+            <span className="chat-agent-name">
+              {displayedAgent && displayedProfile
+                ? `${employeeDisplayName(displayedAgent)} · ${displayedProfile.roleName}`
+                : '暂无可用员工'}
+            </span>
           </div>
         </div>
       </aside>
       <main className="chat-main">
         <div className="chat-header">
           <div>
-            <Typography.Text strong>在线客服</Typography.Text>
+            <Typography.Text strong>任务派发台</Typography.Text>
             <div className="header-subtitle">{sessionId}</div>
           </div>
           <div className="chat-header-actions">
@@ -1451,7 +1461,7 @@ export default function ChatWindowPage() {
           </div>
         </div>
         <div className="chat-messages" ref={chatMessagesRef}>
-          {displayedMessages.length === 0 && <div className="chat-empty-state">暂无消息，发送一句开始</div>}
+          {displayedMessages.length === 0 && <div className="chat-empty-state">暂无消息，描述任务后开始</div>}
           <div className="message-stack">
             {displayedMessages.map((item) => {
               const turnId = item.turnId || item.id;
@@ -1575,7 +1585,7 @@ export default function ChatWindowPage() {
               onCompositionStart={() => setIsComposing(true)}
               onCompositionEnd={() => window.setTimeout(() => setIsComposing(false), 0)}
               autoSize={{ minRows: 2, maxRows: 8 }}
-              placeholder="告诉 Skill Agent 你想办理什么..."
+              placeholder="描述要交给员工办理的任务..."
             />
             <div className="composer-toolbar">
               <div className="composer-hint">Enter 发送 / Shift+Enter 换行</div>
@@ -1592,40 +1602,43 @@ export default function ChatWindowPage() {
       </main>
       <Modal
         className="new-session-agent-modal"
-        title="选择智能体"
+        title="选择接单员工"
         open={newSessionOpen}
-        okText="创建会话"
+        okText="创建任务"
         cancelText="取消"
         okButtonProps={{ disabled: !newSessionAgentId }}
         onOk={createSession}
         onCancel={() => setNewSessionOpen(false)}
       >
         <div className="new-session-agent-copy">
-          一个对话只绑定一个智能体。创建后，该会话不会随左下角默认选择变化。
+          一个任务只绑定一位接单员工。创建后，该任务不会随左下角默认选择变化。
         </div>
         <div className="new-session-agent-list">
-          {agents.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可用智能体" />
+          {availableAgents.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可用员工" />
           ) : (
-            agents.map((agent) => (
-              <button
-                key={agent.id}
-                type="button"
-                className={`new-session-agent-card ${newSessionAgentId === agent.id ? 'selected' : ''}`}
-                onClick={() => setNewSessionAgentId(agent.id)}
-              >
-                <span className="new-session-agent-logo">UR</span>
-                <span className="new-session-agent-info">
-                  <span className="new-session-agent-name">{agent.name}</span>
-                  <span className="new-session-agent-desc">{agent.description || '使用该智能体的技能、知识和人设范围'}</span>
-                </span>
-              </button>
-            ))
+            availableAgents.map((agent) => {
+              const profile = employeeProfile(agent);
+              return (
+                <button
+                  key={agent.id}
+                  type="button"
+                  className={`new-session-agent-card ${newSessionAgentId === agent.id ? 'selected' : ''}`}
+                  onClick={() => setNewSessionAgentId(agent.id)}
+                >
+                  <span className={`new-session-agent-logo tone-${profile.avatarTone}`}>{profile.avatarText}</span>
+                  <span className="new-session-agent-info">
+                    <span className="new-session-agent-name">{employeeDisplayName(agent)}</span>
+                    <span className="new-session-agent-desc">{profile.roleName} · {agent.description || '使用该员工的技能、SOP、业务资料和岗位人设'}</span>
+                  </span>
+                </button>
+              );
+            })
           )}
         </div>
       </Modal>
       <Modal
-        title="重命名会话"
+        title="重命名任务"
         open={Boolean(renameSession)}
         okText="保存"
         cancelText="取消"
@@ -1641,7 +1654,7 @@ export default function ChatWindowPage() {
           value={renameTitle}
           onChange={(event) => setRenameTitle(event.target.value)}
           onPressEnter={saveRename}
-          placeholder="输入会话名称"
+          placeholder="输入任务名称"
         />
       </Modal>
     </div>

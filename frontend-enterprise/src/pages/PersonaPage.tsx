@@ -92,7 +92,7 @@ export default function PersonaPage() {
         return rows.find((agent) => agent.is_overall)?.id || rows[0]?.id || '';
       });
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载智能体域失败');
+      message.error(error instanceof Error ? error.message : '加载员工域失败');
     }
   }
 
@@ -117,14 +117,14 @@ export default function PersonaPage() {
           });
         }
         window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: row.id } }));
-        message.success('智能体配置已保存');
+        message.success('岗位人设已保存');
       } else {
         const row = await api.put<PersonaRead>('/api/enterprise/persona', {
           tenant_id: TENANT_ID,
           system_prompt: values.system_prompt,
         });
         setUpdatedAt(row.updated_at);
-        message.success('整体人设已保存');
+        message.success('组织默认岗位人设已保存');
       }
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败');
@@ -158,29 +158,29 @@ export default function PersonaPage() {
     <>
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>人设</Typography.Title>
+          <Typography.Title level={3}>岗位人设</Typography.Title>
         </div>
         <Button type="primary" icon={<SaveOutlined />} loading={loading} onClick={save}>保存</Button>
       </div>
-      <Card className="editor-card" title={<><UserOutlined /> 智能体人设</>}>
+      <Card className="editor-card" title={<><UserOutlined /> 岗位人设</>}>
         <Form form={form} layout="vertical">
           <Form.Item name="agent_name" label="名称" rules={[{ required: true }]}>
-            <Input placeholder="智能体名称" />
+            <Input placeholder="员工姓名" />
           </Form.Item>
           <Form.Item name="agent_description" label="描述">
-            <Input.TextArea rows={2} placeholder="智能体描述" />
+            <Input.TextArea rows={2} placeholder="员工岗位人设摘要" />
           </Form.Item>
-          <Form.Item name="system_prompt" label="人设 Prompt" rules={[{ required: true }]}>
+          <Form.Item name="system_prompt" label="岗位 Prompt" rules={[{ required: true }]}>
             <Input.TextArea
               className="persona-editor"
               rows={12}
-              placeholder={isOverallPersona ? '输入整体默认人设' : '输入仅当前智能体可见的人设'}
+              placeholder={isOverallPersona ? '输入组织默认岗位人设' : '输入仅当前员工可见的岗位人设'}
             />
           </Form.Item>
         </Form>
         {updatedAt && <Typography.Text type="secondary">最后更新：{formatDateOnly(updatedAt)}</Typography.Text>}
       </Card>
-      <Card className="editor-card settings-card" title="Agent 与展示设置">
+      <Card className="editor-card settings-card" title="执行记录与展示设置">
         <Form
           form={uiForm}
           layout="vertical"
@@ -223,8 +223,8 @@ export default function PersonaPage() {
           </Form.Item>
           <Form.Item
             name="agent_loop_max_actions"
-            label="单轮 Agent 最大动作数"
-            tooltip="控制一次用户输入内模型可连续决策和调用工具的最大次数，用于避免无限循环。"
+            label="单轮最大动作数"
+            tooltip="控制一次用户输入内员工可连续决策和调用工具的最大次数，用于避免无限循环。"
             rules={[{ required: true, type: 'number', min: 1, max: 20 }]}
           >
             <InputNumber min={1} max={20} step={1} precision={0} />

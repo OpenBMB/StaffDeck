@@ -12,6 +12,7 @@ import type { MouseEvent } from 'react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, clearAuthSession, getAuthSession, isAuthError } from '../api/client';
+import { employeeDisplayName, employeeProfile } from '../employee';
 import { ThemeToggleButton } from '../theme';
 import type { AgentProfileRead, ChatSession } from '../types';
 
@@ -60,17 +61,18 @@ export default function SessionListPage() {
     api
       .get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`)
       .then((rows) => {
-        setAgents(rows);
+        const employeeRows = rows.filter((item) => !item.is_overall);
+        setAgents(employeeRows);
         setSelectedAgentId((current) => {
-          if (current && rows.some((item) => item.id === current)) return current;
-          const next = rows[0]?.id || '';
+          if (current && employeeRows.some((item) => item.id === current)) return current;
+          const next = employeeRows[0]?.id || '';
           if (next) window.localStorage.setItem('skill_agent_selected_agent', next);
           return next;
         });
         setNewSessionAgentId((current) => (
-          current && rows.some((item) => item.id === current)
+          current && employeeRows.some((item) => item.id === current)
             ? current
-            : (rows.find((item) => item.id === selectedAgentId)?.id || rows[0]?.id || '')
+            : (employeeRows.find((item) => item.id === selectedAgentId)?.id || employeeRows[0]?.id || '')
         ));
       })
       .catch(() => setAgents([]));
@@ -87,7 +89,7 @@ export default function SessionListPage() {
   async function createSession() {
     const agentId = newSessionAgentId || selectedAgentId || agents[0]?.id || '';
     if (!agentId) {
-      message.warning('请先选择智能体');
+      message.warning('请先选择接单员工');
       return;
     }
     const session = await api.post<ChatSession>('/api/chat/sessions', { tenant_id: tenantId, agent_id: agentId });
@@ -115,7 +117,7 @@ export default function SessionListPage() {
     if (!renameSession) return;
     const title = renameTitle.trim();
     if (!title) {
-      message.warning('请输入会话名称');
+      message.warning('请输入任务名称');
       return;
     }
     const updated = await api.put<ChatSession>(`/api/chat/sessions/${renameSession.id}`, {
@@ -131,8 +133,8 @@ export default function SessionListPage() {
   function confirmDelete(event: MouseEvent<HTMLElement>, target: ChatSession) {
     event.stopPropagation();
     Modal.confirm({
-      title: '删除会话',
-      content: `确定删除「${target.title || target.id}」吗？此操作会同时删除该会话的消息记录。`,
+      title: '删除任务记录',
+      content: `确定删除「${target.title || target.id}」吗？此操作会同时删除该任务的消息记录。`,
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -174,13 +176,13 @@ export default function SessionListPage() {
             />
           </div>
         </div>
-        <div className="session-section-label">Sessions</div>
+        <div className="session-section-label">任务记录</div>
         {sessions.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
           sessions.map((session) => {
             const sessionTitle = session.title || session.id;
-            const sessionSummary = session.summary || session.last_agent_question || '新会话';
+            const sessionSummary = session.summary || session.last_agent_question || '新任务';
             return (
             <div
               key={session.id}
@@ -211,7 +213,7 @@ export default function SessionListPage() {
                     size="small"
                     type="text"
                     icon={<EditOutlined />}
-                    aria-label="重命名会话"
+                    aria-label="重命名任务"
                     onClick={(event) => openRename(event, session)}
                   />
                   <Button
@@ -219,7 +221,7 @@ export default function SessionListPage() {
                     size="small"
                     type="text"
                     icon={<DeleteOutlined />}
-                    aria-label="删除会话"
+                    aria-label="删除任务"
                     onClick={(event) => confirmDelete(event, session)}
                   />
                 </div>
@@ -232,8 +234,8 @@ export default function SessionListPage() {
       <main className="chat-main">
         <div className="chat-header">
           <div>
-            <Typography.Text strong>Skill Agent Chat</Typography.Text>
-            <div className="header-subtitle">选择会话或新建会话</div>
+            <Typography.Text strong>任务派发台</Typography.Text>
+            <div className="header-subtitle">选择历史任务或派发新任务</div>
           </div>
           <div className="chat-header-actions">
             <ThemeToggleButton />
@@ -245,40 +247,43 @@ export default function SessionListPage() {
       </main>
       <Modal
         className="new-session-agent-modal"
-        title="选择智能体"
+        title="选择接单员工"
         open={newSessionOpen}
-        okText="创建会话"
+        okText="创建任务"
         cancelText="取消"
         okButtonProps={{ disabled: !newSessionAgentId }}
         onOk={createSession}
         onCancel={() => setNewSessionOpen(false)}
       >
         <div className="new-session-agent-copy">
-          一个对话只绑定一个智能体。创建后，该会话不会随默认选择变化。
+          一个任务只绑定一位接单员工。创建后，该任务不会随默认选择变化。
         </div>
         <div className="new-session-agent-list">
           {agents.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可用智能体" />
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可用员工" />
           ) : (
-            agents.map((agent) => (
-              <button
-                key={agent.id}
-                type="button"
-                className={`new-session-agent-card ${newSessionAgentId === agent.id ? 'selected' : ''}`}
-                onClick={() => setNewSessionAgentId(agent.id)}
-              >
-                <span className="new-session-agent-logo">UR</span>
-                <span className="new-session-agent-info">
-                  <span className="new-session-agent-name">{agent.name}</span>
-                  <span className="new-session-agent-desc">{agent.description || '使用该智能体的技能、知识和人设范围'}</span>
-                </span>
-              </button>
-            ))
+            agents.map((agent) => {
+              const profile = employeeProfile(agent);
+              return (
+                <button
+                  key={agent.id}
+                  type="button"
+                  className={`new-session-agent-card ${newSessionAgentId === agent.id ? 'selected' : ''}`}
+                  onClick={() => setNewSessionAgentId(agent.id)}
+                >
+                  <span className={`new-session-agent-logo tone-${profile.avatarTone}`}>{profile.avatarText}</span>
+                  <span className="new-session-agent-info">
+                    <span className="new-session-agent-name">{employeeDisplayName(agent)}</span>
+                    <span className="new-session-agent-desc">{profile.roleName} · {agent.description || '使用该员工的技能、SOP、业务资料和岗位人设'}</span>
+                  </span>
+                </button>
+              );
+            })
           )}
         </div>
       </Modal>
       <Modal
-        title="重命名会话"
+        title="重命名任务"
         open={Boolean(renameSession)}
         okText="保存"
         cancelText="取消"
@@ -294,7 +299,7 @@ export default function SessionListPage() {
           value={renameTitle}
           onChange={(event) => setRenameTitle(event.target.value)}
           onPressEnter={saveRename}
-          placeholder="输入会话名称"
+          placeholder="输入任务名称"
         />
       </Modal>
     </div>

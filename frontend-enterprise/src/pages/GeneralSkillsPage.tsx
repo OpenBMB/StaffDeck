@@ -21,7 +21,7 @@ import type { AgentProfileRead, GeneralSkillRead, GeneralSkillRunResponse } from
 
 const DEFAULT_MARKDOWN = `# 技能说明
 
-这里粘贴任意格式的通用技能文档。系统不会从文档中自动抽取名称、Slug 或描述；这些信息由上方表单维护。`;
+这里粘贴任意格式的技能文档。系统不会从文档中自动抽取名称、Slug 或描述；这些信息由上方表单维护。`;
 
 const DEFAULT_GENERAL_META = {
   name: '中国城市天气',
@@ -446,7 +446,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
       void load();
       return row;
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '保存通用技能失败');
+      message.error(error instanceof Error ? error.message : '保存技能失败');
       return null;
     } finally {
       setSaving(false);
@@ -498,7 +498,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
         `/api/enterprise/general-skills/${row.slug}/${published ? 'publish' : 'archive'}?tenant_id=${TENANT_ID}${agentSuffix}`,
       );
       replaceRow(next);
-      message.success(published ? '已发布通用技能' : '已下线通用技能');
+      message.success(published ? '已启用技能' : '已停用技能');
     } catch (error) {
       message.error(error instanceof Error ? error.message : published ? '发布失败' : '下线失败');
     }
@@ -507,10 +507,10 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
   function confirmDeleteSkill(row: GeneralSkillRead) {
     const branchMode = !isOverallAgent;
     Modal.confirm({
-      title: branchMode ? `从当前智能体移除通用技能：${row.name}` : `删除通用技能：${row.name}`,
+      title: branchMode ? `从当前员工移除技能：${row.name}` : `删除技能：${row.name}`,
       content: branchMode
-        ? '这只会在当前分支智能体中隐藏该通用技能；整体智能体和其他分支仍然保留。'
-        : '删除后该技能不会再出现在整体通用技能池中，此操作不可撤销。',
+        ? '这只会在当前员工中隐藏该技能；组织资源库和其他员工仍然保留。'
+        : '删除后该技能不会再出现在组织技能库中，此操作不可撤销。',
       okText: branchMode ? '移除' : '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -530,7 +530,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
               newSkill();
             }
           }
-          message.success(branchMode ? '已从当前智能体移除通用技能' : '已删除通用技能');
+          message.success(branchMode ? '已从当前员工移除技能' : '已删除技能');
         } catch (error) {
           message.error(error instanceof Error ? error.message : '删除失败');
         }
@@ -552,8 +552,8 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
     }
 
     Modal.confirm({
-      title: '导入新通用技能前是否保存当前技能？',
-      content: '你正在编辑现有通用技能。导入会进入新建状态，不会覆盖当前技能。',
+      title: '导入新技能前是否保存当前技能？',
+      content: '你正在编辑现有技能。导入会进入新建状态，不会覆盖当前技能。',
       okText: '保存并发布',
       cancelText: '不保存，继续导入',
       async onOk() {
@@ -600,7 +600,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
           setAgentImportSourceSkills([]);
         }
       } catch (error) {
-        message.error(error instanceof Error ? error.message : '加载智能体列表失败');
+        message.error(error instanceof Error ? error.message : '加载员工列表失败');
       }
     });
   }
@@ -616,21 +616,21 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
       const existingIds = new Set(rows.map((item) => item.id));
       setAgentImportSourceSkills(sourceRows.filter((item) => !existingIds.has(item.id)));
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载来源通用技能失败');
+      message.error(error instanceof Error ? error.message : '加载来源技能失败');
     }
   }
 
   async function submitAgentImportSkills() {
     if (!agentId) {
-      message.warning('请先选择目标智能体');
+      message.warning('请先选择目标员工');
       return;
     }
     if (!agentImportSourceAgentId) {
-      message.warning('请选择来源智能体');
+      message.warning('请选择来源员工');
       return;
     }
     if (!agentImportSelectedSkillIds.length) {
-      message.warning('请选择要导入的通用技能');
+      message.warning('请选择要学习的技能');
       return;
     }
     setAgentImportLoading(true);
@@ -641,11 +641,11 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
         resource_type: 'general_skill',
         resource_ids: agentImportSelectedSkillIds,
       });
-      message.success(`已导入 ${agentImportSelectedSkillIds.length} 个通用技能`);
+      message.success(`已学习 ${agentImportSelectedSkillIds.length} 个技能`);
       setAgentImportOpen(false);
       await load();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '导入通用技能失败');
+      message.error(error instanceof Error ? error.message : '学习技能失败');
     } finally {
       setAgentImportLoading(false);
     }
@@ -707,7 +707,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
 
   function deleteSkillFile(target: GeneralSkillFile) {
     if (target.path.split('/').pop()?.toLowerCase() === 'skill.md') {
-      message.warning('SKILL.md 是通用技能入口，不能删除');
+      message.warning('SKILL.md 是技能入口，不能删除');
       return;
     }
     Modal.confirm({
@@ -764,7 +764,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
   async function runSkill() {
     const slug = selectedSkill?.slug;
     if (!slug) {
-      message.warning('请先导入通用技能');
+      message.warning('请先导入技能');
       return;
     }
     if (!query.trim()) {
@@ -947,8 +947,8 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
     <>
       {!embedded && (
         <div className="page-title">
-          <Typography.Title level={3}>通用技能 Demo</Typography.Title>
-          <Typography.Text type="secondary">导入 PilotDeck 风格 SKILL.md，验证模型选择、代码生成与运行链路。</Typography.Text>
+          <Typography.Title level={3}>已掌握技能</Typography.Title>
+          <Typography.Text type="secondary">维护员工可直接调用的通用能力，验证模型选择、代码生成与运行链路。</Typography.Text>
         </div>
       )}
       <div className="general-skill-workbench">
@@ -962,7 +962,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
             title={(
               <Space>
                 <FileTextOutlined />
-                <span>{editingSlug ? `编辑通用技能：${editingSlug}` : '新增通用技能'}</span>
+                <span>{editingSlug ? `编辑技能：${editingSlug}` : '新增技能'}</span>
               </Space>
             )}
             extra={(
@@ -975,7 +975,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
                       { key: 'file', label: '选择文件' },
                       { key: 'folder', label: '选择文件夹' },
                       { key: 'clawhub', label: '从 ClawHub / GitHub 导入' },
-                      { key: 'agent', label: '从其他智能体导入' },
+                      { key: 'agent', label: '向其他员工学习技能' },
                     ],
                     onClick: ({ key }) => {
                       if (key === 'clawhub') {
@@ -1038,7 +1038,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
               <Input
                 value={skillDescription}
                 onChange={(event) => setSkillDescription(event.target.value)}
-                placeholder="描述，用于模型选择技能"
+                placeholder="描述，用于员工选择技能"
               />
               <Input
                 value={skillHomepage}
@@ -1126,7 +1126,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
             <div className="general-run-form">
               <Select
                 value={selectedSkill?.slug}
-                placeholder="选择通用技能"
+                placeholder="选择技能"
                 options={rows.map((row) => ({ value: row.slug, label: `${row.name} / ${row.slug}` }))}
                 onChange={setSelectedSlug}
               />
@@ -1162,7 +1162,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
                 <section className="general-reply-panel">
                   <div className="general-section-label">最终回复</div>
                   <Typography.Paragraph className="result-reply">
-                    {activeResult.reply || (loading ? '正在运行通用技能...' : '暂无回复')}
+                    {activeResult.reply || (loading ? '正在运行技能...' : '暂无回复')}
                   </Typography.Paragraph>
                 </section>
 
@@ -1234,7 +1234,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
           </Card>
         </Space>
         <aside className="general-skill-side">
-          <Card className="data-card general-skill-list-card" title="通用技能">
+          <Card className="data-card general-skill-list-card" title="技能库">
             <div className="general-skill-list-toolbar">
               <div className="general-skill-search-combo">
                 <Input.Search
@@ -1258,7 +1258,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
               </div>
             </div>
             <div className="general-skill-list">
-              {filteredRows.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={rows.length === 0 ? '暂无通用技能' : '没有符合筛选的通用技能'} />}
+              {filteredRows.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={rows.length === 0 ? '暂无技能' : '没有符合筛选的技能'} />}
               {filteredRows.map((row) => {
                 const active = row.slug === selectedSkill?.slug;
                 return (
@@ -1288,7 +1288,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
                             row.status === 'published'
                               ? { key: 'archive', label: '下线' }
                               : { key: 'publish', label: '发布' },
-                            { key: 'delete', label: isOverallAgent ? '删除' : '从当前智能体移除', danger: true },
+                            { key: 'delete', label: isOverallAgent ? '删除' : '从当前员工移除', danger: true },
                           ].filter(Boolean),
                           onClick: ({ key, domEvent }) => {
                             domEvent.stopPropagation();
@@ -1321,7 +1321,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
         </aside>
       </div>
       <Modal
-        title="从 ClawHub / GitHub 导入通用技能"
+        title="从 ClawHub / GitHub 导入技能"
         open={clawhubModalOpen}
         onOk={importClawHubSource}
         confirmLoading={clawhubLoading}
@@ -1331,7 +1331,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           <Typography.Text type="secondary">
-            支持 GitHub repo/tree/raw SKILL.md、zip 包地址，或 owner/repo 形式。导入会新建通用技能，不覆盖当前内容。
+            支持 GitHub repo/tree/raw SKILL.md、zip 包地址，或 owner/repo 形式。导入会新建技能，不覆盖当前内容。
           </Typography.Text>
           <Input
             value={clawhubSource}
@@ -1341,7 +1341,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
         </Space>
       </Modal>
       <Modal
-        title="从其他智能体导入通用技能"
+        title="向其他员工学习技能"
         open={agentImportOpen}
         okText="导入"
         cancelText="取消"
@@ -1351,11 +1351,11 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
       >
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
           <Typography.Text type="secondary">
-            导入会把来源智能体可见的通用技能绑定到当前智能体；不会覆盖当前编辑区内容。
+            学习会把来源员工可见的技能绑定到当前员工；不会覆盖当前编辑区内容。
           </Typography.Text>
           <Select
             value={agentImportSourceAgentId || undefined}
-            placeholder="选择来源智能体"
+            placeholder="选择来源员工"
             onChange={(value) => {
               setAgentImportSourceAgentId(value);
               void loadAgentImportSourceSkills(value);
@@ -1369,14 +1369,14 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
           <Select
             mode="multiple"
             value={agentImportSelectedSkillIds}
-            placeholder="选择一个或多个通用技能"
+            placeholder="选择一个或多个技能"
             onChange={setAgentImportSelectedSkillIds}
             options={agentImportSourceSkills.map((item) => ({
               value: item.id,
               label: `${item.name} · ${item.slug} · ${statusLabel(item.status)}`,
             }))}
             optionFilterProp="label"
-            notFoundContent={agentImportSourceAgentId ? '没有可导入的通用技能' : '请先选择来源智能体'}
+            notFoundContent={agentImportSourceAgentId ? '没有可学习的技能' : '请先选择来源员工'}
             style={{ width: '100%' }}
           />
         </Space>

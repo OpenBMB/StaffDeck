@@ -1,14 +1,50 @@
-import { DislikeOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Button, Card, Descriptions, Drawer, Empty, Space, Table, Tag, Typography, message } from 'antd';
+import { EyeOutlined, MessageOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Button, Card, Descriptions, Drawer, Empty, Segmented, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api, TENANT_ID } from '../api/client';
-import type { FeedbackAnalysisRead, FeedbackMessageRead, FeedbackSessionDetailRead, FeedbackSessionRead, FeedbackSummaryRead } from '../types';
+import type {
+  EnterpriseChatSessionRead,
+  EnterpriseSessionDetailRead,
+  FeedbackAnalysisRead,
+  FeedbackMessageRead,
+  FeedbackSessionDetailRead,
+  FeedbackSessionRead,
+  FeedbackSummaryRead,
+} from '../types';
+
+type LogFilter = 'all' | 'up' | 'down' | 'unrated' | 'ability' | 'tool' | 'knowledge' | 'sop';
+
+type ConversationLogRow = EnterpriseChatSessionRead & {
+  downFeedback?: FeedbackSessionRead;
+  upFeedback?: FeedbackSessionRead;
+};
+
+type ConversationDetail = {
+  session: Record<string, unknown>;
+  messages: FeedbackMessageRead[];
+  feedback: Array<Record<string, unknown>>;
+  events: EnterpriseSessionDetailRead['events'];
+};
+
+const FILTER_OPTIONS = [
+  { label: '全部', value: 'all' },
+  { label: '好评', value: 'up' },
+  { label: '差评', value: 'down' },
+  { label: '未评价', value: 'unrated' },
+  { label: '能力缺口', value: 'ability' },
+  { label: '工具缺口', value: 'tool' },
+  { label: '资料缺口', value: 'knowledge' },
+  { label: 'SOP 缺口', value: 'sop' },
+];
 
 export default function FeedbackPage() {
-  const [rows, setRows] = useState<FeedbackSessionRead[]>([]);
+  const [sessions, setSessions] = useState<EnterpriseChatSessionRead[]>([]);
+  const [downRows, setDownRows] = useState<FeedbackSessionRead[]>([]);
+  const [upRows, setUpRows] = useState<FeedbackSessionRead[]>([]);
   const [summary, setSummary] = useState<FeedbackSummaryRead | null>(null);
-  const [detail, setDetail] = useState<FeedbackSessionDetailRead | null>(null);
+  const [detail, setDetail] = useState<ConversationDetail | null>(null);
+  const [filter, setFilter] = useState<LogFilter>('all');
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [reanalyzingId, setReanalyzingId] = useState<string | null>(null);
@@ -16,30 +52,73 @@ export default function FeedbackPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const result = await api.get<FeedbackSessionRead[]>(
-        `/api/enterprise/feedback/sessions?tenant_id=${TENANT_ID}&rating=down`,
-      );
-      const summaryResult = await api.get<FeedbackSummaryRead>(
-        `/api/enterprise/feedback/summary?tenant_id=${TENANT_ID}`,
-      );
-      setRows(result);
+      const [sessionResult, downResult, upResult, summaryResult] = await Promise.all([
+        api.get<EnterpriseChatSessionRead[]>(`/api/enterprise/sessions?tenant_id=${TENANT_ID}`),
+        api.get<FeedbackSessionRead[]>(`/api/enterprise/feedback/sessions?tenant_id=${TENANT_ID}&rating=down`),
+        api.get<FeedbackSessionRead[]>(`/api/enterprise/feedback/sessions?tenant_id=${TENANT_ID}&rating=up`),
+        api.get<FeedbackSummaryRead>(`/api/enterprise/feedback/summary?tenant_id=${TENANT_ID}`),
+      ]);
+      setSessions(sessionResult);
+      setDownRows(downResult);
+      setUpRows(upResult);
       setSummary(summaryResult);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '查询失败');
+      message.error(error instanceof Error ? error.message : '查询对话日志失败');
     } finally {
       setLoading(false);
     }
   };
 
-  const openDetail = async (row: FeedbackSessionRead) => {
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const rows = useMemo<ConversationLogRow[]>(() => {
+    const downBySession = new Map(downRows.map((item) => [item.session_id, item]));
+    const upBySession = new Map(upRows.map((item) => [item.session_id, item]));
+    return sessions.map((session) => ({
+      ...session,
+      downFeedback: downBySession.get(session.id),
+      upFeedback: upBySession.get(session.id),
+    }));
+  }, [downRows, sessions, upRows]);
+
+  const filteredRows = useMemo(() => rows.filter((row) => {
+    if (filter === 'all') return true;
+    if (filter === 'up') return Boolean(row.upFeedback);
+    if (filter === 'down') return Boolean(row.downFeedback);
+    if (filter === 'unrated') return !row.upFeedback && !row.downFeedback;
+    if (filter === 'ability') return row.downFeedback?.primary_bucket === 'model_issue';
+    if (filter === 'tool') return row.downFeedback?.primary_bucket === 'tool_or_system_issue';
+    if (filter === 'sop') return row.downFeedback?.primary_bucket === 'skill_issue';
+    if (filter === 'knowledge') return row.downFeedback?.primary_bucket === 'unknown';
+    return true;
+  }), [filter, rows]);
+
+  const openDetail = async (row: ConversationLogRow) => {
     setDetailLoading(true);
     try {
-      const result = await api.get<FeedbackSessionDetailRead>(
-        `/api/enterprise/feedback/sessions/${row.session_id}?tenant_id=${TENANT_ID}`,
+      const sessionDetail = await api.get<EnterpriseSessionDetailRead>(
+        `/api/enterprise/sessions/${row.id}?tenant_id=${TENANT_ID}`,
       );
-      setDetail(result);
+      let feedbackDetail: FeedbackSessionDetailRead | null = null;
+      if (row.downFeedback || row.upFeedback) {
+        try {
+          feedbackDetail = await api.get<FeedbackSessionDetailRead>(
+            `/api/enterprise/feedback/sessions/${row.id}?tenant_id=${TENANT_ID}`,
+          );
+        } catch {
+          feedbackDetail = null;
+        }
+      }
+      setDetail({
+        session: feedbackDetail?.session || sessionDetail.session,
+        messages: feedbackDetail?.messages || sessionDetail.messages,
+        feedback: feedbackDetail?.feedback || [],
+        events: sessionDetail.events || [],
+      });
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载详情失败');
+      message.error(error instanceof Error ? error.message : '加载对话详情失败');
     } finally {
       setDetailLoading(false);
     }
@@ -48,14 +127,8 @@ export default function FeedbackPage() {
   const reloadCurrentDetail = async () => {
     const sessionId = String(detail?.session?.id || detail?.session?.session_id || '');
     if (!sessionId) return;
-    try {
-      const result = await api.get<FeedbackSessionDetailRead>(
-        `/api/enterprise/feedback/sessions/${sessionId}?tenant_id=${TENANT_ID}`,
-      );
-      setDetail(result);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '刷新详情失败');
-    }
+    const row = rows.find((item) => item.id === sessionId);
+    if (row) await openDetail(row);
   };
 
   const reanalyzeFeedback = async (feedbackId: string) => {
@@ -72,38 +145,51 @@ export default function FeedbackPage() {
     }
   };
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  const columns: ColumnsType<FeedbackSessionRead> = [
+  const columns: ColumnsType<ConversationLogRow> = [
     {
-      title: '会话',
-      dataIndex: 'session_id',
-      width: 230,
+      title: '对话任务',
+      dataIndex: 'id',
+      width: 240,
       ellipsis: true,
-      render: (value, row) => row.title || value,
+      render: (_, row) => row.title || row.summary || row.last_agent_question || row.id,
     },
     {
-      title: '用户',
+      title: '接单员工',
+      dataIndex: 'agent_id',
       width: 180,
-      render: (_, row) => row.display_name || row.username || row.user_id || '-',
-    },
-    { title: '点踩数', dataIndex: 'feedback_count', width: 90 },
-    {
-      title: '主要归因',
-      width: 160,
-      render: (_, row) => <FeedbackBucketTag label={row.primary_bucket_label} bucket={row.primary_bucket} />,
-    },
-    {
-      title: '最近点踩回复',
-      dataIndex: 'latest_message',
       ellipsis: true,
-      render: (value) => <span className="muted-cell">{value || '-'}</span>,
+      render: (value) => value || '-',
     },
     {
-      title: '最近点踩时间',
-      dataIndex: 'latest_feedback_at',
+      title: '状态',
+      width: 150,
+      render: (_, row) => (
+        <Space size={4} wrap>
+          {row.upFeedback && <Tag color="green">好评</Tag>}
+          {row.downFeedback && <Tag color="red">差评</Tag>}
+          {!row.upFeedback && !row.downFeedback && <Tag>未评价</Tag>}
+        </Space>
+      ),
+    },
+    {
+      title: '质检归因',
+      width: 160,
+      render: (_, row) => row.downFeedback
+        ? <FeedbackBucketTag label={row.downFeedback.primary_bucket_label} bucket={row.downFeedback.primary_bucket} />
+        : <Tag>暂无缺口</Tag>,
+    },
+    {
+      title: '最近内容',
+      ellipsis: true,
+      render: (_, row) => (
+        <span className="muted-cell">
+          {row.downFeedback?.latest_message || row.upFeedback?.latest_message || row.summary || row.last_agent_question || '-'}
+        </span>
+      ),
+    },
+    {
+      title: '更新时间',
+      dataIndex: 'updated_at',
       width: 180,
       render: (value) => new Date(value).toLocaleString(),
     },
@@ -122,20 +208,21 @@ export default function FeedbackPage() {
   return (
     <>
       <div className="page-title">
-        <Typography.Title level={3}>负反馈会话</Typography.Title>
+        <Typography.Title level={3}>对话日志</Typography.Title>
       </div>
       <Card
-        className="data-card"
-        title={<><DislikeOutlined /> 用户点踩汇总</>}
-        extra={<Button icon={<ReloadOutlined />} onClick={load} loading={loading}>刷新</Button>}
+        className="data-card conversation-log-card"
+        title={<><MessageOutlined /> 对话任务与质检复盘</>}
+        extra={<Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>}
       >
         {summary && (
           <div className="feedback-summary-panel">
             <div className="feedback-summary-text">{summary.summary}</div>
             <Space wrap>
+              <Tag>对话 {sessions.length}</Tag>
               <Tag>反馈 {summary.total_feedback}</Tag>
-              <Tag color="red">点踩 {summary.down_count}</Tag>
-              <Tag color="green">点赞 {summary.up_count}</Tag>
+              <Tag color="green">好评 {summary.up_count}</Tag>
+              <Tag color="red">差评 {summary.down_count}</Tag>
               {summary.bucket_counts.map((item) => (
                 <Tag key={item.bucket} color={bucketColor(item.bucket)}>
                   {item.label} {item.count}
@@ -144,34 +231,40 @@ export default function FeedbackPage() {
             </Space>
           </div>
         )}
+        <Segmented
+          className="conversation-log-filter"
+          value={filter}
+          options={FILTER_OPTIONS}
+          onChange={(value) => setFilter(value as LogFilter)}
+        />
         <Table
-          rowKey="session_id"
+          rowKey="id"
           columns={columns}
-          dataSource={rows}
+          dataSource={filteredRows}
           loading={loading}
           pagination={{ pageSize: 10 }}
-          locale={{ emptyText: <Empty description="暂无点踩会话" /> }}
-          scroll={{ x: 1080 }}
+          locale={{ emptyText: <Empty description="暂无对话日志" /> }}
+          scroll={{ x: 1120 }}
         />
       </Card>
       <Drawer
-        title="点踩会话详情"
+        title="对话日志详情"
         open={Boolean(detail)}
-        width={860}
+        width={920}
         onClose={() => setDetail(null)}
         destroyOnClose
       >
         {detail ? (
           <div className="feedback-detail">
             <Descriptions bordered size="small" column={1}>
-              <Descriptions.Item label="会话 ID">{String(detail.session.session_id || detail.session.id || '-')}</Descriptions.Item>
+              <Descriptions.Item label="任务 ID">{String(detail.session.session_id || detail.session.id || '-')}</Descriptions.Item>
+              <Descriptions.Item label="接单员工">{String(detail.session.agent_id || '-')}</Descriptions.Item>
               <Descriptions.Item label="用户">{displayUser(detail.session)}</Descriptions.Item>
               <Descriptions.Item label="状态">{String(detail.session.status || '-')}</Descriptions.Item>
-              <Descriptions.Item label="点踩数">
-                {detail.feedback.filter((item) => item.rating === 'down').length}
-              </Descriptions.Item>
-              <Descriptions.Item label="归因">
+              <Descriptions.Item label="反馈">
                 <Space wrap>
+                  <Tag color="green">好评 {detail.feedback.filter((item) => item.rating === 'up').length}</Tag>
+                  <Tag color="red">差评 {detail.feedback.filter((item) => item.rating === 'down').length}</Tag>
                   {detail.feedback
                     .filter((item) => item.rating === 'down')
                     .map((item) => item.analysis as FeedbackAnalysisRead | undefined)
@@ -196,6 +289,17 @@ export default function FeedbackPage() {
                 />
               ))}
             </div>
+            {detail.events.length > 0 && (
+              <div className="conversation-event-log">
+                <Typography.Title level={5}>执行记录</Typography.Title>
+                {detail.events.slice(-12).map((event) => (
+                  <div key={event.id} className="conversation-event-item">
+                    <strong>{event.event_type}</strong>
+                    <span>{new Date(event.created_at).toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : null}
       </Drawer>
@@ -219,10 +323,10 @@ function FeedbackMessage({
     <div className={`feedback-message-row ${isUser ? 'user' : 'assistant'}`}>
       <div className="feedback-message-bubble">
         <div className="feedback-message-meta">
-          <span>{isUser ? '用户' : isAssistant ? '助手' : item.role}</span>
+          <span>{isUser ? '用户' : isAssistant ? '员工' : item.role}</span>
           <span>{new Date(item.created_at).toLocaleString()}</span>
-          {item.feedback_rating === 'down' && <Tag color="red">点踩</Tag>}
-          {item.feedback_rating === 'up' && <Tag color="green">点赞</Tag>}
+          {item.feedback_rating === 'down' && <Tag color="red">差评</Tag>}
+          {item.feedback_rating === 'up' && <Tag color="green">好评</Tag>}
           {item.feedback_analysis && (
             analysisFailed
               ? <Tag color="red">分析失败</Tag>
@@ -235,12 +339,12 @@ function FeedbackMessage({
         {item.feedback_analysis && item.feedback_rating === 'down' && (
           <div className="feedback-analysis-box">
             <div>
-              <strong>分析状态：</strong>{analysisStatusLabel(item.feedback_analysis.status)}
+              <strong>质检状态：</strong>{analysisStatusLabel(item.feedback_analysis.status)}
               {item.feedback_analysis.status !== 'failed' && typeof item.feedback_analysis.confidence === 'number' && (
                 <span> · 置信度 {(item.feedback_analysis.confidence * 100).toFixed(0)}%</span>
               )}
             </div>
-            {item.feedback_analysis.summary && <div><strong>总结：</strong>{item.feedback_analysis.summary}</div>}
+            {item.feedback_analysis.summary && <div><strong>改进项：</strong>{item.feedback_analysis.summary}</div>}
             {item.feedback_analysis.reason && <div><strong>原因：</strong>{item.feedback_analysis.reason}</div>}
             {item.feedback_analysis.status === 'failed' && item.feedback_id && (
               <Button

@@ -20,6 +20,7 @@ export type AgentProfileRead = {
   persona_prompt?: string;
   is_overall: boolean;
   status: string;
+  metadata: Record<string, unknown>;
 };
 
 export type ChatMessage = {
