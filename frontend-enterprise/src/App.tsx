@@ -177,25 +177,26 @@ function Shell({
   const isOverallScope = Boolean(selectedAgent?.is_overall);
   const navItems = [
     ...(!isOverallScope ? [{ key: '/enterprise/agents', icon: <TeamOutlined />, label: '员工名册' }] : []),
-    {
-      key: 'employees',
-      type: 'group' as const,
-      label: '数字员工平台',
-      children: [
-        {
-          key: isOverallScope ? '/enterprise/agents' : '/enterprise/dashboard',
-          icon: isOverallScope ? <TeamOutlined /> : <DashboardOutlined />,
-          label: isOverallScope ? '员工广场' : '员工信息',
-        },
-        { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: '员工记忆' },
-        { key: '/enterprise/feedback', icon: <CommentOutlined />, label: '对话日志' },
-      ],
-    },
+    ...(!isOverallScope
+      ? [
+          {
+            key: 'employees',
+            type: 'group' as const,
+            label: '数字员工平台',
+            children: [
+              { key: '/enterprise/dashboard', icon: <DashboardOutlined />, label: '员工信息' },
+              { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: '员工记忆' },
+              { key: '/enterprise/feedback', icon: <CommentOutlined />, label: '对话日志' },
+            ],
+          },
+        ]
+      : []),
     {
       key: 'employee-capabilities',
       type: 'group' as const,
       label: isOverallScope ? '开放广场平台' : '员工能力',
       children: [
+        ...(isOverallScope ? [{ key: '/enterprise/agents', icon: <TeamOutlined />, label: '数字员工广场' }] : []),
         { key: '/enterprise/knowledge', icon: <FileSearchOutlined />, label: isOverallScope ? '业务资料广场' : '业务资料' },
         { key: '/enterprise/general-skills', icon: <SolutionOutlined />, label: isOverallScope ? '通用技能广场' : '已掌握技能' },
         { key: '/enterprise/skills', icon: <ProfileOutlined />, label: isOverallScope ? 'SOP广场' : 'SOP管理' },
