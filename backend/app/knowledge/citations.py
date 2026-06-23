@@ -61,6 +61,28 @@ def knowledge_citations_from_results(
         )
 
     for result in knowledge_results:
+        for concept in result.get("selected_concepts") or []:
+            if not isinstance(concept, dict):
+                continue
+            concept_id = str(concept.get("concept_id") or concept.get("id") or "").strip()
+            title = _display_title(str(concept.get("title") or concept_id or "Wiki 概念"))
+            description = str(concept.get("description") or "").strip()
+            source_refs = concept.get("source_refs") if isinstance(concept.get("source_refs"), list) else []
+            source_path = ""
+            if source_refs and isinstance(source_refs[0], dict):
+                source_path = str(source_refs[0].get("source_path") or source_refs[0].get("document_id") or "")
+            add(
+                "concept",
+                concept_id or title,
+                {
+                    "title": title,
+                    "source_path": source_path,
+                    "excerpt": description[:820],
+                    "concept_id": concept_id,
+                    "concept_type": concept.get("type"),
+                },
+            )
+
         for item in result.get("evidence_pack") or []:
             if not isinstance(item, dict):
                 continue
@@ -84,28 +106,6 @@ def knowledge_citations_from_results(
                     "document_id": item.get("document_id"),
                     "bucket_id": item.get("bucket_id"),
                     "chunk_id": chunk_id,
-                },
-            )
-
-        for concept in result.get("selected_concepts") or []:
-            if not isinstance(concept, dict):
-                continue
-            concept_id = str(concept.get("concept_id") or concept.get("id") or "").strip()
-            title = _display_title(str(concept.get("title") or concept_id or "Wiki 概念"))
-            description = str(concept.get("description") or "").strip()
-            source_refs = concept.get("source_refs") if isinstance(concept.get("source_refs"), list) else []
-            source_path = ""
-            if source_refs and isinstance(source_refs[0], dict):
-                source_path = str(source_refs[0].get("source_path") or source_refs[0].get("document_id") or "")
-            add(
-                "concept",
-                concept_id or title,
-                {
-                    "title": title,
-                    "source_path": source_path,
-                    "excerpt": description[:820],
-                    "concept_id": concept_id,
-                    "concept_type": concept.get("type"),
                 },
             )
 

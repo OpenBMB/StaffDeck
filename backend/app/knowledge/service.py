@@ -397,7 +397,8 @@ class KnowledgeService:
             selected_ids = [bucket.id for bucket in _score_buckets(query, buckets)[: request.max_buckets]]
             route_trace.append({"phase": "bucket_route_fallback", "message": "按桶摘要相关性选择知识桶"})
 
-        selected_buckets = [bucket for bucket in buckets if bucket.id in set(selected_ids)]
+        bucket_by_id = {bucket.id: bucket for bucket in buckets}
+        selected_buckets = [bucket_by_id[bucket_id] for bucket_id in selected_ids if bucket_id in bucket_by_id]
         expanded_sections = _expand_sections(selected_documents, selected_buckets, request.max_depth)
         route_trace.append(
             {

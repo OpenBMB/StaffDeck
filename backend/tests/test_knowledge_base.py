@@ -127,6 +127,88 @@ def test_knowledge_ingest_creates_document_buckets_and_chunks_without_auto_disco
         assert db.exec(select(KnowledgeDiscoverySuggestion)).all() == []
 
 
+def test_knowledge_search_preserves_fallback_bucket_rank_order() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        document = KnowledgeDocument(
+            id="kdoc_frontend",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            filename="frontend.md",
+            file_type="md",
+            title="前端规范资料",
+            status="ready",
+            bucket_count=2,
+            chunk_count=2,
+            metadata_json={
+                "document_card": {
+                    "title": "前端规范资料",
+                    "summary": "前端编码规范、Vue 3、组件规范和命名规范。",
+                }
+            },
+        )
+        irrelevant = KnowledgeBucket(
+            id="kbucket_citation",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            bucket_key="citation",
+            title="知识引用测试说明",
+            summary="回答引用展示规则。",
+        )
+        frontend = KnowledgeBucket(
+            id="kbucket_frontend",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            bucket_key="frontend",
+            title="前端编码规范",
+            summary="Vue 3、Vite、TypeScript、组件编写和命名规范。",
+        )
+        db.add(document)
+        db.add(irrelevant)
+        db.add(frontend)
+        db.add(
+            KnowledgeChunk(
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
+                document_id=document.id,
+                bucket_id=irrelevant.id,
+                chunk_index=0,
+                content="知识引用展示规则。",
+                summary="知识引用展示规则。",
+                source_ref="citation.md",
+            )
+        )
+        db.add(
+            KnowledgeChunk(
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
+                document_id=document.id,
+                bucket_id=frontend.id,
+                chunk_index=0,
+                content="前端规范包括 Vue 3、Vite、TypeScript 和组件编写规范。",
+                summary="前端规范包括 Vue 3、Vite、TypeScript 和组件编写规范。",
+                source_ref="frontend.md",
+            )
+        )
+        db.commit()
+
+        response = KnowledgeService(db).search(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_ids=["kb_demo"],
+                query="前端规范有哪些？",
+                mode="chat",
+                max_buckets=2,
+                need_evidence_pack=True,
+            )
+        )
+
+        assert [bucket.id for bucket in response.selected_buckets][:2] == ["kbucket_frontend", "kbucket_citation"]
+
+
 def test_knowledge_base_read_keeps_archived_rows_visible_despite_active_versions() -> None:
     row = KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库", status="archived")
     version = KnowledgeBaseVersion(

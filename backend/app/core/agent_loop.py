@@ -2798,7 +2798,7 @@ class AgentLoop:
                     max_depth=max(1, min(query.max_depth, 4)),
                     need_evidence_pack=True,
                 ),
-                None,
+                model_config,
             )
         knowledge_items = {
             "query": query.model_dump(mode="json"),
@@ -2878,6 +2878,7 @@ class AgentLoop:
             chat_session.agent_id,
             request.message,
             query,
+            model_config,
         )
         if not knowledge_items:
             return StepAgentResult()
@@ -2900,6 +2901,7 @@ class AgentLoop:
         agent_id: str,
         message: str,
         query: KnowledgeQuery | None = None,
+        model_config: ModelConfig | None = None,
     ) -> dict[str, Any] | None:
         knowledge_base_ids = self._agent_visible_knowledge_base_ids(tenant_id, agent_id)
         if self._agent_requires_resource_filter(tenant_id, agent_id) and not knowledge_base_ids:
@@ -2922,7 +2924,7 @@ class AgentLoop:
                 max_depth=3,
                 need_evidence_pack=True,
             ),
-            None,
+            model_config,
         )
         if not (
             search_response.selected_concepts
