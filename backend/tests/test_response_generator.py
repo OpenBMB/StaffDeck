@@ -358,3 +358,42 @@ def test_completed_step_reply_is_model_driven(monkeypatch):
     )
 
     assert reply == "请问您的退货原因是什么？"
+
+
+def test_knowledge_result_does_not_prefer_generic_step_reply(monkeypatch):
+    def fake_init(self, model_config):  # noqa: ANN001
+        return None
+
+    def fake_generate_text(self, system_prompt, payload):  # noqa: ANN001
+        assert payload["session"]["knowledge_context"]
+        assert payload["knowledge_citation_hints"]
+        return "前端规范包括目录组织、命名规范和组件编写规范。[1]"
+
+    monkeypatch.setattr(LLMClient, "__init__", fake_init)
+    monkeypatch.setattr(LLMClient, "generate_text", fake_generate_text)
+
+    reply = ResponseGenerator().generate(
+        message="前端规范有哪些？",
+        session=ChatSession(id="session_test", tenant_id="tenant_demo"),
+        skill=None,
+        router_decision=RouterDecision(decision="answer_only", user_intent="了解前端编码规范"),
+        step_result=StepAgentResult(
+            reply="请您再补充一下具体诉求，我会继续帮您处理。",
+            knowledge_results=[
+                {
+                    "source_message": "前端规范有哪些？",
+                    "evidence_pack": [
+                        {
+                            "source_path": "vue3-coding-standards.md / 前端编码规范 / evidence 1",
+                            "excerpt": "前端规范包括目录组织、命名规范、组件编写规范。",
+                            "reason": "命中前端规范问题",
+                        }
+                    ],
+                }
+            ],
+        ),
+        tool_result=None,
+        model_config=None,  # type: ignore[arg-type]
+    )
+
+    assert reply == "前端规范包括目录组织、命名规范和组件编写规范。[1]"

@@ -243,13 +243,22 @@ class ResponseGenerator:
         step_reply = (step_result.reply or "").strip()
         if not step_reply:
             return False
-        if step_result.knowledge_results:
-            return True
+        if self._is_generic_step_reply(step_reply):
+            return False
         return (
             "[1]" in step_reply
             or "根据业务资料" in step_reply
             or ("业务资料" in step_reply and "引用" in step_reply)
         )
+
+    def _is_generic_step_reply(self, reply: str) -> bool:
+        generic_terms = (
+            "已记录完整信息",
+            "请问还有其他需要帮助的吗",
+            "请您再补充一下具体诉求",
+            "我会继续帮您处理",
+        )
+        return any(term in reply for term in generic_terms)
 
     def _progress_payload(
         self,
