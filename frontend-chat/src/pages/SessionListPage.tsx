@@ -266,6 +266,12 @@ export default function SessionListPage() {
           </div>
           <div className="chat-header-actions">
             <ThemeToggleButton />
+            <Button
+              className="icon-button"
+              icon={<StaffdeckIcon name="logout" />}
+              aria-label="退出聊天"
+              onClick={() => { window.location.href = '/enterprise/dashboard'; }}
+            />
           </div>
         </div>
         <div className="chat-messages">

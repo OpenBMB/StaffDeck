@@ -415,15 +415,6 @@ function TerminalTraceIcon() {
   );
 }
 
-function SessionChatIcon() {
-  return (
-    <svg className="session-chat-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M12 4.2c-4.7 0-8.1 3.05-8.1 7.25 0 2.32 1.02 4.32 2.75 5.65l-.55 2.65 3.05-1.45c.9.26 1.9.4 2.95.4 4.7 0 8.1-3.05 8.1-7.25S16.7 4.2 12 4.2Z" />
-      <path d="M8.7 11.45h.04M12 11.45h.04M15.3 11.45h.04" />
-    </svg>
-  );
-}
-
 function parseMessageTime(value?: string): number {
   if (!value) return 0;
   const normalized = /(?:z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`;
@@ -1285,34 +1276,36 @@ export default function ChatWindowPage() {
       { label: 'SOP', value: 0 },
     ];
   const sessionFilterOptions = useMemo(() => {
-    const counts = new Map<string, number>();
-    sessions.forEach((session) => {
-      if (!session.agent_id) return;
-      counts.set(session.agent_id, (counts.get(session.agent_id) || 0) + 1);
-    });
-    const rows = Array.from(counts.keys())
-      .map((agentId) => agents.find((agent) => agent.id === agentId))
-      .filter((agent): agent is AgentProfileRead => Boolean(agent))
+    const rows = [...availableAgents]
       .sort((a, b) => employeeDisplayName(a).localeCompare(employeeDisplayName(b), 'zh-Hans-CN'));
     return [
-      { value: 'all', label: `全部员工 · ${sessions.length}` },
+      { value: 'all', label: `全部员工 · ${availableAgents.length}` },
       ...rows.map((agent) => ({
         value: agent.id,
-        label: `${employeeDisplayName(agent)} · ${counts.get(agent.id) || 0}`,
+        label: employeeDisplayName(agent),
       })),
     ];
-  }, [agents, sessions]);
-  const visibleSessions = useMemo(() => (
-    sessionAgentFilter === 'all'
-      ? sessions
-      : sessions.filter((session) => session.agent_id === sessionAgentFilter)
-  ), [sessionAgentFilter, sessions]);
-  const sidebarSessions = useMemo(() => {
-    if (!sidebarCollapsed) return visibleSessions;
-    const active = currentSession ? [currentSession] : [];
-    const rest = visibleSessions.filter((session) => session.id !== currentSession?.id);
+  }, [availableAgents]);
+  const sidebarAgents = useMemo(() => {
+    const rows = sessionAgentFilter === 'all'
+      ? availableAgents
+      : availableAgents.filter((agent) => agent.id === sessionAgentFilter);
+    if (!sidebarCollapsed) return rows;
+    const active = displayedAgent ? [displayedAgent] : [];
+    const rest = rows.filter((agent) => agent.id !== displayedAgent?.id);
     return [...active, ...rest].slice(0, 3);
-  }, [currentSession, sidebarCollapsed, visibleSessions]);
+  }, [availableAgents, displayedAgent, sessionAgentFilter, sidebarCollapsed]);
+  const latestSessionByAgent = useMemo(() => {
+    const map = new Map<string, ChatSession>();
+    sessions.forEach((session) => {
+      if (!session.agent_id) return;
+      const current = map.get(session.agent_id);
+      if (!current || parseMessageTime(session.updated_at) > parseMessageTime(current.updated_at)) {
+        map.set(session.agent_id, session);
+      }
+    });
+    return map;
+  }, [sessions]);
   const enabledModelConfigs = useMemo(() => modelConfigs.filter((item) => item.enabled), [modelConfigs]);
   const selectedModelConfig = (
     enabledModelConfigs.find((item) => item.id === selectedModelConfigId)
@@ -2741,18 +2734,6 @@ export default function ChatWindowPage() {
               </span>
               <StaffdeckIcon name="arrow" />
             </button>
-            <button
-              type="button"
-              className={`sidebar-handoff-entry${handoffs.length ? ' has-items' : ''}`}
-              onClick={() => setShowHandoffInbox(true)}
-            >
-              <span className="sidebar-handoff-entry-icon"><StaffdeckIcon name="clock" /></span>
-              <span className="sidebar-gallery-entry-copy">
-                <strong>待回答</strong>
-                <span>{handoffs.length ? `${handoffs.length} 条等待处理` : '暂无挂起消息'}</span>
-              </span>
-              {handoffs.length ? <span className="sidebar-handoff-badge">{handoffs.length}</span> : <StaffdeckIcon name="arrow" />}
-            </button>
             <div className="session-filter-bar">
               <span className="session-filter-label">员工会话</span>
               <Select
@@ -2765,68 +2746,63 @@ export default function ChatWindowPage() {
             </div>
           </div>
         )}
-        <div className="session-list-scroll">
-          <div className="session-section-label">{sidebarCollapsed ? '会话' : '历史任务'}</div>
-          {visibleSessions.length === 0 && !sidebarCollapsed ? (
-            <div className="session-list-empty">当前员工暂无历史任务</div>
-          ) : null}
-          {sidebarSessions.map((session) => {
-            const itemStream = getStreamSlot(session.id);
-            const sessionTitle = staffdeckDisplayText(session.title || session.id);
-            const sessionSummary = itemStream.loading
-              ? itemStream.phase || '正在思考'
-              : staffdeckDisplayText(session.summary || session.last_agent_question || '新任务');
-            const hasUnread = sessionHasUnreadReply(session, sessionReadTimes, sessionId);
-            const sessionAgentForCard = session.agent_id
-              ? agents.find((agent) => agent.id === session.agent_id) || null
-              : null;
-            const sessionProfileForCard = sessionAgentForCard ? employeeProfile(sessionAgentForCard) : null;
-            const sessionAgentFallback = sessionAgentForCard
-              ? employeeDisplayName(sessionAgentForCard).slice(0, 1)
-              : '员';
+        <div className="session-list-scroll chat-agent-list">
+          <div className="session-section-label">{sidebarCollapsed ? '会话' : '员工会话'}</div>
+          {sidebarAgents.map((agent) => {
+            const profile = employeeProfile(agent);
+            const online = agent.status === 'active';
+            const latestSession = latestSessionByAgent.get(agent.id);
+            const hasUnread = latestSession ? sessionHasUnreadReply(latestSession, sessionReadTimes, sessionId) : false;
+            const openAgent = () => {
+              setSelectedAgentId(agent.id);
+              window.localStorage.setItem('skill_agent_selected_agent', agent.id);
+              if (latestSession) {
+                navigate(`/${latestSession.id}`);
+              } else {
+                navigate('/');
+              }
+            };
             return (
               <div
-                key={session.id}
+                key={agent.id}
                 role="button"
                 tabIndex={0}
-                className={`session-card ${session.id === sessionId ? 'active' : ''} ${hasUnread ? 'unread' : ''}`}
-                onClick={() => navigate(`/${session.id}`)}
+                className={`session-card chat-agent-card ${displayedAgent?.id === agent.id ? 'active' : ''} ${hasUnread ? 'unread' : ''}`}
+                onClick={openAgent}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
-                    navigate(`/${session.id}`);
+                    openAgent();
                   }
                 }}
               >
                 <div className="session-card-content">
                   <span className="session-title-icon session-title-avatar">
-                    {sessionProfileForCard ? (
-                      <EmployeeAvatarMark
-                        profile={sessionProfileForCard}
-                        fallback={sessionAgentFallback || '员'}
-                        className="session-agent-avatar"
-                      />
-                    ) : (
-                      <SessionChatIcon />
-                    )}
+                    <EmployeeAvatarMark
+                      profile={profile}
+                      fallback={employeeDisplayName(agent).slice(0, 1) || '员'}
+                      className="session-agent-avatar"
+                    />
                   </span>
                   <div className="session-meta">
-                    <div className="session-title" title={sessionTitle}>
-                      <span className="session-title-text">{sessionTitle}</span>
+                    <div className="session-title" title={employeeDisplayName(agent)}>
+                      <span className="session-title-text">{employeeDisplayName(agent)}</span>
                     </div>
-                    <div className="session-summary" title={sessionSummary}>
-                      {sessionSummary}
+                    <div className="session-summary" title={profile.roleName}>
+                      {profile.roleName}
+                      <span className={`gallery-agent-status ${online ? 'online' : ''}`}>{online ? '在线客服' : '离线'}</span>
                     </div>
                   </div>
                   {hasUnread && <span className="session-unread-dot" aria-label="未读回复" />}
-                  <div className="session-actions">
+                  {latestSession && (
+                    <div className="session-actions">
                     <Button
                       className="session-action"
                       size="small"
                       type="text"
                       icon={<StaffdeckIcon name="edit" />}
                       aria-label="重命名"
-                      onClick={(event) => openRename(event, session)}
+                      onClick={(event) => openRename(event, latestSession)}
                     />
                     <Button
                       className="session-action danger"
@@ -2834,9 +2810,10 @@ export default function ChatWindowPage() {
                       type="text"
                       icon={<StaffdeckIcon name="trash" />}
                       aria-label="删除任务"
-                      onClick={(event) => confirmDelete(event, session)}
+                      onClick={(event) => confirmDelete(event, latestSession)}
                     />
                   </div>
+                  )}
                 </div>
               </div>
             );
@@ -2874,9 +2851,9 @@ export default function ChatWindowPage() {
             <ThemeToggleButton />
             <Button
               className="icon-button"
-              icon={<StaffdeckIcon name="refresh" />}
-              aria-label="刷新页面"
-              onClick={() => window.location.reload()}
+              icon={<StaffdeckIcon name="logout" />}
+              aria-label="退出聊天"
+              onClick={() => { window.location.href = '/enterprise/dashboard'; }}
             />
           </div>
         </div>

@@ -11760,8 +11760,8 @@ body,
   gap: 22px;
 }
 
-.topbar-actions .ant-btn,
-.topbar-actions .theme-toggle-button {
+.topbar-actions > .ant-btn,
+.topbar-actions > .theme-toggle-button {
   width: 32px !important;
   height: 32px !important;
   min-width: 32px !important;
@@ -11774,8 +11774,8 @@ body,
   box-shadow: none !important;
 }
 
-.topbar-actions .ant-btn > span:not(.ant-btn-icon),
-.topbar-actions .theme-toggle-button > span:not(.ant-btn-icon) {
+.topbar-actions > .ant-btn > span:not(.ant-btn-icon),
+.topbar-actions > .theme-toggle-button > span:not(.ant-btn-icon) {
   display: none !important;
 }
 
@@ -12954,13 +12954,21 @@ body,
   font-weight: 700;
 }
 
-:root[data-theme='dark'] body,
 :root[data-theme='dark'] .app-shell,
 :root[data-theme='dark'] .content,
 :root[data-theme='dark'] .employee-home-page,
 :root[data-theme='dark'] .sd1-agents-page {
-  color: #f5f6f8 !important;
-  background: #111214 !important;
+  color: #f0f2f6 !important;
+  background: #18191d !important;
+}
+
+:root[data-theme='dark'] .topbar,
+:root[data-theme='dark'] .topbar-actions > .ant-btn,
+:root[data-theme='dark'] .topbar-actions > .theme-toggle-button {
+  color: #aab2c2 !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 :root[data-theme='dark'] .employee-home-title-row h1,
@@ -12970,16 +12978,20 @@ body,
 :root[data-theme='dark'] .employee-system-summary,
 :root[data-theme='dark'] .employee-profile-tabs button.active,
 :root[data-theme='dark'] .employee-growth-title,
+:root[data-theme='dark'] .employee-metric-tile strong,
+:root[data-theme='dark'] .employee-work-metric strong,
+:root[data-theme='dark'] .employee-memory-date strong,
 :root[data-theme='dark'] .employee-capability-head em,
 :root[data-theme='dark'] .employee-capability-title,
 :root[data-theme='dark'] .sd1-agents-summary strong,
 :root[data-theme='dark'] .sd1-agents-page .employee-roster-title strong,
 :root[data-theme='dark'] .sd1-agents-page .employee-roster-stats strong {
-  color: #f5f6f8 !important;
+  color: #f0f2f6 !important;
 }
 
 :root[data-theme='dark'] .employee-home-meta,
 :root[data-theme='dark'] .employee-home-meta .ant-typography,
+:root[data-theme='dark'] .employee-metric-tile span,
 :root[data-theme='dark'] .employee-profile-tabs button,
 :root[data-theme='dark'] .employee-work-metric span,
 :root[data-theme='dark'] .employee-heatmap-months,
@@ -12994,7 +13006,7 @@ body,
 :root[data-theme='dark'] .sd1-agents-page .employee-roster-title span,
 :root[data-theme='dark'] .sd1-agents-page .employee-roster-card .ant-typography,
 :root[data-theme='dark'] .sd1-agents-page .employee-roster-stats em {
-  color: #aab2c5 !important;
+  color: #a8afbd !important;
 }
 
 :root[data-theme='dark'] .employee-metric-tile,
@@ -13010,27 +13022,27 @@ body,
 :root[data-theme='dark'] .sd1-agents-page .employee-roster-head,
 :root[data-theme='dark'] .sd1-agents-page .employee-roster-stats,
 :root[data-theme='dark'] .sd1-agents-empty {
-  color: #f5f6f8 !important;
-  border-color: #2c2e35 !important;
-  background: #17181c !important;
+  color: #f0f2f6 !important;
+  border-color: #343741 !important;
+  background: #202126 !important;
   box-shadow: none !important;
 }
 
 :root[data-theme='dark'] .employee-capability-card.is-dark.ant-card {
-  border-color: #3a3a42 !important;
-  background: #242428 !important;
+  border-color: #343741 !important;
+  background: #2a2b31 !important;
 }
 
 :root[data-theme='dark'] .employee-work-metric,
 :root[data-theme='dark'] .employee-metric-tile,
 :root[data-theme='dark'] .sd1-agents-page .employee-roster-stats span {
-  border-color: #2c2e35 !important;
+  border-color: #343741 !important;
 }
 
 :root[data-theme='dark'] .employee-heatmap-cell,
 :root[data-theme='dark'] .employee-heatmap-legend i,
 :root[data-theme='dark'] .sd1-agents-tabs button.active::after {
-  background: #343640 !important;
+  background: #363944 !important;
 }
 
 :root[data-theme='dark'] .employee-heatmap-cell.level-1,
@@ -13050,16 +13062,27 @@ body,
 
 :root[data-theme='dark'] .employee-heatmap-cell.level-4,
 :root[data-theme='dark'] .employee-heatmap-legend i.level-4 {
-  background: #f5f6f8 !important;
+  background: #f0f2f6 !important;
 }
 
 :root[data-theme='dark'] .employee-memory-timeline::before {
-  background: #343640 !important;
+  background: #363944 !important;
+}
+
+:root[data-theme='dark'] .employee-profile-tabs button.active {
+  background: #202126 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme='dark'] .employee-home-meta .ant-tag {
+  color: #c5ccd8 !important;
+  background: #f0f2f6 !important;
+  border-color: #f0f2f6 !important;
 }
 
 :root[data-theme='dark'] .sd1-agents-search .ant-input,
 :root[data-theme='dark'] .sd1-agents-search .ant-input::placeholder {
-  color: #aab2c5 !important;
+  color: #a8afbd !important;
 }
 
 @media (max-width: 1180px) {

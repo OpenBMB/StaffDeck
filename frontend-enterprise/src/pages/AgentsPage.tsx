@@ -27,7 +27,7 @@ export default function AgentsPage({
   const [avatarAgent, setAvatarAgent] = useState<AgentProfileRead | null>(null);
   const [profileAgent, setProfileAgent] = useState<AgentProfileRead | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'gallery'>('all');
+  const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline' | 'pending'>('all');
   const navigate = useNavigate();
 
   async function load() {
@@ -75,14 +75,21 @@ export default function AgentsPage({
     )),
     [agents, currentUser, isAdmin],
   );
-  const onlineEmployees = employees.filter((item) => item.status === 'active');
-  const galleryEmployees = employees.filter(isGalleryEmployee);
+  const offlineEmployees = employees.filter((item) => item.status !== 'active');
+  const pendingEmployees = employees.filter((item) => {
+    const metadata = item.metadata || {};
+    return item.status === 'pending'
+      || metadata.review_status === 'pending'
+      || metadata.approval_status === 'pending'
+      || metadata.audit_status === 'pending';
+  });
   const filteredEmployees = employees.filter((item) => {
     const profile = employeeProfile(item);
     const keyword = searchTerm.trim().toLowerCase();
     const matchesFilter = employeeFilter === 'all'
       || (employeeFilter === 'online' && item.status === 'active')
-      || (employeeFilter === 'gallery' && isGalleryEmployee(item));
+      || (employeeFilter === 'offline' && item.status !== 'active')
+      || (employeeFilter === 'pending' && pendingEmployees.includes(item));
     if (!matchesFilter) return false;
     if (!keyword) return true;
     return [
@@ -184,22 +191,22 @@ export default function AgentsPage({
       <div className="sd1-agents-summary" aria-label="数字员工统计">
         <button type="button" className={employeeFilter === 'all' ? 'active' : ''} onClick={() => setEmployeeFilter('all')}>
           <strong>{employees.length}</strong>
-          <span>数字员工</span>
-          <small>{isOverallScope ? '广场可用员工' : '当前可管理范围'}</small>
+          <span>员工总数</span>
+          <small>{isOverallScope ? '全部可见员工' : '当前可管理范围'}</small>
         </button>
-        <button type="button" className={employeeFilter === 'online' ? 'active' : ''} onClick={() => setEmployeeFilter('online')}>
-          <strong>{onlineEmployees.length}</strong>
-          <span>在线员工</span>
-          <small>聊天端可直接使用</small>
+        <button type="button" className={employeeFilter === 'offline' ? 'active' : ''} onClick={() => setEmployeeFilter('offline')}>
+          <strong>{offlineEmployees.length}</strong>
+          <span>下线员工</span>
+          <small>已归档或暂停使用</small>
         </button>
-        <button type="button" className={employeeFilter === 'gallery' ? 'active' : ''} onClick={() => setEmployeeFilter('gallery')}>
-          <strong>{galleryEmployees.length}</strong>
-          <span>广场员工</span>
-          <small>已发布到开放广场</small>
+        <button type="button" className={employeeFilter === 'pending' ? 'active' : ''} onClick={() => setEmployeeFilter('pending')}>
+          <strong>{pendingEmployees.length}</strong>
+          <span>待审核</span>
+          <small>等待管理员确认</small>
         </button>
         <button type="button" className="is-create" onClick={onCreateAgent}>
           <span className="sd1-agents-add"><StaffdeckIcon name="plus" /></span>
-          <span>新增数字员工</span>
+          <span>新建数字员工</span>
           <small>复制广场配置或从空白开始</small>
         </button>
       </div>
@@ -207,7 +214,7 @@ export default function AgentsPage({
       <nav className="sd1-agents-tabs" aria-label="数字员工分类">
         <button type="button" className={employeeFilter === 'all' ? 'active' : ''} onClick={() => setEmployeeFilter('all')}>全部员工</button>
         <button type="button" className={employeeFilter === 'online' ? 'active' : ''} onClick={() => setEmployeeFilter('online')}>在线员工</button>
-        <button type="button" className={employeeFilter === 'gallery' ? 'active' : ''} onClick={() => setEmployeeFilter('gallery')}>广场员工</button>
+        <button type="button" className={employeeFilter === 'offline' ? 'active' : ''} onClick={() => setEmployeeFilter('offline')}>下线员工</button>
       </nav>
 
       <div className="employee-roster-grid sd1-agents-grid">

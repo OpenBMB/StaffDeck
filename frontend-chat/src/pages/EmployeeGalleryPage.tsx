@@ -1,7 +1,7 @@
 import { Button, Empty, Input, Select, message } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { api, clearAuthSession, getAuthSession, isAuthError } from '../api/client';
+import { api, clearAuthSession, getAuthSession } from '../api/client';
 import EmployeeAvatarMark from '../components/EmployeeAvatarMark';
 import StaffdeckIcon from '../components/StaffdeckIcon';
 import {
@@ -16,21 +16,15 @@ import {
 import { ThemeToggleButton } from '../theme';
 import type { AgentProfileRead, ChatSession } from '../types';
 
-function SessionChatIcon() {
-  return (
-    <svg className="session-chat-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M12 4.2c-4.7 0-8.1 3.05-8.1 7.25 0 2.32 1.02 4.32 2.75 5.65l-.55 2.65 3.05-1.45c.9.26 1.9.4 2.95.4 4.7 0 8.1-3.05 8.1-7.25S16.7 4.2 12 4.2Z" />
-      <path d="M8.7 11.45h.04M12 11.45h.04M15.3 11.45h.04" />
-    </svg>
-  );
+function tabForGalleryPath(pathname: string): 'all' | 'mine' | 'gallery' {
+  if (pathname.includes('/gallery') || pathname.includes('/employees')) return 'all';
+  return 'mine';
 }
 
 export default function EmployeeGalleryPage() {
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
-  const [sessionAgentFilter, setSessionAgentFilter] = useState('all');
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem('skill_agent_selected_agent') || '');
-  const [employeeTab, setEmployeeTab] = useState<'all' | 'mine' | 'gallery'>('mine');
+  const [employeeTab, setEmployeeTab] = useState<'all' | 'mine' | 'gallery'>(() => tabForGalleryPath(window.location.pathname));
   const [searchText, setSearchText] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => (
     window.localStorage.getItem('skill_agent_sidebar_collapsed') === 'true'
@@ -59,47 +53,12 @@ export default function EmployeeGalleryPage() {
       ...profile.expertiseTags,
     ].join(' ').toLowerCase().includes(query);
   });
-  const agentById = useMemo(() => new Map(availableAgents.map((agent) => [agent.id, agent])), [availableAgents]);
-  const visibleSessions = useMemo(() => (
-    sessionAgentFilter === 'all'
-      ? sessions
-      : sessions.filter((session) => session.agent_id === sessionAgentFilter)
-  ), [sessionAgentFilter, sessions]);
-  const sessionFilterOptions = useMemo(() => {
-    const counts = new Map<string, number>();
-    sessions.forEach((session) => {
-      if (!session.agent_id || !agentById.has(session.agent_id)) return;
-      counts.set(session.agent_id, (counts.get(session.agent_id) || 0) + 1);
-    });
-    const rows = Array.from(counts.keys())
-      .map((agentId) => agentById.get(agentId))
-      .filter((agent): agent is AgentProfileRead => Boolean(agent))
-      .sort((a, b) => employeeDisplayName(a).localeCompare(employeeDisplayName(b), 'zh-Hans-CN'));
-    return [
-      { value: 'all', label: `全部员工 · ${sessions.length}` },
-      ...rows.map((agent) => ({
-        value: agent.id,
-        label: `${employeeDisplayName(agent)} · ${counts.get(agent.id) || 0}`,
-      })),
-    ];
-  }, [agentById, sessions]);
-
-  const loadSessions = () =>
-    api
-      .get<ChatSession[]>(`/api/chat/sessions?tenant_id=${tenantId}`)
-      .then(setSessions)
-      .catch((error) => {
-        if (isAuthError(error)) {
-          clearAuthSession();
-          navigate('/login', { replace: true });
-          return;
-        }
-        message.error(error.message);
-      });
-
-  useEffect(() => {
-    loadSessions();
-  }, []);
+  const sidebarEmployeeOptions = [
+    { value: 'all', label: `全部员工 · ${availableAgents.length}` },
+    { value: 'mine', label: `我的员工 · ${personalAgents.length}` },
+    { value: 'gallery', label: `广场员工 · ${galleryAgents.length}` },
+  ];
+  const sidebarAgents = visibleEmployeeCards.length ? visibleEmployeeCards : availableAgents;
 
   useEffect(() => {
     api
@@ -118,11 +77,8 @@ export default function EmployeeGalleryPage() {
   }, [auth?.user, tenantId]);
 
   useEffect(() => {
-    if (sessionAgentFilter === 'all') return;
-    if (!sessionFilterOptions.some((item) => item.value === sessionAgentFilter)) {
-      setSessionAgentFilter('all');
-    }
-  }, [sessionAgentFilter, sessionFilterOptions]);
+    setEmployeeTab(tabForGalleryPath(location.pathname));
+  }, [location.pathname]);
 
   useEffect(() => {
     if (!launchAgentId) return;
@@ -181,8 +137,7 @@ export default function EmployeeGalleryPage() {
                 <span className="employee-gallery-page-role">{profile.roleName}</span>
               </span>
               <span className="employee-gallery-page-action">
-                发起对话
-                <StaffdeckIcon name="arrow" />
+                <StaffdeckIcon name="chat" />
               </span>
             </span>
             <span className="employee-gallery-page-desc">{staffdeckDisplayText(agent.description || '暂无描述')}</span>
@@ -203,8 +158,8 @@ export default function EmployeeGalleryPage() {
   };
 
   return (
-    <div className={`chat-layout ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-      <aside className="session-pane">
+    <div className={`chat-layout employee-gallery-layout ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+      <aside className="session-pane gallery-sidebar-pane">
         <div className="sidebar-head">
           <Button
             className="icon-button"
@@ -245,65 +200,57 @@ export default function EmployeeGalleryPage() {
               <Select
                 size="small"
                 className="session-filter-select"
-                value={sessionAgentFilter}
-                options={sessionFilterOptions}
-                onChange={setSessionAgentFilter}
+                value={employeeTab}
+                options={sidebarEmployeeOptions}
+                onChange={(value) => setEmployeeTab(value as 'all' | 'mine' | 'gallery')}
               />
             </div>
           </div>
         )}
-        <div className="session-list-scroll">
-          <div className="session-section-label">历史任务</div>
-          {visibleSessions.length === 0 ? (
-            <div className="session-list-empty">
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前员工暂无历史任务" />
-            </div>
-          ) : (
-            visibleSessions.map((session) => {
-              const sessionTitle = staffdeckDisplayText(session.title || session.id);
-              const sessionSummary = staffdeckDisplayText(session.summary || session.last_agent_question || '新任务');
-              const sessionAgent = session.agent_id ? agentById.get(session.agent_id) || null : null;
-              const sessionProfile = sessionAgent ? employeeProfile(sessionAgent) : null;
-              const sessionAgentFallback = sessionAgent ? employeeDisplayName(sessionAgent).slice(0, 1) : '员';
+        <div className="session-list-scroll gallery-agent-list">
+          <div className="session-section-label">{sidebarCollapsed ? '会话' : '员工工作'}</div>
+          {sidebarAgents.map((agent) => {
+              const profile = employeeProfile(agent);
+              const online = agent.status === 'active';
               return (
                 <div
-                  key={session.id}
+                  key={agent.id}
                   role="button"
                   tabIndex={0}
-                  className="session-card"
-                  onClick={() => navigate(`/${session.id}`)}
+                  className={`session-card gallery-agent-card ${selectedAgentId === agent.id ? 'active' : ''}`}
+                  onClick={() => {
+                    setSelectedAgentId(agent.id);
+                    window.localStorage.setItem('skill_agent_selected_agent', agent.id);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
-                      navigate(`/${session.id}`);
+                      setSelectedAgentId(agent.id);
+                      window.localStorage.setItem('skill_agent_selected_agent', agent.id);
                     }
                   }}
                 >
                   <div className="session-card-content">
                     <span className="session-title-icon session-title-avatar">
-                      {sessionProfile ? (
-                        <EmployeeAvatarMark
-                          profile={sessionProfile}
-                          fallback={sessionAgentFallback || '员'}
-                          className="session-agent-avatar"
-                        />
-                      ) : (
-                        <SessionChatIcon />
-                      )}
+                      <EmployeeAvatarMark
+                        profile={profile}
+                        fallback={employeeDisplayName(agent).slice(0, 1) || '员'}
+                        className="session-agent-avatar"
+                      />
                     </span>
                     <div className="session-meta">
-                      <div className="session-title" title={sessionTitle}>
-                        <span className="session-title-text">{sessionTitle}</span>
+                      <div className="session-title" title={employeeDisplayName(agent)}>
+                        <span className="session-title-text">{employeeDisplayName(agent)}</span>
                       </div>
-                      <div className="session-summary" title={sessionSummary}>
-                        {sessionSummary}
+                      <div className="session-summary" title={profile.roleName}>
+                        {profile.roleName}
+                        <span className={`gallery-agent-status ${online ? 'online' : ''}`}>{online ? '在线客服' : '离线'}</span>
                       </div>
                     </div>
                   </div>
                 </div>
               );
-            })
-          )}
+            })}
         </div>
         <button type="button" className="sidebar-bottom-link" onClick={() => { window.location.href = '/enterprise/dashboard'; }}>
           <StaffdeckIcon name="grid" />
@@ -321,10 +268,13 @@ export default function EmployeeGalleryPage() {
             onChange={(event) => setSearchText(event.target.value)}
           />
           <div className="chat-header-actions">
-            <Button icon={<StaffdeckIcon name="grid" />} onClick={() => { window.location.href = '/enterprise/dashboard'; }}>
-              数字账号管理
-            </Button>
             <ThemeToggleButton />
+            <Button
+              className="icon-button"
+              icon={<StaffdeckIcon name="logout" />}
+              aria-label="退出聊天"
+              onClick={() => { window.location.href = '/enterprise/dashboard'; }}
+            />
           </div>
         </div>
         <div className="employee-gallery-page">

@@ -412,7 +412,7 @@ function Shell({
           <div className="topbar-actions">
             {accountRoleLabel && <span className="account-chip">{accountRoleLabel}</span>}
             <ThemeToggleButton />
-            <Button icon={<StaffdeckIcon name="refresh" />} onClick={() => window.location.reload()} aria-label="刷新页面" />
+            <Button icon={<StaffdeckIcon name="logout" />} onClick={onLogout} aria-label="退出登录" />
           </div>
         </Header>
         <Content className={`content ${selected === '/enterprise/dashboard' ? 'sd1-dashboard-content' : ''}`}>
