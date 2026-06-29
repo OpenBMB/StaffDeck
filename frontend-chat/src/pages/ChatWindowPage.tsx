@@ -1217,13 +1217,18 @@ export default function ChatWindowPage() {
     });
     return false;
   }, [navigate]);
-  const scrollChatToBottom = useCallback(() => {
+  const scrollChatToBottom = useCallback((options?: { preserveShortContentTop?: boolean }) => {
     const element = chatMessagesRef.current;
     if (!element) return;
+    const targetScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    if (options?.preserveShortContentTop && targetScrollTop < 120) {
+      element.scrollTop = 0;
+      return;
+    }
     window.requestAnimationFrame(() => {
-      element.scrollTop = element.scrollHeight;
+      element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
       window.requestAnimationFrame(() => {
-        element.scrollTop = element.scrollHeight;
+        element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
       });
     });
   }, []);
@@ -1737,12 +1742,12 @@ export default function ChatWindowPage() {
   }, [markSessionRead, sessionId, sessions]);
 
   useLayoutEffect(() => {
-    scrollChatToBottom();
+    scrollChatToBottom({ preserveShortContentTop: true });
   }, [displayedMessages.length, scrollChatToBottom, sessionId, storeTick, traceTick]);
 
   useEffect(() => {
     if (!currentStream.loading) return;
-    scrollChatToBottom();
+    scrollChatToBottom({ preserveShortContentTop: true });
   }, [currentStream.loading, currentStream.phase, scrollChatToBottom, storeTick, streamTick, traceTick]);
 
   useEffect(() => {

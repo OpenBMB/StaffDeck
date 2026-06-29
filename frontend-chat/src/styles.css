@@ -5078,7 +5078,7 @@ body,
 
 .message-stack {
   width: min(900px, calc(100% - 260px)) !important;
-  margin: 36px auto 0 !important;
+  margin: 16px auto 0 !important;
 }
 
 .message-item.assistant {
