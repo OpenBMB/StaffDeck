@@ -1221,7 +1221,8 @@ export default function ChatWindowPage() {
     const element = chatMessagesRef.current;
     if (!element) return;
     const targetScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-    if (options?.preserveShortContentTop && targetScrollTop < 120) {
+    const shortContentGuard = Math.min(520, element.clientHeight * 0.72);
+    if (options?.preserveShortContentTop && targetScrollTop <= shortContentGuard) {
       element.scrollTop = 0;
       return;
     }
