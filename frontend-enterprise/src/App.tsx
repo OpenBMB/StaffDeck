@@ -309,11 +309,11 @@ function Shell({
             <button
               type="button"
               className={`sd1-rail-icon ${selected === '/enterprise/platform' ? 'active' : ''}`}
-              title="开放广场"
+              title="开放广场平台"
             onClick={() => navigate('/enterprise/platform')}
           >
             <StaffdeckIcon name="desktop" />
-            <span className="sd1-rail-menu-text">开放广场</span>
+            <span className="sd1-rail-menu-text">开放广场平台</span>
           </button>
           <button
             type="button"
@@ -334,10 +334,17 @@ function Shell({
               onClick={() => navigate('/enterprise/dashboard')}
             >
               <EmployeeAvatar agent={selectedAgent} size={32} />
-              <span>{selectedAgent?.is_overall ? '广场' : employeeProfile(selectedAgent).roleName.slice(0, 2)}</span>
+              <span className="sd1-rail-agent-label">
+                <span className="sd1-rail-agent-short">{selectedAgent?.is_overall ? '广场' : employeeProfile(selectedAgent).roleName.slice(0, 2)}</span>
+                <span className="sd1-rail-agent-name">{selectedAgent?.is_overall ? '开放广场' : selectedAgentName}</span>
+                <span className="sd1-rail-agent-role">{selectedAgent?.is_overall ? '平台' : employeeProfile(selectedAgent).roleName}</span>
+              </span>
             </button>
             <div className="sd1-rail-divider" />
-            <span className="sd1-rail-label">资料</span>
+            <span className="sd1-rail-label">
+              <span className="sd1-rail-label-collapsed">资料</span>
+              <span className="sd1-rail-label-expanded">基本资料</span>
+            </span>
             <button type="button" className={`sd1-rail-icon ${selected === '/enterprise/dashboard' ? 'active' : ''}`} title="员工档案" onClick={() => navigate('/enterprise/dashboard')}>
               <StaffdeckIcon name="file" />
               <span className="sd1-rail-menu-text">员工档案</span>
@@ -354,7 +361,10 @@ function Shell({
               <StaffdeckIcon name="calendar" />
               <span className="sd1-rail-menu-text">对话日志</span>
             </button>
-            <span className="sd1-rail-label">能力</span>
+            <span className="sd1-rail-label">
+              <span className="sd1-rail-label-collapsed">能力</span>
+              <span className="sd1-rail-label-expanded">员工能力</span>
+            </span>
             <button type="button" className={`sd1-rail-icon ${selected === '/enterprise/knowledge' ? 'active' : ''}`} title="知识库" onClick={() => navigate('/enterprise/knowledge')}>
               <StaffdeckIcon name="folder" />
               <span className="sd1-rail-menu-text">知识库</span>
