@@ -1480,8 +1480,8 @@ export default function ChatWindowPage() {
     void streamTick;
     return sessionId ? getStreamSlot(sessionId) : createStreamSlot();
   }, [getStreamSlot, sessionId, streamTick]);
-  const showComposerAvatar = Boolean(sessionId && displayedMessages.length > 0 && displayedProfile);
   const composerActive = Boolean(input.trim() || displayedMessages.length > 0 || currentStream.loading);
+  const showComposerAvatar = Boolean(sessionId && displayedProfile && composerActive);
   const modelMenuItems = useMemo(() => {
     if (!enabledModelConfigs.length) {
       return [
