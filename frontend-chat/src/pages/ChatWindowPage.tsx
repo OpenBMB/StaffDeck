@@ -1221,7 +1221,12 @@ export default function ChatWindowPage() {
     const element = chatMessagesRef.current;
     if (!element) return;
     const targetScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-    const shortContentGuard = Math.min(520, element.clientHeight * 0.72);
+    const hasFloatingStatus = Boolean(
+      element.querySelector('.turn-trace-summary.running, .message-row.assistant .bubble.status-only'),
+    );
+    const shortContentGuard = hasFloatingStatus
+      ? Math.min(760, element.clientHeight)
+      : Math.min(520, element.clientHeight * 0.72);
     if (options?.preserveShortContentTop && targetScrollTop <= shortContentGuard) {
       element.scrollTop = 0;
       return;
@@ -2958,7 +2963,7 @@ export default function ChatWindowPage() {
                   <div className={`message-row ${item.role} ${item.isError ? 'error' : ''}`}>
                     <div className={`bubble ${showInlineTrace ? 'has-trace' : ''}${runningStatusOnly ? ' status-only' : ''}`}>
                       {runningStatusOnly ? (
-                        <div className="assistant-running-status">正在执行...</div>
+                        <div className="assistant-running-status">正在执行</div>
                       ) : showInlineTrace && summary && (
                         <div className="assistant-trace">
                           <button

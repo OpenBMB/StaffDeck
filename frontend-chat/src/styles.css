@@ -5688,6 +5688,11 @@ body,
   display: none !important;
 }
 
+.message-stack:has(.turn-trace-summary.running),
+.message-stack:has(.message-row.assistant .bubble.status-only) {
+  padding-bottom: clamp(180px, 30vh, 280px);
+}
+
 .composer-stage {
   position: relative;
   width: min(960px, calc(100% - 260px)) !important;
