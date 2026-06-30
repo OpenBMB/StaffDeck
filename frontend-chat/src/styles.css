@@ -6064,7 +6064,7 @@ body,
 .chat-composer-avatar {
   position: absolute;
   left: 30px;
-  bottom: 100%;
+  bottom: calc(100% + 6px);
   z-index: 8;
   width: 48px !important;
   height: 48px !important;
@@ -6081,13 +6081,11 @@ body,
 }
 
 .message-item.status-only-item {
-  position: absolute !important;
-  top: min(369px, max(180px, 54%)) !important;
-  left: 50% !important;
-  z-index: 2 !important;
-  width: min(1100px, calc(100% - 120px)) !important;
+  position: static !important;
+  z-index: auto !important;
+  width: 100% !important;
   margin: 0 !important;
-  transform: translateX(-50%) !important;
+  transform: none !important;
 }
 
 .message-row .bubble.status-only {
@@ -6136,7 +6134,6 @@ body,
   }
 
   .message-item.status-only-item {
-    top: min(300px, max(160px, 50%)) !important;
     width: calc(100% - 56px) !important;
   }
 }
