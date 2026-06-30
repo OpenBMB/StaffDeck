@@ -5280,6 +5280,10 @@ body,
   box-shadow: none !important;
 }
 
+.message-row.assistant .bubble.has-trace {
+  width: min(860px, 100%) !important;
+}
+
 .assistant-trace {
   padding: 10px 16px 8px !important;
   color: #858b9c !important;
