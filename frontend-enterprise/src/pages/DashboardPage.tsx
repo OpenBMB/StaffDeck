@@ -364,8 +364,10 @@ export default function DashboardPage({
             <span>{employeeDisplayName(selectedAgent)}</span>
           </div>
           <Space wrap className="employee-home-meta">
-            <span className="employee-online-dot" />
-            <Typography.Text>{selectedAgent.status === 'active' ? '在线' : '下线'}</Typography.Text>
+            <span className={`employee-online-status ${selectedAgent.status === 'active' ? 'is-online' : 'is-offline'}`}>
+              <span className="employee-online-dot" />
+              <Typography.Text>{selectedAgent.status === 'active' ? '在线' : '下线'}</Typography.Text>
+            </span>
             <Typography.Text type="secondary">入职时间：{employee.onboardedAt}</Typography.Text>
             {employee.workStyles.slice(0, 3).map((item) => <Tag key={item}>{item}</Tag>)}
           </Space>

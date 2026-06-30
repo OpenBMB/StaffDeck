@@ -11975,12 +11975,39 @@ body,
   font-weight: 700;
 }
 
-.employee-online-dot {
-  width: 6px;
-  height: 6px;
-  margin-right: -12px;
+.employee-online-status {
+  width: 56px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
   border-radius: 999px;
-  background: #23c663;
+  background: #f7f8fb;
+}
+
+.employee-online-status .ant-typography {
+  color: #464c5e !important;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+}
+
+.employee-online-dot {
+  flex: 0 0 6px;
+  width: 6px !important;
+  height: 6px !important;
+  min-width: 6px;
+  min-height: 6px;
+  display: inline-block;
+  margin-right: 0;
+  border-radius: 999px;
+  background: #23c663 !important;
+  box-shadow: none !important;
+}
+
+.employee-online-status.is-offline .employee-online-dot {
+  background: #a8afbd !important;
 }
 
 .employee-system-summary.ant-typography {
@@ -14130,6 +14157,15 @@ body:has(.sd1-scheduled-page) .topbar {
 :root[data-theme='dark'] .employee-avatar-actions .ant-btn:hover {
   color: #f0f2f6 !important;
   background: #283040 !important;
+}
+
+:root[data-theme='dark'] .employee-online-status {
+  background: #202126 !important;
+  border: 1px solid #303846 !important;
+}
+
+:root[data-theme='dark'] .employee-online-status .ant-typography {
+  color: #f0f2f6 !important;
 }
 
 :root[data-theme='dark'] .employee-online-dot {
