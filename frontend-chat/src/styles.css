@@ -5907,6 +5907,49 @@ body,
   border-color: #30333b !important;
 }
 
+:root[data-theme='dark'] .sidebar-workspace-panel {
+  border-color: #30333b !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme='dark'] .sidebar-gallery-entry,
+:root[data-theme='dark'] .sidebar-handoff-entry,
+:root[data-theme='dark'] .sidebar-bottom-link {
+  color: #d8dcef !important;
+  background: #111827 !important;
+  border-color: #303846 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme='dark'] .sidebar-gallery-entry:hover,
+:root[data-theme='dark'] .sidebar-gallery-entry.active,
+:root[data-theme='dark'] .sidebar-handoff-entry:hover,
+:root[data-theme='dark'] .sidebar-bottom-link:hover {
+  color: #f0f2f6 !important;
+  background: #172033 !important;
+  border-color: #3a4558 !important;
+}
+
+:root[data-theme='dark'] .sidebar-gallery-entry-icon,
+:root[data-theme='dark'] .sidebar-handoff-entry-icon,
+:root[data-theme='dark'] .sidebar-gallery-entry > .sd1-icon,
+:root[data-theme='dark'] .sidebar-bottom-link .sd1-icon,
+:root[data-theme='dark'] .sidebar-bottom-link .sd1-icon-arrow {
+  color: inherit !important;
+  background: transparent !important;
+  border-color: transparent !important;
+}
+
+:root[data-theme='dark'] .sidebar-gallery-entry-copy strong,
+:root[data-theme='dark'] .sidebar-bottom-link span {
+  color: #f0f2f6 !important;
+}
+
+:root[data-theme='dark'] .sidebar-gallery-entry-copy span {
+  color: #9da6b8 !important;
+}
+
 :root[data-theme='dark'] .chat-header-actions > .ant-btn,
 :root[data-theme='dark'] .chat-header-actions > .theme-toggle-button {
   color: #aab2c2 !important;
