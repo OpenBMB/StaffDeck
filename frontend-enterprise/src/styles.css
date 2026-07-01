@@ -5944,16 +5944,29 @@ textarea.skill-source-edit-input.ant-input,
 }
 
 .skill-source-collapsible-head {
-  min-height: 34px;
-  padding: 5px 8px 5px 10px;
-  display: flex;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 7px 6px 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
+  text-align: left;
   color: var(--muted);
-  background: var(--surface-subtle);
+  background: linear-gradient(180deg, rgba(248, 247, 244, 0.96), rgba(244, 242, 237, 0.78));
   border: 1px solid var(--border);
   border-radius: 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.skill-source-collapsible-head:hover,
+.skill-source-collapsible-head:focus-visible {
+  color: var(--foreground);
+  background: var(--surface);
+  border-color: var(--border-strong);
+  outline: none;
 }
 
 .skill-source-collapsible-preview {
@@ -5969,9 +5982,24 @@ textarea.skill-source-edit-input.ant-input,
   color: var(--muted);
 }
 
-.skill-source-collapsible-head .ant-btn {
+.skill-source-collapsible-toggle {
   flex: 0 0 auto;
+  height: 26px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 720;
+  line-height: 1;
+}
+
+.skill-source-collapsible-toggle .anticon {
+  font-size: 11px;
 }
 
 .skill-source-action-select.ant-select {
@@ -6003,6 +6031,17 @@ textarea.skill-source-edit-input.ant-input,
   border-radius: 999px;
   cursor: pointer;
   line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.86);
+  transition: opacity 0.14s ease, transform 0.14s ease, color 0.14s ease, background 0.14s ease;
+}
+
+.skill-source-action-token:hover .skill-source-action-remove,
+.skill-source-action-token:focus-within .skill-source-action-remove {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
 }
 
 .skill-source-action-remove:hover {
@@ -7387,6 +7426,20 @@ pre {
 :root[data-theme='dark'] .skill-source-collapsible-head {
   color: rgba(203, 213, 225, 0.78);
   background: rgba(248, 250, 252, 0.055);
+  border-color: rgba(226, 232, 240, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme='dark'] .skill-source-collapsible-head:hover,
+:root[data-theme='dark'] .skill-source-collapsible-head:focus-visible {
+  color: rgba(248, 250, 252, 0.94);
+  background: rgba(248, 250, 252, 0.08);
+  border-color: rgba(226, 232, 240, 0.24);
+}
+
+:root[data-theme='dark'] .skill-source-collapsible-toggle {
+  color: rgba(203, 213, 225, 0.78);
+  background: rgba(15, 23, 42, 0.82);
   border-color: rgba(226, 232, 240, 0.16);
 }
 

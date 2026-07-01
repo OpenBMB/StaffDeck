@@ -300,30 +300,34 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
     setHydratedCacheKey('');
     const cached = readDistillCache(cacheKey);
     if (cached) {
-      setDraft(cached.draft);
-      setLoadedSkill(cached.loadedSkill);
-      setLastSavedDraft(cached.lastSavedDraft);
-      setMessages(cached.messages.length > 0 ? cached.messages : DEFAULT_DISTILL_MESSAGES);
-      setInput(cached.input);
-      setSelectedPaths(normalizeInitialSelectedPaths(cached.selectedPaths));
-      setHighlightedPaths(cached.highlightedPaths);
-      setUpdatingPaths(cached.updatingPaths);
-      setDirtyPaths(cached.dirtyPaths);
-      setTextDiffs(cached.textDiffs);
-      setPendingChange(cached.pendingChange);
-      setViewMode(cached.viewMode || 'source');
-      setAttachments(cached.attachments.filter((item) => item.status !== 'uploading'));
-      setStreamStatus(cached.streamStatus);
-      setActiveJob(cached.activeJob || null);
-      setManualSourceEdited(cached.manualSourceEdited);
-      setTeacherPraiseStage(cached.teacherPraiseStage);
-      if (cached.activeJob && cached.activeJob.status !== 'succeeded' && cached.activeJob.status !== 'failed') {
-        setLoading(true);
+      if (skillId && isBlankDistillWorkspace(cached)) {
+        removeDistillCache(cacheKey);
+      } else {
+        setDraft(cached.draft);
+        setLoadedSkill(cached.loadedSkill);
+        setLastSavedDraft(cached.lastSavedDraft);
+        setMessages(cached.messages.length > 0 ? cached.messages : DEFAULT_DISTILL_MESSAGES);
+        setInput(cached.input);
+        setSelectedPaths(normalizeInitialSelectedPaths(cached.selectedPaths));
+        setHighlightedPaths(cached.highlightedPaths);
+        setUpdatingPaths(cached.updatingPaths);
+        setDirtyPaths(cached.dirtyPaths);
+        setTextDiffs(cached.textDiffs);
+        setPendingChange(cached.pendingChange);
+        setViewMode(cached.viewMode || 'source');
+        setAttachments(cached.attachments.filter((item) => item.status !== 'uploading'));
+        setStreamStatus(cached.streamStatus);
+        setActiveJob(cached.activeJob || null);
+        setManualSourceEdited(cached.manualSourceEdited);
+        setTeacherPraiseStage(cached.teacherPraiseStage);
+        if (cached.activeJob && cached.activeJob.status !== 'succeeded' && cached.activeJob.status !== 'failed') {
+          setLoading(true);
+        }
+        setSaveDraftSnapshot(null);
+        setHydratedCacheKey(cacheKey);
+        setCacheReady(true);
+        return;
       }
-      setSaveDraftSnapshot(null);
-      setHydratedCacheKey(cacheKey);
-      setCacheReady(true);
-      return;
     }
 
     if (!skillId) {
@@ -833,7 +837,8 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
       message.info('当前没有内容变化，无需保存草稿。');
       return;
     }
-    const finalDraft = saveReviewDraft;
+    let finalDraft: SkillCard = saveReviewDraft;
+    let renamedSkillId = '';
     try {
       let savedSkill: SkillRead;
       if (loadedSkill) {
@@ -847,11 +852,12 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
           savedSkill = await api.post<SkillRead>(`/api/enterprise/skills${agentOnlyQuery}`, { tenant_id: TENANT_ID, content: finalDraft, status: 'draft' });
         } catch (error) {
           if (!(error instanceof Error) || !error.message.includes('409')) throw error;
-          savedSkill = await api.put<SkillRead>(`/api/enterprise/skills/${finalDraft.skill_id}${agentOnlyQuery}`, {
-            tenant_id: TENANT_ID,
-            content: finalDraft,
-            status: 'draft',
-          });
+          finalDraft = {
+            ...cloneSkill(finalDraft),
+            skill_id: uniqueDraftSkillId(finalDraft.skill_id),
+          };
+          renamedSkillId = finalDraft.skill_id;
+          savedSkill = await api.post<SkillRead>(`/api/enterprise/skills${agentOnlyQuery}`, { tenant_id: TENANT_ID, content: finalDraft, status: 'draft' });
         }
       }
       setLoadedSkill(savedSkill);
@@ -872,7 +878,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
         clearDistillWorkspace();
         message.success('草稿已保存，当前改写已清空');
       } else {
-        message.success('草稿已保存');
+        message.success(renamedSkillId ? `SOP ID 已存在，已另存为 ${renamedSkillId}` : '草稿已保存');
       }
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败');
@@ -1352,8 +1358,10 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
     if (loading) return;
     if (!hasUnsavedSkillChanges()) {
       Modal.confirm({
-        title: '清空当前改写？',
-        content: '当前技能没有未保存变更，确认清空当前改写内容和对话记录？',
+        title: skillId ? '清空并新建 SOP？' : '清空当前改写？',
+        content: skillId
+          ? '清空只会进入一个新的 SOP 草稿工作台，不会删除或替换当前正在编辑的 SOP。'
+          : '当前技能没有未保存变更，确认清空当前改写内容和对话记录？',
         okText: '清空',
         cancelText: '取消',
         onOk: clearDistillWorkspace,
@@ -1374,6 +1382,12 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
     abortRef.current?.abort();
     Object.values(uploadControllersRef.current).forEach((controller) => controller.abort());
     uploadControllersRef.current = {};
+    const nextRoute = `/enterprise/skills/distill?mode=create${activeAgentId ? `&agent_id=${encodeURIComponent(activeAgentId)}` : ''}`;
+    const nextCacheKey = `skill-distill:${TENANT_ID}:${activeAgentId || 'default'}:create`;
+    removeDistillCache(cacheKey);
+    removeDistillCache(nextCacheKey);
+    setCacheReady(false);
+    setHydratedCacheKey('');
     setDraft(null);
     setLoadedSkill(null);
     setLastSavedDraft(null);
@@ -1394,6 +1408,12 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
     setActiveJob(null);
     setManualSourceEdited(false);
     setTeacherPraiseStage('idle');
+    if (skillId) {
+      navigate(nextRoute, { replace: true });
+    } else {
+      setHydratedCacheKey(cacheKey);
+      setCacheReady(true);
+    }
   }
 
   function toggleTarget(target: TargetSelection) {
@@ -2146,7 +2166,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
         }
       >
         <Typography.Paragraph>
-          检测到当前技能有未保存变更。你可以先保存当前技能版本，保存成功后会自动清空当前改写内容。
+          检测到当前 SOP 有未保存变更。你可以先保存当前内容；清空后会进入新的 SOP 草稿工作台，不会把原 SOP 替换为空。
         </Typography.Paragraph>
       </Modal>
       <Modal
@@ -3697,16 +3717,19 @@ function EditableSourceTextLine({
         <EditableSourceField>
           {canCollapse ? (
             <div className="skill-source-collapsible-editor">
-              <div className="skill-source-collapsible-head">
-                {collapsed ? (
-                  <span className="skill-source-collapsible-preview">{previewSourceText(value)}</span>
-                ) : (
-                  <span className="skill-source-collapsible-preview muted">正在编辑节点说明</span>
-                )}
-                <Button size="small" type="text" onClick={() => setCollapsed((current) => !current)}>
-                  {collapsed ? '展开编辑' : '收起'}
-                </Button>
-              </div>
+              <button
+                type="button"
+                className={`skill-source-collapsible-head ${collapsed ? 'collapsed' : 'expanded'}`}
+                onClick={() => setCollapsed((current) => !current)}
+              >
+                <span className={`skill-source-collapsible-preview ${collapsed ? '' : 'muted'}`}>
+                  {collapsed ? previewSourceText(value) : '正在编辑节点说明'}
+                </span>
+                <span className="skill-source-collapsible-toggle">
+                  {collapsed ? <RightOutlined /> : <DownOutlined />}
+                  {collapsed ? '展开' : '收起'}
+                </span>
+              </button>
               {!collapsed && (
                 <Input.TextArea
                   className="skill-source-edit-input"
@@ -5040,6 +5063,18 @@ function writeDistillCache(key: string, snapshot: DistillCacheSnapshot): void {
   }
 }
 
+function removeDistillCache(key: string): void {
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    // Cache cleanup is best-effort.
+  }
+}
+
+function isBlankDistillWorkspace(snapshot: DistillCacheSnapshot): boolean {
+  return !snapshot.draft && !snapshot.loadedSkill && !snapshot.lastSavedDraft;
+}
+
 function normalizeInitialSelectedPaths(paths: string[]): string[] {
   if (paths.length === 1 && paths[0] === 'basic') return [];
   return paths;
@@ -5082,6 +5117,15 @@ function mergePaths(current: string[], next: string[]): string[] {
 
 function cloneSkill(skill: SkillCard): SkillCard {
   return JSON.parse(JSON.stringify(skill)) as SkillCard;
+}
+
+function uniqueDraftSkillId(skillId: string): string {
+  const normalized = (skillId || 'skill')
+    .trim()
+    .replace(/[^A-Za-z0-9_.-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    || 'skill';
+  return `${normalized}_${Date.now().toString(36)}`;
 }
 
 function comparableSkillContent(skill: SkillCard): SkillCard {
