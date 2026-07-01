@@ -1174,6 +1174,7 @@ export default function ChatWindowPage() {
   const [streamTick, setStreamTick] = useState(0);
   const [traceTick, setTraceTick] = useState(0);
   const [expandedTraceIds, setExpandedTraceIds] = useState<string[]>([]);
+  const [collapsedTraceIds, setCollapsedTraceIds] = useState<string[]>([]);
   const [scheduledDrafts, setScheduledDrafts] = useState<Record<string, ScheduledTaskDraftRead>>({});
   const [createdScheduledTasks, setCreatedScheduledTasks] = useState<Record<string, ScheduledTaskRead>>({});
   const [dismissedDraftMessageIds, setDismissedDraftMessageIds] = useState<string[]>([]);
@@ -1405,7 +1406,17 @@ export default function ChatWindowPage() {
         setModelConfigs([]);
       });
   }, [auth, navigate, tenantId]);
-  const toggleTrace = useCallback((turnId: string) => {
+  const toggleTrace = useCallback((turnId: string, defaultExpanded = false) => {
+    if (defaultExpanded) {
+      setCollapsedTraceIds((current) => (
+        current.includes(turnId)
+          ? current.filter((item) => item !== turnId)
+          : [...current, turnId]
+      ));
+      setExpandedTraceIds((current) => current.filter((item) => item !== turnId));
+      return;
+    }
+    setCollapsedTraceIds((current) => current.filter((item) => item !== turnId));
     setExpandedTraceIds((current) => (
       current.includes(turnId)
         ? current.filter((item) => item !== turnId)
@@ -1534,7 +1545,7 @@ export default function ChatWindowPage() {
       <button
         type="button"
         className={`turn-trace-summary ${summary.state}`}
-        onClick={() => toggleTrace(traceTurnId)}
+        onClick={() => toggleTrace(traceTurnId, summary.state === 'running')}
       >
         <span className="trace-icon-slot"><StaffdeckIcon name="refresh" /></span>
         <span className="trace-primary-text" data-text={summary.text}>{summary.text}</span>
@@ -1592,9 +1603,10 @@ export default function ChatWindowPage() {
     ? traceSummary(fallbackRunningTrace, fallbackVisibleTrace)
     : null;
   const fallbackTraceDetails = traceDetails(fallbackVisibleTrace);
+  const fallbackTraceDefaultExpanded = fallbackTraceSummary?.state === 'running';
   const fallbackTraceExpanded = Boolean(
-    fallbackTraceSummary?.state === 'running'
-    || (fallbackRunningTraceId && expandedTraceIds.includes(fallbackRunningTraceId))
+    (fallbackRunningTraceId && expandedTraceIds.includes(fallbackRunningTraceId))
+    || (fallbackTraceDefaultExpanded && !collapsedTraceIds.includes(fallbackRunningTraceId))
   );
   const modelMenuItems = useMemo(() => {
     if (!enabledModelConfigs.length) {
@@ -3246,7 +3258,11 @@ export default function ChatWindowPage() {
               const visibleTrace = forceRunningTrace ? traceLines : allowedTrace;
               const summary = trace && visibleTrace.length > 0 ? traceSummary(trace, visibleTrace) : null;
               const details = traceDetails(visibleTrace);
-              const expanded = expandedTraceIds.includes(traceTurnId) || summary?.state === 'running';
+              const defaultExpanded = summary?.state === 'running';
+              const expanded = Boolean(
+                expandedTraceIds.includes(traceTurnId)
+                || (defaultExpanded && !collapsedTraceIds.includes(traceTurnId))
+              );
               const visibleContent = staffdeckDisplayText(item.role === 'assistant'
                 ? stripTrailingCitationSummary(item.content)
                 : item.content);
