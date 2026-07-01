@@ -242,13 +242,13 @@ def get_skill(
                 AgentResourceBinding.agent_id == agent.id,
                 AgentResourceBinding.resource_type == "skill",
                 AgentResourceBinding.resource_id == row.id,
-                AgentResourceBinding.status == "active",
+                AgentResourceBinding.status != "deleted",
             )
         ).first()
         if not binding:
             raise HTTPException(status_code=404, detail="Skill not visible to this agent")
         branch = ensure_agent_skill_branch(db, tenant_id, agent.id, row)
-        row = project_skill_with_branch(row, branch)
+        row = project_skill_with_branch(row, branch, binding.status)
     stats = _skill_stats(db, tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, tenant_id, stats))
 
@@ -266,6 +266,17 @@ def update_skill(
     normalized_content, _warnings = skill_card_with_unique_step_ids(request.content)
     agent = get_agent(db, request.tenant_id, agent_id)
     if agent and not agent.is_overall:
+        binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == request.tenant_id,
+                AgentResourceBinding.agent_id == agent.id,
+                AgentResourceBinding.resource_type == "skill",
+                AgentResourceBinding.resource_id == row.id,
+                AgentResourceBinding.status != "deleted",
+            )
+        ).first()
+        if not binding:
+            raise HTTPException(status_code=404, detail="Skill not visible to this agent")
         branch = update_branch_skill(
             db,
             request.tenant_id,
@@ -275,7 +286,7 @@ def update_skill(
             "技能分支改写",
         )
         db.commit()
-        projected = project_skill_with_branch(row, branch)
+        projected = project_skill_with_branch(row, branch, binding.status)
         stats = _skill_stats(db, request.tenant_id)
         return skill_read(projected, stats, _recent_skill_stats(db, request.tenant_id, stats))
     row.version = normalized_content.version

@@ -17,6 +17,7 @@ from app.agents.branching import (
 )
 from app.agents.schema import AgentResourceImportRequest
 from app.api.agents import _skill_branch_read, import_agent_resources, list_agents
+from app.api.skills import get_skill, update_skill
 from app.api.tools import list_tools
 from app.db.models import (
     AgentProfile,
@@ -33,6 +34,7 @@ from app.db.models import (
     Tool,
 )
 from app.knowledge.okf import upsert_concepts
+from app.skills.skill_schema import SkillCard, SkillUpdateRequest
 
 
 def test_agent_skill_branch_is_copy_on_write_and_reports_branch_state() -> None:
@@ -214,6 +216,89 @@ def test_updating_inactive_branch_skill_keeps_it_inactive() -> None:
         assert branch_read["status"] == "archived"
         assert branch_read["branch_status"] == "inactive"
         assert branch_read["name"] == "停用分支技能已编辑"
+
+
+def test_inactive_bound_skill_can_be_loaded_and_saved_from_management_api() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        agent = AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="客服分支", is_overall=False)
+        skill_content = _graph("停用分支技能", "1.0.0")
+        skill_content["skill_id"] = "branch_inactive_api_edit"
+        skill = Skill(
+            tenant_id="tenant_demo",
+            skill_id="branch_inactive_api_edit",
+            version="1.0.0",
+            name="停用分支技能",
+            business_domain="电商",
+            description="停用后仍应支持从管理页编辑",
+            status="published",
+            content_json=skill_content,
+        )
+        db.add(agent)
+        db.add(skill)
+        db.commit()
+
+        copy_overall_scope_to_agent(db, "tenant_demo", agent)
+        branch = db.exec(
+            select(AgentSkillBranch).where(
+                AgentSkillBranch.tenant_id == "tenant_demo",
+                AgentSkillBranch.agent_id == agent.id,
+                AgentSkillBranch.skill_id == skill.skill_id,
+            )
+        ).one()
+        binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == "tenant_demo",
+                AgentResourceBinding.agent_id == agent.id,
+                AgentResourceBinding.resource_type == "skill",
+                AgentResourceBinding.resource_id == skill.id,
+            )
+        ).one()
+        binding.status = "inactive"
+        db.add(binding)
+        db.commit()
+
+        loaded = get_skill(skill.skill_id, "tenant_demo", agent.id, db)
+
+        assert loaded.status == "archived"
+        assert loaded.branch_status == "active"
+
+        edited_content = loaded.content.model_copy(deep=True)
+        edited_content.name = "停用分支技能已编辑"
+        edited_content.description = "停用状态下保存的新说明"
+
+        saved = update_skill(
+            skill.skill_id,
+            SkillUpdateRequest(
+                tenant_id="tenant_demo",
+                content=SkillCard.model_validate(edited_content),
+                status=loaded.status,
+            ),
+            agent.id,
+            db,
+        )
+
+        assert saved.status == "archived"
+        assert saved.branch_status == "active"
+        assert saved.name == "停用分支技能已编辑"
+        branch_after = db.exec(
+            select(AgentSkillBranch).where(
+                AgentSkillBranch.tenant_id == "tenant_demo",
+                AgentSkillBranch.agent_id == agent.id,
+                AgentSkillBranch.skill_id == skill.skill_id,
+            )
+        ).one()
+        binding_after = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == "tenant_demo",
+                AgentResourceBinding.agent_id == agent.id,
+                AgentResourceBinding.resource_type == "skill",
+                AgentResourceBinding.resource_id == skill.id,
+            )
+        ).one()
+        assert branch_after.status == "active"
+        assert binding_after.status == "inactive"
+        assert branch_after.content_json["description"] == "停用状态下保存的新说明"
 
 
 def test_disabled_open_gallery_resources_cannot_be_learned() -> None:
