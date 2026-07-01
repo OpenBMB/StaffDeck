@@ -5,8 +5,20 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 
+from app.agents.branching import copy_open_gallery_tools_to_agent
 from app.config import get_settings
-from app.db.models import GeneralSkill, ModelConfig, PersonaConfig, Skill, Tenant, Tool, User, utc_now
+from app.db.models import (
+    AgentProfile,
+    AgentResourceBinding,
+    GeneralSkill,
+    ModelConfig,
+    PersonaConfig,
+    Skill,
+    Tenant,
+    Tool,
+    User,
+    utc_now,
+)
 from app.security.encryption import encrypt_secret
 from app.security.auth import hash_password
 
@@ -764,6 +776,7 @@ def seed_demo_data(session: Session) -> None:
             tool.updated_at = utc_now()
             session.add(tool)
 
+    _backfill_demo_agent_tools(session)
     _seed_weather_general_skill(session)
 
     default_model = session.exec(
@@ -786,6 +799,27 @@ def seed_demo_data(session: Session) -> None:
         )
 
     session.commit()
+
+
+def _backfill_demo_agent_tools(session: Session) -> None:
+    agents = session.exec(
+        select(AgentProfile).where(
+            AgentProfile.tenant_id == "tenant_demo",
+            AgentProfile.is_overall == False,  # noqa: E712
+            AgentProfile.status == "active",
+        )
+    ).all()
+    for agent in agents:
+        existing_tool_binding = session.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == "tenant_demo",
+                AgentResourceBinding.agent_id == agent.id,
+                AgentResourceBinding.resource_type == "tool",
+            )
+        ).first()
+        if existing_tool_binding:
+            continue
+        copy_open_gallery_tools_to_agent(session, "tenant_demo", agent)
 
 
 def _tool_config_with_base_url(tool_config: dict, base_url: str) -> dict:

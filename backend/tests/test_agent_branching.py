@@ -107,6 +107,52 @@ def test_list_agents_allows_tool_resource_bindings() -> None:
         assert result[0].resources[0].resource_id == tool.id
 
 
+def test_copy_overall_scope_to_agent_inherits_open_gallery_tools_only() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        owner = AgentProfile(id="agent_owner", tenant_id="tenant_demo", name="个人员工", is_overall=False)
+        target = AgentProfile(id="agent_target", tenant_id="tenant_demo", name="研发员工", is_overall=False)
+        open_tool = Tool(
+            id="tool_open_lookup",
+            tenant_id="tenant_demo",
+            name="product.lookup",
+            display_name="商品查询",
+            method="POST",
+            url="/api/mock/product/lookup",
+        )
+        private_tool = Tool(
+            id="tool_private_lookup",
+            tenant_id="tenant_demo",
+            name="private.lookup",
+            display_name="个人查询",
+            method="POST",
+            url="/api/mock/private/lookup",
+        )
+        db.add(owner)
+        db.add(target)
+        db.add(open_tool)
+        db.add(private_tool)
+        db.flush()
+        ensure_private_resource_binding(db, "tenant_demo", owner.id, "tool", private_tool.id, "active")
+        db.commit()
+
+        copy_overall_scope_to_agent(db, "tenant_demo", target)
+        db.commit()
+
+        bindings = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == "tenant_demo",
+                AgentResourceBinding.agent_id == target.id,
+                AgentResourceBinding.resource_type == "tool",
+            )
+        ).all()
+
+        assert {binding.resource_id for binding in bindings} == {open_tool.id}
+        visible_tools = list_tools(tenant_id="tenant_demo", bucket=None, agent_id=target.id, db=db)
+        assert [tool.id for tool in visible_tools] == [open_tool.id]
+
+
 def test_non_overall_agent_cannot_delete_global_resources() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))

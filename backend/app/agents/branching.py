@@ -23,6 +23,7 @@ from app.db.models import (
     ModelConfig,
     Skill,
     SkillVersion,
+    Tool,
     utc_now,
 )
 
@@ -687,6 +688,22 @@ def copy_overall_scope_to_agent(db: Session, tenant_id: str, agent: AgentProfile
             "general_skill",
             general_skill.id,
             _binding_status_from_resource_status(general_skill.status),
+        )
+    copy_open_gallery_tools_to_agent(db, tenant_id, agent)
+
+
+def copy_open_gallery_tools_to_agent(db: Session, tenant_id: str, agent: AgentProfile) -> None:
+    tools = db.exec(select(Tool).where(Tool.tenant_id == tenant_id)).all()
+    for tool in tools:
+        if not is_open_gallery_resource(db, tenant_id, "tool", tool):
+            continue
+        _ensure_binding(
+            db,
+            tenant_id,
+            agent.id,
+            "tool",
+            tool.id,
+            "active" if tool.enabled else "inactive",
         )
 
 
