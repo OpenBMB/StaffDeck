@@ -1986,7 +1986,13 @@ textarea,
 
 .message-feedback .ant-btn {
   width: 28px;
+  min-width: 28px;
+  max-width: 28px;
   height: 28px;
+  flex: 0 0 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
   color: var(--muted);
   border: 1px solid transparent;
   border-radius: 8px;
@@ -1994,18 +2000,17 @@ textarea,
     color 140ms ease,
     background-color 140ms ease,
     border-color 140ms ease,
-    transform 140ms ease,
     box-shadow 140ms ease;
 }
 
 .message-feedback .ant-btn.active {
-  animation: feedback-pop 180ms ease;
+  animation: none;
 }
 
 .message-feedback .ant-btn:hover {
   color: var(--foreground) !important;
   background: var(--surface-muted) !important;
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .message-feedback .ant-btn.active:not(.danger) {
@@ -5326,26 +5331,41 @@ body,
 
 .message-feedback {
   justify-content: flex-end !important;
-  gap: 16px !important;
+  gap: 10px !important;
   min-height: 24px !important;
   padding: 0 16px 10px !important;
 }
 
 .message-feedback .ant-btn {
-  width: 14px !important;
-  min-width: 14px !important;
-  height: 14px !important;
+  width: 20px !important;
+  min-width: 20px !important;
+  max-width: 20px !important;
+  flex: 0 0 20px !important;
+  height: 20px !important;
   padding: 0 !important;
+  display: inline-grid !important;
+  place-items: center !important;
   color: #9aa3b8 !important;
   background: transparent !important;
   border: 0 !important;
   border-radius: 0 !important;
   box-shadow: none !important;
+  transform: none !important;
+  animation: none !important;
 }
 
 .message-feedback .ant-btn .sd1-icon {
   width: 14px !important;
   height: 14px !important;
+}
+
+.message-feedback .ant-btn .ant-btn-icon {
+  width: 14px !important;
+  height: 14px !important;
+  display: grid !important;
+  place-items: center !important;
+  margin: 0 !important;
+  line-height: 0 !important;
 }
 
 .message-item.system {
