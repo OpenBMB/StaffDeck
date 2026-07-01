@@ -6111,16 +6111,22 @@ textarea.skill-source-edit-input.ant-input,
 .skill-flow-rule-condition-controls {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(150px, 0.7fr) minmax(180px, 1fr);
+  grid-template-columns: minmax(150px, 0.62fr) minmax(220px, 1.38fr);
   gap: 6px;
+  align-items: start;
 }
 
 .skill-flow-rule-target.ant-select,
 .skill-flow-rule-label-input.ant-input,
 .skill-flow-rule-condition-input.ant-input,
+.skill-flow-rule-condition-input textarea.ant-input,
 .skill-flow-rule-priority.ant-input-number {
   width: 100%;
   min-width: 0;
+}
+
+.skill-flow-rule-condition-input textarea.ant-input {
+  resize: none;
 }
 
 .skill-flow-rule-delete.ant-btn {

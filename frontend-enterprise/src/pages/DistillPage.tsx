@@ -130,6 +130,27 @@ const CONDITION_PRESET_OPTIONS: SelectOption[] = [
   { value: 'user_rejected', label: '用户已拒绝' },
   { value: '__custom__', label: '自定义条件' },
 ];
+
+const CONDITION_PRESET_TEXT: Record<string, string> = {
+  missing_required_info: '还有必填信息没有收集到时进入',
+  'missing_slots([])': '缺少某个指定字段时进入',
+  all_required_info_collected: '所有必填信息都收集完成后进入',
+  tool_success: '上一步工具调用成功后进入',
+  tool_failed: '上一步工具调用失败后进入',
+  user_confirmed: '用户明确确认后进入',
+  user_rejected: '用户明确拒绝后进入',
+};
+
+const CONDITION_FIELD_LABELS: Record<string, string> = {
+  message_content: '用户消息内容',
+  product_name: '商品名称',
+  product_name_1: '第一个商品名称',
+  product_name_2: '第二个商品名称',
+  product_id: '商品编号',
+  order_id: '订单号',
+  user_name: '用户姓名',
+  quantity: '数量',
+};
 type PendingChange = {
   assistantId: string;
   previousDraft: SkillCard;
@@ -3513,7 +3534,7 @@ function incomingEdgeLabel(edge: Record<string, unknown>, nodeNameMap: Record<st
   const sourceName = source && nodeNameMap[source] ? nodeNameMap[source] : source;
   const targetName = edgeTargetName(edge, nodeNameMap);
   const label = String(edge.label || '');
-  const condition = String(edge.condition || '');
+  const condition = conditionNaturalText(String(edge.condition || ''));
   const route = [sourceName, targetName].filter(Boolean).join(' -> ');
   const detail = label && condition ? `${label}（${condition}）` : label || condition;
   if (route && detail) return `${route}：${detail}`;
@@ -3524,7 +3545,7 @@ function incomingEdgeLabel(edge: Record<string, unknown>, nodeNameMap: Record<st
 function edgeDisplayLabel(edge: Record<string, unknown>, nodeNameMap: Record<string, string> = {}): string {
   const label = String(edge.label || '').trim();
   if (label) return label;
-  const condition = String(edge.condition || '').trim();
+  const condition = conditionNaturalText(String(edge.condition || '')).trim();
   if (condition) return condition;
   const source = String(edge.source_node_id || '');
   const sourceName = source && nodeNameMap[source] ? nodeNameMap[source] : source;
@@ -3597,7 +3618,7 @@ function sourceEdgeSummary(
 ): string {
   const targetName = edgeTargetName(edge, nodeNameMap) || '未指定节点';
   const label = String(edge.label || '').trim();
-  const condition = String(edge.condition || '').trim();
+  const condition = conditionNaturalText(String(edge.condition || '')).trim();
   const hasPriority = edge.priority !== undefined && edge.priority !== null && String(edge.priority).trim() !== '';
   const priority = hasPriority && typeof edge.priority === 'number' ? edge.priority : hasPriority && Number.isFinite(Number(edge.priority)) ? Number(edge.priority) : index;
   const prefix = label || condition;
@@ -3829,6 +3850,7 @@ function EditableConditionLine({
   onChange: (value: string) => void;
 }) {
   const presetValue = conditionPresetValue(value);
+  const naturalValue = conditionNaturalText(value);
   return (
     <div className="skill-source-line skill-condition-line">
       <span className="skill-source-key">{fieldLabel('condition')}</span>
@@ -3841,14 +3863,17 @@ function EditableConditionLine({
               options={CONDITION_PRESET_OPTIONS}
               popupMatchSelectWidth={260}
               onChange={(nextValue) => {
-                if (nextValue === '__custom__') return;
-                onChange(nextValue === '__always__' ? '' : nextValue);
+                if (nextValue === '__custom__') {
+                  onChange(naturalValue);
+                  return;
+                }
+                onChange(conditionFromPreset(nextValue));
               }}
             />
             <Input.TextArea
               className="skill-source-edit-input skill-condition-input"
-              value={value}
-              placeholder="留空表示总是可进入；也可写 missing_slots(['field'])、tool_success 等条件。"
+              value={naturalValue}
+              placeholder="用一句话描述什么时候进入，例如：用户已经提供商品名称后进入"
               autoSize={{ minRows: 1, maxRows: 4 }}
               onChange={(event) => onChange(event.target.value)}
             />
@@ -4094,14 +4119,18 @@ function EditableFlowRulesLine({
                           options={CONDITION_PRESET_OPTIONS}
                           popupMatchSelectWidth={260}
                           onChange={(nextValue) => {
-                            if (nextValue === '__custom__') return;
-                            onUpdate(index, { condition: nextValue === '__always__' ? '' : nextValue });
+                            if (nextValue === '__custom__') {
+                              onUpdate(index, { condition: conditionNaturalText(String(edge.condition || '')) });
+                              return;
+                            }
+                            onUpdate(index, { condition: conditionFromPreset(nextValue) });
                           }}
                         />
-                        <Input
+                        <Input.TextArea
                           className="skill-flow-rule-condition-input"
-                          value={conditionInputValue(String(edge.condition || ''))}
-                          placeholder="留空表示总是进入；自定义时填写具体条件"
+                          value={conditionNaturalText(String(edge.condition || ''))}
+                          placeholder="用一句话描述，例如：报文已获取后进入"
+                          autoSize={{ minRows: 1, maxRows: 3 }}
                           onChange={(event) => onUpdate(index, { condition: event.target.value })}
                         />
                       </div>
@@ -5532,41 +5561,81 @@ function conditionPresetValue(value: string): string {
   const trimmed = value.trim();
   if (!trimmed || trimmed === 'always' || trimmed === 'true') return '__always__';
   if (CONDITION_PRESET_OPTIONS.some((option) => option.value === trimmed)) return trimmed;
+  const naturalMatch = Object.entries(CONDITION_PRESET_TEXT).find(([, text]) => text === trimmed);
+  if (naturalMatch) return naturalMatch[0];
   if (/^missing_slots\s*\(/.test(trimmed)) return 'missing_slots([])';
+  if (/(缺少|没有|未填写|未提供|未收集)/.test(trimmed)) return 'missing_slots([])';
+  if (/必填信息/.test(trimmed) && /(完成|完整|已收集|都收集)/.test(trimmed)) return 'all_required_info_collected';
+  if (/必填信息/.test(trimmed) && /(缺少|没有|未收集)/.test(trimmed)) return 'missing_required_info';
+  if (/工具/.test(trimmed) && /(成功|正常)/.test(trimmed)) return 'tool_success';
+  if (/工具/.test(trimmed) && /(失败|异常|报错)/.test(trimmed)) return 'tool_failed';
+  if (/(用户)?.*(确认|同意|通过)/.test(trimmed)) return 'user_confirmed';
+  if (/(用户)?.*(拒绝|不同意|驳回)/.test(trimmed)) return 'user_rejected';
   return '__custom__';
 }
 
-function conditionInputValue(value: string): string {
+function conditionFromPreset(value: string): string {
+  if (value === '__always__') return '';
+  return CONDITION_PRESET_TEXT[value] || '';
+}
+
+function conditionNaturalText(value: string): string {
   const trimmed = value.trim();
-  return trimmed === 'always' || trimmed === 'true' ? '' : value;
+  if (!trimmed || trimmed === 'always' || trimmed === 'true') return '';
+  if (CONDITION_PRESET_TEXT[trimmed]) return CONDITION_PRESET_TEXT[trimmed];
+  const presetMatch = Object.entries(CONDITION_PRESET_TEXT).find(([, text]) => text === trimmed);
+  if (presetMatch) return presetMatch[1];
+  const missingSlots = fieldsFromMissingSlotsCondition(trimmed);
+  if (missingSlots.length > 0) {
+    return `缺少${missingSlots.map(conditionFieldLabel).join('、')}时进入`;
+  }
+  const emptySlot = fieldFromEmptySlotCondition(trimmed);
+  if (emptySlot) return `还没有${conditionFieldLabel(emptySlot)}时进入`;
+  const filledSlot = fieldFromFilledSlotCondition(trimmed);
+  if (filledSlot) return `已经有${conditionFieldLabel(filledSlot)}后进入`;
+  if (isTechnicalCondition(trimmed)) return '满足旧版系统条件后进入';
+  return trimmed;
 }
 
 function conditionReadableText(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed || trimmed === 'always' || trimmed === 'true') return '通俗说明：没有额外限制，流程可以从这里继续。';
-  const missingMatch = trimmed.match(/^missing_slots\((.*)\)$/);
-  if (missingMatch) {
-    const fields = missingMatch[1]
-      .split(',')
-      .map((item) => item.replace(/[\[\]'"\s]/g, ''))
-      .filter(Boolean);
-    return fields.length > 0
-      ? `通俗说明：当还缺少 ${fields.join('、')} 时进入这个节点。`
-      : '通俗说明：当还缺少指定字段时进入这个节点。';
-  }
-  const labels: Record<string, string> = {
-    missing_required_info: '通俗说明：当还有任一必填信息没有收集到时进入这个节点。',
-    all_required_info_collected: '通俗说明：当所有必填信息都已经收集完成时进入这个节点。',
-    tool_success: '通俗说明：上一步工具调用成功后进入这个节点。',
-    tool_failed: '通俗说明：上一步工具调用失败后进入这个节点。',
-    user_confirmed: '通俗说明：用户明确确认后进入这个节点。',
-    user_rejected: '通俗说明：用户明确拒绝后进入这个节点。',
-  };
-  return labels[trimmed] || `通俗说明：满足「${trimmed}」时进入这个节点。`;
+  const natural = conditionNaturalText(value);
+  return natural ? `模型理解：${natural}。` : '模型理解：没有额外限制，流程可以从这里继续。';
 }
 
 function flowRuleConditionText(value: string): string {
-  return conditionReadableText(value).replace(/^通俗说明：/, '进入条件：');
+  const natural = conditionNaturalText(value);
+  return natural ? `进入条件：${natural}。` : '进入条件：总是进入。';
+}
+
+function fieldsFromMissingSlotsCondition(value: string): string[] {
+  const missingMatch = value.match(/^missing_slots\((.*)\)$/);
+  if (!missingMatch) return [];
+  return missingMatch[1]
+    .split(',')
+    .map((item) => item.replace(/[\[\]'"\s]/g, ''))
+    .filter(Boolean);
+}
+
+function fieldFromEmptySlotCondition(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const match = normalized.match(/^slots\.([A-Za-z0-9_]+) is null or slots\.\1\s*==\s*['"]{2}$/)
+    || normalized.match(/^slots\.([A-Za-z0-9_]+)\s*==\s*['"]{2} or slots\.\1 is null$/);
+  return match?.[1] || '';
+}
+
+function fieldFromFilledSlotCondition(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const match = normalized.match(/^slots\.([A-Za-z0-9_]+) is not null and slots\.\1\s*!=\s*['"]{2}$/)
+    || normalized.match(/^slots\.([A-Za-z0-9_]+)\s*!=\s*['"]{2} and slots\.\1 is not null$/);
+  return match?.[1] || '';
+}
+
+function conditionFieldLabel(field: string): string {
+  return CONDITION_FIELD_LABELS[field] || field.replace(/_/g, ' ');
+}
+
+function isTechnicalCondition(value: string): boolean {
+  return /(^|[^A-Za-z])slots\.|missing_slots\s*\(|==|!=|&&|\|\||\bis\s+(not\s+)?null\b/i.test(value);
 }
 
 function diffTargetLabel(path: string, skill: SkillCard | null): string {
