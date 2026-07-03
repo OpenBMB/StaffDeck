@@ -5284,6 +5284,7 @@ body,
   min-height: 0 !important;
   padding: 0 !important;
   scrollbar-gutter: stable both-edges !important;
+  overflow-anchor: none !important;
   overflow-x: hidden !important;
   overflow-y: auto !important;
 }

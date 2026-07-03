@@ -1224,6 +1224,9 @@ export default function ChatWindowPage() {
   });
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isChatProgrammaticScrollRef = useRef(false);
+  const isChatStickyToBottomRef = useRef(true);
+  const lastActiveConversationIdRef = useRef<string | null>(null);
   const storeRef = useRef(new Map<string, SessionSlot>());
   const streamRef = useRef(new Map<string, StreamSlot>());
   const turnTraceRef = useRef(new Map<string, TurnTrace>());
@@ -1245,16 +1248,39 @@ export default function ChatWindowPage() {
     uploadControllersRef.current.forEach((controller) => controller.abort());
     uploadControllersRef.current.clear();
   }, []);
+
+  const updateChatStickiness = useCallback(() => {
+    const element = chatMessagesRef.current;
+    if (!element) return;
+    const remainingScroll = element.scrollHeight - element.clientHeight - element.scrollTop;
+    isChatStickyToBottomRef.current = remainingScroll <= 96;
+  }, []);
+
+  const finishProgrammaticChatScroll = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      updateChatStickiness();
+      isChatProgrammaticScrollRef.current = false;
+    });
+  }, [updateChatStickiness]);
+
+  const handleChatMessagesScroll = useCallback(() => {
+    if (isChatProgrammaticScrollRef.current) return;
+    updateChatStickiness();
+  }, [updateChatStickiness]);
+
   const keepRunningStatusInMessageArea = useCallback(() => {
     const element = chatMessagesRef.current;
     if (!element) return false;
     const status = element.querySelector<HTMLElement>('.message-item.status-only-item, .message-item.running-trace-item');
     if (!status) return false;
+    if (element.scrollTop > 16) return false;
     if (element.scrollTop !== 0) {
+      isChatProgrammaticScrollRef.current = true;
       element.scrollTop = 0;
+      finishProgrammaticChatScroll();
     }
     return true;
-  }, []);
+  }, [finishProgrammaticChatScroll]);
   const notifyRequestError = useCallback((scope: string, error: unknown, fallback: string) => {
     if (isAuthError(error)) {
       clearAuthSession();
@@ -1276,22 +1302,26 @@ export default function ChatWindowPage() {
     });
     return false;
   }, [navigate]);
-  const scrollChatToBottom = useCallback((options?: { preserveShortContentTop?: boolean }) => {
+  const scrollChatToBottom = useCallback((options?: { preserveShortContentTop?: boolean; force?: boolean }) => {
     const element = chatMessagesRef.current;
     if (!element) return;
+    if (!options?.force && !isChatStickyToBottomRef.current) return;
     const targetScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
     const shortContentGuard = Math.min(520, element.clientHeight * 0.72);
+    isChatProgrammaticScrollRef.current = true;
     if (options?.preserveShortContentTop && targetScrollTop <= shortContentGuard) {
       element.scrollTop = 0;
+      finishProgrammaticChatScroll();
       return;
     }
     window.requestAnimationFrame(() => {
       element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
       window.requestAnimationFrame(() => {
         element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+        finishProgrammaticChatScroll();
       });
     });
-  }, []);
+  }, [finishProgrammaticChatScroll]);
 
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((current) => {
@@ -2026,6 +2056,13 @@ export default function ChatWindowPage() {
   }, [markSessionRead, sessionId, sessions]);
 
   useLayoutEffect(() => {
+    const conversationChanged = activeConversationId !== lastActiveConversationIdRef.current;
+    lastActiveConversationIdRef.current = activeConversationId;
+    if (conversationChanged) {
+      isChatStickyToBottomRef.current = true;
+      scrollChatToBottom({ preserveShortContentTop: true, force: true });
+      return;
+    }
     if (keepRunningStatusInMessageArea()) return;
     scrollChatToBottom({ preserveShortContentTop: true });
   }, [activeConversationId, displayedMessages.length, keepRunningStatusInMessageArea, scrollChatToBottom, storeTick, traceTick]);
@@ -3452,7 +3489,7 @@ export default function ChatWindowPage() {
             />
           </div>
         </div>
-        <div className="chat-messages" ref={chatMessagesRef}>
+        <div className="chat-messages" ref={chatMessagesRef} onScroll={handleChatMessagesScroll}>
           {displayedMessages.length === 0 && (
             <div className="chat-empty-state staffdeck-empty-state">
               <EmployeeAvatarMark profile={displayedProfile} fallback="SD" className="staffdeck-empty-avatar" />
