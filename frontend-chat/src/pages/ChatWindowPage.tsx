@@ -102,6 +102,7 @@ type ComposerInteractionMode = 'normal' | 'scheduled_task';
 const MODEL_CONFIG_STORAGE_PREFIX = 'skill_agent_selected_model_config';
 const SESSION_READ_STORAGE_PREFIX = 'skill_agent_session_read_at';
 const RUNNING_EVENT_RECOVERY_WINDOW_MS = 5 * 60 * 1000;
+const CHAT_STREAM_IDLE_TIMEOUT_MS = 90 * 1000;
 
 function sessionReadStorageKey(userId: string): string {
   return `${SESSION_READ_STORAGE_PREFIX}:${userId || 'anonymous'}`;
@@ -500,39 +501,23 @@ function attachTurnIdsToServerMessages(
   realtimeMessages: ChatMessage[],
   previousMessages: ChatMessage[] = [],
 ): ChatMessage[] {
-  const pendingTurns = realtimeMessages.filter((item) => item.turnId && item.role === 'user').reverse();
-  const realtimeTurnIds = new Set(
+  const realtimeTurnIdsByServerId = new Map(
     realtimeMessages
-      .map((item) => item.turnId)
-      .filter((turnId): turnId is string => Boolean(turnId)),
-  );
-  const pendingTurnIdsByServerId = new Map<string, string>();
-  const matchedServerMessageIds = new Set<string>();
-  const previousTurnIds = new Map(
-    previousMessages
-      .filter((item) => item.turnId && (item.turnId === item.id || realtimeTurnIds.has(item.turnId)))
+      .filter((item) => item.turnId && item.id && item.id === item.serverMessageId)
       .map((item) => [item.id, item.turnId as string]),
   );
-
-  pendingTurns.forEach((pendingTurn) => {
-    const pendingContent = normalizeMessageText(pendingTurn.content);
-    if (!pendingTurn.turnId || !pendingContent) return;
-    for (let index = serverMessages.length - 1; index >= 0; index -= 1) {
-      const serverMessage = serverMessages[index];
-      if (serverMessage.role !== 'user' || matchedServerMessageIds.has(serverMessage.id)) continue;
-      if (normalizeMessageText(serverMessage.content) !== pendingContent) continue;
-      pendingTurnIdsByServerId.set(serverMessage.id, pendingTurn.turnId);
-      matchedServerMessageIds.add(serverMessage.id);
-      return;
-    }
-  });
+  const previousTurnIds = new Map(
+    previousMessages
+      .filter((item) => item.turnId)
+      .map((item) => [item.id, item.turnId as string]),
+  );
 
   let activeTurnId: string | undefined;
 
   return serverMessages.map((messageItem) => {
     const previousTurnId = previousTurnIds.get(messageItem.id);
     if (messageItem.role === 'user') {
-      activeTurnId = pendingTurnIdsByServerId.get(messageItem.id) || previousTurnId || messageItem.turnId || messageItem.id;
+      activeTurnId = realtimeTurnIdsByServerId.get(messageItem.id) || previousTurnId || messageItem.turnId || messageItem.id;
       return { ...messageItem, turnId: activeTurnId };
     }
     if (messageItem.role === 'assistant' && activeTurnId) {
@@ -1610,6 +1595,30 @@ export default function ChatWindowPage() {
     }
     notifyStream();
   }, [getSlot, getStreamSlot, notifyStore, notifyStream]);
+
+  const bindRealtimeUserToServerMessage = useCallback((id: string, turnId: string, serverMessageId: string) => {
+    if (!turnId || !serverMessageId) return;
+    const slot = getSlot(id);
+    let changed = false;
+    slot.realtimeMessages = slot.realtimeMessages.map((item) => {
+      if (item.role !== 'user' || item.turnId !== turnId) return item;
+      changed = true;
+      return {
+        ...item,
+        id: serverMessageId,
+        serverMessageId,
+      };
+    });
+    slot.serverMessages = slot.serverMessages.map((item) => {
+      if (item.id !== serverMessageId) return item;
+      changed = true;
+      return {
+        ...item,
+        turnId,
+      };
+    });
+    if (changed) notifyStore();
+  }, [getSlot, notifyStore]);
 
   const displayedMessages = useMemo(() => {
     if (!activeConversationId) return [];
@@ -2912,6 +2921,8 @@ export default function ChatWindowPage() {
 
     const controller = new AbortController();
     stream.abortController = controller;
+    let receivedTerminalEvent = false;
+    let streamWatchdog: number | null = null;
 
     const clearRunningTurn = (targetId = liveConversationId) => {
       setRunningTurn((current) => (
@@ -2919,6 +2930,51 @@ export default function ChatWindowPage() {
           ? null
           : current
       ));
+    };
+
+    const clearStreamWatchdog = () => {
+      if (streamWatchdog !== null) {
+        window.clearTimeout(streamWatchdog);
+        streamWatchdog = null;
+      }
+    };
+
+    const appendInterruptedResponse = (reason: string) => {
+      clearStreamSlot(liveConversationId, true);
+      appendRealtime(liveConversationId, {
+        id: `stream_interrupted_${turnId}_${Date.now()}`,
+        turnId,
+        role: 'assistant',
+        content: reason,
+        created_at: new Date().toISOString(),
+        isError: true,
+      });
+      finishTrace(turnId, true);
+      clearRunningTurn(liveConversationId);
+      notifyStream();
+      window.setTimeout(() => {
+        loadMessages(liveConversationId);
+        loadTraces(liveConversationId);
+        loadSessions();
+      }, 250);
+    };
+
+    const failStalledStream = () => {
+      if (receivedTerminalEvent || controller.signal.aborted) return;
+      const activeStream = getStreamSlot(liveConversationId);
+      if (activeStream.abortController !== controller || activeStream.cancelledTurnId === turnId) return;
+      controller.abort();
+      appendInterruptedResponse('本次响应等待时间过长，已停止等待。请重试发送。');
+    };
+
+    const armStreamWatchdog = () => {
+      clearStreamWatchdog();
+      streamWatchdog = window.setTimeout(failStalledStream, CHAT_STREAM_IDLE_TIMEOUT_MS);
+    };
+
+    const markStreamTerminal = () => {
+      receivedTerminalEvent = true;
+      clearStreamWatchdog();
     };
 
     const promoteDraftConversation = (nextSessionId: string) => {
@@ -2994,7 +3050,11 @@ export default function ChatWindowPage() {
       if (!isDraftConversation) {
         requestBody.session_id = currentConversationId;
       }
+      armStreamWatchdog();
       await streamChatTurn(requestBody, (item) => {
+        if (!controller.signal.aborted) {
+          armStreamWatchdog();
+        }
         if (item.event === 'session_created') {
           createdSessionId = String(item.data.newSessionId || item.data.sessionId || '');
           return;
@@ -3005,6 +3065,11 @@ export default function ChatWindowPage() {
         const eventStream = getStreamSlot(eventSessionId);
         if (controller.signal.aborted || eventStream.cancelledTurnId === turnId) return;
         if (item.event === 'session_created') {
+          return;
+        }
+        if (item.event === 'user_message_received') {
+          const serverMessageId = typeof item.data.message_id === 'string' ? item.data.message_id : '';
+          bindRealtimeUserToServerMessage(eventSessionId, turnId, serverMessageId);
           return;
         }
         if (item.event === 'scheduled_task_draft') {
@@ -3243,6 +3308,7 @@ export default function ChatWindowPage() {
           return;
         }
         if (item.event === 'stream_end') {
+          markStreamTerminal();
           finishTrace(turnId);
           upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
           finalizeStreaming(eventSessionId);
@@ -3257,6 +3323,7 @@ export default function ChatWindowPage() {
           return;
         }
         if (item.event === 'complete' || item.event === 'done') {
+          markStreamTerminal();
           const result = item.data as ChatTurnResponse;
           const completedSessionId = result.session_id || createdSessionId || String(item.data.sessionId || '');
           const userIntent = typeof result.router_decision?.user_intent === 'string' ? result.router_decision.user_intent : '';
@@ -3293,7 +3360,29 @@ export default function ChatWindowPage() {
           }, 250);
         }
       }, controller.signal);
+      clearStreamWatchdog();
+      if (!receivedTerminalEvent && !controller.signal.aborted) {
+        const activeStream = getStreamSlot(liveConversationId);
+        if (activeStream.accumulated) {
+          finishTrace(turnId);
+          upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
+          finalizeStreaming(liveConversationId);
+          activeStream.loading = false;
+          activeStream.phase = '';
+          activeStream.abortController = null;
+          clearRunningTurn(liveConversationId);
+          notifyStream();
+          loadSessions();
+          window.setTimeout(() => {
+            loadMessages(liveConversationId);
+            loadTraces(liveConversationId);
+          }, 250);
+        } else {
+          appendInterruptedResponse('本次响应中断，未收到模型回复。请重试发送。');
+        }
+      }
     } catch (error) {
+      clearStreamWatchdog();
       if (controller.signal.aborted) {
         return;
       }
@@ -3301,14 +3390,15 @@ export default function ChatWindowPage() {
         clearAuthSession();
         navigate('/login', { replace: true });
         finishTrace(turnId, true);
-        stream.loading = false;
-        stream.phase = '';
+        clearStreamSlot(liveConversationId, true);
         clearRunningTurn();
         notifyStream();
         return;
       }
+      clearStreamSlot(liveConversationId, true);
       appendRealtime(liveConversationId, {
         id: `error_${Date.now()}`,
+        turnId,
         role: 'assistant',
         content: '发送失败，请稍后重试',
         created_at: new Date().toISOString(),
@@ -3316,11 +3406,10 @@ export default function ChatWindowPage() {
       });
       notifyRequestError('send', error, '发送失败');
       finishTrace(turnId, true);
-      stream.loading = false;
-      stream.phase = '';
       clearRunningTurn();
       notifyStream();
     } finally {
+      clearStreamWatchdog();
       if (stream.abortController === controller) {
         stream.abortController = null;
         stream.loading = false;

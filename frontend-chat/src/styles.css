@@ -6537,6 +6537,7 @@ body,
 
 .message-row .bubble.status-only {
   width: fit-content !important;
+  min-width: 118px !important;
   max-width: min(860px, 100%) !important;
   padding: 10px 16px !important;
   color: #858b9c !important;
@@ -6545,9 +6546,15 @@ body,
   border-radius: 14px 14px 14px 0 !important;
   box-shadow: none !important;
   overflow: visible !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
 }
 
 .assistant-running-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: inherit;
   font-size: 12px;
   font-weight: 500;

@@ -55,6 +55,7 @@ export type ChatMessage = {
   created_at: string;
   feedback_rating?: 'up' | 'down' | null;
   turnId?: string;
+  serverMessageId?: string;
   isStreaming?: boolean;
   isError?: boolean;
 };
