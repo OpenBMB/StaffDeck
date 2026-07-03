@@ -70,8 +70,12 @@ const CAPABILITY_NAV: NavItem[] = [
 
 const SYSTEM_NAV: NavItem[] = [
   { route: EnterpriseRoute.Accounts, label: '账号管理', Icon: IconAccounts },
-  { route: EnterpriseRoute.Models, label: '模型', Icon: IconModels },
+  { route: EnterpriseRoute.Models, label: '模型配置', Icon: IconModels },
 ];
+
+function primaryNavItems(isAdmin: boolean): NavItem[] {
+  return isAdmin ? [...PRIMARY_NAV, ...SYSTEM_NAV] : PRIMARY_NAV;
+}
 
 export type AppSidebarProps = {
   selected: string;
@@ -372,6 +376,7 @@ function CollapsedSidebar({
       ? '开放广场'
       : employeeDisplayName(sidebarAgent)
     : '未选择';
+  const primaryItems = primaryNavItems(isAdmin);
 
   return (
     <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[16px] py-[10px]">
@@ -397,7 +402,7 @@ function CollapsedSidebar({
       </div>
 
       <div className="flex w-full flex-col items-center gap-[18px]">
-        {PRIMARY_NAV.map((item) => (
+        {primaryItems.map((item) => (
           <CollapsedNavButton
             key={item.route}
             item={item}
@@ -446,22 +451,6 @@ function CollapsedSidebar({
                 iconSize={14}
               />
             ))}
-
-            {isAdmin && (
-              <>
-                <CollapsedGroupLabel>系统</CollapsedGroupLabel>
-                {SYSTEM_NAV.map((item) => (
-                  <CollapsedNavButton
-                    key={item.route}
-                    item={item}
-                    selected={selected}
-                    onNavigate={onNavigate}
-                    radius={10}
-                    iconSize={14}
-                  />
-                ))}
-              </>
-            )}
           </div>
         </div>
 
@@ -499,6 +488,7 @@ export default function AppSidebar({
 }: AppSidebarProps) {
   const { toggleSidebar, state } = useSidebar();
   const brandCollapsed = useMemo(() => state === 'collapsed', [state]);
+  const primaryItems = useMemo(() => primaryNavItems(isAdmin), [isAdmin]);
 
   if (brandCollapsed) {
     return (
@@ -547,7 +537,7 @@ export default function AppSidebar({
 
         <div className="flex flex-col gap-[18px]">
           <SidebarMenu className="gap-[10px]">
-            {PRIMARY_NAV.map((item) => (
+            {primaryItems.map((item) => (
               <PrimaryNavButton key={item.route} item={item} selected={selected} onNavigate={onNavigate} />
             ))}
           </SidebarMenu>
@@ -584,17 +574,6 @@ export default function AppSidebar({
                 <CardNavButton key={item.route} item={item} selected={selected} onNavigate={onNavigate} />
               ))}
             </SidebarMenu>
-
-            {isAdmin && (
-              <>
-                <GroupLabel>系统</GroupLabel>
-                <SidebarMenu className="gap-[2px]">
-                  {SYSTEM_NAV.map((item) => (
-                    <CardNavButton key={item.route} item={item} selected={selected} onNavigate={onNavigate} />
-                  ))}
-                </SidebarMenu>
-              </>
-            )}
           </div>
         </div>
       </SidebarContent>

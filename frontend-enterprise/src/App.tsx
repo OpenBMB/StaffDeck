@@ -290,8 +290,8 @@ function Shell({
               <Route path="/enterprise/general-skills" element={<GeneralSkillsPage />} />
               <Route path="/enterprise/general-skills/new" element={<GeneralSkillNewPage />} />
               <Route path="/enterprise/general-skills/:slug/edit" element={<GeneralSkillEditPage />} />
-              <Route path="/enterprise/accounts" element={<AccountsPage />} />
-              <Route path="/enterprise/models" element={<ModelsPage />} />
+              <Route path="/enterprise/accounts" element={isAdmin ? <AccountsPage /> : <Navigate to={EnterpriseRoute.Dashboard} replace />} />
+              <Route path="/enterprise/models" element={isAdmin ? <ModelsPage /> : <Navigate to={EnterpriseRoute.Dashboard} replace />} />
               <Route path="/enterprise/tools" element={<ToolsPage />} />
               <Route path="/enterprise/tools/new" element={<ToolNewPage />} />
               <Route path="/enterprise/tools/:toolId/edit" element={<ToolEditPage />} />
