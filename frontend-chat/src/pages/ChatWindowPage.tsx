@@ -2052,11 +2052,11 @@ export default function ChatWindowPage() {
         setModelConfigs([]);
       });
   }, [auth, navigate, tenantId]);
-  const toggleTrace = useCallback((turnId: string, defaultExpanded = false) => {
-    if (defaultExpanded) {
+  const toggleTrace = useCallback((turnId: string, isExpanded = false) => {
+    if (isExpanded) {
       setCollapsedTraceIds((current) => (
         current.includes(turnId)
-          ? current.filter((item) => item !== turnId)
+          ? current
           : [...current, turnId]
       ));
       setExpandedTraceIds((current) => current.filter((item) => item !== turnId));
@@ -2160,8 +2160,6 @@ export default function ChatWindowPage() {
       ...line,
       state: failed && line.state === 'running' ? 'failed' : line.state === 'running' ? 'completed' : line.state,
     }));
-    setExpandedTraceIds((current) => (current.includes(turnId) ? current : [...current, turnId]));
-    setCollapsedTraceIds((current) => current.filter((item) => item !== turnId));
     notifyTrace();
   }, [getTurnTrace, notifyTrace]);
 
@@ -2373,7 +2371,7 @@ export default function ChatWindowPage() {
       <button
         type="button"
         className={`turn-trace-summary ${summary.state}`}
-        onClick={() => toggleTrace(traceTurnId, summary.state === 'running')}
+        onClick={() => toggleTrace(traceTurnId, expanded)}
       >
         <span className="trace-icon-slot"><CotTraceIcon name={traceSummaryIconName(summary)} /></span>
         <span className="trace-primary-text" data-text={summary.text}>{summary.text}</span>
