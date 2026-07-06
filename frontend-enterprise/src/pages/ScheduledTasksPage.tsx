@@ -202,7 +202,7 @@ export default function ScheduledTasksPage({
 
   function openChatSession(sessionId?: string) {
     if (!sessionId) return;
-    window.open(`/chat/${sessionId}`, '_blank', 'noopener,noreferrer');
+    window.open(`/enterprise/chat/${sessionId}`, '_blank', 'noopener,noreferrer');
   }
 
   const activeRows = rows.filter((item) => item.status === 'active');

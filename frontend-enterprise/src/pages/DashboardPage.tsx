@@ -408,7 +408,7 @@ export default function DashboardPage({
                 <UiButton
                   variant="outline"
                   className={heroActionButtonClass}
-                  onClick={() => { window.location.href = '/chat/'; }}
+                  onClick={() => { window.location.href = '/enterprise/chat'; }}
                 >
                   <IconChat className="size-[14px]" />
                   去对话

@@ -29,6 +29,7 @@ import {
 } from "./employee";
 import AccountsPage from "./pages/AccountsPage";
 import AgentsPage from "./pages/AgentsPage";
+import ChatPage from "./pages/chat/ChatPage";
 import DashboardPage from "./pages/DashboardPage";
 import DistillPage from "./pages/DistillPage";
 import FeedbackPage from "./pages/FeedbackPage";
@@ -376,7 +377,7 @@ function Shell({
           navigate(EnterpriseRoute.Dashboard);
         }}
         onOpenChat={() => {
-          window.location.href = "/chat/";
+          navigate(EnterpriseRoute.Chat);
         }}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -716,6 +717,29 @@ function Shell({
   );
 }
 
+function AuthedApp({
+  auth,
+  onLogout,
+}: {
+  auth: EnterpriseAuthSession;
+  onLogout: () => void;
+}) {
+  const location = useLocation();
+  if (location.pathname.startsWith(EnterpriseRoute.Chat)) {
+    return (
+      <Routes>
+        <Route path="/enterprise/chat" element={<ChatPage />} />
+        <Route
+          path="/enterprise/chat/draft/:draftAgentId"
+          element={<ChatPage />}
+        />
+        <Route path="/enterprise/chat/:sessionId" element={<ChatPage />} />
+      </Routes>
+    );
+  }
+  return <Shell auth={auth} onLogout={onLogout} />;
+}
+
 export default function App() {
   const [auth, setAuth] = useState<EnterpriseAuthSession | null>(() =>
     getEnterpriseAuthSession(),
@@ -741,7 +765,7 @@ export default function App() {
     <TooltipProvider>
       <BrowserRouter>
         {auth ? (
-          <Shell auth={auth} onLogout={logout} />
+          <AuthedApp auth={auth} onLogout={logout} />
         ) : (
           <LoginPage onLogin={setAuth} />
         )}

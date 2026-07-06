@@ -1,4 +1,4 @@
-import type { AgentProfileRead, AgentResourceBindingRead } from './types';
+import type { AgentProfileRead, AgentResourceBindingRead, AgentResourceType } from './types';
 
 import avatarAfterSales from './assets/staffdeck/staffdeck-avatar-after-sales.png';
 import avatarCommerce from './assets/staffdeck/staffdeck-avatar-commerce.png';
@@ -229,6 +229,22 @@ export function employeeDisplayName(agent?: AgentProfileRead | null): string {
 
 export function resourceCount(resources: AgentResourceBindingRead[] | undefined, type: AgentResourceBindingRead['resource_type']): number {
   return (resources || []).filter((item) => item.resource_type === type && item.status !== 'deleted').length;
+}
+
+/** Employees selectable in the chat sidebar: active, non-overall agents. */
+export function visibleChatEmployees(
+  rows: AgentProfileRead[],
+  _user?: { id?: string; username?: string } | null,
+): AgentProfileRead[] {
+  return rows.filter((agent) => !agent.is_overall && agent.status === 'active');
+}
+
+export function agentResourceCount(agent: AgentProfileRead, resourceType: AgentResourceType): number {
+  return (agent.resources || []).filter((resource) => (
+    resource.resource_type === resourceType
+    && resource.status !== 'deleted'
+    && resource.status !== 'inactive'
+  )).length;
 }
 
 export function activeResourceCount(resources: AgentResourceBindingRead[] | undefined): number {

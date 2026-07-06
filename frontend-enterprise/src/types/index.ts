@@ -411,6 +411,120 @@ export type ChatTurnResponse = {
   session_state: Record<string, unknown>;
 };
 
+// ---------------------------------------------------------------------------
+// Chat conversation types (migrated from frontend-chat)
+// ---------------------------------------------------------------------------
+
+export type ChatSession = {
+  id: string;
+  tenant_id: string;
+  user_id?: string;
+  agent_id?: string;
+  title?: string;
+  active_skill_id?: string;
+  active_step_id?: string;
+  status: string;
+  summary?: string;
+  last_agent_question?: string;
+  updated_at: string;
+};
+
+export type ChatAttachmentKind = 'text' | 'pdf' | 'image' | 'binary';
+
+export type ChatAttachmentRead = {
+  id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  kind: ChatAttachmentKind;
+  text?: string | null;
+  preview?: string | null;
+  data_url?: string | null;
+  python_summary?: string | null;
+  error?: string | null;
+};
+
+export type KnowledgeCitation = {
+  id: string;
+  label?: string;
+  kind?: 'evidence' | 'concept' | 'okf' | string;
+  title?: string;
+  source_path?: string;
+  section_path?: string;
+  excerpt?: string;
+  summary?: string;
+  confidence_reason?: string;
+  document_id?: string;
+  bucket_id?: string;
+  chunk_id?: string;
+  concept_id?: string;
+  concept_type?: string;
+};
+
+export type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  metadata?: {
+    attachments?: ChatAttachmentRead[];
+    knowledge_citations?: KnowledgeCitation[];
+    knowledge_query?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  created_at: string;
+  feedback_rating?: 'up' | 'down' | null;
+  turn_id?: string | null;
+  turnId?: string;
+  serverMessageId?: string;
+  isStreaming?: boolean;
+  isError?: boolean;
+};
+
+export type ChatSessionEventRead = {
+  id: string;
+  created_at: string;
+  run_id?: string;
+  seq?: number;
+  event: string;
+  data: Record<string, unknown>;
+};
+
+export type HumanHandoffRead = {
+  id: string;
+  tenant_id: string;
+  session_id: string;
+  agent_id?: string | null;
+  requester_user_id?: string | null;
+  assignee_user_id?: string | null;
+  trigger_skill_id?: string | null;
+  trigger_step_id?: string | null;
+  context_summary?: string | null;
+  pending_question?: string | null;
+  status: string;
+  human_reply?: string | null;
+  resume_payload?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+  answered_at?: string | null;
+};
+
+export type ScheduledTaskDraftRead = {
+  should_create: boolean;
+  tenant_id: string;
+  agent_id: string;
+  title: string;
+  prompt: string;
+  description?: string;
+  schedule_type: 'once' | 'daily' | 'weekly' | 'monthly' | string;
+  schedule: Record<string, unknown>;
+  timezone: string;
+  rrule?: string;
+  confidence: number;
+  reason?: string;
+  source_session_id?: string;
+};
+
 export type EnterpriseChatSessionRead = {
   id: string;
   tenant_id: string;

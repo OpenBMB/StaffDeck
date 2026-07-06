@@ -111,10 +111,7 @@ export default function AgentsPage({
   }
 
   function startEmployeeChat(row: AgentProfileRead) {
-    const url = new URL('/chat/', window.location.origin);
-    url.searchParams.set('agent_id', row.id);
-    url.searchParams.set('create', '1');
-    window.location.href = `${url.pathname}${url.search}`;
+    navigate(`/enterprise/chat/draft/${row.id}`);
   }
 
   async function updateStatus(row: AgentProfileRead, status: 'active' | 'archived') {
