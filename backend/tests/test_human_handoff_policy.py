@@ -1,11 +1,13 @@
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.api.chat as chat_api
 from app.core.agent_loop import AgentLoop
-from app.db.models import AgentEvent, ChatSession, HumanHandoffRequest, Message, Skill, User
+from app.db.models import AgentEvent, ChatSession, HumanHandoffRequest, Message, Skill, Tenant, User, utc_now
 from app.session.slot_policy import strip_router_generated_message_slots
-from app.session.session_schema import RouterDecision, StepAgentResult
+from app.session.session_schema import ChatTurnRequest, RouterDecision, StepAgentResult
 
 
 class FakeEvents:
@@ -91,6 +93,28 @@ def _handoff_session() -> ChatSession:
         pending_tasks_json=[{"id": "task_next"}],
         skill_stack_json=[{"skill_id": "manual_skill"}],
     )
+
+
+def _test_engine():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    return engine
+
+
+def _seed_handoff_users(db: Session) -> tuple[User, User, User]:
+    admin = User(id="admin_user", tenant_id="tenant_demo", username="admin", password_hash="x")
+    user = User(id="user_demo", tenant_id="tenant_demo", username="user_demo", password_hash="x")
+    other = User(id="other_user", tenant_id="tenant_demo", username="other", password_hash="x")
+    db.add(Tenant(id="tenant_demo", name="Demo"))
+    db.add(admin)
+    db.add(user)
+    db.add(other)
+    db.commit()
+    return admin, user, other
 
 
 def test_handoff_requires_structured_step_declaration():
@@ -215,6 +239,104 @@ def test_handoff_request_is_ignored_when_step_does_not_declare_handoff():
     assert loop.events.records[0][3]["reason"] == "current_step_does_not_declare_handoff"
 
 
+def test_handoff_list_filters_by_status_and_user_then_reply_restores_session(monkeypatch):
+    engine = _test_engine()
+    with Session(engine) as db:
+        admin, user, other = _seed_handoff_users(db)
+        session = ChatSession(
+            id="session_handoff",
+            tenant_id="tenant_demo",
+            user_id=user.id,
+            agent_id="agent_demo",
+            status="handoff",
+            awaiting_input_json={"type": "human_handoff", "handoff_id": "handoff_assigned"},
+        )
+        db.add(session)
+        db.add_all(
+            [
+                HumanHandoffRequest(
+                    id="handoff_assigned",
+                    tenant_id="tenant_demo",
+                    session_id=session.id,
+                    agent_id="agent_demo",
+                    requester_user_id=other.id,
+                    assignee_user_id=user.id,
+                    pending_question="请 user_demo 处理",
+                    status="pending",
+                    updated_at=utc_now(),
+                ),
+                HumanHandoffRequest(
+                    id="handoff_requested",
+                    tenant_id="tenant_demo",
+                    session_id=session.id,
+                    agent_id="agent_demo",
+                    requester_user_id=user.id,
+                    assignee_user_id=other.id,
+                    pending_question="user_demo 发起的请求",
+                    status="pending",
+                    updated_at=utc_now(),
+                ),
+                HumanHandoffRequest(
+                    id="handoff_other",
+                    tenant_id="tenant_demo",
+                    session_id=session.id,
+                    agent_id="agent_demo",
+                    requester_user_id=other.id,
+                    assignee_user_id=other.id,
+                    pending_question="其他人的请求",
+                    status="pending",
+                    updated_at=utc_now(),
+                ),
+                HumanHandoffRequest(
+                    id="handoff_answered",
+                    tenant_id="tenant_demo",
+                    session_id=session.id,
+                    agent_id="agent_demo",
+                    requester_user_id=user.id,
+                    assignee_user_id=user.id,
+                    pending_question="已经处理",
+                    status="answered",
+                    human_reply="已完成",
+                    updated_at=utc_now(),
+                ),
+            ]
+        )
+        db.commit()
+
+        admin_rows = chat_api.list_human_handoffs("tenant_demo", "pending", current_user=admin, db=db)
+        assert {row.id for row in admin_rows} == {"handoff_assigned", "handoff_requested", "handoff_other"}
+
+        user_rows = chat_api.list_human_handoffs("tenant_demo", "pending", current_user=user, db=db)
+        assert {row.id for row in user_rows} == {"handoff_assigned", "handoff_requested"}
+
+        user_all_rows = chat_api.list_human_handoffs("tenant_demo", "all", current_user=user, db=db)
+        assert {row.id for row in user_all_rows} == {"handoff_assigned", "handoff_requested", "handoff_answered"}
+
+        resumed: list[str] = []
+        monkeypatch.setattr(chat_api, "_resume_human_handoff_async", resumed.append)
+        result = chat_api.reply_human_handoff(
+            "handoff_assigned",
+            chat_api.HumanHandoffReplyRequest(tenant_id="tenant_demo", reply="人工已经确认，继续执行"),
+            current_user=user,
+            db=db,
+        )
+
+        assert result.status == "answered"
+        assert result.human_reply == "人工已经确认，继续执行"
+        stored_handoff = db.get(HumanHandoffRequest, "handoff_assigned")
+        stored_session = db.get(ChatSession, "session_handoff")
+        assert stored_handoff is not None
+        assert stored_handoff.resume_payload_json["answered_by_user_id"] == user.id
+        assert stored_session is not None
+        assert stored_session.status == "active"
+        assert stored_session.awaiting_input_json is None
+        assert stored_session.summary == "最近回复：人工已经确认，继续执行"
+        events = db.exec(select(AgentEvent).where(AgentEvent.event_type == "human_handoff_answered")).all()
+        assert len(events) == 1
+        assert events[0].payload_json["handoff_id"] == "handoff_assigned"
+        assert resumed == ["handoff_assigned"]
+
+
 def test_reply_human_handoff_restores_session_and_schedules_resume(monkeypatch):
     handoff = HumanHandoffRequest(
         id="handoff_reply",
@@ -297,6 +419,70 @@ def test_reply_human_handoff_rejects_non_pending_request(monkeypatch):
 
     assert exc.value.status_code == 409
     assert db.commits == 0
+
+
+def test_handoff_resume_worker_continues_original_session_once(monkeypatch):
+    engine = _test_engine()
+    handled_requests: list[ChatTurnRequest] = []
+
+    class FakeAgentLoop:
+        def __init__(self, db: Session) -> None:
+            self.db = db
+
+        def handle_turn(self, request: ChatTurnRequest) -> None:
+            handled_requests.append(request)
+
+    monkeypatch.setattr(chat_api, "engine", engine)
+    monkeypatch.setattr(chat_api, "AgentLoop", FakeAgentLoop)
+    with Session(engine) as db:
+        _admin, user, _other = _seed_handoff_users(db)
+        db.add(
+            ChatSession(
+                id="session_handoff",
+                tenant_id="tenant_demo",
+                user_id=user.id,
+                agent_id="agent_demo",
+                status="active",
+            )
+        )
+        db.add(
+            HumanHandoffRequest(
+                id="handoff_worker",
+                tenant_id="tenant_demo",
+                session_id="session_handoff",
+                agent_id="agent_demo",
+                requester_user_id=user.id,
+                assignee_user_id="admin_user",
+                trigger_skill_id="manual_skill",
+                trigger_step_id="manual_review",
+                pending_question="请人工确认",
+                status="answered",
+                human_reply="人工答复：继续执行后续流程",
+            )
+        )
+        db.commit()
+
+    chat_api._resume_human_handoff_worker("handoff_worker")
+    chat_api._resume_human_handoff_worker("handoff_worker")
+
+    assert len(handled_requests) == 1
+    request = handled_requests[0]
+    assert request.tenant_id == "tenant_demo"
+    assert request.session_id == "session_handoff"
+    assert request.agent_id == "agent_demo"
+    assert request.user_id == "user_demo"
+    assert request.message == "人工答复：继续执行后续流程"
+    assert request.channel == "human_handoff_resume"
+
+    with Session(engine) as db:
+        handoff = db.get(HumanHandoffRequest, "handoff_worker")
+        assert handoff is not None
+        assert handoff.status == "answered"
+        assert handoff.metadata_json["resume_started_at"]
+        assert handoff.metadata_json["resume_finished_at"]
+        events = db.exec(select(AgentEvent).where(AgentEvent.event_type == "human_handoff_resume_started")).all()
+        assert len(events) == 1
+        assert events[0].payload_json["handoff_id"] == "handoff_worker"
 
 
 def test_router_generated_message_slots_are_not_persisted():
