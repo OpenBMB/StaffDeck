@@ -619,7 +619,7 @@ function Shell({
                     roleName: event.target.value,
                   }))
                 }
-                placeholder="例如 研发员工、财务员工"
+                placeholder="例如 研发工程师、财务助理"
               />
             </label>
             {agentForm.sourceMode === "copy" && (
