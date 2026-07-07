@@ -206,6 +206,100 @@ def test_turn_trace_cancel_event_closes_running_status_for_refresh() -> None:
     )
 
 
+def test_scheduled_task_draft_trace_restores_config_stages_for_refresh() -> None:
+    started_at = datetime(2026, 7, 7, 16, 50, 0)
+    draft = {
+        "should_create": True,
+        "tenant_id": "tenant_demo",
+        "agent_id": "agent_demo",
+        "title": "提醒我喝咖啡",
+        "prompt": "提醒我喝咖啡",
+        "schedule_type": "daily",
+        "schedule": {"time": "16:50"},
+        "timezone": "Asia/Shanghai",
+        "confidence": 0.95,
+        "source_session_id": "session_schedule",
+    }
+    messages = [
+        Message(
+            id="msg_user",
+            tenant_id="tenant_demo",
+            session_id="session_schedule",
+            role="user",
+            content="16:50提醒我喝咖啡",
+            created_at=started_at,
+        ),
+        Message(
+            id="msg_assistant",
+            tenant_id="tenant_demo",
+            session_id="session_schedule",
+            role="assistant",
+            content="我已按你选择的定时项目整理成自动任务草案。",
+            metadata_json={"turn_id": "msg_user", "user_message_id": "msg_user", "scheduled_task_draft": draft},
+            created_at=started_at + timedelta(milliseconds=500),
+        ),
+    ]
+    events = [
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_schedule",
+            event_type="user_message_received",
+            payload_json={"message_id": "msg_user", "message": "16:50提醒我喝咖啡"},
+            created_at=started_at,
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_schedule",
+            event_type="stream_status",
+            payload_json={
+                "turn_id": "msg_user",
+                "user_message_id": "msg_user",
+                "phase": "scheduled_task_intent",
+                "text": "识别定时任务需求",
+            },
+            created_at=started_at + timedelta(milliseconds=100),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_schedule",
+            event_type="stream_status",
+            payload_json={
+                "turn_id": "msg_user",
+                "user_message_id": "msg_user",
+                "phase": "scheduled_task_parse",
+                "text": "解析执行计划",
+            },
+            created_at=started_at + timedelta(milliseconds=200),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_schedule",
+            event_type="scheduled_task_draft_created",
+            payload_json={**draft, "turn_id": "msg_user", "user_message_id": "msg_user"},
+            created_at=started_at + timedelta(milliseconds=300),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_schedule",
+            event_type="assistant_message_created",
+            payload_json={"message_id": "msg_assistant", "turn_id": "msg_user", "user_message_id": "msg_user"},
+            created_at=started_at + timedelta(milliseconds=500),
+        ),
+    ]
+
+    traces = _build_turn_traces(messages, events, {})
+
+    assert traces[0]["completed_at"] == (started_at + timedelta(milliseconds=500)).isoformat()
+    assert [line["id"] for line in traces[0]["lines"]] == [
+        "scheduled_task_intent",
+        "scheduled_task_parse",
+        "scheduled_task_draft",
+    ]
+    assert all(line["state"] == "completed" for line in traces[0]["lines"])
+    assert traces[0]["lines"][1]["detail"] == "计划：每天 16:50"
+    assert "提醒我喝咖啡" in traces[0]["lines"][2]["detail"]
+
+
 def test_cancel_endpoint_persists_terminal_trace_for_client_turn_id() -> None:
     db = _test_db()
     started_at = datetime(2026, 7, 4, 9, 5, 0)

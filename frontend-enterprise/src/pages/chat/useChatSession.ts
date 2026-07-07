@@ -126,6 +126,91 @@ function chatSessionPath(id: string): string {
   return `${CHAT_BASE_PATH}/${id}`;
 }
 
+function formatScheduledTaskDraftSchedule(draft?: Partial<ScheduledTaskDraftRead> | Record<string, unknown>): string {
+  const schedule = draft?.schedule && typeof draft.schedule === 'object' && !Array.isArray(draft.schedule)
+    ? draft.schedule as Record<string, unknown>
+    : {};
+  const scheduleType = typeof draft?.schedule_type === 'string' ? draft.schedule_type : 'daily';
+  if (scheduleType === 'once') {
+    return `一次性 ${typeof schedule.run_at === 'string' ? schedule.run_at : '待确认时间'}`;
+  }
+  if (scheduleType === 'weekly') {
+    const labels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    const weekdays = Array.isArray(schedule.weekdays)
+      ? schedule.weekdays
+        .map((item) => Number(item))
+        .filter((item) => Number.isInteger(item) && item >= 0 && item <= 6)
+        .map((item) => labels[item])
+      : [];
+    return `每周 ${weekdays.length ? weekdays.join('、') : '周一'} ${typeof schedule.time === 'string' ? schedule.time : '09:00'}`;
+  }
+  if (scheduleType === 'monthly') {
+    return `每月 ${schedule.day_of_month || 1} 号 ${typeof schedule.time === 'string' ? schedule.time : '09:00'}`;
+  }
+  return `每天 ${typeof schedule.time === 'string' ? schedule.time : '09:00'}`;
+}
+
+function scheduledTaskDraftTraceDetail(draft?: Partial<ScheduledTaskDraftRead> | Record<string, unknown>): string | undefined {
+  const title = typeof draft?.title === 'string' ? draft.title.trim() : '';
+  return [title, formatScheduledTaskDraftSchedule(draft), '等待确认后启用'].filter(Boolean).join(' · ');
+}
+
+function scheduledTaskTraceLines(draft?: Partial<ScheduledTaskDraftRead> | Record<string, unknown>): TraceLine[] {
+  return [
+    {
+      id: 'scheduled_task_intent',
+      kind: 'decision',
+      text: '识别定时任务需求',
+      detail: '用户选择了创建定时任务模式',
+      state: 'completed',
+    },
+    {
+      id: 'scheduled_task_parse',
+      kind: 'decision',
+      text: '解析执行计划',
+      detail: `计划：${formatScheduledTaskDraftSchedule(draft)}`,
+      state: 'completed',
+    },
+    {
+      id: 'scheduled_task_draft',
+      kind: 'decision',
+      text: '生成定时任务草案',
+      detail: scheduledTaskDraftTraceDetail(draft),
+      state: 'completed',
+    },
+  ];
+}
+
+function scheduledTaskStatusTraceLine(phase: string, data: Record<string, unknown>): TraceLine | null {
+  if (phase === 'scheduled_task_intent') {
+    return {
+      id: 'scheduled_task_intent',
+      kind: 'decision',
+      text: '识别定时任务需求',
+      detail: '用户选择了创建定时任务模式',
+      state: 'running',
+    };
+  }
+  if (phase === 'scheduled_task_parse') {
+    return {
+      id: 'scheduled_task_parse',
+      kind: 'decision',
+      text: '解析执行计划',
+      state: 'running',
+    };
+  }
+  if (phase === 'scheduled_task_draft') {
+    return {
+      id: 'scheduled_task_draft',
+      kind: 'decision',
+      text: '生成定时任务草案',
+      detail: scheduledTaskDraftTraceDetail(data),
+      state: 'completed',
+    };
+  }
+  return null;
+}
+
 export type UseChatSession = ReturnType<typeof useChatSession>;
 
 export function useChatSession() {
@@ -1419,6 +1504,17 @@ export function useChatSession() {
       if (draft.should_create) {
         setScheduledDrafts((prev) => ({ ...prev, [eventSessionId]: draft }));
       }
+      if (traceTurnId) {
+        if (shouldTouchStream && eventStream.turnId !== traceTurnId) {
+          eventStream.turnId = traceTurnId;
+        }
+        if (shouldTouchStream) {
+          ensureStreamingTraceMessage(eventSessionId, traceTurnId);
+        }
+        scheduledTaskTraceLines(draft).forEach((line) => upsertTraceLine(traceTurnId, line));
+        finishTrace(traceTurnId);
+        notifyStream();
+      }
       return;
     }
     if (traceTurnId && !STREAM_TERMINAL_EVENTS.has(item.event)) {
@@ -1567,7 +1663,10 @@ export function useChatSession() {
       if (shouldTouchStream) {
         eventStream.phase = publicStreamPhase(item.data);
       }
-      if (phase === 'tool' && typeof item.data.tool_name === 'string') {
+      const scheduledTaskLine = scheduledTaskStatusTraceLine(phase, item.data);
+      if (scheduledTaskLine) {
+        upsertTraceLine(traceTurnId, scheduledTaskLine);
+      } else if (phase === 'tool' && typeof item.data.tool_name === 'string') {
         const toolCallId = typeof item.data.tool_call_id === 'string' ? item.data.tool_call_id : item.data.tool_name;
         upsertTraceLine(traceTurnId, { id: `tool_${toolCallId}`, kind: 'tool', text: `正在调用 ${item.data.tool_name}`, state: 'running' });
       } else if (phase === 'routing') {
@@ -1591,14 +1690,6 @@ export function useChatSession() {
         });
       } else if (phase === 'reflecting') {
         upsertTraceLine(traceTurnId, { id: 'reflection', kind: 'decision', text: '正在反思', state: 'running' });
-      } else if (phase === 'scheduled_task_draft') {
-        upsertTraceLine(traceTurnId, {
-          id: 'scheduled_task_draft',
-          kind: 'decision',
-          text: '生成定时任务草案',
-          detail: '来自本条消息的定时任务，等待用户确认后启用',
-          state: 'completed',
-        });
       } else if (phase !== 'received') {
         upsertTraceLine(traceTurnId, {
           id: `decision_status_${phase}`,

@@ -462,9 +462,12 @@ def _maybe_handle_scheduled_task_request(
 
     reply = _scheduled_task_draft_reply(draft)
     now = utc_now()
-    event_time = now + timedelta(microseconds=1)
-    assistant_time = now + timedelta(microseconds=2)
-    state_time = now + timedelta(microseconds=3)
+    intent_time = now + timedelta(microseconds=1)
+    parse_time = now + timedelta(microseconds=2)
+    draft_status_time = now + timedelta(microseconds=3)
+    event_time = now + timedelta(microseconds=4)
+    assistant_time = now + timedelta(microseconds=5)
+    state_time = now + timedelta(microseconds=6)
     chat_session.updated_at = assistant_time
     chat_session.summary = f"最近回复：{reply[:120]}"
     user_message = Message(
@@ -476,6 +479,7 @@ def _maybe_handle_scheduled_task_request(
         created_at=now,
     )
     db.add(user_message)
+    draft_payload = draft.model_dump(mode="json")
     db.add(
         AgentEvent(
             tenant_id=request.tenant_id,
@@ -491,13 +495,41 @@ def _maybe_handle_scheduled_task_request(
             created_at=now,
         )
     )
+    _add_stream_status_event(
+        db,
+        request.tenant_id,
+        chat_session.id,
+        user_message.id,
+        "scheduled_task_intent",
+        "识别定时任务需求",
+        created_at=intent_time,
+    )
+    _add_stream_status_event(
+        db,
+        request.tenant_id,
+        chat_session.id,
+        user_message.id,
+        "scheduled_task_parse",
+        "解析执行计划",
+        created_at=parse_time,
+    )
+    _add_stream_status_event(
+        db,
+        request.tenant_id,
+        chat_session.id,
+        user_message.id,
+        "scheduled_task_draft",
+        "生成定时任务草案",
+        extra=draft_payload,
+        created_at=draft_status_time,
+    )
     assistant_message = Message(
         tenant_id=request.tenant_id,
         session_id=chat_session.id,
         role="assistant",
         content=reply,
         metadata_json={
-            "scheduled_task_draft": draft.model_dump(mode="json"),
+            "scheduled_task_draft": draft_payload,
             "user_message_id": user_message.id,
             "turn_id": user_message.id,
         },
@@ -509,7 +541,7 @@ def _maybe_handle_scheduled_task_request(
             tenant_id=request.tenant_id,
             session_id=chat_session.id,
             event_type="scheduled_task_draft_created",
-            payload_json=draft.model_dump(mode="json"),
+            payload_json={**draft_payload, "user_message_id": user_message.id, "turn_id": user_message.id},
             created_at=event_time,
         )
     )
@@ -524,7 +556,7 @@ def _maybe_handle_scheduled_task_request(
                 "user_message_id": user_message.id,
                 "turn_id": user_message.id,
                 "reply": reply,
-                "scheduled_task_draft": draft.model_dump(mode="json"),
+                "scheduled_task_draft": draft_payload,
             },
             created_at=assistant_time,
         )
@@ -549,6 +581,35 @@ def _maybe_handle_scheduled_task_request(
     return response, draft
 
 
+def _add_stream_status_event(
+    db: Session,
+    tenant_id: str,
+    session_id: str,
+    user_message_id: str,
+    phase: str,
+    text: str,
+    *,
+    extra: dict | None = None,
+    created_at=None,
+) -> None:
+    payload = {
+        "phase": phase,
+        "text": text,
+        "user_message_id": user_message_id,
+        "turn_id": user_message_id,
+        **(extra or {}),
+    }
+    db.add(
+        AgentEvent(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            event_type="stream_status",
+            payload_json=payload,
+            created_at=created_at or utc_now(),
+        )
+    )
+
+
 def _scheduled_task_draft_reply(draft: ScheduledTaskDraftRead) -> str:
     lines = [
         "我已按你选择的定时项目整理成自动任务草案。",
@@ -561,10 +622,15 @@ def _scheduled_task_draft_reply(draft: ScheduledTaskDraftRead) -> str:
 
 
 def _format_draft_schedule(draft: ScheduledTaskDraftRead) -> str:
-    schedule = draft.schedule or {}
-    if draft.schedule_type == "once":
+    return _format_scheduled_task_schedule(draft.schedule_type, draft.schedule or {})
+
+
+def _format_scheduled_task_schedule(schedule_type: object, schedule_value: object) -> str:
+    schedule = schedule_value if isinstance(schedule_value, dict) else {}
+    schedule_type_text = str(schedule_type or "daily")
+    if schedule_type_text == "once":
         return f"一次性 {schedule.get('run_at') or '待确认时间'}"
-    if draft.schedule_type == "weekly":
+    if schedule_type_text == "weekly":
         weekdays = schedule.get("weekdays")
         labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
         if isinstance(weekdays, list):
@@ -572,9 +638,43 @@ def _format_draft_schedule(draft: ScheduledTaskDraftRead) -> str:
         else:
             days = "周一"
         return f"每周 {days or '周一'} {schedule.get('time') or '09:00'}"
-    if draft.schedule_type == "monthly":
+    if schedule_type_text == "monthly":
         return f"每月 {schedule.get('day_of_month') or 1} 号 {schedule.get('time') or '09:00'}"
     return f"每天 {schedule.get('time') or '09:00'}"
+
+
+def _scheduled_task_trace_detail(payload: dict) -> str | None:
+    title = str(payload.get("title") or "").strip()
+    schedule = _format_scheduled_task_schedule(payload.get("schedule_type"), payload.get("schedule"))
+    detail = " · ".join(part for part in (title, schedule, "等待确认后启用") if part)
+    return detail or None
+
+
+def _scheduled_task_trace_lines(payload: dict, *, state: str = "completed") -> list[dict]:
+    schedule = _format_scheduled_task_schedule(payload.get("schedule_type"), payload.get("schedule"))
+    return [
+        {
+            "id": "scheduled_task_intent",
+            "kind": "decision",
+            "text": "识别定时任务需求",
+            "detail": "用户选择了创建定时任务模式",
+            "state": "completed",
+        },
+        {
+            "id": "scheduled_task_parse",
+            "kind": "decision",
+            "text": "解析执行计划",
+            "detail": f"计划：{schedule}" if schedule else None,
+            "state": "completed",
+        },
+        {
+            "id": "scheduled_task_draft",
+            "kind": "decision",
+            "text": "生成定时任务草案",
+            "detail": _scheduled_task_trace_detail(payload),
+            "state": state,
+        },
+    ]
 
 
 def _persist_scheduled_task_draft(
@@ -706,15 +806,25 @@ def chat_stream(
                         request.user_id,
                         request.session_id,
                     )
+                    if request.interaction_mode == "scheduled_task":
+                        enqueue("status", {"phase": "scheduled_task_intent", "text": "识别定时任务需求"})
+                        enqueue("status", {"phase": "scheduled_task_parse", "text": "解析执行计划"})
                     scheduled_response = _maybe_handle_scheduled_task_request(worker_db, request, chat_session)
                     if scheduled_response:
                         response, draft = scheduled_response
-                        enqueue("status", {"phase": "scheduled_task_draft", "text": "生成自动任务草案"})
+                        enqueue(
+                            "status",
+                            {
+                                "phase": "scheduled_task_draft",
+                                "text": "生成定时任务草案",
+                                **draft.model_dump(mode="json"),
+                            },
+                        )
+                        enqueue("scheduled_task_draft", draft.model_dump(mode="json"))
                         for chunk in _reply_chunks(response.reply):
                             enqueue("stream_delta", {"content": chunk})
                         enqueue("stream_end", {})
                         enqueue("complete", response.model_dump(mode="json"))
-                        enqueue("scheduled_task_draft", draft.model_dump(mode="json"))
                         _schedule_session_title_summary(
                             request.tenant_id,
                             request.user_id,
@@ -1862,29 +1972,13 @@ def _with_scheduled_draft_message_traces(traces: list[dict], messages: list[Mess
         draft = metadata.get("scheduled_task_draft") if isinstance(metadata, dict) else None
         if not isinstance(draft, dict) or previous_user.id in traced_turn_ids:
             continue
-        title = str(draft.get("title") or "").strip()
-        detail = " · ".join(part for part in (title, "等待确认后启用") if part)
         next_traces.append(
             {
                 "turn_id": previous_user.id,
                 "user_message_id": previous_user.id,
                 "started_at": previous_user.created_at.isoformat(),
                 "completed_at": message.created_at.isoformat(),
-                "lines": [
-                    {
-                        "id": "thinking",
-                        "kind": "thinking",
-                        "text": "已完成思考",
-                        "state": "completed",
-                    },
-                    {
-                        "id": f"scheduled_task_draft_{message.id}",
-                        "kind": "decision",
-                        "text": "生成自动任务草案",
-                        "detail": detail or None,
-                        "state": "completed",
-                    },
-                ],
+                "lines": _scheduled_task_trace_lines(draft),
             }
         )
         traced_turn_ids.add(previous_user.id)
@@ -2005,6 +2099,30 @@ def _event_trace_line(
     if event.event_type == "stream_status":
         phase = str(payload.get("phase") or "").strip()
         text = str(payload.get("text") or "").strip()
+        if phase == "scheduled_task_intent":
+            return {
+                "id": "scheduled_task_intent",
+                "kind": "decision",
+                "text": text or "识别定时任务需求",
+                "detail": "用户选择了创建定时任务模式",
+                "state": "running",
+            }
+        if phase == "scheduled_task_parse":
+            return {
+                "id": "scheduled_task_parse",
+                "kind": "decision",
+                "text": text or "解析执行计划",
+                "detail": None,
+                "state": "running",
+            }
+        if phase == "scheduled_task_draft":
+            return {
+                "id": "scheduled_task_draft",
+                "kind": "decision",
+                "text": text or "生成定时任务草案",
+                "detail": _scheduled_task_trace_detail(payload),
+                "state": "running",
+            }
         if phase == "routing":
             return {
                 "id": "decision_router",
@@ -2113,16 +2231,7 @@ def _event_trace_line(
             )
         return lines or None
     if event.event_type == "scheduled_task_draft_created":
-        title = str(payload.get("title") or "").strip()
-        schedule = str(payload.get("schedule_label") or "").strip()
-        detail = " · ".join(part for part in (title, schedule, "等待确认后启用") if part)
-        return {
-            "id": f"scheduled_task_draft_{event.id}",
-            "kind": "decision",
-            "text": "生成自动任务草案",
-            "detail": detail or None,
-            "state": "completed",
-        }
+        return _scheduled_task_trace_lines(payload)
     if event.event_type == "router_decision_created":
         intent = str(payload.get("user_intent") or "").strip()
         reason = str(payload.get("reason") or "").strip()
