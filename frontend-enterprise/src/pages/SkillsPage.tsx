@@ -46,6 +46,7 @@ import IconSearch from '../assets/icons/search.svg?react';
 import IconSkill from '../assets/icons/plaza-skill.svg?react';
 import IconTrash from '../assets/icons/trash.svg?react';
 import type { EnterpriseAuthUser } from '../auth';
+import { visibleEmployeeAgents } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import type { BadgeTone } from './scheduled-tasks/shared';
@@ -345,9 +346,9 @@ export default function SkillsPage({
         : await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
       setAgents(agentRows);
       setImportMode(mode);
-      const candidates = agentRows.filter(
-        (item) => item.id !== agentId && (mode === 'plaza' ? item.is_overall : !item.is_overall),
-      );
+      const candidates = mode === 'plaza'
+        ? agentRows.filter((item) => item.id !== agentId && item.is_overall)
+        : visibleEmployeeAgents(agentRows, currentUser, { activeOnly: true, excludeAgentId: agentId });
       const firstSource = candidates[0]?.id || '';
       setImportSourceAgentId(firstSource);
       setImportSelectedSkillIds([]);

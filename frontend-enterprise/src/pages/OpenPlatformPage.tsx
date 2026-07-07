@@ -11,7 +11,7 @@ import type { ComponentType, ReactNode, SVGProps } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, TENANT_ID } from '../api/client';
-import { isEmployeeOwnedBy, isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
+import { isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 import IconAgents from '../assets/icons/nav-agents.svg?react';
 import IconFolder from '../assets/icons/cap-folder.svg?react';
@@ -22,7 +22,7 @@ import plazaKnowledgeIcon from '../assets/icons/plaza-knowledge.svg';
 import plazaSkillIcon from '../assets/icons/plaza-skill.svg';
 import plazaSopIcon from '../assets/icons/plaza-sop.svg';
 import plazaToolIcon from '../assets/icons/plaza-tool.svg';
-import { employeeDisplayName, employeeProfile } from '../employee';
+import { canManageEmployeeAgent, employeeDisplayName, employeeProfile } from '../employee';
 import type { AgentProfileRead, GeneralSkillRead, KnowledgeBaseRead, SkillRead, ToolRead } from '../types';
 
 import AppHeader from '@/components/AppHeader';
@@ -235,9 +235,9 @@ export default function OpenPlatformPage({
   const overallAgent = agents.find((item) => item.is_overall) || null;
   const canManagePlatform = isAdmin;
   const currentAgent = agents.find((item) => item.id === agentId);
-  const targetEmployee = !currentAgent?.is_overall && currentAgent
+  const targetEmployee = currentAgent && canManageEmployeeAgent(currentAgent, currentUser)
     ? currentAgent
-    : agents.find((item) => !item.is_overall && (isAdmin || isEmployeeOwnedBy(item, currentUser) || isGalleryEmployee(item)));
+    : agents.find((item) => canManageEmployeeAgent(item, currentUser) && !item.is_overall);
 
   const platformItems = useMemo<Record<PlatformKind, PlatformItem[]>>(() => ({
     agents: visibleAgents.map((item) => {

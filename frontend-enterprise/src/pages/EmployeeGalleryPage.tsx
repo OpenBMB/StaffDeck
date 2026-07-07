@@ -7,14 +7,19 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { api, TENANT_ID } from '../api/client';
-import { isEmployeeOwnedBy, isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
+import { isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
 
 import AppHeader from '../components/AppHeader';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
-import { employeeDisplayName, employeeProfile } from '../employee';
+import {
+  canManageEmployeeAgent,
+  employeeDisplayName,
+  employeeProfile,
+  visibleEmployeeAgents,
+} from '../employee';
 import type { AgentProfileRead } from '../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
@@ -57,16 +62,16 @@ export default function EmployeeGalleryPage({
   }, []);
 
   const overallAgent = agents.find((item) => item.is_overall);
-  // Mirror the frontend-chat gallery filtering (visibleChatEmployees + personal/gallery split):
-  // - 所有员工: every active, non-overall employee
-  // - 我的数字员工: employees that are NOT published to the gallery, OR are owned by me
-  // - 数字员工广场: gallery employees that don't already belong to "我的数字员工"
+  // Keep these tabs aligned with the rest of the app:
+  // - 所有员工: employees the current user can access and chat with
+  // - 我的数字员工: employees the current user can manage/edit
+  // - 数字员工广场: public employees not already listed as mine
   const availableAgents = useMemo(
-    () => agents.filter((item) => !item.is_overall && item.status === 'active'),
-    [agents],
+    () => visibleEmployeeAgents(agents, currentUser, { activeOnly: true }),
+    [agents, currentUser],
   );
   const myEmployees = useMemo(
-    () => availableAgents.filter((item) => !isGalleryEmployee(item) || isEmployeeOwnedBy(item, currentUser)),
+    () => availableAgents.filter((item) => canManageEmployeeAgent(item, currentUser)),
     [availableAgents, currentUser],
   );
   const galleryEmployees = useMemo(() => {
@@ -197,7 +202,7 @@ export default function EmployeeGalleryPage({
           <EmployeeCard
             key={employee.id}
             employee={employee}
-            canManage={isAdmin || isEmployeeOwnedBy(employee, currentUser)}
+            canManage={canManageEmployeeAgent(employee, currentUser)}
             showMenu={false}
             onOpen={() => startEmployeeChat(employee)}
             onStatus={(status) => void updateStatus(employee, status)}

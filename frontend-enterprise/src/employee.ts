@@ -1,4 +1,10 @@
 import type { AgentProfileRead, AgentResourceBindingRead, AgentResourceType } from './types';
+import {
+  isEmployeeOwnedBy,
+  isEnterpriseAdmin,
+  isGalleryEmployee,
+  type EnterpriseAuthUser,
+} from './auth';
 
 import avatarAfterSales from './assets/staffdeck/staffdeck-avatar-after-sales.png';
 import avatarCommerce from './assets/staffdeck/staffdeck-avatar-commerce.png';
@@ -184,6 +190,49 @@ export function preferredEmployeeAgent<T extends EmployeeAgentLike>(agents: T[])
   return agents.find(isDefaultEmployeeAgent) || agents.find((item) => !item.is_overall);
 }
 
+export type EmployeeVisibilityOptions = {
+  activeOnly?: boolean;
+  excludeAgentId?: string;
+  includeDefault?: boolean;
+  includeOverall?: boolean;
+};
+
+export function canAccessEmployeeAgent(
+  agent: AgentProfileRead,
+  user?: EnterpriseAuthUser | null,
+  options: EmployeeVisibilityOptions = {},
+): boolean {
+  if (options.excludeAgentId && agent.id === options.excludeAgentId) return false;
+  if (options.activeOnly && agent.status !== 'active') return false;
+
+  const includeOverall = options.includeOverall ?? false;
+  if (isEnterpriseAdmin(user)) return includeOverall || !agent.is_overall;
+  if (agent.is_overall) return false;
+
+  const includeDefault = options.includeDefault ?? false;
+  return (
+    (includeDefault && isDefaultEmployeeAgent(agent))
+    || isEmployeeOwnedBy(agent, user)
+    || isGalleryEmployee(agent)
+  );
+}
+
+export function canManageEmployeeAgent(
+  agent: AgentProfileRead,
+  user?: EnterpriseAuthUser | null,
+): boolean {
+  if (agent.is_overall) return isEnterpriseAdmin(user);
+  return isEnterpriseAdmin(user) || isEmployeeOwnedBy(agent, user);
+}
+
+export function visibleEmployeeAgents(
+  rows: AgentProfileRead[],
+  user?: EnterpriseAuthUser | null,
+  options: EmployeeVisibilityOptions = {},
+): AgentProfileRead[] {
+  return rows.filter((agent) => canAccessEmployeeAgent(agent, user, options));
+}
+
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
 }
@@ -231,12 +280,12 @@ export function resourceCount(resources: AgentResourceBindingRead[] | undefined,
   return (resources || []).filter((item) => item.resource_type === type && item.status !== 'deleted').length;
 }
 
-/** Employees selectable in the chat sidebar: active, non-overall agents. */
+/** Employees selectable in the chat sidebar: active employees visible to the current user. */
 export function visibleChatEmployees(
   rows: AgentProfileRead[],
-  _user?: { id?: string; username?: string } | null,
+  user?: EnterpriseAuthUser | null,
 ): AgentProfileRead[] {
-  return rows.filter((agent) => !agent.is_overall && agent.status === 'active');
+  return visibleEmployeeAgents(rows, user, { activeOnly: true });
 }
 
 export function agentResourceCount(agent: AgentProfileRead, resourceType: AgentResourceType): number {

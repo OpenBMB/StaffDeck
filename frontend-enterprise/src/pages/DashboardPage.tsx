@@ -17,7 +17,7 @@ import IconCapBriefcase from '../assets/icons/cap-briefcase.svg?react';
 import IconCardArrow from '../assets/icons/card-arrow.svg?react';
 import IconGrowthArrow from '../assets/icons/growth-arrow.svg?react';
 import { api, TENANT_ID } from '../api/client';
-import { isEmployeeOwnedBy, isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
+import type { EnterpriseAuthUser } from '../auth';
 import AppHeader from '../components/AppHeader';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
@@ -27,9 +27,10 @@ import capabilityLogs from '../assets/staffdeck/capabilityLogs.png';
 import capabilityTasks from '../assets/staffdeck/capabilityTasks.png';
 import capabilityTools from '../assets/staffdeck/capabilityTools.png';
 import {
+  canAccessEmployeeAgent,
+  canManageEmployeeAgent,
   employeeDisplayName,
   employeeProfile,
-  isDefaultEmployeeAgent,
   preferredEmployeeAgent,
   staffdeckDisplayText,
 } from '../employee';
@@ -132,13 +133,10 @@ export default function DashboardPage({
       api.get<ScheduledTaskRead[]>(`/api/enterprise/scheduled-tasks?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
     ])
       .then(([agentRows, skillRows, generalSkillRows, kbRows, modelRows, toolRows, sessionRows, feedbackRows, taskRows]) => {
-        const visibleAgents = agentRows.filter((item) => (
-          isAdmin || (!item.is_overall && (
-            isDefaultEmployeeAgent(item)
-            || isEmployeeOwnedBy(item, currentUser)
-            || isGalleryEmployee(item)
-          ))
-        ));
+        const visibleAgents = agentRows.filter((item) => canAccessEmployeeAgent(item, currentUser, {
+          activeOnly: true,
+          includeOverall: isAdmin,
+        }));
         setAgents(visibleAgents);
         setSkills(skillRows);
         setGeneralSkills(generalSkillRows);
@@ -158,10 +156,10 @@ export default function DashboardPage({
           return;
         }
         if (!agentId || !visibleAgents.some((item) => item.id === agentId)) {
-          const ownedAgents = visibleAgents.filter((item) => !item.is_overall && isEmployeeOwnedBy(item, currentUser));
+          const manageableAgents = visibleAgents.filter((item) => canManageEmployeeAgent(item, currentUser));
           const next = isAdmin
             ? visibleAgents.find((item) => item.is_overall)?.id || preferredEmployeeAgent(visibleAgents)?.id || ''
-            : preferredEmployeeAgent(ownedAgents)?.id
+            : preferredEmployeeAgent(manageableAgents)?.id
               || preferredEmployeeAgent(visibleAgents)?.id
               || '';
           if (next) {
@@ -285,7 +283,7 @@ export default function DashboardPage({
   }
 
   const employee = employeeProfile(selectedAgent);
-  const canEditSelectedAgent = !selectedAgent.is_overall && (isAdmin || isEmployeeOwnedBy(selectedAgent, currentUser));
+  const canEditSelectedAgent = canManageEmployeeAgent(selectedAgent, currentUser);
   const activeSkills = skills.filter((item) => item.status === 'published' && item.branch_status !== 'inactive');
   const activeGeneralSkills = generalSkills.filter((item) => item.status === 'published');
   const activeKnowledge = knowledgeBases.filter((item) => item.status === 'active');

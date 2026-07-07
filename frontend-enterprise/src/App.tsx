@@ -11,7 +11,6 @@ import { api, TENANT_ID } from "./api/client";
 import {
   clearEnterpriseAuthSession,
   getEnterpriseAuthSession,
-  isEmployeeOwnedBy,
   isEnterpriseAdmin,
   isGalleryEmployee,
   type EnterpriseAuthSession,
@@ -22,9 +21,10 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { EnterpriseRoute } from "./enums/routes";
 import {
   employeeBlankMetadata,
+  canAccessEmployeeAgent,
+  canManageEmployeeAgent,
   employeeDisplayName,
   employeeProfile,
-  isDefaultEmployeeAgent,
   preferredEmployeeAgent,
 } from "./employee";
 import AccountsPage from "./pages/AccountsPage";
@@ -214,14 +214,14 @@ function Shell({
         setSelectedAgentId((current) => {
           if (current && selectableRows.some((item) => item.id === current))
             return current;
-          const ownedRows = selectableRows.filter(
-            (item) => !item.is_overall && isEmployeeOwnedBy(item, auth.user),
+          const manageableRows = selectableRows.filter((item) =>
+            canManageEmployeeAgent(item, auth.user),
           );
           const next = isAdmin
             ? selectableRows.find((item) => item.is_overall)?.id ||
               preferredEmployeeAgent(selectableRows)?.id ||
               ""
-            : preferredEmployeeAgent(ownedRows)?.id ||
+            : preferredEmployeeAgent(manageableRows)?.id ||
               preferredEmployeeAgent(selectableRows)?.id ||
               "";
           if (next) {
@@ -241,13 +241,7 @@ function Shell({
   }
 
   function canUseAgentScope(agent: AgentProfileRead): boolean {
-    if (isAdmin) return true;
-    if (agent.is_overall) return false;
-    return (
-      isDefaultEmployeeAgent(agent) ||
-      isEmployeeOwnedBy(agent, auth.user) ||
-      isGalleryEmployee(agent)
-    );
+    return canAccessEmployeeAgent(agent, auth.user, { activeOnly: true, includeOverall: isAdmin });
   }
 
   function changeAgentScope(agentId: string) {

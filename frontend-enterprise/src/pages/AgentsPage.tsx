@@ -9,14 +9,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { api, TENANT_ID } from '../api/client';
-import { isEmployeeOwnedBy, isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
+import { type EnterpriseAuthUser } from '../auth';
 
 import AppHeader from '../components/AppHeader';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
-import { employeeDisplayName, employeeProfile } from '../employee';
+import { canManageEmployeeAgent, employeeDisplayName, employeeProfile } from '../employee';
 import type { AgentProfileRead } from '../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
@@ -72,10 +72,8 @@ export default function AgentsPage({
 
   const overallAgent = agents.find((item) => item.is_overall);
   const employees = useMemo(
-    () => agents.filter((item) => (
-      !item.is_overall && (isAdmin || isEmployeeOwnedBy(item, currentUser) || isGalleryEmployee(item))
-    )),
-    [agents, currentUser, isAdmin],
+    () => agents.filter((item) => !item.is_overall && canManageEmployeeAgent(item, currentUser)),
+    [agents, currentUser],
   );
   const offlineEmployees = employees.filter((item) => item.status !== 'active');
   const onlineEmployees = employees.filter((item) => item.status === 'active');
@@ -255,7 +253,7 @@ export default function AgentsPage({
           <EmployeeCard
             key={employee.id}
             employee={employee}
-            canManage={isAdmin || isEmployeeOwnedBy(employee, currentUser)}
+            canManage={canManageEmployeeAgent(employee, currentUser)}
             selected={employee.id === selectedAgentId}
             onOpen={() => selectEmployee(employee)}
             onStatus={(status) => void updateStatus(employee, status)}

@@ -69,5 +69,12 @@ export function isEmployeeOwnedBy(
   const metadata = agent.metadata || {};
   const ownerUserId = metadata.owner_user_id;
   const ownerUsername = metadata.owner_username;
-  return ownerUserId === user.id || ownerUsername === user.username;
+  const createdByUserId = metadata.created_by_user_id;
+  const createdByUsername = metadata.created_by_username;
+  return (
+    ownerUserId === user.id
+    || ownerUsername === user.username
+    || createdByUserId === user.id
+    || createdByUsername === user.username
+  );
 }

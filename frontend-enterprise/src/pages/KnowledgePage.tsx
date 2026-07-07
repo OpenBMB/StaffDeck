@@ -59,6 +59,7 @@ import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconClear from '../assets/icons/field-clear.svg?react';
 import IconRefresh from '../assets/icons/refresh.svg?react';
 import IconSearch from '../assets/icons/search.svg?react';
+import { visibleEmployeeAgents } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
 import type {
   KnowledgeBaseRead,
@@ -384,9 +385,9 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       const agentRows = agents.length ? agents : await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
       setAgents(agentRows);
       setImportMode(mode);
-      const candidates = agentRows.filter((item) => (
-        item.id !== agentId && (mode === 'plaza' ? item.is_overall : !item.is_overall)
-      ));
+      const candidates = mode === 'plaza'
+        ? agentRows.filter((item) => item.id !== agentId && item.is_overall)
+        : visibleEmployeeAgents(agentRows, currentUser, { activeOnly: true, excludeAgentId: agentId });
       const firstSource = candidates[0]?.id || '';
       setImportSourceAgentId(firstSource);
       setImportSelectedKnowledgeBaseIds([]);

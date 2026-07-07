@@ -64,6 +64,7 @@ import IconProfileFile from '../assets/icons/profile-file.svg?react';
 import IconSearch from '../assets/icons/search.svg?react';
 import IconSkill from '../assets/icons/plaza-skill.svg?react';
 import IconTrash from '../assets/icons/trash.svg?react';
+import { visibleEmployeeAgents } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import type { BadgeTone } from './scheduled-tasks/shared';
@@ -439,9 +440,9 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
   async function requestAgentImport(mode: GeneralSkillImportMode, selectedResourceId?: string) {
     try {
       const agents = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
-      const candidates = agents.filter((item) => (
-        item.id !== agentId && (mode === 'plaza' ? item.is_overall : !item.is_overall)
-      ));
+      const candidates = mode === 'plaza'
+        ? agents.filter((item) => item.id !== agentId && item.is_overall)
+        : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: agentId });
       const firstSource = candidates[0]?.id || '';
       setAgentImportMode(mode);
       setAgentImportAgents(candidates);
@@ -1433,9 +1434,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     void withImportPreparation(async () => {
       try {
         const agents = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
-        const candidates = agents.filter((item) => (
-          item.id !== agentId && (mode === 'plaza' ? item.is_overall : !item.is_overall)
-        ));
+        const candidates = mode === 'plaza'
+          ? agents.filter((item) => item.id !== agentId && item.is_overall)
+          : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: agentId });
         const firstSource = candidates[0]?.id || '';
         setAgentImportMode(mode);
         setAgentImportAgents(candidates);
