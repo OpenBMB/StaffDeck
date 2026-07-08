@@ -489,14 +489,14 @@ export default function DashboardPage({
           <ClickableMetric label="差评率" value={negativeRate} suffix="%" onClick={goToLogs} />
         </div>
         <ConversationHeatmap byDay={replyStats.byDay} />
-        <div className="flex w-full min-w-0 max-w-full flex-col gap-[10px] my-[20px]">
+        <div className="flex w-full min-w-0 max-w-full flex-col gap-[10px] mt-[20px]">
           <div className="inline-flex items-center gap-[6px] self-start text-[14px] capitalize leading-none text-[#757f9c] in-data-[theme=dark]:text-[#8b93a6]">
             <IconGrowthArrow className="size-[14px] shrink-0" />
             成长记录
           </div>
           {growthItems.length ? (
             <div className="relative w-full min-w-0 max-w-full overflow-x-auto">
-              <div className="grid grid-flow-col auto-cols-[minmax(160px,1fr)] gap-[20px]">
+              <div className="grid grid-flow-col auto-cols-[minmax(160px,1fr)] gap-[20px] pb-[20px]">
                 {growthItems.map((item) => (
                   <div className="relative flex flex-col items-center gap-[8px]" key={item.id}>
                     <span className="pointer-events-none absolute left-[-10px] right-[-10px] top-[28px] z-0 h-px bg-[#e3e7f1] in-data-[theme=dark]:bg-[#363a45]" />
