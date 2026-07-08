@@ -10,8 +10,10 @@ from app.agents.branching import (
     ensure_open_gallery_binding,
     ensure_private_resource_binding,
     get_agent,
+    hide_open_gallery_binding,
     is_open_gallery_resource,
     require_overall_agent,
+    resource_binding_metadata,
 )
 from app.config import get_settings
 from app.db import get_session
@@ -36,7 +38,7 @@ from app.tools.tool_schema import (
 router = APIRouter(prefix="/api/enterprise/tools", tags=["enterprise:tools"])
 
 
-def tool_read(row: Tool) -> ToolRead:
+def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
     return ToolRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -54,6 +56,7 @@ def tool_read(row: Tool) -> ToolRead:
         output_schema=row.output_schema or {},
         allowed_skills=row.allowed_skills_json or [],
         enabled=row.enabled,
+        metadata=dict(metadata or {}),
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
@@ -68,7 +71,8 @@ def list_tools(
 ) -> list[ToolRead]:
     ensure_tenant(db, tenant_id)
     rows = _visible_tool_rows(db, tenant_id, bucket, agent_id)
-    return [tool_read(row) for row in rows]
+    metadata_by_id = resource_binding_metadata(db, tenant_id, agent_id, "tool")
+    return [tool_read(row, metadata_by_id.get(row.id)) for row in rows]
 
 
 @router.get("/buckets", response_model=list[ToolBucketRead])
@@ -137,7 +141,8 @@ def create_tool(
         ensure_open_gallery_binding(db, request.tenant_id, "tool", row.id, "active" if request.enabled else "inactive")
     db.commit()
     db.refresh(row)
-    return tool_read(row)
+    metadata_by_id = resource_binding_metadata(db, request.tenant_id, agent_id, "tool")
+    return tool_read(row, metadata_by_id.get(row.id))
 
 
 @router.post("/probe", response_model=ToolProbeResponse)
@@ -211,7 +216,8 @@ def get_tool(
 ) -> ToolRead:
     row = _get_tool(db, tenant_id, tool_id)
     _ensure_tool_visible(db, tenant_id, row, agent_id)
-    return tool_read(row)
+    metadata_by_id = resource_binding_metadata(db, tenant_id, agent_id, "tool")
+    return tool_read(row, metadata_by_id.get(row.id))
 
 
 @router.put("/{tool_id}", response_model=ToolRead)
@@ -254,7 +260,8 @@ def update_tool(
         ensure_open_gallery_binding(db, request.tenant_id, "tool", row.id, "active" if request.enabled else "inactive")
     db.commit()
     db.refresh(row)
-    return tool_read(row)
+    metadata_by_id = resource_binding_metadata(db, request.tenant_id, agent_id, "tool")
+    return tool_read(row, metadata_by_id.get(row.id))
 
 
 @router.delete("/{tool_id}")
@@ -275,8 +282,12 @@ def delete_tool(
             db.commit()
             return {"status": "hidden"}
         raise HTTPException(status_code=404, detail="Tool not visible to this agent")
-    if agent and agent.is_overall and not is_open_gallery_resource(db, tenant_id, "tool", row):
-        raise HTTPException(status_code=404, detail="Tool not visible in open gallery")
+    if agent and agent.is_overall:
+        if not is_open_gallery_resource(db, tenant_id, "tool", row):
+            raise HTTPException(status_code=404, detail="Tool not visible in open gallery")
+        hide_open_gallery_binding(db, tenant_id, "tool", row.id)
+        db.commit()
+        return {"status": "hidden"}
     require_overall_agent(db, tenant_id, agent_id)
     db.delete(row)
     db.commit()

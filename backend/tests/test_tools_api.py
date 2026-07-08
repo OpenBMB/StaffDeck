@@ -5,11 +5,12 @@ import pytest
 import httpx
 from fastapi import HTTPException
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.api.tools import _normalize_probe_url, delete_tool, probe_tool
+from app.agents.branching import ensure_open_gallery_binding
+from app.api.tools import _normalize_probe_url, delete_tool, list_tools, probe_tool
 from app.config import get_settings
-from app.db.models import Tenant, Tool
+from app.db.models import AgentProfile, AgentResourceBinding, Tenant, Tool
 from app.tools.tool_schema import ToolProbeRequest
 
 
@@ -53,6 +54,74 @@ def test_delete_tool_is_tenant_scoped() -> None:
 
         assert exc_info.value.status_code == 404
         assert db.get(Tool, tool.id) is not None
+
+
+def test_open_gallery_delete_tool_hides_gallery_without_removing_agent_binding() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
+        db.add(AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False))
+        tool = Tool(
+            id="tool_weather",
+            tenant_id="tenant_demo",
+            name="weather.forecast",
+            display_name="天气查询",
+            method="POST",
+            url="/api/mock/weather",
+        )
+        db.add(tool)
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_branch",
+                resource_type="tool",
+                resource_id=tool.id,
+                status="active",
+            )
+        )
+        db.commit()
+        ensure_open_gallery_binding(db, "tenant_demo", "tool", tool.id, "active")
+        db.commit()
+
+        result = delete_tool(tool.id, "tenant_demo", db, agent_id="agent_overall")
+
+        assert result == {"status": "hidden"}
+        assert db.get(Tool, tool.id) is not None
+        branch_binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == "tenant_demo",
+                AgentResourceBinding.agent_id == "agent_branch",
+                AgentResourceBinding.resource_type == "tool",
+                AgentResourceBinding.resource_id == tool.id,
+            )
+        ).one()
+        assert branch_binding.status == "active"
+        assert list_tools("tenant_demo", bucket=None, agent_id="agent_overall", db=db) == []
+        assert list_tools("tenant_demo", bucket=None, agent_id="agent_branch", db=db)[0].id == tool.id
+
+
+def test_open_gallery_tool_read_returns_system_creator_metadata() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
+        tool = Tool(
+            id="tool_weather",
+            tenant_id="tenant_demo",
+            name="weather.forecast",
+            display_name="天气查询",
+            method="POST",
+            url="/api/mock/weather",
+        )
+        db.add(tool)
+        db.commit()
+        ensure_open_gallery_binding(db, "tenant_demo", "tool", tool.id, "active")
+        db.commit()
+
+        rows = list_tools("tenant_demo", bucket=None, agent_id="agent_overall", db=db)
+
+        assert len(rows) == 1
+        assert rows[0].metadata["creator_name"] == "admin"
+        assert rows[0].metadata["created_by_username"] == "admin"
 
 
 def test_probe_tool_success_infers_output_schema(monkeypatch: pytest.MonkeyPatch) -> None:

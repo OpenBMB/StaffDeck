@@ -24,7 +24,6 @@ import plazaSopIcon from '../assets/icons/plaza-sop.svg';
 import plazaToolIcon from '../assets/icons/plaza-tool.svg';
 import {
   canManageEmployeeAgent,
-  displayNameWithCreator,
   employeeDisplayNameWithCreator,
   employeeProfile,
   resourceDisplayNameWithCreator,
@@ -286,8 +285,8 @@ export default function OpenPlatformPage({
       .filter((item) => item.status === 'published')
       .map((item) => ({
         id: item.id,
-        deleteKey: item.id,
-        title: displayNameWithCreator(item.name, '系统'),
+        deleteKey: item.skill_id,
+        title: resourceDisplayNameWithCreator(item.name, item),
         description: item.description || '可复制和复用的业务 SOP。',
         meta: `${item.skill_id} / ${item.version}`,
         tags: [item.business_domain || '业务流程', `${item.total_call_count || item.call_count || 0} 次调用`],
@@ -297,7 +296,7 @@ export default function OpenPlatformPage({
       .map((item) => ({
         id: item.id,
         deleteKey: item.id,
-        title: displayNameWithCreator(item.display_name || item.name, '系统'),
+        title: resourceDisplayNameWithCreator(item.display_name || item.name, item),
         description: item.description || '可配置到员工工具的工具。',
         meta: `${item.bucket || '工具'} / ${item.tool_type.toUpperCase()}`,
         tags: [item.method, item.enabled ? '已启用' : '已停用'],
@@ -362,8 +361,20 @@ export default function OpenPlatformPage({
     const key = platformItemDeleteKey(platformKind, item);
     setDeletingItemKey(key);
     try {
-      await api.delete(platformDeleteUrl(platformKind, item));
-      notify.success('已删除广场内容');
+      if (platformKind === 'agents' && item.agent) {
+        const metadata = { ...(item.agent.metadata || {}) };
+        metadata.published_to_gallery = false;
+        delete metadata.gallery_published_at;
+        delete metadata.gallery_published_by;
+        await api.put<AgentProfileRead>(`/api/enterprise/agents/${item.agent.id}`, {
+          tenant_id: TENANT_ID,
+          metadata,
+        });
+        window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+      } else {
+        await api.delete(platformDeleteUrl(platformKind, item));
+      }
+      notify.success('已从广场移除');
       setDetailItem((current) => (
         current && current.kind === platformKind && current.item.id === item.id ? null : current
       ));

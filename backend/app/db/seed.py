@@ -5,12 +5,19 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 
-from app.agents.branching import copy_open_gallery_tools_to_agent
+from app.agents.branching import (
+    copy_open_gallery_tools_to_agent,
+    get_overall_agent,
+    open_gallery_metadata,
+    system_creator_metadata,
+)
 from app.config import get_settings
 from app.db.models import (
     AgentProfile,
     AgentResourceBinding,
     GeneralSkill,
+    KnowledgeBase,
+    KnowledgeBaseVersion,
     ModelConfig,
     PersonaConfig,
     Skill,
@@ -778,6 +785,8 @@ def seed_demo_data(session: Session) -> None:
 
     _backfill_demo_agent_tools(session)
     _seed_weather_general_skill(session)
+    session.flush()
+    _backfill_system_creator_metadata(session)
 
     default_model = session.exec(
         select(ModelConfig).where(ModelConfig.tenant_id == "tenant_demo", ModelConfig.is_default == True)  # noqa: E712
@@ -799,6 +808,107 @@ def seed_demo_data(session: Session) -> None:
         )
 
     session.commit()
+
+
+def _backfill_system_creator_metadata(session: Session) -> None:
+    tenant_id = "tenant_demo"
+    for agent in session.exec(select(AgentProfile).where(AgentProfile.tenant_id == tenant_id)).all():
+        agent.metadata_json = system_creator_metadata(agent.metadata_json or {})
+        session.add(agent)
+
+    for model in (GeneralSkill, KnowledgeBase, KnowledgeBaseVersion):
+        for row in session.exec(select(model).where(model.tenant_id == tenant_id)).all():
+            row.metadata_json = system_creator_metadata(row.metadata_json or {})
+            session.add(row)
+
+    overall = get_overall_agent(session, tenant_id)
+    if not overall:
+        return
+    for resource_type, model in (
+        ("skill", Skill),
+        ("general_skill", GeneralSkill),
+        ("knowledge_base", KnowledgeBase),
+        ("tool", Tool),
+    ):
+        for resource in session.exec(select(model).where(model.tenant_id == tenant_id)).all():
+            _ensure_overall_resource_creator_binding(session, tenant_id, overall.id, resource_type, resource)
+
+
+def _ensure_overall_resource_creator_binding(
+    session: Session,
+    tenant_id: str,
+    overall_agent_id: str,
+    resource_type: str,
+    resource: object,
+) -> None:
+    resource_id = getattr(resource, "id", "")
+    if not resource_id:
+        return
+    existing = session.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == overall_agent_id,
+            AgentResourceBinding.resource_type == resource_type,
+            AgentResourceBinding.resource_id == resource_id,
+        )
+    ).first()
+    if existing:
+        existing.metadata_json = open_gallery_metadata(existing.metadata_json or {})
+        existing.updated_at = utc_now()
+        session.add(existing)
+        return
+    if not _resource_can_have_overall_binding(session, tenant_id, resource_type, resource):
+        return
+    session.add(
+        AgentResourceBinding(
+            tenant_id=tenant_id,
+            agent_id=overall_agent_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            status=_resource_binding_status(resource),
+            metadata_json=open_gallery_metadata(),
+        )
+    )
+
+
+def _resource_can_have_overall_binding(
+    session: Session,
+    tenant_id: str,
+    resource_type: str,
+    resource: object,
+) -> bool:
+    status = str(getattr(resource, "status", "") or "").strip()
+    if status == "deleted":
+        return False
+    metadata = dict(getattr(resource, "metadata_json", None) or {})
+    if _private_metadata(metadata):
+        return False
+    resource_id = getattr(resource, "id", "")
+    private_bindings = session.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.resource_type == resource_type,
+            AgentResourceBinding.resource_id == resource_id,
+        )
+    ).all()
+    return not any(_private_metadata(binding.metadata_json or {}) for binding in private_bindings)
+
+
+def _private_metadata(metadata: dict[str, object]) -> bool:
+    return (
+        metadata.get("scope") == "agent_private"
+        or metadata.get("visibility") == "agent_private"
+        or metadata.get("created_from_agent") is True
+        or metadata.get("created_from_upload") is True
+    )
+
+
+def _resource_binding_status(resource: object) -> str:
+    status = str(getattr(resource, "status", "") or "").strip()
+    enabled = getattr(resource, "enabled", None)
+    if enabled is False or status in {"draft", "inactive", "archived"}:
+        return "inactive"
+    return "active"
 
 
 def _backfill_demo_agent_tools(session: Session) -> None:

@@ -44,6 +44,7 @@ class ToolRead(BaseModel):
     output_schema: dict[str, Any]
     allowed_skills: list[str]
     enabled: bool
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
 

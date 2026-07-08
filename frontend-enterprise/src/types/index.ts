@@ -26,7 +26,7 @@ export type KnowledgeIngestJobRead = {
   stage: string;
   progress: number;
   error?: string;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   created_at: string;
   started_at?: string;
   finished_at?: string;
@@ -43,7 +43,7 @@ export type KnowledgeBaseRead = {
   branch_sync_state?: string;
   branch_base_version?: string;
   branch_head_version?: string;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   document_count: number;
   bucket_count: number;
   chunk_count: number;
@@ -61,7 +61,7 @@ export type KnowledgeDocumentRead = {
   status: string;
   bucket_count: number;
   chunk_count: number;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   error?: string;
   created_at: string;
   updated_at: string;
@@ -78,7 +78,7 @@ export type KnowledgeBucketRead = {
   token_estimate: number;
   chunk_count: number;
   status: string;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 };
@@ -249,6 +249,7 @@ export type SkillRead = {
   branch_sync_state?: string;
   branch_base_version?: string;
   branch_head_version?: string;
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 };
@@ -351,6 +352,7 @@ export type ToolRead = {
   output_schema: Record<string, unknown>;
   allowed_skills: string[];
   enabled: boolean;
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 };

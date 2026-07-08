@@ -1662,8 +1662,9 @@ export function KnowledgeAddPage() {
 
 function KnowledgeJobCard({ job }: { job: KnowledgeIngestJobRead }) {
   const steps = ingestSteps(job);
-  const stageLabel = stringFromMetadata(job.metadata.stage_label) || stageLabelFallback(job.stage);
-  const stageDetail = stringFromMetadata(job.metadata.stage_detail);
+  const metadata = job.metadata || {};
+  const stageLabel = stringFromMetadata(metadata.stage_label) || stageLabelFallback(job.stage);
+  const stageDetail = stringFromMetadata(metadata.stage_detail);
   return (
     <div className="knowledge-job">
       <div className="knowledge-job-head">
@@ -1720,7 +1721,7 @@ function SmoothProgress({ job }: { job: KnowledgeIngestJobRead }) {
 }
 
 function ingestSteps(job: KnowledgeIngestJobRead): IngestStepView[] {
-  const raw = job.metadata.ingest_steps;
+  const raw = (job.metadata || {}).ingest_steps;
   if (Array.isArray(raw)) {
     return raw.map((item, index) => {
       const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};

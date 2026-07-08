@@ -180,6 +180,7 @@ class SkillRead(BaseModel):
     branch_sync_state: Optional[str] = None
     branch_base_version: Optional[str] = None
     branch_head_version: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
 

@@ -12,6 +12,7 @@ from app.agents.branching import (
     ensure_knowledge_base_version,
     ensure_open_gallery_binding,
     get_agent,
+    hide_open_gallery_binding,
     is_open_gallery_resource,
     knowledge_version_for_upload,
     mark_resource_open_gallery,
@@ -471,6 +472,12 @@ def delete_knowledge_base(
         db.commit()
         return {"status": "hidden"}
     row = _get_knowledge_base(db, tenant_id, knowledge_base_id)
+    if agent and agent.is_overall:
+        if not is_open_gallery_resource(db, tenant_id, "knowledge_base", row):
+            raise HTTPException(status_code=404, detail="Knowledge base not visible in open gallery")
+        hide_open_gallery_binding(db, tenant_id, "knowledge_base", row.id)
+        db.commit()
+        return {"status": "hidden"}
     for model in (
         KnowledgeDiscoverySuggestion,
         KnowledgeIngestJob,

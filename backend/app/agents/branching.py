@@ -31,6 +31,86 @@ from app.db.models import (
 DEFAULT_AGENT_ROLES = ("default", "router", "step", "response", "general_skill")
 OPEN_GALLERY_SCOPE = "open_gallery"
 AGENT_PRIVATE_SCOPE = "agent_private"
+SYSTEM_CREATOR_NAME = "admin"
+STANDARD_CREATOR_METADATA_KEYS = (
+    "creator_name",
+    "created_by",
+    "created_by_display_name",
+    "created_by_username",
+)
+CREATOR_SOURCE_METADATA_KEYS = (
+    "gallery_published_by",
+    "owner_display_name",
+    "owner_username",
+    "created_by_user_id",
+    "owner_user_id",
+)
+CREATOR_METADATA_KEYS = STANDARD_CREATOR_METADATA_KEYS + CREATOR_SOURCE_METADATA_KEYS
+
+
+def _valid_creator_value(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip()
+    return bool(normalized) and normalized != "系统" and normalized.lower() != "system"
+
+
+def _metadata_creator_value(metadata: dict[str, Any]) -> str:
+    owner_username = metadata.get("owner_username")
+    if _valid_creator_value(owner_username):
+        return owner_username.strip()
+    for key in (
+        "created_by_username",
+        "created_by",
+        "creator_name",
+        "gallery_published_by",
+    ):
+        value = metadata.get(key)
+        if _valid_creator_value(value) and value.strip() != SYSTEM_CREATOR_NAME:
+            return value.strip()
+    for key in (
+        "created_by_username",
+        "created_by",
+        "owner_username",
+        "creator_name",
+        "gallery_published_by",
+        "created_by_display_name",
+        "owner_display_name",
+        "created_by_user_id",
+        "owner_user_id",
+    ):
+        value = metadata.get(key)
+        if _valid_creator_value(value):
+            return value.strip()
+    return SYSTEM_CREATOR_NAME
+
+
+def system_creator_metadata(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = dict(extra or {})
+    owner_username = metadata.get("owner_username")
+    owner_creator = owner_username.strip() if _valid_creator_value(owner_username) else ""
+    creator = owner_creator or _metadata_creator_value(metadata)
+    should_replace_default = creator != SYSTEM_CREATOR_NAME
+    should_replace_owner = bool(owner_creator)
+    if not _valid_creator_value(metadata.get("creator_name")) or (
+        should_replace_default and metadata.get("creator_name") == SYSTEM_CREATOR_NAME
+    ) or (should_replace_owner and metadata.get("creator_name") != creator):
+        metadata["creator_name"] = creator
+    if not _valid_creator_value(metadata.get("created_by")) or (
+        should_replace_default and metadata.get("created_by") == SYSTEM_CREATOR_NAME
+    ) or (should_replace_owner and metadata.get("created_by") != creator):
+        metadata["created_by"] = creator
+    if not _valid_creator_value(metadata.get("created_by_username")) or (
+        should_replace_default and metadata.get("created_by_username") == SYSTEM_CREATOR_NAME
+    ) or (should_replace_owner and metadata.get("created_by_username") != creator):
+        metadata["created_by_username"] = creator
+    if not _valid_creator_value(metadata.get("created_by_user_id")):
+        metadata["created_by_user_id"] = (
+            metadata.get("owner_user_id")
+            if _valid_creator_value(metadata.get("owner_user_id"))
+            else creator
+        )
+    return metadata
 
 
 def get_overall_agent(db: Session, tenant_id: str) -> AgentProfile | None:
@@ -70,7 +150,7 @@ def require_overall_agent(db: Session, tenant_id: str, agent_id: str | None) -> 
 
 
 def open_gallery_metadata(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    metadata = dict(extra or {})
+    metadata = system_creator_metadata(extra)
     metadata["scope"] = OPEN_GALLERY_SCOPE
     metadata["visibility"] = OPEN_GALLERY_SCOPE
     metadata.pop("owner_agent_id", None)
@@ -122,6 +202,27 @@ def ensure_open_gallery_binding(
         )
 
 
+def hide_open_gallery_binding(
+    db: Session,
+    tenant_id: str,
+    resource_type: str,
+    resource_id: str,
+) -> bool:
+    overall = get_overall_agent(db, tenant_id)
+    if not overall:
+        return False
+    _ensure_binding(
+        db,
+        tenant_id,
+        overall.id,
+        resource_type,
+        resource_id,
+        "deleted",
+        metadata_json=open_gallery_metadata(),
+    )
+    return True
+
+
 def ensure_private_resource_binding(
     db: Session,
     tenant_id: str,
@@ -139,6 +240,28 @@ def ensure_private_resource_binding(
         status,
         metadata_json=agent_private_metadata(agent_id),
     )
+
+
+def resource_binding_metadata(
+    db: Session,
+    tenant_id: str,
+    agent_id: str | None,
+    resource_type: str,
+) -> dict[str, dict[str, Any]]:
+    agent = get_agent(db, tenant_id, agent_id)
+    if not agent:
+        agent = get_overall_agent(db, tenant_id)
+    if not agent:
+        return {}
+    bindings = db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == agent.id,
+            AgentResourceBinding.resource_type == resource_type,
+            AgentResourceBinding.status != "deleted",
+        )
+    ).all()
+    return {binding.resource_id: dict(binding.metadata_json or {}) for binding in bindings}
 
 
 def is_open_gallery_resource(db: Session, tenant_id: str, resource_type: str, resource: object) -> bool:
@@ -223,7 +346,11 @@ def visible_skill_rows(
                 .order_by(Skill.updated_at.desc())
             ).all()
         )
-        return [row for row in rows if is_open_gallery_resource(db, tenant_id, "skill", row)]
+        metadata_by_id = resource_binding_metadata(db, tenant_id, agent.id if agent else None, "skill")
+        visible_rows = [row for row in rows if is_open_gallery_resource(db, tenant_id, "skill", row)]
+        for row in visible_rows:
+            object.__setattr__(row, "agent_branch_meta", {"metadata": metadata_by_id.get(row.id, {})})
+        return visible_rows
     rows: list[Skill] = []
     bindings = db.exec(
         select(AgentResourceBinding).where(
@@ -263,6 +390,8 @@ def visible_skill(db: Session, tenant_id: str, skill_id: str, agent_id: str | No
             return None
         if not is_open_gallery_resource(db, tenant_id, "skill", skill):
             return None
+        metadata_by_id = resource_binding_metadata(db, tenant_id, agent.id if agent else None, "skill")
+        object.__setattr__(skill, "agent_branch_meta", {"metadata": metadata_by_id.get(skill.id, {})})
         return skill
     binding = db.exec(
         select(AgentResourceBinding).where(

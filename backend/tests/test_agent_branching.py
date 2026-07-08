@@ -8,16 +8,18 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.agents.branching import (
     copy_overall_scope_to_agent,
     ensure_private_resource_binding,
+    ensure_open_gallery_binding,
     ensure_knowledge_base_version,
     knowledge_version_for_upload,
     require_overall_agent,
+    system_creator_metadata,
     update_branch_skill,
     visible_knowledge_base_versions,
     visible_skill_rows,
 )
 from app.agents.schema import AgentResourceImportRequest
 from app.api.agents import _skill_branch_read, import_agent_resources, list_agents
-from app.api.skills import get_skill, update_skill
+from app.api.skills import delete_skill, get_skill, skill_read, update_skill
 from app.api.tools import list_tools
 from app.db.models import (
     AgentProfile,
@@ -74,6 +76,101 @@ def test_agent_skill_branch_is_copy_on_write_and_reports_branch_state() -> None:
         assert global_skill is not None
         assert global_skill.name == "购买流程"
         assert _skill_branch_read(branch_visible)["branch_sync_state"] == "diverged"
+
+
+def test_open_gallery_delete_skill_hides_gallery_without_removing_agent_binding() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False))
+        skill = Skill(
+            id="skill_weather_row",
+            tenant_id="tenant_demo",
+            skill_id="skill_weather",
+            version="1.0.0",
+            name="天气查询流程",
+            business_domain="工具",
+            description="查询天气",
+            status="published",
+            content_json=_graph("天气查询流程", "1.0.0"),
+        )
+        db.add(skill)
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_branch",
+                resource_type="skill",
+                resource_id=skill.id,
+                status="active",
+            )
+        )
+        db.commit()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", skill.id, "active")
+        db.commit()
+
+        result = delete_skill(skill.skill_id, "tenant_demo", db, agent_id="agent_overall")
+
+        assert result == {"status": "hidden"}
+        assert db.get(Skill, skill.id) is not None
+        branch_binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == "tenant_demo",
+                AgentResourceBinding.agent_id == "agent_branch",
+                AgentResourceBinding.resource_type == "skill",
+                AgentResourceBinding.resource_id == skill.id,
+            )
+        ).one()
+        assert branch_binding.status == "active"
+        assert visible_skill_rows(db, "tenant_demo", "agent_overall") == []
+        assert visible_skill_rows(db, "tenant_demo", "agent_branch")[0].id == skill.id
+
+
+def test_open_gallery_skill_read_returns_system_creator_metadata() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        skill = Skill(
+            id="skill_weather_row",
+            tenant_id="tenant_demo",
+            skill_id="skill_weather",
+            version="1.0.0",
+            name="天气查询流程",
+            business_domain="工具",
+            description="查询天气",
+            status="published",
+            content_json=_graph("天气查询流程", "1.0.0"),
+        )
+        db.add(skill)
+        db.commit()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", skill.id, "active")
+        db.commit()
+
+        visible = visible_skill_rows(db, "tenant_demo", "agent_overall")
+        read = skill_read(visible[0])
+        branch_read = _skill_branch_read(visible[0])
+
+        assert read.metadata["creator_name"] == "admin"
+        assert read.metadata["created_by_username"] == "admin"
+        assert branch_read["metadata"]["creator_name"] == "admin"
+        assert branch_read["metadata"]["created_by_username"] == "admin"
+
+
+def test_system_creator_metadata_persists_owner_username_as_creator() -> None:
+    metadata = system_creator_metadata(
+        {
+            "creator_name": "admin",
+            "created_by": "admin",
+            "created_by_username": "admin",
+            "owner_username": "demo",
+            "owner_display_name": "演示用户",
+            "owner_user_id": "user_demo",
+        }
+    )
+
+    assert metadata["creator_name"] == "demo"
+    assert metadata["created_by"] == "demo"
+    assert metadata["created_by_username"] == "demo"
+    assert metadata["created_by_user_id"] == "user_demo"
 
 
 def test_list_agents_allows_tool_resource_bindings() -> None:

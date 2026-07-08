@@ -19,9 +19,12 @@ from app.agents.branching import (
     ensure_open_gallery_binding,
     ensure_private_resource_binding,
     get_agent,
+    hide_open_gallery_binding,
+    is_open_gallery_resource,
     mark_resource_open_gallery,
     project_skill_with_branch,
     require_overall_agent,
+    resource_binding_metadata,
     rollback_branch,
     update_branch_skill,
     visible_skill_rows,
@@ -103,6 +106,7 @@ def skill_read(
         branch_sync_state=branch_meta.get("sync_state"),
         branch_base_version=branch_meta.get("base_version"),
         branch_head_version=branch_meta.get("head_version"),
+        metadata=dict(branch_meta.get("metadata") or {}),
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
@@ -249,6 +253,11 @@ def get_skill(
             raise HTTPException(status_code=404, detail="Skill not visible to this agent")
         branch = ensure_agent_skill_branch(db, tenant_id, agent.id, row)
         row = project_skill_with_branch(row, branch, binding.status)
+    else:
+        metadata_by_id = resource_binding_metadata(db, tenant_id, agent_id, "skill")
+        branch_meta = dict(getattr(row, "agent_branch_meta", {}) or {})
+        branch_meta["metadata"] = metadata_by_id.get(row.id, {})
+        object.__setattr__(row, "agent_branch_meta", branch_meta)
     stats = _skill_stats(db, tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, tenant_id, stats))
 
@@ -398,6 +407,12 @@ def delete_skill(
         branch.updated_at = utc_now()
         db.add(binding)
         db.add(branch)
+        db.commit()
+        return {"status": "hidden"}
+    if agent and agent.is_overall:
+        if not is_open_gallery_resource(db, tenant_id, "skill", row):
+            raise HTTPException(status_code=404, detail="Skill not visible in open gallery")
+        hide_open_gallery_binding(db, tenant_id, "skill", row.id)
         db.commit()
         return {"status": "hidden"}
 

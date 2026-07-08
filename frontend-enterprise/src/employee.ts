@@ -251,10 +251,12 @@ function firstString(...values: unknown[]): string {
 
 export function creatorNameFromMetadata(
   metadata?: Record<string, unknown> | null,
-  fallback = '系统',
+  fallback = '',
 ): string {
   const meta = metadata || {};
-  return firstString(
+  const creator = firstString(
+    meta.creator_name,
+    meta.created_by,
     meta.created_by_display_name,
     meta.created_by_username,
     meta.owner_display_name,
@@ -262,7 +264,11 @@ export function creatorNameFromMetadata(
     meta.gallery_published_by,
     meta.created_by_user_id,
     meta.owner_user_id,
-  ) || fallback;
+  );
+  if (!creator) return fallback;
+  const normalized = creator.trim();
+  if (!normalized || normalized === '系统' || normalized.toLowerCase() === 'system') return fallback;
+  return normalized;
 }
 
 export function displayNameWithCreator(name: string, creator?: string): string {

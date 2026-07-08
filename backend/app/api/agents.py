@@ -957,6 +957,7 @@ def _skill_branch_read(skill: Skill) -> dict[str, object]:
         "branch_sync_state": metadata.get("sync_state"),
         "branch_base_version": metadata.get("base_version"),
         "branch_head_version": metadata.get("head_version"),
+        "metadata": dict(metadata.get("metadata") or {}),
         "created_at": skill.created_at.isoformat(),
         "updated_at": skill.updated_at.isoformat(),
     }

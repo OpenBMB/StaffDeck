@@ -24,6 +24,7 @@ from app.agents.branching import (
     ensure_open_gallery_binding,
     ensure_private_resource_binding,
     get_agent,
+    hide_open_gallery_binding,
     is_open_gallery_resource,
     mark_resource_open_gallery,
     mark_resource_private_for_agent,
@@ -438,6 +439,12 @@ def delete_general_skill(
         binding.status = "deleted"
         binding.updated_at = utc_now()
         db.add(binding)
+        db.commit()
+        return {"status": "hidden", "slug": slug}
+    if agent and agent.is_overall:
+        if not is_open_gallery_resource(db, tenant_id, "general_skill", row):
+            raise HTTPException(status_code=404, detail="General skill not visible in open gallery")
+        hide_open_gallery_binding(db, tenant_id, "general_skill", row.id)
         db.commit()
         return {"status": "hidden", "slug": slug}
 
