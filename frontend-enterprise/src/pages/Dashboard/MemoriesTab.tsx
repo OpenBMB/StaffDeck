@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import AppHeader from '@/components/AppHeader';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { DetailField } from '@/components/DetailField';
 import { Paginator } from '@/components/Paginator';
@@ -10,13 +9,12 @@ import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 import { MOBILE_CARD_CLASS, formatDateTime } from '@/lib/enterprise-ui';
 
-import { api, TENANT_ID } from '../api/client';
-import IconListBulleted from '../assets/icons/list-bulleted.svg?react';
-import IconRefresh from '../assets/icons/refresh.svg?react';
-import IconSearch from '../assets/icons/search.svg?react';
-import type { EnterpriseAuthUser } from '../auth';
-import { useClientPagination } from '../hooks/useClientPagination';
-import type { MemoryRead } from '../types';
+import { api, TENANT_ID } from '../../api/client';
+import IconListBulleted from '../../assets/icons/list-bulleted.svg?react';
+import IconRefresh from '../../assets/icons/refresh.svg?react';
+import IconSearch from '../../assets/icons/search.svg?react';
+import { useClientPagination } from '../../hooks/useClientPagination';
+import type { MemoryRead } from '../../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const MEMORY_PAGE_SIZE = 10;
@@ -39,13 +37,7 @@ type MemoryUserGroup = {
 
 const EMPTY_FILTER: MemoryFilter = { username: '', user_id: '', q: '' };
 
-export default function MemoriesPage({
-  currentUser,
-  onLogout,
-}: {
-  currentUser?: EnterpriseAuthUser;
-  onLogout?: () => void;
-} = {}) {
+export default function MemoriesTab() {
   const [rows, setRows] = useState<MemoryRead[]>([]);
   const [detail, setDetail] = useState<MemoryUserGroup | null>(null);
   const [loading, setLoading] = useState(false);
@@ -188,13 +180,11 @@ export default function MemoriesPage({
   );
 
   return (
-    <div
-      className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]"
-      aria-busy={loading}
-    >
-      <AppHeader onLogout={onLogout} userName={currentUser?.username} title="员工记忆" />
-
-      <div className="mt-[20px] flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_18px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+    <>
+      <section
+        aria-busy={loading}
+        className="relative mt-[-2px] flex w-full min-w-0 max-w-full flex-col gap-[24px] overflow-hidden rounded-[18px] bg-white p-[14px] shadow-[0_20px_42px_rgba(21,26,38,0.045)] min-[521px]:p-[18px]"
+      >
         <div className="flex flex-col gap-[18px]">
           <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
             <IconListBulleted className="size-[14px] shrink-0" />
@@ -275,10 +265,10 @@ export default function MemoriesPage({
             />
           )}
         </div>
-      </div>
+      </section>
 
       <MemoryDetailDialog detail={detail} onClose={() => setDetail(null)} />
-    </div>
+    </>
   );
 }
 

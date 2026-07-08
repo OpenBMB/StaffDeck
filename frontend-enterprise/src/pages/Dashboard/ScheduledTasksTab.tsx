@@ -2,28 +2,24 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { notify } from '@/components/ui/app-toast';
 
-import AppHeader from '@/components/AppHeader';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { Paginator } from '@/components/Paginator';
 import { StatCard } from '@/components/StatCard';
 import { Button as UIButton } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui';
-import { cn } from '@/lib/utils';
 import { MOBILE_CARD_CLASS } from '@/lib/enterprise-ui';
 
-import { api, TENANT_ID } from '../api/client';
-import IconAdd from '../assets/icons/add.svg?react';
-import IconAlignJustify from '../assets/icons/align-justify.svg?react';
-import IconRefresh from '../assets/icons/refresh.svg?react';
-import IconSearch from '../assets/icons/search.svg?react';
-import IconTable from '../assets/icons/table.svg?react';
-import type { EnterpriseAuthUser } from '../auth';
-import { useClientPagination } from '../hooks/useClientPagination';
-import type { AgentProfileRead, ScheduledTaskRead, ScheduledTaskRunRead } from '../types';
-import { StatusBadge, TaskRunResultBadge, TaskStatusBadge } from './scheduled-tasks/StatusBadge';
-import { TaskActionsMenu } from './scheduled-tasks/TaskActionsMenu';
-import { TaskSection } from './scheduled-tasks/TaskSection';
+import { api, TENANT_ID } from '../../api/client';
+import IconAdd from '../../assets/icons/add.svg?react';
+import IconAlignJustify from '../../assets/icons/align-justify.svg?react';
+import IconSearch from '../../assets/icons/search.svg?react';
+import IconTable from '../../assets/icons/table.svg?react';
+import { useClientPagination } from '../../hooks/useClientPagination';
+import type { AgentProfileRead, ScheduledTaskRead, ScheduledTaskRunRead } from '../../types';
+import { StatusBadge, TaskRunResultBadge, TaskStatusBadge } from '../scheduled-tasks/StatusBadge';
+import { TaskActionsMenu } from '../scheduled-tasks/TaskActionsMenu';
+import { TaskSection } from '../scheduled-tasks/TaskSection';
 import {
   ENTERPRISE_AGENT_STORAGE_KEY,
   RUN_FILTER_TABS,
@@ -35,13 +31,13 @@ import {
   matchesTaskFilter,
   type RunListFilter,
   type TaskListFilter,
-} from './scheduled-tasks/shared';
+} from '../scheduled-tasks/shared';
 
 export {
   ScheduledTaskEditPage,
   ScheduledTaskNewPage,
   type ScheduledTaskPageProps,
-} from './scheduled-tasks/ScheduledTaskEditorPage';
+} from '../scheduled-tasks/ScheduledTaskEditorPage';
 
 const MOBILE_CARD_HEAD_CLASS = 'flex min-w-0 items-start justify-between gap-[10px]';
 const MOBILE_META_CLASS =
@@ -50,13 +46,7 @@ const MOBILE_TITLE_CLASS =
   'min-w-0 wrap-break-word text-[14px] font-semibold text-[#18181a]';
 const MOBILE_SUMMARY_CLASS = 'mt-[8px] line-clamp-2 text-[12px] leading-[1.55] text-[#858b9c]';
 
-export default function ScheduledTasksPage({
-  currentUser,
-  onLogout,
-}: {
-  currentUser?: EnterpriseAuthUser;
-  onLogout?: () => void;
-} = {}) {
+export default function ScheduledTasksTab() {
   const [rows, setRows] = useState<ScheduledTaskRead[]>([]);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [agentId, setAgentId] = useState(
@@ -152,17 +142,14 @@ export default function ScheduledTasksPage({
       notify.warning('已删除的定时任务不能运行');
       return;
     }
-    const toastId = notify.loading('正在创建执行记录...');
     try {
       const run = await api.post<ScheduledTaskRunRead>(
         `/api/enterprise/scheduled-tasks/${row.id}/run-now?tenant_id=${TENANT_ID}`,
       );
-      notify.success(run.session_id ? '已创建独立任务会话，后台开始执行' : '已触发后台执行', {
-        id: toastId,
-      });
+      notify.success(run.session_id ? '已创建独立任务会话，后台开始执行' : '已触发后台执行');
       await load();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '立即执行失败', { id: toastId });
+      notify.error(error instanceof Error ? error.message : '立即执行失败');
     }
   }
 
@@ -238,7 +225,13 @@ export default function ScheduledTasksPage({
         </div>
       ),
     },
-    { key: 'schedule', title: '计划', width: 160, render: (row) => formatSchedule(row) },
+    {
+      key: 'schedule',
+      title: '计划',
+      width: 200,
+      className: 'whitespace-normal [overflow-wrap:anywhere]',
+      render: (row) => formatSchedule(row),
+    },
     { key: 'status', title: '状态', width: 120, render: (row) => <TaskStatusBadge status={row.status} /> },
     { key: 'next', title: '下次执行', width: 160, render: (row) => formatTime(row.next_run_at) },
     { key: 'runCount', title: '已执行', width: 120, render: (row) => `${row.run_count || 0} 次` },
@@ -408,83 +401,83 @@ export default function ScheduledTasksPage({
     </article>
   );
 
-  return (
-    <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px]" aria-busy={loading}>
-      <AppHeader onLogout={onLogout} userName={currentUser?.username} title="定时任务" />
-      <div className="flex justify-end gap-[16px] mt-[20px] mb-[16px]">
-        <UIButton
-          variant="outline"
-          onClick={() => void load()}
-          disabled={loading}
-          className="h-8 w-[100px] gap-1 rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-5 text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
-        >
-          <IconRefresh className={cn('size-3.5', loading && 'animate-spin')} />
-          刷新
-        </UIButton>
-        <UIButton
-          onClick={() => navigate('/enterprise/scheduled-tasks/new')}
-          disabled={createDisabled}
-          className="h-8 w-[100px] gap-1 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]"
-        >
-          <IconAdd className="size-3.5" />
-          新增任务
-        </UIButton>
+  const actionButtons = (
+    <div className="flex justify-end gap-[16px]">
+      <UIButton
+        onClick={() => navigate('/enterprise/scheduled-tasks/new')}
+        disabled={createDisabled}
+        className="h-8 w-[100px] gap-1 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]"
+      >
+        <IconAdd className="size-3.5" />
+        新增任务
+      </UIButton>
+    </div>
+  );
+
+  const scheduledBody = selectedAgent?.is_overall ? (
+    <div className="flex min-h-[200px] items-center justify-center rounded-[14px] bg-[#f6f6f6] text-[13px] text-[#858b9c]">
+      请先选择一个数字员工再配置定时任务。
+    </div>
+  ) : (
+    <>
+      <div className="flex flex-wrap items-stretch gap-[20px]" aria-label="定时任务统计">
+        <StatCard label="待完成" value={activeRows.length} className="basis-[220px]" />
+        <StatCard label="已完成" value={completedCount} className="basis-[220px]" />
+        <StatCard label="执行记录" value={allRunRows.length} className="basis-[220px]" />
       </div>
 
-      {selectedAgent?.is_overall ? (
-        <div className="mt-[24px] flex min-h-[200px] items-center justify-center rounded-[14px] bg-[#f6f6f6] text-[13px] text-[#858b9c]">
-          请先选择一个数字员工再配置定时任务。
-        </div>
-      ) : (
-        <>
-          <div className="my-[24px] flex flex-wrap items-stretch gap-[20px]" aria-label="定时任务统计">
-            <StatCard label="待完成" value={activeRows.length} className="basis-[220px]" />
-            <StatCard label="已完成" value={completedCount} className="basis-[220px]" />
-            <StatCard label="执行记录" value={allRunRows.length} className="basis-[220px]" />
-          </div>
+      <div className="flex flex-col gap-[24px]">
+        <TaskSection
+          icon={<IconTable className="size-[14px] shrink-0" />}
+          title="任务列表"
+          filterTabs={TASK_FILTER_TABS}
+          filter={taskFilter}
+          onFilterChange={setTaskFilter}
+          rows={visibleRows}
+          pagedRows={taskPagination.pagedItems}
+          columns={taskColumns}
+          rowKey={(row) => row.id}
+          loading={loading}
+          emptyText="暂无定时任务"
+          page={taskPagination.page}
+          pageCount={taskPagination.pageCount}
+          onPageChange={taskPagination.setPage}
+          renderMobileCard={renderTaskMobileCard}
+        />
 
-          <div className="flex flex-col gap-[24px] p-[18px_18px_18px_18px] rounded-[20px_20px_0_0] bg-[#FFF] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
-            <TaskSection
-              icon={<IconTable className="size-[14px] shrink-0" />}
-              title="任务列表"
-              filterTabs={TASK_FILTER_TABS}
-              filter={taskFilter}
-              onFilterChange={setTaskFilter}
-              rows={visibleRows}
-              pagedRows={taskPagination.pagedItems}
-              columns={taskColumns}
-              rowKey={(row) => row.id}
-              loading={loading}
-              emptyText="暂无定时任务"
-              page={taskPagination.page}
-              pageCount={taskPagination.pageCount}
-              onPageChange={taskPagination.setPage}
-              renderMobileCard={renderTaskMobileCard}
-            />
+        <TaskSection
+          icon={<IconAlignJustify className="size-[14px] shrink-0" />}
+          title="执行记录"
+          filterTabs={RUN_FILTER_TABS}
+          filter={runFilter}
+          onFilterChange={setRunFilter}
+          rows={visibleRunRows}
+          pagedRows={runPagination.pagedItems}
+          columns={runColumns}
+          rowKey={(row) => row.id}
+          loading={loading}
+          emptyText="暂无执行记录"
+          tableSize="compact"
+          striped
+          bordered
+          page={runPagination.page}
+          pageCount={runPagination.pageCount}
+          onPageChange={runPagination.setPage}
+          renderMobileCard={renderRunMobileCard}
+        />
+      </div>
+    </>
+  );
 
-            <TaskSection
-              icon={<IconAlignJustify className="size-[14px] shrink-0" />}
-              title="执行记录"
-              filterTabs={RUN_FILTER_TABS}
-              filter={runFilter}
-              onFilterChange={setRunFilter}
-              rows={visibleRunRows}
-              pagedRows={runPagination.pagedItems}
-              columns={runColumns}
-              rowKey={(row) => row.id}
-              loading={loading}
-              emptyText="暂无执行记录"
-              tableSize="compact"
-              striped
-              bordered
-              page={runPagination.page}
-              pageCount={runPagination.pageCount}
-              onPageChange={runPagination.setPage}
-              renderMobileCard={renderRunMobileCard}
-            />
-          </div>
-        </>
-      )}
+  return (
+    <>
+      <section
+        aria-busy={loading}
+        className="relative mt-[-2px] flex w-full min-w-0 max-w-full flex-col gap-[24px] overflow-hidden rounded-[18px] bg-white p-[14px] shadow-[0_20px_42px_rgba(21,26,38,0.045)] *:min-w-0 min-[521px]:p-[18px]"
+      >
+        {actionButtons}
+        {scheduledBody}
+      </section>
 
       <Dialog open={runsOpen} onOpenChange={setRunsOpen}>
         <DialogContent
@@ -532,7 +525,7 @@ export default function ScheduledTasksPage({
         description="删除后不再唤醒该员工，历史执行记录会继续保留。"
         onConfirm={() => void confirmDelete()}
       />
-    </div>
+    </>
   );
 }
 

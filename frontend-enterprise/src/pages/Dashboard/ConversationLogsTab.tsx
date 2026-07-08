@@ -9,7 +9,6 @@ import {
   Wrench,
 } from 'lucide-react';
 
-import AppHeader from '@/components/AppHeader';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { DetailField } from '@/components/DetailField';
 import { Paginator } from '@/components/Paginator';
@@ -20,13 +19,11 @@ import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/enterprise-ui';
 
-import { api, TENANT_ID } from '../api/client';
-import IconRefresh from '../assets/icons/refresh.svg?react';
-import type { EnterpriseAuthUser } from '../auth';
-import { employeeDisplayNameWithCreator } from '../employee';
-import { useClientPagination } from '../hooks/useClientPagination';
-import { StatusBadge } from './scheduled-tasks/StatusBadge';
-import type { BadgeTone } from './scheduled-tasks/shared';
+import { api, TENANT_ID } from '../../api/client';
+import { employeeDisplayNameWithCreator } from '../../employee';
+import { useClientPagination } from '../../hooks/useClientPagination';
+import { StatusBadge } from '../scheduled-tasks/StatusBadge';
+import type { BadgeTone } from '../scheduled-tasks/shared';
 import type {
   AgentProfileRead,
   EnterpriseChatSessionRead,
@@ -38,7 +35,7 @@ import type {
   FeedbackSummaryRead,
   TraceLineRead,
   TurnTraceRead,
-} from '../types';
+} from '../../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const FEEDBACK_PAGE_SIZE = 10;
@@ -72,13 +69,7 @@ const FILTER_TABS: UnderlineTabItem<LogFilter>[] = [
 const MOBILE_CARD_CLASS =
   'min-w-0 rounded-[8px] border border-[#eceef1] bg-white p-[14px]';
 
-export default function FeedbackPage({
-  currentUser,
-  onLogout,
-}: {
-  currentUser?: EnterpriseAuthUser;
-  onLogout?: () => void;
-} = {}) {
+export default function ConversationLogsTab() {
   const [searchParams] = useSearchParams();
   const [scopedAgentId, setScopedAgentId] = useState(
     () => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '',
@@ -109,25 +100,27 @@ export default function FeedbackPage({
 
   const load = async () => {
     setLoading(true);
-    try {
-      const agentQuery = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
-      const [sessionResult, downResult, upResult, summaryResult, agentResult] = await Promise.all([
-        api.get<EnterpriseChatSessionRead[]>(`/api/enterprise/sessions?tenant_id=${TENANT_ID}${agentQuery}`),
-        api.get<FeedbackSessionRead[]>(`/api/enterprise/feedback/sessions?tenant_id=${TENANT_ID}&rating=down${agentQuery}`),
-        api.get<FeedbackSessionRead[]>(`/api/enterprise/feedback/sessions?tenant_id=${TENANT_ID}&rating=up${agentQuery}`),
-        api.get<FeedbackSummaryRead>(`/api/enterprise/feedback/summary?tenant_id=${TENANT_ID}${agentQuery}`),
-        api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
-      ]);
-      setSessions(sessionResult);
-      setDownRows(downResult);
-      setUpRows(upResult);
-      setSummary(summaryResult);
-      setAgents(agentResult);
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '查询对话日志失败');
-    } finally {
-      setLoading(false);
+    const agentQuery = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+    // Load each source independently so one failing endpoint doesn't blank the whole tab.
+    const [sessionResult, downResult, upResult, summaryResult, agentResult] = await Promise.allSettled([
+      api.get<EnterpriseChatSessionRead[]>(`/api/enterprise/sessions?tenant_id=${TENANT_ID}${agentQuery}`),
+      api.get<FeedbackSessionRead[]>(`/api/enterprise/feedback/sessions?tenant_id=${TENANT_ID}&rating=down${agentQuery}`),
+      api.get<FeedbackSessionRead[]>(`/api/enterprise/feedback/sessions?tenant_id=${TENANT_ID}&rating=up${agentQuery}`),
+      api.get<FeedbackSummaryRead>(`/api/enterprise/feedback/summary?tenant_id=${TENANT_ID}${agentQuery}`),
+      api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
+    ]);
+    if (sessionResult.status === 'fulfilled') setSessions(sessionResult.value);
+    if (downResult.status === 'fulfilled') setDownRows(downResult.value);
+    if (upResult.status === 'fulfilled') setUpRows(upResult.value);
+    if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value);
+    if (agentResult.status === 'fulfilled') setAgents(agentResult.value);
+    const failure = [sessionResult, downResult, upResult, summaryResult, agentResult].find(
+      (item): item is PromiseRejectedResult => item.status === 'rejected',
+    );
+    if (failure) {
+      notify.error(failure.reason instanceof Error ? failure.reason.message : '部分对话日志数据加载失败');
     }
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -344,25 +337,11 @@ export default function FeedbackPage({
   );
 
   return (
-    <div
-      className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]"
-      aria-busy={loading}
-    >
-      <AppHeader onLogout={onLogout} userName={currentUser?.username} title="对话日志" />
-
-      <div className="mt-[20px] mb-[16px] flex justify-end">
-        <UIButton
-          variant="outline"
-          onClick={() => void load()}
-          disabled={loading}
-          className="h-8 w-[100px] gap-1 rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-5 text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
-        >
-          <IconRefresh className={cn('size-3.5', loading && 'animate-spin')} />
-          刷新
-        </UIButton>
-      </div>
-
-      <div className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_18px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+    <>
+      <section
+        aria-busy={loading}
+        className="relative mt-[-2px] flex w-full min-w-0 max-w-full flex-col gap-[24px] overflow-hidden rounded-[18px] bg-white p-[14px] shadow-[0_20px_42px_rgba(21,26,38,0.045)] min-[521px]:p-[18px]"
+      >
         <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
           <Clock className="size-[14px] shrink-0" />
           <span className="text-[14px] font-normal leading-none">对话记录</span>
@@ -398,7 +377,6 @@ export default function FeedbackPage({
           <UnderlineTabs
             aria-label="对话日志筛选"
             variant="line"
-            tabClassName="w-auto"
             value={filter}
             onChange={setFilter}
             items={FILTER_TABS}
@@ -433,7 +411,7 @@ export default function FeedbackPage({
             onChange={pagination.setPage}
           />
         )}
-      </div>
+      </section>
 
       <FeedbackDetailDialog
         detail={detail}
@@ -442,7 +420,7 @@ export default function FeedbackPage({
         onReanalyze={reanalyzeFeedback}
         reanalyzingId={reanalyzingId}
       />
-    </div>
+    </>
   );
 }
 

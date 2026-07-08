@@ -22,7 +22,7 @@ import EmployeeAvatar from './EmployeeAvatar';
 
 // Hover colors come from the scoped --accent / --accent-foreground overrides on
 // DropdownMenuContent (see below), so items only need layout + default color here.
-// Kept in sync with the ScheduledTasksPage action menu.
+// Kept in sync with the ScheduledTasksTab action menu.
 const MENU_ITEM_CLASS =
   'cursor-pointer gap-[4px] rounded-[10px] px-[12px] py-[6px] text-[12px] text-[#858b9c] focus:text-[#18181a]';
 const MENU_ITEM_DANGER_CLASS =

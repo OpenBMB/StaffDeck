@@ -4,7 +4,6 @@ import {
   DEFAULT_AVATAR_PRESET,
   employeeAvatarImage,
   employeeProfile,
-  isUploadedAvatar,
   type EmployeeProfile,
 } from '../employee';
 import type { AgentProfileRead } from '../types';
@@ -44,11 +43,9 @@ export default function EmployeeAvatar({
   style,
 }: EmployeeAvatarProps) {
   const profile = profileOverride || employeeProfile(agent);
-  const uploaded = isUploadedAvatar(profile);
 
   const className_ = [
     'employee-avatar',
-    uploaded ? 'is-uploaded-avatar' : '',
     className,
   ]
     .filter(Boolean)
@@ -76,7 +73,7 @@ export default function EmployeeAvatar({
     <span
       className={className_}
       style={boxStyle}
-      aria-label={uploaded ? '员工自定义头像' : `${profile.avatarText || '员'}员工头像`}
+      aria-label={`${profile.avatarText || '员'}员工头像`}
     >
       <img src={employeeAvatarImage(profile)} alt="" style={imageStyle} />
     </span>

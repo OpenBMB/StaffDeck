@@ -32,24 +32,22 @@ import AccountsPage from "./pages/AccountsPage";
 import AgentsPage from "./pages/AgentsPage";
 import ChatPage from "./pages/chat/ChatPage";
 import ChatGalleryPage from "./pages/chat/ChatGalleryPage";
-import DashboardPage from "./pages/DashboardPage";
+import DashboardPage from "./pages/Dashboard/DashboardPage";
 import EmptyEmployeeState from "./components/EmptyEmployeeState";
 import DistillPage from "./pages/DistillPage";
-import FeedbackPage from "./pages/FeedbackPage";
 import GeneralSkillsPage, {
   GeneralSkillEditPage,
   GeneralSkillNewPage,
 } from "./pages/GeneralSkillsPage";
 import KnowledgeManagePage, { KnowledgeAddPage } from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
-import MemoriesPage from "./pages/MemoriesPage";
 import ModelsPage from "./pages/ModelsPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
 import SkillsPage from "./pages/SkillsPage";
-import ScheduledTasksPage, {
+import {
   ScheduledTaskEditPage,
   ScheduledTaskNewPage,
-} from "./pages/ScheduledTasksPage";
+} from "./pages/Dashboard/ScheduledTasksTab";
 import ToolsPage, {
   ToolEditPage,
   ToolNewPage,
@@ -481,7 +479,12 @@ function Shell({
               <Route
                 path="/enterprise/memories"
                 element={
-                  <MemoriesPage currentUser={auth.user} onLogout={onLogout} />
+                  <DashboardPage
+                    currentUser={auth.user}
+                    isAdmin={isAdmin}
+                    profileTab="memories"
+                    onLogout={onLogout}
+                  />
                 }
               />
               <Route
@@ -500,14 +503,21 @@ function Shell({
               <Route
                 path="/enterprise/feedback"
                 element={
-                  <FeedbackPage currentUser={auth.user} onLogout={onLogout} />
+                  <DashboardPage
+                    currentUser={auth.user}
+                    isAdmin={isAdmin}
+                    profileTab="logs"
+                    onLogout={onLogout}
+                  />
                 }
               />
               <Route
                 path="/enterprise/scheduled-tasks"
                 element={
-                  <ScheduledTasksPage
+                  <DashboardPage
                     currentUser={auth.user}
+                    isAdmin={isAdmin}
+                    profileTab="scheduled"
                     onLogout={onLogout}
                   />
                 }
