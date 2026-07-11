@@ -6,8 +6,8 @@ import re
 import threading
 import time
 import traceback
+from collections.abc import Callable, Iterator
 from datetime import timedelta
-from collections.abc import Iterator
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -42,7 +42,7 @@ from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
 from app.scheduled_tasks.schema import ScheduledTaskDraftRead
-from app.scheduled_tasks.service import detect_scheduled_task_draft
+from app.scheduled_tasks.service import DEFAULT_TASK_TIME, detect_scheduled_task_draft
 from app.session.attachments import parse_chat_attachment
 from app.session.helpers import public_session
 from app.session.session_schema import (
@@ -68,6 +68,7 @@ STREAM_INTERRUPTED_TRACEBACK_CHAR_LIMIT = 6000
 MAX_CHAT_ATTACHMENT_BYTES = 12 * 1024 * 1024
 MAX_CHAT_ATTACHMENTS = 8
 SESSION_TITLE_SUMMARY_EVENT = "session_title_summarized"
+SCHEDULE_WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 EVENT_PAYLOAD_META_KEYS = {"id", "event", "type", "event_type", "created_at", "data"}
 STREAM_RELAY_EVENT_ALIASES = {
     "router_decision_created": "router_decision",
@@ -714,22 +715,49 @@ def _format_draft_schedule(draft: ScheduledTaskDraftRead) -> str:
     return _format_scheduled_task_schedule(draft.schedule_type, draft.schedule or {})
 
 
+def _format_once_schedule(schedule: dict) -> str:
+    return f"一次性 {schedule.get('run_at') or '待确认时间'}"
+
+
+def _format_weekly_schedule(schedule: dict) -> str:
+    return f"每周 {_format_weekday_labels(schedule.get('weekdays'))} {schedule.get('time') or DEFAULT_TASK_TIME}"
+
+
+def _format_monthly_schedule(schedule: dict) -> str:
+    return f"每月 {schedule.get('day_of_month') or 1} 号 {schedule.get('time') or DEFAULT_TASK_TIME}"
+
+
+def _format_daily_schedule(schedule: dict) -> str:
+    return f"每天 {schedule.get('time') or DEFAULT_TASK_TIME}"
+
+
+SCHEDULE_TEXT_FORMATTERS: dict[str, Callable[[dict], str]] = {
+    "once": _format_once_schedule,
+    "weekly": _format_weekly_schedule,
+    "monthly": _format_monthly_schedule,
+    "daily": _format_daily_schedule,
+}
+
+
 def _format_scheduled_task_schedule(schedule_type: object, schedule_value: object) -> str:
     schedule = schedule_value if isinstance(schedule_value, dict) else {}
     schedule_type_text = str(schedule_type or "daily")
-    if schedule_type_text == "once":
-        return f"一次性 {schedule.get('run_at') or '待确认时间'}"
-    if schedule_type_text == "weekly":
-        weekdays = schedule.get("weekdays")
-        labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-        if isinstance(weekdays, list):
-            days = "、".join(labels[int(day)] for day in weekdays if str(day).isdigit() and 0 <= int(day) <= 6)
-        else:
-            days = "周一"
-        return f"每周 {days or '周一'} {schedule.get('time') or '09:00'}"
-    if schedule_type_text == "monthly":
-        return f"每月 {schedule.get('day_of_month') or 1} 号 {schedule.get('time') or '09:00'}"
-    return f"每天 {schedule.get('time') or '09:00'}"
+    formatter = SCHEDULE_TEXT_FORMATTERS.get(schedule_type_text, _format_daily_schedule)
+    return formatter(schedule)
+
+
+def _format_weekday_labels(value: object) -> str:
+    if not isinstance(value, list):
+        return SCHEDULE_WEEKDAY_LABELS[0]
+    labels: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if not text.isdigit():
+            continue
+        day = int(text)
+        if 0 <= day < len(SCHEDULE_WEEKDAY_LABELS):
+            labels.append(SCHEDULE_WEEKDAY_LABELS[day])
+    return "、".join(labels) or SCHEDULE_WEEKDAY_LABELS[0]
 
 
 def _scheduled_task_trace_detail(payload: dict) -> str | None:

@@ -5,6 +5,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.chat import (
     _build_turn_traces,
+    _format_scheduled_task_schedule,
     _message_turn_ids_from_events,
     _persist_chat_turn_cancelled,
     _persist_chat_turn_interrupted,
@@ -452,6 +453,15 @@ def test_scheduled_task_draft_trace_restores_config_stages_for_refresh() -> None
     assert all(line["state"] == "completed" for line in traces[0]["lines"])
     assert traces[0]["lines"][1]["detail"] == "计划：每天 16:50"
     assert "提醒我喝咖啡" in traces[0]["lines"][2]["detail"]
+
+
+def test_scheduled_task_schedule_formatter_preserves_fallbacks() -> None:
+    assert (
+        _format_scheduled_task_schedule("weekly", {"time": "18:30", "weekdays": ["1", "x", 6, 7, -1]})
+        == "每周 周二、周日 18:30"
+    )
+    assert _format_scheduled_task_schedule("monthly", {"day_of_month": 21}) == "每月 21 号 09:00"
+    assert _format_scheduled_task_schedule("unknown", {"time": "08:15"}) == "每天 08:15"
 
 
 def test_cancel_endpoint_persists_terminal_trace_for_client_turn_id() -> None:
