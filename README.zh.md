@@ -6,8 +6,7 @@
 
 **把企业岗位转化为可配置、可执行、可观测数字员工的一体化平台。**
 
-[English](./README.md) | [简体中文](./README.zh.md)
-
+[English](./README.md) | 简体中文
 <p>
   <a href="#快速开始"><img alt="快速开始" src="https://img.shields.io/badge/快速开始-跑通首个_Demo-111111?style=for-the-badge" /></a>
   <a href="docs/tutorial.md"><img alt="使用教程" src="https://img.shields.io/badge/使用教程-StaffDeck-111111?style=for-the-badge" /></a>
@@ -325,4 +324,4 @@ npm run build
 
 ## 致谢
 
-URStaff 由 [OpenBMB](https://www.openbmb.cn/) 生态孵化。README 结构参考了 [PilotDeck](https://github.com/OpenBMB/PilotDeck) 简洁、Demo 优先的呈现方式。感谢 FastAPI、React、Vite、SQLModel、Pydantic 与 OpenAI 兼容 API 生态的开源贡献者。
+URStaff 由 [OpenBMB](https://www.openbmb.cn/) 生态孵化。
