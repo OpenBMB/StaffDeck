@@ -3,6 +3,7 @@
 #
 # 下载对应平台的 python-build-standalone（install_only 变体自带 pip），
 # 预装通用技能高频包后，供 build 脚本拷进最终产物的 runtime/ 目录。
+import os
 import platform
 import subprocess
 import sys
@@ -33,13 +34,22 @@ def _norm_arch(value: str) -> str:
     return ARCH_ALIASES.get(value.lower(), value.lower())
 
 
+def _machine() -> str:
+    machine = platform.machine() or os.environ.get("PROCESSOR_ARCHITECTURE", "")
+    if machine:
+        return machine
+    if platform.system() == "Windows" and sys.maxsize > 2**32:
+        return "AMD64"
+    return machine
+
+
 def main(argv: list[str]) -> int:
     dest = argv[0]
     expect_arch = None
     if "--expect-arch" in argv:
         expect_arch = argv[argv.index("--expect-arch") + 1]
 
-    key = (platform.system(), platform.machine())
+    key = (platform.system(), _machine())
     if key not in ASSETS:
         print(f"不支持的平台/架构: {key}", file=sys.stderr)
         return 3
@@ -63,7 +73,15 @@ def main(argv: list[str]) -> int:
     py = dest_dir / "python" / ("python.exe" if key[0] == "Windows" else "bin/python3")
 
     # install_only 变体自带 pip（24.0），直接装预装包；不升级 pip（升级易触发 resolvelib 半损坏）
-    subprocess.run([str(py), "-m", "pip", "install", "--no-cache-dir", *PRELOAD], check=True)
+    subprocess.run(
+        [
+            str(py), "-m", "pip", "install",
+            "--no-cache-dir", "--disable-pip-version-check",
+            "--timeout", "30", "--retries", "5",
+            *PRELOAD,
+        ],
+        check=True,
+    )
 
     # 验证附带 Python 的 SSL 证书 + 关键包可用（否则技能里 https/word/excel 会失败）
     check = subprocess.run(
