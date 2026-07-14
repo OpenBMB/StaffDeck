@@ -70,15 +70,24 @@ else
 fi
 
 DMG="packaging/out/URStaff-${VERSION}-macos-${ARCH}.dmg"
+DMG_ROOT="packaging/out/dmg-root"
 rm -f "$DMG"
+rm -f "packaging/out/rw."*"URStaff-${VERSION}-macos-${ARCH}.dmg" 2>/dev/null || true
+rm -rf "$DMG_ROOT"
+mkdir -p "$DMG_ROOT"
+ditto "$APP" "$DMG_ROOT/URStaff.app"
+ln -s /Applications "$DMG_ROOT/Applications"
+
 if command -v create-dmg >/dev/null 2>&1; then
-  create-dmg --volname "URStaff" --window-size 520 320 \
+  LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 create-dmg --volname "URStaff" --window-size 520 320 \
     --app-drop-link 380 170 --icon "URStaff.app" 140 170 \
     --volicon "packaging/assets/staffdeck.icns" \
-    "$DMG" "$APP" \
-    || hdiutil create -volname URStaff -srcfolder "$APP" -ov -format UDZO "$DMG"
+    "$DMG" "$DMG_ROOT" \
+    || hdiutil create -volname URStaff -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG"
 else
-  hdiutil create -volname URStaff -srcfolder "$APP" -ov -format UDZO "$DMG"
+  hdiutil create -volname URStaff -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG"
 fi
+rm -rf "$DMG_ROOT"
+rm -f "packaging/out/rw."*"URStaff-${VERSION}-macos-${ARCH}.dmg" 2>/dev/null || true
 echo "built $DMG"
 ls -lh "$DMG"

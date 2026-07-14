@@ -26,6 +26,7 @@ from app.db.models import (
 )
 from app.security.encryption import encrypt_secret
 from app.security.auth import hash_password
+from app.db.staffdeck_seed import seed_staffdeck_admin_gallery
 
 
 ADAPTIVE_FLOW_RULE = (
@@ -878,6 +879,8 @@ def seed_demo_data(session: Session) -> None:
         admin_user.updated_at = utc_now()
         session.add(admin_user)
 
+    _ensure_seed_agents(session)
+
     for raw_content in (
         REFUND_SKILL,
         EXCHANGE_SKILL,
@@ -939,6 +942,7 @@ def seed_demo_data(session: Session) -> None:
     _seed_weather_general_skill(session)
     session.flush()
     _publish_seeded_system_resources(session)
+    seed_staffdeck_admin_gallery(session)
 
     default_model = session.exec(
         select(ModelConfig).where(
@@ -1037,6 +1041,27 @@ def _publish_seeded_system_resources(session: Session) -> None:
     if default_agent:
         copy_overall_scope_to_agent(session, tenant_id, default_agent)
         copy_open_gallery_tools_to_agent(session, tenant_id, default_agent)
+
+
+def _ensure_seed_agents(session: Session) -> None:
+    tenant_id = "tenant_demo"
+    for agent_id, name, description, is_overall in (
+        (f"agent_{tenant_id}_overall", "整体智能体", "全局资源池", True),
+        (f"agent_{tenant_id}_default", "默认智能体", "默认对话可见域", False),
+    ):
+        existing = session.get(AgentProfile, agent_id)
+        if existing:
+            continue
+        session.add(
+            AgentProfile(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name=name,
+                description=description,
+                is_overall=is_overall,
+                status="active",
+            )
+        )
 
 
 def _system_seed_metadata(extra: dict[str, object] | None = None) -> dict[str, object]:
