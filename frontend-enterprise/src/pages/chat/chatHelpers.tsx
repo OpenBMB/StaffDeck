@@ -1234,6 +1234,33 @@ export function mergeTraceLine(existing: TraceLine, incoming: TraceLine): TraceL
   };
 }
 
+export function mergeTurnTraceSnapshot(existing: TurnTrace | undefined, incoming: TurnTrace): TurnTrace {
+  if (!existing) return incoming;
+
+  const existingById = new Map(existing.lines.map((line) => [line.id, line]));
+  const incomingIds = new Set(incoming.lines.map((line) => line.id));
+  const mergedLines = incoming.lines.map((line) => {
+    const previous = existingById.get(line.id);
+    return previous ? mergeTraceLine(previous, line) : line;
+  });
+
+  existing.lines.forEach((line) => {
+    if (!incomingIds.has(line.id) && !line.provisional && !line.placeholder) {
+      mergedLines.push(line);
+    }
+  });
+
+  const startedAt = existing.startedAt > 0 && incoming.startedAt > 0
+    ? Math.min(existing.startedAt, incoming.startedAt)
+    : existing.startedAt || incoming.startedAt;
+
+  return {
+    lines: mergedLines.slice(-80),
+    startedAt,
+    completedAt: incoming.completedAt || existing.completedAt,
+  };
+}
+
 function formatTracePayload(value: unknown): string {
   if (value === undefined || value === null || value === '') return '';
   if (typeof value === 'string') {

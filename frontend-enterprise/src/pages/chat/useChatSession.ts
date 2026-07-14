@@ -87,6 +87,7 @@ import {
   latestUserMessageForTurn,
   loadSessionReadTimes,
   mergeTraceLine,
+  mergeTurnTraceSnapshot,
   modelStorageKey,
   normalizeMessageText,
   normalizeSessionEventForStream,
@@ -1040,8 +1041,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         rows.forEach((row) => {
           const hasFinalAssistant = hasAssistantMessageForTurn(slot, row.turn_id);
           const hasAssistantCarrier = hasAssistantCarrierForTurn(slot, row.turn_id);
-          const recoverableRunningTrace = !locallyCancelled && isRecoverableRunningTrace(row) && !hasFinalAssistant;
-          const staleOpenTrace = !row.completed_at && row.lines.length > 0 && !recoverableRunningTrace && !hasAssistantCarrier;
           const traceLines = row.lines.map((line) => ({
             id: line.id,
             kind: line.kind,
@@ -1052,21 +1051,47 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
             output: line.output || undefined,
             outputLanguage: line.outputLanguage || undefined,
             outputTitle: line.outputTitle || undefined,
-            state: staleOpenTrace && line.state === 'running' ? 'completed' as const : line.state,
+            state: line.state,
             collapsible: Boolean(line.collapsible || line.code || line.output),
           }));
-          turnTraceRef.current.set(row.turn_id, {
+          let mergedTrace = mergeTurnTraceSnapshot(turnTraceRef.current.get(row.turn_id), {
             lines: traceLines,
             startedAt: parseMessageTime(row.started_at) || Date.now(),
-            completedAt: row.completed_at
-              ? parseMessageTime(row.completed_at)
-              : staleOpenTrace
-                ? parseMessageTime(row.started_at) || Date.now()
-                : undefined,
+            completedAt: row.completed_at ? parseMessageTime(row.completed_at) : undefined,
           });
+          const activeStreamTurn = stream.loading && stream.turnId === row.turn_id;
+          const recoverableRunningTrace = (
+            !locallyCancelled
+            && !hasFinalAssistant
+            && !mergedTrace.completedAt
+            && (
+              activeStreamTurn
+              || isRecoverableRunningTrace({
+                completed_at: row.completed_at,
+                lines: mergedTrace.lines,
+                started_at: row.started_at,
+              })
+            )
+          );
+          const staleOpenTrace = (
+            !mergedTrace.completedAt
+            && mergedTrace.lines.length > 0
+            && !recoverableRunningTrace
+            && !hasAssistantCarrier
+          );
+          if (staleOpenTrace) {
+            mergedTrace = {
+              ...mergedTrace,
+              lines: mergedTrace.lines.map((line) => (
+                line.state === 'running' ? { ...line, state: 'completed' as const } : line
+              )),
+              completedAt: parseMessageTime(row.started_at) || Date.now(),
+            };
+          }
+          turnTraceRef.current.set(row.turn_id, mergedTrace);
           if (recoverableRunningTrace) {
             recoveredRunningTurnId = row.turn_id;
-          } else if ((row.completed_at || staleOpenTrace) && row.lines.length > 0 && !hasAssistantCarrier) {
+          } else if ((row.completed_at || staleOpenTrace) && mergedTrace.lines.length > 0 && !hasAssistantCarrier) {
             storeChanged = upsertTraceStatusPlaceholder(slot, id, row.turn_id) || storeChanged;
             if (staleOpenTrace) {
               setExpandedTraceIds((expanded) => (expanded.includes(row.turn_id) ? expanded : [...expanded, row.turn_id]));
@@ -1074,6 +1099,22 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
             }
           }
         });
+        if (
+          !recoveredRunningTurnId
+          && !locallyCancelled
+          && stream.loading
+          && stream.turnId
+          && !hasAssistantMessageForTurn(slot, stream.turnId)
+        ) {
+          const activeTrace = turnTraceRef.current.get(stream.turnId);
+          const hasVisibleActiveTrace = Boolean(activeTrace?.lines.some((line) => (
+            !line.provisional && !line.placeholder && Boolean(normalizeMessageText(line.text))
+          )));
+          recoveredRunningTurnId = stream.turnId;
+          if (hasVisibleActiveTrace) {
+            storeChanged = upsertStreamingTracePlaceholder(slot, id, stream.turnId) || storeChanged;
+          }
+        }
         if (recoveredRunningTurnId) {
           streamChanged = streamChanged || stream.turnId !== recoveredRunningTurnId || !stream.loading || !stream.phase;
           stream.turnId = recoveredRunningTurnId;
