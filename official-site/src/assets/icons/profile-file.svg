@@ -1,0 +1,14 @@
+<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 14.2 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="card">
+<g id="icon">
+<path d="M3.03997 6.16001C3.03997 5.5778 3.50779 5.11003 4.08997 5.11003C4.67214 5.11003 5.13997 5.5778 5.13997 6.16001C5.13997 6.74219 4.67217 7.21003 4.08997 7.21003C3.50776 7.21003 3.03997 6.74219 3.03997 6.16001Z" fill="currentColor"/>
+<path d="M6.4 5.95H11.3V5.25H6.4V5.95Z" fill="currentColor"/>
+<path d="M9.9 8.05H6.4V7.35H9.9V8.05Z" fill="currentColor"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M0.1 2.8C0.1 2.4134 0.413401 2.1 0.8 2.1H13.4C13.7866 2.1 14.1 2.4134 14.1 2.8V11.2C14.1 11.5866 13.7866 11.9 13.4 11.9H0.8C0.413401 11.9 0.1 11.5866 0.1 11.2V2.8ZM0.8 2.8H13.4V11.2H0.8V2.8Z" fill="currentColor"/>
+<path d="M3.03997 6.16001C3.03997 5.5778 3.50779 5.11003 4.08997 5.11003C4.67214 5.11003 5.13997 5.5778 5.13997 6.16001C5.13997 6.74219 4.67217 7.21003 4.08997 7.21003C3.50776 7.21003 3.03997 6.74219 3.03997 6.16001Z" stroke="var(--stroke-0, #858B9C)" stroke-width="0.2"/>
+<path d="M6.4 5.95H11.3V5.25H6.4V5.95Z" stroke="var(--stroke-0, #858B9C)" stroke-width="0.2"/>
+<path d="M9.9 8.05H6.4V7.35H9.9V8.05Z" stroke="var(--stroke-0, #858B9C)" stroke-width="0.2"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M0.1 2.8C0.1 2.4134 0.413401 2.1 0.8 2.1H13.4C13.7866 2.1 14.1 2.4134 14.1 2.8V11.2C14.1 11.5866 13.7866 11.9 13.4 11.9H0.8C0.413401 11.9 0.1 11.5866 0.1 11.2V2.8ZM0.8 2.8H13.4V11.2H0.8V2.8Z" stroke="var(--stroke-0, #858B9C)" stroke-width="0.2"/>
+</g>
+</g>
+</svg>

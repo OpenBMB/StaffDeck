@@ -1,0 +1,248 @@
+{
+  "zh-CN": {
+    "scenes": ["首页", "能力介绍", "产品问答"],
+    "hero": {
+      "platform": "企业级数字员工平台",
+      "subtitle": "将员工经验、业务流程与判断标准固化为可持续工作的数字员工，让 AI 从「会聊天」走向「能上岗、能执行、能进化」。",
+      "repository": "代码仓库",
+      "tutorial": "教程文档",
+      "download": "下载",
+      "mac": "macOS",
+      "linux": "Linux",
+      "windows": "Windows",
+      "bubble": "我们来做什么？",
+      "dashboardAlt": "StaffDeck 数字员工广场"
+    },
+    "story": {
+      "title": "不是又一个聊天机器人，而是一位数字同事",
+      "subtitle": "StaffDeck 用三层能力，让 AI 从「会聊天」进化为「能上岗」。",
+      "data": "资料",
+      "capability": "能力",
+      "advantages": [
+        {
+          "tag": "优势一",
+          "title": "数字员工：向管理员工一样管理 AI",
+          "body": "每位数字员工都有自己的档案、岗位、技能配置与成长记录。你可以看到它服务了多少人、好评率如何、最近学会了什么——AI 不再是黑盒工具，而是一位可培养、可考核、可信赖的数字同事。",
+          "alt": "数字员工档案"
+        },
+        {
+          "tag": "优势二",
+          "title": "流程型技能：把流程真正办到底",
+          "body": "基于状态机驱动的 SOP 技能，多个流程可实时切换、互相串联。用户中途插问、跳出流程，数字员工也能记住进度、无缝恢复，上下文不丢——不只是回答问题，而是把事情办完。",
+          "alt": "流程型技能"
+        },
+        {
+          "tag": "优势三",
+          "title": "OKF 企业知识本体：理解业务，而非只会检索",
+          "body": "将文档沉淀为主题、规则、操作手册等结构化知识本体，回答自带出处引用。数字员工理解的是你的业务口径，而不是简单的关键词匹配。",
+          "alt": "企业知识本体"
+        }
+      ]
+    },
+    "dashboard": {
+      "greeting": "Hello StaffDeck！",
+      "greetingSub": "我们来做什么？",
+      "role": "# 角色：知识运营官「StaffDeck」，一名经验丰富的知识运营官",
+      "tags": ["结构化整理", "可追溯", "证据优先"],
+      "stats": [
+        { "value": "12", "label": "资料" },
+        { "value": "3", "label": "技能" },
+        { "value": "20", "label": "SOP" }
+      ],
+      "tabs": ["核心创新", "功能模块", "全天在线", "一句话创建"],
+      "innovationTitle": "3 大核心创新",
+      "innovationBody": "数字员工档案 · SOP 状态机 · OKF 知识本体",
+      "features": [
+        { "title": "6 大功能模块", "body": "技能 · 知识 · 工具 · 定时任务 · 可观测 · 记忆" },
+        { "title": "7×24 全天候在线", "body": "主动履职，不用等人来问" },
+        { "title": "一句话创建 SOP", "body": "可打断、可恢复、可多线并行" }
+      ],
+      "workRecord": "工作记录",
+      "periods": ["日", "周", "月"],
+      "workDate": "2026/06/14",
+      "workRange": "06/10 – 06/17",
+      "workMetrics": [
+        { "value": "0", "label": "今日对话" },
+        { "value": "819", "label": "累计对话" },
+        { "value": "32", "label": "好评率" },
+        { "value": "2", "label": "差评率" }
+      ],
+      "chartLabels": ["34条", "12点10分提醒交工作日报", "新增商品价格查询"],
+      "workHours": ["10AM", "11AM", "12PM", "1PM", "2PM", "3PM", "4PM", "5PM", "6PM", "7PM", "8PM", "9PM", "10PM"],
+      "workSummaries": [
+        { "value": "1", "label": "对话" },
+        { "value": "2", "label": "反馈" },
+        { "value": "3", "label": "好评" },
+        { "value": "3", "label": "差评" }
+      ],
+      "workFilters": ["全部", "好评", "差评"],
+      "workRows": [
+        ["咨询客服功能服务范围", "好评", "暂无缺口", "2026/7/4 18:30:00"],
+        ["Admin909090", "差评", "暂无缺口", "2026/7/4 18:30:00"],
+        ["最近回复：好的，请问您…", "好评", "暂无缺口", "2026/7/4 18:30:00"],
+        ["Admin909090", "好评", "暂无缺口", "2026/7/4 18:30:00"]
+      ],
+      "tableHeaders": ["对话任务", "状态", "问题归因", "时间"]
+    },
+    "chat": {
+      "eyebrow": "StaffDeck 产品顾问",
+      "title": "想了解 StaffDeck？直接问我",
+      "intro": "可以先聊聊，也可以问我 StaffDeck 的产品能力、使用场景与落地方式。",
+      "prompts": ["StaffDeck 和普通聊天机器人有什么不同？", "数字员工如何沉淀员工经验？", "如何让数字员工主动执行任务？"],
+      "placeholder": "输入你的问题…",
+      "send": "发送",
+      "stop": "停止生成",
+      "execution": "执行记录",
+      "sources": "知识来源",
+      "errorTitle": "回答遇到问题",
+      "retry": "请稍后重试。",
+      "stopped": "已停止生成",
+      "model": "GLM-5",
+      "attachment": "添加附件",
+      "feedbackUp": "有帮助",
+      "feedbackDown": "没有帮助",
+      "emptyGreeting": "Hello！",
+      "emptySubtitle": "我们来做什么？",
+      "emptyRole": "# 角色：StaffDeck 产品顾问，为你介绍产品能力、使用场景与落地方式。",
+      "emptyTags": ["产品能力", "使用场景", "落地方式"],
+      "emptyStats": [
+        { "value": "12", "label": "资料" },
+        { "value": "3", "label": "技能" },
+        { "value": "1", "label": "SOP" }
+      ],
+      "stages": {
+        "thinking": "正在执行",
+        "route": "理解问题",
+        "routeCasual": "识别为日常交流",
+        "routeProduct": "识别为产品问题",
+        "routeUnsupported": "识别请求范围",
+        "sop": "选择产品问答 SOP",
+        "retrieval": "检索产品资料",
+        "answer": "生成回答"
+      }
+    }
+  },
+  "en-US": {
+    "scenes": ["Home", "Capabilities", "Product Q&A"],
+    "hero": {
+      "platform": "Enterprise Digital Employee Platform",
+      "subtitle": "Turn employee expertise, business processes, and decision criteria into digital employees that work continuously, taking AI from “able to chat” to “ready to work, execute, and evolve.”",
+      "repository": "Code Repository",
+      "tutorial": "Tutorials",
+      "download": "Download",
+      "mac": "macOS",
+      "linux": "Linux",
+      "windows": "Windows",
+      "bubble": "What shall we work on?",
+      "dashboardAlt": "StaffDeck Staff Gallery"
+    },
+    "story": {
+      "title": "Not another chatbot, but a digital colleague",
+      "subtitle": "Three layers of capability take AI from conversation to execution.",
+      "data": "Data",
+      "capability": "Capabilities",
+      "advantages": [
+        {
+          "tag": "Advantage 01",
+          "title": "Digital employees: manage AI like your team",
+          "body": "Every digital employee has a profile, role, capability configuration, and growth record. See whom it served, how it performed, and what it learned—turning AI from a black box into a trusted colleague you can develop and evaluate.",
+          "alt": "Digital employee profile"
+        },
+        {
+          "tag": "Advantage 02",
+          "title": "Process skills: carry work through to completion",
+          "body": "State-machine-driven SOP skills can switch and connect in real time. Even when a user interrupts or leaves a flow, the digital employee preserves progress and resumes without losing context—it completes work instead of merely answering questions.",
+          "alt": "Process skills"
+        },
+        {
+          "tag": "Advantage 03",
+          "title": "OKF enterprise ontology: understand the business",
+          "body": "Turn documents into structured topics, rules, and operating guides with traceable citations. Digital employees follow your business standards instead of relying on simple keyword matching.",
+          "alt": "Enterprise knowledge ontology"
+        }
+      ]
+    },
+    "dashboard": {
+      "greeting": "Hello StaffDeck!",
+      "greetingSub": "What will we build today?",
+      "role": "# Role: StaffDeck, an experienced knowledge operations specialist",
+      "tags": ["Structured", "Traceable", "Evidence-first"],
+      "stats": [
+        { "value": "12", "label": "Knowledge" },
+        { "value": "3", "label": "Skills" },
+        { "value": "20", "label": "SOPs" }
+      ],
+      "tabs": ["Core Innovation", "Capability Modules", "Always Online", "Create in One Sentence"],
+      "innovationTitle": "3 Core Innovations",
+      "innovationBody": "Digital employee profiles · SOP state machines · OKF knowledge ontology",
+      "features": [
+        { "title": "6 Capability Modules", "body": "Skills · Knowledge · Tools · Tasks · Observability · Memory" },
+        { "title": "Always On, 24/7", "body": "Proactive work without waiting to be asked" },
+        { "title": "Create SOPs in One Sentence", "body": "Interruptible, resumable, and multi-threaded" }
+      ],
+      "workRecord": "Work Record",
+      "periods": ["Day", "Week", "Month"],
+      "workDate": "2026/06/14",
+      "workRange": "06/10 – 06/17",
+      "workMetrics": [
+        { "value": "0", "label": "Today" },
+        { "value": "819", "label": "Total" },
+        { "value": "32", "label": "Positive" },
+        { "value": "2", "label": "Negative" }
+      ],
+      "chartLabels": ["34 conversations", "12:10 PM daily report reminder", "Added product price lookup"],
+      "workHours": ["10AM", "11AM", "12PM", "1PM", "2PM", "3PM", "4PM", "5PM", "6PM", "7PM", "8PM", "9PM", "10PM"],
+      "workSummaries": [
+        { "value": "1", "label": "Conversation" },
+        { "value": "2", "label": "Feedback" },
+        { "value": "3", "label": "Positive" },
+        { "value": "3", "label": "Negative" }
+      ],
+      "workFilters": ["All", "Positive", "Negative"],
+      "workRows": [
+        ["Customer service scope", "Positive", "No issue", "2026/7/4 18:30:00"],
+        ["Admin909090", "Negative", "No issue", "2026/7/4 18:30:00"],
+        ["Latest reply: Certainly…", "Positive", "No issue", "2026/7/4 18:30:00"],
+        ["Admin909090", "Positive", "No issue", "2026/7/4 18:30:00"]
+      ],
+      "tableHeaders": ["Conversation", "Status", "Reason", "Time"]
+    },
+    "chat": {
+      "eyebrow": "StaffDeck Product Advisor",
+      "title": "Ask me anything about StaffDeck",
+      "intro": "We can chat, or you can ask about StaffDeck capabilities, use cases, and deployment approaches.",
+      "prompts": ["How is StaffDeck different from a chatbot?", "How do digital employees retain expertise?", "How can digital employees work proactively?"],
+      "placeholder": "Ask a question…",
+      "send": "Send",
+      "stop": "Stop generating",
+      "execution": "Execution record",
+      "sources": "Knowledge sources",
+      "errorTitle": "The answer could not be completed",
+      "retry": "Please try again shortly.",
+      "stopped": "Generation stopped",
+      "model": "GLM-5",
+      "attachment": "Add attachment",
+      "feedbackUp": "Helpful",
+      "feedbackDown": "Not helpful",
+      "emptyGreeting": "Hello!",
+      "emptySubtitle": "What shall we work on?",
+      "emptyRole": "# Role: StaffDeck product advisor, here to explain capabilities, use cases, and deployment.",
+      "emptyTags": ["Capabilities", "Use Cases", "Deployment"],
+      "emptyStats": [
+        { "value": "12", "label": "Knowledge" },
+        { "value": "3", "label": "Skills" },
+        { "value": "1", "label": "SOP" }
+      ],
+      "stages": {
+        "thinking": "Working",
+        "route": "Understand the question",
+        "routeCasual": "Recognize casual conversation",
+        "routeProduct": "Recognize a product question",
+        "routeUnsupported": "Check the request scope",
+        "sop": "Select the product Q&A SOP",
+        "retrieval": "Retrieve product material",
+        "answer": "Generate the answer"
+      }
+    }
+  }
+}

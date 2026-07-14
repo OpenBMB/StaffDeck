@@ -1,0 +1,10 @@
+<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 14 14.1" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="calendar">
+<g id="icon">
+<path fill-rule="evenodd" clip-rule="evenodd" d="M12.6 5.35H1.4V12.7H12.6V5.35ZM12.6 4.65H1.4V2.2H12.6V4.65ZM13.3 2.2C13.3 1.8134 12.9866 1.5 12.6 1.5H1.4C1.0134 1.5 0.7 1.8134 0.7 2.2V12.7C0.7 13.0866 1.0134 13.4 1.4 13.4H12.6C12.9866 13.4 13.3 13.0866 13.3 12.7V2.2Z" fill="currentColor"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M3.85 3.6V0.1H4.55V3.6H3.85ZM9.45 3.6V0.1H10.15V3.6H9.45Z" fill="currentColor"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M12.6 5.35H1.4V12.7H12.6V5.35ZM12.6 4.65H1.4V2.2H12.6V4.65ZM13.3 2.2C13.3 1.8134 12.9866 1.5 12.6 1.5H1.4C1.0134 1.5 0.7 1.8134 0.7 2.2V12.7C0.7 13.0866 1.0134 13.4 1.4 13.4H12.6C12.9866 13.4 13.3 13.0866 13.3 12.7V2.2Z" stroke="var(--stroke-0, #858B9C)" stroke-width="0.2"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M3.85 3.6V0.1H4.55V3.6H3.85ZM9.45 3.6V0.1H10.15V3.6H9.45Z" stroke="var(--stroke-0, #858B9C)" stroke-width="0.2"/>
+</g>
+</g>
+</svg>
