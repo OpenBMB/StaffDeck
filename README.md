@@ -2,18 +2,21 @@
 
 <img src="packaging/assets/staffdeck_banner_en.png" alt="StaffDeck logo" />
 
-
-
-**English** | [简体中文](./README.zh.md)
-<p>
-  <a href="#quick-start"><img alt="Quick Start" src="https://img.shields.io/badge/Quick_Start-First_Demo-111111?style=for-the-badge" /></a>
-  <a href="docs/tutorial.md"><img alt="Tutorial" src="https://img.shields.io/badge/Tutorial-StaffDeck-111111?style=for-the-badge" /></a>
-  <a href="docs/api_spec.md"><img alt="API Reference" src="https://img.shields.io/badge/API-Reference-111111?style=for-the-badge" /></a>
-  <a href="https://github.com/OpenBMB/StaffDeck/issues"><img alt="Issues" src="https://img.shields.io/badge/Feedback-Issues-111111?style=for-the-badge" /></a>
+<p align="center">
+  <a href="https://"><img src="https://img.shields.io/badge/Website-staffdeck.openbmb.cn-FF6B35?style=flat-square&logo=googlechrome&logoColor=white" alt="Official Website"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="https://github.com/OpenBMB/StaffDeck/stargazers"><img src="https://img.shields.io/github/stars/OpenBMB/StaffDeck?style=flat-square" alt="Stars"/></a>
+  <br/>
+  <a href="#-联系我们"><img src="https://img.shields.io/badge/Discord-Join_Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
+  &nbsp;
+  <a href="#-联系我们"><img src="https://img.shields.io/badge/Feishu-Community-00D6B9?style=for-the-badge&logo=bytedance&logoColor=white" alt="Feishu"/></a>
+  &nbsp;
+  <a href="#-联系我们"><img src="https://img.shields.io/badge/WeChat-Community-07C160?style=for-the-badge&logo=wechat&logoColor=white" alt="WeChat"/></a>
+  <br/>
 </p>
 
+**English** | [简体中文](./README.zh.md)
 </div>
-
 
 ## News
 

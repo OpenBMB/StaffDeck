@@ -2,15 +2,21 @@
 
 <img src="packaging/assets/staffdeck_banner_cn.png" alt="StaffDeck 标志"  />
 
-
+<p align="center">
+  <a href="https://"><img src="https://img.shields.io/badge/Website-staffdeck.openbmb.cn-FF6B35?style=flat-square&logo=googlechrome&logoColor=white" alt="Official Website"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="https://github.com/OpenBMB/StaffDeck/stargazers"><img src="https://img.shields.io/github/stars/OpenBMB/StaffDeck?style=flat-square" alt="Stars"/></a>
+  <br/>
+  <a href="#-联系我们"><img src="https://img.shields.io/badge/Discord-Join_Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
+  &nbsp;
+  <a href="#-联系我们"><img src="https://img.shields.io/badge/飞书-交流群-00D6B9?style=for-the-badge&logo=bytedance&logoColor=white" alt="Feishu"/></a>
+  &nbsp;
+  <a href="#-联系我们"><img src="https://img.shields.io/badge/微信-交流群-07C160?style=for-the-badge&logo=wechat&logoColor=white" alt="WeChat"/></a>
+  <br/>
+</p>
 
 [English](./README.md) | **简体中文**
-<p>
-  <a href="#快速开始"><img alt="快速开始" src="https://img.shields.io/badge/快速开始-跑通首个_Demo-111111?style=for-the-badge" /></a>
-  <a href="docs/tutorial.md"><img alt="使用教程" src="https://img.shields.io/badge/使用教程-StaffDeck-111111?style=for-the-badge" /></a>
-  <a href="docs/api_spec.md"><img alt="API 参考" src="https://img.shields.io/badge/API-参考-111111?style=for-the-badge" /></a>
-  <a href="https://github.com/OpenBMB/StaffDeck/issues"><img alt="问题反馈" src="https://img.shields.io/badge/问题反馈-Issues-111111?style=for-the-badge" /></a>
-</p>
+
 
 </div>
 
@@ -60,6 +66,7 @@ DETACH=1 scripts/dev_up.sh，并验证 /api/health 和 /workspace/gallery 后再
   - [项目结构](#项目结构)
   - [常见问题](#常见问题)
   - [路线图](#路线图)
+- [💬 联系我们](#-联系我们)
   - [参与贡献](#参与贡献)
   - [风险与限制](#风险与限制)
   - [引用](#引用)
@@ -186,6 +193,23 @@ StaffDeck/
 - [ ] 面向高风险工具动作的细粒度审批策略
 
 路线优先级由真实部署需求驱动。请通过 [Issue](https://github.com/OpenBMB/StaffDeck/issues) 提供可复现的场景和预期行为。
+
+# 💬 联系我们
+- 关于技术问题及功能请求，请提交 [GitHub Issues](https://github.com/OpenBMB/StaffDeck/issues)。
+- 欢迎加入我们的社区与我们交流：
+
+<table width="100%">
+<tr>
+<td width="33%" align="center"><b>微信交流群</b></td>
+<td width="33%" align="center"><b>飞书交流群</b></td>
+<td width="33%" align="center"><b>Discord 社区</b></td>
+</tr>
+<tr>
+<td align="center"><img src="assets/community/qr-wechat.png" width="200" alt="微信二维码"/></td>
+<td align="center"><img src="assets/community/qr-feishu.png" width="200" alt="飞书二维码"/></td>
+<td align="center"><img src="assets/community/qr-discord.png" width="200" alt="Discord 二维码"/></td>
+</tr>
+</table>
 
 ## 参与贡献
 
