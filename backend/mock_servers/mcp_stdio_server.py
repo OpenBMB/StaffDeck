@@ -22,7 +22,7 @@ def main() -> None:
                 {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "ultrarag4-mock-mcp", "version": "0.1.0"},
+                    "serverInfo": {"name": "StaffDeck-mock-mcp", "version": "0.1.0"},
                 },
             )
             continue

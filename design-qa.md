@@ -5,14 +5,14 @@ Source:
 - Covered SD1 frames: `1:2892`, `1:765`, `1:1462`, `1:2165`, `1:68`, `1:6578`, `1:3713`, `1:3425`, `1:5883`, `1:7470`, `1:3975`, `1:4614`, `1:4286`, `1:5013`, `1:5409`
 
 Implementation checkpoints:
-- Chat gallery and selected-session states: `/private/tmp/ultrarag4-sd1-qa/01-chat-gallery-switch.png` through `/private/tmp/ultrarag4-sd1-qa/15-chat-stopped-or-idle.png`
-- Figma reference exports: `/private/tmp/ultrarag4-figma-sd1/01-figma-1-2892.png` through `/private/tmp/ultrarag4-figma-sd1/15-figma-1-5409.png`
-- Visual comparison contact sheet: `/private/tmp/ultrarag4-sd1-visual-diff/overview-15-scenarios.png`
-- Visual comparison report: `/private/tmp/ultrarag4-sd1-visual-diff/visual-diff-report.json`
-- Enterprise employee roster: `/private/tmp/ultrarag4-sd1-qa/02-enterprise-agents-collapsed.png` (legacy filename; Figma node `1:765` is expanded), `/private/tmp/ultrarag4-sd1-qa/05-enterprise-agents-expanded.png`, `/private/tmp/ultrarag4-sd1-qa/09-enterprise-agents-collapsed-reference.png`
-- Enterprise employee profile: `/private/tmp/ultrarag4-sd1-qa/06-enterprise-dashboard-expanded.png`, `/private/tmp/ultrarag4-sd1-qa/10-enterprise-dashboard-collapsed.png`
-- Dark and responsive checks: `/private/tmp/ultrarag4-sd1-qa/20-dark-chat-input.png`, `/private/tmp/ultrarag4-sd1-qa/21-dark-enterprise-dashboard.png`, `/private/tmp/ultrarag4-sd1-qa/22-mobile-chat-input.png`, `/private/tmp/ultrarag4-sd1-qa/23-mobile-enterprise-agents.png`
-- Machine-readable report: `/private/tmp/ultrarag4-sd1-qa/report.json`
+- Chat gallery and selected-session states: `/private/tmp/StaffDeck-sd1-qa/01-chat-gallery-switch.png` through `/private/tmp/StaffDeck-sd1-qa/15-chat-stopped-or-idle.png`
+- Figma reference exports: `/private/tmp/StaffDeck-figma-sd1/01-figma-1-2892.png` through `/private/tmp/StaffDeck-figma-sd1/15-figma-1-5409.png`
+- Visual comparison contact sheet: `/private/tmp/StaffDeck-sd1-visual-diff/overview-15-scenarios.png`
+- Visual comparison report: `/private/tmp/StaffDeck-sd1-visual-diff/visual-diff-report.json`
+- Enterprise employee roster: `/private/tmp/StaffDeck-sd1-qa/02-enterprise-agents-collapsed.png` (legacy filename; Figma node `1:765` is expanded), `/private/tmp/StaffDeck-sd1-qa/05-enterprise-agents-expanded.png`, `/private/tmp/StaffDeck-sd1-qa/09-enterprise-agents-collapsed-reference.png`
+- Enterprise employee profile: `/private/tmp/StaffDeck-sd1-qa/06-enterprise-dashboard-expanded.png`, `/private/tmp/StaffDeck-sd1-qa/10-enterprise-dashboard-collapsed.png`
+- Dark and responsive checks: `/private/tmp/StaffDeck-sd1-qa/20-dark-chat-input.png`, `/private/tmp/StaffDeck-sd1-qa/21-dark-enterprise-dashboard.png`, `/private/tmp/StaffDeck-sd1-qa/22-mobile-chat-input.png`, `/private/tmp/StaffDeck-sd1-qa/23-mobile-enterprise-agents.png`
+- Machine-readable report: `/private/tmp/StaffDeck-sd1-qa/report.json`
 
 Browser QA summary:
 - 23 browser states checked: all 15 SD1 frames, 4 enterprise regression pages, 2 dark-mode pages, and 2 narrow-screen pages.

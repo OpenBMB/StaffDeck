@@ -63,7 +63,7 @@ class _LLMScheduledTaskDraft(BaseModel):
 
 
 SCHEDULE_DRAFT_PROMPT = """
-你是 UltraRAG4 数字员工的自动任务配置解析器。
+你是 StaffDeck 数字员工的自动任务配置解析器。
 用户已经在对话框中选择了“创建定时任务”模式。请把用户输入整理成一个可编辑的自动任务草案。
 如果用户没有写清时间计划，默认每天 09:00 执行；如果用户没有写清任务目标，用原始输入作为执行内容。
 

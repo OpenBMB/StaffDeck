@@ -7,11 +7,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg?style=flat-square" alt="License"/></a>
   <a href="https://github.com/OpenBMB/StaffDeck/stargazers"><img src="https://img.shields.io/github/stars/OpenBMB/StaffDeck?style=flat-square" alt="Stars"/></a>
   <br/>
-  <a href="#-联系我们"><img src="https://img.shields.io/badge/Discord-Join_Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="#-Community"><img src="https://img.shields.io/badge/Discord-Join_Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
   &nbsp;
-  <a href="#-联系我们"><img src="https://img.shields.io/badge/Feishu-Community-00D6B9?style=for-the-badge&logo=bytedance&logoColor=white" alt="Feishu"/></a>
+  <a href="#-Community"><img src="https://img.shields.io/badge/Feishu-Community-00D6B9?style=for-the-badge&logo=bytedance&logoColor=white" alt="Feishu"/></a>
   &nbsp;
-  <a href="#-联系我们"><img src="https://img.shields.io/badge/WeChat-Community-07C160?style=for-the-badge&logo=wechat&logoColor=white" alt="WeChat"/></a>
+  <a href="#-Community"><img src="https://img.shields.io/badge/WeChat-Community-07C160?style=for-the-badge&logo=wechat&logoColor=white" alt="WeChat"/></a>
   <br/>
 </p>
 
@@ -64,6 +64,7 @@ verify /api/health plus /workspace/gallery before reporting success.
   - [Project Structure](#project-structure)
   - [FAQ](#faq)
   - [Roadmap](#roadmap)
+- [💬 Community](#-community)
   - [Contributing](#contributing)
   - [Risks and Limitations](#risks-and-limitations)
   - [Citation](#citation)
@@ -191,6 +192,24 @@ Marketplace resources are reusable templates. Regular users can copy or bind aut
 
 Roadmap priorities are driven by real deployment needs. Please open an [Issue](https://github.com/OpenBMB/StaffDeck/issues) with a reproducible scenario and expected behavior.
 
+# 💬 Community
+- For bugs and feature requests, please open a [GitHub Issues](https://github.com/OpenBMB/StaffDeck/issues)。
+- 欢迎加入我们的社区与我们交流：
+
+<table width="100%">
+<tr>
+<td width="33%" align="center"><b>WeChat Community</b></td>
+<td width="33%" align="center"><b>Feishu Community</b></td>
+<td width="33%" align="center"><b>Discord Community</b></td>
+</tr>
+<tr>
+<td align="center"><img src="packaging/assets/qr-wechat.jpg" width="200" alt="微信二维码"/></td>
+<td align="center"><img src="packaging/assets/qr-feishu.jpg" width="200" alt="飞书二维码"/></td>
+<td align="center"><img src="packaging/assets/qr-discord.jpg" width="200" alt="Discord 二维码"/></td>
+</tr>
+</table>
+
+
 ## Contributing
 
 Contributions from collaborators with repository access are welcome:
@@ -221,15 +240,6 @@ When using StaffDeck in internal research or authorized public materials, cite:
   author = {OpenBMB},
   year   = {2026},
   url    = {https://github.com/OpenBMB/StaffDeck}
-}
-```
-
-```bibtex
-@article{chen2025ultrarag,
-  title={UltraRAG: A Modular and Automated Toolkit for Adaptive Retrieval-Augmented Generation},
-  author={Chen, Yuxuan and Guo, Dewen and Mei, Sen and Li, Xinze and Chen, Hao and Li, Yishan and Wang, Yixuan and Tang, Chaoyue and Wang, Ruobing and Wu, Dingjun and others},
-  journal={arXiv preprint arXiv:2504.08761},
-  year={2025}
 }
 ```
 

@@ -18,7 +18,7 @@ print_service() {
   local name="$1"
   local pid_file="$RUN_DIR/$name.pid"
 
-  if label_present "com.ultrarag4.dev.$name" || label_present "com.skill-agent-loop.$name"; then
+  if label_present "com.StaffDeck.dev.$name" || label_present "com.skill-agent-loop.$name"; then
     echo "  $name has legacy launchctl label; run scripts/dev_down.sh"
     return 0
   fi

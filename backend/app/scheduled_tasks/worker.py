@@ -55,7 +55,7 @@ def stop_background_worker() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run UltraRAG4 scheduled task worker")
+    parser = argparse.ArgumentParser(description="Run StaffDeck scheduled task worker")
     parser.add_argument("--once", action="store_true", help="scan and execute due tasks once, then exit")
     parser.add_argument("--poll-seconds", type=float, default=WORKER_SLEEP_SECONDS)
     args = parser.parse_args()

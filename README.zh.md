@@ -7,7 +7,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg?style=flat-square" alt="License"/></a>
   <a href="https://github.com/OpenBMB/StaffDeck/stargazers"><img src="https://img.shields.io/github/stars/OpenBMB/StaffDeck?style=flat-square" alt="Stars"/></a>
   <br/>
-  <a href="#-联系我们"><img src="https://img.shields.io/badge/Discord-Join_Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="#-联系我们"><img src="https://img.shields.io/badge/Discord-社群-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
   &nbsp;
   <a href="#-联系我们"><img src="https://img.shields.io/badge/飞书-交流群-00D6B9?style=for-the-badge&logo=bytedance&logoColor=white" alt="Feishu"/></a>
   &nbsp;
@@ -23,7 +23,7 @@
 
 ## 更新日志
 
-- 📌 **置顶 · 2026-07-15**：StaffDeck正式开源！欢迎大家使用反馈与Star支持。
+  - **2026-07-15**：StaffDeck正式开源！欢迎大家使用反馈与Star支持。
 
 # 💡 关于StaffDeck
 
@@ -138,7 +138,7 @@ scripts/dev_down.sh         # 停止本地服务
 scripts/dev_up.sh           # 前台运行
 ```
 
-> 完整说明 → [StaffDeck 使用教程](docs/tutorial.md)
+> 完整说明 → [StaffDeck 使用教程]()
 
 
 
@@ -205,9 +205,9 @@ StaffDeck/
 <td width="33%" align="center"><b>Discord 社区</b></td>
 </tr>
 <tr>
-<td align="center"><img src="assets/community/qr-wechat.png" width="200" alt="微信二维码"/></td>
-<td align="center"><img src="assets/community/qr-feishu.png" width="200" alt="飞书二维码"/></td>
-<td align="center"><img src="assets/community/qr-discord.png" width="200" alt="Discord 二维码"/></td>
+<td align="center"><img src="packaging/assets/qr-wechat.jpg" width="200" alt="微信二维码"/></td>
+<td align="center"><img src="packaging/assets/qr-feishu.jpg" width="200" alt="飞书二维码"/></td>
+<td align="center"><img src="packaging/assets/qr-discord.jpg" width="200" alt="Discord 二维码"/></td>
 </tr>
 </table>
 
@@ -244,14 +244,6 @@ StaffDeck/
 }
 ```
 
-```bibtex
-@article{chen2025ultrarag,
-  title={UltraRAG: A Modular and Automated Toolkit for Adaptive Retrieval-Augmented Generation},
-  author={Chen, Yuxuan and Guo, Dewen and Mei, Sen and Li, Xinze and Chen, Hao and Li, Yishan and Wang, Yixuan and Tang, Chaoyue and Wang, Ruobing and Wu, Dingjun and others},
-  journal={arXiv preprint arXiv:2504.08761},
-  year={2025}
-}
-```
 
 ## 许可证
 

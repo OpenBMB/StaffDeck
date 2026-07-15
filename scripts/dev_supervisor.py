@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local development supervisor for UltraRAG4 services."""
+"""Local development supervisor for StaffDeck services."""
 
 from __future__ import annotations
 

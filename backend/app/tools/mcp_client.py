@@ -470,7 +470,7 @@ def _initialize_params() -> dict[str, Any]:
     return {
         "protocolVersion": "2024-11-05",
         "capabilities": {},
-        "clientInfo": {"name": "UltraRAG4", "version": "0.1.0"},
+        "clientInfo": {"name": "StaffDeck", "version": "0.1.0"},
     }
 
 

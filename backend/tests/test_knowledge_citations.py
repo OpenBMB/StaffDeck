@@ -57,7 +57,7 @@ def test_knowledge_citations_prefer_wiki_concepts_over_evidence_pack() -> None:
                         "source_path": "citation-demo.md",
                         "section_path": "知识引用测试说明 / 引用规则",
                         "summary": "回答基于业务资料时必须展示可点击知识引用。",
-                        "excerpt": "UltraRAG4 引用测试规则。",
+                        "excerpt": "StaffDeck 引用测试规则。",
                     }
                 ],
             }

@@ -1333,7 +1333,7 @@ def _is_clawhub_download_url(parsed) -> bool:
 
 def _download_url(url: str) -> tuple[bytes, str]:
     try:
-        request = Request(url, headers={"User-Agent": "UltraRAG4-GeneralSkillImporter/1.0"})
+        request = Request(url, headers={"User-Agent": "StaffDeck-GeneralSkillImporter/1.0"})
         with urlopen(request, timeout=REMOTE_SKILL_DOWNLOAD_TIMEOUT_SECONDS) as response:  # noqa: S310 - user-confirmed import source
             content_type = response.headers.get("content-type", "")
             data = response.read(MAX_CLAWHUB_PACKAGE_BYTES + 1)

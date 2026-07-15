@@ -48,7 +48,7 @@ export API_BASE_URL VITE_API_BASE_URL="$API_BASE_URL" CORS_ORIGINS TOOL_BASE_URL
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
 remove_legacy_launchctl_labels() {
-  for prefix in com.ultrarag4.dev com.skill-agent-loop; do
+  for prefix in com.StaffDeck.dev com.skill-agent-loop; do
     for name in app backend enterprise chat; do
       launchctl remove "$prefix.$name" >/dev/null 2>&1 || true
     done

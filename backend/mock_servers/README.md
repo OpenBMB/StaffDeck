@@ -22,7 +22,7 @@ Example tool config:
   "mcp_config": {
     "transport": "stdio",
     "command": "python",
-    "args": ["/Users/hm/Documents/UltraRAG4/backend/mock_servers/mcp_stdio_server.py"],
+    "args": ["/Users/hm/Documents/StaffDeck/backend/mock_servers/mcp_stdio_server.py"],
     "tool": "product_lookup"
   }
 }
