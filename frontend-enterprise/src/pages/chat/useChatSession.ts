@@ -139,6 +139,22 @@ const SCHEDULE_WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五
 // the collapse state is preserved when switching between 管理端 and 对话端.
 // Stored as '1' (expanded) / '0' (collapsed); unset defaults to expanded.
 const ENTERPRISE_SIDEBAR_STORAGE_KEY = 'ultrarag_enterprise_sidebar_expanded';
+const MISSING_MODEL_CONFIG_PATTERN = /missing_model_config|missing model config|没有默认模型配置|没有可用模型|模型配置不存在|模型未配置/i;
+
+function isMissingModelConfigurationError(value: unknown): boolean {
+  if (value instanceof ApiError) {
+    return MISSING_MODEL_CONFIG_PATTERN.test(`${value.message}\n${value.body}`);
+  }
+  if (typeof value === 'string') {
+    return MISSING_MODEL_CONFIG_PATTERN.test(value);
+  }
+  if (!value || typeof value !== 'object') return false;
+  try {
+    return MISSING_MODEL_CONFIG_PATTERN.test(JSON.stringify(value));
+  } catch {
+    return false;
+  }
+}
 
 function chatSessionPath(id: string): string {
   return `${CHAT_BASE_PATH}/${id}`;
@@ -300,6 +316,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const [selectedModelConfigId, setSelectedModelConfigId] = useState(
     () => window.localStorage.getItem(modelStorageKey(tenantId)) || '',
   );
+  const [modelConfigsLoading, setModelConfigsLoading] = useState(Boolean(auth));
+  const [modelConfigsLoadError, setModelConfigsLoadError] = useState('');
+  const [modelSetupOpen, setModelSetupOpen] = useState(false);
   const [input, setInput] = useState('');
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
   const [composerDragActive, setComposerDragActive] = useState(false);
@@ -550,6 +569,38 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     }
   }, [tenantId]);
 
+  const completeModelSetup = useCallback((model: ModelConfigRead) => {
+    setModelConfigs((current) => [...current.filter((item) => item.id !== model.id), model]);
+    setModelConfigsLoadError('');
+    changeModelConfig(model.id);
+  }, [changeModelConfig]);
+
+  const invalidateModelSelection = useCallback((modelId?: string) => {
+    if (modelId) {
+      setModelConfigs((current) => current.filter((item) => item.id !== modelId));
+    } else {
+      setModelConfigs([]);
+    }
+    changeModelConfig('');
+    setModelSetupOpen(true);
+  }, [changeModelConfig]);
+
+  const ensureModelAvailable = useCallback(() => {
+    if (modelConfigsLoading) {
+      notify.warning('模型配置正在加载，请稍后再发送');
+      return false;
+    }
+    if (modelConfigsLoadError) {
+      notify.error('无法读取模型配置，请刷新页面后重试');
+      return false;
+    }
+    if (!selectedModelConfig) {
+      setModelSetupOpen(true);
+      return false;
+    }
+    return true;
+  }, [modelConfigsLoadError, modelConfigsLoading, selectedModelConfig]);
+
   const loadAgents = useCallback(async (preferredAgentId?: string) => {
     setAgentsLoaded(false);
     try {
@@ -620,7 +671,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [userId]);
 
   useEffect(() => {
-    if (!auth) return;
+    if (!auth) {
+      setModelConfigsLoading(false);
+      return;
+    }
+    setModelConfigsLoading(true);
+    setModelConfigsLoadError('');
     api
       .get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${tenantId}`)
       .then((rows) => {
@@ -642,8 +698,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
           redirectToLogin();
           return;
         }
-        setModelConfigs([]);
-      });
+        setModelConfigsLoadError(error instanceof Error ? error.message : '模型配置加载失败');
+      })
+      .finally(() => setModelConfigsLoading(false));
   }, [auth, redirectToLogin, tenantId]);
 
   const toggleTrace = useCallback((turnId: string, isExpanded = false) => {
@@ -1249,8 +1306,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       notify.warning('请输入回复内容');
       return;
     }
+    if (!ensureModelAvailable()) return;
     void replyToHandoff(handoff, reply);
-  }, [handoffReplies, replyToHandoff]);
+  }, [ensureModelAvailable, handoffReplies, replyToHandoff]);
 
   const openHandoffInbox = useCallback(() => {
     setShowHandoffInbox(true);
@@ -2092,6 +2150,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     }
     if (item.event === 'stream_interrupted' || item.event === 'error_occurred') {
       const interruptedStreamTurnId = eventStream.turnId || traceTurnId;
+      if (isMissingModelConfigurationError(item.data)) {
+        invalidateModelSelection(selectedModelConfigId);
+      }
       finishTrace(traceTurnId, true);
       if (!shouldTouchStream) {
         window.setTimeout(() => {
@@ -2162,6 +2223,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       }, 250);
     }
     if (item.event === 'error') {
+      if (isMissingModelConfigurationError(item.data)) {
+        invalidateModelSelection(selectedModelConfigId);
+      }
       if (!shouldTouchStream) {
         finishTrace(traceTurnId, true);
         notifyStream();
@@ -2196,12 +2260,14 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     finishTrace,
     getSlot,
     getStreamSlot,
+    invalidateModelSelection,
     getTurnTrace,
     loadMessages,
     loadSessions,
     loadTraces,
     notifyStore,
     notifyStream,
+    selectedModelConfigId,
     notifyTrace,
     ensureStreamingTraceMessage,
     syncTurnUntilAssistant,
@@ -2885,6 +2951,14 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       if (controller.signal.aborted) {
         return;
       }
+      if (isMissingModelConfigurationError(error)) {
+        finishTrace(getStreamSlot(liveConversationId).turnId || turnId, true);
+        clearStreamSlot(liveConversationId, true);
+        clearRunningTurn();
+        invalidateModelSelection(prepared.modelConfigId);
+        notifyStream();
+        return;
+      }
       if (isAuthError(error)) {
         finishTrace(getStreamSlot(liveConversationId).turnId || turnId, true);
         clearStreamSlot(liveConversationId, true);
@@ -2912,6 +2986,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     finishTrace,
     getStreamSlot,
     handleStreamEvent,
+    invalidateModelSelection,
     loadMessages,
     loadSessions,
     loadTraces,
@@ -2942,6 +3017,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       notify.warning('文件还在解析中，请稍后发送');
       return;
     }
+    if (!ensureModelAvailable()) return;
     const currentConversationId = activeConversationId;
     const pendingHandoff = handoffs.find((handoff) => (
       handoff.session_id === currentConversationId && handoff.status === 'pending'
@@ -3015,6 +3091,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     currentSessionRunning,
     displayedAgent?.id,
     enqueuePreparedTurn,
+    ensureModelAvailable,
     executePreparedTurn,
     getStreamSlot,
     handoffs,
@@ -3036,6 +3113,11 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     const nextTurn = queuedTurnsRef.current[0];
     if (!nextTurn) return;
     if (sessionsLoading) return;
+    if (modelConfigsLoading || modelConfigsLoadError) return;
+    if (!selectedModelConfig) {
+      setModelSetupOpen(true);
+      return;
+    }
     const queuedSession = sessions.find((item) => item.id === nextTurn.conversationId);
     if (
       queuedSession
@@ -3060,7 +3142,18 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       queuedTurnProcessingRef.current = false;
       notifyQueue();
     });
-  }, [executePreparedTurn, getStreamSlot, notifyQueue, persistQueuedTurns, runningTurn, sessions, sessionsLoading]);
+  }, [
+    executePreparedTurn,
+    getStreamSlot,
+    modelConfigsLoadError,
+    modelConfigsLoading,
+    notifyQueue,
+    persistQueuedTurns,
+    runningTurn,
+    selectedModelConfig,
+    sessions,
+    sessionsLoading,
+  ]);
 
   useEffect(() => {
     void queuedTurnsTick;
@@ -3171,7 +3264,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     enabledModelConfigs,
     selectedModelConfig,
     changeModelConfig,
-    // models handled in composer
+    tenantId,
+    canConfigureModels: auth?.user.role === 'admin',
+    modelConfigsLoading,
+    modelSetupOpen,
+    setModelSetupOpen,
+    completeModelSetup,
     // refs
     chatMessagesRef,
     fileInputRef,

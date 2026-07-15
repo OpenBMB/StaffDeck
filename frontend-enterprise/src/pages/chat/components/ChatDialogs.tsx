@@ -34,6 +34,7 @@ import {
   MarkdownMessage,
 } from '../chatHelpers';
 import type { UseChatSession } from '../useChatSession';
+import ModelSetupDialog from './ModelSetupDialog';
 
 export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
   const {
@@ -58,10 +59,23 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
     pendingDelete,
     setPendingDelete,
     confirmDeleteSession,
+    tenantId,
+    canConfigureModels,
+    modelSetupOpen,
+    setModelSetupOpen,
+    completeModelSetup,
   } = chat;
 
   return (
     <>
+      <ModelSetupDialog
+        open={modelSetupOpen}
+        tenantId={tenantId}
+        canConfigure={canConfigureModels}
+        onOpenChange={setModelSetupOpen}
+        onConfigured={completeModelSetup}
+      />
+
       <Dialog open={showHandoffInbox} onOpenChange={(open) => !open && setShowHandoffInbox(false)}>
         <DialogContent className="max-w-[min(920px,calc(100vw-40px))] sm:max-w-[920px]">
           <DialogHeader>
