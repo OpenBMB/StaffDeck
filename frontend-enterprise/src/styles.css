@@ -3108,6 +3108,28 @@ pre {
   padding-right: 4px;
 }
 
+.knowledge-document-card-markdown .knowledge-markdown-preview,
+.knowledge-document-md-scroll.is-summary .knowledge-markdown-preview {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.75;
+}
+
+.knowledge-document-card-markdown .knowledge-markdown-preview h1,
+.knowledge-document-card-markdown .knowledge-markdown-preview h2,
+.knowledge-document-card-markdown .knowledge-markdown-preview h3,
+.knowledge-document-card-markdown .knowledge-markdown-preview h4,
+.knowledge-document-card-markdown .knowledge-markdown-preview strong,
+.knowledge-document-md-scroll.is-summary .knowledge-markdown-preview h1,
+.knowledge-document-md-scroll.is-summary .knowledge-markdown-preview h2,
+.knowledge-document-md-scroll.is-summary .knowledge-markdown-preview h3,
+.knowledge-document-md-scroll.is-summary .knowledge-markdown-preview h4,
+.knowledge-document-md-scroll.is-summary .knowledge-markdown-preview strong {
+  font-size: inherit;
+  font-weight: 400;
+  line-height: inherit;
+}
+
 .knowledge-document-md-panel {
   display: flex;
   min-width: 0;
