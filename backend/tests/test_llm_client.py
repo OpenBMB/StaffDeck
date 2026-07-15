@@ -54,6 +54,10 @@ def test_llm_client_uses_600_second_timeout(monkeypatch):
             "model": "demo-model",
             "temperature": 0.2,
             "max_output_tokens": 256,
+            "extra_body_json": {
+                "thinking": {"type": "disabled"},
+                "do_sample": False,
+            },
         },
     )()
     monkeypatch.setattr("app.llm.client.decrypt_secret", fake_decrypt_secret)
@@ -64,6 +68,11 @@ def test_llm_client_uses_600_second_timeout(monkeypatch):
 
     assert client.timeout_seconds == 600.0
     assert captured["timeout"] == 600.0
+    assert client.extra_body == {
+        "thinking": {"type": "disabled"},
+        "do_sample": False,
+    }
+    assert client.thinking_mode == "disabled"
 
 
 def test_model_config_create_defaults_to_8192_output_tokens():
@@ -74,6 +83,7 @@ def test_model_config_create_defaults_to_8192_output_tokens():
     )
 
     assert request.max_output_tokens == 8192
+    assert request.extra_body == {}
 
 
 def _completion_with_content(content):  # noqa: ANN001
@@ -123,6 +133,27 @@ def test_generate_text_can_disable_provider_thinking():
 
     call = client.client.chat.completions.calls[0]
     assert call["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_generate_text_passes_model_extra_body_and_preserves_thinking_options():
+    client = object.__new__(LLMClient)
+    client.client = _FakeOpenAIClient()
+    client.model = "glm-5.2"
+    client.temperature = 0.2
+    client.max_output_tokens = 256
+    client.thinking_mode = "disabled"
+    client.extra_body = {
+        "thinking": {"type": "disabled", "clear_thinking": True},
+        "do_sample": False,
+    }
+
+    assert client.generate_text("system prompt", "hello") == "ok"
+
+    call = client.client.chat.completions.calls[0]
+    assert call["extra_body"] == {
+        "thinking": {"type": "disabled", "clear_thinking": True},
+        "do_sample": False,
+    }
 
 
 def test_thinking_mode_can_be_scoped_to_specific_models():

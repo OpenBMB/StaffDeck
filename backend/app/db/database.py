@@ -70,6 +70,19 @@ def _migrate_sqlite_skill_schema() -> None:
     with engine.begin() as conn:
         _migrate_default_model_output_limit(conn, tables)
 
+        if "model_configs" in tables:
+            model_config_columns = {
+                column["name"] for column in inspector.get_columns("model_configs")
+            }
+            if "extra_body_json" not in model_config_columns:
+                conn.execute(text("ALTER TABLE model_configs ADD COLUMN extra_body_json JSON"))
+                conn.execute(
+                    text(
+                        "UPDATE model_configs SET extra_body_json = '{}' "
+                        "WHERE extra_body_json IS NULL"
+                    )
+                )
+
         if "users" in tables:
             user_columns = {column["name"] for column in inspector.get_columns("users")}
             if "role" not in user_columns:

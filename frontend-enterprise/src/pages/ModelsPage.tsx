@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
   Input,
   Switch,
+  Textarea,
 } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
@@ -43,6 +44,7 @@ type ModelForm = {
   api_key: string;
   temperature: string;
   max_output_tokens: string;
+  extra_body: string;
   is_default: boolean;
   enabled: boolean;
 };
@@ -55,6 +57,7 @@ const BLANK_MODEL_FORM: ModelForm = {
   api_key: '',
   temperature: '0.2',
   max_output_tokens: '8192',
+  extra_body: '{}',
   is_default: false,
   enabled: true,
 };
@@ -116,6 +119,7 @@ export default function ModelsPage({
       api_key: '',
       temperature: String(row.temperature),
       max_output_tokens: String(row.max_output_tokens),
+      extra_body: JSON.stringify(row.extra_body || {}, null, 2),
       is_default: row.is_default,
       enabled: row.enabled,
     });
@@ -148,6 +152,17 @@ export default function ModelsPage({
       notify.error('Temperature 与 Max Tokens 必须是数字');
       return;
     }
+    let extraBody: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(form.extra_body.trim() || '{}') as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('not an object');
+      }
+      extraBody = parsed as Record<string, unknown>;
+    } catch {
+      notify.error('额外参数必须是合法的 JSON 对象');
+      return;
+    }
     const payload = {
       tenant_id: TENANT_ID,
       name,
@@ -156,6 +171,7 @@ export default function ModelsPage({
       model,
       temperature,
       max_output_tokens: maxOutputTokens,
+      extra_body: extraBody,
       is_default: form.is_default,
       enabled: form.enabled,
       api_key: form.api_key || undefined,
@@ -435,6 +451,17 @@ export default function ModelsPage({
                     max={32000}
                     value={form.max_output_tokens}
                     onChange={(event) => updateForm('max_output_tokens', event.target.value)}
+                  />
+                </LabeledField>
+              </div>
+              <div className="sm:col-span-2">
+                <LabeledField label="额外请求参数（extra_body JSON）">
+                  <Textarea
+                    rows={5}
+                    value={form.extra_body}
+                    placeholder={'{\n  "thinking": {\n    "type": "disabled"\n  }\n}'}
+                    className="min-h-[116px] resize-y font-mono text-[12px]"
+                    onChange={(event) => updateForm('extra_body', event.target.value)}
                   />
                 </LabeledField>
               </div>

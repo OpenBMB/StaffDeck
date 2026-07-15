@@ -321,6 +321,7 @@ class ModelConfig(SQLModel, table=True):
     model: str
     temperature: float = 0.2
     max_output_tokens: int = 8192
+    extra_body_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     is_default: bool = False
     enabled: bool = True
     created_at: datetime = Field(default_factory=utc_now)

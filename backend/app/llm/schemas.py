@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,6 +14,7 @@ class ModelConfigCreateRequest(BaseModel):
     model: str
     temperature: float = 0.2
     max_output_tokens: int = 8192
+    extra_body: dict[str, Any] = Field(default_factory=dict)
     is_default: bool = False
     enabled: bool = True
 
@@ -27,6 +28,7 @@ class ModelConfigUpdateRequest(BaseModel):
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_output_tokens: Optional[int] = None
+    extra_body: Optional[dict[str, Any]] = None
     is_default: Optional[bool] = None
     enabled: Optional[bool] = None
 
@@ -41,6 +43,7 @@ class ModelConfigRead(BaseModel):
     model: str
     temperature: float
     max_output_tokens: int
+    extra_body: dict[str, Any]
     is_default: bool
     enabled: bool
     created_at: str

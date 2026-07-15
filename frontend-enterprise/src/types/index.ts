@@ -301,6 +301,7 @@ export type ModelConfigRead = {
   model: string;
   temperature: number;
   max_output_tokens: number;
+  extra_body: Record<string, unknown>;
   is_default: boolean;
   enabled: boolean;
   updated_at: string;

@@ -57,11 +57,17 @@ class LLMClient:
         self.model = model_config.model
         self.temperature = model_config.temperature
         self.max_output_tokens = model_config.max_output_tokens
+        self.extra_body = _normalize_extra_body(
+            getattr(model_config, "extra_body_json", {})
+        )
         settings = get_settings()
-        self.thinking_mode = _thinking_mode_for_model(
-            getattr(settings, "model_thinking_mode", ""),
-            getattr(settings, "model_thinking_models", ""),
-            self.model,
+        self.thinking_mode = (
+            _thinking_mode_from_extra_body(self.extra_body)
+            or _thinking_mode_for_model(
+                getattr(settings, "model_thinking_mode", ""),
+                getattr(settings, "model_thinking_models", ""),
+                self.model,
+            )
         )
 
     def generate_text(
@@ -94,7 +100,12 @@ class LLMClient:
             }
             if response_format:
                 request["response_format"] = response_format
-            request.update(_thinking_request_kwargs(getattr(self, "thinking_mode", "")))
+            request.update(
+                _thinking_request_kwargs(
+                    getattr(self, "thinking_mode", ""),
+                    getattr(self, "extra_body", {}),
+                )
+            )
             empty_diagnostics: list[str] = []
             for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
                 span = start_llm_call(
@@ -200,7 +211,10 @@ class LLMClient:
                         temperature=self.temperature,
                         max_tokens=max_output_tokens,
                         stream=True,
-                        **_thinking_request_kwargs(getattr(self, "thinking_mode", "")),
+                        **_thinking_request_kwargs(
+                            getattr(self, "thinking_mode", ""),
+                            getattr(self, "extra_body", {}),
+                        ),
                     )
                     provider_setup_ms = span.elapsed_ms()
                     for chunk in stream:
@@ -466,11 +480,30 @@ def _thinking_mode_for_model(mode: Any, configured_models: Any, model: Any) -> s
     return normalized_mode
 
 
-def _thinking_request_kwargs(mode: Any) -> dict[str, Any]:
-    normalized = _normalize_thinking_mode(mode)
-    if not normalized:
+def _normalize_extra_body(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
         return {}
-    return {"extra_body": {"thinking": {"type": normalized}}}
+    return copy.deepcopy(value)
+
+
+def _thinking_mode_from_extra_body(extra_body: Any) -> str:
+    normalized = _normalize_extra_body(extra_body)
+    thinking = normalized.get("thinking")
+    if not isinstance(thinking, dict):
+        return ""
+    return _normalize_thinking_mode(thinking.get("type"))
+
+
+def _thinking_request_kwargs(mode: Any, extra_body: Any = None) -> dict[str, Any]:
+    body = _normalize_extra_body(extra_body)
+    normalized = _normalize_thinking_mode(mode)
+    if normalized:
+        thinking = body.get("thinking")
+        body["thinking"] = {
+            **(thinking if isinstance(thinking, dict) else {}),
+            "type": normalized,
+        }
+    return {"extra_body": body} if body else {}
 
 
 def _request_messages(

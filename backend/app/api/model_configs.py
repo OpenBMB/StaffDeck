@@ -21,6 +21,7 @@ router = APIRouter(
 
 def model_config_read(row: ModelConfig) -> ModelConfigRead:
     api_key = decrypt_secret(row.api_key_encrypted)
+    extra_body = row.extra_body_json if isinstance(row.extra_body_json, dict) else {}
     return ModelConfigRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -31,6 +32,7 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
         model=row.model,
         temperature=row.temperature,
         max_output_tokens=row.max_output_tokens,
+        extra_body=dict(extra_body),
         is_default=row.is_default,
         enabled=row.enabled,
         created_at=row.created_at.isoformat(),
@@ -68,6 +70,7 @@ def create_model_config(
         model=request.model,
         temperature=request.temperature,
         max_output_tokens=request.max_output_tokens,
+        extra_body_json=dict(request.extra_body),
         is_default=is_default,
         enabled=request.enabled,
     )
@@ -94,6 +97,8 @@ def update_model_config(
             setattr(row, field, value)
     if request.api_key is not None:
         row.api_key_encrypted = encrypt_secret(request.api_key)
+    if request.extra_body is not None:
+        row.extra_body_json = dict(request.extra_body)
     if request.is_default is not None:
         row.is_default = request.is_default
     row.updated_at = utc_now()
