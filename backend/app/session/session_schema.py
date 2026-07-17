@@ -144,7 +144,7 @@ class ChatTurnRequest(BaseModel):
     agent_id: Optional[str] = None
     model_config_id: Optional[str] = None
     client_turn_id: Optional[str] = None
-    user_id: str = ""
+    user_id: Optional[str] = None
     message: str
     attachments: list["ChatAttachmentRead"] = Field(default_factory=list)
     channel: str = "web"
