@@ -133,7 +133,18 @@ def _agent_identity_prompt(agent: AgentProfile) -> str:
         lines.append("")
         lines.append("员工角色补充要求：")
         lines.append(persona)
-    return "\n".join(lines)
+
+    rendered_values = []
+    for key2, label2 in AGENT_PERSONA_METADATA_FIELDS:
+        if label2 != label:
+            continue
+        v2 = _metadata_prompt_text(metadata.get(key2))
+        if v2 and v2 not in rendered_values:
+            rendered_values.append(v2)
+    combined = "".join(rendered_values) if rendered_values else value
+    lines.append(f"{label}:{combined}")
+    seen_labels.add(label)
+    continue    return "\n".join(lines)
 
 
 def _metadata_prompt_text(value: object) -> str:
