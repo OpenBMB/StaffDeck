@@ -119,15 +119,16 @@ def _agent_identity_prompt(agent: AgentProfile) -> str:
     description = _single_line_text(agent.description)
     if description:
         lines.append(f"员工描述：{description}")
-    seen_labels: set[str] = set()
+    label_values: dict[str, list[str]] = {}
     for key, label in AGENT_PERSONA_METADATA_FIELDS:
         value = _metadata_prompt_text(metadata.get(key))
         if not value:
             continue
-        if label in seen_labels and label in {"岗位"}:
-            continue
-        seen_labels.add(label)
-        lines.append(f"{label}：{value}")
+        if label not in label_values:
+            label_values[label] = []
+            label_values[label].append(value)
+    for label, values in label_values.items():
+        lines.append(f"{label}：{'; '.join(values)}")
     persona = str(agent.persona_prompt or "").strip()
     if persona:
         lines.append("")
