@@ -194,6 +194,12 @@ def _first_node_id(skill: Skill) -> str | None:
             if isinstance(node, dict) and node.get("node_id"):
                 return str(node["node_id"])
     return None
+    steps = content.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if isinstance(step, dict) and step.get("node_id"):
+                return str(step["node_id"])
+    return None
 
 
 def _available_skill_payloads(available_skills: list[Skill]) -> list[dict[str, Any]]:
