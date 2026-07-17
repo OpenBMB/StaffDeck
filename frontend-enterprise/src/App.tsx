@@ -239,7 +239,13 @@ function Shell({
         (event as CustomEvent<{ agentId?: string }>).detail?.agentId ||
         window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) ||
         "";
-      if (nextAgentId) persistSharedAgentScope(nextAgentId, auth.user.id);
+      if (nextAgentId) {
+        persistSharedAgentScope(nextAgentId, auth.user.id);
+        const knownSelectableAgent = agents.some(
+          (item) => item.id === nextAgentId && canUseAgentScope(item),
+        );
+        if (!knownSelectableAgent) void loadAgents(nextAgentId);
+      }
       setSelectedAgentId(nextAgentId);
     };
     window.addEventListener(
@@ -251,7 +257,7 @@ function Shell({
         "ultrarag-enterprise-agent-scope-change",
         onScopeChange,
       );
-  }, [auth.user.id]);
+  }, [agents, auth.user.id]);
 
   useEffect(() => {
     const onCreateAgent = () => openCreateAgentModal();
@@ -263,15 +269,21 @@ function Shell({
       );
   }, []);
 
-  function loadAgents() {
+  function loadAgents(preferredAgentId = "") {
     return api
       .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
       .then((rows) => {
         setAgents(rows);
         const selectableRows = rows.filter((item) => canUseAgentScope(item));
         setSelectedAgentId((current) => {
-          if (current && selectableRows.some((item) => item.id === current))
-            return current;
+          const requestedAgentId = preferredAgentId || current;
+          if (
+            requestedAgentId &&
+            selectableRows.some((item) => item.id === requestedAgentId)
+          ) {
+            persistSharedAgentScope(requestedAgentId, auth.user.id);
+            return requestedAgentId;
+          }
           const manageableRows = selectableRows.filter((item) =>
             canManageEmployeeAgent(item, auth.user),
           );
@@ -724,11 +736,11 @@ function Shell({
         </div>
       </div>
       <Dialog open={agentCreateOpen} onOpenChange={setAgentCreateOpen}>
-        <DialogContent className="gap-0 overflow-hidden rounded-[16px] p-0 sm:max-w-[520px]">
-          <DialogTitle className="px-[24px] py-[16px] text-[16px] font-semibold text-foreground">
+        <DialogContent className="flex max-h-[calc(100dvh-32px)] w-[calc(100%-32px)] flex-col gap-0 overflow-hidden rounded-[16px] p-0 sm:max-w-[520px]">
+          <DialogTitle className="shrink-0 px-[24px] py-[16px] text-[16px] font-semibold text-foreground">
             新建数字员工
           </DialogTitle>
-          <div className="agent-editor-form px-[24px]">
+          <div className="agent-editor-form min-h-0 flex-1 overflow-y-auto px-[24px] pb-[16px]">
             <label>
               创建方式
               <div className="inline-flex w-fit gap-[4px] rounded-[10px] border border-border p-[2px]">
@@ -843,7 +855,7 @@ function Shell({
               />
             </label>
           </div>
-          <div className={DIALOG_FOOTER_CLASS}>
+          <div className={cn(DIALOG_FOOTER_CLASS, "shrink-0 border-t border-border")}>
             <UIButton
               variant="outline"
               className={DIALOG_CANCEL_BUTTON_CLASS}

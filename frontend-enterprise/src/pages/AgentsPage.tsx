@@ -16,7 +16,14 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
-import { canManageEmployeeAgent, employeeDisplayName, employeeDisplayNameWithCreator, employeeProfile } from '../employee';
+import {
+  canManageEmployeeAgent,
+  canSelectCurrentEmployeeAgent,
+  employeeDisplayName,
+  employeeDisplayNameWithCreator,
+  employeeProfile,
+} from '../employee';
+import { emitAgentScopeChange, persistSharedAgentScope } from '../lib/agent-scope-storage';
 import type { AgentProfileRead } from '../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
@@ -38,6 +45,7 @@ export default function AgentsPage({
   const [profileAgent, setProfileAgent] = useState<AgentProfileRead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentProfileRead | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [selectingAgentId, setSelectingAgentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline' | 'pending'>('all');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
@@ -101,11 +109,27 @@ export default function AgentsPage({
     ].some((value) => value.toLowerCase().includes(keyword));
   });
 
-  function selectEmployee(row: AgentProfileRead) {
-    setSelectedAgentId(row.id);
-    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, row.id);
-    window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: row.id } }));
-    navigate('/enterprise/dashboard');
+  async function selectEmployee(row: AgentProfileRead) {
+    if (selectingAgentId) return;
+    setSelectingAgentId(row.id);
+    try {
+      let selectedRow = row;
+      if (!canSelectCurrentEmployeeAgent(row, currentUser, { activeOnly: true })) {
+        selectedRow = await api.post<AgentProfileRead>(
+          `/api/chat/agents/${encodeURIComponent(row.id)}/use?tenant_id=${TENANT_ID}`,
+          {},
+        );
+        updateAgentInList(selectedRow);
+      }
+      setSelectedAgentId(selectedRow.id);
+      persistSharedAgentScope(selectedRow.id, currentUser?.id);
+      emitAgentScopeChange(selectedRow.id);
+      navigate('/enterprise/dashboard');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '加载员工失败');
+    } finally {
+      setSelectingAgentId(null);
+    }
   }
 
   function startEmployeeChat(row: AgentProfileRead) {
@@ -260,9 +284,10 @@ export default function AgentsPage({
           <EmployeeCard
             key={employee.id}
             employee={employee}
+            busy={selectingAgentId === employee.id}
             canManage={canManageEmployeeAgent(employee, currentUser)}
             selected={employee.id === selectedAgentId}
-            onOpen={() => selectEmployee(employee)}
+            onOpen={() => void selectEmployee(employee)}
             onStatus={(status) => void updateStatus(employee, status)}
             onGallery={(published) => void updateGalleryState(employee, published)}
             onDelete={() => setDeleteTarget(employee)}
