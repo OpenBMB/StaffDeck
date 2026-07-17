@@ -126,7 +126,7 @@ def _agent_identity_prompt(agent: AgentProfile) -> str:
             continue
         if label not in label_values:
             label_values[label] = []
-            label_values[label].append(value)
+        label_values[label].append(value)
     for label, values in label_values.items():
         lines.append(f"{label}：{'; '.join(values)}")
     persona = str(agent.persona_prompt or "").strip()
