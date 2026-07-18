@@ -152,28 +152,36 @@ def render_stage_user_message(
         output_contract = json.dumps(
             output_contract or {}, ensure_ascii=False, separators=(",", ":")
         )
-    sections = []
+    # Static/highly-reused content goes first, volatile content last. Providers
+    # (DeepSeek, OpenAI-compatible proxies, etc.) cache the longest matching
+    # prefix of a request; a per-call timestamp or the user's raw message
+    # placed ahead of the large, stable stage instructions (e.g. a skill's
+    # full SKILL.md) breaks the prefix at the first byte and defeats caching
+    # for everything that follows, even though that content is identical
+    # across calls. Keeping the actual user question last also matches
+    # standard prompting practice (closest to where generation begins).
+    sections = [
+        f"当前阶段：\n{stage.get('phase') or '未指定'}",
+        (
+            "思考要求：\n保留完成当前阶段所需的简短思考；不要复述上下文、逐字段展开检查、"
+            "罗列无关备选方案或反复验证已明确的信息。得到可靠结论后立即按输出约束作答。"
+        ),
+        f"阶段规则：\n{str(stage.get('instructions') or '').strip()}",
+        f"输出约束：\n{output_contract}",
+    ]
+    if include_turn_header:
+        sections.append(f"用户记忆：\n{stage.get('memory') or '无'}")
+    sections.append(
+        "当前阶段独有内容：\n"
+        + json.dumps(projected, ensure_ascii=False, separators=(",", ":"))
+    )
     if include_turn_header:
         sections.extend(
             [
-                f"用户记忆：\n{stage.get('memory') or '无'}",
                 f"本轮时间：\n{stage.get('turn_time') or '未提供'}",
                 f"本轮用户输入：\n{user_message or '（空）'}",
             ]
         )
-    sections.extend(
-        [
-            f"当前阶段：\n{stage.get('phase') or '未指定'}",
-            (
-                "思考要求：\n保留完成当前阶段所需的简短思考；不要复述上下文、逐字段展开检查、"
-                "罗列无关备选方案或反复验证已明确的信息。得到可靠结论后立即按输出约束作答。"
-            ),
-            f"阶段规则：\n{str(stage.get('instructions') or '').strip()}",
-            "当前阶段独有内容：\n"
-            + json.dumps(projected, ensure_ascii=False, separators=(",", ":")),
-            f"输出约束：\n{output_contract}",
-        ]
-    )
     return "\n\n".join(sections)
 
 

@@ -458,7 +458,7 @@ def test_generate_text_projects_conversation_context_messages():
     assert '"pending_tasks"' not in current_input["content"]
 
 
-def test_stage_input_uses_stable_history_and_puts_memory_time_and_question_first():
+def test_stage_input_uses_stable_history_and_puts_instructions_before_volatile_content():
     client = object.__new__(LLMClient)
     client.client = _FakeOpenAIClient()
     client.model = "demo-model"
@@ -492,13 +492,17 @@ def test_stage_input_uses_stable_history_and_puts_memory_time_and_question_first
         {"role": "assistant", "content": "请说明本次需求"},
     ]
     current = messages[-1]["content"]
-    assert current.startswith("用户记忆：\n- 用户偏好简洁回复\n\n本轮时间：")
-    assert "本轮时间：\n2026-07-13T20:30:00+08:00" in current
-    assert "本轮用户输入：\n我想申请报销" in current
-    assert "当前阶段：\nRouter" in current
+    # Static/stable content (phase, thinking requirement, stage instructions) must
+    # come first so provider-side prompt-prefix caching isn't broken by a per-call
+    # timestamp or the user's raw message; volatile content stays last.
+    assert current.startswith("当前阶段：\nRouter")
     assert "思考要求：" in current
     assert "保留完成当前阶段所需的简短思考" in current
-    assert "available_skills" in current
+    assert current.index("只根据技能摘要路由。") < current.index("本轮时间：")
+    assert current.index("available_skills") < current.index("本轮用户输入：")
+    assert "本轮时间：\n2026-07-13T20:30:00+08:00" in current
+    assert "本轮用户输入：\n我想申请报销" in current
+    assert current.rstrip().endswith("本轮用户输入：\n我想申请报销")
     assert "memory_internal" not in current
     assert sum("我想申请报销" in str(message["content"]) for message in messages) == 1
 
