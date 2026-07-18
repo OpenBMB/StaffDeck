@@ -90,8 +90,23 @@ REFLECTION_OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-def unified_system_prompt() -> str:
-    return UNIFIED_PROMPT_PATH.read_text(encoding="utf-8").strip()
+def unified_system_prompt(skill_markdown: str | None = None) -> str:
+    base = UNIFIED_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    markdown = (skill_markdown or "").strip()
+    if not markdown:
+        return base
+    # Appending the active general skill's SKILL.md here (rather than in the
+    # per-turn stage payload) puts it in the one message position that stays
+    # byte-identical across every call for this skill, so provider prefix
+    # caching (DeepSeek/Gemini) actually reuses it instead of re-billing the
+    # full text on every turn. See render_stage_user_message for the
+    # matching comment on the per-turn side.
+    return (
+        base
+        + "\n\n---\n\n"
+        + "以下是当前技能的 SKILL.md 全文，是本次调用的固定背景资料：\n\n"
+        + markdown
+    )
 
 
 def stage_payload(
