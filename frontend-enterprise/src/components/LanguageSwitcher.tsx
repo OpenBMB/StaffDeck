@@ -25,7 +25,9 @@ export default function LanguageSwitcher({ className }: { className?: string }) 
     <DropdownMenu>
       <DropdownMenuTrigger
         data-i18n-ignore
-        aria-label={locale === 'zh-CN' ? '切换语言' : 'Switch language'}
+        aria-label={
+          locale === 'zh-CN' ? '切换语言' : locale === 'id-ID' ? 'Ganti bahasa' : 'Switch language'
+        }
         className={cn(
           'flex h-[32px] w-[74px] shrink-0 items-center justify-center gap-[6px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[8px] text-[12px] font-medium text-[#757f9c] outline-none transition-colors hover:border-[#cbd3e6] hover:text-[#18181a]',
           className,
@@ -38,7 +40,7 @@ export default function LanguageSwitcher({ className }: { className?: string }) 
       <DropdownMenuContent
         data-i18n-ignore
         align="end"
-        className="w-[132px] rounded-[12px] border-[0.5px] border-[#eceef1] bg-white p-[4px] shadow-[0_10px_28px_rgba(0,0,0,0.1)]"
+        className="w-[160px] rounded-[12px] border-[0.5px] border-[#eceef1] bg-white p-[4px] shadow-[0_10px_28px_rgba(0,0,0,0.1)]"
       >
         {OPTIONS.map((option) => (
           <DropdownMenuItem
