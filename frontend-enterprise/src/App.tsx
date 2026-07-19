@@ -34,6 +34,7 @@ import {
 } from "./employee";
 import AccountsPage from "./pages/AccountsPage";
 import AgentsPage from "./pages/AgentsPage";
+import ChannelsPage from "./pages/ChannelsPage";
 import ChatPage from "./pages/chat/ChatPage";
 import ChatGalleryPage from "./pages/chat/ChatGalleryPage";
 import DashboardPage from "./pages/dashboard/DashboardPage";
@@ -597,6 +598,12 @@ function Shell({
                     profileTab="logs"
                     onLogout={onLogout}
                   />
+                }
+              />
+              <Route
+                path="/enterprise/channels"
+                element={
+                  <ChannelsPage currentUser={auth.user} onLogout={onLogout} />
                 }
               />
               <Route

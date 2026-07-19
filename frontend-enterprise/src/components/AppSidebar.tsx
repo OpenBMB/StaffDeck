@@ -59,6 +59,7 @@ type NavItem = {
 const PRIMARY_NAV: NavItem[] = [
   { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform },
   { route: EnterpriseRoute.Agents, label: '我的数字员工', Icon: IconAgents },
+  { route: EnterpriseRoute.Channels, label: '渠道接入', Icon: IconGlobe },
 ];
 
 const PROFILE_NAV: NavItem[] = [

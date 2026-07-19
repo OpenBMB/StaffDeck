@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     general_skill_pip_index_url: str = ""
     general_skill_pip_timeout_seconds: int = 180
     general_skill_network_install: bool = False
+    channel_secret: str = ""
+    staffdeck_role: str = "all"
+    wechat_ilink_base_url: str = "https://ilinkai.weixin.qq.com"
+    channel_delivery_poll_seconds: float = 1.0
+    channel_delivery_max_attempts: int = 8
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),

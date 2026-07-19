@@ -4,7 +4,16 @@ import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { DetailField } from '@/components/DetailField';
 import { Paginator } from '@/components/Paginator';
 import { Button as UIButton } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  Select as UISelect,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 import { MOBILE_CARD_CLASS, formatDateTime } from '@/lib/enterprise-ui';
@@ -14,11 +23,14 @@ import IconListBulleted from '../../assets/icons/list-bulleted.svg?react';
 import IconHistory from '../../assets/icons/profile-history.svg?react';
 import IconRefresh from '../../assets/icons/refresh.svg?react';
 import IconSearch from '../../assets/icons/search.svg?react';
+import type { EnterpriseAuthUser } from '../../auth';
+import { canManageEmployeeAgent } from '../../employee';
 import { useClientPagination } from '../../hooks/useClientPagination';
-import type { MemoryRead } from '../../types';
+import type { AgentProfileRead, MemoryRead } from '../../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const MEMORY_PAGE_SIZE = 10;
+const ALL_USERS_VALUE = '__all__';
 
 type MemoryFilter = {
   username: string;
@@ -38,7 +50,13 @@ type MemoryUserGroup = {
 
 const EMPTY_FILTER: MemoryFilter = { username: '', user_id: '', q: '' };
 
-export default function MemoriesTab() {
+export default function MemoriesTab({
+  currentUser,
+  agent,
+}: {
+  currentUser?: EnterpriseAuthUser;
+  agent?: AgentProfileRead | null;
+} = {}) {
   const [rows, setRows] = useState<MemoryRead[]>([]);
   const [detail, setDetail] = useState<MemoryUserGroup | null>(null);
   const [loading, setLoading] = useState(false);
@@ -85,6 +103,16 @@ export default function MemoriesTab() {
 
   const groups = useMemo(() => groupMemories(rows), [rows]);
   const pagination = useClientPagination(groups, MEMORY_PAGE_SIZE, groups);
+  const canFilterUsers = agent ? canManageEmployeeAgent(agent, currentUser) : false;
+  const userOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    rows.forEach((row) => {
+      if (row.user_id && !map.has(row.user_id)) {
+        map.set(row.user_id, row.username || row.user_id);
+      }
+    });
+    return Array.from(map.entries()).map(([user_id, label]) => ({ user_id, label }));
+  }, [rows]);
   const emptyText = agentId
     ? '当前员工暂无用户记忆；新的对话记忆会按员工和用户隔离沉淀。'
     : '暂无记忆';
@@ -220,6 +248,36 @@ export default function MemoriesTab() {
               void load(filter);
             }}
           >
+            {canFilterUsers && (
+              <label className="flex h-[34px] w-[260px] items-center overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white transition-colors focus-within:border-[#18181a] max-[900px]:w-full">
+                <span className="flex h-full w-[58px] shrink-0 items-center justify-center border-r-[0.5px] border-[#e3e7f1] bg-[#f6f6f6] text-[12px] text-[#858b9c]">
+                  用户
+                </span>
+                <UISelect
+                  value={filter.user_id || ALL_USERS_VALUE}
+                  onValueChange={(value) => {
+                    const next = {
+                      ...filter,
+                      user_id: value === ALL_USERS_VALUE ? '' : value,
+                    };
+                    setFilter(next);
+                    void load(next);
+                  }}
+                >
+                  <SelectTrigger className="h-full min-w-0 flex-1 rounded-none border-0 px-[12px] text-[12px] shadow-none focus:ring-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_USERS_VALUE}>全部用户</SelectItem>
+                    {userOptions.map((option) => (
+                      <SelectItem key={option.user_id} value={option.user_id}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </UISelect>
+              </label>
+            )}
             <PrefixInput
               label="用户名"
               placeholder="如 user_demo"

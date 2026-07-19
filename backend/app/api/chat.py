@@ -16,6 +16,7 @@ from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from app.agents.branching import model_for_agent
+from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn
 from app.db import engine, get_session
@@ -675,6 +676,7 @@ def _maybe_handle_scheduled_task_request(
         created_at=assistant_time,
     )
     db.add(assistant_message)
+    stage_channel_delivery(db, chat_session, assistant_message)
     db.add(
         AgentEvent(
             tenant_id=request.tenant_id,
@@ -1426,6 +1428,7 @@ def _ensure_cancelled_assistant_message(
         created_at=created_at,
     )
     db.add(assistant_message)
+    stage_channel_delivery(db, chat_session, assistant_message)
     db.add(
         AgentEvent(
             tenant_id=tenant_id,
@@ -1607,6 +1610,7 @@ def _ensure_interrupted_assistant_message(
         created_at=created_at,
     )
     db.add(assistant_message)
+    stage_channel_delivery(db, chat_session, assistant_message)
     db.add(
         AgentEvent(
             tenant_id=tenant_id,

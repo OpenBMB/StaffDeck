@@ -594,6 +594,9 @@ export type EnterpriseChatSessionRead = {
   status: string;
   summary?: string;
   last_agent_question?: string;
+  channel?: string | null;
+  session_username?: string;
+  session_display_name?: string;
   created_at: string;
   updated_at: string;
 };
@@ -726,4 +729,109 @@ export type FeedbackSummaryRead = {
   status_counts: Record<string, number>;
   summary: string;
   top_summaries: Array<Record<string, unknown>>;
+};
+
+export type ChannelBindingAgentRead = {
+  agent_id: string;
+  name: string;
+  is_default: boolean;
+  sort_order: number;
+};
+
+export type ChannelBindingRead = {
+  id: string;
+  tenant_id: string;
+  agent_id: string;
+  channel: string;
+  status: string;
+  connected: boolean;
+  ilink_bot_id?: string | null;
+  baseurl?: string | null;
+  bot_id?: string | null;
+  session_expired?: boolean;
+  bound_at?: string | null;
+  created_by_user_id?: string | null;
+  config_json?: Record<string, unknown>;
+  agents: ChannelBindingAgentRead[];
+  auto_route?: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChannelDeliveryRead = {
+  id: string;
+  kind: string;
+  text: string;
+  status: string;
+  attempts: number;
+  last_error?: string;
+  created_at: string;
+  delivered_at?: string;
+  target_json: Record<string, unknown>;
+};
+
+export type ChannelConversationRead = {
+  session_id: string;
+  external_conv_id: string;
+  display_name: string;
+  is_group: boolean;
+  agent_id: string;
+  agent_name: string;
+  message_count: number;
+  last_message_preview: string;
+  updated_at: string;
+};
+
+export type ChannelConversationMessageRead = {
+  id: string;
+  role: string;
+  content: string;
+  created_at: string;
+};
+
+export type ChannelBindCodeRead = {
+  code: string;
+  expires_at: string;
+};
+
+export type PagedResponse<T> = {
+  items: T[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
+export type ChannelDeliveryDay = {
+  date: string;
+  count: number;
+  items: ChannelDeliveryRead[];
+};
+
+export type ChannelDeliveryDayPage = {
+  days: ChannelDeliveryDay[];
+  total_days: number;
+  offset: number;
+  limit: number;
+};
+
+export type ChannelIdentityBindingRead = {
+  channel: string;
+  external_user_id: string;
+  display_name: string;
+  bound_at: string;
+};
+
+export type ChannelCredentialFieldRead = {
+  key: string;
+  label: string;
+  placeholder?: string;
+  secret?: boolean;
+};
+
+export type ChannelMetaRead = {
+  channel: string;
+  name: string;
+  setup: 'qrcode' | 'credentials' | string;
+  credential_fields?: ChannelCredentialFieldRead[];
+  capabilities: string[];
 };

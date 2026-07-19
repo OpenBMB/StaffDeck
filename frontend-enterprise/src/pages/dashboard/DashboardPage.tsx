@@ -381,7 +381,7 @@ export default function DashboardPage({
         />
       )}
       {profileTab === 'scheduled' && <ScheduledTasksTab />}
-      {profileTab === 'memories' && <MemoriesTab />}
+      {profileTab === 'memories' && <MemoriesTab currentUser={currentUser} agent={selectedAgent} />}
       {profileTab === 'logs' && <ConversationLogsTab />}
       <EmployeeAvatarEditor
         agent={selectedAgent}

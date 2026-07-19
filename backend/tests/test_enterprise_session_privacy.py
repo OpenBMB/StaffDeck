@@ -18,10 +18,9 @@ def test_enterprise_sessions_are_limited_to_current_user_even_for_admin() -> Non
 
         assert [row["id"] for row in rows] == ["session_admin"]
 
-        with pytest.raises(HTTPException) as exc_info:
-            get_session_detail("session_other", "tenant_demo", current_user=admin, db=db)
-
-        assert exc_info.value.status_code == 404
+        # admin 现在可查看任意会话详情（admin/agent 创建者放开规则，详见 test_enterprise_session_visibility.py）
+        detail = get_session_detail("session_other", "tenant_demo", current_user=admin, db=db)
+        assert detail["session"]["id"] == "session_other"
 
 
 def test_enterprise_feedback_is_limited_to_current_user_even_for_admin() -> None:

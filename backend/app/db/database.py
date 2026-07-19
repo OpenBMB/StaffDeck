@@ -36,6 +36,8 @@ engine: Engine = create_engine(database_url, echo=False, connect_args=connect_ar
 _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID = "20260712_default_model_output_tokens_8192"
 _LEGACY_DEFAULT_MODEL_OUTPUT_TOKENS = 2048
 _DEFAULT_MODEL_OUTPUT_TOKENS = 8192
+_CHANNEL_BINDING_AGENTS_BACKFILL_MIGRATION_ID = "20260718_channel_binding_agents_backfill"
+_USER_SOURCE_BACKFILL_MIGRATION_ID = "20260718_user_source_wechat_backfill"
 
 
 def init_db() -> None:
@@ -69,6 +71,7 @@ def _migrate_sqlite_skill_schema() -> None:
     legacy_id_prefix = f"{legacy_key}_"
     with engine.begin() as conn:
         _migrate_default_model_output_limit(conn, tables)
+        _migrate_channel_binding_agents_backfill(conn, tables)
 
         if "model_configs" in tables:
             model_config_columns = {
@@ -87,6 +90,9 @@ def _migrate_sqlite_skill_schema() -> None:
             user_columns = {column["name"] for column in inspector.get_columns("users")}
             if "role" not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'member'"))
+            if "source" not in user_columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN source VARCHAR NOT NULL DEFAULT 'web'"))
+            _migrate_user_source_backfill(conn)
 
         if "sessions" in tables:
             session_columns = {column["name"] for column in inspector.get_columns("sessions")}
@@ -115,6 +121,26 @@ def _migrate_sqlite_skill_schema() -> None:
             if "context_state_json" not in session_columns:
                 conn.execute(text("ALTER TABLE sessions ADD COLUMN context_state_json JSON"))
                 conn.execute(text("UPDATE sessions SET context_state_json = '{}'"))
+            if "channel" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel VARCHAR"))
+            if "external_conv_id" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN external_conv_id VARCHAR"))
+            if "channel_target_json" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_target_json JSON"))
+            if "channel_binding_id" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_binding_id VARCHAR"))
+            # SQLite 唯一索引中 NULL 互不相等，web 会话（channel 为空）不受约束
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_agent_channel_extconv "
+                    "ON sessions(agent_id, channel, external_conv_id)"
+                )
+            )
+
+        if "channel_conv_states" in tables:
+            conv_columns = {column["name"] for column in inspector.get_columns("channel_conv_states")}
+            if "manual_pin_until" not in conv_columns:
+                conn.execute(text("ALTER TABLE channel_conv_states ADD COLUMN manual_pin_until DATETIME"))
 
         if "messages" in tables:
             message_columns = {column["name"] for column in inspector.get_columns("messages")}
@@ -301,6 +327,90 @@ def _migrate_default_model_output_limit(conn, tables: set[str]) -> None:
     conn.execute(
         text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
         {"id": _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID},
+    )
+
+
+def _migrate_channel_binding_agents_backfill(conn, tables: set[str]) -> None:
+    """为存量渠道绑定补挂载行(binding_id, agent_id, is_default=1),只跑一次。"""
+    if "channel_bindings" not in tables or "channel_binding_agents" not in tables:
+        return
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _CHANNEL_BINDING_AGENTS_BACKFILL_MIGRATION_ID},
+    ).first()
+    if applied:
+        return
+
+    rows = conn.execute(
+        text("SELECT id, tenant_id, agent_id FROM channel_bindings")
+    ).mappings().all()
+    for row in rows:
+        existing = conn.execute(
+            text(
+                "SELECT id FROM channel_binding_agents "
+                "WHERE binding_id = :binding_id AND agent_id = :agent_id"
+            ),
+            {"binding_id": row["id"], "agent_id": row["agent_id"]},
+        ).first()
+        if existing:
+            continue
+        conn.execute(
+            text(
+                """
+                INSERT INTO channel_binding_agents (
+                    id, tenant_id, binding_id, agent_id, is_default, sort_order, created_at
+                )
+                VALUES (:id, :tenant_id, :binding_id, :agent_id, 1, 0, CURRENT_TIMESTAMP)
+                """
+            ),
+            {
+                "id": f"chba_{row['id']}",
+                "tenant_id": row["tenant_id"],
+                "binding_id": row["id"],
+                "agent_id": row["agent_id"],
+            },
+        )
+    conn.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _CHANNEL_BINDING_AGENTS_BACKFILL_MIGRATION_ID},
+    )
+
+
+def _migrate_user_source_backfill(conn) -> None:
+    """存量渠道懒建账号(username 以 wechat_ 开头,含群账号)source 置 'wechat',只跑一次。"""
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _USER_SOURCE_BACKFILL_MIGRATION_ID},
+    ).first()
+    if applied:
+        return
+    conn.execute(
+        text("UPDATE users SET source = 'wechat' WHERE substr(username, 1, 7) = 'wechat_' AND source = 'web'")
+    )
+    conn.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _USER_SOURCE_BACKFILL_MIGRATION_ID},
     )
 
 

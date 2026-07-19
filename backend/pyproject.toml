@@ -19,7 +19,8 @@ dependencies = [
   "requests>=2.32.0",
   "sqlmodel>=0.0.21",
   "tzdata>=2025.2",
-  "uvicorn[standard]>=0.30.0"
+  "uvicorn[standard]>=0.30.0",
+  "wecom-aibot-python-sdk>=1.0.2"
 ]
 
 [project.optional-dependencies]

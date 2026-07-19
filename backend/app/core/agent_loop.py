@@ -53,6 +53,7 @@ from app.db.models import (
 )
 from app.general_skills import GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import GeneralSkillRunResponse, GeneralSkillSelection
+from app.channels.service_outbox import stage_channel_delivery
 from app.knowledge import KnowledgeService
 from app.knowledge.citations import (
     compact_knowledge_citation_labels,
@@ -6686,6 +6687,7 @@ class AgentLoop:
             reply,
             metadata=assistant_metadata,
         )
+        stage_channel_delivery(self.db, chat_session, assistant_message)
         event_payload: dict[str, Any] = {
             "message_id": assistant_message.id,
             "assistant_message_id": assistant_message.id,

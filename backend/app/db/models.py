@@ -34,6 +34,8 @@ class User(SQLModel, table=True):
     username: str = Field(index=True)
     display_name: Optional[str] = None
     role: str = Field(default="member", index=True)
+    # 账号来源:web=网页端创建;wechat 等=渠道懒建(用户管理列表默认隐藏)
+    source: str = Field(default="web", index=True)
     password_hash: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -506,6 +508,136 @@ class ChatSession(SQLModel, table=True):
     summary: Optional[str] = None
     last_agent_question: Optional[str] = None
     status: str = "active"
+    channel: Optional[str] = None
+    external_conv_id: Optional[str] = None
+    channel_target_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    # 渠道会话直挂绑定:出站 staging 优先按它直查,不再靠 (agent_id, channel) 反查
+    channel_binding_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ChannelBinding(SQLModel, table=True):
+    __tablename__ = "channel_bindings"
+    __table_args__ = (UniqueConstraint("agent_id", "channel", name="uq_channel_binding_agent_channel"),)
+
+    id: str = Field(default_factory=lambda: new_id("chan"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    channel: str = Field(default="wechat", index=True)
+    # pending/active/expired/disabled
+    status: str = Field(default="pending", index=True)
+    # Fernet 加密后的渠道凭证（如微信 bot_token），绝不回传明文
+    credentials_enc: Optional[str] = None
+    # ilink_bot_id、baseurl、get_updates_buf 游标、session_expired、bound_at 等
+    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    connected: bool = False
+    created_by_user_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ChannelBindingAgent(SQLModel, table=True):
+    """渠道账号可调度的员工集合（一个微信号挂载多个数字员工，恰好一个默认）。"""
+
+    __tablename__ = "channel_binding_agents"
+    __table_args__ = (UniqueConstraint("binding_id", "agent_id", name="uq_channel_binding_agent"),)
+
+    id: str = Field(default_factory=lambda: new_id("chba"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    binding_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    is_default: bool = False
+    sort_order: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ChannelConvState(SQLModel, table=True):
+    """路由指针：每个 (binding, external_conv_id) 会话的当前员工。"""
+
+    __tablename__ = "channel_conv_states"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "external_conv_id", name="uq_channel_conv_state"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("chconv"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    binding_id: str = Field(index=True)
+    external_conv_id: str
+    current_agent_id: str
+    # 手动 /切换 后的保护窗:此时间之前跳过智能自动分发
+    manual_pin_until: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ChannelBindCode(SQLModel, table=True):
+    """微信身份自助绑定码:网页端生成,微信侧 /绑定 <码> 核销。"""
+
+    __tablename__ = "channel_bind_codes"
+
+    id: str = Field(default_factory=lambda: new_id("chbc"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    code: str = Field(index=True)
+    expires_at: datetime
+    used_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ChannelIdentity(SQLModel, table=True):
+    __tablename__ = "channel_identities"
+    __table_args__ = (UniqueConstraint("channel", "external_user_id", name="uq_channel_identity_external"),)
+
+    id: str = Field(default_factory=lambda: new_id("chident"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    channel: str = Field(index=True)
+    external_user_id: str
+    staffdeck_user_id: str = Field(index=True)
+    display_name: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ChannelInboundEvent(SQLModel, table=True):
+    __tablename__ = "channel_inbound_events"
+    __table_args__ = (UniqueConstraint("channel", "event_id", name="uq_channel_inbound_event"),)
+
+    id: str = Field(default_factory=lambda: new_id("chevt"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    binding_id: str = Field(index=True)
+    channel: str = Field(index=True)
+    event_id: str
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # received/processing/done/failed
+    status: str = Field(default="received", index=True)
+    error: Optional[str] = None
+    processed_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ChannelDelivery(SQLModel, table=True):
+    __tablename__ = "channel_deliveries"
+
+    id: str = Field(default_factory=lambda: new_id("chdlv"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    binding_id: str = Field(index=True)
+    session_id: str = Field(index=True)
+    message_id: Optional[str] = Field(default=None, index=True)
+    # 投递目标：to_user_id + context_token
+    target_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # reply/error_notice
+    kind: str = Field(default="reply", index=True)
+    text: str
+    # pending/sending/delivered/failed
+    status: str = Field(default="pending", index=True)
+    attempts: int = 0
+    next_attempt_at: Optional[datetime] = Field(default=None, index=True)
+    last_error: Optional[str] = None
+    # 回复类投递 = message_id，天然幂等
+    idempotency_key: str = Field(unique=True, index=True)
+    delivered_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

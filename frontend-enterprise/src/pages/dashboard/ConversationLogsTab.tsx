@@ -241,6 +241,19 @@ export default function ConversationLogsTab() {
       render: (row) => <span className="block truncate" title={agentLabel(row)}>{agentLabel(row)}</span>,
     },
     {
+      key: 'source',
+      title: '来源/用户',
+      width: 140,
+      render: (row) => (
+        <div className="flex min-w-0 flex-col items-start gap-[4px]">
+          <ChannelBadge channel={row.channel} />
+          <span className="max-w-full truncate text-[11px] text-[#a0a6b8]">
+            {row.session_display_name || row.session_username || '-'}
+          </span>
+        </div>
+      ),
+    },
+    {
       key: 'status',
       title: '状态',
       width: 120,
@@ -323,6 +336,10 @@ export default function ConversationLogsTab() {
       <div className="mt-[10px] flex items-center justify-between gap-[10px] text-[12px] text-[#858b9c]">
         <span className="truncate" title={agentLabel(row)}>{agentLabel(row)}</span>
         <span className="shrink-0">{formatDateTime(row.updated_at)}</span>
+      </div>
+      <div className="mt-[8px] flex items-center gap-[8px] text-[12px] text-[#858b9c]">
+        <ChannelBadge channel={row.channel} />
+        <span className="truncate">{row.session_display_name || row.session_username || '-'}</span>
       </div>
       <div className="mt-[10px] flex justify-end">
         <UIButton
@@ -663,6 +680,12 @@ function traceLineIcon(kind: TraceLineRead['kind']) {
 
 function displayUser(session: Record<string, unknown>): string {
   return String(session.display_name || session.username || session.user_id || '-');
+}
+
+function ChannelBadge({ channel }: { channel?: string | null }) {
+  if (channel === 'wechat') return <StatusBadge tone="green">微信</StatusBadge>;
+  if (channel) return <StatusBadge tone="blue">{channel}</StatusBadge>;
+  return <StatusBadge tone="gray">网页</StatusBadge>;
 }
 
 function bucketTone(bucket?: string): BadgeTone {

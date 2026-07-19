@@ -1,0 +1,122 @@
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine, select
+
+from app.channels.service_identity import external_identity_for_message, resolve_or_provision_user
+from app.db.models import ChannelIdentity, Tenant, User
+
+
+def _test_engine():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    return engine
+
+
+def _seed_tenant(db: Session) -> None:
+    db.add(Tenant(id="tenant_demo", name="Demo"))
+    db.commit()
+
+
+def test_external_identity_for_p2p_and_group() -> None:
+    external_id, display = external_identity_for_message(
+        "wechat", is_group=False, conv_key="", from_user_id="o9cq800kum_ab12cd34@im.wechat"
+    )
+    assert external_id == "o9cq800kum_ab12cd34@im.wechat"
+    assert display == "微信用户 ab12cd34"
+
+    external_id, display = external_identity_for_message(
+        "wechat", is_group=True, conv_key="room_123456", from_user_id="sender"
+    )
+    assert external_id == "group_room_123456"
+    assert display == "微信群聊 3456"
+
+
+def test_provision_creates_member_user_and_identity() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        user = resolve_or_provision_user(db, "tenant_demo", "wechat", "wxid_ab12cd34", "微信用户 ab12cd34")
+        db.commit()
+
+        assert user.role == "member"
+        assert user.username == "wechat_wxid_ab12cd34"
+        assert user.display_name == "微信用户 ab12cd34"
+        assert user.password_hash
+
+        identity = db.exec(
+            select(ChannelIdentity).where(
+                ChannelIdentity.channel == "wechat",
+                ChannelIdentity.external_user_id == "wxid_ab12cd34",
+            )
+        ).one()
+        assert identity.staffdeck_user_id == user.id
+
+
+def test_second_call_hits_existing_mapping() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        first = resolve_or_provision_user(db, "tenant_demo", "wechat", "wxid_ab12cd34", "微信用户 ab12cd34")
+        db.commit()
+        second = resolve_or_provision_user(db, "tenant_demo", "wechat", "wxid_ab12cd34", "另一个名字")
+        db.commit()
+
+        assert second.id == first.id
+        identities = db.exec(
+            select(ChannelIdentity).where(ChannelIdentity.external_user_id == "wxid_ab12cd34")
+        ).all()
+        assert len(identities) == 1
+
+
+def test_group_account_provision() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        user = resolve_or_provision_user(db, "tenant_demo", "wechat", "group_room_123456", "微信群聊 3456")
+        db.commit()
+
+        assert user.username == "wechat_group_room_123456"
+        assert user.display_name == "微信群聊 3456"
+
+
+def test_username_conflict_falls_back_to_existing_user() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        existing = User(
+            tenant_id="tenant_demo",
+            username="wechat_wxid_conflict",
+            display_name="老账号",
+            role="member",
+            password_hash="x",
+        )
+        db.add(existing)
+        db.commit()
+
+        user = resolve_or_provision_user(db, "tenant_demo", "wechat", "wxid_conflict", "微信用户 conflict")
+        db.commit()
+
+        assert user.id == existing.id
+        identity = db.exec(
+            select(ChannelIdentity).where(
+                ChannelIdentity.channel == "wechat",
+                ChannelIdentity.external_user_id == "wxid_conflict",
+            )
+        ).one()
+        assert identity.staffdeck_user_id == existing.id
+
+
+def test_username_sanitizes_and_truncates() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        long_external = "wx id with space/" + "x" * 100
+        user = resolve_or_provision_user(db, "tenant_demo", "wechat", long_external, None)
+        db.commit()
+
+        assert " " not in user.username
+        assert "/" not in user.username
+        assert len(user.username) <= 64
