@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import time
 from typing import Any
 
@@ -21,13 +22,19 @@ security = HTTPBearer(auto_error=False)
 
 
 def hash_password(password: str) -> str:
-    salt = hashlib.sha256(get_settings().app_secret.encode("utf-8")).hexdigest()[:16]
+    salt = os.urandom(16).hex()
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
     return f"pbkdf2_sha256${salt}${base64.urlsafe_b64encode(digest).decode('utf-8')}"
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    return hmac.compare_digest(hash_password(password), stored_hash)
+    try:
+        _algo, salt, _digest = stored_hash.split("$", 2)
+    except ValueError:
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    candidate = f"pbkdf2_sha256${salt}${base64.urlsafe_b64encode(digest).decode('utf-8')}"
+    return hmac.compare_digest(candidate, stored_hash)
 
 
 def create_access_token(user: User) -> str:
