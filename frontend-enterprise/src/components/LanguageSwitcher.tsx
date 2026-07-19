@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 const OPTIONS: Array<{ locale: AppLocale; label: string; shortLabel: string }> = [
   { locale: 'zh-CN', label: '中文', shortLabel: '中' },
   { locale: 'en-US', label: 'English', shortLabel: 'EN' },
+  { locale: 'id-ID', label: 'Bahasa Indonesia', shortLabel: 'ID' },
 ];
 
 export default function LanguageSwitcher({ className }: { className?: string }) {
