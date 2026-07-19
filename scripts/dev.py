@@ -126,6 +126,9 @@ def _port_available(host: str, port: int) -> bool:
     bind_host = "0.0.0.0" if host == "0.0.0.0" else host
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         try:
+            # 与 uvicorn 监听行为保持一致:不设 REUSEADDR 时,刚停止的进程
+            # 留下的 TIME_WAIT 连接会让 bind 失败,被误判为端口被占而漂移。
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind((bind_host, port))
             return True
         except OSError:
