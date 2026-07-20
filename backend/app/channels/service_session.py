@@ -12,11 +12,16 @@ def adopt_orphan_channel_sessions(db: Session, binding: ChannelBinding) -> int:
     """认领孤儿渠道会话(误删绑定后重绑自愈),返回认领数量。
 
     范围:本租户内同渠道、channel_binding_id 为空或指向已不存在绑定、
-    agent_id 属于本绑定挂载集(含 binding.agent_id 回退)的会话。
+    agent_id 属于本绑定挂载集(含 binding.agent_id 回退)的会话;
+    企微额外要求会话 conv 的 scope 前缀与本绑定一致,防误认领别家企业会话。
     """
+    from app.channels.service_identity import external_account_scope
     from app.channels.service_routing import mounted_agents
 
     agent_ids = [mount.agent_id for mount in mounted_agents(db, binding)]
+    scope_prefix = ""
+    if binding.channel == "wecom":
+        scope_prefix = f"wecom_{external_account_scope(db, binding)}_"
     alive_binding_ids = set(
         db.exec(
             select(ChannelBinding.id).where(ChannelBinding.tenant_id == binding.tenant_id)
@@ -32,6 +37,8 @@ def adopt_orphan_channel_sessions(db: Session, binding: ChannelBinding) -> int:
     adopted = 0
     for row in candidates:
         if row.channel_binding_id and row.channel_binding_id in alive_binding_ids:
+            continue
+        if scope_prefix and not (row.external_conv_id or "").startswith(scope_prefix):
             continue
         row.channel_binding_id = binding.id
         db.add(row)

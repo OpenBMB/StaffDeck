@@ -35,7 +35,12 @@ from app.channels.schema import (
     channel_binding_read,
     channel_delivery_read,
 )
-from app.channels.service_identity import unbind_external_identity
+from app.channels.service_identity import (
+    external_account_scope,
+    migrate_scope_for_binding,
+    scope_from_config,
+    unbind_external_identity,
+)
 from app.channels.service_session import adopt_orphan_channel_sessions
 from app.config import get_settings
 from app.db import get_session
@@ -82,6 +87,13 @@ CHANNEL_META = [
         "credential_fields": [
             {"key": "bot_id", "label": "机器人 ID", "placeholder": "企业微信后台获取", "secret": False},
             {"key": "secret", "label": "机器人 Secret", "placeholder": None, "secret": True},
+            {
+                "key": "corp_id",
+                "label": "企业 ID（可选）",
+                "placeholder": "管理后台-我的企业-企业信息",
+                "secret": False,
+                "optional": True,
+            },
         ],
         "capabilities": [],
     },
@@ -499,15 +511,26 @@ def save_wecom_credentials(
     secret = request.secret.strip()
     if not bot_id or not secret:
         raise HTTPException(status_code=400, detail="bot_id 与 secret 均不能为空")
+    # 先生效旧 scope(按当前已存配置),保存后若变化则做连续性迁移
+    old_scope = scope_from_config(dict(binding.config_json or {}), binding)
     binding.credentials_enc = encrypt_channel_secret(secret)
     config = dict(binding.config_json or {})
     config.update({"bot_id": bot_id, "bound_at": utc_now().isoformat()})
+    corp_id = (request.corp_id or "").strip()
+    if corp_id:
+        config["corp_id"] = corp_id
+    else:
+        config.pop("corp_id", None)
     binding.config_json = config
     binding.status = "active"
     binding.connected = False
     binding.updated_at = utc_now()
     db.add(binding)
     adopt_orphan_channel_sessions(db, binding)
+    new_scope = external_account_scope(db, binding)
+    if new_scope != old_scope:
+        # corp_id 补填/变更导致生效 scope 变化:迁移身份/会话/指针保持连续
+        migrate_scope_for_binding(db, binding, old_scope, new_scope)
     db.commit()
     db.refresh(binding)
     if channel_services_enabled():

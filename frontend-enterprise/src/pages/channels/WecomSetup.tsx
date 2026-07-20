@@ -32,12 +32,16 @@ export default function WecomSetup({
   const configuredBotId =
     (typeof binding.bot_id === 'string' && binding.bot_id) ||
     (typeof binding.config_json?.bot_id === 'string' ? binding.config_json.bot_id : '');
+  const configuredCorpId =
+    typeof binding.config_json?.corp_id === 'string' ? binding.config_json.corp_id : '';
   const [editing, setEditing] = useState(!configuredBotId);
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
   async function save() {
-    const incomplete = fields.some((field) => !String(values[field.key] || '').trim());
+    const incomplete = fields.some(
+      (field) => !field.optional && !String(values[field.key] || '').trim(),
+    );
     if (incomplete) {
       notify.error('请填写完整凭证');
       return;
@@ -63,13 +67,20 @@ export default function WecomSetup({
     return (
       <div className="flex flex-wrap items-center gap-[10px] rounded-[10px] bg-[#fafbfc] p-[16px]">
         <span className="text-[12px] text-[#464c5e]">凭证已配置</span>
+        <span className="text-[12px] text-[#858b9c]">bot_id：{configuredBotId}</span>
+        {configuredCorpId && (
+          <span className="text-[12px] text-[#858b9c]">{`企业 ID：${configuredCorpId}`}</span>
+        )}
         <StatusBadge tone={binding.connected ? 'green' : 'gray'}>
           {binding.connected ? '已连接' : '未连接'}
         </StatusBadge>
         <UIButton
           variant="outline"
           onClick={() => {
-            setValues({ bot_id: configuredBotId });
+            setValues({
+              bot_id: configuredBotId,
+              ...(configuredCorpId ? { corp_id: configuredCorpId } : {}),
+            });
             setEditing(true);
           }}
           className={OUTLINE_BUTTON_CLASS}
@@ -98,6 +109,11 @@ export default function WecomSetup({
             }
             className="h-8 rounded-[10px] text-[12px]"
           />
+          {field.key === 'corp_id' && (
+            <span className="text-[11px] leading-[1.5] text-[#a0a6b8]">
+              用于跨企业区分相同 userid；不填则以机器人 ID 区分（删除重建绑定后身份可能断开）
+            </span>
+          )}
         </label>
       ))}
       <div className="flex justify-end gap-[8px]">

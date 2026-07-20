@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.db.models import ChannelIdentity, ChatSession, MemoryRecord, User, utc_now
+from app.db.models import (
+    ChannelBinding,
+    ChannelConvState,
+    ChannelIdentity,
+    ChatSession,
+    MemoryRecord,
+    User,
+    utc_now,
+)
 from app.security.auth import hash_password
+
+logger = logging.getLogger(__name__)
 
 _USERNAME_UNSAFE = re.compile(r"[^a-zA-Z0-9_.@-]")
 
@@ -17,6 +28,24 @@ _CHANNEL_LABELS = {"wechat": "微信", "wecom": "企微"}
 
 def channel_label(channel: str) -> str:
     return _CHANNEL_LABELS.get(channel, channel)
+
+
+def scope_from_config(config: dict, binding: ChannelBinding) -> str:
+    """按配置计算生效 scope:wecom 取 corp_id/bot_id,兜底 binding.id;其他渠道置空。"""
+    if binding.channel != "wecom":
+        return ""
+    return str(config.get("corp_id") or config.get("bot_id") or "").strip() or binding.id
+
+
+def external_account_scope(db: Session, binding: ChannelBinding) -> str:
+    """渠道账号作用域:以绑定当前配置为准(corp_id > bot_id > binding.id)。"""
+    return scope_from_config(dict(binding.config_json or {}), binding)
+
+
+def p2p_external_conv_id(channel: str, account_scope: str, from_user_id: str) -> str:
+    if account_scope:
+        return f"{channel}_{account_scope}_p2p_{from_user_id}"
+    return f"{channel}_p2p_{from_user_id}"
 
 
 def _id_suffix(external_id: str, length: int) -> str:
@@ -31,23 +60,37 @@ def external_identity_for_message(
     is_group: bool,
     conv_key: str,
     from_user_id: str,
+    account_scope: str = "",
 ) -> tuple[str, str]:
     """返回 (external_user_id, display_name)：群聊映射群账号，私聊映射个人账号。"""
     label = channel_label(channel)
     if is_group:
-        return f"group_{conv_key}", f"{label}群聊 {_id_suffix(conv_key, 4)}"
+        # 群账号 external_id 内嵌 scope(跨企业同 chatid 隔离)
+        group_key = f"{account_scope}_{conv_key}" if account_scope else conv_key
+        return f"group_{group_key}", f"{label}群聊 {_id_suffix(conv_key, 4)}"
     return from_user_id, f"{label}用户 {_id_suffix(from_user_id, 8)}"
 
 
-def channel_username(channel: str, external_id: str) -> str:
+def channel_username(channel: str, external_id: str, account_scope: str = "") -> str:
     cleaned = _USERNAME_UNSAFE.sub("_", external_id)[:48]
+    if account_scope:
+        scope = _USERNAME_UNSAFE.sub("_", account_scope)[:24]
+        return f"{channel}_{scope}_{cleaned}"[:64]
     return f"{channel}_{cleaned}"[:64]
 
 
-def find_channel_identity(db: Session, channel: str, external_id: str) -> ChannelIdentity | None:
+def find_channel_identity(
+    db: Session,
+    tenant_id: str,
+    channel: str,
+    external_id: str,
+    account_scope: str = "",
+) -> ChannelIdentity | None:
     return db.exec(
         select(ChannelIdentity).where(
+            ChannelIdentity.tenant_id == tenant_id,
             ChannelIdentity.channel == channel,
+            ChannelIdentity.external_account_scope == account_scope,
             ChannelIdentity.external_user_id == external_id,
         )
     ).first()
@@ -59,15 +102,18 @@ def resolve_or_provision_user(
     channel: str,
     external_id: str,
     display_name: str | None = None,
+    account_scope: str = "",
 ) -> User:
-    """按渠道外部身份解析 StaffDeck 用户，不存在则开通 member 账号并写映射。"""
-    identity = find_channel_identity(db, channel, external_id)
+    """按 (tenant, channel, scope, external_id) 解析 StaffDeck 用户，不存在则开通懒建账号。"""
+    identity = find_channel_identity(db, tenant_id, channel, external_id, account_scope)
     if identity:
         user = db.get(User, identity.staffdeck_user_id)
         if user:
             return user
 
-    username = channel_username(channel, external_id)
+    # 群账号 external_id 已内嵌 scope,username 不再重复加 scope 段
+    username_scope = "" if external_id.startswith("group_") else account_scope
+    username = channel_username(channel, external_id, username_scope)
     user = User(
         tenant_id=tenant_id,
         username=username,
@@ -81,6 +127,7 @@ def resolve_or_provision_user(
         ChannelIdentity(
             tenant_id=tenant_id,
             channel=channel,
+            external_account_scope=account_scope,
             external_user_id=external_id,
             staffdeck_user_id=user.id,
             display_name=user.display_name,
@@ -91,7 +138,7 @@ def resolve_or_provision_user(
     except IntegrityError:
         # 并发下另一线程已建号/已映射：回滚后按既有记录兜底
         db.rollback()
-        identity = find_channel_identity(db, channel, external_id)
+        identity = find_channel_identity(db, tenant_id, channel, external_id, account_scope)
         if identity:
             user = db.get(User, identity.staffdeck_user_id)
             if user:
@@ -104,6 +151,7 @@ def resolve_or_provision_user(
                 ChannelIdentity(
                     tenant_id=tenant_id,
                     channel=channel,
+                    external_account_scope=account_scope,
                     external_user_id=external_id,
                     staffdeck_user_id=user.id,
                     display_name=user.display_name,
@@ -120,18 +168,19 @@ def unbind_external_identity(
     tenant_id: str,
     channel: str,
     external_id: str,
+    account_scope: str = "",
 ) -> User | None:
     """解绑外部身份:指针移回懒建账号(缺则按原规则创建),迁回该私聊身份的渠道会话与对应记忆。
 
     返回原绑定的 web 账号;未绑定(无映射或映射不是 web 账号)返回 None。
     群身份(group_ 开头)不属于个人,不应调用本函数。
     """
-    identity = find_channel_identity(db, channel, external_id)
+    identity = find_channel_identity(db, tenant_id, channel, external_id, account_scope)
     current = db.get(User, identity.staffdeck_user_id) if identity else None
     if not identity or not current or current.source != "web":
         return None
 
-    lazy_username = channel_username(channel, external_id)
+    lazy_username = channel_username(channel, external_id, account_scope)
     lazy = db.exec(
         select(User).where(User.tenant_id == tenant_id, User.username == lazy_username)
     ).first()
@@ -156,7 +205,7 @@ def unbind_external_identity(
     identity.updated_at = utc_now()
     db.add(identity)
 
-    external_conv_id = f"{channel}_p2p_{external_id}"
+    external_conv_id = p2p_external_conv_id(channel, account_scope, external_id)
     sessions = db.exec(
         select(ChatSession).where(
             ChatSession.user_id == current.id,
@@ -181,3 +230,76 @@ def unbind_external_identity(
             row.username = lazy.username
             db.add(row)
     return current
+
+
+def migrate_scope_for_binding(
+    db: Session,
+    binding: ChannelBinding,
+    old_scope: str,
+    new_scope: str,
+) -> dict[str, int]:
+    """绑定生效 scope 变化时的连续性迁移(同一事务内调用)。
+
+    - channel_identities:同 tenant+channel 下旧 scope 的行改指新 scope;
+      冲突(新 scope 下已存在同 external_user_id 的行)时跳过该行并记 warning——
+      以新 scope 既有身份为准,不删不改,避免误伤另一套身份关联(最安全策略)。
+    - sessions / channel_conv_states:wecom conv 的旧 scope 前缀替换为新 scope。
+    返回各项迁移数量统计。
+    """
+    stats = {"identities": 0, "identities_conflicted": 0, "sessions": 0, "conv_states": 0}
+    if old_scope == new_scope or binding.channel != "wecom":
+        return stats
+
+    identities = db.exec(
+        select(ChannelIdentity).where(
+            ChannelIdentity.tenant_id == binding.tenant_id,
+            ChannelIdentity.channel == binding.channel,
+            ChannelIdentity.external_account_scope == old_scope,
+        )
+    ).all()
+    for row in identities:
+        conflict = find_channel_identity(
+            db, binding.tenant_id, binding.channel, row.external_user_id, new_scope
+        )
+        if conflict:
+            stats["identities_conflicted"] += 1
+            logger.warning(
+                "scope 迁移冲突:external_user_id=%s 在新 scope=%s 已有身份记录,旧行(scope=%s)跳过 binding=%s",
+                row.external_user_id,
+                new_scope,
+                old_scope,
+                binding.id,
+            )
+            continue
+        row.external_account_scope = new_scope
+        row.updated_at = utc_now()
+        db.add(row)
+        stats["identities"] += 1
+
+    for kind in ("p2p", "group"):
+        old_prefix = f"{binding.channel}_{old_scope}_{kind}_"
+        new_prefix = f"{binding.channel}_{new_scope}_{kind}_"
+        sessions = db.exec(
+            select(ChatSession).where(
+                ChatSession.tenant_id == binding.tenant_id,
+                ChatSession.channel == binding.channel,
+                ChatSession.external_conv_id.like(f"{old_prefix}%"),
+            )
+        ).all()
+        for row in sessions:
+            row.external_conv_id = new_prefix + row.external_conv_id[len(old_prefix):]
+            db.add(row)
+            stats["sessions"] += 1
+        states = db.exec(
+            select(ChannelConvState).where(
+                ChannelConvState.tenant_id == binding.tenant_id,
+                ChannelConvState.binding_id == binding.id,
+                ChannelConvState.external_conv_id.like(f"{old_prefix}%"),
+            )
+        ).all()
+        for row in states:
+            row.external_conv_id = new_prefix + row.external_conv_id[len(old_prefix):]
+            row.updated_at = utc_now()
+            db.add(row)
+            stats["conv_states"] += 1
+    return stats

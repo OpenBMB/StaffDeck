@@ -587,11 +587,21 @@ class ChannelBindCode(SQLModel, table=True):
 
 class ChannelIdentity(SQLModel, table=True):
     __tablename__ = "channel_identities"
-    __table_args__ = (UniqueConstraint("channel", "external_user_id", name="uq_channel_identity_external"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "channel",
+            "external_account_scope",
+            "external_user_id",
+            name="uq_channel_identity_scope_external",
+        ),
+    )
 
     id: str = Field(default_factory=lambda: new_id("chident"), primary_key=True)
     tenant_id: str = Field(index=True)
     channel: str = Field(index=True)
+    # 渠道账号作用域:wechat 置空(全局 wxid);wecom 取 corp_id/bot_id/binding.id,隔离跨企业身份
+    external_account_scope: str = Field(default="", index=True)
     external_user_id: str
     staffdeck_user_id: str = Field(index=True)
     display_name: Optional[str] = None
@@ -601,7 +611,9 @@ class ChannelIdentity(SQLModel, table=True):
 
 class ChannelInboundEvent(SQLModel, table=True):
     __tablename__ = "channel_inbound_events"
-    __table_args__ = (UniqueConstraint("channel", "event_id", name="uq_channel_inbound_event"),)
+    __table_args__ = (
+        UniqueConstraint("binding_id", "event_id", name="uq_channel_inbound_event_binding"),
+    )
 
     id: str = Field(default_factory=lambda: new_id("chevt"), primary_key=True)
     tenant_id: str = Field(index=True)

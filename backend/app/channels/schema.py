@@ -79,6 +79,8 @@ class WeComCredentialsRequest(BaseModel):
     tenant_id: str
     bot_id: str
     secret: str
+    # 可选:企业 ID,有则作为身份作用域首选(跨企业同 userid 隔离)
+    corp_id: Optional[str] = None
 
 
 class ChannelCredentialFieldRead(BaseModel):
@@ -86,6 +88,7 @@ class ChannelCredentialFieldRead(BaseModel):
     label: str
     placeholder: Optional[str] = None
     secret: bool = False
+    optional: bool = False
 
 
 class ChannelMetaRead(BaseModel):

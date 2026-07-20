@@ -1954,5 +1954,7 @@
   "解除后，该渠道对话将与你的账号分离，历史会话与记忆迁回渠道账号。确定解除绑定吗？": "After unbinding, conversations on this channel will be detached from your account, and history sessions and memories will be moved back to the channel account. Unbind?",
   "请在{1}中向你的数字员工发送以上指令，完成身份绑定。": "Send the command above to your employee in {1} to link your identity.",
   "加载更多（已显示 {1} / 共 {2} 条）": "Load more (showing {1} of {2})",
-  "加载更多天（已显示 {1} / 共 {2} 天）": "Load more days (showing {1} of {2})"
+  "加载更多天（已显示 {1} / 共 {2} 天）": "Load more days (showing {1} of {2})",
+  "用于跨企业区分相同 userid；不填则以机器人 ID 区分（删除重建绑定后身份可能断开）": "Distinguishes identical userids across enterprises. If empty, the bot ID is used instead (identity may break after deleting and recreating the binding).",
+  "企业 ID：{1}": "Corp ID: {1}"
 }

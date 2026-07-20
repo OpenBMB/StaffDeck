@@ -25,6 +25,8 @@ class ChannelInbound:
     raw: dict[str, Any]
     # 群内发言人显示名(帧内可获取时;无则 intake 回退 userid 尾段)
     sender_name: str = ""
+    # 渠道账号作用域:wechat 置空;wecom 为 corp_id/bot_id/binding.id(intake 以绑定配置为准重算)
+    account_scope: str = ""
 
     @property
     def conv_key(self) -> str:
@@ -33,7 +35,11 @@ class ChannelInbound:
     @property
     def external_conv_id(self) -> str:
         if self.is_group:
+            if self.account_scope:
+                return f"{self.channel}_{self.account_scope}_group_{self.conv_key}"
             return f"{self.channel}_group_{self.conv_key}"
+        if self.account_scope:
+            return f"{self.channel}_{self.account_scope}_p2p_{self.from_user_id}"
         return f"{self.channel}_p2p_{self.from_user_id}"
 
 

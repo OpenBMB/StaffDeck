@@ -718,7 +718,7 @@ def _make_wecom_lazy_account(engine) -> User:
         lazy = User(
             id="user_wecom_lazy",
             tenant_id="tenant_demo",
-            username="wecom_zhangsan",
+            username="wecom_aib_bot1_zhangsan",
             display_name="企微用户 zhangsan",
             role="member",
             source="wecom",
@@ -729,6 +729,7 @@ def _make_wecom_lazy_account(engine) -> User:
             ChannelIdentity(
                 tenant_id="tenant_demo",
                 channel="wecom",
+                external_account_scope="aib_bot1",
                 external_user_id="zhangsan",
                 staffdeck_user_id=lazy.id,
                 display_name=lazy.display_name,
@@ -749,7 +750,7 @@ def _seed_wecom_lazy_history(engine, lazy: User) -> None:
                 user_id=lazy.id,
                 agent_id="agent_1",
                 channel="wecom",
-                external_conv_id="wecom_p2p_zhangsan",
+                external_conv_id="wecom_aib_bot1_p2p_zhangsan",
             )
         )
         db.add(
@@ -803,7 +804,7 @@ def test_wecom_bind_success_full_chain() -> None:
 
     # 绑定后身份解析命中码主账号,下一条消息归属码主
     with Session(engine) as db:
-        user = resolve_or_provision_user(db, "tenant_demo", "wecom", "zhangsan", None)
+        user = resolve_or_provision_user(db, "tenant_demo", "wecom", "zhangsan", None, "aib_bot1")
         assert user.id == "user_web"
     binding = _load_binding(engine, binding_id)
     assert process_inbound(binding, _wecom_inbound("evt_wb2", "你好"), db_engine=engine) is True
@@ -831,10 +832,10 @@ def test_wecom_unbind_moves_history_back() -> None:
         assert db.get(ChatSession, "s_wecom_p2p").user_id == "user_wecom_lazy"
         memory = db.get(MemoryRecord, "mem_wecom_1")
         assert memory.user_id == "user_wecom_lazy"
-        assert memory.username == "wecom_zhangsan"
+        assert memory.username == "wecom_aib_bot1_zhangsan"
 
     with Session(engine) as db:
-        user = resolve_or_provision_user(db, "tenant_demo", "wecom", "zhangsan", None)
+        user = resolve_or_provision_user(db, "tenant_demo", "wecom", "zhangsan", None, "aib_bot1")
         assert user.id == "user_wecom_lazy"
 
 

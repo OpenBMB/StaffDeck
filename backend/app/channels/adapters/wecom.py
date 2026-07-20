@@ -31,7 +31,7 @@ def is_self_frame(frame: dict[str, Any]) -> bool:
     return bool(sender) and bool(bot_id) and sender == bot_id
 
 
-def normalize_wecom_frame(frame: dict[str, Any]) -> ChannelInbound | None:
+def normalize_wecom_frame(frame: dict[str, Any], *, account_scope: str = "") -> ChannelInbound | None:
     """归一化企微 WS 消息帧；自身消息/非文本语音/缺字段返回 None（丢弃）。"""
     if not isinstance(frame, dict) or is_self_frame(frame):
         return None
@@ -70,6 +70,7 @@ def normalize_wecom_frame(frame: dict[str, Any]) -> ChannelInbound | None:
         is_group=is_group,
         raw=frame,
         sender_name=sender_name,
+        account_scope=account_scope,
     )
 
 
@@ -249,7 +250,7 @@ class WeComStreamManager:
         except Exception:
             logger.exception("企微连接状态落库失败 binding=%s", binding_id)
 
-    def _wire_client(self, binding_id: str, client, state: _StreamState) -> None:
+    def _wire_client(self, binding_id: str, client, state: _StreamState, account_scope: str = "") -> None:
         def on_authenticated(*_args) -> None:
             self._set_connected(binding_id, True)
 
@@ -259,7 +260,7 @@ class WeComStreamManager:
         def on_frame(frame, *_args) -> None:
             # WS loop 线程只做归一化+入队,立即返回继续心跳;AgentLoop 轮在 worker 线程执行
             try:
-                inbound = normalize_wecom_frame(frame)
+                inbound = normalize_wecom_frame(frame, account_scope=account_scope)
                 if inbound is None:
                     return
                 state.queue.put_nowait(inbound)
@@ -304,8 +305,11 @@ class WeComStreamManager:
             if not bot_id or not secret:
                 logger.warning("企微绑定缺少凭证,stream 退出 binding=%s", binding_id)
                 return
+            from app.channels.service_identity import external_account_scope
+
+            account_scope = external_account_scope(None, binding)
             client = self._client_factory(bot_id, secret)
-            self._wire_client(binding_id, client, state)
+            self._wire_client(binding_id, client, state, account_scope)
             state.client = client
             state.loop = loop
             loop.run_until_complete(client.connect())

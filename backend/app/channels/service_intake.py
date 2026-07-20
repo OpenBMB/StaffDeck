@@ -10,6 +10,8 @@ from app.channels.adapters.base import ChannelInbound, get_channel_adapter
 from app.channels.adapters.wechat import normalize_wechat_message
 from app.channels.service_autoroute import maybe_auto_route, record_auto_route_event
 from app.channels.service_identity import (
+    channel_label,
+    external_account_scope,
     external_identity_for_message,
     find_channel_identity,
     resolve_or_provision_user,
@@ -208,14 +210,16 @@ def _bind_external_identity(
     if not owner:
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
 
+    scope = external_account_scope(db, binding)
     external_id = inbound.from_user_id
-    identity = find_channel_identity(db, binding.channel, external_id)
+    identity = find_channel_identity(db, binding.tenant_id, binding.channel, external_id, scope)
     old_user_id = identity.staffdeck_user_id if identity else None
     if old_user_id and old_user_id != owner.id:
         current = db.get(User, old_user_id)
         if current and current.source == "web":
             display = current.display_name or current.username
-            return f"该微信已绑定到 StaffDeck 账号「{display}」，请先发送 /解绑 解除后再绑定。"
+            label = channel_label(binding.channel)
+            return f"该{label}账号已绑定到 StaffDeck 账号「{display}」，请先发送 /解绑 解除后再绑定。"
 
     # ① 身份指针改指码主账号(无记录则新建)
     if identity:
@@ -225,6 +229,7 @@ def _bind_external_identity(
         identity = ChannelIdentity(
             tenant_id=binding.tenant_id,
             channel=binding.channel,
+            external_account_scope=scope,
             external_user_id=external_id,
             staffdeck_user_id=owner.id,
             display_name=owner.display_name,
@@ -246,7 +251,10 @@ def _unbind_external_identity(
     binding: ChannelBinding,
     inbound: ChannelInbound,
 ) -> str:
-    current = unbind_external_identity(db, binding.tenant_id, binding.channel, inbound.from_user_id)
+    scope = external_account_scope(db, binding)
+    current = unbind_external_identity(
+        db, binding.tenant_id, binding.channel, inbound.from_user_id, scope
+    )
     if not current:
         return "当前微信未绑定 StaffDeck 账号，无需解绑。"
     display = current.display_name or current.username
@@ -284,6 +292,10 @@ def _normalize_compat(binding: ChannelBinding, raw: dict) -> ChannelInbound | No
     if binding.channel == "wechat":
         config = dict(binding.config_json or {})
         return normalize_wechat_message(raw, ilink_bot_id=str(config.get("ilink_bot_id") or ""))
+    if binding.channel == "wecom":
+        from app.channels.adapters.wecom import normalize_wecom_frame
+
+        return normalize_wecom_frame(raw, account_scope=external_account_scope(None, binding))
     adapter = get_channel_adapter(binding.channel)
     return adapter.normalize(raw)
 
@@ -300,6 +312,9 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
         inbound = _normalize_compat(binding, msg)
     if inbound is None:
         return False
+    # 作用域以绑定配置为准(适配器侧可能拿的是启动时旧值):统一覆盖后再使用
+    scope = external_account_scope(None, binding)
+    inbound.account_scope = scope
 
     with Session(use_engine) as db:
         event = ChannelInboundEvent(
@@ -342,8 +357,11 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
             is_group=inbound.is_group,
             conv_key=inbound.conv_key,
             from_user_id=inbound.from_user_id,
+            account_scope=scope,
         )
-        user = resolve_or_provision_user(db, binding.tenant_id, binding.channel, external_id, display_name)
+        user = resolve_or_provision_user(
+            db, binding.tenant_id, binding.channel, external_id, display_name, scope
+        )
         current_agent_id, pointer_reset = resolve_current_agent(db, binding, inbound.external_conv_id)
         pre_route_agent_id = current_agent_id
         # 智能前台:LLM 意图分类自动分发(开关/挂载数/粘性保护由 maybe_auto_route 把关,异常全部回退当前)

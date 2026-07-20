@@ -826,6 +826,7 @@ export type ChannelCredentialFieldRead = {
   label: string;
   placeholder?: string;
   secret?: boolean;
+  optional?: boolean;
 };
 
 export type ChannelMetaRead = {

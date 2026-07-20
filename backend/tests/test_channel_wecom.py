@@ -409,10 +409,10 @@ def test_wecom_p2p_inbound_full_chain() -> None:
 
     with Session(engine) as db:
         chat_session = db.get(ChatSession, request.session_id)
-        assert chat_session.external_conv_id == "wecom_p2p_zhangsan"
+        assert chat_session.external_conv_id == "wecom_aib_bot1_p2p_zhangsan"
         assert chat_session.channel_binding_id == binding_id
         user = db.get(User, chat_session.user_id)
-        assert user.username == "wecom_zhangsan"
+        assert user.username == "wecom_aib_bot1_zhangsan"
         assert user.display_name == "企微用户 zhangsan"
         assert user.source == "wecom"
         event = db.exec(select(ChannelInboundEvent)).one()
@@ -437,11 +437,11 @@ def test_wecom_group_inbound_uses_sender_name_prefix() -> None:
 
     with Session(engine) as db:
         chat_session = db.get(ChatSession, request.session_id)
-        assert chat_session.external_conv_id == "wecom_group_wr_group1"
+        assert chat_session.external_conv_id == "wecom_aib_bot1_group_wr_group1"
         # 群聊回复投递到群 chatid
         assert chat_session.channel_target_json["to_user_id"] == "wr_group1"
         group_user = db.get(User, chat_session.user_id)
-        assert group_user.username == "wecom_group_wr_group1"
+        assert group_user.username == "wecom_group_aib_bot1_wr_group1"
 
 
 def test_wecom_switch_command_routes_agents() -> None:
