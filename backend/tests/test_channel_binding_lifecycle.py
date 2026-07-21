@@ -87,7 +87,11 @@ def test_delete_binding_cascades_mounts_and_conv_states(monkeypatch) -> None:
     users = _seed_users(engine)
     with Session(engine) as db:
         binding = ChannelBinding(
-            tenant_id="tenant_demo", agent_id="agent_xz", channel="wechat", status="active"
+            tenant_id="tenant_demo",
+            agent_id="agent_xz",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_owner",
         )
         db.add(binding)
         db.flush()

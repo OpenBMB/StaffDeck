@@ -847,3 +847,68 @@ def test_wecom_bind_command_not_supported_in_group() -> None:
     assert process_inbound(binding, _wecom_inbound("evt_wb5", "/绑定 123456", group=True), db_engine=engine) is False
     notices = _notice_texts(engine)
     assert any("私聊" in text for text in notices)
+
+
+# ---------- 企微页面侧解绑携带 scope(假 204 修复) ----------
+
+
+def test_wecom_delete_my_identity_binding_moves_data_back() -> None:
+    engine = _test_engine()
+    users = _seed_web_users(engine)
+    # 企微身份(scope=corpA)已绑定到 web 账号,会话与记忆在 web 名下
+    with Session(engine) as db:
+        lazy = User(
+            id="user_wecom_lazy",
+            tenant_id="tenant_demo",
+            username="wecom_corpA_zhangsan",
+            display_name="企微用户 zhangsan",
+            source="wecom",
+            password_hash="x",
+        )
+        db.add(lazy)
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corpA",
+                external_user_id="zhangsan",
+                staffdeck_user_id=users["web"].id,
+                display_name="张三",
+            )
+        )
+        db.add(
+            ChatSession(
+                id="s_wecom_bound",
+                tenant_id="tenant_demo",
+                user_id=users["web"].id,
+                agent_id="agent_1",
+                channel="wecom",
+                external_conv_id="wecom_corpA_p2p_zhangsan",
+            )
+        )
+        db.add(
+            MemoryRecord(
+                id="mem_wecom_bound",
+                tenant_id="tenant_demo",
+                user_id=users["web"].id,
+                username=users["web"].username,
+                session_id="s_wecom_bound",
+                content="偏好",
+            )
+        )
+        db.commit()
+
+    client = _make_api_client(engine)
+    deleted = client.delete(
+        "/api/enterprise/channels/my-identity-bindings/wecom?tenant_id=tenant_demo",
+        headers=_auth(users["web"]),
+    )
+    assert deleted.status_code == 204
+
+    with Session(engine) as db:
+        identity = db.exec(select(ChannelIdentity)).one()
+        assert identity.staffdeck_user_id == "user_wecom_lazy"
+        assert db.get(ChatSession, "s_wecom_bound").user_id == "user_wecom_lazy"
+        memory = db.get(MemoryRecord, "mem_wecom_bound")
+        assert memory.user_id == "user_wecom_lazy"
+        assert memory.username == "wecom_corpA_zhangsan"

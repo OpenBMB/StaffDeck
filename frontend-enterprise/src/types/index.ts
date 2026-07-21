@@ -748,6 +748,7 @@ export type ChannelBindingRead = {
   ilink_bot_id?: string | null;
   baseurl?: string | null;
   bot_id?: string | null;
+  corp_id?: string | null;
   session_expired?: boolean;
   bound_at?: string | null;
   created_by_user_id?: string | null;

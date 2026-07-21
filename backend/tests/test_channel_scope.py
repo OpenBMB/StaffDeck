@@ -57,6 +57,7 @@ def _seed_wecom_binding(
             channel="wecom",
             status="active",
             config_json=config,
+            created_by_user_id="user_owner",
         )
         db.add(binding)
         db.commit()
@@ -645,6 +646,7 @@ def _seed_scope_history(engine, binding_id: str, scope: str) -> None:
                 agent_id="agent_1",
                 channel="wecom",
                 external_conv_id=f"wecom_{scope}_p2p_zhangsan",
+                channel_binding_id=binding_id,
             )
         )
         db.add(
@@ -697,12 +699,13 @@ def test_credentials_corp_id_fill_migrates_identity_sessions_and_pointer(monkeyp
     assert RecordingAgentLoop.calls[-1].user_id == "lazy_scope"
 
 
-def test_scope_migration_conflict_skips_old_row() -> None:
+def test_scope_migration_ignores_unreferenced_identities() -> None:
     engine = _test_engine()
     binding_id = _seed_wecom_binding(engine, corp_id="corpA", bot_id="aib_bot1")
     with Session(engine) as db:
         db.add(User(id="l1", tenant_id="tenant_demo", username="wecom_aib_bot1_zhangsan", source="wecom", password_hash="x"))
-        db.add(User(id="l2", tenant_id="tenant_demo", username="wecom_corpA_zhangsan", source="wecom", password_hash="x"))
+        db.add(User(id="l2", tenant_id="tenant_demo", username="wecom_aib_bot1_lisi", source="wecom", password_hash="x"))
+        # l1 被该 binding 的会话引用;l2 的旧 scope 身份无任何该 binding 会话引用
         db.add(
             ChannelIdentity(
                 tenant_id="tenant_demo",
@@ -716,19 +719,31 @@ def test_scope_migration_conflict_skips_old_row() -> None:
             ChannelIdentity(
                 tenant_id="tenant_demo",
                 channel="wecom",
-                external_account_scope="corpA",
-                external_user_id="zhangsan",
+                external_account_scope="aib_bot1",
+                external_user_id="lisi",
                 staffdeck_user_id="l2",
             )
         )
         db.add(
             ChatSession(
-                id="s_old",
+                id="s_ref",
                 tenant_id="tenant_demo",
                 user_id="l1",
                 agent_id="agent_1",
                 channel="wecom",
                 external_conv_id="wecom_aib_bot1_p2p_zhangsan",
+                channel_binding_id=binding_id,
+            )
+        )
+        db.add(
+            ChatSession(
+                id="s_unref",
+                tenant_id="tenant_demo",
+                user_id="l2",
+                agent_id="agent_1",
+                channel="wecom",
+                external_conv_id="wecom_aib_bot1_p2p_lisi",
+                channel_binding_id="chan_other",
             )
         )
         db.commit()
@@ -739,17 +754,16 @@ def test_scope_migration_conflict_skips_old_row() -> None:
         stats = migrate_scope_for_binding(db, binding, "aib_bot1", "corpA")
         db.commit()
 
-        assert stats["identities"] == 0
-        assert stats["identities_conflicted"] == 1
+        assert stats["identities"] == 1
         assert stats["sessions"] == 1
-        rows = db.exec(select(ChannelIdentity).order_by(ChannelIdentity.external_account_scope)).all()
-        # 冲突策略:两行都保留,新 scope 既有身份(l2)为准,旧行不删不改
-        assert len(rows) == 2
-        assert rows[0].external_account_scope == "aib_bot1"
-        assert rows[0].staffdeck_user_id == "l1"
-        assert rows[1].external_account_scope == "corpA"
-        assert rows[1].staffdeck_user_id == "l2"
-        assert db.get(ChatSession, "s_old").external_conv_id == "wecom_corpA_p2p_zhangsan"
+        identities = {
+            row.external_user_id: row.external_account_scope
+            for row in db.exec(select(ChannelIdentity)).all()
+        }
+        # 被当前 binding 会话引用的身份迁移;未被引用的旧 scope 行不动
+        assert identities == {"zhangsan": "corpA", "lisi": "aib_bot1"}
+        assert db.get(ChatSession, "s_ref").external_conv_id == "wecom_corpA_p2p_zhangsan"
+        assert db.get(ChatSession, "s_unref").external_conv_id == "wecom_aib_bot1_p2p_lisi"
 
 
 def test_scope_migration_roundtrip_and_noop(monkeypatch) -> None:
@@ -771,8 +785,8 @@ def test_scope_migration_roundtrip_and_noop(monkeypatch) -> None:
         assert db.exec(select(ChannelIdentity)).one().external_account_scope == "corpA"
         assert db.get(ChatSession, "s_scope").external_conv_id == "wecom_corpA_p2p_zhangsan"
 
-    # ② 去掉 corp_id:scope 回 bot_id,迁回原格式
-    client.post(url, json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s2"}, headers=headers)
+    # ② 显式空串去掉 corp_id:scope 回 bot_id,迁回原格式
+    client.post(url, json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s2", "corp_id": ""}, headers=headers)
     with Session(engine) as db:
         assert db.exec(select(ChannelIdentity)).one().external_account_scope == "aib_bot1"
         assert db.get(ChatSession, "s_scope").external_conv_id == "wecom_aib_bot1_p2p_zhangsan"
@@ -801,3 +815,253 @@ def test_migrate_scope_noop_when_unchanged() -> None:
         binding = db.get(ChannelBinding, binding_id)
         stats = migrate_scope_for_binding(db, binding, "aib_bot1", "aib_bot1")
         assert stats == {"identities": 0, "identities_conflicted": 0, "sessions": 0, "conv_states": 0}
+
+
+# ---------- 同企业多 Bot:会话与出站按 binding 隔离 ----------
+
+
+def test_same_corp_two_bots_get_isolated_sessions_and_outbound() -> None:
+    engine = _test_engine()
+    binding_a = _seed_wecom_binding(engine, corp_id="corpX", bot_id="bot_a")
+    # uq(agent_id, channel) 全局唯一:同 tenant 两绑定用不同默认员工
+    binding_b = _seed_wecom_binding(engine, corp_id="corpX", bot_id="bot_b", agent_id="agent_2")
+
+    binding = _load_binding(engine, binding_a)
+    assert process_inbound(binding, _wecom_inbound("m_a", "你好 A"), db_engine=engine) is True
+    binding = _load_binding(engine, binding_b)
+    assert process_inbound(binding, _wecom_inbound("m_b", "你好 B"), db_engine=engine) is True
+
+    session_a = RecordingAgentLoop.calls[0].session_id
+    session_b = RecordingAgentLoop.calls[1].session_id
+    assert session_a != session_b
+    with Session(engine) as db:
+        assert db.get(ChatSession, session_a).channel_binding_id == binding_a
+        assert db.get(ChatSession, session_b).channel_binding_id == binding_b
+
+        # 出站各自按会话直挂 binding 投递(second_incoming_binding=bot_b → outbound=bot_b)
+        from app.channels.service_outbox import stage_channel_delivery
+        from app.db.models import ChannelDelivery, Message
+
+        for session_id, message_id in ((session_a, "msg_out_a"), (session_b, "msg_out_b")):
+            chat_session = db.get(ChatSession, session_id)
+            message = Message(
+                id=message_id,
+                tenant_id="tenant_demo",
+                session_id=session_id,
+                role="assistant",
+                content="回复",
+            )
+            db.add(message)
+            stage_channel_delivery(db, chat_session, message)
+        db.commit()
+        deliveries = {
+            row.message_id: row.binding_id for row in db.exec(select(ChannelDelivery)).all()
+        }
+        assert deliveries == {"msg_out_a": binding_a, "msg_out_b": binding_b}
+
+
+# ---------- scope 迁移限定当前 binding + 冲突合并一致 ----------
+
+
+def test_scope_migration_narrowed_to_current_binding() -> None:
+    engine = _test_engine()
+    binding_a = _seed_wecom_binding(engine, corp_id="corpX", bot_id="bot_a")
+    binding_b = _seed_wecom_binding(engine, corp_id="corpX", bot_id="bot_b", agent_id="agent_2")
+    with Session(engine) as db:
+        for lazy_id, conv_suffix, bid, agent in (
+            ("lazy_a", "zhangsan", binding_a, "agent_1"),
+            ("lazy_b", "lisi", binding_b, "agent_2"),
+        ):
+            db.add(
+                User(
+                    id=lazy_id,
+                    tenant_id="tenant_demo",
+                    username=f"wecom_corpX_{conv_suffix}",
+                    source="wecom",
+                    password_hash="x",
+                )
+            )
+            db.add(
+                ChannelIdentity(
+                    tenant_id="tenant_demo",
+                    channel="wecom",
+                    external_account_scope="corpX",
+                    external_user_id=conv_suffix,
+                    staffdeck_user_id=lazy_id,
+                )
+            )
+            db.add(
+                ChatSession(
+                    id=f"s_{conv_suffix}",
+                    tenant_id="tenant_demo",
+                    user_id=lazy_id,
+                    agent_id=agent,
+                    channel="wecom",
+                    external_conv_id=f"wecom_corpX_p2p_{conv_suffix}",
+                    channel_binding_id=bid,
+                )
+            )
+        from app.db.models import ChannelConvState
+
+        db.add(
+            ChannelConvState(
+                tenant_id="tenant_demo",
+                binding_id=binding_a,
+                external_conv_id="wecom_corpX_p2p_zhangsan",
+                current_agent_id="agent_1",
+            )
+        )
+        db.add(
+            ChannelConvState(
+                tenant_id="tenant_demo",
+                binding_id=binding_b,
+                external_conv_id="wecom_corpX_p2p_lisi",
+                current_agent_id="agent_2",
+            )
+        )
+        db.commit()
+
+        from app.channels.service_identity import migrate_scope_for_binding
+
+        # A 的 corp_id 从 corpX 改成 corpY:只有 A 的身份/会话/指针迁移
+        stats = migrate_scope_for_binding(db, db.get(ChannelBinding, binding_a), "corpX", "corpY")
+        db.commit()
+        assert stats["identities"] == 1
+        assert stats["sessions"] == 1
+        assert stats["conv_states"] == 1
+
+        identity_a = db.exec(
+            select(ChannelIdentity).where(ChannelIdentity.external_user_id == "zhangsan")
+        ).one()
+        assert identity_a.external_account_scope == "corpY"
+        assert db.get(ChatSession, "s_zhangsan").external_conv_id == "wecom_corpY_p2p_zhangsan"
+        state_a = db.exec(
+            select(ChannelConvState).where(ChannelConvState.binding_id == binding_a)
+        ).one()
+        assert state_a.external_conv_id == "wecom_corpY_p2p_zhangsan"
+
+        # B 的身份/会话/指针零影响
+        identity_b = db.exec(
+            select(ChannelIdentity).where(ChannelIdentity.external_user_id == "lisi")
+        ).one()
+        assert identity_b.external_account_scope == "corpX"
+        assert db.get(ChatSession, "s_lisi").external_conv_id == "wecom_corpX_p2p_lisi"
+        state_b = db.exec(
+            select(ChannelConvState).where(ChannelConvState.binding_id == binding_b)
+        ).one()
+        assert state_b.external_conv_id == "wecom_corpX_p2p_lisi"
+
+
+def test_scope_migration_conflict_merges_consistently() -> None:
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine, corp_id="corpY", bot_id="aib_bot1")
+    with Session(engine) as db:
+        db.add(User(id="lazy_old", tenant_id="tenant_demo", username="wecom_corpX_zhangsan", source="wecom", password_hash="x"))
+        db.add(User(id="user_web", tenant_id="tenant_demo", username="webadmin", password_hash="x"))
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corpX",
+                external_user_id="zhangsan",
+                staffdeck_user_id="lazy_old",
+            )
+        )
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corpY",
+                external_user_id="zhangsan",
+                staffdeck_user_id="user_web",
+            )
+        )
+        db.add(
+            ChatSession(
+                id="s_conflict",
+                tenant_id="tenant_demo",
+                user_id="lazy_old",
+                agent_id="agent_1",
+                channel="wecom",
+                external_conv_id="wecom_corpX_p2p_zhangsan",
+                channel_binding_id=binding_id,
+            )
+        )
+        db.add(
+            MemoryRecord(
+                id="mem_conflict",
+                tenant_id="tenant_demo",
+                user_id="lazy_old",
+                username="wecom_corpX_zhangsan",
+                session_id="s_conflict",
+                content="偏好",
+            )
+        )
+        db.commit()
+
+        from app.channels.service_identity import migrate_scope_for_binding
+
+        stats = migrate_scope_for_binding(db, db.get(ChannelBinding, binding_id), "corpX", "corpY")
+        db.commit()
+        assert stats["identities_conflicted"] == 1
+
+        # 合并后身份与会话一致:同一 User、同一 conv 前缀
+        rows = db.exec(select(ChannelIdentity)).all()
+        assert len(rows) == 1
+        assert rows[0].external_account_scope == "corpY"
+        assert rows[0].staffdeck_user_id == "user_web"
+        session = db.get(ChatSession, "s_conflict")
+        assert session.user_id == "user_web"
+        assert session.external_conv_id == "wecom_corpY_p2p_zhangsan"
+        memory = db.get(MemoryRecord, "mem_conflict")
+        assert memory.user_id == "user_web"
+        assert memory.username == "webadmin"
+
+
+# ---------- corp_id 可读取 + 不传不清空 ----------
+
+
+def test_corp_id_read_and_reconfig_keeps_unless_explicit(monkeypatch) -> None:
+    import app.api.channels as channels_api
+
+    engine = _test_engine()
+    owner, headers = _seed_owner(engine)
+    binding_id = _seed_wecom_binding(engine, bot_id="aib_bot1")
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        binding.status = "pending"
+        binding.credentials_enc = None
+        db.add(binding)
+        db.commit()
+    client = _make_api_client(engine)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: False)
+
+    url = f"/api/enterprise/channels/{binding_id}/wecom/credentials"
+    client.post(
+        url,
+        json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s1", "corp_id": "corpA"},
+        headers=headers,
+    )
+    listed = client.get(
+        "/api/enterprise/channels?tenant_id=tenant_demo&agent_id=agent_1", headers=headers
+    )
+    assert listed.json()[0]["corp_id"] == "corpA"
+    assert "s1" not in listed.text
+
+    # 不传 corp_id 字段重新配置:不被静默清空
+    client.post(
+        url,
+        json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s2"},
+        headers=headers,
+    )
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id).config_json["corp_id"] == "corpA"
+
+    # 显式传空串:清除
+    client.post(
+        url,
+        json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s3", "corp_id": ""},
+        headers=headers,
+    )
+    with Session(engine) as db:
+        assert "corp_id" not in (db.get(ChannelBinding, binding_id).config_json or {})

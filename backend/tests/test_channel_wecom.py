@@ -70,6 +70,7 @@ def _seed_wecom_binding(engine, **overrides) -> str:
             "status": "active",
             "credentials_enc": encrypt_channel_secret("bot_secret"),
             "config_json": {"bot_id": "aib_bot1"},
+            "created_by_user_id": "user_owner",
         }
         values.update(overrides)
         binding = ChannelBinding(**values)
@@ -559,7 +560,11 @@ def test_wecom_credentials_rejects_wechat_binding() -> None:
     users = _seed_api_users(engine)
     with Session(engine) as db:
         binding = ChannelBinding(
-            tenant_id="tenant_demo", agent_id="agent_1", channel="wechat", status="pending"
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat",
+            status="pending",
+            created_by_user_id="user_owner",
         )
         db.add(binding)
         db.commit()

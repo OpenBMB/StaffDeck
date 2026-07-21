@@ -1083,3 +1083,85 @@ def test_deliveries_days_requires_manager() -> None:
         headers=_auth(users["other"]),
     )
     assert forbidden.status_code == 403
+
+
+# ---------- 绑定管理权限不随默认员工漂移 ----------
+
+
+def test_binding_manager_not_drifted_by_default_agent() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        # agent_3 属于 other;绑定由 owner 创建、默认员工是 agent_3
+        db.add(
+            AgentProfile(
+                id="agent_3",
+                tenant_id="tenant_demo",
+                name="他人的员工",
+                metadata_json={"owner_user_id": users["other"].id},
+            )
+        )
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_3",
+            channel="wechat",
+            status="active",
+            created_by_user_id=users["owner"].id,
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+
+    client = _make_client(engine)
+    # other 拥有默认员工,但不是绑定创建者也不是 admin → 不能管
+    assert client.get(
+        f"/api/enterprise/channels/{binding_id}/agents?tenant_id=tenant_demo",
+        headers=_auth(users["other"]),
+    ).status_code == 403
+    assert client.delete(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        headers=_auth(users["other"]),
+    ).status_code == 403
+    assert client.post(
+        f"/api/enterprise/channels/{binding_id}/wechat/qrcode?tenant_id=tenant_demo",
+        headers=_auth(users["other"]),
+    ).status_code == 403
+
+    # 创建者换默认员工后仍可管(PUT 换默认 → 再 PUT/DELETE 均放行)
+    with Session(engine) as db:
+        db.add(
+            AgentProfile(
+                id="agent_2",
+                tenant_id="tenant_demo",
+                name="财务员工",
+                metadata_json={"owner_user_id": users["other"].id},
+            )
+        )
+        db.commit()
+    # agent_2 属于 other,owner 无管理权 → PUT 校验逐员工 manager 应 403(该校验不变)
+    assert client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"agents": [{"agent_id": "agent_3"}, {"agent_id": "agent_2"}]},
+        headers=_auth(users["owner"]),
+    ).status_code == 403
+
+    # 创建者 PUT 换默认员工为自己拥有的 agent_1 → 放行(绑定权限看 created_by,不看默认员工归属)
+    updated = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"agents": [{"agent_id": "agent_1", "is_default": True}]},
+        headers=_auth(users["owner"]),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["agent_id"] == "agent_1"
+
+    # 换完默认员工后创建者仍可管
+    assert client.get(
+        f"/api/enterprise/channels/{binding_id}/agents?tenant_id=tenant_demo",
+        headers=_auth(users["owner"]),
+    ).status_code == 200
+
+    # admin 恒可
+    assert client.delete(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        headers=_auth(users["admin"]),
+    ).status_code == 204

@@ -40,6 +40,13 @@ def test_channel_columns_migration_is_idempotent(monkeypatch, tmp_path) -> None:
 
     index_names = {index["name"] for index in inspect(engine).get_indexes("sessions")}
     assert "uq_sessions_agent_channel_extconv" in index_names
+    index_columns = next(
+        index["column_names"]
+        for index in inspect(engine).get_indexes("sessions")
+        if index["name"] == "uq_sessions_agent_channel_extconv"
+    )
+    # 索引已重建为四列:agent/channel/channel_binding_id/external_conv_id(binding 隔离)
+    assert index_columns == ["agent_id", "channel", "channel_binding_id", "external_conv_id"]
 
     with engine.begin() as conn:
         conn.execute(text("INSERT INTO sessions (id, tenant_id) VALUES ('s1', 't')"))
@@ -49,17 +56,23 @@ def test_channel_columns_migration_is_idempotent(monkeypatch, tmp_path) -> None:
         count = conn.execute(text("SELECT COUNT(*) FROM sessions")).scalar_one()
         assert count == 2
 
-        # 渠道会话锚点重复则违反唯一索引
+        # 同 (agent, channel, binding, conv) 重复则违反唯一索引;binding 不同则放行
         conn.execute(
             text(
-                "INSERT INTO sessions (id, tenant_id, agent_id, channel, external_conv_id) "
-                "VALUES ('c1', 't', 'a', 'wechat', 'wechat_p2p_x')"
+                "INSERT INTO sessions (id, tenant_id, agent_id, channel, channel_binding_id, external_conv_id) "
+                "VALUES ('c1', 't', 'a', 'wechat', 'chan_1', 'wechat_p2p_x')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO sessions (id, tenant_id, agent_id, channel, channel_binding_id, external_conv_id) "
+                "VALUES ('c3', 't', 'a', 'wechat', 'chan_2', 'wechat_p2p_x')"
             )
         )
         with pytest.raises(IntegrityError):
             conn.execute(
                 text(
-                    "INSERT INTO sessions (id, tenant_id, agent_id, channel, external_conv_id) "
-                    "VALUES ('c2', 't', 'a', 'wechat', 'wechat_p2p_x')"
+                    "INSERT INTO sessions (id, tenant_id, agent_id, channel, channel_binding_id, external_conv_id) "
+                    "VALUES ('c2', 't', 'a', 'wechat', 'chan_1', 'wechat_p2p_x')"
                 )
             )

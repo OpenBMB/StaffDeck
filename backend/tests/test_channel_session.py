@@ -19,7 +19,7 @@ def _test_engine(with_unique_index: bool = False):
             conn.execute(
                 text(
                     "CREATE UNIQUE INDEX uq_sessions_agent_channel_extconv "
-                    "ON sessions(agent_id, channel, external_conv_id)"
+                    "ON sessions(agent_id, channel, channel_binding_id, external_conv_id)"
                 )
             )
     return engine
@@ -108,6 +108,7 @@ def test_unique_index_rejects_duplicate_anchor() -> None:
                 agent_id=binding.agent_id,
                 channel="wechat",
                 external_conv_id="wechat_p2p_wxid_1",
+                channel_binding_id=binding.id,
             )
         )
         with pytest.raises(IntegrityError):

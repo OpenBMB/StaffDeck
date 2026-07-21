@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 from app.config import get_settings
 
@@ -64,11 +65,18 @@ def start_channel_services() -> None:
         logger.info("staffdeck_role=%s,渠道服务不启动", get_settings().staffdeck_role)
         return
     _ensure_adapters_registered()
+    from app.channels.service_intake import sweep_stale_inbound_events
     from app.channels.service_outbox import start_delivery_daemon
 
     get_wechat_poll_manager().start()
     get_wecom_stream_manager().start()
     start_delivery_daemon()
+    # 启动恢复:一次性清扫崩溃残留的 processing 入站事件(独立线程,不阻塞启动)
+    threading.Thread(
+        target=sweep_stale_inbound_events,
+        name="staffdeck-channel-intake-sweep",
+        daemon=True,
+    ).start()
 
 
 def stop_channel_services() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import timedelta
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -45,6 +46,8 @@ logger = logging.getLogger(__name__)
 
 ERROR_NOTICE_TEXT = "处理出错，请稍后再试。"
 _DEDUP_LOOKBACK = 50
+# 入站事件 processing 卡死阈值:超过视为崩溃残留,允许接管重跑
+STALE_PROCESSING_SECONDS = 120
 
 # 进程级会话串行锁：同一渠道会话的入站消息顺序处理（拉模式天然有序）
 _session_locks: dict[str, threading.Lock] = {}
@@ -69,6 +72,25 @@ def _user_message_with_client_turn_exists(db: Session, session_id: str, client_t
     ).all()
     for row in rows:
         if str((row.metadata_json or {}).get("client_turn_id") or "") == client_turn_id:
+            return True
+    return False
+
+
+def _client_turn_seen_in_conv(
+    db: Session,
+    binding: ChannelBinding,
+    external_conv_id: str,
+    client_turn_id: str,
+) -> bool:
+    """该外部会话(任意员工会话)是否已有此 client_turn_id 的用户消息(崩溃完成度判定)。"""
+    session_ids = db.exec(
+        select(ChatSession.id).where(
+            ChatSession.channel == binding.channel,
+            ChatSession.external_conv_id == external_conv_id,
+        )
+    ).all()
+    for session_id in session_ids:
+        if _user_message_with_client_turn_exists(db, session_id, client_turn_id):
             return True
     return False
 
@@ -329,8 +351,31 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
         try:
             db.commit()
         except IntegrityError:
-            # (channel, event_id) 唯一冲突 = 已处理过，直接返回（幂等）
+            # (binding_id, event_id) 唯一冲突:默认已处理跳过;
+            # 陈旧 processing(疑似崩溃残留且消息未落库)则接管重跑
             db.rollback()
+            stale = db.exec(
+                select(ChannelInboundEvent).where(
+                    ChannelInboundEvent.binding_id == binding.id,
+                    ChannelInboundEvent.event_id == inbound.event_id,
+                )
+            ).first()
+            if (
+                stale
+                and stale.status == "processing"
+                and stale.updated_at <= utc_now() - timedelta(seconds=STALE_PROCESSING_SECONDS)
+                and not _client_turn_seen_in_conv(db, binding, inbound.external_conv_id, inbound.event_id)
+            ):
+                logger.warning(
+                    "接管卡死的入站事件 binding=%s event=%s(status=%s,updated_at=%s)",
+                    binding.id,
+                    inbound.event_id,
+                    stale.status,
+                    stale.updated_at,
+                )
+                db.delete(stale)
+                db.commit()
+                return process_inbound(binding, inbound, db_engine=db_engine)
             return False
 
         # 指令拦截:早于身份解析与会话创建,指令消息不进 AgentLoop
@@ -447,3 +492,34 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
             db.add(event)
             db.commit()
             return True
+
+
+def sweep_stale_inbound_events(*, db_engine=None) -> int:
+    """启动恢复:接管超过阈值的陈旧 processing 事件并重新处理,返回接管数。
+
+    事件 payload 即原始帧,交给 process_inbound(其内部陈旧接管逻辑会删旧行重走)。
+    """
+    use_engine = db_engine or engine
+    taken = 0
+    with Session(use_engine) as db:
+        stale_rows = db.exec(
+            select(ChannelInboundEvent).where(
+                ChannelInboundEvent.status == "processing",
+                ChannelInboundEvent.updated_at <= utc_now() - timedelta(seconds=STALE_PROCESSING_SECONDS),
+            )
+        ).all()
+        candidates = [(row.binding_id, row.event_id, row.payload_json) for row in stale_rows]
+    for binding_id, event_id, payload in candidates:
+        with Session(use_engine) as db:
+            binding = db.get(ChannelBinding, binding_id)
+            if not binding or binding.status != "active":
+                continue
+            db.expunge(binding)
+        try:
+            if process_inbound(binding, payload or {}, db_engine=use_engine):
+                taken += 1
+        except Exception:
+            logger.exception("陈旧入站事件接管失败 binding=%s event=%s", binding_id, event_id)
+    if taken:
+        logger.info("启动恢复:接管重跑 %s 个卡死入站事件", taken)
+    return taken

@@ -56,6 +56,7 @@ def find_channel_session(
         select(ChatSession).where(
             ChatSession.agent_id == agent_id,
             ChatSession.channel == binding.channel,
+            ChatSession.channel_binding_id == binding.id,
             ChatSession.external_conv_id == external_conv_id,
         )
     ).first()

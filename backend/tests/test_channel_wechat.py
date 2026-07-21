@@ -699,3 +699,44 @@ def test_reconcile_does_not_restart_recovering_binding() -> None:
     assert ensured == []
     assert binding_id in manager.running_binding_ids()
     manager.stop_binding(binding_id)
+
+
+def test_cursor_advances_only_after_full_batch() -> None:
+    engine = _test_engine()
+    binding_id = _seed_poll_binding(engine)
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(
+                200,
+                json={"ret": 0, "msgs": [_text_message()], "get_updates_buf": "c1"},
+            )
+        return httpx.Response(200, json={"ret": -14, "errcode": -14})
+
+    import app.channels.service_intake as intake
+
+    attempts: list[dict] = []
+
+    def failing_process_inbound(binding, msg, *, db_engine=None):
+        attempts.append(msg)
+        raise RuntimeError("处理中途崩溃")
+
+    original = intake.process_inbound
+    intake.process_inbound = failing_process_inbound
+    try:
+        client = _client(handler)
+        manager = WeChatPollManager(
+            db_engine=engine, client_factory=lambda binding: client, recovery_cooldown_seconds=0.02
+        )
+        manager._poll_loop(binding_id, threading.Event())
+    finally:
+        intake.process_inbound = original
+
+    assert len(attempts) == 1
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        # 批内异常:游标不推进(下次重拉同批),c1 从未落库
+        assert binding.config_json.get("get_updates_buf", "") == ""
+        assert binding.status == "expired"

@@ -120,3 +120,28 @@ def test_username_sanitizes_and_truncates() -> None:
         assert " " not in user.username
         assert "/" not in user.username
         assert len(user.username) <= 64
+
+
+def test_long_external_id_username_uses_stable_hash_suffix() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        # 两个前缀相同、尾部不同的长 userid:截断时代会撞名,hash 后缀后不再冲突
+        shared = "corp_user_" + "x" * 55
+        id_a = shared + "aaaa"
+        id_b = shared + "bbbb"
+        user_a = resolve_or_provision_user(db, "tenant_demo", "wecom", id_a, None, "corpX")
+        user_b = resolve_or_provision_user(db, "tenant_demo", "wecom", id_b, None, "corpX")
+        db.commit()
+
+        assert user_a.id != user_b.id
+        assert user_a.username != user_b.username
+        assert len(user_a.username) <= 64
+        assert len(user_b.username) <= 64
+        assert ".." in user_a.username
+        # 稳定:同输入同输出
+        from app.channels.service_identity import channel_username
+
+        assert channel_username("wecom", id_a, "corpX") == user_a.username
+        # 短 id 行为不变(无 hash 后缀)
+        assert ".." not in channel_username("wecom", "zhangsan", "corpX")

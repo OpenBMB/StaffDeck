@@ -33,7 +33,8 @@ export default function WecomSetup({
     (typeof binding.bot_id === 'string' && binding.bot_id) ||
     (typeof binding.config_json?.bot_id === 'string' ? binding.config_json.bot_id : '');
   const configuredCorpId =
-    typeof binding.config_json?.corp_id === 'string' ? binding.config_json.corp_id : '';
+    (typeof binding.corp_id === 'string' && binding.corp_id) ||
+    (typeof binding.config_json?.corp_id === 'string' ? binding.config_json.corp_id : '');
   const [editing, setEditing] = useState(!configuredBotId);
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -48,9 +49,15 @@ export default function WecomSetup({
     }
     setSaving(true);
     try {
+      // 空值字段(主要是可选的 corp_id)不下发,避免把后端已有值清空
+      const payload: Record<string, string> = { tenant_id: TENANT_ID };
+      fields.forEach((field) => {
+        const value = String(values[field.key] || '').trim();
+        if (value) payload[field.key] = value;
+      });
       const updated = await api.post<ChannelBindingRead>(
         `/api/enterprise/channels/${binding.id}/wecom/credentials`,
-        { tenant_id: TENANT_ID, ...values },
+        payload,
       );
       notify.success('已保存');
       setValues({});

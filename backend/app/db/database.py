@@ -131,11 +131,19 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_target_json JSON"))
             if "channel_binding_id" not in session_columns:
                 conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_binding_id VARCHAR"))
-            # SQLite 唯一索引中 NULL 互不相等，web 会话（channel 为空）不受约束
+            # SQLite 唯一索引中 NULL 互不相等，web 会话（channel 为空）不受约束；
+            # 含 channel_binding_id 以隔离同企业多 Bot(老三列索引先 DROP 再按新四列重建)
+            session_index_columns = {
+                tuple(index["column_names"])
+                for index in inspector.get_indexes("sessions")
+                if index["name"] == "uq_sessions_agent_channel_extconv"
+            }
+            if ("agent_id", "channel", "external_conv_id") in session_index_columns:
+                conn.execute(text("DROP INDEX IF EXISTS uq_sessions_agent_channel_extconv"))
             conn.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_agent_channel_extconv "
-                    "ON sessions(agent_id, channel, external_conv_id)"
+                    "ON sessions(agent_id, channel, channel_binding_id, external_conv_id)"
                 )
             )
 

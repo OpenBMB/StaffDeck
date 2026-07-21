@@ -475,17 +475,16 @@ class WeChatPollManager:
                 if isinstance(timeout_ms, (int, float)) and timeout_ms > 0:
                     poll_timeout = min(max(float(timeout_ms) / 1000.0, 10.0), 60.0)
                 new_cursor = str(resp.get("get_updates_buf") or "")
-                if not self._persist_cursor(binding_id, new_cursor):
-                    return
                 from app.channels.service_intake import process_inbound
 
                 for msg in resp.get("msgs") or []:
                     if not isinstance(msg, dict) or is_self_message(msg, ilink_bot_id):
                         continue
-                    try:
-                        process_inbound(binding, msg, db_engine=self._engine)
-                    except Exception:
-                        logger.exception("微信入站消息处理失败 binding=%s", binding_id)
+                    # 批内异常外抛:游标不推进,下轮重拉整批,靠事件幂等去重
+                    process_inbound(binding, msg, db_engine=self._engine)
+                # 整批处理完才推进游标
+                if not self._persist_cursor(binding_id, new_cursor):
+                    return
             except Exception:
                 logger.exception("微信 poll 线程异常 binding=%s", binding_id)
                 stop_flag.wait(backoff)

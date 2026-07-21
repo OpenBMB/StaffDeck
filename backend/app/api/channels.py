@@ -108,7 +108,11 @@ def _get_binding(db: Session, tenant_id: str, binding_id: str) -> ChannelBinding
 
 
 def _ensure_binding_manager(db: Session, tenant_id: str, binding: ChannelBinding, current_user: User) -> None:
-    ensure_agent_scope_manager(db, tenant_id, binding.agent_id, current_user)
+    """渠道绑定管理权限:仅 admin 或绑定创建者;不随默认员工(binding.agent_id)漂移。"""
+    ensure_current_user_tenant(tenant_id, current_user)
+    if is_admin_user(current_user) or binding.created_by_user_id == current_user.id:
+        return
+    raise HTTPException(status_code=403, detail="Only the creator or administrator can manage this channel binding")
 
 
 @router.get("/meta", response_model=list[ChannelMetaRead])
@@ -279,7 +283,9 @@ def delete_my_identity_binding(
     if not identities:
         raise HTTPException(status_code=404, detail="Identity binding not found")
     for identity in identities:
-        unbind_external_identity(db, tenant_id, channel, identity.external_user_id)
+        unbind_external_identity(
+            db, tenant_id, channel, identity.external_user_id, identity.external_account_scope
+        )
     db.commit()
     return Response(status_code=204)
 
@@ -516,11 +522,13 @@ def save_wecom_credentials(
     binding.credentials_enc = encrypt_channel_secret(secret)
     config = dict(binding.config_json or {})
     config.update({"bot_id": bot_id, "bound_at": utc_now().isoformat()})
-    corp_id = (request.corp_id or "").strip()
-    if corp_id:
-        config["corp_id"] = corp_id
-    else:
-        config.pop("corp_id", None)
+    # corp_id 仅在显式传该字段时更新(空串=清除);不传则保留,避免重新配置时被静默清空
+    if "corp_id" in request.model_fields_set:
+        corp_id = (request.corp_id or "").strip()
+        if corp_id:
+            config["corp_id"] = corp_id
+        else:
+            config.pop("corp_id", None)
     binding.config_json = config
     binding.status = "active"
     binding.connected = False

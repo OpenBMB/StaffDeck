@@ -233,6 +233,7 @@ def test_sticky_rules_skip_classification() -> None:
                 agent_id="agent_xz",
                 channel="wechat",
                 external_conv_id="wechat_p2p_u1",
+                channel_binding_id=binding_id,
                 status="handoff",
             )
         )
@@ -273,6 +274,7 @@ def test_sop_active_uses_higher_threshold() -> None:
                 agent_id="agent_xz",
                 channel="wechat",
                 external_conv_id="wechat_p2p_u1",
+                channel_binding_id=binding_id,
                 active_skill_id="meeting_room_sop",
             )
         )
@@ -426,6 +428,7 @@ def test_intake_sop_event_carries_effective_threshold() -> None:
                 agent_id="agent_xz",
                 channel="wechat",
                 external_conv_id="wechat_p2p_user_ab12cd34@im.wechat",
+                channel_binding_id=binding_id,
                 active_skill_id="meeting_room_sop",
             )
         )
@@ -629,7 +632,11 @@ def test_put_auto_route_read_write() -> None:
     users = _seed_api_users(engine)
     with Session(engine) as db:
         binding = ChannelBinding(
-            tenant_id="tenant_demo", agent_id="agent_xz", channel="wechat", status="active"
+            tenant_id="tenant_demo",
+            agent_id="agent_xz",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_owner",
         )
         db.add(binding)
         db.commit()
@@ -662,5 +669,3 @@ def test_put_auto_route_read_write() -> None:
         headers=_auth(users["owner"]),
     )
     assert updated.json()["auto_route"] is False
-
-

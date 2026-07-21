@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import secrets
@@ -72,11 +73,17 @@ def external_identity_for_message(
 
 
 def channel_username(channel: str, external_id: str, account_scope: str = "") -> str:
-    cleaned = _USERNAME_UNSAFE.sub("_", external_id)[:48]
+    cleaned = _USERNAME_UNSAFE.sub("_", external_id)
     if account_scope:
         scope = _USERNAME_UNSAFE.sub("_", account_scope)[:24]
-        return f"{channel}_{scope}_{cleaned}"[:64]
-    return f"{channel}_{cleaned}"[:64]
+        readable = f"{channel}_{scope}_{cleaned}"
+    else:
+        readable = f"{channel}_{cleaned}"
+    if len(readable) <= 64:
+        return readable
+    # 超长时保留可读前缀(含 scope 段)+ 稳定 hash 后缀,前缀相同尾部不同的 id 不再撞名
+    digest = hashlib.sha256(external_id.encode("utf-8")).hexdigest()[:10]
+    return f"{readable[:52]}..{digest}"
 
 
 def find_channel_identity(
@@ -238,25 +245,37 @@ def migrate_scope_for_binding(
     old_scope: str,
     new_scope: str,
 ) -> dict[str, int]:
-    """绑定生效 scope 变化时的连续性迁移(同一事务内调用)。
+    """绑定生效 scope 变化时的连续性迁移(同一事务内调用,范围限定当前 binding)。
 
-    - channel_identities:同 tenant+channel 下旧 scope 的行改指新 scope;
-      冲突(新 scope 下已存在同 external_user_id 的行)时跳过该行并记 warning——
-      以新 scope 既有身份为准,不删不改,避免误伤另一套身份关联(最安全策略)。
-    - sessions / channel_conv_states:wecom conv 的旧 scope 前缀替换为新 scope。
+    - channel_identities:仅迁移"该 binding 会话引用到的账号集合"内的旧 scope 行;
+      冲突(新 scope 下已存在同 external_user_id 的行)时合并:该 binding 会话的
+      user_id 改指新 scope 既有账号(会话链接的记忆同步),删除旧 scope 行——
+      杜绝"身份没迁、会话已迁"的不一致,并记审计日志。
+    - sessions / channel_conv_states:仅当前 binding 的 wecom conv 旧前缀替换。
     返回各项迁移数量统计。
     """
     stats = {"identities": 0, "identities_conflicted": 0, "sessions": 0, "conv_states": 0}
     if old_scope == new_scope or binding.channel != "wecom":
         return stats
 
+    binding_sessions = db.exec(
+        select(ChatSession).where(
+            ChatSession.tenant_id == binding.tenant_id,
+            ChatSession.channel == binding.channel,
+            ChatSession.channel_binding_id == binding.id,
+        )
+    ).all()
+    referenced_user_ids = {row.user_id for row in binding_sessions if row.user_id}
+
     identities = db.exec(
         select(ChannelIdentity).where(
             ChannelIdentity.tenant_id == binding.tenant_id,
             ChannelIdentity.channel == binding.channel,
             ChannelIdentity.external_account_scope == old_scope,
+            ChannelIdentity.staffdeck_user_id.in_(referenced_user_ids),
         )
-    ).all()
+    ).all() if referenced_user_ids else []
+    merged_accounts: dict[str, str] = {}
     for row in identities:
         conflict = find_channel_identity(
             db, binding.tenant_id, binding.channel, row.external_user_id, new_scope
@@ -264,12 +283,15 @@ def migrate_scope_for_binding(
         if conflict:
             stats["identities_conflicted"] += 1
             logger.warning(
-                "scope 迁移冲突:external_user_id=%s 在新 scope=%s 已有身份记录,旧行(scope=%s)跳过 binding=%s",
+                "scope 迁移冲突合并:external_user_id=%s 旧 scope=%s 身份行删除,"
+                "会话改指新 scope 既有账号 %s binding=%s",
                 row.external_user_id,
-                new_scope,
                 old_scope,
+                conflict.staffdeck_user_id,
                 binding.id,
             )
+            merged_accounts[row.staffdeck_user_id] = conflict.staffdeck_user_id
+            db.delete(row)
             continue
         row.external_account_scope = new_scope
         row.updated_at = utc_now()
@@ -283,11 +305,14 @@ def migrate_scope_for_binding(
             select(ChatSession).where(
                 ChatSession.tenant_id == binding.tenant_id,
                 ChatSession.channel == binding.channel,
+                ChatSession.channel_binding_id == binding.id,
                 ChatSession.external_conv_id.like(f"{old_prefix}%"),
             )
         ).all()
         for row in sessions:
             row.external_conv_id = new_prefix + row.external_conv_id[len(old_prefix):]
+            if row.user_id in merged_accounts:
+                row.user_id = merged_accounts[row.user_id]
             db.add(row)
             stats["sessions"] += 1
         states = db.exec(
@@ -302,4 +327,21 @@ def migrate_scope_for_binding(
             row.updated_at = utc_now()
             db.add(row)
             stats["conv_states"] += 1
+
+    # 冲突合并的会话改了归属:会话链接的记忆同步到新账号,保持身份/数据一致
+    for old_user_id, new_user_id in merged_accounts.items():
+        session_ids = {row.id for row in binding_sessions if row.user_id == new_user_id}
+        if not session_ids:
+            continue
+        new_user = db.get(User, new_user_id)
+        memories = db.exec(
+            select(MemoryRecord).where(
+                MemoryRecord.user_id == old_user_id,
+                MemoryRecord.session_id.in_(session_ids),
+            )
+        ).all()
+        for row in memories:
+            row.user_id = new_user_id
+            row.username = new_user.username if new_user else row.username
+            db.add(row)
     return stats

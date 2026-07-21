@@ -415,7 +415,11 @@ def test_staging_prefers_channel_binding_id() -> None:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         # 绑定默认员工是行政,但会话属于财务(账号化路由后的状态)
         binding = ChannelBinding(
-            tenant_id="tenant_demo", agent_id="agent_xz", channel="wechat", status="active"
+            tenant_id="tenant_demo",
+            agent_id="agent_xz",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_owner",
         )
         db.add(binding)
         db.commit()
@@ -451,7 +455,11 @@ def test_staging_fallback_without_channel_binding_id() -> None:
     with Session(engine) as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         binding = ChannelBinding(
-            tenant_id="tenant_demo", agent_id="agent_xz", channel="wechat", status="active"
+            tenant_id="tenant_demo",
+            agent_id="agent_xz",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_owner",
         )
         db.add(binding)
         db.commit()
@@ -637,7 +645,11 @@ def test_get_agents_legacy_fallback() -> None:
     users = _seed_api_users(engine)
     with Session(engine) as db:
         binding = ChannelBinding(
-            tenant_id="tenant_demo", agent_id="agent_xz", channel="wechat", status="active"
+            tenant_id="tenant_demo",
+            agent_id="agent_xz",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_owner",
         )
         db.add(binding)
         db.commit()
@@ -657,7 +669,11 @@ def test_put_agents_replaces_mounts_and_normalizes_default() -> None:
     users = _seed_api_users(engine)
     with Session(engine) as db:
         binding = ChannelBinding(
-            tenant_id="tenant_demo", agent_id="agent_xz", channel="wechat", status="active"
+            tenant_id="tenant_demo",
+            agent_id="agent_xz",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_owner",
         )
         db.add(binding)
         db.commit()
@@ -708,7 +724,11 @@ def test_put_agents_validations() -> None:
     users = _seed_api_users(engine)
     with Session(engine) as db:
         binding = ChannelBinding(
-            tenant_id="tenant_demo", agent_id="agent_xz", channel="wechat", status="active"
+            tenant_id="tenant_demo",
+            agent_id="agent_xz",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_owner",
         )
         db.add(binding)
         db.commit()

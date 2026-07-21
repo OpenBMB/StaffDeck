@@ -44,6 +44,7 @@ class ChannelBindingRead(BaseModel):
     ilink_bot_id: Optional[str] = None
     baseurl: Optional[str] = None
     bot_id: Optional[str] = None
+    corp_id: Optional[str] = None
     session_expired: bool = False
     bound_at: Optional[str] = None
     created_by_user_id: Optional[str] = None
@@ -188,6 +189,7 @@ def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBinding
         ilink_bot_id=config.get("ilink_bot_id"),
         baseurl=config.get("baseurl"),
         bot_id=config.get("bot_id"),
+        corp_id=config.get("corp_id"),
         session_expired=bool(config.get("session_expired")),
         bound_at=str(bound_at) if bound_at else None,
         created_by_user_id=binding.created_by_user_id,

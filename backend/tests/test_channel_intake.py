@@ -23,6 +23,7 @@ from app.db.models import (
     Tenant,
     User,
     new_id,
+    utc_now,
 )
 
 
@@ -196,6 +197,7 @@ def test_crash_recovery_dedup_marks_done_without_rerun() -> None:
                 agent_id="agent_1",
                 channel="wechat",
                 external_conv_id="wechat_p2p_user_ab12cd34@im.wechat",
+                channel_binding_id=binding_id,
             )
         )
         db.add(
@@ -470,3 +472,88 @@ def test_typing_noop_for_inactive_binding() -> None:
 
     assert client.get_config_calls == []
     assert client.send_calls == []
+
+
+# ---------- 陈旧 processing 事件接管与启动 sweep ----------
+
+
+def _seed_stale_event(engine, binding_id: str, event_id: str, *, status: str, age_seconds: float, payload: dict | None = None) -> None:
+    from datetime import timedelta
+
+    with Session(engine) as db:
+        db.add(
+            ChannelInboundEvent(
+                tenant_id="tenant_demo",
+                binding_id=binding_id,
+                channel="wechat",
+                event_id=event_id,
+                payload_json=payload or {},
+                status=status,
+                updated_at=utc_now() - timedelta(seconds=age_seconds),
+            )
+        )
+        db.commit()
+
+
+def test_stale_processing_event_is_taken_over() -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_stale_event(engine, binding_id, "evt_stale", status="processing", age_seconds=300)
+    binding = _load_binding(engine, binding_id)
+
+    assert process_inbound(binding, _p2p_message("evt_stale"), db_engine=engine) is True
+    assert len(RecordingAgentLoop.calls) == 1
+    with Session(engine) as db:
+        events = db.exec(select(ChannelInboundEvent)).all()
+        assert len(events) == 1
+        assert events[0].status == "done"
+
+
+def test_fresh_processing_event_is_not_killed() -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_stale_event(engine, binding_id, "evt_fresh", status="processing", age_seconds=5)
+    binding = _load_binding(engine, binding_id)
+
+    assert process_inbound(binding, _p2p_message("evt_fresh"), db_engine=engine) is False
+    assert RecordingAgentLoop.calls == []
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "processing"
+
+
+def test_done_event_is_never_taken_over() -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_stale_event(engine, binding_id, "evt_done", status="done", age_seconds=300)
+    binding = _load_binding(engine, binding_id)
+
+    assert process_inbound(binding, _p2p_message("evt_done"), db_engine=engine) is False
+    assert RecordingAgentLoop.calls == []
+    with Session(engine) as db:
+        assert db.exec(select(ChannelInboundEvent)).one().status == "done"
+
+
+def test_startup_sweep_takes_over_stale_events() -> None:
+    from app.channels.service_intake import sweep_stale_inbound_events
+
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_stale_event(
+        engine,
+        binding_id,
+        "evt_sweep",
+        status="processing",
+        age_seconds=300,
+        payload=_p2p_message("evt_sweep"),
+    )
+    # 新鲜的与 done 的不应被接管
+    _seed_stale_event(engine, binding_id, "evt_fresh", status="processing", age_seconds=5)
+    _seed_stale_event(engine, binding_id, "evt_done", status="done", age_seconds=300)
+
+    taken = sweep_stale_inbound_events(db_engine=engine)
+    assert taken == 1
+    assert len(RecordingAgentLoop.calls) == 1
+    with Session(engine) as db:
+        by_event = {row.event_id: row.status for row in db.exec(select(ChannelInboundEvent)).all()}
+        assert by_event == {"evt_sweep": "done", "evt_fresh": "processing", "evt_done": "done"}
