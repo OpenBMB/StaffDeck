@@ -372,11 +372,11 @@ def test_client_for_binding_decrypts_credentials() -> None:
         channel="wechat",
         status="active",
         credentials_enc=encrypt_channel_secret("real_bot_token"),
-        config_json={"baseurl": "https://example.wechat.qq.com"},
+        config_json={"baseurl": "https://szilinkai.weixin.qq.com"},
     )
     client = WeChatClient.for_binding(binding)
     assert client.bot_token == "real_bot_token"
-    assert client.base_url == "https://example.wechat.qq.com"
+    assert client.base_url == "https://szilinkai.weixin.qq.com"
 
 
 def test_poll_loop_marks_expired_on_minus_14() -> None:
@@ -740,3 +740,50 @@ def test_cursor_advances_only_after_full_batch() -> None:
         # 批内异常:游标不推进(下次重拉同批),c1 从未落库
         assert binding.config_json.get("get_updates_buf", "") == ""
         assert binding.status == "expired"
+
+
+# ---------- 接入域名安全校验 ----------
+
+
+def test_validate_wechat_host_rules() -> None:
+    from app.channels.adapters.wechat import validate_wechat_host
+
+    assert validate_wechat_host("ilinkai.weixin.qq.com") is True
+    assert validate_wechat_host("szilinkai.weixin.qq.com") is True
+    assert validate_wechat_host("ILINKAI.WEIXIN.QQ.COM") is True
+    assert validate_wechat_host("ilinkai.weixin.qq.com:443") is True
+    assert validate_wechat_host("evil.com") is False
+    assert validate_wechat_host("weixin.qq.com.evil.com") is False
+    assert validate_wechat_host("") is False
+
+
+def test_sanitize_wechat_baseurl_normalizes_and_falls_back() -> None:
+    from app.channels.adapters.wechat import sanitize_wechat_baseurl
+
+    default = "https://ilinkai.weixin.qq.com"
+    # 合法域名:规范为 https://{host},丢弃 path/query
+    assert sanitize_wechat_baseurl("https://szilinkai.weixin.qq.com/x/y?a=1", default=default) == (
+        "https://szilinkai.weixin.qq.com"
+    )
+    assert sanitize_wechat_baseurl("http://ilinkai.weixin.qq.com", default=default) == default
+    # 非法:回退默认
+    assert sanitize_wechat_baseurl("https://evil.com", default=default) == default
+    assert sanitize_wechat_baseurl("https://weixin.qq.com.evil.com", default=default) == default
+    assert sanitize_wechat_baseurl("not-a-url", default=default) == default
+
+
+def test_for_binding_clamps_stored_illegal_baseurl() -> None:
+    binding = ChannelBinding(
+        tenant_id="t",
+        agent_id="a",
+        channel="wechat",
+        status="active",
+        credentials_enc=encrypt_channel_secret("real_bot_token"),
+        config_json={"baseurl": "https://evil.com"},
+    )
+    client = WeChatClient.for_binding(binding)
+    assert client.base_url == "https://ilinkai.weixin.qq.com"
+
+    binding.config_json = {"baseurl": "https://szilinkai.weixin.qq.com"}
+    client = WeChatClient.for_binding(binding)
+    assert client.base_url == "https://szilinkai.weixin.qq.com"

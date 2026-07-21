@@ -40,6 +40,34 @@ RECOVERY_COOLDOWN_SECONDS = 3600.0
 # 连续恢复失败达上限才判真过期(expired + 清游标 + 线程退出)
 RECOVERY_MAX_FAILURES = 5
 
+# 腾讯官方接入域名:业务请求携带 bot_token,redirect/baseurl 必须限制在官方域内
+WECHAT_ALLOWED_HOSTS = ("ilinkai.weixin.qq.com",)
+
+
+def validate_wechat_host(host: str) -> bool:
+    """校验微信接入域名:精确命中官方域或为 *.weixin.qq.com 子域(防 weixin.qq.com.evil.com 绕过)。"""
+    normalized = (host or "").strip().lower().split(":", 1)[0]
+    if not normalized:
+        return False
+    return normalized in WECHAT_ALLOWED_HOSTS or normalized.endswith(".weixin.qq.com")
+
+
+def sanitize_wechat_baseurl(url: str, *, default: str) -> str:
+    """把 redirect/confirmed 下发的 baseurl 规范为 https://{host}(丢弃 path/query);非法回退 default。"""
+    from urllib.parse import urlparse
+
+    host = ""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme in {"http", "https"}:
+            host = (parsed.hostname or "").lower()
+    except ValueError:
+        host = ""
+    if host and validate_wechat_host(host):
+        return f"https://{host}"
+    logger.warning("微信 baseurl 域名不受信任,回退默认接入地址: %s", url)
+    return default
+
 # 兼容旧名:统一内核类型后,微信入站消息即 ChannelInbound(channel="wechat")
 WeChatInbound = ChannelInbound
 
@@ -78,7 +106,11 @@ class WeChatClient:
     @classmethod
     def for_binding(cls, binding: ChannelBinding) -> "WeChatClient":
         config = dict(binding.config_json or {})
-        base_url = str(config.get("baseurl") or "").strip() or get_settings().wechat_ilink_base_url
+        # 防御纵深:存量 config 里的非法 baseurl 一律钳制回默认官方地址
+        base_url = sanitize_wechat_baseurl(
+            str(config.get("baseurl") or "").strip() or get_settings().wechat_ilink_base_url,
+            default=get_settings().wechat_ilink_base_url,
+        )
         token = ""
         if binding.credentials_enc:
             token = decrypt_channel_secret(binding.credentials_enc)

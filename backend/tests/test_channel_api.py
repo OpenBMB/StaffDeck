@@ -1165,3 +1165,98 @@ def test_binding_manager_not_drifted_by_default_agent() -> None:
         f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
         headers=_auth(users["admin"]),
     ).status_code == 204
+
+
+# ---------- redirect_host / baseurl 域名校验 ----------
+
+
+def test_scaned_but_redirect_rejects_untrusted_host(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: False)
+
+    for bad_host in ("evil.com", "weixin.qq.com.evil.com"):
+        _FakeWeChatClient.reset({"status": "scaned_but_redirect", "redirect_host": bad_host})
+        monkeypatch.setattr(channels_api, "WeChatClient", _FakeWeChatClient)
+        response = client.get(
+            f"/api/enterprise/channels/{binding_id}/wechat/qrcode-status",
+            params={"tenant_id": "tenant_demo", "qrcode": "qrc_1"},
+            headers=_auth(users["owner"]),
+        )
+        assert response.status_code == 502, bad_host
+        with Session(engine) as db:
+            # 非法域名不存不用
+            assert "qrcode_redirect_baseurl" not in (db.get(ChannelBinding, binding_id).config_json or {})
+
+
+def test_scaned_but_redirect_accepts_official_subdomain(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+    _FakeWeChatClient.reset(
+        {"status": "scaned_but_redirect", "redirect_host": "szilinkai.weixin.qq.com"}
+    )
+    monkeypatch.setattr(channels_api, "WeChatClient", _FakeWeChatClient)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: False)
+
+    response = client.get(
+        f"/api/enterprise/channels/{binding_id}/wechat/qrcode-status",
+        params={"tenant_id": "tenant_demo", "qrcode": "qrc_1"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    with Session(engine) as db:
+        config = db.get(ChannelBinding, binding_id).config_json
+        assert config["qrcode_redirect_baseurl"] == "https://szilinkai.weixin.qq.com"
+
+
+def test_confirmed_sanitizes_baseurl(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: False)
+
+    _FakeWeChatClient.reset(
+        {
+            "status": "confirmed",
+            "bot_token": "tok_x",
+            "ilink_bot_id": "bot@im.bot",
+            "baseurl": "https://evil.com/steal",
+        }
+    )
+    monkeypatch.setattr(channels_api, "WeChatClient", _FakeWeChatClient)
+    response = client.get(
+        f"/api/enterprise/channels/{binding_id}/wechat/qrcode-status",
+        params={"tenant_id": "tenant_demo", "qrcode": "qrc_1"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    with Session(engine) as db:
+        # 非法 baseurl 不落库,回退官方默认
+        assert db.get(ChannelBinding, binding_id).config_json["baseurl"] == (
+            "https://ilinkai.weixin.qq.com"
+        )
+
+    _FakeWeChatClient.reset(
+        {
+            "status": "confirmed",
+            "bot_token": "tok_y",
+            "ilink_bot_id": "bot@im.bot",
+            "baseurl": "https://szilinkai.weixin.qq.com/ilink/bot",
+        }
+    )
+    response = client.get(
+        f"/api/enterprise/channels/{binding_id}/wechat/qrcode-status",
+        params={"tenant_id": "tenant_demo", "qrcode": "qrc_2"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    with Session(engine) as db:
+        # 合法子域:规范化为 https://{host}
+        assert db.get(ChannelBinding, binding_id).config_json["baseurl"] == (
+            "https://szilinkai.weixin.qq.com"
+        )

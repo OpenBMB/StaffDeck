@@ -12,7 +12,7 @@ from app.channels import (
     start_binding_ingress,
     stop_binding_ingress,
 )
-from app.channels.adapters.wechat import WeChatClient
+from app.channels.adapters.wechat import WeChatClient, sanitize_wechat_baseurl, validate_wechat_host
 from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.channels.schema import (
     ChannelBindingAgentRead,
@@ -442,7 +442,12 @@ def poll_wechat_qrcode_status(
     binding = _get_binding(db, tenant_id, binding_id)
     _ensure_binding_manager(db, tenant_id, binding, current_user)
     redirect_baseurl = str((binding.config_json or {}).get("qrcode_redirect_baseurl") or "").strip()
-    client = WeChatClient(redirect_baseurl or get_settings().wechat_ilink_base_url)
+    client = WeChatClient(
+        sanitize_wechat_baseurl(
+            redirect_baseurl or get_settings().wechat_ilink_base_url,
+            default=get_settings().wechat_ilink_base_url,
+        )
+    )
     try:
         data = client.get_qrcode_status(qrcode, verify_code=verify_code)
     except Exception as exc:
@@ -450,15 +455,17 @@ def poll_wechat_qrcode_status(
         raise HTTPException(status_code=502, detail="轮询微信扫码状态失败，请重试") from exc
     status = str(data.get("status") or "wait")
     if status == "scaned_but_redirect":
-        # 扫码后被要求切换接入域名:记住 redirect_host,后续轮询走该域名
+        # 扫码后被要求切换接入域名:域名必须属于腾讯官方域,否则不存不用(防凭证外发)
         redirect_host = str(data.get("redirect_host") or "").strip()
-        if redirect_host:
-            config = dict(binding.config_json or {})
-            config["qrcode_redirect_baseurl"] = f"https://{redirect_host}"
-            binding.config_json = config
-            binding.updated_at = utc_now()
-            db.add(binding)
-            db.commit()
+        if not redirect_host or not validate_wechat_host(redirect_host):
+            logger.warning("微信 redirect_host 不受信任,拒绝使用 binding=%s host=%s", binding_id, redirect_host)
+            raise HTTPException(status_code=502, detail="微信返回的接入域名不受信任，请刷新二维码重试")
+        config = dict(binding.config_json or {})
+        config["qrcode_redirect_baseurl"] = f"https://{redirect_host.lower()}"
+        binding.config_json = config
+        binding.updated_at = utc_now()
+        db.add(binding)
+        db.commit()
         return ChannelQRCodeStatusRead(status=status)
     if status == "binded_redirect":
         # 该 bot 已绑定过本实例,旧凭证仍有效:直接复用激活
@@ -480,7 +487,10 @@ def poll_wechat_qrcode_status(
         {
             "ilink_bot_id": str(data.get("ilink_bot_id") or ""),
             "ilink_user_id": str(data.get("ilink_user_id") or ""),
-            "baseurl": str(data.get("baseurl") or "") or get_settings().wechat_ilink_base_url,
+            "baseurl": sanitize_wechat_baseurl(
+                str(data.get("baseurl") or "") or get_settings().wechat_ilink_base_url,
+                default=get_settings().wechat_ilink_base_url,
+            ),
             "get_updates_buf": "",
             "session_expired": False,
             "bound_at": utc_now().isoformat(),
