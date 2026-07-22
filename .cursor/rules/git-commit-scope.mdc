@@ -1,0 +1,11 @@
+---
+description: Git 提交范围约束
+alwaysApply: true
+---
+
+# Git 提交范围
+
+- `design-*.md` 是本地设计与评审材料，默认不得加入暂存区、commit、PR 或 push。
+- 执行 `git add` 时必须显式列出本次业务代码和测试文件，不使用 `git add .`、`git add -A` 或其他会顺带暂存无关文件的命令。
+- 提交前必须检查 `git diff --cached --name-only`，确认不存在 `design-*.md` 及其他无关改动。
+- 只有用户明确指定某一份设计文档需要提交时，才能把该文档加入提交范围。

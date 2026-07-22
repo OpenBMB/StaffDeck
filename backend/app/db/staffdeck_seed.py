@@ -152,6 +152,7 @@ def _seed_skills(
         ).first()
         existing = _seed_update_target(existing_by_id, existing_by_skill_id, source_id)
         content = _json_object(row.get("content_json"))
+        _apply_curated_skill_runtime_defaults(skill_id, content)
         content.update({"skill_id": skill_id, "name": row.get("name"), "version": row.get("version") or "1.0.0"})
         payload = {
             "tenant_id": TENANT_ID,
@@ -195,6 +196,7 @@ def _seed_skills(
         ).first()
         existing = _seed_update_target(existing_by_id, existing_by_version, source_id)
         content = _json_object(row.get("content_json"))
+        _apply_curated_skill_runtime_defaults(skill_id, content)
         content.update({"skill_id": skill_id, "name": row.get("name"), "version": version})
         payload = {
             "tenant_id": TENANT_ID,
@@ -279,6 +281,9 @@ def _seed_tools(
             select(Tool).where(Tool.tenant_id == TENANT_ID, Tool.name == name)
         ).first()
         existing = _seed_update_target(existing_by_id, existing_by_name, source_id)
+        config = _json_object(row.get("config_json"))
+        if name == "contract.archive_query":
+            config = {**config, "execution": {"timeout_seconds": 20}}
         payload = {
             "tenant_id": TENANT_ID,
             "name": name,
@@ -290,7 +295,7 @@ def _seed_tools(
             "url": row.get("url") or "",
             "headers_json": _json_object(row.get("headers_json")),
             "auth_json": _json_object(row.get("auth_json")),
-            "config_json": _json_object(row.get("config_json")),
+            "config_json": config,
             "input_schema": _json_object(row.get("input_schema")),
             "output_schema": _json_object(row.get("output_schema")),
             "allowed_skills_json": _json_list(row.get("allowed_skills_json")),
@@ -307,6 +312,20 @@ def _seed_tools(
         else:
             session.add(Tool(id=source_id, **payload))
             id_maps["tool"][source_id] = source_id
+
+
+def _apply_curated_skill_runtime_defaults(skill_id: str, content: JsonDict) -> None:
+    if skill_id != "leave_apply_v1":
+        return
+    nodes = content.get("nodes")
+    if not isinstance(nodes, list):
+        return
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("node_id") != "check_policy":
+            continue
+        scope = _json_object(node.get("knowledge_scope"))
+        scope.setdefault("query_fields", ["leave_type"])
+        node["knowledge_scope"] = scope
 
 
 def _seed_knowledge(

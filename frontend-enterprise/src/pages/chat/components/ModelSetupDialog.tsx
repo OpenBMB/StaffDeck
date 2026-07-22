@@ -10,6 +10,11 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
@@ -26,7 +31,7 @@ type ModelSetupDialogProps = {
 
 type ModelSetupForm = {
   name: string;
-  provider: string;
+  apiProtocol: 'openai_chat_completions' | 'anthropic_messages' | 'gemini_generate_content';
   baseUrl: string;
   model: string;
   apiKey: string;
@@ -41,7 +46,7 @@ type TestResult = {
 
 const INITIAL_FORM: ModelSetupForm = {
   name: '默认模型',
-  provider: 'openai_compatible',
+  apiProtocol: 'openai_chat_completions',
   baseUrl: '',
   model: '',
   apiKey: '',
@@ -60,6 +65,7 @@ export default function ModelSetupDialog({
   const [savedModelId, setSavedModelId] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult>(null);
+  const [availableProtocols, setAvailableProtocols] = useState<ModelSetupForm['apiProtocol'][]>(['openai_chat_completions']);
   const { t } = useI18n();
 
   useEffect(() => {
@@ -68,7 +74,10 @@ export default function ModelSetupDialog({
     setSavedModelId('');
     setTesting(false);
     setTestResult(null);
-  }, [open]);
+    void api
+      .get<{ protocols: ModelSetupForm['apiProtocol'][] }>(`/api/enterprise/model-configs/protocols?tenant_id=${encodeURIComponent(tenantId)}`)
+      .then((result) => setAvailableProtocols(result.protocols));
+  }, [open, tenantId]);
 
   const updateForm = <K extends keyof ModelSetupForm>(key: K, value: ModelSetupForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -77,10 +86,9 @@ export default function ModelSetupDialog({
 
   async function saveAndTest() {
     const name = form.name.trim();
-    const provider = form.provider.trim();
     const model = form.model.trim();
-    if (!name || !provider || !model) {
-      notify.error(t('请填写配置名称、Provider 和 Model'));
+    if (!name || !model) {
+      notify.error(t('请填写配置名称和 Model'));
       return;
     }
     const temperature = Number(form.temperature);
@@ -96,7 +104,7 @@ export default function ModelSetupDialog({
       const payload = {
         tenant_id: tenantId,
         name,
-        provider,
+        api_protocol: form.apiProtocol,
         base_url: form.baseUrl.trim() || undefined,
         api_key: form.apiKey || undefined,
         model,
@@ -110,20 +118,29 @@ export default function ModelSetupDialog({
         : await api.post<ModelConfigRead>('/api/enterprise/model-configs', payload);
       setSavedModelId(saved.id);
 
-      const result = await api.post<{ success: boolean; message: string; output?: string }>(
-        `/api/enterprise/model-configs/${saved.id}/test?tenant_id=${encodeURIComponent(tenantId)}`,
+      const result = await api.post<{
+        success: boolean;
+        message: string;
+        output?: string;
+        activated: boolean;
+        model?: ModelConfigRead;
+      }>(
+        `/api/enterprise/model-configs/${saved.id}/test?tenant_id=${encodeURIComponent(tenantId)}&activate_if_initial=true`,
       );
       if (!result.success) {
         setTestResult({ success: false, message: result.message ? t(result.message) : t('模型连接失败，请检查配置后重试。') });
         return;
       }
 
-      const activated = await api.put<ModelConfigRead>(`/api/enterprise/model-configs/${saved.id}`, {
-        ...payload,
-        api_key: undefined,
-        is_default: true,
-        enabled: true,
-      });
+      const activated = result.model?.enabled
+        ? result.model
+        : (await api.get<ModelConfigRead[]>(
+          `/api/enterprise/model-configs?tenant_id=${encodeURIComponent(tenantId)}`,
+        )).find((item) => item.enabled && item.is_default);
+      if (!activated) {
+        setTestResult({ success: false, message: t('模型测试通过，但首次激活未完成，请刷新后重试。') });
+        return;
+      }
       setTestResult({ success: true, message: result.output || (result.message ? t(result.message) : t('模型连接成功。')) });
       onConfigured(activated);
     } catch (error) {
@@ -154,13 +171,31 @@ export default function ModelSetupDialog({
             <LabeledField label="配置名称">
               <Input value={form.name} onChange={(event) => updateForm('name', event.target.value)} />
             </LabeledField>
-            <LabeledField label="Provider">
-              <Input value={form.provider} onChange={(event) => updateForm('provider', event.target.value)} />
+            <LabeledField label="API 协议">
+              <Select
+                value={form.apiProtocol}
+                onValueChange={(value) => updateForm('apiProtocol', value as ModelSetupForm['apiProtocol'])}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {availableProtocols.includes('openai_chat_completions') && (
+                    <SelectItem value="openai_chat_completions">OpenAI Chat Completions</SelectItem>
+                  )}
+                  {availableProtocols.includes('anthropic_messages') && (
+                    <SelectItem value="anthropic_messages">Anthropic Messages</SelectItem>
+                  )}
+                  {availableProtocols.includes('gemini_generate_content') && (
+                    <SelectItem value="gemini_generate_content">Gemini Generate Content</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
             </LabeledField>
             <LabeledField label="Base URL">
               <Input
                 value={form.baseUrl}
-                placeholder="例如 https://api.openai.com/v1"
+                placeholder={form.apiProtocol === 'openai_chat_completions'
+                  ? '例如 https://llm-center.modelbest.cn/llm/v1'
+                  : '例如 https://llm-center.modelbest.cn/llm'}
                 onChange={(event) => updateForm('baseUrl', event.target.value)}
               />
             </LabeledField>

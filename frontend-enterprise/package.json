@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "i18n:check": "node scripts/check-i18n.cjs",
+    "config:check": "node scripts/check-vite-env.cjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort"
   },

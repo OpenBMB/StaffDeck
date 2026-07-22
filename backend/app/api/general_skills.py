@@ -45,6 +45,7 @@ from app.general_skills import (
 )
 from app.general_skills.schema import GeneralSkillFile
 from app.general_skills.runner import GeneralSkillRunner
+from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.security.auth import get_current_user
 from app.security.permissions import (
     ensure_agent_scope_manager,
@@ -615,7 +616,7 @@ def run_general_skill_stream(
     _ensure_general_skill_visible(db, request.tenant_id, skill, request.agent_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
     skill_snapshot = _general_skill_snapshot(skill)
-    model_snapshot = _model_config_snapshot(model_config)
+    model_snapshot = model_config
 
     def stream_events() -> Iterator[str]:
         events: queue.Queue[tuple[str, dict[str, object]] | None] = queue.Queue()
@@ -784,7 +785,7 @@ def _get_default_model(db: Session, tenant_id: str) -> ModelConfig:
     ).first()
     if not model_config:
         raise HTTPException(status_code=400, detail="No default model config")
-    return model_config
+    return _model_runtime_config(db, tenant_id, model_config)
 
 
 def _get_request_model(
@@ -795,7 +796,7 @@ def _get_request_model(
     model_config = db.get(ModelConfig, model_config_id)
     if not model_config or model_config.tenant_id != tenant_id or not model_config.enabled:
         raise HTTPException(status_code=404, detail="Model config not found")
-    return model_config
+    return _model_runtime_config(db, tenant_id, model_config)
 
 
 def _general_skill_snapshot(row: GeneralSkill) -> SimpleNamespace:
@@ -814,14 +815,8 @@ def _general_skill_snapshot(row: GeneralSkill) -> SimpleNamespace:
     )
 
 
-def _model_config_snapshot(row: ModelConfig) -> SimpleNamespace:
-    return SimpleNamespace(
-        api_key_encrypted=row.api_key_encrypted,
-        base_url=row.base_url,
-        model=row.model,
-        temperature=row.temperature,
-        max_output_tokens=row.max_output_tokens,
-    )
+def _model_runtime_config(db: Session, tenant_id: str, row: ModelConfig):
+    return resolve_model_config_for_runtime(db, tenant_id, row.id)
 
 
 def _required_text(value: str | None, field: str) -> str:

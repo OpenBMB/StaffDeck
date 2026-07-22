@@ -1,4 +1,5 @@
 from collections.abc import Callable, Generator
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -35,7 +36,25 @@ engine: Engine = create_engine(database_url, echo=False, connect_args=connect_ar
 
 _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID = "20260712_default_model_output_tokens_8192"
 _LEGACY_DEFAULT_MODEL_OUTPUT_TOKENS = 2048
+_MODEL_API_PROTOCOLS_MIGRATION_ID = "20260722_model_api_protocols_v1"
 _DEFAULT_MODEL_OUTPUT_TOKENS = 8192
+_MODEL_API_PROTOCOL_COLUMNS = {
+    "extra_body_json",
+    "api_protocol",
+    "protocol_options_json",
+    "legacy_unmapped_options_json",
+    "trust_status",
+    "verified_at",
+    "verified_fingerprint",
+    "verification_attempt_id",
+    "verification_started_at",
+    "verification_attempt_status",
+    "verification_attempt_error_code",
+    "config_revision",
+    "security_revision",
+    "key_revision",
+}
+
 _CHANNEL_BINDING_AGENTS_BACKFILL_MIGRATION_ID = "20260718_channel_binding_agents_backfill"
 _USER_SOURCE_BACKFILL_MIGRATION_ID = "20260718_user_source_wechat_backfill"
 _CHANNEL_SCOPE_REBUILD_MIGRATION_ID = "20260719_channel_scope_rebuild"
@@ -71,24 +90,12 @@ def _migrate_sqlite_skill_schema() -> None:
     legacy_table = f"{legacy_key}_skills"
     legacy_id_column = f"{legacy_key}_id"
     legacy_id_prefix = f"{legacy_key}_"
-    with engine.begin() as conn:
+    with _sqlite_immediate_connection() as conn:
+        _migrate_model_api_protocols(conn, tables)
         _migrate_default_model_output_limit(conn, tables)
         _migrate_channel_binding_agents_backfill(conn, tables)
         _migrate_channel_scope_rebuild(conn, inspector, tables)
         _migrate_channel_bindings_multi(conn, inspector, tables)
-
-        if "model_configs" in tables:
-            model_config_columns = {
-                column["name"] for column in inspector.get_columns("model_configs")
-            }
-            if "extra_body_json" not in model_config_columns:
-                conn.execute(text("ALTER TABLE model_configs ADD COLUMN extra_body_json JSON"))
-                conn.execute(
-                    text(
-                        "UPDATE model_configs SET extra_body_json = '{}' "
-                        "WHERE extra_body_json IS NULL"
-                    )
-                )
 
         if "users" in tables:
             user_columns = {column["name"] for column in inspector.get_columns("users")}
@@ -298,6 +305,20 @@ def _migrate_sqlite_skill_schema() -> None:
             _normalize_agent_branch_rows(conn, tables)
             _seed_agent_branch_state(conn, inspector, tables)
             _sync_explicit_skill_tool_bindings(conn, tables)
+
+
+@contextmanager
+def _sqlite_immediate_connection():
+    conn = engine.connect()
+    try:
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _migrate_default_model_output_limit(conn, tables: set[str]) -> None:
@@ -673,6 +694,191 @@ def _migrate_channel_bindings_multi(conn, inspector, tables: set[str]) -> None:
         text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
         {"id": _CHANNEL_BINDINGS_MULTI_MIGRATION_ID},
     )
+
+
+def _migrate_model_api_protocols(conn, tables: set[str]) -> None:
+    if "model_configs" not in tables:
+        return
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _MODEL_API_PROTOCOLS_MIGRATION_ID},
+    ).first()
+    columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(model_configs)")).all()
+    }
+    if applied and _model_api_protocol_schema_complete(conn, columns):
+        return
+    repairing_applied_migration = bool(applied)
+    if "extra_body_json" not in columns:
+        conn.execute(text("ALTER TABLE model_configs ADD COLUMN extra_body_json JSON"))
+        conn.execute(text("UPDATE model_configs SET extra_body_json = '{}'"))
+        columns.add("extra_body_json")
+    column_ddl = {
+        "api_protocol": (
+            "ALTER TABLE model_configs ADD COLUMN api_protocol VARCHAR "
+            "NOT NULL DEFAULT 'openai_chat_completions'"
+        ),
+        "protocol_options_json": "ALTER TABLE model_configs ADD COLUMN protocol_options_json JSON",
+        "legacy_unmapped_options_json": (
+            "ALTER TABLE model_configs ADD COLUMN legacy_unmapped_options_json JSON"
+        ),
+        "trust_status": (
+            "ALTER TABLE model_configs ADD COLUMN trust_status VARCHAR "
+            "NOT NULL DEFAULT 'unverified'"
+        ),
+        "verified_at": "ALTER TABLE model_configs ADD COLUMN verified_at DATETIME",
+        "verified_fingerprint": (
+            "ALTER TABLE model_configs ADD COLUMN verified_fingerprint VARCHAR"
+        ),
+        "verification_attempt_id": (
+            "ALTER TABLE model_configs ADD COLUMN verification_attempt_id VARCHAR"
+        ),
+        "verification_started_at": (
+            "ALTER TABLE model_configs ADD COLUMN verification_started_at DATETIME"
+        ),
+        "verification_attempt_status": (
+            "ALTER TABLE model_configs ADD COLUMN verification_attempt_status VARCHAR "
+            "NOT NULL DEFAULT 'idle'"
+        ),
+        "verification_attempt_error_code": (
+            "ALTER TABLE model_configs ADD COLUMN verification_attempt_error_code VARCHAR"
+        ),
+        "config_revision": (
+            "ALTER TABLE model_configs ADD COLUMN config_revision INTEGER NOT NULL DEFAULT 1"
+        ),
+        "security_revision": (
+            "ALTER TABLE model_configs ADD COLUMN security_revision INTEGER NOT NULL DEFAULT 1"
+        ),
+        "key_revision": (
+            "ALTER TABLE model_configs ADD COLUMN key_revision INTEGER NOT NULL DEFAULT 1"
+        ),
+    }
+    for column_name, ddl in column_ddl.items():
+        if column_name not in columns:
+            conn.execute(text(ddl))
+
+    if not repairing_applied_migration:
+        rows = conn.execute(
+            text("SELECT id, enabled, extra_body_json FROM model_configs")
+        ).mappings().all()
+        for row in rows:
+            extra_body = _json_object(row.get("extra_body_json"))
+            thinking = extra_body.get("thinking")
+            protocol_options: dict[str, object] = {"openai_chat_completions": {}}
+            legacy_unmapped: dict[str, object] = {}
+            if _valid_chat_thinking_options(thinking):
+                protocol_options["openai_chat_completions"] = {"thinking": thinking}
+                legacy_unmapped = {
+                    key: value for key, value in extra_body.items() if key != "thinking"
+                }
+            elif extra_body:
+                legacy_unmapped = extra_body
+            conn.execute(
+                text(
+                    """
+                    UPDATE model_configs
+                    SET api_protocol = 'openai_chat_completions',
+                        protocol_options_json = :protocol_options,
+                        legacy_unmapped_options_json = :legacy_unmapped,
+                        trust_status = CASE WHEN enabled = 1 THEN 'legacy_trusted' ELSE 'unverified' END,
+                        verification_attempt_status = 'idle',
+                        config_revision = 1,
+                        security_revision = 1,
+                        key_revision = 1
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    "id": row["id"],
+                    "protocol_options": json.dumps(protocol_options, ensure_ascii=False),
+                    "legacy_unmapped": json.dumps(legacy_unmapped, ensure_ascii=False),
+                },
+            )
+
+    _normalize_model_default_rows(conn)
+    if repairing_applied_migration:
+        return
+
+
+def _normalize_model_default_rows(conn) -> None:
+    duplicate_defaults = conn.execute(
+        text(
+            """
+            SELECT tenant_id
+            FROM model_configs
+            WHERE is_default = 1 AND enabled = 1
+            GROUP BY tenant_id
+            HAVING COUNT(*) > 1
+            """
+        )
+    ).scalars().all()
+    for tenant_id in duplicate_defaults:
+        keep_id = conn.execute(
+            text(
+                """
+                SELECT id FROM model_configs
+                WHERE tenant_id = :tenant_id AND is_default = 1 AND enabled = 1
+                ORDER BY updated_at DESC, id ASC
+                LIMIT 1
+                """
+            ),
+            {"tenant_id": tenant_id},
+        ).scalar_one()
+        conn.execute(
+            text(
+                """
+                UPDATE model_configs SET is_default = 0
+                WHERE tenant_id = :tenant_id AND is_default = 1 AND id != :keep_id
+                """
+            ),
+            {"tenant_id": tenant_id, "keep_id": keep_id},
+        )
+    conn.execute(text("UPDATE model_configs SET is_default = 0 WHERE enabled = 0"))
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_model_configs_tenant_default
+            ON model_configs(tenant_id) WHERE is_default = 1
+            """
+        )
+    )
+    conn.execute(
+        text(
+            "INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"
+        ),
+        {"id": _MODEL_API_PROTOCOLS_MIGRATION_ID},
+    )
+
+
+def _model_api_protocol_schema_complete(conn, columns: set[str]) -> bool:
+    if not _MODEL_API_PROTOCOL_COLUMNS.issubset(columns):
+        return False
+    index = conn.execute(
+        text(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'index' AND name = 'uq_model_configs_tenant_default'"
+        )
+    ).scalar_one_or_none()
+    return bool(index and "WHERE is_default = 1" in index)
+
+
+def _valid_chat_thinking_options(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) - {"type", "clear_thinking"}:
+        return False
+    if value.get("type") not in {"enabled", "disabled"}:
+        return False
+    return "clear_thinking" not in value or isinstance(value["clear_thinking"], bool)
 
 
 def _migrate_skill_content(value: object, skill_id: str) -> dict[str, object]:

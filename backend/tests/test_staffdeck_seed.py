@@ -4,7 +4,7 @@ from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.api.agents import list_agents
 from app.api.knowledge_bases import list_knowledge_bases
-from app.db.models import AgentProfile, Tenant, User
+from app.db.models import AgentProfile, Skill, Tenant, Tool, User
 from app.db.seed import seed_demo_data
 from app.db import staffdeck_seed
 
@@ -88,6 +88,30 @@ def test_staffdeck_seed_exposes_selected_agents_with_knowledge_bases() -> None:
             assert len(scoped_knowledge) == expected_count
             assert all(item.document_count > 0 for item in scoped_knowledge)
             assert all(item.chunk_count > 0 for item in scoped_knowledge)
+
+
+def test_staffdeck_seed_applies_reliability_defaults_to_existing_rows() -> None:
+    with _seeded_session() as db:
+        archive_tool = db.exec(
+            select(Tool).where(
+                Tool.tenant_id == "tenant_demo",
+                Tool.name == "contract.archive_query",
+            )
+        ).one()
+        leave_skill = db.exec(
+            select(Skill).where(
+                Skill.tenant_id == "tenant_demo",
+                Skill.skill_id == "leave_apply_v1",
+            )
+        ).one()
+        policy_node = next(
+            node
+            for node in leave_skill.content_json.get("nodes", [])
+            if node.get("node_id") == "check_policy"
+        )
+
+        assert archive_tool.config_json["execution"] == {"timeout_seconds": 20}
+        assert policy_node["knowledge_scope"]["query_fields"] == ["leave_type"]
 
 
 def test_staffdeck_seed_uses_existing_admin_id_for_seeded_agents() -> None:

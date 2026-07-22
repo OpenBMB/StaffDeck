@@ -318,12 +318,27 @@ class ModelConfig(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     name: str
     provider: str = "openai_compatible"
+    api_protocol: str = Field(default="openai_chat_completions", index=True)
     base_url: Optional[str] = None
     api_key_encrypted: str
     model: str
     temperature: float = 0.2
     max_output_tokens: int = 8192
     extra_body_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    protocol_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    legacy_unmapped_options_json: dict[str, Any] = Field(
+        default_factory=dict, sa_column=Column(JSON)
+    )
+    trust_status: str = Field(default="unverified", index=True)
+    verified_at: Optional[datetime] = None
+    verified_fingerprint: Optional[str] = None
+    verification_attempt_id: Optional[str] = None
+    verification_started_at: Optional[datetime] = None
+    verification_attempt_status: str = Field(default="idle", index=True)
+    verification_attempt_error_code: Optional[str] = None
+    config_revision: int = 1
+    security_revision: int = 1
+    key_revision: int = 1
     is_default: bool = False
     enabled: bool = True
     created_at: datetime = Field(default_factory=utc_now)

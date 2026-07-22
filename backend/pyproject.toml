@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "FastAPI MVP for an enterprise Skill Agent Loop service"
 requires-python = ">=3.11"
 dependencies = [
+  "anthropic>=0.117.0,<0.118.0",
   "cryptography>=42.0.0",
   "fastapi>=0.111.0",
   "greenlet>=3.0.3",

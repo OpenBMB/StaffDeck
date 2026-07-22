@@ -110,6 +110,111 @@ def test_execute_builtin_mcp_tool_success() -> None:
         assert result.data == {"text": "hello mcp", "length": 9}
 
 
+def test_execution_policy_uses_tool_timeout_and_falls_back_for_invalid_values() -> None:
+    executor = object.__new__(ToolExecutor)
+    executor.settings = type("Settings", (), {"tool_timeout_seconds": 8.0})()
+
+    configured = Tool(
+        tenant_id="tenant_demo",
+        name="slow.lookup",
+        method="POST",
+        url="https://example.test/slow",
+        config_json={"execution": {"timeout_seconds": 20}},
+    )
+    invalid = Tool(
+        tenant_id="tenant_demo",
+        name="bad.lookup",
+        method="POST",
+        url="https://example.test/bad",
+        config_json={"execution": {"timeout_seconds": 999}},
+    )
+
+    assert executor._execution_policy(configured).timeout_seconds == 20
+    assert executor._execution_policy(invalid).timeout_seconds == 8
+
+
+def test_execute_http_tool_passes_configured_timeout_to_client(monkeypatch) -> None:
+    captured: dict[str, float] = {}
+
+    class FakeClient:
+        def __init__(self, *, timeout: float):
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def request(self, method, url, headers=None, json=None, params=None):
+            return httpx.Response(200, json={"ok": True}, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            Tool(
+                tenant_id="tenant_demo",
+                name="slow.lookup",
+                method="POST",
+                url="https://example.test/slow",
+                config_json={"execution": {"timeout_seconds": 20}},
+                enabled=True,
+            )
+        )
+        db.commit()
+
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="slow.lookup", arguments={})
+        )
+
+    assert result.success is True
+    assert captured["timeout"] == 20
+
+
+def test_execute_mcp_tool_passes_configured_timeout(monkeypatch) -> None:
+    captured: dict[str, float] = {}
+
+    def fake_execute(config, arguments, *, timeout_seconds, tool_name):
+        captured["timeout"] = timeout_seconds
+        return {"ok": True}
+
+    monkeypatch.setattr("app.tools.tool_executor.execute_mcp_tool", fake_execute)
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            MCPServer(
+                id="server_builtin_timeout",
+                tenant_id="tenant_demo",
+                name="builtin-timeout",
+                transport="builtin",
+            )
+        )
+        db.add(
+            Tool(
+                tenant_id="tenant_demo",
+                name="mcp.timeout.echo",
+                tool_type="mcp",
+                method="POST",
+                url="mcp://builtin.demo/echo",
+                mcp_server_id="server_builtin_timeout",
+                config_json={
+                    "tool": "echo",
+                    "execution": {"timeout_seconds": 20},
+                },
+                enabled=True,
+            )
+        )
+        db.commit()
+
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="mcp.timeout.echo", arguments={"text": "hi"})
+        )
+
+    assert result.success is True
+    assert captured["timeout"] == 20
+
+
 def test_execute_builtin_mcp_tool_unknown_config_returns_error() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))

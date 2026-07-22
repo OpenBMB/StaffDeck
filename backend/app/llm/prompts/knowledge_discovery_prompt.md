@@ -27,25 +27,71 @@
   "sample_arguments": {}
 }
 
-技能建议 payload 建议格式：
+技能建议 payload 建议格式。以下内容只示意 StaffDeck 字段结构，不是业务模板；
+所有名称、说明、字段和流程必须来自当前文档，不得复用示例业务内容：
 {
   "draft_skill": {
-    "skill_id": "...",
-    "name": "...",
+    "skill_id": "request.approval",
+    "name": "申请审批",
     "version": "1.0.0",
-    "business_domain": "...",
-    "description": "...",
-    "trigger_intents": [],
-    "user_utterance_examples": [],
-    "goal": [],
-    "required_info": [],
-    "response_rules": [],
-    "nodes": [],
-    "edges": [],
-    "start_node_id": "...",
-    "terminal_node_ids": []
+    "business_domain": "原文所属业务领域",
+    "description": "根据原文处理申请审批流程。",
+    "trigger_intents": ["提交申请"],
+    "user_utterance_examples": ["我要提交申请"],
+    "goal": ["完成申请审批"],
+    "required_info": ["申请信息", "申请材料"],
+    "slot_filling_policy": {},
+    "response_rules": ["明确反馈审批结果"],
+    "nodes": [
+      {
+        "node_id": "collect_documents",
+        "type": "collect_info",
+        "name": "收集申请材料",
+        "instruction": "向用户收集原文明示的申请信息和材料。",
+        "optional": false,
+        "condition": null,
+        "expected_user_info": ["申请信息", "申请材料"],
+        "allowed_actions": ["ask_user", "continue_flow"],
+        "knowledge_scope": {},
+        "retry_policy": {},
+        "metadata": {}
+      },
+      {
+        "node_id": "reply_result",
+        "type": "response",
+        "name": "反馈结果",
+        "instruction": "根据流程进展向用户反馈明确结果。",
+        "optional": false,
+        "condition": null,
+        "expected_user_info": [],
+        "allowed_actions": ["answer_user", "handoff_human"],
+        "knowledge_scope": {},
+        "retry_policy": {},
+        "metadata": {}
+      }
+    ],
+    "edges": [
+      {
+        "source_node_id": "collect_documents",
+        "next_node_id": "reply_result",
+        "condition": null,
+        "priority": 0,
+        "label": "材料齐全"
+      }
+    ],
+    "start_node_id": "collect_documents",
+    "terminal_node_ids": ["reply_result"],
+    "interruption_policy": {}
   }
 }
+
+技能图字段必须严格使用以下名称：
+- nodes 中每项必须包含 `node_id`、`type`、`name`、`instruction`，不要使用 `id`、`label`、`action` 代替。
+- edges 中每项必须包含 `source_node_id`、`next_node_id`，不要使用 `source`/`target` 或 `from`/`to` 代替。
+- 所有节点都必须能从 `start_node_id` 到达，且最终能到达 `terminal_node_ids` 中的至少一个结束节点。
+- 只能使用原文明示的业务流程和业务字段，不得为补齐结构编造业务步骤或工具。
+- `ask_user`、`continue_flow`、`answer_user`、`handoff_human` 是 StaffDeck 平台编排动作，可以按节点职责配置；它们不是文档中的业务事实。
+- `skill_id` 必须根据当前文档生成具体且有区分度的稳定标识，不得直接复用示例中的 `request.approval`。
 
 输出格式：
 {

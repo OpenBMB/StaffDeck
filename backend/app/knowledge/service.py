@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app import paths
@@ -27,6 +30,7 @@ from app.db.models import (
     utc_now,
 )
 from app.knowledge.parser import KnowledgeParseError, extract_text
+from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.knowledge.schema import (
     KnowledgeBucketRead,
     KnowledgeChunkRead,
@@ -43,7 +47,7 @@ from app.knowledge.okf import (
 from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
 from app.llm import LLMClient, LLMError
 from app.observability.spans import llm_operation, observed_span
-from app.skills.skill_schema import SkillCard
+from app.skills.skill_schema import SkillCard, SkillGraphEdge, SkillGraphNode
 
 
 PROMPT_DIR = paths.resource_dir() / "app" / "llm" / "prompts"
@@ -80,6 +84,7 @@ INGEST_STAGES: list[dict[str, Any]] = [
 ]
 
 INGEST_STAGE_BY_KEY = {stage["key"]: stage for stage in INGEST_STAGES}
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -91,6 +96,97 @@ class IngestPayload:
     knowledge_base_version_id: str | None = None
     title: str | None = None
     metadata: dict[str, Any] | None = None
+
+
+class KnowledgeDiscoveryValidationError(ValueError):
+    """Raised when a model-produced discovery cannot safely enter the review queue."""
+
+
+class KnowledgeDiscoveryConflictError(ValueError):
+    """Raised when a discovery cannot transition from pending to confirmed."""
+
+
+def validate_discovered_skill(payload: dict[str, Any]) -> SkillCard:
+    unknown_skill_fields = sorted(set(payload) - set(SkillCard.model_fields))
+    if unknown_skill_fields:
+        raise KnowledgeDiscoveryValidationError(
+            f"技能草稿包含未知字段：{', '.join(unknown_skill_fields)}。"
+        )
+    for index, node in enumerate(payload.get("nodes", [])):
+        if not isinstance(node, dict):
+            continue
+        unknown_node_fields = sorted(set(node) - set(SkillGraphNode.model_fields))
+        if unknown_node_fields:
+            raise KnowledgeDiscoveryValidationError(
+                f"技能草稿节点 nodes.{index} 包含未知字段：{', '.join(unknown_node_fields)}。"
+            )
+    for index, edge in enumerate(payload.get("edges", [])):
+        if not isinstance(edge, dict):
+            continue
+        unknown_edge_fields = sorted(set(edge) - set(SkillGraphEdge.model_fields))
+        if unknown_edge_fields:
+            raise KnowledgeDiscoveryValidationError(
+                f"技能草稿连线 edges.{index} 包含未知字段：{', '.join(unknown_edge_fields)}。"
+            )
+    try:
+        card = SkillCard.model_validate(payload)
+    except ValidationError as exc:
+        details = []
+        for error in exc.errors(include_url=False)[:5]:
+            field = ".".join(str(item) for item in error.get("loc", ())) or "skill"
+            details.append(f"{field}: {error.get('msg', '字段不合法')}")
+        suffix = f"：{'；'.join(details)}" if details else "。"
+        raise KnowledgeDiscoveryValidationError(
+            f"技能草稿不符合 StaffDeck SkillCard 格式{suffix}"
+        ) from exc
+
+    if not card.skill_id.strip() or not card.name.strip():
+        raise KnowledgeDiscoveryValidationError("技能草稿的 skill_id 和 name 不能为空。")
+    incomplete_nodes = [
+        node.node_id or "<empty>"
+        for node in card.nodes
+        if not node.node_id.strip() or not node.name.strip() or not node.instruction.strip()
+    ]
+    if incomplete_nodes:
+        raise KnowledgeDiscoveryValidationError(
+            f"技能草稿节点缺少 node_id、name 或 instruction：{', '.join(incomplete_nodes)}。"
+        )
+
+    node_ids = {node.node_id for node in card.nodes}
+    outgoing: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+    reverse: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+    for edge in card.edges:
+        outgoing[edge.source_node_id].add(edge.next_node_id)
+        reverse[edge.next_node_id].add(edge.source_node_id)
+
+    reachable: set[str] = set()
+    pending = [card.start_node_id]
+    while pending:
+        node_id = pending.pop()
+        if node_id in reachable:
+            continue
+        reachable.add(node_id)
+        pending.extend(outgoing[node_id] - reachable)
+    unreachable = sorted(node_ids - reachable)
+    if unreachable:
+        raise KnowledgeDiscoveryValidationError(
+            f"技能草稿包含无法从开始节点到达的节点：{', '.join(unreachable)}。"
+        )
+
+    reaches_terminal: set[str] = set()
+    pending = list(card.terminal_node_ids)
+    while pending:
+        node_id = pending.pop()
+        if node_id in reaches_terminal:
+            continue
+        reaches_terminal.add(node_id)
+        pending.extend(reverse[node_id] - reaches_terminal)
+    dead_ends = sorted(node_ids - reaches_terminal)
+    if dead_ends:
+        raise KnowledgeDiscoveryValidationError(
+            f"技能草稿包含无法到达结束节点的节点：{', '.join(dead_ends)}。"
+        )
+    return card
 
 
 class KnowledgeIngestCancelled(RuntimeError):
@@ -574,20 +670,35 @@ class KnowledgeService:
         )
 
     def confirm_discovery(self, suggestion: KnowledgeDiscoverySuggestion) -> dict[str, Any]:
+        if suggestion.status != "pending":
+            raise KnowledgeDiscoveryConflictError(
+                f"只有待处理建议可以确认，当前状态为 {suggestion.status}。"
+            )
         payload = suggestion.payload_json or {}
-        if suggestion.suggestion_type == "tool":
-            created = self._confirm_tool(suggestion, payload)
-        elif suggestion.suggestion_type == "skill":
-            created = self._confirm_skill(suggestion, payload)
-        else:
-            created = {"status": "confirmed"}
-        suggestion.status = "confirmed"
-        suggestion.updated_at = utc_now()
-        self.db.add(suggestion)
-        self.db.commit()
-        return created
+        try:
+            if suggestion.suggestion_type == "tool":
+                created = self._confirm_tool(suggestion, payload)
+            elif suggestion.suggestion_type == "skill":
+                created = self._confirm_skill(suggestion, payload)
+            else:
+                created = {"status": "confirmed"}
+            suggestion.status = "confirmed"
+            suggestion.updated_at = utc_now()
+            self.db.add(suggestion)
+            self.db.commit()
+            return created
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise KnowledgeDiscoveryConflictError("资源已存在或建议已被其他请求处理，请刷新后重试。") from exc
+        except Exception:
+            self.db.rollback()
+            raise
 
     def reject_discovery(self, suggestion: KnowledgeDiscoverySuggestion) -> None:
+        if suggestion.status != "pending":
+            raise KnowledgeDiscoveryConflictError(
+                f"只有待处理建议可以拒绝，当前状态为 {suggestion.status}。"
+            )
         suggestion.status = "rejected"
         suggestion.updated_at = utc_now()
         self.db.add(suggestion)
@@ -775,6 +886,29 @@ class KnowledgeService:
             if suggestion_type not in {"skill", "tool", "warning"}:
                 continue
             title = str(item.get("title") or "").strip() or "未命名建议"
+            discovery_payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+            status = "pending"
+            reason = _optional_str(item.get("reason"))
+            if suggestion_type == "skill":
+                skill_payload = (
+                    discovery_payload.get("draft_skill")
+                    if isinstance(discovery_payload.get("draft_skill"), dict)
+                    else discovery_payload
+                )
+                try:
+                    card = validate_discovered_skill(skill_payload)
+                except KnowledgeDiscoveryValidationError as exc:
+                    status = "invalid"
+                    reason = f"{reason + ' ' if reason else ''}草稿校验失败：{exc}"
+                    logger.warning(
+                        "Rejected invalid knowledge skill discovery tenant=%s document=%s title=%s: %s",
+                        tenant_id,
+                        document.id,
+                        title,
+                        exc,
+                    )
+                else:
+                    discovery_payload = {"draft_skill": card.model_dump(mode="json")}
             row = KnowledgeDiscoverySuggestion(
                 tenant_id=tenant_id,
                 knowledge_base_id=knowledge_base_id,
@@ -783,9 +917,10 @@ class KnowledgeService:
                 bucket_id=_optional_str(item.get("bucket_id")),
                 suggestion_type=suggestion_type,
                 title=title,
-                payload_json=item.get("payload") if isinstance(item.get("payload"), dict) else {},
+                status=status,
+                payload_json=discovery_payload,
                 source_refs_json=item.get("source_refs") if isinstance(item.get("source_refs"), list) else [],
-                reason=_optional_str(item.get("reason")),
+                reason=reason,
             )
             self.db.add(row)
         self.db.commit()
@@ -934,16 +1069,15 @@ class KnowledgeService:
     def _confirm_tool(self, suggestion: KnowledgeDiscoverySuggestion, payload: dict[str, Any]) -> dict[str, Any]:
         name = str(payload.get("name") or payload.get("tool_name") or "").strip()
         if not name:
-            raise ValueError("工具建议缺少 name。")
+            raise KnowledgeDiscoveryValidationError("工具建议缺少 name。")
+        url = str(payload.get("url") or "").strip()
+        if not url:
+            raise KnowledgeDiscoveryValidationError("工具建议缺少 url。")
         existing = self.db.exec(
             select(Tool).where(Tool.tenant_id == suggestion.tenant_id, Tool.name == name)
         ).first()
         if existing:
-            existing.enabled = True
-            existing.updated_at = utc_now()
-            self.db.add(existing)
-            self.db.commit()
-            return {"status": "existing", "tool_id": existing.id}
+            raise KnowledgeDiscoveryConflictError(f"工具名称 {name} 已存在，请修改建议后重试。")
         row = Tool(
             tenant_id=suggestion.tenant_id,
             name=name,
@@ -951,7 +1085,7 @@ class KnowledgeService:
             description=_optional_str(payload.get("description") or suggestion.reason),
             bucket=str(payload.get("bucket") or "知识自发现工具").strip() or "知识自发现工具",
             method=str(payload.get("method") or "POST").upper(),
-            url=str(payload.get("url") or ""),
+            url=url,
             headers_json=payload.get("headers") if isinstance(payload.get("headers"), dict) else {},
             auth_json=payload.get("auth") if isinstance(payload.get("auth"), dict) else {},
             input_schema=payload.get("input_schema") if isinstance(payload.get("input_schema"), dict) else {},
@@ -960,26 +1094,20 @@ class KnowledgeService:
             enabled=True,
         )
         self.db.add(row)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(row)
         return {"status": "created", "tool_id": row.id}
 
     def _confirm_skill(self, suggestion: KnowledgeDiscoverySuggestion, payload: dict[str, Any]) -> dict[str, Any]:
         skill_payload = payload.get("draft_skill") if isinstance(payload.get("draft_skill"), dict) else payload
-        card = SkillCard.model_validate(skill_payload)
+        card = validate_discovered_skill(skill_payload)
         existing = self.db.exec(
             select(Skill).where(Skill.tenant_id == suggestion.tenant_id, Skill.skill_id == card.skill_id)
         ).first()
         if existing:
-            existing.content_json = card.model_dump(mode="json")
-            existing.name = card.name
-            existing.version = card.version
-            existing.business_domain = card.business_domain
-            existing.description = card.description
-            existing.updated_at = utc_now()
-            self.db.add(existing)
-            self.db.commit()
-            return {"status": "updated", "skill_id": existing.id}
+            raise KnowledgeDiscoveryConflictError(
+                f"技能 ID {card.skill_id} 已存在，不能通过知识发现覆盖现有技能。"
+            )
         row = Skill(
             tenant_id=suggestion.tenant_id,
             skill_id=card.skill_id,
@@ -991,18 +1119,21 @@ class KnowledgeService:
             status="draft",
         )
         self.db.add(row)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(row)
         return {"status": "created", "skill_id": row.id}
 
     def _default_model_config(self, tenant_id: str) -> ModelConfig | None:
-        return self.db.exec(
+        row = self.db.exec(
             select(ModelConfig).where(
                 ModelConfig.tenant_id == tenant_id,
                 ModelConfig.is_default == True,  # noqa: E712 - SQLModel expression.
                 ModelConfig.enabled == True,  # noqa: E712
             )
         ).first()
+        if row is None:
+            return None
+        return resolve_model_config_for_runtime(self.db, tenant_id, row.id)
 
     def ensure_default_knowledge_base(self, tenant_id: str) -> KnowledgeBase:
         existing = self.db.exec(

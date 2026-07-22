@@ -185,6 +185,61 @@ def test_pending_tasks_are_queued_and_selected_explicitly_without_using_skill_st
     assert session.pending_tasks_json == []
 
 
+def test_continue_active_does_not_regress_existing_step_from_router_hint():
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="meeting_room_book",
+        active_step_id="confirm_booking",
+        slots_json={"date": "2026-07-22", "employee_id": "123456"},
+    )
+    runtime = SkillRuntime()
+
+    runtime.apply_decision(
+        session,
+        RouterDecision(
+            decision="continue_active",
+            target_skill_id="meeting_room_book",
+            target_step_id="collect_info",
+            user_intent="确认会议室预订",
+        ),
+    )
+
+    assert session.active_skill_id == "meeting_room_book"
+    assert session.active_step_id == "confirm_booking"
+    assert session.slots_json == {"date": "2026-07-22", "employee_id": "123456"}
+
+
+def test_start_new_task_clears_previous_awaiting_input():
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="meeting_room_book",
+        active_step_id="confirm_booking",
+        awaiting_input_json={
+            "skill_id": "meeting_room_book",
+            "step_id": "confirm_booking",
+            "expected_fields": ["confirmation"],
+            "question_summary": "请确认预订",
+        },
+        last_agent_question="请确认预订",
+    )
+
+    SkillRuntime().apply_decision(
+        session,
+        RouterDecision(
+            decision="start_new_task",
+            target_skill_id="purchase",
+            target_step_id="collect_product",
+        ),
+    )
+
+    assert session.active_skill_id == "purchase"
+    assert session.active_step_id == "collect_product"
+    assert session.awaiting_input_json is None
+    assert session.last_agent_question is None
+
+
 def test_runtime_never_persists_router_generated_message_content_slots():
     session = ChatSession(
         id="session_test",

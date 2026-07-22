@@ -22,6 +22,9 @@ cp .env.example .env
 
 Swagger UI: `http://localhost:5173/docs`
 
+The current production schema migration path supports SQLite only. Non-SQLite
+database URLs are not a supported deployment configuration.
+
 `CORS_ORIGINS` controls the allowed frontend origins. The root `scripts/dev_up.sh`
 sets the local single-port origin by default and can add a public tunnel origin with
 `PUBLIC_APP_ORIGIN`.

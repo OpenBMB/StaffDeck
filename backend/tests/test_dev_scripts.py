@@ -84,3 +84,10 @@ def test_powershell_wrappers_delegate_to_cross_platform_cli() -> None:
     for command in ("up", "down", "status"):
         script = (SCRIPTS_DIR / f"dev_{command}.ps1").read_text(encoding="utf-8")
         assert f'"$PSScriptRoot\\dev.ps1" {command}' in script
+
+
+def test_powershell_launcher_accepts_newer_python_3_versions() -> None:
+    script = (SCRIPTS_DIR / "dev.ps1").read_text(encoding="utf-8")
+
+    assert 'Prefix = @("-3.11")' in script
+    assert 'Prefix = @("-3")' in script

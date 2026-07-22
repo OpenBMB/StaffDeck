@@ -139,7 +139,8 @@ class SkillRuntime:
             session.active_skill_id = decision.target_skill_id
             session.active_step_id = decision.target_step_id
             session.slots_json = strip_router_generated_message_slots(decision.slot_hints)
-            _set_active_task_id(session, None)
+            session.awaiting_input_json = None
+            session.last_agent_question = None
             return
         if not session.active_skill_id and decision.target_skill_id:
             session.active_skill_id = decision.target_skill_id
@@ -148,8 +149,14 @@ class SkillRuntime:
         if decision.target_skill_id and decision.decision == "start_new_task":
             session.active_skill_id = decision.target_skill_id
             session.slots_json = strip_router_generated_message_slots(decision.slot_hints)
-            _set_active_task_id(session, None)
-        if decision.target_step_id:
+            session.awaiting_input_json = None
+            session.last_agent_question = None
+        preserve_active_step = (
+            decision.decision == "continue_active"
+            and bool(session.active_step_id)
+            and decision.target_skill_id == session.active_skill_id
+        )
+        if decision.target_step_id and not preserve_active_step:
             session.active_step_id = decision.target_step_id
 
     def _append_pending_tasks(self, session: ChatSession, tasks: list[PendingTask]) -> None:
@@ -332,8 +339,7 @@ def _activate_frame(session: ChatSession, frame: dict[str, Any]) -> None:
     session.summary = frame.get("summary")
     session.last_agent_question = frame.get("last_agent_question")
     awaiting_input = frame.get("awaiting_input")
-    if isinstance(awaiting_input, dict):
-        session.awaiting_input_json = dict(awaiting_input)
+    session.awaiting_input_json = dict(awaiting_input) if isinstance(awaiting_input, dict) else None
     _set_active_task_id(session, str(frame.get("task_id") or ""))
 
 
