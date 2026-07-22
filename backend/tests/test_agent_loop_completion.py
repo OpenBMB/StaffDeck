@@ -2,10 +2,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.agent_loop import GRAPH_PENDING_STEPS_SLOT, AgentLoop
+from app.core.agent_loop import (
+    GRAPH_PENDING_STEPS_SLOT,
+    _KNOWLEDGE_RESULTS_CACHE,
+    _KNOWLEDGE_STEPS_SEEN,
+    AgentLoop,
+)
 from app.core.skill_runtime import SkillRuntime
 from app.db.models import AgentEvent, ChatSession, Message, Skill, Tool
-from app.session.session_schema import AwaitingInput, PendingTask, RouterDecision, StepAgentResult
+from app.session.session_schema import (
+    AwaitingInput,
+    KnowledgeQuery,
+    PendingTask,
+    RouterDecision,
+    StepAgentResult,
+)
 from app.tools.tool_schema import ToolCall, ToolResult
 
 
@@ -622,6 +633,125 @@ def test_current_turn_task_frames_execute_in_order_without_pending_queue() -> No
     assert session.pending_tasks_json == []
     assert result is not None
     assert result.reply == "已完成\n\n已完成"
+
+
+def test_non_stream_followup_executes_knowledge_query_before_tool() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.runtime = SkillRuntime()
+    loop.events = FakeEvents()
+    loop.db = FakeDb()
+    loop._get_agent_loop_max_actions = lambda _tenant_id: 2
+    loop._drop_unavailable_skill_state = lambda *_args, **_kwargs: False
+    loop._should_record_runtime_event_after_prune = lambda *_args, **_kwargs: False
+    loop._should_run_step_agent = lambda *_args, **_kwargs: True
+    loop._get_reflection_max_rounds = lambda _tenant_id: 0
+    loop._run_reflection_rounds = lambda *args, **_kwargs: tuple(args[5:9])
+    loop._auto_progress_skill_graph = lambda *args, **_kwargs: tuple(args[5:9])
+    loop._generate_reply_segment = lambda *_args, **_kwargs: "已完成"
+    skill = _leave_policy_skill()
+    loop._get_active_skill = lambda *_args, **_kwargs: skill
+    calls: list[str] = []
+    loop._run_step_agent_with_context_repair = lambda *_args, **_kwargs: StepAgentResult(
+        knowledge_query=KnowledgeQuery(query="事假政策")
+    )
+
+    def execute_knowledge(*_args, **_kwargs):
+        calls.append("knowledge")
+        return StepAgentResult(
+            tool_call=ToolCall(name="hr.balance_query", arguments={"employee_id": "E1"})
+        )
+
+    def execute_tool(*args, **_kwargs):
+        calls.append("tool")
+        return args[5], ToolResult(tool_name="hr.balance_query", success=True, data={})
+
+    loop._execute_knowledge_query_cycle = execute_knowledge
+    loop._execute_tool_action_cycle = execute_tool
+    loop._finalize_execution_after_reply = lambda *_args, **_kwargs: "completed"
+    session = ChatSession(id="session_test", tenant_id="tenant_demo", pending_tasks_json=[])
+
+    result = loop._try_continue_pending_after_completion(
+        _request("继续请假"),
+        session,
+        _model_config(),
+        [skill],
+        [],
+        None,
+        [],
+        {},
+        "",
+        turn_task_frames=[
+            PendingTask(
+                decision="start_new_task",
+                target_skill_id="leave",
+                target_step_id="check_policy",
+                slot_hints={"leave_type": "事假"},
+            )
+        ],
+    )
+
+    assert result is not None
+    assert calls == ["knowledge", "tool"]
+
+
+def test_stream_followup_executes_knowledge_query_before_tool() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.runtime = SkillRuntime()
+    loop.events = FakeEvents()
+    loop.db = FakeDb()
+    loop._get_agent_loop_max_actions = lambda _tenant_id: 2
+    loop._drop_unavailable_skill_state = lambda *_args, **_kwargs: False
+    loop._should_record_runtime_event_after_prune = lambda *_args, **_kwargs: False
+    loop._should_run_step_agent = lambda *_args, **_kwargs: True
+    loop._get_reflection_max_rounds = lambda _tenant_id: 0
+    loop._run_reflection_rounds = lambda *args, **_kwargs: tuple(args[5:9])
+    loop._auto_progress_skill_graph = lambda *args, **_kwargs: tuple(args[5:9])
+    loop._skill_state_payload = lambda *_args, **_kwargs: {}
+    loop._runtime_stream_context = lambda *_args, **_kwargs: {}
+    skill = _leave_policy_skill()
+    loop._get_active_skill = lambda *_args, **_kwargs: skill
+    loop._run_step_agent_with_context_repair = lambda *_args, **_kwargs: StepAgentResult(
+        knowledge_query=KnowledgeQuery(query="事假政策")
+    )
+    calls: list[str] = []
+
+    def execute_knowledge(*_args, **_kwargs):
+        calls.append("knowledge")
+        return StepAgentResult(
+            tool_call=ToolCall(name="hr.balance_query", arguments={"employee_id": "E1"})
+        )
+
+    def execute_tool(*args, **_kwargs):
+        calls.append("tool")
+        return args[5], ToolResult(tool_name="hr.balance_query", success=True, data={})
+
+    loop._execute_knowledge_query_cycle = execute_knowledge
+    loop._execute_tool_action_cycle = execute_tool
+    loop._finalize_execution_after_reply = lambda *_args, **_kwargs: "completed"
+    session = ChatSession(id="session_test", tenant_id="tenant_demo", pending_tasks_json=[])
+    iterator = loop._stream_continue_pending_after_completion(
+        _request("继续请假"),
+        session,
+        _model_config(),
+        [skill],
+        [],
+        None,
+        [],
+        {},
+        "",
+        user_message_id="msg_user",
+        turn_task_frames=[
+            PendingTask(
+                decision="start_new_task",
+                target_skill_id="leave",
+                target_step_id="check_policy",
+                slot_hints={"leave_type": "事假"},
+            )
+        ],
+    )
+    list(iterator)
+
+    assert calls == ["knowledge", "tool"]
 
 
 def test_only_started_waiting_task_becomes_pending_while_later_turn_frame_still_runs() -> None:
@@ -1470,6 +1600,137 @@ def test_context_repair_does_not_auto_advance_satisfied_collect_step() -> None:
         event_type == "skill_step_changed" and payload.get("reason") == "expected_info_satisfied"
         for _, _, event_type, payload in loop.events.records
     )
+
+
+def test_required_knowledge_step_forces_query_before_advance() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="leave",
+        active_step_id="check_policy",
+        slots_json={"leave_type": "事假"},
+    )
+    result = StepAgentResult(
+        action="advance",
+        reply="根据公司政策可以申请。",
+        tool_call=ToolCall(name="hr.balance_query", arguments={"employee_id": "E1"}),
+        knowledge_results=[{"evidence_pack": [{"content": "伪造证据"}]}],
+        next_step_id="query_balance",
+        is_step_completed=True,
+        handoff=True,
+    )
+
+    normalized = loop._normalize_required_knowledge_step(
+        _request("我要请事假"), session, _leave_policy_skill(), result
+    )
+
+    assert normalized.action == "query_knowledge"
+    assert normalized.knowledge_query is not None
+    assert "leave_type: 事假" in normalized.knowledge_query.query
+    assert "我要请事假" not in normalized.knowledge_query.query
+    assert normalized.reply is None
+    assert normalized.tool_call is None
+    assert normalized.next_step_id is None
+    assert normalized.knowledge_results == []
+    assert normalized.is_step_completed is False
+    assert normalized.handoff is False
+    assert any(record[2] == "knowledge_query_forced" for record in loop.events.records)
+
+
+def test_required_knowledge_step_preserves_missing_field_question() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="leave",
+        active_step_id="check_policy",
+        slots_json={},
+    )
+    result = StepAgentResult(
+        action="advance",
+        reply="请问请假类型是什么？",
+        knowledge_query=KnowledgeQuery(query="通用请假政策"),
+        tool_call=ToolCall(name="hr.balance_query", arguments={}),
+        next_step_id="query_balance",
+        is_step_completed=True,
+        handoff=True,
+    )
+
+    normalized = loop._normalize_required_knowledge_step(
+        _request("我要请假"), session, _leave_policy_skill(), result
+    )
+
+    assert normalized is result
+    assert normalized.knowledge_query is None
+    assert normalized.reply == "请问请假类型是什么？"
+    assert normalized.action == "ask_user"
+    assert normalized.tool_call is None
+    assert normalized.next_step_id is None
+    assert normalized.is_step_completed is False
+    assert normalized.handoff is False
+
+
+def test_required_knowledge_step_keeps_model_query_but_removes_conflicts() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="leave",
+        active_step_id="check_policy",
+        slots_json={"leave_type": "年假"},
+    )
+    query = KnowledgeQuery(query="年假政策", query_type="policy_check")
+    result = StepAgentResult(
+        action="reply",
+        reply="先直接回答",
+        knowledge_query=query,
+        next_step_id="query_balance",
+    )
+
+    normalized = loop._normalize_required_knowledge_step(
+        _request("年假"), session, _leave_policy_skill(), result
+    )
+
+    assert normalized.knowledge_query is query
+    assert normalized.action == "query_knowledge"
+    assert normalized.reply is None
+    assert normalized.next_step_id is None
+    assert not any(record[2] == "knowledge_query_forced" for record in loop.events.records)
+
+
+def test_repeated_knowledge_step_reuses_turn_cache_without_new_search() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    loop._run_step_agent_once = lambda *args, **kwargs: StepAgentResult(  # type: ignore[method-assign]
+        action="reply", reply="已根据检索结果处理"
+    )
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="leave",
+        active_step_id="check_policy",
+    )
+    key = ("leave", "check_policy")
+    cached = {"query": {"query": "事假政策"}, "evidence_pack": [{"content": "事假无薪"}]}
+    _KNOWLEDGE_STEPS_SEEN.set({key})
+    _KNOWLEDGE_RESULTS_CACHE.set({key: cached})
+
+    result = loop._execute_knowledge_query_cycle(
+        _request("继续"),
+        session,
+        _leave_policy_skill(),
+        [],
+        _model_config(),
+        StepAgentResult(knowledge_query=KnowledgeQuery(query="事假政策")),
+    )
+
+    assert result.reply == "已根据检索结果处理"
+    assert result.knowledge_results == [cached]
+    assert not any(record[2] == "knowledge_query_started" for record in loop.events.records)
     assert not any(
         event_type == "step_agent_result_repaired" and payload.get("mode") == "schema_tool_call"
         for _, _, event_type, payload in loop.events.records
@@ -2187,6 +2448,7 @@ def _graph_content(
             "instruction": str(node.get("instruction") or ""),
             "expected_user_info": list(node.get("expected_user_info") or []),
             "allowed_actions": list(node.get("allowed_actions") or []),
+            "knowledge_scope": dict(node.get("knowledge_scope") or {}),
             "metadata": dict(node.get("metadata") or {}),
         }
         for node in nodes
@@ -2240,6 +2502,37 @@ def _purchase_skill() -> Skill:
                 },
             ],
             required_info=["user_name", "product_id", "quantity"],
+        ),
+        status="published",
+    )
+
+
+def _leave_policy_skill() -> Skill:
+    return Skill(
+        tenant_id="tenant_demo",
+        skill_id="leave",
+        name="请假申请",
+        content_json=_graph_content(
+            "leave",
+            "请假申请",
+            [
+                {
+                    "node_id": "check_policy",
+                    "type": "knowledge_query",
+                    "name": "检索假期政策",
+                    "instruction": "根据请假类型检索假期政策。",
+                    "expected_user_info": ["leave_type"],
+                    "allowed_actions": ["answer_user"],
+                    "knowledge_scope": {"query_fields": ["leave_type"]},
+                },
+                {
+                    "node_id": "query_balance",
+                    "type": "tool_call",
+                    "name": "查询余额",
+                    "allowed_actions": ["call_tool:hr.balance_query"],
+                },
+            ],
+            required_info=["leave_type"],
         ),
         status="published",
     )

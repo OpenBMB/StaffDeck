@@ -2,7 +2,13 @@ from app.core.agent_loop import AgentLoop
 from app.core.reflection_agent import ReflectionDecision
 from app.core.skill_runtime import SkillRuntime
 from app.db.models import ChatSession, ModelConfig, Skill, Tool
-from app.session.session_schema import ChatTurnRequest, RouterDecision, StepAgentResult, ToolCall
+from app.session.session_schema import (
+    ChatTurnRequest,
+    KnowledgeQuery,
+    RouterDecision,
+    StepAgentResult,
+    ToolCall,
+)
 from app.tools.tool_schema import ToolResult
 
 
@@ -361,6 +367,52 @@ def test_reflection_target_skill_is_scheduled_instead_of_skipped() -> None:
     )
 
 
+def test_router_reflection_retry_executes_knowledge_before_tool() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.db = _FakeDb()
+    loop.events = _FakeEvents()
+    loop.runtime = SkillRuntime()
+    skill = _knowledge_skill()
+    loop._get_active_skill = lambda *_args, **_kwargs: skill
+    loop._skill_version = lambda *_args, **_kwargs: None
+    loop._run_step_agent_with_context_repair = lambda *_args, **_kwargs: StepAgentResult(
+        knowledge_query=KnowledgeQuery(query="政策")
+    )
+    calls: list[str] = []
+
+    def execute_knowledge(*_args, **_kwargs):
+        calls.append("knowledge")
+        return StepAgentResult(
+            tool_call=ToolCall(name="policy.apply", arguments={"type": "annual"})
+        )
+
+    def execute_tool(*args, **_kwargs):
+        calls.append("tool")
+        return args[5], ToolResult(tool_name="policy.apply", success=True, data={})
+
+    loop._execute_knowledge_query_cycle = execute_knowledge
+    loop._execute_tool_action_cycle = execute_tool
+    session = ChatSession(id="session_test", tenant_id="tenant_demo")
+    decision = RouterDecision(
+        decision="start_new_task",
+        target_skill_id="knowledge_skill",
+        target_step_id="check_policy",
+    )
+
+    _active_skill, _decision, _step_result, tool_result = loop._retry_with_router_decision(
+        ChatTurnRequest(tenant_id="tenant_demo", message="继续"),
+        session,
+        [skill],
+        [],
+        decision,
+        ModelConfig(tenant_id="tenant_demo", name="demo", api_key_encrypted="", model="demo"),
+        {},
+    )
+
+    assert calls == ["knowledge", "tool"]
+    assert tool_result is not None and tool_result.success
+
+
 class _FakeDb:
     def commit(self) -> None:
         pass
@@ -434,6 +486,30 @@ def _skill(skill_id: str) -> Skill:
             "edges": [],
             "start_node_id": "start",
             "terminal_node_ids": ["start"],
+        },
+        status="published",
+    )
+
+
+def _knowledge_skill() -> Skill:
+    return Skill(
+        tenant_id="tenant_demo",
+        skill_id="knowledge_skill",
+        name="政策流程",
+        content_json={
+            "skill_id": "knowledge_skill",
+            "name": "政策流程",
+            "nodes": [
+                {
+                    "node_id": "check_policy",
+                    "type": "knowledge_query",
+                    "name": "检索政策",
+                    "allowed_actions": ["answer_user"],
+                }
+            ],
+            "edges": [],
+            "start_node_id": "check_policy",
+            "terminal_node_ids": ["check_policy"],
         },
         status="published",
     )
