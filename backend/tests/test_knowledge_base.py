@@ -8,7 +8,13 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import ensure_open_gallery_binding
-from app.api.knowledge import list_documents, search_knowledge, update_chunk, update_document
+from app.api.knowledge import (
+    confirm_discovery as confirm_discovery_api,
+    list_documents,
+    search_knowledge,
+    update_chunk,
+    update_document,
+)
 from app.api.knowledge_bases import knowledge_base_read
 from app.db.models import (
     AgentProfile,
@@ -29,7 +35,14 @@ from app.db.models import (
 )
 from app.knowledge.schema import KnowledgeChunkUpdateRequest, KnowledgeDocumentUpdateRequest, KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.knowledge.okf import search_concepts
-from app.knowledge.service import IngestPayload, KnowledgeService
+from app.knowledge.service import (
+    IngestPayload,
+    KnowledgeDiscoveryConflictError,
+    KnowledgeDiscoveryValidationError,
+    KnowledgeService,
+    validate_discovered_skill,
+)
+from app.llm import LLMClient
 from app.observability.spans import bind_span_sink
 from app.skills.skill_schema import SkillCard
 
@@ -821,6 +834,394 @@ def test_confirm_discovery_is_required_before_tool_or_skill_enters_runtime() -> 
         assert result["status"] == "created"
         assert db.exec(select(Tool).where(Tool.name == "member.benefit_reconcile")).first()
         assert db.exec(select(Skill)).all() == []
+
+
+def test_confirm_discovery_rejects_tool_without_url() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        suggestion = KnowledgeDiscoverySuggestion(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_1",
+            suggestion_type="tool",
+            title="缺少地址的工具",
+            payload_json={"name": "missing.url"},
+        )
+        db.add(suggestion)
+        db.commit()
+
+        with pytest.raises(KnowledgeDiscoveryValidationError, match="缺少 url"):
+            KnowledgeService(db).confirm_discovery(suggestion)
+
+        db.refresh(suggestion)
+        assert suggestion.status == "pending"
+        assert db.exec(select(Tool)).all() == []
+
+
+def test_confirm_discovery_api_returns_422_for_invalid_skill() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        user = User(
+            id="user_admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            role="admin",
+            password_hash="unused",
+        )
+        suggestion = KnowledgeDiscoverySuggestion(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_1",
+            suggestion_type="skill",
+            title="错误格式的技能",
+            payload_json={"draft_skill": {"skill_id": "invalid", "name": "错误格式"}},
+        )
+        db.add(user)
+        db.add(suggestion)
+        db.commit()
+
+        with pytest.raises(Exception) as exc_info:
+            confirm_discovery_api(suggestion.id, "tenant_demo", db, user)
+
+        assert getattr(exc_info.value, "status_code", None) == 422
+        assert "StaffDeck SkillCard" in str(getattr(exc_info.value, "detail", ""))
+
+
+def test_confirm_discovery_api_returns_409_for_non_pending_status() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        user = User(
+            id="user_admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            role="admin",
+            password_hash="unused",
+        )
+        suggestion = KnowledgeDiscoverySuggestion(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_1",
+            suggestion_type="warning",
+            title="已处理建议",
+            status="confirmed",
+        )
+        db.add(user)
+        db.add(suggestion)
+        db.commit()
+
+        with pytest.raises(Exception) as exc_info:
+            confirm_discovery_api(suggestion.id, "tenant_demo", db, user)
+
+        assert getattr(exc_info.value, "status_code", None) == 409
+        assert "只有待处理建议可以确认" in str(getattr(exc_info.value, "detail", ""))
+
+
+def test_confirm_discovery_rejects_noncanonical_skill_graph() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        suggestion = KnowledgeDiscoverySuggestion(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_1",
+            suggestion_type="skill",
+            title="差旅报销审批",
+            payload_json={
+                "draft_skill": {
+                    "skill_id": "expense.travel_approval",
+                    "name": "差旅报销审批",
+                    "nodes": [
+                        {"id": "start", "type": "start", "label": "开始"},
+                        {"id": "approve", "type": "action", "label": "主管审批", "description": "核对单据"},
+                        {"id": "end", "type": "terminal", "label": "完成"},
+                    ],
+                    "edges": [
+                        {"from": "start", "to": "approve"},
+                        {"source": "approve", "target": "end"},
+                    ],
+                    "start_node_id": "start",
+                    "terminal_node_ids": ["end"],
+                }
+            },
+        )
+        db.add(suggestion)
+        db.commit()
+        db.refresh(suggestion)
+
+        with pytest.raises(KnowledgeDiscoveryValidationError, match="nodes.0.*id, label"):
+            KnowledgeService(db).confirm_discovery(suggestion)
+
+        db.refresh(suggestion)
+        assert suggestion.status == "pending"
+        assert db.exec(select(Skill)).all() == []
+
+
+def test_confirm_discovery_does_not_overwrite_existing_skill() -> None:
+    card = SkillCard(
+        skill_id="expense.travel_approval",
+        name="知识发现技能",
+        nodes=[
+            {
+                "node_id": "reply",
+                "type": "response",
+                "name": "反馈结果",
+                "instruction": "反馈结果。",
+            }
+        ],
+        edges=[],
+        start_node_id="reply",
+        terminal_node_ids=["reply"],
+    )
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        existing = Skill(
+            tenant_id="tenant_demo",
+            skill_id=card.skill_id,
+            name="生产技能",
+            version="2.0.0",
+            content_json={**card.model_dump(mode="json"), "name": "生产技能", "version": "2.0.0"},
+            status="published",
+        )
+        suggestion = KnowledgeDiscoverySuggestion(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_1",
+            suggestion_type="skill",
+            title=card.name,
+            payload_json={"draft_skill": card.model_dump(mode="json")},
+        )
+        db.add(existing)
+        db.add(suggestion)
+        db.commit()
+
+        with pytest.raises(KnowledgeDiscoveryConflictError, match="不能通过知识发现覆盖"):
+            KnowledgeService(db).confirm_discovery(suggestion)
+
+        db.refresh(existing)
+        db.refresh(suggestion)
+        assert existing.name == "生产技能"
+        assert existing.version == "2.0.0"
+        assert existing.status == "published"
+        assert suggestion.status == "pending"
+
+
+@pytest.mark.parametrize("status", ["confirmed", "rejected", "invalid"])
+def test_confirm_discovery_only_allows_pending_status(status: str) -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        suggestion = KnowledgeDiscoverySuggestion(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_1",
+            suggestion_type="warning",
+            title="状态检查",
+            status=status,
+        )
+        db.add(suggestion)
+        db.commit()
+
+        with pytest.raises(KnowledgeDiscoveryConflictError, match="只有待处理建议可以确认"):
+            KnowledgeService(db).confirm_discovery(suggestion)
+
+        db.refresh(suggestion)
+        assert suggestion.status == status
+
+
+def test_confirm_discovery_rolls_back_resource_when_status_commit_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        suggestion = KnowledgeDiscoverySuggestion(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id="doc_1",
+            suggestion_type="tool",
+            title="会员权益核对",
+            payload_json={"name": "member.benefit_reconcile", "url": "/api/mock/member"},
+        )
+        db.add(suggestion)
+        db.commit()
+        original_commit = db.commit
+        monkeypatch.setattr(db, "commit", lambda: (_ for _ in ()).throw(RuntimeError("commit failed")))
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            KnowledgeService(db).confirm_discovery(suggestion)
+
+        monkeypatch.setattr(db, "commit", original_commit)
+        assert db.exec(select(Tool).where(Tool.name == "member.benefit_reconcile")).first() is None
+        persisted = db.get(KnowledgeDiscoverySuggestion, suggestion.id)
+        assert persisted is not None
+        assert persisted.status == "pending"
+
+
+def test_discovered_skill_rejects_unknown_fields_instead_of_dropping_them() -> None:
+    payload = {
+        "skill_id": "expense.travel_approval",
+        "name": "差旅报销审批",
+        "nodes": [
+            {
+                "node_id": "start",
+                "type": "response",
+                "name": "反馈结果",
+                "instruction": "反馈结果。",
+                "prompt": "这个字段不能被静默丢弃",
+            }
+        ],
+        "edges": [],
+        "start_node_id": "start",
+        "terminal_node_ids": ["start"],
+    }
+
+    with pytest.raises(KnowledgeDiscoveryValidationError, match="nodes.0.*prompt"):
+        validate_discovered_skill(payload)
+
+
+def test_discovered_skill_requires_connected_start_to_terminal_graph() -> None:
+    payload = {
+        "skill_id": "expense.travel_approval",
+        "name": "差旅报销审批",
+        "nodes": [
+            {
+                "node_id": "start",
+                "type": "collect_info",
+                "name": "收集材料",
+                "instruction": "收集材料。",
+            },
+            {
+                "node_id": "reply",
+                "type": "response",
+                "name": "反馈结果",
+                "instruction": "反馈结果。",
+                "allowed_actions": ["answer_user"],
+            },
+            {
+                "node_id": "orphan",
+                "type": "response",
+                "name": "孤立节点",
+                "instruction": "处理孤立步骤。",
+            },
+        ],
+        "edges": [{"source_node_id": "start", "next_node_id": "reply"}],
+        "start_node_id": "start",
+        "terminal_node_ids": ["reply"],
+    }
+
+    with pytest.raises(KnowledgeDiscoveryValidationError, match="无法从开始节点到达"):
+        validate_discovered_skill(payload)
+
+    payload["edges"].append({"source_node_id": "start", "next_node_id": "orphan"})
+    with pytest.raises(KnowledgeDiscoveryValidationError, match="无法到达结束节点"):
+        validate_discovered_skill(payload)
+
+
+def test_discovery_only_marks_valid_skill_as_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    valid_skill = {
+        "skill_id": "expense.travel_approval",
+        "name": "差旅报销审批",
+        "nodes": [
+            {
+                "node_id": "collect",
+                "type": "collect_info",
+                "name": "收集材料",
+                "instruction": "收集报销单据。",
+            },
+            {
+                "node_id": "reply",
+                "type": "response",
+                "name": "反馈结果",
+                "instruction": "反馈审批结果。",
+                "allowed_actions": ["answer_user", "handoff_human"],
+            },
+        ],
+        "edges": [{"source_node_id": "collect", "next_node_id": "reply"}],
+        "start_node_id": "collect",
+        "terminal_node_ids": ["reply"],
+    }
+    model_output = {
+        "discoveries": [
+            {
+                "suggestion_type": "skill",
+                "title": "差旅报销审批",
+                "reason": "原文包含完整流程。",
+                "payload": {"draft_skill": valid_skill},
+            },
+            {
+                "suggestion_type": "skill",
+                "title": "错误格式的技能",
+                "reason": "模型使用了非标准字段。",
+                "payload": {
+                    "draft_skill": {
+                        **valid_skill,
+                        "nodes": [{"id": "collect", "label": "收集材料"}],
+                    }
+                },
+            },
+        ]
+    }
+
+    monkeypatch.setattr(LLMClient, "__init__", lambda self, model_config: None)
+    monkeypatch.setattr(LLMClient, "generate_json", lambda self, prompt, payload: model_output)
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        db.add(
+            ModelConfig(
+                id="model_demo",
+                tenant_id="tenant_demo",
+                name="测试模型",
+                api_key_encrypted="unused",
+                model="test",
+                is_default=True,
+            )
+        )
+        document = KnowledgeDocument(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            filename="expense.md",
+            file_type="md",
+            title="报销制度",
+        )
+        bucket = KnowledgeBucket(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            bucket_key="expense",
+            title="差旅报销",
+            summary="差旅报销审批流程",
+            metadata_json={"content": "提交材料后审批并反馈结果。"},
+        )
+        job = KnowledgeIngestJob(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            filename="expense.md",
+            status="running",
+            stage="discovering",
+        )
+        db.add(document)
+        db.add(bucket)
+        db.add(job)
+        db.commit()
+
+        KnowledgeService(db)._discover_from_document(  # noqa: SLF001
+            "tenant_demo", "kb_demo", document, [bucket], job
+        )
+
+        rows = db.exec(select(KnowledgeDiscoverySuggestion)).all()
+        assert {row.title: row.status for row in rows} == {
+            "差旅报销审批": "pending",
+            "错误格式的技能": "invalid",
+        }
+        valid_row = next(row for row in rows if row.status == "pending")
+        stored_skill = valid_row.payload_json["draft_skill"]
+        assert stored_skill["nodes"][0]["node_id"] == "collect"
+        assert stored_skill["nodes"][0]["expected_user_info"] == []
 
 
 def _b64(text: str) -> str:

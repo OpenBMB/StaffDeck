@@ -1,6 +1,7 @@
 import pytest
 
 from app.llm.client import LLMClient, LLMError, _thinking_mode_for_model
+from app.llm.protocol_drivers import ChatCompletionsDriver
 from app.llm.output_policy import operation_output_tokens
 from app.llm.stage_protocol import TURN_STAGE_MESSAGES_KEY, stage_payload
 from app.llm.schemas import ModelConfigCreateRequest
@@ -68,11 +69,41 @@ def test_llm_client_uses_600_second_timeout(monkeypatch):
 
     assert client.timeout_seconds == 600.0
     assert captured["timeout"] == 600.0
+    assert captured["base_url"] == "https://example.test/v1"
     assert client.extra_body == {
         "thinking": {"type": "disabled"},
         "do_sample": False,
     }
     assert client.thinking_mode == "disabled"
+
+
+def test_llm_client_preserves_custom_openai_base_url(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "api-key")
+    monkeypatch.setattr(
+        "app.llm.client.OpenAI",
+        lambda **kwargs: captured.update(kwargs) or _FakeOpenAIClient(),
+    )
+    monkeypatch.setattr(
+        "app.llm.client.get_settings",
+        lambda: type("Settings", (), {"model_api_timeout_seconds": 30.0})(),
+    )
+    config = type(
+        "ModelConfig",
+        (),
+        {
+            "api_key_encrypted": "encrypted",
+            "base_url": "https://custom-relay.example/llm",
+            "model": "custom-model",
+            "temperature": 0.2,
+            "max_output_tokens": 128,
+            "extra_body_json": {},
+        },
+    )()
+
+    LLMClient(config)
+
+    assert captured["base_url"] == "https://custom-relay.example/llm"
 
 
 def test_model_config_create_defaults_to_8192_output_tokens():
@@ -119,6 +150,19 @@ def test_generate_text_uses_chat_completions_only():
         {"role": "user", "content": '{"hello": "world"}'},
     ]
     assert call["max_tokens"] == 256
+
+
+def test_chat_completions_driver_preserves_non_stream_and_stream_requests():
+    client = _FakeOpenAIClient()
+    driver = ChatCompletionsDriver(client)
+    request = {"model": "demo-model", "messages": [{"role": "user", "content": "hi"}]}
+
+    assert driver.complete(request).choices[0].message.content == "ok"
+    stream = driver.stream(request)
+
+    assert client.chat.completions.calls[0] == request
+    assert client.chat.completions.calls[1] == {**request, "stream": True}
+    assert stream is not None
 
 
 def test_generate_text_can_disable_provider_thinking():

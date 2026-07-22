@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Check, FlaskConical } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Check, FlaskConical, LoaderCircle } from 'lucide-react';
 
 import { api, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
@@ -16,6 +16,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Switch,
   Textarea,
 } from '@/components/ui';
@@ -33,12 +38,13 @@ import IconSearch from '../assets/icons/search.svg?react';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { useClientPagination } from '../hooks/useClientPagination';
 import type { ModelConfigRead } from '../types';
+import { OPEN_MODEL_CREATE_EVENT } from '@/components/QuickStartGuide';
 
 const MODEL_PAGE_SIZE = 8;
 
 type ModelForm = {
   name: string;
-  provider: string;
+  api_protocol: 'openai_chat_completions' | 'anthropic_messages' | 'gemini_generate_content';
   base_url: string;
   model: string;
   api_key: string;
@@ -51,7 +57,7 @@ type ModelForm = {
 
 const BLANK_MODEL_FORM: ModelForm = {
   name: '',
-  provider: 'openai_compatible',
+  api_protocol: 'openai_chat_completions',
   base_url: '',
   model: '',
   api_key: '',
@@ -76,13 +82,16 @@ export default function ModelsPage({
   const [selected, setSelected] = useState<ModelConfigRead | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const testingModelIdsRef = useRef(new Set<string>());
+  const [testingModelIds, setTestingModelIds] = useState<Set<string>>(new Set());
   const [form, setForm] = useState<ModelForm>(BLANK_MODEL_FORM);
+  const [availableProtocols, setAvailableProtocols] = useState<ModelForm['api_protocol'][]>(['openai_chat_completions']);
 
   const updateForm = <K extends keyof ModelForm>(key: K, value: ModelForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
-  const load = () => {
-    setLoading(true);
+  const load = (showLoading = true) => {
+    if (showLoading) setLoading(true);
     return api
       .get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}`)
       .then((items) => {
@@ -90,18 +99,29 @@ export default function ModelsPage({
         window.dispatchEvent(new CustomEvent(MODEL_CONFIGS_UPDATED_EVENT, { detail: { models: items } }));
       })
       .catch((error) => notify.error(error instanceof Error ? error.message : '加载模型失败'))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (showLoading) setLoading(false);
+      });
   };
 
   useEffect(() => {
     void load();
+    void api
+      .get<{ protocols: ModelForm['api_protocol'][] }>(`/api/enterprise/model-configs/protocols?tenant_id=${TENANT_ID}`)
+      .then((result) => setAvailableProtocols(result.protocols));
+  }, []);
+
+  useEffect(() => {
+    const openCreate = () => createBlank();
+    window.addEventListener(OPEN_MODEL_CREATE_EVENT, openCreate);
+    return () => window.removeEventListener(OPEN_MODEL_CREATE_EVENT, openCreate);
   }, []);
 
   const filteredRows = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
     if (!keyword) return rows;
     return rows.filter((row) =>
-      [row.name, row.model, row.provider, row.base_url || ''].some((value) =>
+      [row.name, row.model, row.api_protocol, row.base_url || ''].some((value) =>
         (value || '').toLowerCase().includes(keyword),
       ),
     );
@@ -111,13 +131,13 @@ export default function ModelsPage({
 
   const enabledCount = rows.filter((item) => item.enabled).length;
   const defaultRow = rows.find((item) => item.is_default);
-  const providerCount = new Set(rows.map((item) => item.provider).filter(Boolean)).size;
+  const providerCount = new Set(rows.map((item) => item.api_protocol).filter(Boolean)).size;
 
   function edit(row: ModelConfigRead) {
     setSelected(row);
     setForm({
       name: row.name,
-      provider: row.provider,
+      api_protocol: row.api_protocol,
       base_url: row.base_url || '',
       model: row.model,
       api_key: '',
@@ -144,10 +164,9 @@ export default function ModelsPage({
 
   async function save() {
     const name = form.name.trim();
-    const provider = form.provider.trim();
     const model = form.model.trim();
-    if (!name || !provider || !model) {
-      notify.error('请填写名称、Provider 和 Model');
+    if (!name || !model) {
+      notify.error('请填写名称和 Model');
       return;
     }
     const temperature = Number(form.temperature);
@@ -170,7 +189,7 @@ export default function ModelsPage({
     const payload = {
       tenant_id: TENANT_ID,
       name,
-      provider,
+      api_protocol: form.api_protocol,
       base_url: form.base_url.trim() || undefined,
       model,
       temperature,
@@ -210,41 +229,59 @@ export default function ModelsPage({
   }
 
   async function test(row: ModelConfigRead) {
+    if (testingModelIdsRef.current.has(row.id)) return;
+    testingModelIdsRef.current.add(row.id);
+    setTestingModelIds(new Set(testingModelIdsRef.current));
     try {
-      const result = await api.post<{ success: boolean; message: string; output?: string }>(
-        `/api/enterprise/model-configs/${row.id}/test?tenant_id=${TENANT_ID}`,
+      const result = await api.post<{ success: boolean; message: string; output?: string; activated: boolean }>(
+        `/api/enterprise/model-configs/${row.id}/test?tenant_id=${TENANT_ID}&activate_if_initial=true`,
       );
       if (result.success) {
-        notify.success(result.output || result.message);
+        notify.success(
+          result.activated
+            ? '测试通过，已启用并设为默认模型'
+            : result.output || result.message,
+        );
+      } else if (result.message === 'MODEL_VERIFICATION_STALE') {
+        notify.warning('模型配置或测试状态已发生变化，本次结果未生效，请刷新后重新测试');
       } else {
         notify.error(result.message);
       }
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '测试失败');
+    } finally {
+      await load(false);
+      testingModelIdsRef.current.delete(row.id);
+      setTestingModelIds(new Set(testingModelIdsRef.current));
     }
   }
 
   function renderActions(row: ModelConfigRead) {
+    const isTesting = testingModelIds.has(row.id);
     return (
       <DropdownMenu>
         <DropdownMenuTrigger
-          aria-label="模型操作"
+          aria-label={isTesting ? `${row.name} 正在测试` : '模型操作'}
           className="ml-auto grid size-7 place-items-center rounded-[8px] text-[#1a71ff] transition-colors outline-none hover:bg-black/5 hover:text-[#4a8dff] focus-visible:bg-black/5"
         >
-          <IconMore className="size-3.5" />
+          {isTesting ? <LoaderCircle className="size-3.5 animate-spin" /> : <IconMore className="size-3.5" />}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className={MENU_CONTENT_CLASS}>
-          <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => edit(row)}>
+          <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={isTesting} onSelect={() => edit(row)}>
             <IconEdit />
             编辑
           </DropdownMenuItem>
-          <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={row.is_default} onSelect={() => void setDefault(row)}>
+          <DropdownMenuItem
+            className={MENU_ITEM_CLASS}
+            disabled={isTesting || row.is_default}
+            onSelect={() => void setDefault(row)}
+          >
             <Check />
             {row.is_default ? '已默认' : '设为默认'}
           </DropdownMenuItem>
-          <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void test(row)}>
-            <FlaskConical />
-            测试
+          <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={isTesting} onSelect={() => void test(row)}>
+            {isTesting ? <LoaderCircle className="animate-spin" /> : <FlaskConical />}
+            {isTesting ? '正在测试' : '测试'}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -264,7 +301,7 @@ export default function ModelsPage({
             {row.is_default && <StatusBadge tone="green">默认</StatusBadge>}
           </span>
           <span className="truncate text-[#858b9c]">
-            {row.enabled ? '已启用' : '已停用'} · {row.provider}
+            {row.enabled ? '已启用' : '已停用'} · {row.api_protocol}
           </span>
         </div>
       ),
@@ -303,7 +340,7 @@ export default function ModelsPage({
             {row.is_default && <StatusBadge tone="green">默认</StatusBadge>}
           </span>
           <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">
-            {row.enabled ? '已启用' : '已停用'} · {row.provider}
+            {row.enabled ? '已启用' : '已停用'} · {row.api_protocol}
           </span>
         </div>
         {renderActions(row)}
@@ -330,6 +367,7 @@ export default function ModelsPage({
           刷新
         </UIButton>
         <UIButton
+          data-guide-target="models-create"
           onClick={createBlank}
           className="h-[34px] gap-[4px] rounded-[10px] bg-[#18181a] px-[20px] text-[12px] font-normal text-white hover:bg-[#303030]"
         >
@@ -343,7 +381,7 @@ export default function ModelsPage({
           <StatCard label="模型" value={rows.length} />
           <StatCard label="已启用" value={enabledCount} tone="green" />
           <StatCard label="默认模型" value={defaultRow?.name || '-'} valueClassName="text-[18px]" />
-          <StatCard label="Provider" value={providerCount} />
+          <StatCard label="API 协议" value={providerCount} />
         </div>
 
         <div className="flex flex-col gap-[18px]">
@@ -356,7 +394,7 @@ export default function ModelsPage({
             <IconSearch className="size-[14px] shrink-0 text-[#858b9c]" />
             <input
               value={searchText}
-              placeholder="搜索名称、模型、Provider 或 Base URL"
+              placeholder="搜索名称、模型、API 协议或 Base URL"
               onChange={(event) => setSearchText(event.target.value)}
               className="h-full min-w-0 flex-1 bg-transparent text-[12px] text-[#17191f] outline-none placeholder:text-[#c0c6d4]"
             />
@@ -420,11 +458,33 @@ export default function ModelsPage({
               <LabeledField label="名称">
                 <Input value={form.name} placeholder="例如 GPT-4o" onChange={(event) => updateForm('name', event.target.value)} />
               </LabeledField>
-              <LabeledField label="Provider">
-                <Input value={form.provider} placeholder="例如 openai_compatible" onChange={(event) => updateForm('provider', event.target.value)} />
+              <LabeledField label="API 协议">
+                <Select
+                  value={form.api_protocol}
+                  onValueChange={(value) => updateForm('api_protocol', value as ModelForm['api_protocol'])}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {availableProtocols.includes('openai_chat_completions') && (
+                      <SelectItem value="openai_chat_completions">OpenAI Chat Completions</SelectItem>
+                    )}
+                    {availableProtocols.includes('anthropic_messages') && (
+                      <SelectItem value="anthropic_messages">Anthropic Messages</SelectItem>
+                    )}
+                    {availableProtocols.includes('gemini_generate_content') && (
+                      <SelectItem value="gemini_generate_content">Gemini Generate Content</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
               </LabeledField>
               <LabeledField label="Base URL">
-                <Input value={form.base_url} placeholder="https://api.openai.com/v1" onChange={(event) => updateForm('base_url', event.target.value)} />
+                <Input
+                  value={form.base_url}
+                  placeholder={form.api_protocol === 'openai_chat_completions'
+                    ? 'https://llm-center.modelbest.cn/llm/v1'
+                    : 'https://llm-center.modelbest.cn/llm'}
+                  onChange={(event) => updateForm('base_url', event.target.value)}
+                />
               </LabeledField>
               <LabeledField label="Model">
                 <Input value={form.model} placeholder="例如 gpt-4o" onChange={(event) => updateForm('model', event.target.value)} />
@@ -442,7 +502,7 @@ export default function ModelsPage({
                   <Input
                     type="number"
                     min={0}
-                    max={2}
+                    max={form.api_protocol === 'anthropic_messages' ? 1 : 2}
                     step={0.1}
                     value={form.temperature}
                     onChange={(event) => updateForm('temperature', event.target.value)}
@@ -458,7 +518,7 @@ export default function ModelsPage({
                   />
                 </LabeledField>
               </div>
-              <div className="sm:col-span-2">
+              {form.api_protocol === 'openai_chat_completions' && <div className="sm:col-span-2">
                 <LabeledField label="额外请求参数（extra_body JSON）">
                   <Textarea
                     rows={5}
@@ -468,7 +528,7 @@ export default function ModelsPage({
                     onChange={(event) => updateForm('extra_body', event.target.value)}
                   />
                 </LabeledField>
-              </div>
+              </div>}
             </div>
             <div className="mt-[16px] flex flex-wrap items-center gap-[24px]">
               <label className="flex cursor-pointer items-center gap-[8px]">

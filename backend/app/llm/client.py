@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 import copy
 import hashlib
 import json
@@ -10,11 +10,21 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+import httpx
 from openai import OpenAI
+from anthropic import Anthropic
 
 from app.config import get_settings
 from app.db.models import ModelConfig
+from app.llm.model_protocols import ModelApiProtocol
 from app.llm.output_policy import operation_output_tokens
+from app.llm.protocol_drivers import (
+    AnthropicMessagesDriver,
+    CancellationToken,
+    ChatCompletionsDriver,
+    GeminiGenerateContentDriver,
+    ProtocolCallError,
+)
 from app.llm.stage_protocol import (
     STAGE_PROTOCOL_KEY,
     TURN_STAGE_MESSAGES_KEY,
@@ -42,23 +52,59 @@ class _CurrentStageText(str):
 
 class LLMClient:
     def __init__(self, model_config: ModelConfig):
+        try:
+            protocol = ModelApiProtocol(
+                getattr(model_config, "api_protocol", "openai_chat_completions")
+            )
+        except ValueError as exc:
+            raise LLMError("MODEL_PROTOCOL_UNSUPPORTED") from exc
         api_key = decrypt_secret(model_config.api_key_encrypted)
         if not api_key:
             raise LLMError("Model API key is not configured")
         self.timeout_seconds = (
-            get_settings().model_api_timeout_seconds or DEFAULT_MODEL_API_TIMEOUT_SECONDS
+            getattr(model_config, "timeout_seconds", None)
+            or get_settings().model_api_timeout_seconds
+            or DEFAULT_MODEL_API_TIMEOUT_SECONDS
         )
         self.base_url = str(model_config.base_url or "")
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url=self.base_url,
-            timeout=self.timeout_seconds,
-        )
+        if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
+            self.client = OpenAI(
+                api_key=api_key,
+                base_url=self.base_url,
+                timeout=self.timeout_seconds,
+            )
+            self.driver = ChatCompletionsDriver(self.client)
+        elif protocol is ModelApiProtocol.ANTHROPIC_MESSAGES:
+            kwargs: dict[str, Any] = {
+                "api_key": api_key,
+                "timeout": self.timeout_seconds,
+                "max_retries": 0,
+            }
+            if self.base_url:
+                kwargs["base_url"] = self.base_url
+            self.client = Anthropic(**kwargs)
+            self.driver = AnthropicMessagesDriver(self.client)
+        elif protocol is ModelApiProtocol.GEMINI_GENERATE_CONTENT:
+            self.client = httpx.Client(timeout=self.timeout_seconds)
+            self.driver = GeminiGenerateContentDriver(
+                self.client,
+                self.base_url,
+                api_key,
+                model_config.model,
+            )
+        else:
+            raise LLMError("MODEL_PROTOCOL_UNSUPPORTED")
+        self.api_protocol = protocol
+        self.api_key = api_key
         self.model = model_config.model
         self.temperature = model_config.temperature
         self.max_output_tokens = model_config.max_output_tokens
+        legacy_extra_body = getattr(model_config, "legacy_extra_body", {})
+        protocol_options = getattr(model_config, "protocol_options", {})
         self.extra_body = _normalize_extra_body(
-            getattr(model_config, "extra_body_json", {})
+            legacy_extra_body
+            or getattr(model_config, "extra_body_json", {})
+            or protocol_options
         )
         settings = get_settings()
         self.thinking_mode = (
@@ -75,6 +121,7 @@ class LLMClient:
         system_prompt: str,
         user_payload: dict[str, Any] | str,
         response_format: dict[str, str] | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> str:
         max_output_tokens = operation_output_tokens(
             current_llm_operation(), self.max_output_tokens
@@ -98,6 +145,8 @@ class LLMClient:
                 "temperature": self.temperature,
                 "max_tokens": max_output_tokens,
             }
+            if cancellation is not None:
+                request["_cancellation"] = cancellation
             if response_format:
                 request["response_format"] = response_format
             request.update(
@@ -111,7 +160,7 @@ class LLMClient:
                 span = start_llm_call(
                     model=self.model,
                     endpoint=_endpoint_label(getattr(self, "base_url", "")),
-                    request_kind="chat.completions",
+                    request_kind=self._protocol_driver().request_kind,
                     stream=False,
                     attempt=attempt + 1,
                     retry_count=attempt,
@@ -121,9 +170,7 @@ class LLMClient:
                     **request_shape,
                 )
                 try:
-                    completion = self.client.chat.completions.create(
-                        **request,
-                    )
+                    completion = self._protocol_driver().complete(request)
                 except BaseException as exc:
                     span.fail(exc, **_completion_span_metrics(None))
                     raise
@@ -157,10 +204,15 @@ class LLMClient:
         except Exception as exc:
             if isinstance(exc, LLMError):
                 raise
+            if isinstance(exc, ProtocolCallError):
+                raise LLMError(exc.code) from exc
             raise LLMError(_provider_failure_detail(self, exc)) from exc
 
     def generate_text_stream(
-        self, system_prompt: str, user_payload: dict[str, Any] | str
+        self,
+        system_prompt: str,
+        user_payload: dict[str, Any] | str,
+        cancellation: CancellationToken | None = None,
     ) -> Iterator[str]:
         max_output_tokens = operation_output_tokens(
             current_llm_operation(), self.max_output_tokens
@@ -183,7 +235,7 @@ class LLMClient:
                 span = start_llm_call(
                     model=self.model,
                     endpoint=_endpoint_label(getattr(self, "base_url", "")),
-                    request_kind="chat.completions",
+                    request_kind=self._protocol_driver().request_kind,
                     stream=True,
                     attempt=attempt + 1,
                     retry_count=attempt,
@@ -205,17 +257,19 @@ class LLMClient:
                 finish_reasons: set[str] = set()
                 response_ids: set[str] = set()
                 try:
-                    stream = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=request_messages,
-                        temperature=self.temperature,
-                        max_tokens=max_output_tokens,
-                        stream=True,
+                    stream_request = {
+                        "model": self.model,
+                        "messages": request_messages,
+                        "temperature": self.temperature,
+                        "max_tokens": max_output_tokens,
                         **_thinking_request_kwargs(
                             getattr(self, "thinking_mode", ""),
                             getattr(self, "extra_body", {}),
                         ),
-                    )
+                    }
+                    if cancellation is not None:
+                        stream_request["_cancellation"] = cancellation
+                    stream = self._protocol_driver().stream(stream_request)
                     provider_setup_ms = span.elapsed_ms()
                     for chunk in stream:
                         chunk_count += 1
@@ -309,9 +363,35 @@ class LLMClient:
         except Exception as exc:
             if isinstance(exc, LLMError):
                 raise
+            if isinstance(exc, ProtocolCallError):
+                raise LLMError(exc.code) from exc
             raise LLMError(_provider_failure_detail(self, exc)) from exc
 
-    def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    def _protocol_driver(
+        self,
+    ) -> ChatCompletionsDriver | AnthropicMessagesDriver | GeminiGenerateContentDriver:
+        driver = getattr(self, "driver", None)
+        if driver is None:
+            if getattr(self, "api_protocol", ModelApiProtocol.OPENAI_CHAT_COMPLETIONS) is (
+                ModelApiProtocol.GEMINI_GENERATE_CONTENT
+            ):
+                driver = GeminiGenerateContentDriver(
+                    self.client,
+                    self.base_url,
+                    getattr(self, "api_key", ""),
+                    self.model,
+                )
+            else:
+                driver = ChatCompletionsDriver(self.client)
+            self.driver = driver
+        return driver
+
+    def generate_json(
+        self,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        cancellation: CancellationToken | None = None,
+    ) -> dict[str, Any]:
         outputs: list[str] = []
         next_payload = user_payload
         last_error: json.JSONDecodeError | None = None
@@ -327,7 +407,7 @@ class LLMClient:
                 self._defer_stage_recording = True
                 try:
                     text = self._generate_json_candidate(
-                        system_prompt, next_payload, json_mode_supported
+                        system_prompt, next_payload, json_mode_supported, cancellation
                     )
                     if json_mode_supported and _response_format_unsupported(text):
                         json_mode_supported = False
@@ -384,23 +464,37 @@ class LLMClient:
         system_prompt: str,
         user_payload: dict[str, Any],
         json_mode_supported: bool,
+        cancellation: CancellationToken | None = None,
     ) -> str:
+        def call_generate_text(prompt: str, payload: dict[str, Any], **kwargs: Any) -> str:
+            if cancellation is not None:
+                kwargs["cancellation"] = cancellation
+            return self.generate_text(prompt, payload, **kwargs)
+
+        if getattr(self, "api_protocol", ModelApiProtocol.OPENAI_CHAT_COMPLETIONS) is (
+            ModelApiProtocol.ANTHROPIC_MESSAGES
+        ):
+            return call_generate_text(
+                system_prompt.rstrip()
+                + "\n\n只返回一个合法 JSON object；不要输出 Markdown、代码围栏、解释或额外文本。",
+                user_payload,
+            )
         if not json_mode_supported:
-            return self.generate_text(system_prompt, user_payload)
+            return call_generate_text(system_prompt, user_payload)
         try:
-            return self.generate_text(
+            return call_generate_text(
                 system_prompt,
                 user_payload,
                 response_format={"type": "json_object"},
             )
         except TypeError:
-            return self.generate_text(system_prompt, user_payload)
+            return call_generate_text(system_prompt, user_payload)
         except LLMError as exc:
             message = str(exc)
             if _response_format_unsupported(message):
                 return message
             if _empty_response(message):
-                return self.generate_text(system_prompt, user_payload)
+                return call_generate_text(system_prompt, user_payload)
             raise
 
 
@@ -481,8 +575,16 @@ def _thinking_mode_for_model(mode: Any, configured_models: Any, model: Any) -> s
 
 
 def _normalize_extra_body(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
+    if not isinstance(value, Mapping):
         return {}
+    return {str(key): _mutable_copy(item) for key, item in value.items()}
+
+
+def _mutable_copy(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _mutable_copy(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_mutable_copy(item) for item in value]
     return copy.deepcopy(value)
 
 

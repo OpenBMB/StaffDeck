@@ -134,6 +134,42 @@ def test_sync_mcp_tools_imports_tools_and_executes() -> None:
         assert result.data == {"text": "hi", "length": 2}
 
 
+def test_sync_mcp_tools_preserves_execution_policy() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        server = MCPServer(
+            id="server_builtin_policy",
+            tenant_id="tenant_demo",
+            name="builtin-policy",
+            transport="builtin",
+        )
+        db.add(server)
+        db.add(
+            Tool(
+                id="tool_policy",
+                tenant_id="tenant_demo",
+                name="mcp.builtin-policy.echo",
+                tool_type="mcp",
+                method="POST",
+                url="mcp://builtin-policy/echo",
+                mcp_server_id=server.id,
+                config_json={"tool": "echo", "execution": {"timeout_seconds": 20}},
+            )
+        )
+        db.commit()
+
+        sync_mcp_tools(
+            server.id,
+            MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]),
+            db,
+            current_user=_admin_user(),
+        )
+
+        tool = db.get(Tool, "tool_policy")
+        assert tool is not None
+        assert tool.config_json == {"tool": "echo", "execution": {"timeout_seconds": 20}}
+
+
 def test_sync_mcp_tools_scoped_to_employee_binds_privately() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))

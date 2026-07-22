@@ -46,6 +46,7 @@ from app.tools.tool_schema import (
     ToolCall,
     ToolCreateRequest,
     ToolError,
+    ToolExecutionPolicy,
     ToolProbeRequest,
     ToolProbeResponse,
     ToolRead,
@@ -59,6 +60,7 @@ mcp_router = APIRouter(prefix="/api/enterprise/mcp-servers", tags=["enterprise:m
 
 
 def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
+    config = dict(row.config_json or {})
     return ToolRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -71,7 +73,8 @@ def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
         url=row.url,
         headers=row.headers_json or {},
         auth=row.auth_json or {},
-        mcp_config=row.config_json or {},
+        mcp_config={key: value for key, value in config.items() if key != "execution"},
+        execution_policy=_read_execution_policy(config),
         input_schema=row.input_schema or {},
         output_schema=row.output_schema or {},
         allowed_skills=row.allowed_skills_json or [],
@@ -148,7 +151,7 @@ def create_tool(
         url=request.url,
         headers_json=request.headers,
         auth_json=request.auth,
-        config_json=request.mcp_config,
+        config_json=_tool_config(request.mcp_config, request.execution_policy),
         input_schema=request.input_schema,
         output_schema=request.output_schema,
         allowed_skills_json=request.allowed_skills,
@@ -192,11 +195,12 @@ def probe_tool(
     ensure_current_user_tenant(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     if request.tool_type == "mcp":
+        timeout_seconds = _probe_timeout_seconds(request)
         try:
             data = execute_mcp_tool(
                 request.mcp_config,
                 request.sample_arguments,
-                timeout_seconds=get_settings().tool_timeout_seconds,
+                timeout_seconds=timeout_seconds,
             )
         except MCPClientError as exc:
             return ToolProbeResponse(
@@ -219,8 +223,9 @@ def probe_tool(
         )
     headers = ToolExecutor(db)._resolve_headers(request.headers, request.auth)  # noqa: SLF001
     url = _normalize_probe_url(request.url)
+    timeout_seconds = _probe_timeout_seconds(request)
     try:
-        with httpx.Client(timeout=get_settings().tool_timeout_seconds) as client:
+        with httpx.Client(timeout=timeout_seconds) as client:
             if request.method.upper() == "GET":
                 request_url, request_kwargs = prepare_get_request(url, request.sample_arguments)
                 response = client.request(
@@ -301,7 +306,11 @@ def update_tool(
     row.url = request.url
     row.headers_json = request.headers
     row.auth_json = request.auth
-    row.config_json = request.mcp_config
+    row.config_json = _tool_config(
+        request.mcp_config,
+        request.execution_policy,
+        existing=row.config_json,
+    )
     row.input_schema = request.input_schema
     row.output_schema = request.output_schema
     row.allowed_skills_json = request.allowed_skills
@@ -508,6 +517,38 @@ def _normalize_probe_url(url: str) -> str:
     if stripped.startswith("/"):
         return f"{get_settings().normalized_tool_base_url}{stripped}"
     return stripped
+
+
+def _tool_config(
+    mcp_config: dict[str, Any],
+    execution_policy: object | None,
+    *,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    config = {
+        key: value for key, value in (mcp_config or {}).items() if key != "execution"
+    }
+    if execution_policy is not None:
+        config["execution"] = execution_policy.model_dump(mode="json")
+    elif isinstance((existing or {}).get("execution"), dict):
+        config["execution"] = dict(existing["execution"])
+    return config
+
+
+def _read_execution_policy(config: dict[str, Any]) -> ToolExecutionPolicy | None:
+    execution = config.get("execution")
+    if not isinstance(execution, dict):
+        return None
+    try:
+        return ToolExecutionPolicy.model_validate(execution)
+    except ValueError:
+        return None
+
+
+def _probe_timeout_seconds(request: ToolProbeRequest) -> float:
+    if request.execution_policy is not None:
+        return request.execution_policy.timeout_seconds
+    return get_settings().tool_timeout_seconds
 
 
 def _response_preview(response: httpx.Response) -> Any:
@@ -803,7 +844,7 @@ def sync_mcp_tools(
             current.description = tool.description or current.description
             current.input_schema = tool.input_schema or current.input_schema
             current.output_schema = tool.output_schema or current.output_schema
-            current.config_json = {"tool": tool.name}
+            current.config_json = {**(current.config_json or {}), "tool": tool.name}
             current.updated_at = utc_now()
             db.add(current)
             touched_tool_ids.append(current.id)

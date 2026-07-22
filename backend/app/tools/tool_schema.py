@@ -5,6 +5,10 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class ToolExecutionPolicy(BaseModel):
+    timeout_seconds: float = Field(ge=1, le=300)
+
+
 class ToolCreateRequest(BaseModel):
     tenant_id: str
     name: str
@@ -17,6 +21,7 @@ class ToolCreateRequest(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     auth: dict[str, Any] = Field(default_factory=dict)
     mcp_config: dict[str, Any] = Field(default_factory=dict)
+    execution_policy: Optional[ToolExecutionPolicy] = None
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
     allowed_skills: list[str] = Field(default_factory=list)
@@ -40,6 +45,7 @@ class ToolRead(BaseModel):
     headers: dict[str, Any]
     auth: dict[str, Any]
     mcp_config: dict[str, Any]
+    execution_policy: Optional[ToolExecutionPolicy] = None
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     allowed_skills: list[str]
@@ -94,6 +100,7 @@ class ToolProbeRequest(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     auth: dict[str, Any] = Field(default_factory=dict)
     mcp_config: dict[str, Any] = Field(default_factory=dict)
+    execution_policy: Optional[ToolExecutionPolicy] = None
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
     sample_arguments: dict[str, Any] = Field(default_factory=dict)

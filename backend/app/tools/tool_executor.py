@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -18,6 +19,11 @@ from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_serv
 
 
 SECRET_PATTERN = re.compile(r"\$\{secret\.([A-Z0-9_]+)\}")
+
+
+@dataclass(frozen=True)
+class ToolExecutionPolicy:
+    timeout_seconds: float
 
 
 class ToolExecutor:
@@ -63,8 +69,9 @@ class ToolExecutor:
             tool.url,
             self._resolve_headers(tool.headers_json or {}, tool.auth_json or {}),
         )
+        policy = self._execution_policy(tool)
         try:
-            with httpx.Client(timeout=self.settings.tool_timeout_seconds) as client:
+            with httpx.Client(timeout=policy.timeout_seconds) as client:
                 if tool.method.upper() == "GET":
                     request_url, request_kwargs = prepare_get_request(tool.url, tool_call.arguments)
                     response = client.request(
@@ -82,7 +89,11 @@ class ToolExecutor:
                     error=None,
                 )
         except httpx.TimeoutException:
-            return self._error(tool.name, "TIMEOUT", "工具调用超时。")
+            return self._error(
+                tool.name,
+                "TIMEOUT",
+                f"工具调用超过 {policy.timeout_seconds:g} 秒未返回。",
+            )
         except httpx.HTTPStatusError as exc:
             return self._error(
                 tool.name,
@@ -95,10 +106,11 @@ class ToolExecutor:
     def _execute_mcp_tool(self, tool: Tool, arguments: dict[str, Any]) -> ToolResult:
         try:
             config, tool_name = self._resolve_mcp_config(tool)
+            policy = self._execution_policy(tool)
             data = execute_mcp_tool(
                 config,
                 arguments,
-                timeout_seconds=self.settings.tool_timeout_seconds,
+                timeout_seconds=policy.timeout_seconds,
                 tool_name=tool_name,
             )
             return ToolResult(tool_name=tool.name, success=True, data=data, error=None)
@@ -106,6 +118,17 @@ class ToolExecutor:
             return self._error(tool.name, "MCP_ERROR", str(exc))
         except Exception as exc:
             return self._error(tool.name, "MCP_EXECUTION_ERROR", str(exc))
+
+    def _execution_policy(self, tool: Tool) -> ToolExecutionPolicy:
+        execution = (tool.config_json or {}).get("execution")
+        raw_timeout = execution.get("timeout_seconds") if isinstance(execution, dict) else None
+        try:
+            timeout_seconds = float(raw_timeout)
+        except (TypeError, ValueError):
+            timeout_seconds = self.settings.tool_timeout_seconds
+        if not 1 <= timeout_seconds <= 300:
+            timeout_seconds = self.settings.tool_timeout_seconds
+        return ToolExecutionPolicy(timeout_seconds=timeout_seconds)
 
     def _resolve_mcp_config(self, tool: Tool) -> tuple[dict[str, Any], str | None]:
         """Resolve an MCP tool through its persisted MCP server relation."""

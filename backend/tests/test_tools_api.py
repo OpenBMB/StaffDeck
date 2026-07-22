@@ -11,13 +11,15 @@ from app.agents.branching import ensure_open_gallery_binding, ensure_private_res
 from app.api.tools import (
     _ensure_tool_visible,
     _normalize_probe_url,
+    _read_execution_policy,
+    _tool_config,
     delete_tool,
     list_tools,
     probe_tool as _probe_tool,
 )
 from app.config import get_settings
 from app.db.models import AgentProfile, AgentResourceBinding, Tenant, Tool, User
-from app.tools.tool_schema import ToolProbeRequest
+from app.tools.tool_schema import ToolExecutionPolicy, ToolProbeRequest
 
 
 def _admin_user() -> User:
@@ -58,6 +60,35 @@ def test_delete_tool_removes_tenant_tool() -> None:
 
         assert result == {"status": "deleted"}
         assert db.get(Tool, tool.id) is None
+
+
+def test_tool_config_namespaces_execution_and_preserves_existing_policy() -> None:
+    created = _tool_config(
+        {"tool": "sum"},
+        ToolExecutionPolicy(timeout_seconds=20),
+    )
+    updated_by_legacy_client = _tool_config(
+        {"tool": "echo", "obsolete": False},
+        None,
+        existing={**created, "obsolete": True},
+    )
+
+    assert created == {"tool": "sum", "execution": {"timeout_seconds": 20.0}}
+    assert updated_by_legacy_client == {
+        "tool": "echo",
+        "obsolete": False,
+        "execution": {"timeout_seconds": 20.0},
+    }
+
+
+def test_tool_config_rejects_untyped_execution_and_reads_invalid_legacy_safely() -> None:
+    config = _tool_config(
+        {"tool": "sum", "execution": {"timeout_seconds": 999}},
+        None,
+    )
+
+    assert config == {"tool": "sum"}
+    assert _read_execution_policy({"execution": {"timeout_seconds": 999}}) is None
 
 
 def test_delete_tool_is_tenant_scoped() -> None:

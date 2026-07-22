@@ -18,7 +18,11 @@ import {
   type EnterpriseAuthUser,
 } from "./auth";
 import AppSidebar from "./components/AppSidebar";
-import OnboardingGuide from "./components/OnboardingGuide";
+import OnboardingGuide, { ONBOARDING_SEEN_KEY } from "./components/OnboardingGuide";
+import QuickStartGuide, {
+  QUICK_START_COMPLETED_EVENT,
+  QUICK_START_SEEN_KEY,
+} from "./components/QuickStartGuide";
 import StaffdeckIcon from "./components/StaffdeckIcon";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { EnterpriseRoute } from "./enums/routes";
@@ -135,6 +139,10 @@ function Shell({
     useState<AgentCreateFormState>(EMPTY_AGENT_FORM);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [modelConfigsLoaded, setModelConfigsLoaded] = useState(false);
+  const [guidesCompleted, setGuidesCompleted] = useState(() => Boolean(
+    window.localStorage.getItem(ONBOARDING_SEEN_KEY)
+    && window.localStorage.getItem(QUICK_START_SEEN_KEY),
+  ));
   const isMobile = useIsMobile();
   const isAdmin = isEnterpriseAdmin(auth.user);
   const accountRoleLabel = isAdmin ? "管理员" : "";
@@ -205,6 +213,12 @@ function Shell({
     window.addEventListener(MODEL_CONFIGS_UPDATED_EVENT, onModelConfigsUpdated);
     return () => window.removeEventListener(MODEL_CONFIGS_UPDATED_EVENT, onModelConfigsUpdated);
   }, [loadModelConfigs]);
+
+  useEffect(() => {
+    const onQuickStartCompleted = () => setGuidesCompleted(true);
+    window.addEventListener(QUICK_START_COMPLETED_EVENT, onQuickStartCompleted);
+    return () => window.removeEventListener(QUICK_START_COMPLETED_EVENT, onQuickStartCompleted);
+  }, []);
 
   // Auto-collapse the sidebar on small screens; restore the saved preference on desktop.
   useEffect(() => {
@@ -325,7 +339,7 @@ function Shell({
 
   const scopeAgents = agents.filter(canUseAgentScope);
   const hasUsableModelConfig = modelConfigs.some((item) => item.enabled);
-  const showModelSetupNotice = modelConfigsLoaded && !hasUsableModelConfig;
+  const showModelSetupNotice = guidesCompleted && modelConfigsLoaded && !hasUsableModelConfig;
   const modelSetupNoticeText = isAdmin
     ? t("还没有可用模型配置，数字员工暂不能调用模型。请先完成模型配置。")
     : t("系统管理员尚未配置可用模型，数字员工暂不能调用模型。请联系管理员完成模型配置。");
@@ -988,6 +1002,7 @@ export default function App() {
           />
         </Routes>
         {auth && authChecked ? <OnboardingGuide /> : null}
+        {auth && authChecked ? <QuickStartGuide isAdmin={isEnterpriseAdmin(auth.user)} /> : null}
       </BrowserRouter>
       <Toaster richColors closeButton position="top-center" />
     </TooltipProvider>

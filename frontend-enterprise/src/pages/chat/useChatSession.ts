@@ -143,6 +143,8 @@ const SCHEDULE_WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五
 const ENTERPRISE_SIDEBAR_STORAGE_KEY = 'ultrarag_enterprise_sidebar_expanded';
 const MISSING_MODEL_CONFIG_PATTERN = /missing_model_config|missing model config|没有默认模型配置|没有可用模型|模型配置不存在|模型未配置/i;
 const MODEL_CONFIGS_UPDATED_EVENT = 'ultrarag-enterprise-model-configs-updated';
+const ONBOARDING_SEEN_KEY = 'staffdeck_onboarding_guide_seen';
+const QUICK_START_SEEN_KEY = 'staffdeck_quick_start_guide_seen';
 
 function isMissingModelConfigurationError(value: unknown): boolean {
   if (value instanceof ApiError) {
@@ -740,6 +742,14 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     window.addEventListener(MODEL_CONFIGS_UPDATED_EVENT, onModelConfigsUpdated);
     return () => window.removeEventListener(MODEL_CONFIGS_UPDATED_EVENT, onModelConfigsUpdated);
   }, [tenantId]);
+
+  useEffect(() => {
+    if (!auth || modelConfigsLoading || modelConfigsLoadError || selectedModelConfig) return;
+    const onboardingSeen = window.localStorage.getItem(ONBOARDING_SEEN_KEY);
+    const quickStartSeen = window.localStorage.getItem(QUICK_START_SEEN_KEY);
+    if (!onboardingSeen || !quickStartSeen) return;
+    setModelSetupOpen(true);
+  }, [auth, modelConfigsLoadError, modelConfigsLoading, selectedModelConfig]);
 
   const toggleTrace = useCallback((turnId: string, isExpanded = false) => {
     if (isExpanded) {

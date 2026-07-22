@@ -260,7 +260,7 @@ export default function AgentsPage({
             </span>
           </button>
         ))}
-        <button type="button" onClick={onCreateAgent} className={cn(summaryCardClass, 'hover:shadow-[0_16px_30px_0_rgba(0,0,0,0.10)]')}>
+        <button data-guide-target="agents-create" type="button" onClick={onCreateAgent} className={cn(summaryCardClass, 'hover:shadow-[0_16px_30px_0_rgba(0,0,0,0.10)]')}>
           <span className="grid size-[38px] shrink-0 place-items-center text-[#18181A]">
             <IconPlus className="size-[38px]" />
           </span>
