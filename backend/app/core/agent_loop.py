@@ -60,6 +60,9 @@ from app.knowledge.citations import (
 )
 from app.knowledge.schema import KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.llm import LLMClient, LLMError
+from app.llm.model_config_resolver import (
+    resolve_model_config_for_runtime,
+)
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
 from app.observability.spans import llm_operation
 from app.memory.jobs import enqueue_memory_capture
@@ -860,13 +863,7 @@ class AgentLoop:
             runtime_config_json=skill.runtime_config_json or {},
             status=skill.status,
         )
-        model_snapshot = SimpleNamespace(
-            api_key_encrypted=model_config.api_key_encrypted,
-            base_url=model_config.base_url,
-            model=model_config.model,
-            temperature=model_config.temperature,
-            max_output_tokens=model_config.max_output_tokens,
-        )
+        model_snapshot = model_config
 
         def general_skill_sink(trace_item: dict[str, Any]) -> None:
             general_skill_events.put(("trace", trace_item))
@@ -5909,7 +5906,7 @@ class AgentLoop:
                 raise AgentLoopPreconditionError("invalid_model_config", "选中的模型配置不存在。")
             if not row.enabled:
                 raise AgentLoopPreconditionError("disabled_model_config", "选中的模型配置已停用。")
-            return row
+            return resolve_model_config_for_runtime(self.db, request.tenant_id, row.id)
         return self._get_default_model(request.tenant_id, agent_id, role)
 
     def _get_default_model(

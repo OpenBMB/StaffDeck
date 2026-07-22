@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from app.db.models import AgentEvent, ChatSession, Message, MessageFeedback, ModelConfig, User, utc_now
 from app.llm import LLMClient, LLMError
+from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.observability.spans import llm_operation
 
 
@@ -88,13 +89,16 @@ class FeedbackAnalysisService:
         return feedback
 
     def _default_model_config(self, tenant_id: str) -> ModelConfig | None:
-        return self.db.exec(
+        row = self.db.exec(
             select(ModelConfig).where(
                 ModelConfig.tenant_id == tenant_id,
                 ModelConfig.is_default == True,  # noqa: E712
                 ModelConfig.enabled == True,  # noqa: E712
             )
         ).first()
+        if row is None:
+            return None
+        return resolve_model_config_for_runtime(self.db, tenant_id, row.id)
 
     def _mark_needs_model(self, feedback: MessageFeedback) -> MessageFeedback:
         analysis = {

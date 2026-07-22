@@ -43,6 +43,7 @@ from app.db.models import (
     User,
     utc_now,
 )
+from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.llm import LLMError
 from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.permissions import (
@@ -874,7 +875,11 @@ def _get_default_model(db: Session, tenant_id: str) -> ModelConfig:
     ).first()
     if not model_config:
         raise HTTPException(status_code=400, detail="No enabled default model config")
-    return model_config
+    return _model_runtime_config(db, tenant_id, model_config)
+
+
+def _model_runtime_config(db: Session, tenant_id: str, row: ModelConfig):
+    return resolve_model_config_for_runtime(db, tenant_id, row.id)
 
 
 def _get_request_model(
@@ -885,7 +890,7 @@ def _get_request_model(
     model_config = db.get(ModelConfig, model_config_id)
     if not model_config or model_config.tenant_id != tenant_id or not model_config.enabled:
         raise HTTPException(status_code=404, detail="Model config not found")
-    return model_config
+    return _model_runtime_config(db, tenant_id, model_config)
 
 
 def _sync_skill_tool_bindings(

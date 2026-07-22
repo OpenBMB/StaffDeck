@@ -731,7 +731,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
             </UIButton>
             {canManageCurrentScope && (
               <DropdownMenu>
-                <DropdownMenuTrigger className="flex h-[34px] items-center gap-[4px] rounded-[10px] bg-[#18181a] px-[20px] text-[12px] font-normal text-white outline-none transition-colors hover:bg-[#303030]">
+                <DropdownMenuTrigger data-guide-target="skills-create" className="flex h-[34px] items-center gap-[4px] rounded-[10px] bg-[#18181a] px-[20px] text-[12px] font-normal text-white outline-none transition-colors hover:bg-[#303030]">
                   <IconAdd className="size-[14px]" />
                   新增
                   <IconChevronDown className="size-[12px]" />

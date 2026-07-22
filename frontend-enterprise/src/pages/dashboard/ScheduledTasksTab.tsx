@@ -404,6 +404,7 @@ export default function ScheduledTasksTab() {
   const actionButtons = (
     <div className="flex justify-end gap-[16px]">
       <UIButton
+        data-guide-target="scheduled-task-create"
         onClick={() => navigate('/enterprise/scheduled-tasks/new')}
         disabled={createDisabled}
         className="h-8 w-[100px] gap-1 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]"

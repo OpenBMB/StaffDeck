@@ -38,7 +38,7 @@ export const CHAT_COMPOSER_SHELL_CLASS =
   'shrink-0 border-t border-[#eceef1] pt-[16px]';
 export const CHAT_COMPOSER_CLASS = 'grid gap-[12px]';
 export const CHAT_TEXTAREA_CLASS =
-  'min-h-[96px] resize-none rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-[#fafafa] px-[14px] py-[12px] text-[13px] leading-[1.65] text-[#18181a] shadow-none placeholder:text-[#c0c6d4] focus-visible:border-[#18181a] focus-visible:ring-0';
+  'h-[112px] min-h-[96px] max-h-[160px] resize-none overflow-y-auto field-sizing-fixed rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-[#fafafa] px-[14px] py-[12px] text-[13px] leading-[1.65] text-[#18181a] shadow-none placeholder:text-[#c0c6d4] focus-visible:border-[#18181a] focus-visible:ring-0';
 export const CHAT_ACTIONS_CLASS = 'flex flex-wrap items-center justify-between gap-[10px]';
 export const CHAT_ACTIONS_GROUP_CLASS = 'flex flex-wrap items-center justify-end gap-[8px]';
 
@@ -106,12 +106,13 @@ export const CHAT_CONFIRM_CLASS = 'mt-[12px] flex gap-[8px]';
 export const CHAT_DECISION_CLASS = 'mt-[10px] text-[12px] text-[#858b9c]';
 
 // Upload list
-export const UPLOAD_LIST_CLASS = 'grid gap-[8px]';
+export const UPLOAD_LIST_CLASS =
+  'grid max-h-[min(168px,30vh)] gap-[8px] overflow-y-auto overscroll-contain pr-[2px] [scrollbar-gutter:stable]';
 export const UPLOAD_ITEM_BASE_CLASS =
   'grid min-h-[34px] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-[8px] rounded-[10px] border border-[#eceef1] bg-[#fafafa] p-[6px_8px] text-[12px] text-[#18181a]';
 export const UPLOAD_ITEM_ERROR_CLASS = 'border-[#fecaca] bg-[#fef2f2] text-[#d20b0b]';
 export const UPLOAD_NAME_CLASS = 'min-w-0 truncate';
-export const UPLOAD_STATUS_CLASS = 'whitespace-nowrap text-[#858b9c]';
+export const UPLOAD_STATUS_CLASS = 'max-w-[160px] truncate whitespace-nowrap text-[#858b9c]';
 
 // Tool suggestions
 export const TOOL_SUGGESTIONS_CLASS = 'mt-[12px] grid w-full min-w-0 max-w-full gap-[8px]';

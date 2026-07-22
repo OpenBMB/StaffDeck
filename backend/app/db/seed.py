@@ -962,11 +962,13 @@ def seed_demo_data(session: Session) -> None:
                 tenant_id="tenant_demo",
                 name="Demo Qwen Compatible",
                 provider="openai_compatible",
+                api_protocol="openai_chat_completions",
                 base_url=settings.demo_model_base_url,
                 api_key_encrypted=encrypt_secret(settings.demo_model_api_key),
                 model=settings.demo_model_name,
                 temperature=0.2,
                 max_output_tokens=8192,
+                trust_status="legacy_trusted",
                 is_default=True,
                 enabled=True,
             )

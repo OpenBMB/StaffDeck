@@ -26,6 +26,10 @@ from app.db.models import (
     Tool,
     utc_now,
 )
+from app.llm.model_config_resolver import (
+    ResolvedModelConfig,
+    resolve_model_config_for_runtime,
+)
 
 
 DEFAULT_AGENT_ROLES = ("default", "router", "step", "response", "general_skill")
@@ -955,7 +959,7 @@ def rollback_knowledge_branch(
 
 def model_for_agent(
     db: Session, tenant_id: str, agent_id: str | None, role: str = "default"
-) -> ModelConfig | None:
+) -> ResolvedModelConfig | None:
     agent = get_agent(db, tenant_id, agent_id)
     roles: Iterable[str] = (role, "default") if role != "default" else ("default",)
     if agent:
@@ -970,14 +974,21 @@ def model_for_agent(
             if binding:
                 model = db.get(ModelConfig, binding.model_config_id)
                 if model and model.enabled:
-                    return model
-    return db.exec(
+                    return _runtime_model(db, tenant_id, model)
+    model = db.exec(
         select(ModelConfig).where(
             ModelConfig.tenant_id == tenant_id,
             ModelConfig.is_default == True,  # noqa: E712
             ModelConfig.enabled == True,  # noqa: E712
         )
     ).first()
+    return _runtime_model(db, tenant_id, model) if model else None
+
+
+def _runtime_model(
+    db: Session, tenant_id: str, model: ModelConfig
+) -> ResolvedModelConfig:
+    return resolve_model_config_for_runtime(db, tenant_id, model.id)
 
 
 def copy_overall_scope_to_agent(db: Session, tenant_id: str, agent: AgentProfile) -> None:

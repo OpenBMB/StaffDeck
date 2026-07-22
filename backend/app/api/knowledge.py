@@ -38,6 +38,7 @@ from app.db.models import (
     User,
     utc_now,
 )
+from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.knowledge.schema import (
     KnowledgeBucketRead,
     KnowledgeChunkRead,
@@ -58,7 +59,15 @@ from app.knowledge.okf import (
     parse_okf_bundle,
     upsert_concepts,
 )
-from app.knowledge.service import IngestPayload, KnowledgeService, bucket_read, chunk_read
+from app.knowledge.service import (
+    IngestPayload,
+    KnowledgeDiscoveryConflictError,
+    KnowledgeDiscoveryValidationError,
+    KnowledgeService,
+    bucket_read,
+    chunk_read,
+    validate_discovered_skill,
+)
 from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.permissions import (
     ensure_agent_scope_manager,
@@ -615,13 +624,14 @@ def search_knowledge(
 
 
 def _get_default_model(db: Session, tenant_id: str) -> ModelConfig | None:
-    return db.exec(
+    row = db.exec(
         select(ModelConfig).where(
             ModelConfig.tenant_id == tenant_id,
             ModelConfig.is_default == True,  # noqa: E712
             ModelConfig.enabled == True,  # noqa: E712
         )
     ).first()
+    return _runtime_model(db, tenant_id, row) if row else None
 
 
 def _get_request_model(
@@ -632,7 +642,11 @@ def _get_request_model(
     model_config = db.get(ModelConfig, model_config_id)
     if not model_config or model_config.tenant_id != tenant_id or not model_config.enabled:
         raise HTTPException(status_code=404, detail="Model config not found")
-    return model_config
+    return _runtime_model(db, tenant_id, model_config)
+
+
+def _runtime_model(db: Session, tenant_id: str, row: ModelConfig):
+    return resolve_model_config_for_runtime(db, tenant_id, row.id)
 
 
 @router.get(
@@ -667,7 +681,17 @@ def list_discoveries(
     if status:
         stmt = stmt.where(KnowledgeDiscoverySuggestion.status == status)
     rows = db.exec(stmt.order_by(KnowledgeDiscoverySuggestion.created_at.desc())).all()
-    return [discovery_read(row) for row in rows]
+    visible_rows: list[KnowledgeDiscoverySuggestion] = []
+    for row in rows:
+        if row.status == "pending" and row.suggestion_type == "skill":
+            payload = row.payload_json or {}
+            skill_payload = payload.get("draft_skill") if isinstance(payload.get("draft_skill"), dict) else payload
+            try:
+                validate_discovered_skill(skill_payload)
+            except KnowledgeDiscoveryValidationError:
+                continue
+        visible_rows.append(row)
+    return [discovery_read(row) for row in visible_rows]
 
 
 @router.post("/discoveries/{suggestion_id}/confirm")
@@ -679,7 +703,12 @@ def confirm_discovery(
 ) -> dict[str, object]:
     row = _get_discovery(db, tenant_id, suggestion_id)
     _ensure_open_gallery_knowledge_admin(db, tenant_id, row.knowledge_base_id, current_user)
-    result = KnowledgeService(db).confirm_discovery(row)
+    try:
+        result = KnowledgeService(db).confirm_discovery(row)
+    except KnowledgeDiscoveryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KnowledgeDiscoveryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "confirmed", "result": result}
 
 
@@ -692,7 +721,10 @@ def reject_discovery(
 ) -> dict[str, str]:
     row = _get_discovery(db, tenant_id, suggestion_id)
     _ensure_open_gallery_knowledge_admin(db, tenant_id, row.knowledge_base_id, current_user)
-    KnowledgeService(db).reject_discovery(row)
+    try:
+        KnowledgeService(db).reject_discovery(row)
+    except KnowledgeDiscoveryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "rejected"}
 
 

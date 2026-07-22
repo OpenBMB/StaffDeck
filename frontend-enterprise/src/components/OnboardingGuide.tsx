@@ -11,10 +11,11 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import galleryImage from "@/assets/onboarding-gallery.png";
 import profileImage from "@/assets/onboarding-profile.png";
 
-const ONBOARDING_SEEN_KEY = "staffdeck_onboarding_guide_seen";
+export const ONBOARDING_SEEN_KEY = "staffdeck_onboarding_guide_seen";
 
 /** Custom event that lets any part of the app re-open the onboarding guide. */
 export const OPEN_ONBOARDING_EVENT = "staffdeck-open-onboarding";
+export const OPEN_QUICK_START_EVENT = "staffdeck-open-quick-start";
 
 type GuideCard = {
   icon: ReactNode;
@@ -108,6 +109,7 @@ export default function OnboardingGuide() {
   function finish() {
     window.localStorage.setItem(ONBOARDING_SEEN_KEY, "1");
     setOpen(false);
+    window.dispatchEvent(new Event(OPEN_QUICK_START_EVENT));
   }
 
   function goPrev() {

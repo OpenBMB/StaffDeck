@@ -11,7 +11,6 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import mkdtemp
-from types import SimpleNamespace
 from typing import Any
 
 from app import paths
@@ -25,6 +24,7 @@ from app.general_skills.schema import (
 )
 from app.general_skills.runtime_env import GeneralSkillRuntimeError, ensure_runtime_python, runtime_environment
 from app.llm import LLMClient, LLMError
+from app.llm.model_config_resolver import snapshot_model_config
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
 from app.observability.spans import llm_operation
 
@@ -1054,13 +1054,7 @@ def _normalize_failure_diagnostics(structured_result: dict[str, Any]) -> None:
 
 
 def _with_min_tokens(model_config: ModelConfig, max_output_tokens: int) -> ModelConfig:
-    return SimpleNamespace(
-        api_key_encrypted=model_config.api_key_encrypted,
-        base_url=model_config.base_url,
-        model=model_config.model,
-        temperature=model_config.temperature,
-        max_output_tokens=max(int(getattr(model_config, "max_output_tokens", 0) or 0), max_output_tokens),
-    )
+    return snapshot_model_config(model_config, min_output_tokens=max_output_tokens)
 
 
 def _fallback_reply(structured_result: dict[str, Any]) -> str:

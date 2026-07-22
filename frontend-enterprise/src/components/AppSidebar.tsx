@@ -143,6 +143,7 @@ function PrimaryNavButton({
   return (
     <SidebarMenuItem>
       <SidebarMenuButton
+        data-guide-target={`route-${item.route}`}
         tooltip={item.label}
         isActive={selected === item.route}
         onClick={() => onNavigate(item.route)}
@@ -176,6 +177,7 @@ function CardNavButton({
   return (
     <SidebarMenuItem>
       <SidebarMenuButton
+        data-guide-target={`route-${item.route}`}
         tooltip={item.label}
         isActive={selected === item.route}
         onClick={() => onNavigate(item.route)}
@@ -285,6 +287,7 @@ function SidebarFooterActions({ onOpenChat }: { onOpenChat: () => void }) {
     >
       <button
         type="button"
+        data-guide-target="open-chat"
         onClick={onOpenChat}
         title="对话端"
         className={cn(
