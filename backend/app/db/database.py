@@ -39,6 +39,7 @@ _DEFAULT_MODEL_OUTPUT_TOKENS = 8192
 _CHANNEL_BINDING_AGENTS_BACKFILL_MIGRATION_ID = "20260718_channel_binding_agents_backfill"
 _USER_SOURCE_BACKFILL_MIGRATION_ID = "20260718_user_source_wechat_backfill"
 _CHANNEL_SCOPE_REBUILD_MIGRATION_ID = "20260719_channel_scope_rebuild"
+_CHANNEL_BINDINGS_MULTI_MIGRATION_ID = "20260721_channel_bindings_multi"
 
 
 def init_db() -> None:
@@ -74,6 +75,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_default_model_output_limit(conn, tables)
         _migrate_channel_binding_agents_backfill(conn, tables)
         _migrate_channel_scope_rebuild(conn, inspector, tables)
+        _migrate_channel_bindings_multi(conn, inspector, tables)
 
         if "model_configs" in tables:
             model_config_columns = {
@@ -538,14 +540,9 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
                 conn.execute(text(index_sql))
 
     if "channel_inbound_events" in tables:
-        # 新形态判定:存在覆盖 (binding_id, event_id) 的唯一索引(内联约束在 SQLite
-        # 下是 sqlite_autoindex_*,不能按约束名匹配,按列组合判定)
-        event_uq_columns = [
-            set(index["column_names"])
-            for index in inspector.get_indexes("channel_inbound_events")
-            if index.get("unique")
-        ]
-        if {"binding_id", "event_id"} not in event_uq_columns:
+        # 新形态判定:SQLite 内联唯一约束在 get_indexes 中不可见,按 sqlite_master 的 DDL 文本判定
+        compact = _table_sql_compact(conn, "channel_inbound_events")
+        if "UNIQUE(CHANNEL,EVENT_ID)" in compact:
             conn.execute(
                 text(
                     """
@@ -608,6 +605,73 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
     conn.execute(
         text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
         {"id": _CHANNEL_SCOPE_REBUILD_MIGRATION_ID},
+    )
+
+
+def _table_sql_compact(conn, table_name: str) -> str:
+    """sqlite_master 中表 DDL 的去空白大写文本(SQLite 内联约束在 get_indexes 不可见时用它判定)。"""
+    row = conn.execute(
+        text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = :name"),
+        {"name": table_name},
+    ).first()
+    if not row or not row[0]:
+        return ""
+    return "".join(str(row[0]).split()).upper()
+
+
+def _migrate_channel_bindings_multi(conn, inspector, tables: set[str]) -> None:
+    """channel_bindings 重建:移除 (agent_id, channel) 表级唯一约束,支持同 Agent 多渠道实例。"""
+    if "channel_bindings" not in tables:
+        return
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _CHANNEL_BINDINGS_MULTI_MIGRATION_ID},
+    ).first()
+    if applied:
+        return
+    if "UNIQUE(AGENT_ID,CHANNEL)" in _table_sql_compact(conn, "channel_bindings"):
+        conn.execute(
+            text(
+                """
+                CREATE TABLE channel_bindings_new (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR,
+                    agent_id VARCHAR,
+                    channel VARCHAR,
+                    status VARCHAR,
+                    credentials_enc VARCHAR,
+                    config_json JSON,
+                    connected BOOLEAN,
+                    created_by_user_id VARCHAR,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(text("INSERT INTO channel_bindings_new SELECT * FROM channel_bindings"))
+        conn.execute(text("DROP TABLE channel_bindings"))
+        conn.execute(text("ALTER TABLE channel_bindings_new RENAME TO channel_bindings"))
+        for column in ("tenant_id", "agent_id", "channel", "status", "created_by_user_id"):
+            conn.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_channel_bindings_{column} "
+                    f"ON channel_bindings ({column})"
+                )
+            )
+    conn.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _CHANNEL_BINDINGS_MULTI_MIGRATION_ID},
     )
 
 

@@ -45,6 +45,7 @@ from app.session.session_schema import ChatTurnRequest
 logger = logging.getLogger(__name__)
 
 ERROR_NOTICE_TEXT = "处理出错，请稍后再试。"
+INTERRUPTED_NOTICE_TEXT = "上一条消息处理中断，请重新发送。"
 _DEDUP_LOOKBACK = 50
 # 入站事件 processing 卡死阈值:超过视为崩溃残留,允许接管重跑
 STALE_PROCESSING_SECONDS = 120
@@ -63,10 +64,19 @@ def _session_lock(session_id: str) -> threading.Lock:
         return lock
 
 
-def _user_message_with_client_turn_exists(db: Session, session_id: str, client_turn_id: str) -> bool:
+def _user_message_with_client_turn_exists(
+    db: Session,
+    session_id: str,
+    client_turn_id: str,
+    tenant_id: str,
+) -> bool:
     rows = db.exec(
         select(Message)
-        .where(Message.session_id == session_id, Message.role == "user")
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.session_id == session_id,
+            Message.role == "user",
+        )
         .order_by(Message.created_at.desc())
         .limit(_DEDUP_LOOKBACK)
     ).all()
@@ -76,6 +86,38 @@ def _user_message_with_client_turn_exists(db: Session, session_id: str, client_t
     return False
 
 
+def _find_turn_user_message_in_conv(
+    db: Session,
+    binding: ChannelBinding,
+    external_conv_id: str,
+    client_turn_id: str,
+) -> Message | None:
+    """在该 binding 的渠道会话(tenant 限定)内找此 client_turn_id 的用户消息。"""
+    session_ids = db.exec(
+        select(ChatSession.id).where(
+            ChatSession.tenant_id == binding.tenant_id,
+            ChatSession.channel == binding.channel,
+            ChatSession.channel_binding_id == binding.id,
+            ChatSession.external_conv_id == external_conv_id,
+        )
+    ).all()
+    for session_id in session_ids:
+        rows = db.exec(
+            select(Message)
+            .where(
+                Message.tenant_id == binding.tenant_id,
+                Message.session_id == session_id,
+                Message.role == "user",
+            )
+            .order_by(Message.created_at.desc())
+            .limit(_DEDUP_LOOKBACK)
+        ).all()
+        for row in rows:
+            if str((row.metadata_json or {}).get("client_turn_id") or "") == client_turn_id:
+                return row
+    return None
+
+
 def _client_turn_seen_in_conv(
     db: Session,
     binding: ChannelBinding,
@@ -83,14 +125,28 @@ def _client_turn_seen_in_conv(
     client_turn_id: str,
 ) -> bool:
     """该外部会话(任意员工会话)是否已有此 client_turn_id 的用户消息(崩溃完成度判定)。"""
-    session_ids = db.exec(
-        select(ChatSession.id).where(
-            ChatSession.channel == binding.channel,
-            ChatSession.external_conv_id == external_conv_id,
+    return _find_turn_user_message_in_conv(db, binding, external_conv_id, client_turn_id) is not None
+
+
+def _turn_reply_exists(db: Session, binding: ChannelBinding, user_message: Message) -> bool:
+    """该用户消息对应的 assistant 回复是否已落库(turn_id/user_message_id 关联)。"""
+    rows = db.exec(
+        select(Message)
+        .where(
+            Message.tenant_id == binding.tenant_id,
+            Message.session_id == user_message.session_id,
+            Message.role == "assistant",
         )
+        .order_by(Message.created_at)
     ).all()
-    for session_id in session_ids:
-        if _user_message_with_client_turn_exists(db, session_id, client_turn_id):
+    for row in rows:
+        metadata = row.metadata_json or {}
+        turn_ids = {
+            str(metadata.get("turn_id") or "").strip(),
+            str(metadata.get("user_message_id") or "").strip(),
+            str(metadata.get("client_turn_id") or "").strip(),
+        }
+        if user_message.id in turn_ids:
             return True
     return False
 
@@ -337,6 +393,11 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
     # 作用域以绑定配置为准(适配器侧可能拿的是启动时旧值):统一覆盖后再使用
     scope = external_account_scope(None, binding)
     inbound.account_scope = scope
+    command = parse_command(inbound.text)
+    target = {
+        "to_user_id": inbound.conv_key if inbound.is_group else inbound.from_user_id,
+        "context_token": inbound.context_token,
+    }
 
     with Session(use_engine) as db:
         event = ChannelInboundEvent(
@@ -351,8 +412,7 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
         try:
             db.commit()
         except IntegrityError:
-            # (binding_id, event_id) 唯一冲突:默认已处理跳过;
-            # 陈旧 processing(疑似崩溃残留且消息未落库)则接管重跑
+            # (binding_id, event_id) 唯一冲突:默认已处理跳过
             db.rollback()
             stale = db.exec(
                 select(ChannelInboundEvent).where(
@@ -360,30 +420,54 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
                     ChannelInboundEvent.event_id == inbound.event_id,
                 )
             ).first()
-            if (
-                stale
-                and stale.status == "processing"
-                and stale.updated_at <= utc_now() - timedelta(seconds=STALE_PROCESSING_SECONDS)
-                and not _client_turn_seen_in_conv(db, binding, inbound.external_conv_id, inbound.event_id)
+            if stale and stale.status == "processing" and stale.updated_at <= utc_now() - timedelta(
+                seconds=STALE_PROCESSING_SECONDS
             ):
-                logger.warning(
-                    "接管卡死的入站事件 binding=%s event=%s(status=%s,updated_at=%s)",
-                    binding.id,
-                    inbound.event_id,
-                    stale.status,
-                    stale.updated_at,
+                turn_message = _find_turn_user_message_in_conv(
+                    db, binding, inbound.external_conv_id, inbound.event_id
                 )
-                db.delete(stale)
-                db.commit()
-                return process_inbound(binding, inbound, db_engine=db_engine)
+                if not turn_message:
+                    # 消息未落库(崩溃在登记后):删除旧行接管重跑
+                    logger.warning(
+                        "接管卡死的入站事件 binding=%s event=%s(status=%s,updated_at=%s)",
+                        binding.id,
+                        inbound.event_id,
+                        stale.status,
+                        stale.updated_at,
+                    )
+                    db.delete(stale)
+                    db.commit()
+                    return process_inbound(binding, inbound, db_engine=db_engine)
+                if not _turn_reply_exists(db, binding, turn_message):
+                    # 消息已落库但 turn 未完成:不重跑(避免工具副作用重复),
+                    # 标 failed + 向该会话发中断通知
+                    logger.warning(
+                        "入站事件 turn 未完成(崩溃窗口),标记失败 binding=%s event=%s",
+                        binding.id,
+                        inbound.event_id,
+                    )
+                    stale.status = "failed"
+                    stale.error = "process_exit_incomplete_turn"
+                    stale.updated_at = utc_now()
+                    db.add(stale)
+                    db.add(
+                        ChannelDelivery(
+                            tenant_id=binding.tenant_id,
+                            binding_id=binding.id,
+                            session_id=turn_message.session_id,
+                            message_id=None,
+                            target_json=dict(target),
+                            kind="error_notice",
+                            text=INTERRUPTED_NOTICE_TEXT,
+                            status="pending",
+                            next_attempt_at=utc_now(),
+                            idempotency_key=new_id("chnotice"),
+                        )
+                    )
+                    db.commit()
             return False
 
         # 指令拦截:早于身份解析与会话创建,指令消息不进 AgentLoop
-        command = parse_command(inbound.text)
-        target = {
-            "to_user_id": inbound.conv_key if inbound.is_group else inbound.from_user_id,
-            "context_token": inbound.context_token,
-        }
         if command:
             if command.kind in {"bind", "unbind"}:
                 reply = _run_bind_command(db, binding, inbound, command)
@@ -442,7 +526,7 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
                 target,
                 f"当前员工已下线，已为你切回默认员工「{fallback_name}」。",
             )
-        if _user_message_with_client_turn_exists(db, chat_session.id, inbound.event_id):
+        if _user_message_with_client_turn_exists(db, chat_session.id, inbound.event_id, binding.tenant_id):
             # 崩溃恢复去重：同一 event 的用户消息已落库
             event.status = "done"
             event.processed_at = utc_now()

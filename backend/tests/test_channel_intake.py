@@ -7,6 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.channels.service_intake as intake_module
 import app.core.agent_loop as agent_loop_module
+from app.channels.service_identity import channel_username
 from app.channels.service_intake import (
     _send_wechat_typing as _real_send_wechat_typing,
 )
@@ -238,7 +239,7 @@ def test_group_message_uses_group_account_and_sender_prefix() -> None:
         # 群消息回复投递到群会话而不是发言人
         assert chat_session.channel_target_json["to_user_id"] == "room_123456"
         group_user = db.get(User, chat_session.user_id)
-        assert group_user.username == "wechat_group_room_123456"
+        assert group_user.username == channel_username("tenant_demo", "wechat", "group_room_123456")
 
 
 def test_failure_marks_event_failed_and_stages_error_notice() -> None:
@@ -557,3 +558,114 @@ def test_startup_sweep_takes_over_stale_events() -> None:
     with Session(engine) as db:
         by_event = {row.event_id: row.status for row in db.exec(select(ChannelInboundEvent)).all()}
         assert by_event == {"evt_sweep": "done", "evt_fresh": "processing", "evt_done": "done"}
+
+
+# ---------- 崩溃恢复:turn 未完成窗口 ----------
+
+
+def _seed_incomplete_turn(engine, binding_id: str, event_id: str, *, with_reply: bool) -> None:
+    from datetime import timedelta
+
+    with Session(engine) as db:
+        db.add(
+            ChatSession(
+                id="session_incomplete",
+                tenant_id="tenant_demo",
+                user_id="user_x",
+                agent_id="agent_1",
+                channel="wechat",
+                external_conv_id="wechat_p2p_user_ab12cd34@im.wechat",
+                channel_binding_id=binding_id,
+            )
+        )
+        db.add(
+            Message(
+                id="msg_turn_user",
+                tenant_id="tenant_demo",
+                session_id="session_incomplete",
+                role="user",
+                content="你好",
+                metadata_json={"client_turn_id": event_id},
+            )
+        )
+        if with_reply:
+            db.add(
+                Message(
+                    id="msg_turn_reply",
+                    tenant_id="tenant_demo",
+                    session_id="session_incomplete",
+                    role="assistant",
+                    content="回复",
+                    metadata_json={"turn_id": "msg_turn_user", "user_message_id": "msg_turn_user"},
+                )
+            )
+        db.add(
+            ChannelInboundEvent(
+                tenant_id="tenant_demo",
+                binding_id=binding_id,
+                channel="wechat",
+                event_id=event_id,
+                payload_json={},
+                status="processing",
+                updated_at=utc_now() - timedelta(seconds=300),
+            )
+        )
+        db.commit()
+
+
+def test_incomplete_turn_marks_failed_and_notices_without_rerun() -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_incomplete_turn(engine, binding_id, "evt_gap", with_reply=False)
+    binding = _load_binding(engine, binding_id)
+
+    # 不重跑:标记 failed + 中断通知投递
+    assert process_inbound(binding, _p2p_message("evt_gap"), db_engine=engine) is False
+    assert RecordingAgentLoop.calls == []
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "failed"
+        assert event.error == "process_exit_incomplete_turn"
+        notices = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "error_notice")
+        ).all()
+        assert len(notices) == 1
+        assert notices[0].text == "上一条消息处理中断，请重新发送。"
+        assert notices[0].session_id == "session_incomplete"
+
+
+def test_completed_turn_is_not_misflagged() -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_incomplete_turn(engine, binding_id, "evt_done_turn", with_reply=True)
+    binding = _load_binding(engine, binding_id)
+
+    assert process_inbound(binding, _p2p_message("evt_done_turn"), db_engine=engine) is False
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        # 已有完成回复:维持跳过语义,不标 failed、不发通知
+        assert event.status == "processing"
+        assert db.exec(select(ChannelDelivery)).all() == []
+
+
+def test_sweep_marks_incomplete_turn_failed_consistently() -> None:
+    from app.channels.service_intake import sweep_stale_inbound_events
+
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_incomplete_turn(engine, binding_id, "evt_gap_sweep", with_reply=False)
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        event.payload_json = _p2p_message("evt_gap_sweep")
+        db.add(event)
+        db.commit()
+
+    taken = sweep_stale_inbound_events(db_engine=engine)
+    # sweep 与运行时接管一致:不重跑,标 failed + 通知
+    assert taken == 0
+    assert RecordingAgentLoop.calls == []
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "failed"
+        assert event.error == "process_exit_incomplete_turn"
+        assert db.exec(select(ChannelDelivery).where(ChannelDelivery.kind == "error_notice")).all()

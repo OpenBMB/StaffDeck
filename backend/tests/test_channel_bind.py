@@ -8,7 +8,7 @@ import app.channels.service_intake as intake_module
 import app.core.agent_loop as agent_loop_module
 from app.api.auth import list_users
 from app.api.channels import create_bind_code
-from app.channels.service_identity import resolve_or_provision_user
+from app.channels.service_identity import channel_username, resolve_or_provision_user
 from app.channels.service_intake import process_inbound
 from app.channels.service_routing import parse_command
 from app.db.models import (
@@ -132,7 +132,7 @@ def _make_lazy_account(engine) -> User:
         lazy = User(
             id="user_lazy",
             tenant_id="tenant_demo",
-            username="wechat_user_ab12cd34@im.wechat",
+            username=channel_username("tenant_demo", "wechat", "user_ab12cd34@im.wechat"),
             display_name="微信用户 ab12cd34",
             role="member",
             source="wechat",
@@ -256,7 +256,7 @@ def test_list_users_hides_channel_accounts_by_default() -> None:
             User(
                 id="u_lazy",
                 tenant_id="tenant_demo",
-                username="wechat_user_ab12cd34@im.wechat",
+                username=channel_username("tenant_demo", "wechat", "user_ab12cd34@im.wechat"),
                 source="wechat",
                 password_hash="x",
             )
@@ -268,7 +268,11 @@ def test_list_users_hides_channel_accounts_by_default() -> None:
         assert all(row.source == "web" for row in default_rows)
 
         all_rows = list_users("tenant_demo", include_channel=True, current_user=admin, db=db)
-        assert {row.username for row in all_rows} == {"admin", "zhangsan", "wechat_user_ab12cd34@im.wechat"}
+        assert {row.username for row in all_rows} == {
+            "admin",
+            "zhangsan",
+            channel_username("tenant_demo", "wechat", "user_ab12cd34@im.wechat"),
+        }
         lazy_row = next(row for row in all_rows if row.id == "u_lazy")
         assert lazy_row.source == "wechat"
 
@@ -443,7 +447,7 @@ def test_unbind_moves_history_back_to_lazy_account() -> None:
         assert db.get(ChatSession, "s_p2p").user_id == "user_lazy"
         memory = db.get(MemoryRecord, "mem_1")
         assert memory.user_id == "user_lazy"
-        assert memory.username == "wechat_user_ab12cd34@im.wechat"
+        assert memory.username == channel_username("tenant_demo", "wechat", "user_ab12cd34@im.wechat")
 
     # 解绑后身份解析回到懒建账号
     with Session(engine) as db:
@@ -473,7 +477,9 @@ def test_unbind_creates_lazy_account_when_missing() -> None:
 
     with Session(engine) as db:
         lazy = db.exec(
-            select(User).where(User.username == "wechat_user_ab12cd34@im.wechat")
+            select(User).where(
+                User.username == channel_username("tenant_demo", "wechat", "user_ab12cd34@im.wechat")
+            )
         ).one()
         assert lazy.source == "wechat"
         identity = db.exec(select(ChannelIdentity)).one()
@@ -540,7 +546,7 @@ def _seed_bound_state(engine) -> None:
             User(
                 id="user_lazy",
                 tenant_id="tenant_demo",
-                username="wechat_user_ab12cd34@im.wechat",
+                username=channel_username("tenant_demo", "wechat", "user_ab12cd34@im.wechat"),
                 display_name="微信用户 ab12cd34",
                 source="wechat",
                 password_hash="x",
@@ -636,7 +642,7 @@ def test_delete_my_identity_binding_unbinds_like_command() -> None:
         assert db.get(ChatSession, "s_p2p").user_id == "user_lazy"
         memory = db.get(MemoryRecord, "mem_1")
         assert memory.user_id == "user_lazy"
-        assert memory.username == "wechat_user_ab12cd34@im.wechat"
+        assert memory.username == channel_username("tenant_demo", "wechat", "user_ab12cd34@im.wechat")
 
     # 再删一次 → 404
     again = client.delete(
@@ -718,7 +724,7 @@ def _make_wecom_lazy_account(engine) -> User:
         lazy = User(
             id="user_wecom_lazy",
             tenant_id="tenant_demo",
-            username="wecom_aib_bot1_zhangsan",
+            username=channel_username("tenant_demo", "wecom", "zhangsan", "aib_bot1"),
             display_name="企微用户 zhangsan",
             role="member",
             source="wecom",
@@ -832,7 +838,7 @@ def test_wecom_unbind_moves_history_back() -> None:
         assert db.get(ChatSession, "s_wecom_p2p").user_id == "user_wecom_lazy"
         memory = db.get(MemoryRecord, "mem_wecom_1")
         assert memory.user_id == "user_wecom_lazy"
-        assert memory.username == "wecom_aib_bot1_zhangsan"
+        assert memory.username == channel_username("tenant_demo", "wecom", "zhangsan", "aib_bot1")
 
     with Session(engine) as db:
         user = resolve_or_provision_user(db, "tenant_demo", "wecom", "zhangsan", None, "aib_bot1")
@@ -860,7 +866,7 @@ def test_wecom_delete_my_identity_binding_moves_data_back() -> None:
         lazy = User(
             id="user_wecom_lazy",
             tenant_id="tenant_demo",
-            username="wecom_corpA_zhangsan",
+            username=channel_username("tenant_demo", "wecom", "zhangsan", "corpA"),
             display_name="企微用户 zhangsan",
             source="wecom",
             password_hash="x",
@@ -911,4 +917,4 @@ def test_wecom_delete_my_identity_binding_moves_data_back() -> None:
         assert db.get(ChatSession, "s_wecom_bound").user_id == "user_wecom_lazy"
         memory = db.get(MemoryRecord, "mem_wecom_bound")
         assert memory.user_id == "user_wecom_lazy"
-        assert memory.username == "wecom_corpA_zhangsan"
+        assert memory.username == channel_username("tenant_demo", "wecom", "zhangsan", "corpA")

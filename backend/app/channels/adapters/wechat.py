@@ -388,6 +388,7 @@ class WeChatPollManager:
         self._recovery_cooldown_seconds = recovery_cooldown_seconds
         self._threads: dict[str, threading.Thread] = {}
         self._stop_flags: dict[str, threading.Event] = {}
+        self._clients: dict[str, WeChatClient] = {}
         self._lock = threading.Lock()
         self._stopped = threading.Event()
         self._reconcile_thread: threading.Thread | None = None
@@ -429,8 +430,23 @@ class WeChatPollManager:
     def stop_binding(self, binding_id: str) -> None:
         with self._lock:
             flag = self._stop_flags.get(binding_id)
+            client = self._clients.get(binding_id)
         if flag:
             flag.set()
+        # 中止在飞长轮询(最长 40s),保证重配时的等待有界
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                logger.debug("关闭微信 client 失败(忽略) binding=%s", binding_id, exc_info=True)
+
+    def wait_binding_stopped(self, binding_id: str, timeout_seconds: float = 5.0) -> bool:
+        """有界等待 poll 线程退出(重配凭证前调用),返回是否已停止。"""
+        with self._lock:
+            thread = self._threads.get(binding_id)
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout_seconds)
+        return not (thread and thread.is_alive())
 
     def running_binding_ids(self) -> set[str]:
         with self._lock:
@@ -481,6 +497,8 @@ class WeChatPollManager:
                 cursor = str(config.get("get_updates_buf") or "")
                 ilink_bot_id = str(config.get("ilink_bot_id") or "")
                 client = self._client_factory(binding)
+                with self._lock:
+                    self._clients[binding_id] = client
                 try:
                     resp = client.get_updates(cursor, timeout_seconds=poll_timeout)
                     errcode = resp.get("errcode") or resp.get("ret") or 0
@@ -521,6 +539,8 @@ class WeChatPollManager:
                 logger.exception("微信 poll 线程异常 binding=%s", binding_id)
                 stop_flag.wait(backoff)
                 backoff = min(backoff * 2, POLL_BACKOFF_MAX_SECONDS)
+        with self._lock:
+            self._clients.pop(binding_id, None)
 
     def _on_failure(
         self,

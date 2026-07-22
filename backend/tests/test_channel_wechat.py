@@ -787,3 +787,53 @@ def test_for_binding_clamps_stored_illegal_baseurl() -> None:
     binding.config_json = {"baseurl": "https://szilinkai.weixin.qq.com"}
     client = WeChatClient.for_binding(binding)
     assert client.base_url == "https://szilinkai.weixin.qq.com"
+
+
+def test_reconfigure_stop_aborts_inflight_poll_and_restarts() -> None:
+    engine = _test_engine()
+    binding_id = _seed_poll_binding(engine)
+
+    class BlockingPollClient:
+        def __init__(self):
+            self.closed = False
+            self.calls = 0
+            self._gate = threading.Event()
+
+        def get_updates(self, cursor, *, timeout_seconds: float = 40.0):
+            self.calls += 1
+            if self.calls == 1:
+                return {"ret": 0, "msgs": [], "get_updates_buf": "c1"}
+            self._gate.wait(60)  # 模拟在飞长轮询
+            return {"ret": 0, "msgs": [], "get_updates_buf": cursor}
+
+        def close(self):
+            self.closed = True
+            self._gate.set()
+
+    old_client = BlockingPollClient()
+    created: list = []
+
+    def factory(binding):
+        # 同一连接期内复用同一 client;被 close(重配)后下次工厂调用给新 client
+        if not created:
+            created.append(old_client)
+        elif created[-1].closed:
+            created.append(BlockingPollClient())
+        return created[-1]
+
+    manager = WeChatPollManager(db_engine=engine, client_factory=factory)
+    manager.ensure_binding(binding_id)
+    assert _wait_for(lambda: old_client.calls >= 2)
+
+    started = time.monotonic()
+    manager.stop_binding(binding_id)
+    # 在飞长轮询被 close 中止,等待有界(远小于 40s)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0) is True
+    assert time.monotonic() - started < 5.0
+    assert old_client.closed is True
+
+    # 重扫重启:新 client 接管,老 client 不再处理新消息
+    manager.ensure_binding(binding_id)
+    assert _wait_for(lambda: len(created) >= 2 and created[1].calls >= 1)
+    assert old_client.calls == 2
+    manager.stop_binding(binding_id)

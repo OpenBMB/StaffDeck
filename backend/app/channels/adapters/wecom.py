@@ -169,6 +169,20 @@ class WeComStreamManager:
             # 容忍超时:进行中的对话轮可能很长,worker 是 daemon,不阻塞停机
             worker.join(timeout=5.0)
 
+    def wait_binding_stopped(self, binding_id: str, timeout_seconds: float = 5.0) -> bool:
+        """有界等待 stream/worker 线程退出(重配凭证前调用),返回是否已停止。"""
+        with self._lock:
+            state = self._streams.get(binding_id)
+        if not state:
+            return True
+        thread = state.thread
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout_seconds)
+        worker = state.worker
+        if worker and worker.is_alive():
+            worker.join(timeout=timeout_seconds)
+        return not ((thread and thread.is_alive()) or (worker and worker.is_alive()))
+
     def running_binding_ids(self) -> set[str]:
         with self._lock:
             return {

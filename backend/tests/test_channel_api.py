@@ -1260,3 +1260,23 @@ def test_confirmed_sanitizes_baseurl(monkeypatch) -> None:
         assert db.get(ChannelBinding, binding_id).config_json["baseurl"] == (
             "https://szilinkai.weixin.qq.com"
         )
+
+
+def test_post_binding_allows_multiple_bindings_per_agent_channel() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    first = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "wechat"},
+        headers=_auth(users["owner"]),
+    )
+    second = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "wechat"},
+        headers=_auth(users["owner"]),
+    )
+    assert first.status_code == 200 and second.status_code == 200
+    # 同 Agent 同渠道:总是创建新绑定,不再命中返回旧实例
+    assert first.json()["id"] != second.json()["id"]

@@ -1,7 +1,11 @@
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.channels.service_identity import external_identity_for_message, resolve_or_provision_user
+from app.channels.service_identity import (
+    channel_username,
+    external_identity_for_message,
+    resolve_or_provision_user,
+)
 from app.db.models import ChannelIdentity, Tenant, User
 
 
@@ -42,7 +46,7 @@ def test_provision_creates_member_user_and_identity() -> None:
         db.commit()
 
         assert user.role == "member"
-        assert user.username == "wechat_wxid_ab12cd34"
+        assert user.username == channel_username("tenant_demo", "wechat", "wxid_ab12cd34")
         assert user.display_name == "微信用户 ab12cd34"
         assert user.password_hash
 
@@ -78,7 +82,7 @@ def test_group_account_provision() -> None:
         user = resolve_or_provision_user(db, "tenant_demo", "wechat", "group_room_123456", "微信群聊 3456")
         db.commit()
 
-        assert user.username == "wechat_group_room_123456"
+        assert user.username == channel_username("tenant_demo", "wechat", "group_room_123456")
         assert user.display_name == "微信群聊 3456"
 
 
@@ -88,7 +92,7 @@ def test_username_conflict_falls_back_to_existing_user() -> None:
         _seed_tenant(db)
         existing = User(
             tenant_id="tenant_demo",
-            username="wechat_wxid_conflict",
+            username=channel_username("tenant_demo", "wechat", "wxid_conflict"),
             display_name="老账号",
             role="member",
             password_hash="x",
@@ -142,6 +146,31 @@ def test_long_external_id_username_uses_stable_hash_suffix() -> None:
         # 稳定:同输入同输出
         from app.channels.service_identity import channel_username
 
-        assert channel_username("wecom", id_a, "corpX") == user_a.username
-        # 短 id 行为不变(无 hash 后缀)
-        assert ".." not in channel_username("wecom", "zhangsan", "corpX")
+        assert channel_username("tenant_demo", "wecom", id_a, "corpX") == user_a.username
+        # 短 id 同样带 hash 后缀(本轮语义)
+        assert ".." in channel_username("tenant_demo", "wecom", "zhangsan", "corpX")
+
+
+def test_username_always_carries_stable_hash() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        # 清洗后同形的两个 id,hash 后不再同名,各自建不同 User
+        user_a = resolve_or_provision_user(db, "tenant_demo", "wechat", "a/b", None)
+        user_b = resolve_or_provision_user(db, "tenant_demo", "wechat", "a_b", None)
+        db.commit()
+        assert user_a.id != user_b.id
+        assert user_a.username != user_b.username
+        assert ".." in user_a.username and ".." in user_b.username
+
+        # 不同租户同 id:身份键含 tenant,username 不同
+        db.add(Tenant(id="tenant_b", name="B"))
+        user_c = resolve_or_provision_user(db, "tenant_b", "wechat", "a/b", None)
+        db.commit()
+        assert user_c.username != user_a.username
+
+        # 超长 id 仍 ≤64 且带 hash 后缀
+        long_user = resolve_or_provision_user(db, "tenant_demo", "wecom", "x" * 100, None, "corpX")
+        db.commit()
+        assert len(long_user.username) <= 64
+        assert ".." in long_user.username

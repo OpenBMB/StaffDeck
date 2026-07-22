@@ -72,18 +72,26 @@ def external_identity_for_message(
     return from_user_id, f"{label}用户 {_id_suffix(from_user_id, 8)}"
 
 
-def channel_username(channel: str, external_id: str, account_scope: str = "") -> str:
+def channel_username(
+    tenant_id: str,
+    channel: str,
+    external_id: str,
+    account_scope: str = "",
+) -> str:
+    """懒建账号 username:可读段 + 完整身份键 (tenant, channel, scope, external_id) 的
+    稳定 hash 后缀(清洗后同名/跨租户同 id/超长 id 均不撞),总长 ≤64。"""
     cleaned = _USERNAME_UNSAFE.sub("_", external_id)
     if account_scope:
         scope = _USERNAME_UNSAFE.sub("_", account_scope)[:24]
         readable = f"{channel}_{scope}_{cleaned}"
     else:
         readable = f"{channel}_{cleaned}"
-    if len(readable) <= 64:
-        return readable
-    # 超长时保留可读前缀(含 scope 段)+ 稳定 hash 后缀,前缀相同尾部不同的 id 不再撞名
-    digest = hashlib.sha256(external_id.encode("utf-8")).hexdigest()[:10]
-    return f"{readable[:52]}..{digest}"
+    digest = hashlib.sha256(
+        f"{tenant_id}:{channel}:{account_scope}:{external_id}".encode("utf-8")
+    ).hexdigest()[:8]
+    if len(readable) > 53:
+        readable = readable[:53]
+    return f"{readable}..{digest}"
 
 
 def find_channel_identity(
@@ -120,7 +128,7 @@ def resolve_or_provision_user(
 
     # 群账号 external_id 已内嵌 scope,username 不再重复加 scope 段
     username_scope = "" if external_id.startswith("group_") else account_scope
-    username = channel_username(channel, external_id, username_scope)
+    username = channel_username(tenant_id, channel, external_id, username_scope)
     user = User(
         tenant_id=tenant_id,
         username=username,
@@ -187,7 +195,7 @@ def unbind_external_identity(
     if not identity or not current or current.source != "web":
         return None
 
-    lazy_username = channel_username(channel, external_id, account_scope)
+    lazy_username = channel_username(tenant_id, channel, external_id, account_scope)
     lazy = db.exec(
         select(User).where(User.tenant_id == tenant_id, User.username == lazy_username)
     ).first()
@@ -247,6 +255,9 @@ def migrate_scope_for_binding(
 ) -> dict[str, int]:
     """绑定生效 scope 变化时的连续性迁移(同一事务内调用,范围限定当前 binding)。
 
+    仅允许"首次补充企业信息"形态:旧 scope 是本 binding 派生值(binding.id 或
+    config_json.bot_id)且新 scope 是 corp_id;corpA→corpB 等跨企业变更不迁移
+    (端点应已拦截 400,此处防御性零操作)。
     - channel_identities:仅迁移"该 binding 会话引用到的账号集合"内的旧 scope 行;
       冲突(新 scope 下已存在同 external_user_id 的行)时合并:该 binding 会话的
       user_id 改指新 scope 既有账号(会话链接的记忆同步),删除旧 scope 行——
@@ -256,6 +267,17 @@ def migrate_scope_for_binding(
     """
     stats = {"identities": 0, "identities_conflicted": 0, "sessions": 0, "conv_states": 0}
     if old_scope == new_scope or binding.channel != "wecom":
+        return stats
+    config = dict(binding.config_json or {})
+    derived_scopes = {binding.id, str(config.get("bot_id") or "").strip()} - {""}
+    corp_id = str(config.get("corp_id") or "").strip()
+    if not (old_scope in derived_scopes and corp_id and new_scope == corp_id):
+        logger.warning(
+            "拒绝跨企业 scope 迁移(仅允许 派生bot→corp_id 的首次补充):old=%s new=%s binding=%s",
+            old_scope,
+            new_scope,
+            binding.id,
+        )
         return stats
 
     binding_sessions = db.exec(

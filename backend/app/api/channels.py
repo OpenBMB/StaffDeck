@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 
 from app.channels import (
     channel_services_enabled,
-    start_binding_ingress,
+    restart_binding_ingress,
     stop_binding_ingress,
 )
 from app.channels.adapters.wechat import WeChatClient, sanitize_wechat_baseurl, validate_wechat_host
@@ -36,7 +36,6 @@ from app.channels.schema import (
     channel_delivery_read,
 )
 from app.channels.service_identity import (
-    external_account_scope,
     migrate_scope_for_binding,
     scope_from_config,
     unbind_external_identity,
@@ -156,14 +155,7 @@ def create_channel_binding(
     if request.channel not in SUPPORTED_CHANNELS:
         raise HTTPException(status_code=400, detail=f"v1 仅支持渠道: {sorted(SUPPORTED_CHANNELS)}")
     ensure_agent_scope_manager(db, request.tenant_id, request.agent_id, current_user)
-    existing = db.exec(
-        select(ChannelBinding).where(
-            ChannelBinding.agent_id == request.agent_id,
-            ChannelBinding.channel == request.channel,
-        )
-    ).first()
-    if existing:
-        return channel_binding_read(db, existing)
+    # 同一员工同一渠道允许多个绑定实例,总是新建
     binding = ChannelBinding(
         tenant_id=request.tenant_id,
         agent_id=request.agent_id,
@@ -426,7 +418,7 @@ def _activate_binding_with_existing_credentials(db: Session, binding: ChannelBin
     db.commit()
     db.refresh(binding)
     if channel_services_enabled():
-        start_binding_ingress(binding.channel, binding.id)
+        restart_binding_ingress(binding.channel, binding.id)
 
 
 @router.get("/{binding_id}/wechat/qrcode-status", response_model=ChannelQRCodeStatusRead)
@@ -506,7 +498,7 @@ def poll_wechat_qrcode_status(
     db.commit()
     db.refresh(binding)
     if channel_services_enabled():
-        start_binding_ingress(binding.channel, binding.id)
+        restart_binding_ingress(binding.channel, binding.id)
     return ChannelQRCodeStatusRead(status=status, binding=channel_binding_read(db, binding))
 
 
@@ -528,7 +520,8 @@ def save_wecom_credentials(
     if not bot_id or not secret:
         raise HTTPException(status_code=400, detail="bot_id 与 secret 均不能为空")
     # 先生效旧 scope(按当前已存配置),保存后若变化则做连续性迁移
-    old_scope = scope_from_config(dict(binding.config_json or {}), binding)
+    old_config = dict(binding.config_json or {})
+    old_scope = scope_from_config(old_config, binding)
     binding.credentials_enc = encrypt_channel_secret(secret)
     config = dict(binding.config_json or {})
     config.update({"bot_id": bot_id, "bound_at": utc_now().isoformat()})
@@ -545,14 +538,24 @@ def save_wecom_credentials(
     binding.updated_at = utc_now()
     db.add(binding)
     adopt_orphan_channel_sessions(db, binding)
-    new_scope = external_account_scope(db, binding)
-    if new_scope != old_scope:
-        # corp_id 补填/变更导致生效 scope 变化:迁移身份/会话/指针保持连续
+    new_scope = scope_from_config(config, binding)
+    # 此前无凭证(从未有流量)时,scope 从 binding.id 兜底值变化无历史可迁,直接放行;
+    # 有凭证历史时 scope 变化才进入迁移/拦截判定
+    old_had_credentials = bool(str(old_config.get("bot_id") or "").strip())
+    if new_scope != old_scope and old_had_credentials:
+        # 仅"首次补充企业信息"(派生 scope → corp_id)允许迁移;corpA→corpB 等跨企业变更禁止
+        derived_scopes = {binding.id, str(old_config.get("bot_id") or "").strip()} - {""}
+        new_corp_id = str(config.get("corp_id") or "").strip()
+        if not (old_scope in derived_scopes and new_corp_id and new_scope == new_corp_id):
+            raise HTTPException(
+                status_code=400,
+                detail="企业变更不允许直接修改，请删除后重新创建绑定",
+            )
         migrate_scope_for_binding(db, binding, old_scope, new_scope)
     db.commit()
     db.refresh(binding)
     if channel_services_enabled():
-        start_binding_ingress(binding.channel, binding.id)
+        restart_binding_ingress(binding.channel, binding.id)
     return channel_binding_read(db, binding)
 
 

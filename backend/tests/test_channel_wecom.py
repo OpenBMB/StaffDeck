@@ -15,6 +15,7 @@ from app.channels.adapters.wecom import (
     is_self_frame,
     normalize_wecom_frame,
 )
+from app.channels.service_identity import channel_username
 from app.channels.service_intake import process_inbound
 from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.db.models import (
@@ -413,7 +414,7 @@ def test_wecom_p2p_inbound_full_chain() -> None:
         assert chat_session.external_conv_id == "wecom_aib_bot1_p2p_zhangsan"
         assert chat_session.channel_binding_id == binding_id
         user = db.get(User, chat_session.user_id)
-        assert user.username == "wecom_aib_bot1_zhangsan"
+        assert user.username == channel_username("tenant_demo", "wecom", "zhangsan", "aib_bot1")
         assert user.display_name == "企微用户 zhangsan"
         assert user.source == "wecom"
         event = db.exec(select(ChannelInboundEvent)).one()
@@ -442,7 +443,7 @@ def test_wecom_group_inbound_uses_sender_name_prefix() -> None:
         # 群聊回复投递到群 chatid
         assert chat_session.channel_target_json["to_user_id"] == "wr_group1"
         group_user = db.get(User, chat_session.user_id)
-        assert group_user.username == "wecom_group_aib_bot1_wr_group1"
+        assert group_user.username == channel_username("tenant_demo", "wecom", "group_aib_bot1_wr_group1")
 
 
 def test_wecom_switch_command_routes_agents() -> None:
@@ -673,3 +674,75 @@ def test_reconcile_skips_write_when_connected_unchanged(monkeypatch) -> None:
     assert commits["count"] == 0
     assert _load_binding(engine, binding_id).connected is True
     manager.stop_binding(binding_id)
+
+
+# ---------- 重配凭证真正重启 ingress ----------
+
+
+def test_wecom_credentials_change_restarts_stream_with_new_client() -> None:
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine, bot_id="bot_1")
+    created: list[tuple[str, str, FakeWSClient]] = []
+
+    def factory(bot_id: str, secret: str):
+        client = FakeWSClient()
+        created.append((bot_id, secret, client))
+        return client
+
+    manager = WeComStreamManager(db_engine=engine, client_factory=factory)
+    manager.ensure_binding(binding_id)
+    assert _wait_for(lambda: len(created) == 1)
+    assert _wait_for(lambda: manager.get_stream(binding_id) is not None)
+    first = created[0][2]
+
+    # 换凭证:stop+wait 后旧 stream 退出,新 client 以新凭证接管
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        binding.credentials_enc = encrypt_channel_secret("secret_2")
+        binding.config_json = {"bot_id": "bot_2"}
+        db.add(binding)
+        db.commit()
+
+    manager.stop_binding(binding_id)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0) is True
+    assert first.disconnect_calls == 1
+
+    manager.ensure_binding(binding_id)
+    assert _wait_for(lambda: len(created) == 2)
+    assert created[1][0] == "bot_2"
+    assert created[1][1] == "secret_2"
+    assert created[1][2] is not first
+
+
+def test_wecom_endpoint_restart_flow_via_spy_manager(monkeypatch) -> None:
+    import app.channels
+    import app.api.channels as channels_api
+
+    engine = _test_engine()
+    users = _seed_api_users(engine)
+    binding_id = _seed_wecom_binding(engine, status="pending", credentials_enc=None, config_json={})
+    calls: list[str] = []
+
+    class SpyManager:
+        def stop_binding(self, bid):
+            calls.append(f"stop:{bid}")
+
+        def wait_binding_stopped(self, bid, timeout_seconds=5.0):
+            calls.append(f"wait:{bid}")
+            return True
+
+        def ensure_binding(self, bid):
+            calls.append(f"ensure:{bid}")
+
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: SpyManager())
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
+
+    client = _make_api_client(engine)
+    response = client.post(
+        f"/api/enterprise/channels/{binding_id}/wecom/credentials",
+        json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "bot_secret"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    # stop → wait → start 顺序
+    assert calls == [f"stop:{binding_id}", f"wait:{binding_id}", f"ensure:{binding_id}"]

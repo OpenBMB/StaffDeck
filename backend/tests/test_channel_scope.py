@@ -7,6 +7,7 @@ import app.channels.service_intake as intake_module
 import app.core.agent_loop as agent_loop_module
 from app.channels.adapters.wecom import normalize_wecom_frame
 from app.channels.service_identity import (
+    channel_username,
     external_account_scope,
     resolve_or_provision_user,
 )
@@ -170,8 +171,8 @@ def test_same_tenant_different_corp_same_userid_get_different_users() -> None:
     with Session(engine) as db:
         usernames = {row.username for row in db.exec(select(User)).all()}
         # 同租户两企业同名不撞 username
-        assert "wecom_corpA_zhangsan" in usernames
-        assert "wecom_corpB_zhangsan" in usernames
+        assert channel_username("tenant_demo", "wecom", "zhangsan", "corpA") in usernames
+        assert channel_username("tenant_demo", "wecom", "zhangsan", "corpB") in usernames
         identities = db.exec(select(ChannelIdentity)).all()
         assert len(identities) == 2
         assert {i.external_account_scope for i in identities} == {"corpA", "corpB"}
@@ -221,7 +222,7 @@ def test_bind_unbind_never_migrates_other_corp_data() -> None:
         lazy_a = User(
             id="lazy_a",
             tenant_id="tenant_demo",
-            username="wecom_corpA_zhangsan",
+            username=channel_username("tenant_demo", "wecom", "zhangsan", "corpA"),
             display_name="企微用户 zhangsan",
             source="wecom",
             password_hash="x",
@@ -229,7 +230,7 @@ def test_bind_unbind_never_migrates_other_corp_data() -> None:
         lazy_b = User(
             id="lazy_b",
             tenant_id="tenant_demo",
-            username="wecom_corpB_zhangsan",
+            username=channel_username("tenant_demo", "wecom", "zhangsan", "corpB"),
             display_name="企微用户 zhangsan",
             source="wecom",
             password_hash="x",
@@ -724,6 +725,11 @@ def test_scope_migration_ignores_unreferenced_identities() -> None:
                 staffdeck_user_id="l2",
             )
         )
+        binding = db.get(ChannelBinding, binding_id)
+        config = dict(binding.config_json or {})
+        config["corp_id"] = "corpA"
+        binding.config_json = config
+        db.add(binding)
         db.add(
             ChatSession(
                 id="s_ref",
@@ -750,7 +756,6 @@ def test_scope_migration_ignores_unreferenced_identities() -> None:
 
         from app.channels.service_identity import migrate_scope_for_binding
 
-        binding = db.get(ChannelBinding, binding_id)
         stats = migrate_scope_for_binding(db, binding, "aib_bot1", "corpA")
         db.commit()
 
@@ -785,11 +790,19 @@ def test_scope_migration_roundtrip_and_noop(monkeypatch) -> None:
         assert db.exec(select(ChannelIdentity)).one().external_account_scope == "corpA"
         assert db.get(ChatSession, "s_scope").external_conv_id == "wecom_corpA_p2p_zhangsan"
 
-    # ② 显式空串去掉 corp_id:scope 回 bot_id,迁回原格式
-    client.post(url, json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s2", "corp_id": ""}, headers=headers)
+    # ② 显式空串去掉 corp_id:跨企业变更,400 拦截且数据零变化
+    cleared = client.post(url, json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s2", "corp_id": ""}, headers=headers)
+    assert cleared.status_code == 400
+    assert "删除后重新创建绑定" in cleared.json()["detail"]
     with Session(engine) as db:
-        assert db.exec(select(ChannelIdentity)).one().external_account_scope == "aib_bot1"
-        assert db.get(ChatSession, "s_scope").external_conv_id == "wecom_aib_bot1_p2p_zhangsan"
+        assert db.exec(select(ChannelIdentity)).one().external_account_scope == "corpA"
+        assert db.get(ChatSession, "s_scope").external_conv_id == "wecom_corpA_p2p_zhangsan"
+
+    # ②b corpA→corpB:同样 400 拦截且零变化
+    changed = client.post(url, json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s2", "corp_id": "corpB"}, headers=headers)
+    assert changed.status_code == 400
+    with Session(engine) as db:
+        assert db.exec(select(ChannelIdentity)).one().external_account_scope == "corpA"
 
     # ③ 再保存一次(scope 无变化):不触发迁移
     calls: list = []
@@ -799,11 +812,11 @@ def test_scope_migration_roundtrip_and_noop(monkeypatch) -> None:
         "migrate_scope_for_binding",
         lambda db, binding, old, new: calls.append((old, new)) or original(db, binding, old, new),
     )
-    client.post(url, json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s3"}, headers=headers)
+    client.post(url, json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s3", "corp_id": "corpA"}, headers=headers)
     assert calls == []
     with Session(engine) as db:
         assert len(db.exec(select(ChannelIdentity)).all()) == 1
-        assert db.get(ChatSession, "s_scope").external_conv_id == "wecom_aib_bot1_p2p_zhangsan"
+        assert db.get(ChatSession, "s_scope").external_conv_id == "wecom_corpA_p2p_zhangsan"
 
 
 def test_migrate_scope_noop_when_unchanged() -> None:
@@ -865,18 +878,18 @@ def test_same_corp_two_bots_get_isolated_sessions_and_outbound() -> None:
 
 def test_scope_migration_narrowed_to_current_binding() -> None:
     engine = _test_engine()
-    binding_a = _seed_wecom_binding(engine, corp_id="corpX", bot_id="bot_a")
-    binding_b = _seed_wecom_binding(engine, corp_id="corpX", bot_id="bot_b", agent_id="agent_2")
+    binding_a = _seed_wecom_binding(engine, bot_id="bot_a")
+    binding_b = _seed_wecom_binding(engine, bot_id="bot_b", agent_id="agent_2")
     with Session(engine) as db:
-        for lazy_id, conv_suffix, bid, agent in (
-            ("lazy_a", "zhangsan", binding_a, "agent_1"),
-            ("lazy_b", "lisi", binding_b, "agent_2"),
+        for lazy_id, conv_suffix, bid, agent, scope in (
+            ("lazy_a", "zhangsan", binding_a, "agent_1", "bot_a"),
+            ("lazy_b", "lisi", binding_b, "agent_2", "bot_b"),
         ):
             db.add(
                 User(
                     id=lazy_id,
                     tenant_id="tenant_demo",
-                    username=f"wecom_corpX_{conv_suffix}",
+                    username=channel_username("tenant_demo", "wecom", conv_suffix, scope),
                     source="wecom",
                     password_hash="x",
                 )
@@ -885,7 +898,7 @@ def test_scope_migration_narrowed_to_current_binding() -> None:
                 ChannelIdentity(
                     tenant_id="tenant_demo",
                     channel="wecom",
-                    external_account_scope="corpX",
+                    external_account_scope=scope,
                     external_user_id=conv_suffix,
                     staffdeck_user_id=lazy_id,
                 )
@@ -897,7 +910,7 @@ def test_scope_migration_narrowed_to_current_binding() -> None:
                     user_id=lazy_id,
                     agent_id=agent,
                     channel="wecom",
-                    external_conv_id=f"wecom_corpX_p2p_{conv_suffix}",
+                    external_conv_id=f"wecom_{scope}_p2p_{conv_suffix}",
                     channel_binding_id=bid,
                 )
             )
@@ -907,7 +920,7 @@ def test_scope_migration_narrowed_to_current_binding() -> None:
             ChannelConvState(
                 tenant_id="tenant_demo",
                 binding_id=binding_a,
-                external_conv_id="wecom_corpX_p2p_zhangsan",
+                external_conv_id="wecom_bot_a_p2p_zhangsan",
                 current_agent_id="agent_1",
             )
         )
@@ -915,7 +928,7 @@ def test_scope_migration_narrowed_to_current_binding() -> None:
             ChannelConvState(
                 tenant_id="tenant_demo",
                 binding_id=binding_b,
-                external_conv_id="wecom_corpX_p2p_lisi",
+                external_conv_id="wecom_bot_b_p2p_lisi",
                 current_agent_id="agent_2",
             )
         )
@@ -923,8 +936,14 @@ def test_scope_migration_narrowed_to_current_binding() -> None:
 
         from app.channels.service_identity import migrate_scope_for_binding
 
-        # A 的 corp_id 从 corpX 改成 corpY:只有 A 的身份/会话/指针迁移
-        stats = migrate_scope_for_binding(db, db.get(ChannelBinding, binding_a), "corpX", "corpY")
+        # A 首次补填企业信息(bot_a → corpY):只有 A 的身份/会话/指针迁移
+        binding_a_row = db.get(ChannelBinding, binding_a)
+        config = dict(binding_a_row.config_json or {})
+        config["corp_id"] = "corpY"
+        binding_a_row.config_json = config
+        db.add(binding_a_row)
+        db.commit()
+        stats = migrate_scope_for_binding(db, db.get(ChannelBinding, binding_a), "bot_a", "corpY")
         db.commit()
         assert stats["identities"] == 1
         assert stats["sessions"] == 1
@@ -944,25 +963,25 @@ def test_scope_migration_narrowed_to_current_binding() -> None:
         identity_b = db.exec(
             select(ChannelIdentity).where(ChannelIdentity.external_user_id == "lisi")
         ).one()
-        assert identity_b.external_account_scope == "corpX"
-        assert db.get(ChatSession, "s_lisi").external_conv_id == "wecom_corpX_p2p_lisi"
+        assert identity_b.external_account_scope == "bot_b"
+        assert db.get(ChatSession, "s_lisi").external_conv_id == "wecom_bot_b_p2p_lisi"
         state_b = db.exec(
             select(ChannelConvState).where(ChannelConvState.binding_id == binding_b)
         ).one()
-        assert state_b.external_conv_id == "wecom_corpX_p2p_lisi"
+        assert state_b.external_conv_id == "wecom_bot_b_p2p_lisi"
 
 
 def test_scope_migration_conflict_merges_consistently() -> None:
     engine = _test_engine()
-    binding_id = _seed_wecom_binding(engine, corp_id="corpY", bot_id="aib_bot1")
+    binding_id = _seed_wecom_binding(engine, bot_id="aib_bot1")
     with Session(engine) as db:
-        db.add(User(id="lazy_old", tenant_id="tenant_demo", username="wecom_corpX_zhangsan", source="wecom", password_hash="x"))
+        db.add(User(id="lazy_old", tenant_id="tenant_demo", username=channel_username("tenant_demo", "wecom", "zhangsan", "aib_bot1"), source="wecom", password_hash="x"))
         db.add(User(id="user_web", tenant_id="tenant_demo", username="webadmin", password_hash="x"))
         db.add(
             ChannelIdentity(
                 tenant_id="tenant_demo",
                 channel="wecom",
-                external_account_scope="corpX",
+                external_account_scope="aib_bot1",
                 external_user_id="zhangsan",
                 staffdeck_user_id="lazy_old",
             )
@@ -983,7 +1002,7 @@ def test_scope_migration_conflict_merges_consistently() -> None:
                 user_id="lazy_old",
                 agent_id="agent_1",
                 channel="wecom",
-                external_conv_id="wecom_corpX_p2p_zhangsan",
+                external_conv_id="wecom_aib_bot1_p2p_zhangsan",
                 channel_binding_id=binding_id,
             )
         )
@@ -992,7 +1011,7 @@ def test_scope_migration_conflict_merges_consistently() -> None:
                 id="mem_conflict",
                 tenant_id="tenant_demo",
                 user_id="lazy_old",
-                username="wecom_corpX_zhangsan",
+                username=channel_username("tenant_demo", "wecom", "zhangsan", "aib_bot1"),
                 session_id="s_conflict",
                 content="偏好",
             )
@@ -1001,7 +1020,14 @@ def test_scope_migration_conflict_merges_consistently() -> None:
 
         from app.channels.service_identity import migrate_scope_for_binding
 
-        stats = migrate_scope_for_binding(db, db.get(ChannelBinding, binding_id), "corpX", "corpY")
+        # 首次补填企业信息(aib_bot1 → corpY):冲突合并
+        binding = db.get(ChannelBinding, binding_id)
+        config = dict(binding.config_json or {})
+        config["corp_id"] = "corpY"
+        binding.config_json = config
+        db.add(binding)
+        db.commit()
+        stats = migrate_scope_for_binding(db, db.get(ChannelBinding, binding_id), "aib_bot1", "corpY")
         db.commit()
         assert stats["identities_conflicted"] == 1
 
@@ -1057,11 +1083,71 @@ def test_corp_id_read_and_reconfig_keeps_unless_explicit(monkeypatch) -> None:
     with Session(engine) as db:
         assert db.get(ChannelBinding, binding_id).config_json["corp_id"] == "corpA"
 
-    # 显式传空串:清除
-    client.post(
+    # 显式传空串想清除:属于跨企业变更,400 拦截,corpA 保留(与本轮禁止迁移语义一致)
+    cleared = client.post(
         url,
         json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "s3", "corp_id": ""},
         headers=headers,
     )
+    assert cleared.status_code == 400
     with Session(engine) as db:
-        assert "corp_id" not in (db.get(ChannelBinding, binding_id).config_json or {})
+        assert db.get(ChannelBinding, binding_id).config_json["corp_id"] == "corpA"
+
+
+# ---------- 同 Agent 多 binding 迁移(去 uq 重建) ----------
+
+
+def test_channel_bindings_multi_migration_removes_uq(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "multi.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(
+            sa_text(
+                """
+                CREATE TABLE channel_bindings (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR,
+                    agent_id VARCHAR,
+                    channel VARCHAR,
+                    status VARCHAR,
+                    credentials_enc VARCHAR,
+                    config_json JSON,
+                    connected BOOLEAN,
+                    created_by_user_id VARCHAR,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    CONSTRAINT uq_channel_binding_agent_channel UNIQUE (agent_id, channel)
+                )
+                """
+            )
+        )
+        conn.execute(
+            sa_text(
+                "INSERT INTO channel_bindings (id, tenant_id, agent_id, channel, status) "
+                "VALUES ('chan_1', 'tenant_demo', 'agent_1', 'wecom', 'active')"
+            )
+        )
+    monkeypatch.setattr(database, "database_url", f"sqlite:///{db_path}")
+    monkeypatch.setattr(database, "engine", engine)
+
+    database._migrate_sqlite_skill_schema()
+    with engine.begin() as conn:
+        # 重建后同 (agent_id, channel) 可重复
+        conn.execute(
+            sa_text(
+                "INSERT INTO channel_bindings (id, tenant_id, agent_id, channel, status) "
+                "VALUES ('chan_2', 'tenant_demo', 'agent_1', 'wecom', 'pending')"
+            )
+        )
+        count = conn.execute(sa_text("SELECT COUNT(*) FROM channel_bindings")).scalar_one()
+        assert count == 2
+
+    # 幂等重跑不炸
+    database._migrate_sqlite_skill_schema()
+    with engine.begin() as conn:
+        assert conn.execute(sa_text("SELECT COUNT(*) FROM channel_bindings")).scalar_one() == 2
+        applied = conn.execute(
+            sa_text("SELECT id FROM app_data_migrations WHERE id = :id"),
+            {"id": database._CHANNEL_BINDINGS_MULTI_MIGRATION_ID},
+        ).first()
+        assert applied is not None

@@ -519,7 +519,6 @@ class ChatSession(SQLModel, table=True):
 
 class ChannelBinding(SQLModel, table=True):
     __tablename__ = "channel_bindings"
-    __table_args__ = (UniqueConstraint("agent_id", "channel", name="uq_channel_binding_agent_channel"),)
 
     id: str = Field(default_factory=lambda: new_id("chan"), primary_key=True)
     tenant_id: str = Field(index=True)

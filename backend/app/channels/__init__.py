@@ -60,6 +60,23 @@ def stop_binding_ingress(channel: str, binding_id: str) -> None:
         stopper(binding_id)
 
 
+def wait_binding_ingress_stopped(channel: str, binding_id: str, timeout_seconds: float = 5.0) -> bool:
+    """有界等待指定绑定的 ingress 线程退出(重配凭证前调用)。"""
+    _ensure_adapters_registered()
+    if channel == "wechat":
+        return get_wechat_poll_manager().wait_binding_stopped(binding_id, timeout_seconds)
+    if channel == "wecom":
+        return get_wecom_stream_manager().wait_binding_stopped(binding_id, timeout_seconds)
+    return True
+
+
+def restart_binding_ingress(channel: str, binding_id: str, *, wait_seconds: float = 5.0) -> None:
+    """stop → 有界等待退出 → start:重配凭证时确保旧连接真正退出再拉起新连接。"""
+    stop_binding_ingress(channel, binding_id)
+    wait_binding_ingress_stopped(channel, binding_id, wait_seconds)
+    start_binding_ingress(channel, binding_id)
+
+
 def start_channel_services() -> None:
     if not channel_services_enabled():
         logger.info("staffdeck_role=%s,渠道服务不启动", get_settings().staffdeck_role)
