@@ -1899,5 +1899,10 @@
   "API 协议": "Protokol API",
   "搜索名称、模型、API 协议或 Base URL": "Cari nama, model, protokol API, atau Base URL",
   "请填写配置名称和 Model": "Isi nama konfigurasi dan Model",
-  "模型测试通过，但首次激活未完成，请刷新后重试。": "Pengujian model berhasil, tetapi aktivasi pertama belum selesai. Muat ulang lalu coba lagi."
+  "模型测试通过，但首次激活未完成，请刷新后重试。": "Pengujian model berhasil, tetapi aktivasi pertama belum selesai. Muat ulang lalu coba lagi.",
+  "例如 https://llm-center.modelbest.cn/llm/v1": "Contoh, https://llm-center.modelbest.cn/llm/v1",
+  "例如 https://llm-center.modelbest.cn/llm": "Contoh, https://llm-center.modelbest.cn/llm",
+  "测试通过，已启用并设为默认模型": "Pengujian berhasil, diaktifkan dan ditetapkan sebagai model default",
+  "模型配置或测试状态已发生变化，本次结果未生效，请刷新后重新测试": "Konfigurasi model atau status pengujian telah berubah. Hasil ini tidak berlaku. Muat ulang dan uji ulang.",
+  "{1} 正在测试": "Menguji {1}"
 }

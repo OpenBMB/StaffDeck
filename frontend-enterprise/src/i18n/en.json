@@ -1898,5 +1898,14 @@
   "API 协议": "API Protocol",
   "搜索名称、模型、API 协议或 Base URL": "Search name, model, API protocol, or Base URL",
   "请填写配置名称和 Model": "Enter a configuration name and Model",
-  "模型测试通过，但首次激活未完成，请刷新后重试。": "The model test passed, but initial activation did not complete. Refresh and try again."
+  "模型测试通过，但首次激活未完成，请刷新后重试。": "The model test passed, but initial activation did not complete. Refresh and try again.",
+  "例如 https://llm-center.modelbest.cn/llm/v1": "For example, https://llm-center.modelbest.cn/llm/v1",
+  "例如 https://llm-center.modelbest.cn/llm": "For example, https://llm-center.modelbest.cn/llm",
+  "测试通过，已启用并设为默认模型": "Test passed, enabled and set as default model",
+  "模型配置或测试状态已发生变化，本次结果未生效，请刷新后重新测试": "Model configuration or test status has changed. This result did not take effect. Refresh and retest.",
+  "{1} 正在测试": "Testing {1}",
+  "例如 openai_compatible": "For example, openai_compatible",
+  "请填写名称、Provider 和 Model": "Please fill in Name, Provider, and Model",
+  "搜索名称、模型、Provider 或 Base URL": "Search name, model, provider, or base URL",
+  "请填写配置名称、Provider 和 Model": "Please fill in configuration name, provider, and model"
 }
