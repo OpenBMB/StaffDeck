@@ -2792,6 +2792,10 @@ function ActionCombobox({
     >
       <PopoverTrigger asChild>
         <input
+          autoComplete="off"
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-bwignore="true"
           className={SOURCE_ACTION_SELECT_CLASS}
           autoFocus
           value={query}

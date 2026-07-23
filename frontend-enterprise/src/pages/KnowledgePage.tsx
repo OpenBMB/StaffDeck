@@ -1111,6 +1111,10 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
           <label className="flex h-[34px] w-[300px] max-w-full items-center gap-[8px] overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] transition-colors focus-within:border-[#18181a]">
             <IconSearch className="size-[14px] shrink-0 text-[#858b9c]" />
             <input
+              autoComplete="off"
+              data-1p-ignore="true"
+              data-lpignore="true"
+              data-bwignore="true"
               value={documentSearch}
               placeholder="搜索知识库名称、描述、状态或版本"
               onChange={(event) => setDocumentSearch(event.target.value)}
@@ -1181,6 +1185,10 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
             <div className="flex flex-wrap items-center gap-[10px]">
               <label className={cn(SEARCH_COMBO_CLASS, 'min-w-[280px] flex-1 max-w-[560px]')}>
                 <input
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-bwignore="true"
                   className={SEARCH_COMBO_INPUT_CLASS}
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}

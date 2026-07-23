@@ -146,15 +146,24 @@ export default function MemoriesTab({
     {
       key: 'username',
       title: '用户名',
-      width: 160,
-      className: 'text-[#18181a]',
-      render: (row) => <span className="truncate">{row.username || '-'}</span>,
+      width: 200,
+      className: 'align-top whitespace-normal text-[#18181a]',
+      render: (row) => (
+        <span className="block max-w-full break-all leading-[1.55]" title={row.username || undefined}>
+          {row.username || '-'}
+        </span>
+      ),
     },
     {
       key: 'user_id',
       title: '用户ID',
       width: 180,
-      render: (row) => <span className="block truncate">{row.user_id}</span>,
+      className: 'align-top whitespace-normal',
+      render: (row) => (
+        <span className="block max-w-full break-all leading-[1.55]" title={row.user_id}>
+          {row.user_id}
+        </span>
+      ),
     },
     {
       key: 'kinds',
@@ -378,6 +387,10 @@ function PrefixInput({
         {label}
       </span>
       <input
+        autoComplete="off"
+        data-1p-ignore="true"
+        data-lpignore="true"
+        data-bwignore="true"
         value={value}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
