@@ -1054,3 +1054,144 @@ def test_generate_json_allows_multiple_repair_attempts(monkeypatch):
     assert payloads[1]["_json_repair"]["attempt"] == 1
     assert payloads[2]["_json_repair"]["attempt"] == 2
     assert "parser_error" in payloads[2]["_json_repair"]
+
+
+# --- Reasoning-model length-truncation token escalation regression tests ---
+
+
+def _length_truncated_completion():
+    """A completion whose reasoning phase exhausted the budget (finish_reason=length,
+    empty content, non-empty reasoning_content)."""
+    message = type(
+        "Message",
+        (),
+        {"content": "", "reasoning_content": "thinking about the answer"},
+    )()
+    choice = type("Choice", (), {"message": message, "finish_reason": "length"})()
+    usage = type("Usage", (), {"completion_tokens": 32})()
+    return type(
+        "Completion",
+        (),
+        {"choices": [choice], "usage": usage, "id": "resp_demo"},
+    )()
+
+
+def _successful_completion(content="ok"):
+    message = type("Message", (), {"content": content, "reasoning_content": None})()
+    choice = type("Choice", (), {"message": message, "finish_reason": "stop"})()
+    return type("Completion", (), {"choices": [choice], "id": "resp_demo"})()
+
+
+def _recording_create(client, factory):
+    """Replace the fake client's create with one that records calls and delegates."""
+    def _create(**kwargs):
+        client.client.chat.completions.calls.append(kwargs)
+        return factory()
+    return _create
+
+
+def test_generate_text_escalates_token_budget_on_reasoning_length_truncation():
+    client = object.__new__(LLMClient)
+    client.client = _FakeOpenAIClient()
+    client.model = "demo-model"
+    client.temperature = 0.2
+    client.max_output_tokens = 4096
+
+    # First attempt: length-truncated empty content with reasoning -> retry.
+    # Second attempt: succeed so we can observe the escalated budget on attempt 1.
+    responses = iter([_length_truncated_completion(), _successful_completion()])
+    client.client.chat.completions.create = _recording_create(client, lambda: next(responses))
+
+    output = client.generate_text("system prompt", {"hello": "world"})
+
+    assert output == "ok"
+    calls = client.client.chat.completions.calls
+    assert len(calls) == 2
+    # Attempt 0 uses the configured budget.
+    assert calls[0]["max_tokens"] == 4096
+    # Attempt 1 is doubled (4096 * 2 = 8192), still under the 32768 ceiling.
+    assert calls[1]["max_tokens"] == 8192
+
+
+def test_generate_text_preserves_budget_above_escalation_ceiling():
+    client = object.__new__(LLMClient)
+    client.client = _FakeOpenAIClient()
+    client.model = "demo-model"
+    client.temperature = 0.2
+    # Operator configured a budget larger than the escalation ceiling.
+    client.max_output_tokens = 65536
+
+    responses = iter([_length_truncated_completion(), _successful_completion()])
+    client.client.chat.completions.create = _recording_create(client, lambda: next(responses))
+
+    output = client.generate_text("system prompt", {"hello": "world"})
+
+    assert output == "ok"
+    calls = client.client.chat.completions.calls
+    assert len(calls) == 2
+    # The configured value must be preserved on retry -- never shrunk to the ceiling.
+    assert calls[0]["max_tokens"] == 65536
+    assert calls[1]["max_tokens"] == 65536
+
+
+def test_generate_text_stream_escalates_token_budget_on_reasoning_length_truncation():
+    client = object.__new__(LLMClient)
+    client.client = _FakeOpenAIClient()
+    client.model = "demo-model"
+    client.base_url = "https://example.test/v1"
+    client.timeout_seconds = 600.0
+    client.temperature = 0.2
+    client.max_output_tokens = 4096
+
+    def length_chunk():
+        delta = type("Delta", (), {"content": None, "reasoning_content": "thinking"})()
+        choice = type("Choice", (), {"delta": delta, "finish_reason": "length"})()
+        return type("Chunk", (), {"id": "chunk_demo", "choices": [choice]})()
+
+    def success_chunks():
+        delta = type("Delta", (), {"content": "ok", "reasoning_content": None})()
+        choice = type("Choice", (), {"delta": delta, "finish_reason": "stop"})()
+        return [type("Chunk", (), {"id": "chunk_demo", "choices": [choice]})()]
+
+    streams = iter([[length_chunk()], success_chunks()])
+    client.client.chat.completions.create = _recording_create(client, lambda: iter(next(streams)))
+
+    output = "".join(client.generate_text_stream("system prompt", {"hello": "world"}))
+
+    assert output == "ok"
+    calls = client.client.chat.completions.calls
+    assert len(calls) == 2
+    assert calls[0]["max_tokens"] == 4096
+    assert calls[1]["max_tokens"] == 8192
+
+
+def test_generate_text_stream_preserves_budget_above_escalation_ceiling():
+    client = object.__new__(LLMClient)
+    client.client = _FakeOpenAIClient()
+    client.model = "demo-model"
+    client.base_url = "https://example.test/v1"
+    client.timeout_seconds = 600.0
+    client.temperature = 0.2
+    client.max_output_tokens = 65536
+
+    def length_chunk():
+        delta = type("Delta", (), {"content": None, "reasoning_content": "thinking"})()
+        choice = type("Choice", (), {"delta": delta, "finish_reason": "length"})()
+        return type("Chunk", (), {"id": "chunk_demo", "choices": [choice]})()
+
+    def success_chunks():
+        delta = type("Delta", (), {"content": "ok", "reasoning_content": None})()
+        choice = type("Choice", (), {"delta": delta, "finish_reason": "stop"})()
+        return [type("Chunk", (), {"id": "chunk_demo", "choices": [choice]})()]
+
+    streams = iter([[length_chunk()], success_chunks()])
+    client.client.chat.completions.create = _recording_create(client, lambda: iter(next(streams)))
+
+    output = "".join(client.generate_text_stream("system prompt", {"hello": "world"}))
+
+    assert output == "ok"
+    calls = client.client.chat.completions.calls
+    assert len(calls) == 2
+    assert calls[0]["max_tokens"] == 65536
+    assert calls[1]["max_tokens"] == 65536
+

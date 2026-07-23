@@ -44,6 +44,24 @@ EMPTY_RESPONSE_MESSAGE = "Model returned an empty response"
 DEFAULT_MODEL_API_TIMEOUT_SECONDS = 600.0
 DEFAULT_INPUT_TOKEN_BUDGET = 32_000
 TURN_STAGE_MESSAGE_MARKER = "_agent_turn_message"
+# Ceiling for the reasoning-model length-truncation retry escalation. A model
+# configuration may legitimately request a larger budget than this; in that case
+# the retry preserves the configured value instead of shrinking it.
+REASONING_TOKEN_ESCALATION_CEILING = 32768
+
+
+def _escalate_reasoning_token_budget(current_max_tokens: int) -> int:
+    """Double the token budget for the next retry, but never below the ceiling.
+
+    Reasoning models (e.g. deepseek-v4-flash) share the max_tokens budget
+    between reasoning_content and content. When finish_reason=length cuts off
+    before the answer, we retry with more room. We cap the escalation at the
+    ceiling, but we never *reduce* a budget that the operator already configured
+    above the ceiling.
+    """
+    if current_max_tokens >= REASONING_TOKEN_ESCALATION_CEILING:
+        return current_max_tokens
+    return min(current_max_tokens * 2, REASONING_TOKEN_ESCALATION_CEILING)
 
 
 class _CurrentStageText(str):
@@ -203,13 +221,13 @@ class LLMClient:
                 empty_diagnostics.append(_completion_empty_diagnostic(completion, attempt + 1))
                 # Reasoning models (e.g. deepseek-v4-flash) share the max_tokens budget
                 # between reasoning_content and content. When finish_reason=length cuts off
-                # before the answer, retry with a doubled budget so reasoning has room to
-                # finish and content can be produced.
+                # before the answer, retry with more room so reasoning can finish and
+                # content can be produced. Never shrink a budget already at/above the ceiling.
                 if (
                     metrics.get("finish_reason") == "length"
                     and metrics.get("reasoning_chars", 0) > 0
                 ):
-                    current_max_tokens = min(current_max_tokens * 2, 32768)
+                    current_max_tokens = _escalate_reasoning_token_budget(current_max_tokens)
                 if attempt >= EMPTY_RESPONSE_RETRIES:
                     raise LLMError(_empty_response_detail(self, empty_diagnostics))
         except Exception as exc:
@@ -372,9 +390,10 @@ class LLMClient:
                     )
                 )
                 # Reasoning models share the max_tokens budget between reasoning and answer.
-                # When length-truncated with only reasoning output, double the budget on retry.
+                # When length-truncated with only reasoning output, escalate the budget on
+                # retry, but never shrink one already at/above the ceiling.
                 if "length" in finish_reasons and reasoning_chars > 0:
-                    current_max_tokens = min(current_max_tokens * 2, 32768)
+                    current_max_tokens = _escalate_reasoning_token_budget(current_max_tokens)
             raise LLMError(_empty_response_detail(self, empty_diagnostics))
         except Exception as exc:
             if isinstance(exc, LLMError):
