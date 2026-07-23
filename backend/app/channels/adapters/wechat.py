@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import threading
@@ -10,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.channels.adapters.base import (
@@ -42,6 +44,65 @@ RECOVERY_MAX_FAILURES = 5
 
 # 腾讯官方接入域名:业务请求携带 bot_token,redirect/baseurl 必须限制在官方域内
 WECHAT_ALLOWED_HOSTS = ("ilinkai.weixin.qq.com",)
+
+
+def _patch_runtime_config(
+    db_engine,
+    binding_id: str,
+    *,
+    set_values: dict[str, Any] | None = None,
+    remove_keys: tuple[str, ...] = (),
+    expected_revision: int | None = None,
+    require_active: bool = False,
+    expected_values: dict[str, Any] | None = None,
+    binding_values: dict[str, Any] | None = None,
+) -> bool:
+    """Atomically patch connector-owned JSON keys without replacing API configuration."""
+    config_expr = "COALESCE(config_json, '{}')"
+    params: dict[str, Any] = {"binding_id": binding_id, "updated_at": utc_now()}
+    for index, (key, value) in enumerate((set_values or {}).items()):
+        params[f"set_path_{index}"] = f"$.{key}"
+        params[f"set_value_{index}"] = json.dumps(value, ensure_ascii=False)
+        config_expr = (
+            f"json_set({config_expr}, :set_path_{index}, json(:set_value_{index}))"
+        )
+    for index, key in enumerate(remove_keys):
+        params[f"remove_path_{index}"] = f"$.{key}"
+        config_expr = f"json_remove({config_expr}, :remove_path_{index})"
+
+    assignments = ["updated_at = :updated_at"]
+    if set_values or remove_keys:
+        assignments.insert(0, f"config_json = {config_expr}")
+    allowed_binding_values = {"connected", "status"}
+    for key, value in (binding_values or {}).items():
+        if key not in allowed_binding_values:
+            raise ValueError(f"unsupported binding runtime field: {key}")
+        params[f"binding_value_{key}"] = value
+        assignments.append(f"{key} = :binding_value_{key}")
+
+    predicates = ["id = :binding_id"]
+    if require_active:
+        predicates.append("status = 'active'")
+    if expected_revision is not None:
+        params["expected_revision"] = expected_revision
+        predicates.append("config_revision = :expected_revision")
+    for index, (key, value) in enumerate((expected_values or {}).items()):
+        params[f"expected_path_{index}"] = f"$.{key}"
+        params[f"expected_value_{index}"] = value
+        predicates.append(
+            f"json_extract(config_json, :expected_path_{index}) = :expected_value_{index}"
+        )
+
+    with Session(db_engine) as db:
+        result = db.exec(
+            text(
+                f"UPDATE channel_bindings SET {', '.join(assignments)} "
+                f"WHERE {' AND '.join(predicates)}"
+            ),
+            params=params,
+        )
+        db.commit()
+        return result.rowcount == 1
 
 
 def validate_wechat_host(host: str) -> bool:
@@ -273,11 +334,12 @@ class WeChatAdapter:
                     ticket = str(client.get_config(ilink_user_id, context_token).get("typing_ticket") or "")
                     if not ticket:
                         return
-                    config["typing_ticket"] = ticket
-                    row.config_json = config
-                    row.updated_at = utc_now()
-                    db.add(row)
-                    db.commit()
+                    _patch_runtime_config(
+                        db_engine or engine,
+                        binding.id,
+                        set_values={"typing_ticket": ticket},
+                        require_active=True,
+                    )
                 if not ticket:
                     return
                 try:
@@ -285,11 +347,13 @@ class WeChatAdapter:
                 except Exception:
                     # ticket 可能已失效:清掉缓存,下次重新获取
                     if "typing_ticket" in config:
-                        config.pop("typing_ticket", None)
-                        row.config_json = config
-                        row.updated_at = utc_now()
-                        db.add(row)
-                        db.commit()
+                        _patch_runtime_config(
+                            db_engine or engine,
+                            binding.id,
+                            remove_keys=("typing_ticket",),
+                            require_active=True,
+                            expected_values={"typing_ticket": ticket},
+                        )
                     raise
         except Exception:
             logger.debug("微信 typing 状态发送失败(忽略) binding=%s status=%s", binding.id, status, exc_info=True)
@@ -389,6 +453,7 @@ class WeChatPollManager:
         self._threads: dict[str, threading.Thread] = {}
         self._stop_flags: dict[str, threading.Event] = {}
         self._clients: dict[str, WeChatClient] = {}
+        self._paused: set[str] = set()
         self._lock = threading.Lock()
         self._stopped = threading.Event()
         self._reconcile_thread: threading.Thread | None = None
@@ -404,15 +469,29 @@ class WeChatPollManager:
         )
         self._reconcile_thread.start()
 
-    def stop(self) -> None:
+    def stop(self, timeout_seconds: float = 5.0) -> bool:
         self._stopped.set()
         with self._lock:
-            flags = list(self._stop_flags.values())
-        for flag in flags:
-            flag.set()
+            binding_ids = list(self._threads)
+            reconcile_thread = self._reconcile_thread
+        for binding_id in binding_ids:
+            self.stop_binding(binding_id)
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        for binding_id in binding_ids:
+            with self._lock:
+                thread = self._threads.get(binding_id)
+            if thread and thread.is_alive():
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if reconcile_thread and reconcile_thread.is_alive():
+            reconcile_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        with self._lock:
+            polls_stopped = all(not thread.is_alive() for thread in self._threads.values())
+        return polls_stopped and not (reconcile_thread and reconcile_thread.is_alive())
 
     def ensure_binding(self, binding_id: str) -> None:
         with self._lock:
+            if binding_id in self._paused:
+                return
             thread = self._threads.get(binding_id)
             if thread and thread.is_alive():
                 return
@@ -440,12 +519,24 @@ class WeChatPollManager:
             except Exception:
                 logger.debug("关闭微信 client 失败(忽略) binding=%s", binding_id, exc_info=True)
 
+    def pause_binding(self, binding_id: str) -> None:
+        with self._lock:
+            self._paused.add(binding_id)
+        self.stop_binding(binding_id)
+
+    def resume_binding(self, binding_id: str, *, start: bool = True) -> None:
+        with self._lock:
+            self._paused.discard(binding_id)
+        if start:
+            self.ensure_binding(binding_id)
+
     def wait_binding_stopped(self, binding_id: str, timeout_seconds: float = 5.0) -> bool:
         """有界等待 poll 线程退出(重配凭证前调用),返回是否已停止。"""
         with self._lock:
             thread = self._threads.get(binding_id)
         if thread and thread.is_alive():
-            thread.join(timeout=timeout_seconds)
+            deadline = time.monotonic() + max(0.0, timeout_seconds)
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
         return not (thread and thread.is_alive())
 
     def running_binding_ids(self) -> set[str]:
@@ -462,6 +553,8 @@ class WeChatPollManager:
                 )
             ).all()
         active_ids = {row.id for row in rows}
+        with self._lock:
+            active_ids -= self._paused
         for binding_id in active_ids - self.running_binding_ids():
             self.ensure_binding(binding_id)
         for binding_id in self.running_binding_ids() - active_ids:
@@ -518,6 +611,8 @@ class WeChatPollManager:
                     if failures >= POLL_FAILURE_CIRCUIT_THRESHOLD:
                         failures = 0
                     continue
+                if stop_flag.is_set() or self._stopped.is_set():
+                    return
                 failures = 0
                 backoff = POLL_BACKOFF_START_SECONDS
                 self._clear_session_recovery(binding_id)
@@ -533,7 +628,11 @@ class WeChatPollManager:
                     # 批内异常外抛:游标不推进,下轮重拉整批,靠事件幂等去重
                     process_inbound(binding, msg, db_engine=self._engine)
                 # 整批处理完才推进游标
-                if not self._persist_cursor(binding_id, new_cursor):
+                if not self._persist_cursor(
+                    binding_id,
+                    new_cursor,
+                    expected_revision=binding.config_revision,
+                ):
                     return
             except Exception:
                 logger.exception("微信 poll 线程异常 binding=%s", binding_id)
@@ -571,16 +670,20 @@ class WeChatPollManager:
             failures = int(config.get("recovery_failures") or 0) + 1
             if failures >= RECOVERY_MAX_FAILURES:
                 return False
-            config["session_expired"] = True
-            config["recovery_failures"] = failures
-            config["next_recovery_at"] = (
+            next_recovery_at = (
                 utc_now() + timedelta(seconds=self._recovery_cooldown_seconds)
             ).isoformat()
-            binding.config_json = config
-            binding.connected = False
-            binding.updated_at = utc_now()
-            db.add(binding)
-            db.commit()
+        if not _patch_runtime_config(
+            self._engine,
+            binding_id,
+            set_values={
+                "session_expired": True,
+                "recovery_failures": failures,
+                "next_recovery_at": next_recovery_at,
+            },
+            binding_values={"connected": False},
+        ):
+            return False
         logger.warning(
             "微信会话疑似过期(-14,第 %s/%s 次),冷却 %.0fs 后用原 token 重试 binding=%s",
             failures,
@@ -604,43 +707,36 @@ class WeChatPollManager:
                 and "next_recovery_at" not in config
             ):
                 return
-            config["session_expired"] = False
-            config["recovery_failures"] = 0
-            config.pop("next_recovery_at", None)
-            binding.config_json = config
-            binding.updated_at = utc_now()
-            db.add(binding)
-            db.commit()
+        _patch_runtime_config(
+            self._engine,
+            binding_id,
+            set_values={"session_expired": False, "recovery_failures": 0},
+            remove_keys=("next_recovery_at",),
+        )
 
-    def _persist_cursor(self, binding_id: str, new_cursor: str) -> bool:
-        with Session(self._engine) as db:
-            binding = db.get(ChannelBinding, binding_id)
-            if not binding or binding.status != "active":
-                return False
-            if new_cursor:
-                config = dict(binding.config_json or {})
-                config["get_updates_buf"] = new_cursor
-                binding.config_json = config
-            binding.connected = True
-            binding.updated_at = utc_now()
-            db.add(binding)
-            db.commit()
-            return True
+    def _persist_cursor(
+        self,
+        binding_id: str,
+        new_cursor: str,
+        *,
+        expected_revision: int | None = None,
+    ) -> bool:
+        return _patch_runtime_config(
+            self._engine,
+            binding_id,
+            set_values={"get_updates_buf": new_cursor} if new_cursor else None,
+            expected_revision=expected_revision,
+            require_active=True,
+            binding_values={"connected": True},
+        )
 
     def _mark_session_expired(self, binding_id: str) -> None:
-        with Session(self._engine) as db:
-            binding = db.get(ChannelBinding, binding_id)
-            if not binding:
-                return
-            config = dict(binding.config_json or {})
-            config["session_expired"] = True
-            config["get_updates_buf"] = ""
-            binding.config_json = config
-            binding.status = "expired"
-            binding.connected = False
-            binding.updated_at = utc_now()
-            db.add(binding)
-            db.commit()
+        _patch_runtime_config(
+            self._engine,
+            binding_id,
+            set_values={"session_expired": True, "get_updates_buf": ""},
+            binding_values={"status": "expired", "connected": False},
+        )
 
 
 # 模块导入即注册微信适配器(渠道内核按注册表发现渠道)

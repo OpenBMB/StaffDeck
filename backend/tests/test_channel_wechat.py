@@ -837,3 +837,84 @@ def test_reconfigure_stop_aborts_inflight_poll_and_restarts() -> None:
     assert _wait_for(lambda: len(created) >= 2 and created[1].calls >= 1)
     assert old_client.calls == 2
     manager.stop_binding(binding_id)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
+
+
+def test_timeout_then_reconcile_restores_old_wechat_config_once() -> None:
+    engine = _test_engine()
+    binding_id = _seed_poll_binding(engine)
+
+    class ControlledPollClient:
+        def __init__(self, *, release_on_close: bool):
+            self.closed = False
+            self.calls = 0
+            self.release_on_close = release_on_close
+            self.gate = threading.Event()
+
+        def get_updates(self, cursor, *, timeout_seconds: float = 40.0):
+            self.calls += 1
+            self.gate.wait(10.0)
+            return {"ret": 0, "msgs": [], "get_updates_buf": cursor}
+
+        def close(self):
+            self.closed = True
+            if self.release_on_close:
+                self.gate.set()
+
+    created: list[ControlledPollClient] = []
+
+    def factory(binding):
+        if not created or created[-1].closed:
+            created.append(ControlledPollClient(release_on_close=bool(created)))
+        return created[-1]
+
+    manager = WeChatPollManager(db_engine=engine, client_factory=factory)
+    manager.ensure_binding(binding_id)
+    assert _wait_for(lambda: len(created) == 1 and created[0].calls == 1)
+
+    manager.pause_binding(binding_id)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=0.05) is False
+    manager.resume_binding(binding_id, start=False)
+    manager.reconcile_once()
+    assert len(created) == 1
+
+    created[0].gate.set()
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
+    manager.reconcile_once()
+    assert _wait_for(lambda: len(created) == 2 and created[1].calls == 1)
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert binding.config_json["ilink_bot_id"] == "bot@im.bot"
+        assert binding.config_revision == 0
+    manager.pause_binding(binding_id)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
+
+
+def test_cursor_patch_preserves_api_owned_config_fields() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat",
+            status="active",
+            config_json={
+                "ilink_bot_id": "bot@im.bot",
+                "auto_route": False,
+                "get_updates_buf": "old",
+            },
+            config_revision=7,
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+
+    manager = WeChatPollManager(db_engine=engine, client_factory=lambda binding: None)
+    assert manager._persist_cursor(binding_id, "new", expected_revision=7)
+
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert binding.config_json["auto_route"] is False
+        assert binding.config_json["ilink_bot_id"] == "bot@im.bot"
+        assert binding.config_json["get_updates_buf"] == "new"

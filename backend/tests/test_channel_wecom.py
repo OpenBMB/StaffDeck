@@ -4,6 +4,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -372,7 +373,208 @@ def test_worker_exits_on_stop_binding() -> None:
     assert worker and worker.is_alive()
 
     manager.stop_binding(binding_id)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
     assert not worker.is_alive()
+
+
+def test_worker_sentinel_waits_for_producer_barrier() -> None:
+    from app.channels.adapters.wecom import _StreamState
+
+    class StubThread:
+        def __init__(self, alive: bool):
+            self.alive = alive
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout=None):
+            return None
+
+    engine = _test_engine()
+    manager = WeComStreamManager(db_engine=engine)
+    state = _StreamState()
+    producer = StubThread(alive=True)
+    state.thread = producer
+    with manager._lock:
+        manager._streams["chan_barrier"] = state
+
+    manager.stop_binding("chan_barrier")
+    assert state.queue.empty()
+    assert manager.wait_binding_stopped("chan_barrier", timeout_seconds=0.0) is False
+    assert state.queue.empty()
+
+    producer.alive = False
+    assert manager.wait_binding_stopped("chan_barrier", timeout_seconds=0.0) is True
+    assert state.queue.get_nowait() is None
+
+
+def test_stop_waits_for_inflight_callback_before_worker_sentinel(monkeypatch) -> None:
+    import app.channels.adapters.wecom as wecom_module
+    from app.channels.adapters.wecom import _StreamState
+
+    engine = _test_engine()
+    manager = WeComStreamManager(db_engine=engine)
+    state = _StreamState()
+    state.config_revision = 3
+    client = FakeWSClient()
+    callback_entered = threading.Event()
+    release_callback = threading.Event()
+    wait_finished = threading.Event()
+    inbound = object()
+
+    def blocking_normalize(frame, account_scope=""):
+        callback_entered.set()
+        assert release_callback.wait(timeout=5.0)
+        return inbound
+
+    monkeypatch.setattr(wecom_module, "normalize_wecom_frame", blocking_normalize)
+    manager._wire_client("chan_callback", client, state, "corpA")
+    with manager._lock:
+        manager._streams["chan_callback"] = state
+
+    callback_thread = threading.Thread(
+        target=client.emit_local,
+        args=("message", _text_frame(msgid="msg_callback")),
+    )
+    callback_thread.start()
+    assert callback_entered.wait(timeout=5.0)
+    manager.stop_binding("chan_callback")
+
+    wait_thread = threading.Thread(
+        target=lambda: (
+            manager.wait_binding_stopped("chan_callback", timeout_seconds=5.0),
+            wait_finished.set(),
+        )
+    )
+    wait_thread.start()
+    assert not wait_finished.wait(timeout=0.1)
+    release_callback.set()
+    callback_thread.join(timeout=5.0)
+    wait_thread.join(timeout=5.0)
+
+    assert not callback_thread.is_alive()
+    assert not wait_thread.is_alive()
+    queued_revision, queued_inbound = state.queue.get_nowait()
+    assert queued_revision == 3
+    assert queued_inbound is inbound
+    assert state.queue.get_nowait() is None
+
+
+def test_stream_finally_waits_for_external_callback_and_worker_consumes_it(monkeypatch) -> None:
+    import app.channels.adapters.wecom as wecom_module
+
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine)
+    callback_entered = threading.Event()
+    release_callback = threading.Event()
+    processed = threading.Event()
+    callback_threads: list[threading.Thread] = []
+    inbound = SimpleNamespace(event_id="msg_external_callback")
+
+    class ExternalCallbackClient(FakeWSClient):
+        async def connect(self):
+            self.connect_calls += 1
+            thread = threading.Thread(
+                target=self.emit_local,
+                args=("message", _text_frame(msgid="msg_external_callback")),
+            )
+            callback_threads.append(thread)
+            thread.start()
+            return self
+
+    def blocking_normalize(frame, account_scope=""):
+        callback_entered.set()
+        assert release_callback.wait(timeout=5.0)
+        return inbound
+
+    def record_process(binding, item, db_engine=None):
+        assert item is inbound
+        processed.set()
+        return True
+
+    client = ExternalCallbackClient()
+    monkeypatch.setattr(wecom_module, "normalize_wecom_frame", blocking_normalize)
+    monkeypatch.setattr(intake_module, "process_inbound", record_process)
+    manager = WeComStreamManager(
+        db_engine=engine,
+        client_factory=lambda bot_id, secret: client,
+    )
+    manager.ensure_binding(binding_id)
+    assert callback_entered.wait(timeout=5.0)
+
+    manager.stop_binding(binding_id)
+    wait_result: list[bool] = []
+    wait_thread = threading.Thread(
+        target=lambda: wait_result.append(
+            manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
+        )
+    )
+    wait_thread.start()
+    time.sleep(0.05)
+    assert wait_thread.is_alive()
+    release_callback.set()
+    wait_thread.join(timeout=5.0)
+    for thread in callback_threads:
+        thread.join(timeout=5.0)
+
+    assert wait_result == [True]
+    assert processed.is_set()
+    assert all(not thread.is_alive() for thread in callback_threads)
+
+
+def test_unexpected_stream_exit_rejects_late_callback() -> None:
+    import app.channels.adapters.wecom as wecom_module
+
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine)
+
+    class FailingClient(FakeWSClient):
+        async def connect(self):
+            raise RuntimeError("stream failed")
+
+    client = FailingClient()
+    manager = WeComStreamManager(
+        db_engine=engine,
+        client_factory=lambda bot_id, secret: client,
+    )
+    state = wecom_module._StreamState()
+    state.config_revision = 0
+
+    manager._run_stream(binding_id, state)
+    assert state.stop.is_set()
+    client.emit_local("message", _text_frame(msgid="late_callback"))
+
+    assert state.queue.get_nowait() is None
+    assert state.queue.empty()
+
+
+def test_reconcile_does_not_stop_stream_while_revision_initializes(monkeypatch) -> None:
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine)
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        binding.config_revision = 7
+        db.add(binding)
+        db.commit()
+
+    release_stream = threading.Event()
+    manager = WeComStreamManager(db_engine=engine)
+    monkeypatch.setattr(
+        manager,
+        "_run_stream",
+        lambda bid, state: release_stream.wait(timeout=5.0),
+    )
+    manager.ensure_binding(binding_id)
+    with manager._lock:
+        state = manager._streams[binding_id]
+    assert state.config_revision == 7
+
+    manager.reconcile_once()
+
+    assert state.stop.is_set() is False
+    release_stream.set()
+    manager.stop_binding(binding_id)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
 
 
 # ---------- intake 集成(企微会话/身份/路由) ----------
@@ -443,7 +645,9 @@ def test_wecom_group_inbound_uses_sender_name_prefix() -> None:
         # 群聊回复投递到群 chatid
         assert chat_session.channel_target_json["to_user_id"] == "wr_group1"
         group_user = db.get(User, chat_session.user_id)
-        assert group_user.username == channel_username("tenant_demo", "wecom", "group_aib_bot1_wr_group1")
+        assert group_user.username == channel_username(
+            "tenant_demo", "wecom", "group:wr_group1", "aib_bot1"
+        )
 
 
 def test_wecom_switch_command_routes_agents() -> None:
@@ -475,7 +679,7 @@ def test_wecom_switch_command_routes_agents() -> None:
 # ---------- API ----------
 
 
-def _make_api_client(engine):
+def _make_api_client(engine, observed_sessions: list[Session] | None = None):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -487,6 +691,8 @@ def _make_api_client(engine):
 
     def override_get_session():
         with Session(engine) as session:
+            if observed_sessions is not None:
+                observed_sessions.append(session)
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
@@ -532,14 +738,24 @@ def test_wecom_credentials_endpoint(monkeypatch) -> None:
 
     forbidden = client.post(
         f"/api/enterprise/channels/{binding_id}/wecom/credentials",
-        json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "bot_secret"},
+        json={
+            "tenant_id": "tenant_demo",
+            "bot_id": "aib_bot1",
+            "secret": "bot_secret",
+            "corp_id": "corpA",
+        },
         headers=_auth(users["other"]),
     )
     assert forbidden.status_code == 403
 
     response = client.post(
         f"/api/enterprise/channels/{binding_id}/wecom/credentials",
-        json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "bot_secret"},
+        json={
+            "tenant_id": "tenant_demo",
+            "bot_id": "aib_bot1",
+            "secret": "bot_secret",
+            "corp_id": "corpA",
+        },
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 200
@@ -554,6 +770,7 @@ def test_wecom_credentials_endpoint(monkeypatch) -> None:
         assert binding.status == "active"
         assert decrypt_channel_secret(binding.credentials_enc) == "bot_secret"
         assert binding.config_json["bot_id"] == "aib_bot1"
+        assert binding.config_json["corp_id"] == "corpA"
 
 
 def test_wecom_credentials_rejects_wechat_binding() -> None:
@@ -574,7 +791,12 @@ def test_wecom_credentials_rejects_wechat_binding() -> None:
     client = _make_api_client(engine)
     response = client.post(
         f"/api/enterprise/channels/{binding_id}/wecom/credentials",
-        json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "x"},
+        json={
+            "tenant_id": "tenant_demo",
+            "bot_id": "aib_bot1",
+            "secret": "x",
+            "corp_id": "corpA",
+        },
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 400
@@ -722,9 +944,12 @@ def test_wecom_endpoint_restart_flow_via_spy_manager(monkeypatch) -> None:
     users = _seed_api_users(engine)
     binding_id = _seed_wecom_binding(engine, status="pending", credentials_enc=None, config_json={})
     calls: list[str] = []
+    observed_sessions: list[Session] = []
 
     class SpyManager:
         def stop_binding(self, bid):
+            assert observed_sessions
+            assert observed_sessions[-1].in_transaction() is False
             calls.append(f"stop:{bid}")
 
         def wait_binding_stopped(self, bid, timeout_seconds=5.0):
@@ -737,12 +962,392 @@ def test_wecom_endpoint_restart_flow_via_spy_manager(monkeypatch) -> None:
     monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: SpyManager())
     monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
 
-    client = _make_api_client(engine)
+    client = _make_api_client(engine, observed_sessions)
     response = client.post(
         f"/api/enterprise/channels/{binding_id}/wecom/credentials",
-        json={"tenant_id": "tenant_demo", "bot_id": "aib_bot1", "secret": "bot_secret"},
+        json={
+            "tenant_id": "tenant_demo",
+            "bot_id": "aib_bot1",
+            "secret": "bot_secret",
+            "corp_id": "corpA",
+        },
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 200
     # stop → wait → start 顺序
     assert calls == [f"stop:{binding_id}", f"wait:{binding_id}", f"ensure:{binding_id}"]
+
+
+def test_wecom_credentials_rejects_bot_change_without_stopping_ingress(monkeypatch) -> None:
+    import app.channels
+    import app.api.channels as channels_api
+
+    engine = _test_engine()
+    users = _seed_api_users(engine)
+    binding_id = _seed_wecom_binding(
+        engine,
+        config_json={"bot_id": "bot_old", "corp_id": "corpA"},
+        external_account_key="wecom:corp:5:corpA:bot:7:bot_old",
+        identity_scope_key="corpA",
+    )
+    calls: list[str] = []
+
+    class SpyManager:
+        def pause_binding(self, bid):
+            calls.append(f"pause:{bid}")
+
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: SpyManager())
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
+
+    response = _make_api_client(engine).post(
+        f"/api/enterprise/channels/{binding_id}/wecom/credentials",
+        json={
+            "tenant_id": "tenant_demo",
+            "bot_id": "bot_new",
+            "secret": "new_secret",
+            "corp_id": "corpA",
+        },
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 400
+    assert "删除后重新创建绑定" in response.json()["detail"]
+    assert calls == []
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert binding.config_json["bot_id"] == "bot_old"
+        assert decrypt_channel_secret(binding.credentials_enc) == "bot_secret"
+        assert binding.config_revision == 0
+
+
+def test_wecom_reconfigure_timeout_keeps_old_config_and_does_not_start(monkeypatch) -> None:
+    import app.channels
+    import app.api.channels as channels_api
+
+    engine = _test_engine()
+    users = _seed_api_users(engine)
+    binding_id = _seed_wecom_binding(
+        engine,
+        config_json={"bot_id": "aib_bot1", "corp_id": "corpA"},
+        external_account_key="wecom:corp:5:corpA:bot:8:aib_bot1",
+        identity_scope_key="corpA",
+    )
+    calls: list[str] = []
+
+    class SpyManager:
+        def pause_binding(self, bid):
+            calls.append(f"pause:{bid}")
+
+        def wait_binding_stopped(self, bid, timeout_seconds=5.0):
+            calls.append(f"wait:{bid}")
+            return False
+
+        def resume_binding(self, bid, *, start=True):
+            calls.append(f"resume:{bid}:{start}")
+
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: SpyManager())
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
+
+    response = _make_api_client(engine).post(
+        f"/api/enterprise/channels/{binding_id}/wecom/credentials",
+        json={
+            "tenant_id": "tenant_demo",
+            "bot_id": "aib_bot1",
+            "secret": "new_secret",
+            "corp_id": "corpA",
+        },
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 409
+    assert calls == [
+        f"pause:{binding_id}",
+        f"wait:{binding_id}",
+        f"resume:{binding_id}:False",
+    ]
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert decrypt_channel_secret(binding.credentials_enc) == "bot_secret"
+        assert binding.config_revision == 0
+
+
+def test_wecom_reconfigure_commit_failure_restores_old_ingress(monkeypatch) -> None:
+    import app.channels
+    import app.api.channels as channels_api
+
+    engine = _test_engine()
+    users = _seed_api_users(engine)
+    binding_id = _seed_wecom_binding(
+        engine,
+        config_json={"bot_id": "aib_bot1", "corp_id": "corpA"},
+        external_account_key="wecom:corp:5:corpA:bot:8:aib_bot1",
+        identity_scope_key="corpA",
+    )
+    calls: list[str] = []
+
+    class SpyManager:
+        def pause_binding(self, bid):
+            calls.append(f"pause:{bid}")
+
+        def wait_binding_stopped(self, bid, timeout_seconds=5.0):
+            calls.append(f"wait:{bid}")
+            return True
+
+        def resume_binding(self, bid, *, start=True):
+            calls.append(f"resume:{bid}:{start}")
+
+    original_commit = Session.commit
+    failed = False
+
+    def fail_first_commit(session):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise IntegrityError("forced", {}, RuntimeError("forced"))
+        return original_commit(session)
+
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: SpyManager())
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
+    monkeypatch.setattr(Session, "commit", fail_first_commit)
+
+    response = _make_api_client(engine).post(
+        f"/api/enterprise/channels/{binding_id}/wecom/credentials",
+        json={
+            "tenant_id": "tenant_demo",
+            "bot_id": "aib_bot1",
+            "secret": "new_secret",
+            "corp_id": "corpA",
+        },
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 409
+    assert calls == [
+        f"pause:{binding_id}",
+        f"wait:{binding_id}",
+        f"resume:{binding_id}:True",
+    ]
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert decrypt_channel_secret(binding.credentials_enc) == "bot_secret"
+        assert binding.config_revision == 0
+
+
+def test_wecom_reconcile_does_not_restart_paused_binding() -> None:
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine)
+    manager = WeComStreamManager(
+        db_engine=engine,
+        client_factory=lambda bot_id, secret: FakeWSClient(),
+    )
+    manager.ensure_binding(binding_id)
+    assert _wait_for(lambda: binding_id in manager.running_binding_ids())
+
+    manager.pause_binding(binding_id)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
+    manager.reconcile_once()
+
+    assert binding_id not in manager.running_binding_ids()
+
+
+def test_wecom_timeout_then_reconcile_restores_old_config_once(monkeypatch) -> None:
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine)
+    created: list[tuple[str, str, FakeWSClient]] = []
+    turn_started = threading.Event()
+    release_turn = threading.Event()
+
+    def factory(bot_id: str, secret: str):
+        client = FakeWSClient()
+        created.append((bot_id, secret, client))
+        return client
+
+    def blocking_process(binding, inbound, db_engine=None):
+        turn_started.set()
+        assert release_turn.wait(timeout=5.0)
+        return True
+
+    monkeypatch.setattr(intake_module, "process_inbound", blocking_process)
+    manager = WeComStreamManager(db_engine=engine, client_factory=factory)
+    manager.ensure_binding(binding_id)
+    assert _wait_for(lambda: manager.get_stream(binding_id) is not None)
+    created[0][2].emit_local("message", _text_frame(msgid="msg_slow"))
+    assert turn_started.wait(timeout=5.0)
+
+    manager.pause_binding(binding_id)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=0.05) is False
+    manager.resume_binding(binding_id, start=False)
+    manager.reconcile_once()
+    assert len(created) == 1
+
+    release_turn.set()
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
+    manager.reconcile_once()
+    assert _wait_for(lambda: len(created) == 2 and manager.get_stream(binding_id) is not None)
+    assert created[1][0:2] == ("aib_bot1", "bot_secret")
+    with manager._lock:
+        assert len(manager._streams) == 1
+    manager.pause_binding(binding_id)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
+
+
+def test_stale_wecom_callback_cannot_overwrite_new_revision_connected_state() -> None:
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine)
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        binding.config_revision = 2
+        binding.connected = True
+        db.add(binding)
+        db.commit()
+
+    manager = WeComStreamManager(db_engine=engine)
+    manager._set_connected(binding_id, False, config_revision=1)
+
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id).connected is True
+
+
+def test_concurrent_wecom_secret_rotations_serialize_and_match_running_config(
+    monkeypatch, tmp_path
+) -> None:
+    import app.channels
+    import app.api.channels as channels_api
+
+    db_path = tmp_path / "wecom-reconfigure.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    SQLModel.metadata.create_all(engine)
+    users = _seed_api_users(engine)
+    binding_id = _seed_wecom_binding(
+        engine,
+        config_json={"bot_id": "aib_bot1", "corp_id": "corpA"},
+        external_account_key="wecom:corp:5:corpA:bot:8:aib_bot1",
+        identity_scope_key="corpA",
+    )
+    created: list[tuple[str, str, FakeWSClient]] = []
+
+    def factory(bot_id: str, secret: str):
+        client = FakeWSClient()
+        created.append((bot_id, secret, client))
+        return client
+
+    manager = WeComStreamManager(db_engine=engine, client_factory=factory)
+    manager.ensure_binding(binding_id)
+    assert _wait_for(lambda: manager.get_stream(binding_id) is not None)
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: manager)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
+    responses: list[tuple[int, str]] = []
+
+    def rotate(secret: str) -> None:
+        response = _make_api_client(engine).post(
+            f"/api/enterprise/channels/{binding_id}/wecom/credentials",
+            json={
+                "tenant_id": "tenant_demo",
+                "bot_id": "aib_bot1",
+                "secret": secret,
+                "corp_id": "corpA",
+            },
+            headers=_auth(users["owner"]),
+        )
+        responses.append((response.status_code, response.text))
+
+    threads = [threading.Thread(target=rotate, args=(secret,)) for secret in ("s1", "s2")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10.0)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert sorted(status for status, _body in responses) == [200, 200], responses
+    assert _wait_for(lambda: len(created) == 3 and manager.get_stream(binding_id) is not None)
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert binding.config_revision == 2
+        final_secret = decrypt_channel_secret(binding.credentials_enc)
+    assert created[-1][1] == final_secret
+    assert created[0][2].disconnect_calls == 1
+    assert created[1][2].disconnect_calls in {0, 1}
+    with manager._lock:
+        state = manager._streams[binding_id]
+        assert state.config_revision == 2
+        assert state.thread and state.thread.is_alive()
+        assert state.worker and state.worker.is_alive()
+    manager.pause_binding(binding_id)
+    assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
+
+
+def test_delete_serializes_against_concurrent_credentials_update(monkeypatch, tmp_path) -> None:
+    import app.channels
+    import app.api.channels as channels_api
+
+    db_path = tmp_path / "delete-race.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    SQLModel.metadata.create_all(engine)
+    users = _seed_api_users(engine)
+    binding_id = _seed_wecom_binding(
+        engine,
+        config_json={"bot_id": "aib_bot1", "corp_id": "corpA"},
+        external_account_key="wecom:corp:5:corpA:bot:8:aib_bot1",
+        identity_scope_key="corpA",
+    )
+    delete_waiting = threading.Event()
+    release_delete = threading.Event()
+    starts: list[bool] = []
+
+    class BarrierManager:
+        def pause_binding(self, bid):
+            return None
+
+        def wait_binding_stopped(self, bid, timeout_seconds=5.0):
+            delete_waiting.set()
+            assert release_delete.wait(timeout=5.0)
+            return True
+
+        def resume_binding(self, bid, *, start=True):
+            starts.append(start)
+
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: BarrierManager())
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
+    responses: dict[str, int] = {}
+
+    def delete() -> None:
+        response = _make_api_client(engine).delete(
+            f"/api/enterprise/channels/{binding_id}",
+            params={"tenant_id": "tenant_demo"},
+            headers=_auth(users["owner"]),
+        )
+        responses["delete"] = response.status_code
+
+    def update_credentials() -> None:
+        response = _make_api_client(engine).post(
+            f"/api/enterprise/channels/{binding_id}/wecom/credentials",
+            json={
+                "tenant_id": "tenant_demo",
+                "bot_id": "aib_bot1",
+                "secret": "new_secret",
+                "corp_id": "corpA",
+            },
+            headers=_auth(users["owner"]),
+        )
+        responses["update"] = response.status_code
+
+    delete_thread = threading.Thread(target=delete)
+    update_thread = threading.Thread(target=update_credentials)
+    delete_thread.start()
+    assert delete_waiting.wait(timeout=5.0)
+    update_thread.start()
+    time.sleep(0.05)
+    release_delete.set()
+    delete_thread.join(timeout=10.0)
+    update_thread.join(timeout=10.0)
+
+    assert responses == {"delete": 204, "update": 404}
+    assert starts == [False]
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id) is None

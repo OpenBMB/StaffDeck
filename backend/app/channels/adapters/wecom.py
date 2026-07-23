@@ -4,6 +4,7 @@ import asyncio
 import logging
 import queue
 import threading
+import time
 from typing import Any
 
 from sqlmodel import Session, select
@@ -89,6 +90,11 @@ class _StreamState:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client: Any = None
         self.queue: queue.Queue = queue.Queue()
+        self.config_revision: int | None = None
+        self.callback_condition = threading.Condition()
+        self.callbacks_inflight = 0
+        self.worker_stop_sent = False
+        self.disconnect_sent = False
 
 
 class WeComStreamManager:
@@ -105,6 +111,7 @@ class WeComStreamManager:
         self._client_factory = client_factory or _default_client_factory
         self._reconcile_seconds = reconcile_seconds
         self._streams: dict[str, _StreamState] = {}
+        self._paused: set[str] = set()
         self._lock = threading.Lock()
         self._stopped = threading.Event()
         self._reconcile_thread: threading.Thread | None = None
@@ -120,23 +127,49 @@ class WeComStreamManager:
         )
         self._reconcile_thread.start()
 
-    def stop(self) -> None:
+    def stop(self, timeout_seconds: float = 5.0) -> bool:
         self._stopped.set()
         with self._lock:
             states = list(self._streams.values())
+            reconcile_thread = self._reconcile_thread
         for state in states:
             state.stop.set()
-            state.queue.put_nowait(None)
-        for state in states:
-            self._join_worker(state)
             self._stop_loop(state)
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        for state in states:
+            thread = state.thread
+            if thread and thread.is_alive():
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            if not (thread and thread.is_alive()):
+                self._signal_worker_after_producers(state, deadline)
+            worker = state.worker
+            if worker and worker.is_alive():
+                worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        if reconcile_thread and reconcile_thread.is_alive():
+            reconcile_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        return all(
+            not (state.thread and state.thread.is_alive())
+            and not (state.worker and state.worker.is_alive())
+            for state in states
+        ) and not (reconcile_thread and reconcile_thread.is_alive())
 
     def ensure_binding(self, binding_id: str) -> None:
+        with Session(self._engine) as db:
+            binding = db.get(ChannelBinding, binding_id)
+            if not binding or binding.status != "active":
+                return
+            config_revision = binding.config_revision
         with self._lock:
+            if binding_id in self._paused:
+                return
             state = self._streams.get(binding_id)
-            if state and state.thread and state.thread.is_alive():
+            if state and (
+                (state.thread and state.thread.is_alive())
+                or (state.worker and state.worker.is_alive())
+            ):
                 return
             state = _StreamState()
+            state.config_revision = config_revision
             state.worker = threading.Thread(
                 target=self._run_worker,
                 args=(binding_id, state),
@@ -159,9 +192,19 @@ class WeComStreamManager:
             state = self._streams.get(binding_id)
         if state:
             state.stop.set()
-            state.queue.put_nowait(None)
-            self._join_worker(state)
+            # 这里只拒绝新 callback 并停止 producer；worker sentinel 必须等 producer barrier。
             self._stop_loop(state)
+
+    def pause_binding(self, binding_id: str) -> None:
+        with self._lock:
+            self._paused.add(binding_id)
+        self.stop_binding(binding_id)
+
+    def resume_binding(self, binding_id: str, *, start: bool = True) -> None:
+        with self._lock:
+            self._paused.discard(binding_id)
+        if start:
+            self.ensure_binding(binding_id)
 
     def _join_worker(self, state: _StreamState) -> None:
         worker = state.worker
@@ -175,20 +218,50 @@ class WeComStreamManager:
             state = self._streams.get(binding_id)
         if not state:
             return True
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
         thread = state.thread
+        while thread and thread.is_alive():
+            remaining = max(0.0, deadline - time.monotonic())
+            if remaining <= 0:
+                break
+            # 覆盖 loop 发布/启动边界上的 stop 调度竞态，并给 worker 留出 deadline。
+            self._stop_loop(state)
+            thread.join(timeout=min(0.1, remaining))
         if thread and thread.is_alive():
-            thread.join(timeout=timeout_seconds)
+            return False
+        if not self._signal_worker_after_producers(state, deadline):
+            return False
         worker = state.worker
         if worker and worker.is_alive():
-            worker.join(timeout=timeout_seconds)
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
         return not ((thread and thread.is_alive()) or (worker and worker.is_alive()))
+
+    @staticmethod
+    def _signal_worker_after_producers(
+        state: _StreamState,
+        deadline: float | None,
+    ) -> bool:
+        with state.callback_condition:
+            while state.callbacks_inflight:
+                if deadline is None:
+                    state.callback_condition.wait()
+                    continue
+                remaining = max(0.0, deadline - time.monotonic())
+                if remaining <= 0:
+                    return False
+                state.callback_condition.wait(timeout=remaining)
+            if not state.worker_stop_sent:
+                state.queue.put_nowait(None)
+                state.worker_stop_sent = True
+            return True
 
     def running_binding_ids(self) -> set[str]:
         with self._lock:
             return {
                 binding_id
                 for binding_id, state in self._streams.items()
-                if state.thread and state.thread.is_alive()
+                if (state.thread and state.thread.is_alive())
+                or (state.worker and state.worker.is_alive())
             }
 
     def get_stream(self, binding_id: str):
@@ -209,6 +282,8 @@ class WeComStreamManager:
                 )
             ).all()
         active_ids = {row.id for row in rows}
+        with self._lock:
+            active_ids -= self._paused
         for binding_id in active_ids - self.running_binding_ids():
             self.ensure_binding(binding_id)
         for binding_id in self.running_binding_ids() - active_ids:
@@ -216,8 +291,25 @@ class WeComStreamManager:
         # connected 对账:运行中按 SDK 实况对齐(无变化时 _set_connected 不写库),未运行置 False
         running_ids = self.running_binding_ids()
         for row in rows:
+            with self._lock:
+                state = self._streams.get(row.id)
+                state_revision = state.config_revision if state else None
+            if (
+                row.id in running_ids
+                and state_revision is not None
+                and state_revision != row.config_revision
+            ):
+                self.stop_binding(row.id)
+                self._set_connected(
+                    row.id,
+                    False,
+                    config_revision=row.config_revision,
+                )
+                continue
             self._set_connected(
-                row.id, self._stream_connected(row.id) if row.id in running_ids else False
+                row.id,
+                self._stream_connected(row.id) if row.id in running_ids else False,
+                config_revision=row.config_revision,
             )
 
     def _stream_connected(self, binding_id: str) -> bool:
@@ -243,18 +335,30 @@ class WeComStreamManager:
         if loop is None or loop.is_closed():
             return
         try:
-            if client is not None:
+            with state.callback_condition:
+                should_disconnect = client is not None and not state.disconnect_sent
+                if should_disconnect:
+                    state.disconnect_sent = True
+            if should_disconnect:
                 # SDK v1.0.2 的 disconnect 是同步方法,须调度到 loop 线程执行
                 loop.call_soon_threadsafe(client.disconnect)
+            loop.call_soon_threadsafe(loop.stop)
         except Exception:
             logger.debug("企微 disconnect 调度失败(忽略)", exc_info=True)
-        loop.call_soon_threadsafe(loop.stop)
 
-    def _set_connected(self, binding_id: str, connected: bool) -> None:
+    def _set_connected(
+        self,
+        binding_id: str,
+        connected: bool,
+        *,
+        config_revision: int | None = None,
+    ) -> None:
         try:
             with Session(self._engine) as db:
                 binding = db.get(ChannelBinding, binding_id)
                 if not binding:
+                    return
+                if config_revision is not None and binding.config_revision != config_revision:
                     return
                 if binding.connected != connected:
                     binding.connected = connected
@@ -266,20 +370,36 @@ class WeComStreamManager:
 
     def _wire_client(self, binding_id: str, client, state: _StreamState, account_scope: str = "") -> None:
         def on_authenticated(*_args) -> None:
-            self._set_connected(binding_id, True)
+            self._set_connected(
+                binding_id,
+                True,
+                config_revision=state.config_revision,
+            )
 
         def on_disconnected(*_args) -> None:
-            self._set_connected(binding_id, False)
+            self._set_connected(
+                binding_id,
+                False,
+                config_revision=state.config_revision,
+            )
 
         def on_frame(frame, *_args) -> None:
             # WS loop 线程只做归一化+入队,立即返回继续心跳;AgentLoop 轮在 worker 线程执行
+            with state.callback_condition:
+                if state.stop.is_set():
+                    return
+                state.callbacks_inflight += 1
             try:
                 inbound = normalize_wecom_frame(frame, account_scope=account_scope)
                 if inbound is None:
                     return
-                state.queue.put_nowait(inbound)
+                state.queue.put_nowait((state.config_revision, inbound))
             except Exception:
                 logger.exception("企微入站消息入队失败 binding=%s", binding_id)
+            finally:
+                with state.callback_condition:
+                    state.callbacks_inflight -= 1
+                    state.callback_condition.notify_all()
 
         client.on("authenticated", on_authenticated)
         client.on("disconnected", on_disconnected)
@@ -293,20 +413,33 @@ class WeComStreamManager:
             item = state.queue.get()
             if item is None:
                 return
+            if isinstance(item, tuple) and len(item) == 2:
+                item_revision, inbound = item
+            else:
+                item_revision, inbound = state.config_revision, item
             try:
                 with Session(self._engine) as db:
                     binding = db.get(ChannelBinding, binding_id)
-                    if not binding or binding.status != "active":
+                    if (
+                        not binding
+                        or binding.status != "active"
+                        or binding.config_revision != item_revision
+                    ):
                         continue
                     db.expunge(binding)
-                process_inbound(binding, item, db_engine=self._engine)
+                process_inbound(binding, inbound, db_engine=self._engine)
             except Exception:
                 logger.exception("企微入站消息处理失败 binding=%s", binding_id)
 
     def _run_stream(self, binding_id: str, state: _StreamState) -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        # 先发布 loop 再检查 stop，覆盖 ensure_binding 后立即 stop 的启动竞态。
+        # stop 若更早发生，Event 会阻止连接；若更晚发生，则可调度 loop.stop。
+        state.loop = loop
         try:
+            if state.stop.is_set() or self._stopped.is_set():
+                return
             with Session(self._engine) as db:
                 binding = db.get(ChannelBinding, binding_id)
                 if not binding or binding.status != "active":
@@ -316,6 +449,8 @@ class WeComStreamManager:
                 secret = (
                     decrypt_channel_secret(binding.credentials_enc) if binding.credentials_enc else ""
                 )
+                if state.config_revision != binding.config_revision:
+                    return
             if not bot_id or not secret:
                 logger.warning("企微绑定缺少凭证,stream 退出 binding=%s", binding_id)
                 return
@@ -325,14 +460,18 @@ class WeComStreamManager:
             client = self._client_factory(bot_id, secret)
             self._wire_client(binding_id, client, state, account_scope)
             state.client = client
-            state.loop = loop
+            if state.stop.is_set() or self._stopped.is_set():
+                return
             loop.run_until_complete(client.connect())
             loop.run_forever()
         except Exception:
             logger.exception("企微 stream 线程异常 binding=%s", binding_id)
         finally:
+            # 封闭 producer 注册窗口后再等待已登记 callback，sentinel 后不得再入队。
+            state.stop.set()
             state.loop = None
             state.client = None
+            self._signal_worker_after_producers(state, None)
             try:
                 loop.close()
             except Exception:

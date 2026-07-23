@@ -1,10 +1,12 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 import app.api.channels as channels_api
 from app.channels.schema import channel_binding_read
+from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.db import get_session
 from app.db.models import AgentProfile, ChannelBinding, ChannelDelivery, Tenant, User, utc_now
 from app.security.auth import create_access_token
@@ -226,6 +228,109 @@ def test_qrcode_confirm_activates_binding(monkeypatch) -> None:
         assert "ilinkbot_secret_token" not in binding.credentials_enc
         read = channel_binding_read(db, binding)
         assert "ilinkbot_secret_token" not in read.model_dump_json()
+
+
+def test_qrcode_confirm_timeout_keeps_pending_config(monkeypatch) -> None:
+    import app.channels
+
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    calls: list[str] = []
+
+    class SpyManager:
+        def pause_binding(self, bid):
+            calls.append(f"pause:{bid}")
+
+        def wait_binding_stopped(self, bid, timeout_seconds=5.0):
+            calls.append(f"wait:{bid}")
+            return False
+
+        def resume_binding(self, bid, *, start=True):
+            calls.append(f"resume:{bid}:{start}")
+
+    _FakeWeChatClient.reset()
+    monkeypatch.setattr(channels_api, "WeChatClient", _FakeWeChatClient)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
+    monkeypatch.setattr(app.channels, "get_wechat_poll_manager", lambda: SpyManager())
+
+    response = _make_client(engine).get(
+        f"/api/enterprise/channels/{binding_id}/wechat/qrcode-status",
+        params={"tenant_id": "tenant_demo", "qrcode": "qrc_1"},
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 409
+    assert calls == [
+        f"pause:{binding_id}",
+        f"wait:{binding_id}",
+        f"resume:{binding_id}:False",
+    ]
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert binding.status == "pending"
+        assert binding.credentials_enc is None
+        assert binding.config_revision == 0
+
+
+def test_binded_redirect_commit_failure_restores_old_ingress(monkeypatch) -> None:
+    import app.channels
+
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine, status="active")
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        binding.credentials_enc = encrypt_channel_secret("old_token")
+        binding.config_json = {"ilink_bot_id": "bot@im.bot"}
+        binding.external_account_key = "wechat:ilink_bot:bot@im.bot"
+        db.add(binding)
+        db.commit()
+    calls: list[str] = []
+
+    class SpyManager:
+        def pause_binding(self, bid):
+            calls.append(f"pause:{bid}")
+
+        def wait_binding_stopped(self, bid, timeout_seconds=5.0):
+            calls.append(f"wait:{bid}")
+            return True
+
+        def resume_binding(self, bid, *, start=True):
+            calls.append(f"resume:{bid}:{start}")
+
+    original_commit = Session.commit
+    failed = False
+
+    def fail_first_commit(session):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise IntegrityError("forced", {}, RuntimeError("forced"))
+        return original_commit(session)
+
+    _FakeWeChatClient.reset({"status": "binded_redirect"})
+    monkeypatch.setattr(channels_api, "WeChatClient", _FakeWeChatClient)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
+    monkeypatch.setattr(app.channels, "get_wechat_poll_manager", lambda: SpyManager())
+    monkeypatch.setattr(Session, "commit", fail_first_commit)
+
+    response = _make_client(engine).get(
+        f"/api/enterprise/channels/{binding_id}/wechat/qrcode-status",
+        params={"tenant_id": "tenant_demo", "qrcode": "qrc_1"},
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 409
+    assert calls == [
+        f"pause:{binding_id}",
+        f"wait:{binding_id}",
+        f"resume:{binding_id}:True",
+    ]
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert decrypt_channel_secret(binding.credentials_enc) == "old_token"
+        assert binding.config_revision == 0
 
 
 def test_qrcode_endpoints_reject_non_creator(monkeypatch) -> None:

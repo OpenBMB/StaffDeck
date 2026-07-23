@@ -16,6 +16,7 @@ const OUTLINE_BUTTON_CLASS =
 const DEFAULT_FIELDS: ChannelCredentialFieldRead[] = [
   { key: 'bot_id', label: '机器人 ID' },
   { key: 'secret', label: '机器人 Secret', secret: true },
+  { key: 'corp_id', label: '企业 ID' },
 ];
 
 export default function WecomSetup({
@@ -49,7 +50,6 @@ export default function WecomSetup({
     }
     setSaving(true);
     try {
-      // 空值字段(主要是可选的 corp_id)不下发,避免把后端已有值清空
       const payload: Record<string, string> = { tenant_id: TENANT_ID };
       fields.forEach((field) => {
         const value = String(values[field.key] || '').trim();
@@ -118,7 +118,7 @@ export default function WecomSetup({
           />
           {field.key === 'corp_id' && (
             <span className="text-[11px] leading-[1.5] text-[#a0a6b8]">
-              用于跨企业区分相同 userid；不填则以机器人 ID 区分（删除重建绑定后身份可能断开）
+              企业身份隔离的必要字段，激活后不可在原绑定上修改
             </span>
           )}
         </label>
