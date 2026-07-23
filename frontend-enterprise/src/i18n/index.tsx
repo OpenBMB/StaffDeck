@@ -9,8 +9,9 @@ import {
 } from 'react';
 
 import englishCatalog from './en.json';
+import indonesianCatalog from './id.json';
 
-export type AppLocale = 'zh-CN' | 'en-US';
+export type AppLocale = 'zh-CN' | 'en-US' | 'id-ID';
 
 type I18nContextValue = {
   locale: AppLocale;
@@ -26,7 +27,10 @@ type CompiledTemplate = {
 };
 
 const STORAGE_KEY = 'staffdeck_locale';
-const CATALOG = englishCatalog as Record<string, string>;
+const CATALOGS: Record<string, Record<string, string>> = {
+  'en-US': englishCatalog as Record<string, string>,
+  'id-ID': indonesianCatalog as Record<string, string>,
+};
 const SAFE_ATTRIBUTES = ['placeholder', 'aria-label', 'title', 'alt', 'data-placeholder'] as const;
 const TEMPLATE_TOKEN = /\{(\d+)\}/g;
 const textOriginals = new WeakMap<Text, string>();
@@ -35,7 +39,9 @@ const translationCache = new Map<string, string | null>();
 
 function initialLocale(): AppLocale {
   if (typeof window === 'undefined') return 'zh-CN';
-  return window.localStorage.getItem(STORAGE_KEY) === 'en-US' ? 'en-US' : 'zh-CN';
+  const stored = window.localStorage.getItem(STORAGE_KEY);
+  if (stored === 'en-US' || stored === 'id-ID') return stored;
+  return 'zh-CN';
 }
 
 let currentLocale: AppLocale = initialLocale();
@@ -55,38 +61,48 @@ function escapePattern(value: string): string {
 
 const exactCatalog = new Map<string, string>();
 const compiledTemplates: CompiledTemplate[] = [];
+let builtLocale: AppLocale | null = null;
 
-for (const [rawSource, target] of Object.entries(CATALOG)) {
-  const sources = new Set([rawSource, decodeSourceEntities(rawSource)]);
-  for (const source of sources) {
-    if (!source) continue;
-    exactCatalog.set(source, target);
-    if (!TEMPLATE_TOKEN.test(source)) {
+function buildCatalog(locale: AppLocale): void {
+  if (builtLocale === locale) return;
+  const source = CATALOGS[locale];
+  if (!source) return;
+  exactCatalog.clear();
+  compiledTemplates.length = 0;
+  for (const [rawSource, target] of Object.entries(source)) {
+    const sources = new Set([rawSource, decodeSourceEntities(rawSource)]);
+    for (const s of sources) {
+      if (!s) continue;
+      exactCatalog.set(s, target);
+      if (!TEMPLATE_TOKEN.test(s)) {
+        TEMPLATE_TOKEN.lastIndex = 0;
+        continue;
+      }
       TEMPLATE_TOKEN.lastIndex = 0;
-      continue;
+      const placeholderOrder: number[] = [];
+      let cursor = 0;
+      let pattern = '^';
+      for (const match of s.matchAll(TEMPLATE_TOKEN)) {
+        pattern += escapePattern(s.slice(cursor, match.index));
+        pattern += '([\\s\\S]*?)';
+        placeholderOrder.push(Number(match[1]));
+        cursor = (match.index || 0) + match[0].length;
+      }
+      pattern += `${escapePattern(s.slice(cursor))}$`;
+      compiledTemplates.push({ pattern: new RegExp(pattern), placeholderOrder, target });
     }
-    TEMPLATE_TOKEN.lastIndex = 0;
-    const placeholderOrder: number[] = [];
-    let cursor = 0;
-    let pattern = '^';
-    for (const match of source.matchAll(TEMPLATE_TOKEN)) {
-      pattern += escapePattern(source.slice(cursor, match.index));
-      pattern += '([\\s\\S]*?)';
-      placeholderOrder.push(Number(match[1]));
-      cursor = (match.index || 0) + match[0].length;
-    }
-    pattern += `${escapePattern(source.slice(cursor))}$`;
-    compiledTemplates.push({ pattern: new RegExp(pattern), placeholderOrder, target });
   }
+  compiledTemplates.sort((left, right) => right.pattern.source.length - left.pattern.source.length);
+  builtLocale = locale;
+  translationCache.clear();
 }
-
-compiledTemplates.sort((left, right) => right.pattern.source.length - left.pattern.source.length);
 
 function interpolate(target: string, values: Record<string | number, string | number>): string {
   return target.replace(TEMPLATE_TOKEN, (_, key: string) => String(values[key] ?? `{${key}}`));
 }
 
 function translateCore(source: string): string | null {
+  buildCatalog(currentLocale);
   if (translationCache.has(source)) return translationCache.get(source) || null;
   const exact = exactCatalog.get(source);
   if (exact) {
@@ -218,7 +234,9 @@ export function getStoredLocale(): AppLocale {
 }
 
 export function getDateLocale(): string {
-  return currentLocale === 'en-US' ? 'en-US' : 'zh-CN';
+  if (currentLocale === 'en-US') return 'en-US';
+  if (currentLocale === 'id-ID') return 'id-ID';
+  return 'zh-CN';
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {
@@ -226,13 +244,16 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const setLocale = useCallback((nextLocale: AppLocale) => {
     currentLocale = nextLocale;
+    builtLocale = null;
+    translationCache.clear();
     window.localStorage.setItem(STORAGE_KEY, nextLocale);
     document.documentElement.lang = nextLocale;
     setLocaleState(nextLocale);
   }, []);
 
   const toggleLocale = useCallback(() => {
-    setLocale(locale === 'zh-CN' ? 'en-US' : 'zh-CN');
+    const next: AppLocale = locale === 'zh-CN' ? 'en-US' : locale === 'en-US' ? 'id-ID' : 'zh-CN';
+    setLocale(next);
   }, [locale, setLocale]);
 
   const t = useCallback(
