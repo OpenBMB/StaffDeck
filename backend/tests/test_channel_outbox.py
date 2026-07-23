@@ -7,15 +7,27 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.channels.adapters.base import register_channel_adapter
 from app.channels.service_outbox import run_delivery_daemon, stage_channel_delivery
 from app.config import get_settings
-from app.db.models import ChannelBinding, ChannelDelivery, ChatSession, Message, Tenant, utc_now
+from app.channels.crypto import encrypt_channel_secret
+from app.db.models import (
+    ChannelBinding,
+    ChannelDelivery,
+    ChannelIdentity,
+    ChatSession,
+    Message,
+    Tenant,
+    User,
+    utc_now,
+)
 
 
 class FakeAdapter:
     def __init__(self, *, fail_times: int = 0):
         self.fail_times = fail_times
         self.sent: list[tuple[str, dict, str]] = []
+        self.dedupe_keys: list[str | None] = []
 
-    def send(self, binding: ChannelBinding, target: dict, text: str) -> None:
+    def send(self, binding: ChannelBinding, target: dict, text: str, *, dedupe_key: str | None = None) -> None:
+        self.dedupe_keys.append(dedupe_key)
         if self.fail_times > 0:
             self.fail_times -= 1
             raise RuntimeError("模拟发送失败")
@@ -396,3 +408,199 @@ def _clean_adapter_registry():
 
     _adapters.pop("fake", None)
     _adapters.pop("unknown_channel", None)
+
+
+# ---------- 原子 claim 与确定性幂等 ----------
+
+
+def test_concurrent_daemons_claim_disjoint_deliveries(tmp_path) -> None:
+    import threading
+
+    from app.channels.service_outbox import _claim_due_deliveries
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'outbox_claim.db'}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        all_ids = set()
+        for index in range(30):
+            delivery = _make_delivery(db, binding, message_id=f"msg_{index}", idempotency_key=f"msg_{index}")
+            all_ids.add(delivery.id)
+
+    claimed: list[set] = []
+    barrier = threading.Barrier(3)
+
+    def claim() -> None:
+        barrier.wait()
+        with Session(engine) as db:
+            claimed.append({row.id for row in _claim_due_deliveries(db, limit=20)})
+
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(claimed) == 2
+    # 两个并发守护拿到互不重叠的行集,且合起来覆盖全部到期投递
+    assert claimed[0].isdisjoint(claimed[1])
+    assert claimed[0] | claimed[1] == all_ids
+
+
+def test_delivery_retries_pass_same_dedupe_key() -> None:
+    engine = _test_engine()
+    adapter = FakeAdapter(fail_times=1)
+    register_channel_adapter("fake", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        delivery = _make_delivery(db, binding)
+        delivery_id = delivery.id
+        idem = delivery.idempotency_key
+
+    run_delivery_daemon(once=True, db_engine=engine)
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "pending"
+        delivery.next_attempt_at = utc_now() - timedelta(seconds=1)
+        db.add(delivery)
+        db.commit()
+
+    run_delivery_daemon(once=True, db_engine=engine)
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    # 同一投递的每次重试都把 idempotency_key 作为 dedupe_key 传给适配器
+    assert adapter.dedupe_keys == [idem, idem]
+
+
+def test_claim_orders_by_next_attempt_at() -> None:
+    engine = _test_engine()
+    adapter = FakeAdapter()
+    register_channel_adapter("fake", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        _make_delivery(
+            db,
+            binding,
+            message_id="msg_late",
+            idempotency_key="msg_late",
+            next_attempt_at=utc_now() + timedelta(hours=1),
+        )
+        early = _make_delivery(
+            db,
+            binding,
+            message_id="msg_early",
+            idempotency_key="msg_early",
+            next_attempt_at=utc_now() - timedelta(seconds=10),
+        )
+        early_id = early.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, early_id).status == "delivered"
+        # 未到期的不被 claim
+        late = db.exec(select(ChannelDelivery).where(ChannelDelivery.idempotency_key == "msg_late")).one()
+        assert late.status == "pending"
+        assert late.sending_since is None
+
+
+# ---------- 渠道异常主动告警 ----------
+
+
+def _seed_alertable_wechat_binding(engine, *, with_identity: bool, with_session: bool) -> str:
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_web", tenant_id="tenant_demo", username="zhangsan", password_hash="x"))
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat",
+            status="active",
+            connected=True,
+            credentials_enc=encrypt_channel_secret("tok"),
+            config_json={"baseurl": "https://ilinkai.weixin.qq.com", "ilink_bot_id": "bot@im.bot"},
+            created_by_user_id="user_web",
+        )
+        db.add(binding)
+        db.flush()
+        if with_identity:
+            db.add(
+                ChannelIdentity(
+                    tenant_id="tenant_demo",
+                    channel="wechat",
+                    external_account_scope="",
+                    external_user_id="wxid_creator",
+                    staffdeck_user_id="user_web",
+                    display_name="张三",
+                )
+            )
+        if with_session:
+            db.add(
+                ChatSession(
+                    id="s_creator",
+                    tenant_id="tenant_demo",
+                    user_id="user_web",
+                    agent_id="agent_1",
+                    channel="wechat",
+                    external_conv_id="wechat_p2p_wxid_creator",
+                    channel_target_json={"to_user_id": "wxid_creator", "context_token": "ctx_1"},
+                    channel_binding_id=binding.id,
+                )
+            )
+        db.commit()
+        return binding.id
+
+
+def test_wechat_expired_alerts_creator_via_admin_alert() -> None:
+    from app.channels.adapters.wechat import WeChatPollManager
+
+    engine = _test_engine()
+    binding_id = _seed_alertable_wechat_binding(engine, with_identity=True, with_session=True)
+    manager = WeChatPollManager(db_engine=engine)
+    manager._mark_session_expired(binding_id)
+
+    with Session(engine) as db:
+        alerts = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "admin_alert")
+        ).all()
+        assert len(alerts) == 1
+        alert = alerts[0]
+        assert "微信渠道 token 已失效" in alert.text
+        assert alert.binding_id == binding_id
+        # 目标取创建者最近私聊会话的 channel_target_json
+        assert alert.target_json == {"to_user_id": "wxid_creator", "context_token": "ctx_1"}
+        assert alert.session_id == "s_creator"
+        assert db.get(ChannelBinding, binding_id).status == "expired"
+
+
+def test_notify_skips_when_creator_has_no_identity() -> None:
+    from app.channels.adapters.wechat import WeChatPollManager
+
+    engine = _test_engine()
+    binding_id = _seed_alertable_wechat_binding(engine, with_identity=False, with_session=False)
+    manager = WeChatPollManager(db_engine=engine)
+    # 无身份:跳过仅记日志,不影响主流程(过期标记照常落)
+    manager._mark_session_expired(binding_id)
+    with Session(engine) as db:
+        assert db.exec(select(ChannelDelivery)).all() == []
+        assert db.get(ChannelBinding, binding_id).status == "expired"
+
+
+def test_notify_uses_identity_basics_without_session() -> None:
+    from app.channels.adapters.wechat import WeChatPollManager
+
+    engine = _test_engine()
+    binding_id = _seed_alertable_wechat_binding(engine, with_identity=True, with_session=False)
+    manager = WeChatPollManager(db_engine=engine)
+    manager._mark_session_expired(binding_id)
+    with Session(engine) as db:
+        alerts = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "admin_alert")
+        ).all()
+        assert len(alerts) == 1
+        # 无会话:按身份基本信息构造 to_user_id
+        assert alerts[0].target_json["to_user_id"] == "wxid_creator"
+        assert alerts[0].session_id.startswith("alert:")

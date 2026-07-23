@@ -557,6 +557,8 @@ class ChannelBinding(SQLModel, table=True):
         sa_column=Column(Integer, nullable=False, server_default="0"),
     )
     connected: bool = False
+    # 最近一次成功连上渠道的时间(企微断开超时告警的时间基准)
+    last_connected_at: Optional[datetime] = None
     created_by_user_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -677,6 +679,8 @@ class ChannelDelivery(SQLModel, table=True):
     status: str = Field(default="pending", index=True)
     attempts: int = 0
     next_attempt_at: Optional[datetime] = Field(default=None, index=True)
+    # 原子 claim 的抢占时间(守护据此重置卡死投递)
+    sending_since: Optional[datetime] = None
     last_error: Optional[str] = None
     # 回复类投递 = message_id，天然幂等
     idempotency_key: str = Field(unique=True, index=True)

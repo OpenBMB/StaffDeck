@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 
 from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
@@ -67,6 +68,39 @@ def current_processor_run_id() -> str:
 # 进程级会话串行锁：同一渠道会话的入站消息顺序处理（拉模式天然有序）
 _session_locks: dict[str, threading.Lock] = {}
 _session_locks_guard = threading.Lock()
+
+# /绑定 校验失败限流:按 (channel, external_user_id) 进程内计数(单进程够用,
+# 重启清零可接受)——连续 5 次失败冷却 10 分钟
+_BIND_FAILURE_LIMIT = 5
+_BIND_FAILURE_COOLDOWN_SECONDS = 600.0
+_BIND_COOLDOWN_TEXT = "尝试次数过多，请 10 分钟后再试。"
+_bind_failures: dict[tuple[str, str], tuple[int, float]] = {}
+_bind_failures_lock = threading.Lock()
+
+
+def _bind_cooldown_remaining(channel: str, external_id: str) -> float:
+    """冷却剩余秒数;冷却结束自动清零重新计数。"""
+    now = time.monotonic()
+    with _bind_failures_lock:
+        failures, since = _bind_failures.get((channel, external_id), (0, 0.0))
+        if failures < _BIND_FAILURE_LIMIT:
+            return 0.0
+        remaining = _BIND_FAILURE_COOLDOWN_SECONDS - (now - since)
+        if remaining > 0:
+            return remaining
+        _bind_failures.pop((channel, external_id), None)
+    return 0.0
+
+
+def _record_bind_failure(channel: str, external_id: str) -> None:
+    with _bind_failures_lock:
+        failures, _since = _bind_failures.get((channel, external_id), (0, 0.0))
+        _bind_failures[(channel, external_id)] = (failures + 1, time.monotonic())
+
+
+def _reset_bind_failures(channel: str, external_id: str) -> None:
+    with _bind_failures_lock:
+        _bind_failures.pop((channel, external_id), None)
 
 
 def _claim_stale_event(db: Session, event_id: str) -> bool:
@@ -407,6 +441,10 @@ def _bind_external_identity(
     code = (code or "").strip()
     if not code:
         return "用法：/绑定 <6位绑定码>。绑定码请在 StaffDeck 网页端生成。"
+    external_id = inbound.from_user_id
+    # 限流:连续错码/过期码达上限后冷却,冷却期内连正确码也拒绝
+    if _bind_cooldown_remaining(binding.channel, external_id) > 0:
+        return _BIND_COOLDOWN_TEXT
     now = utc_now()
     record = db.exec(
         select(ChannelBindCode)
@@ -416,13 +454,14 @@ def _bind_external_identity(
         )
     ).first()
     if not record or record.used_at is not None or record.expires_at <= now:
+        _record_bind_failure(binding.channel, external_id)
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
     owner = db.get(User, record.user_id)
     if not owner:
+        _record_bind_failure(binding.channel, external_id)
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
 
     scope = external_account_scope(db, binding)
-    external_id = inbound.from_user_id
     identity = find_channel_identity(db, binding.tenant_id, binding.channel, external_id, scope)
     old_user_id = identity.staffdeck_user_id if identity else None
     if old_user_id and old_user_id != owner.id:
@@ -434,7 +473,9 @@ def _bind_external_identity(
 
     if not _claim_bind_code(db, binding, record, code, now):
         db.rollback()
+        _record_bind_failure(binding.channel, external_id)
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
+    _reset_bind_failures(binding.channel, external_id)
 
     # ① 身份指针改指码主账号(无记录则新建)
     if identity:

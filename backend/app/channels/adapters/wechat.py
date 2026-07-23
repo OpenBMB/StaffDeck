@@ -234,12 +234,13 @@ class WeChatClient:
         resp.raise_for_status()
         return dict(resp.json() or {})
 
-    def send_message(self, to_user_id: str, context_token: str, text: str) -> None:
+    def send_message(self, to_user_id: str, context_token: str, text: str, client_id: str = "") -> None:
         payload = {
             "msg": {
                 "from_user_id": "",
                 "to_user_id": to_user_id,
-                "client_id": f"staffdeck:{int(time.time() * 1000)}:{uuid4().hex[:8]}",
+                # 确定性幂等:同一投递的重试复用同一 client_id;未指定时保持随机
+                "client_id": client_id or f"staffdeck:{int(time.time() * 1000)}:{uuid4().hex[:8]}",
                 "message_type": 2,
                 "message_state": 2,
                 "context_token": context_token,
@@ -299,14 +300,23 @@ class WeChatAdapter:
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None:
         return normalize_wechat_message(raw)
 
-    def send(self, binding: ChannelBinding, target: dict[str, Any], text: str) -> None:
+    def send(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        text: str,
+        *,
+        dedupe_key: str | None = None,
+    ) -> None:
         to_user_id = str(target.get("to_user_id") or "").strip()
         context_token = str(target.get("context_token") or "").strip()
         if not to_user_id or not context_token:
             raise ValueError("微信投递目标缺少 to_user_id 或 context_token")
+        # 同一投递的每次重试使用同一 client_id,服务端可幂等去重
+        client_id = f"staffdeck:{dedupe_key}" if dedupe_key else ""
         client = self._client_factory(binding)
         for chunk in split_wechat_text(text):
-            client.send_message(to_user_id, context_token, chunk)
+            client.send_message(to_user_id, context_token, chunk, client_id=client_id)
 
     def send_typing(
         self,
@@ -731,12 +741,21 @@ class WeChatPollManager:
         )
 
     def _mark_session_expired(self, binding_id: str) -> None:
-        _patch_runtime_config(
+        marked = _patch_runtime_config(
             self._engine,
             binding_id,
             set_values={"session_expired": True, "get_updates_buf": ""},
             binding_values={"status": "expired", "connected": False},
         )
+        if not marked:
+            return
+        # 自愈失败转真过期:主动告警绑定创建者重新扫码(helper 内部整体兜底)
+        from app.channels.service_outbox import notify_binding_creator
+
+        with Session(self._engine) as db:
+            binding = db.get(ChannelBinding, binding_id)
+            if binding:
+                notify_binding_creator(db, binding, "微信渠道 token 已失效，请在渠道接入页重新扫码。")
 
 
 # 模块导入即注册微信适配器(渠道内核按注册表发现渠道)

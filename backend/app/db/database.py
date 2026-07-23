@@ -178,6 +178,16 @@ def _migrate_sqlite_skill_schema() -> None:
             if "manual_pin_until" not in conv_columns:
                 conn.execute(text("ALTER TABLE channel_conv_states ADD COLUMN manual_pin_until DATETIME"))
 
+        if "channel_bindings" in tables:
+            binding_columns = {column["name"] for column in inspector.get_columns("channel_bindings")}
+            if "last_connected_at" not in binding_columns:
+                conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN last_connected_at DATETIME"))
+
+        if "channel_deliveries" in tables:
+            delivery_columns = {column["name"] for column in inspector.get_columns("channel_deliveries")}
+            if "sending_since" not in delivery_columns:
+                conn.execute(text("ALTER TABLE channel_deliveries ADD COLUMN sending_since DATETIME"))
+
         if "messages" in tables:
             message_columns = {column["name"] for column in inspector.get_columns("messages")}
             if "metadata_json" not in message_columns:
@@ -474,8 +484,10 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
     """身份作用域重构(一次性,app_data_migrations 守卫):
 
     1) channel_identities 重建:加 external_account_scope 列,唯一约束改
-       (tenant_id, channel, external_account_scope, external_user_id);存量行按
-       "同 tenant 同 channel 的现存绑定"回填 scope,取不到绑定的归 'legacy'。
+       (tenant_id, channel, external_account_scope, external_user_id)。存量行 scope
+       回填优先级:①被会话引用的 identity 按其会话所在 binding 的 scope(多 scope
+       歧义则留 legacy 并隔离相关会话);②无会话引用时取该 tenant+channel 最早创建
+       的 active binding 的 scope;③取不到归 'legacy'。
     2) channel_inbound_events 重建:唯一约束 (channel, event_id) 改 (binding_id, event_id)。
     3) sessions 的 wecom external_conv_id 改写为 wecom_{scope}_p2p_/group_ 格式(孤儿归 legacy)。
     """
@@ -498,9 +510,13 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
 
     scope_by_binding_id: dict[str, str] = {}
     scopes_by_tenant_channel: dict[tuple[str, str], set[str]] = {}
+    active_scope_by_tenant_channel: dict[tuple[str, str], str] = {}
     if "channel_bindings" in tables:
         for row in conn.execute(
-            text("SELECT id, tenant_id, channel, config_json FROM channel_bindings")
+            text(
+                "SELECT id, tenant_id, channel, status, config_json "
+                "FROM channel_bindings ORDER BY created_at, id"
+            )
         ).mappings().all():
             if row["channel"] != "wecom":
                 scope = ""
@@ -512,6 +528,11 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
             scopes_by_tenant_channel.setdefault(
                 (str(row["tenant_id"]), str(row["channel"])), set()
             ).add(scope)
+            # 回填优先级②的候选:该 tenant+channel 最早创建的 active binding
+            if str(row["channel"]) == "wecom" and str(row.get("status") or "") == "active":
+                active_scope_by_tenant_channel.setdefault(
+                    (str(row["tenant_id"]), str(row["channel"])), scope
+                )
 
     # 旧全局 identity bug 可能让 tenantB session 指向 tenantA User。迁移时立即
     # 解除错误 User 关联并隔离会话，避免升级后被正常 external_conv_id 再次命中。
@@ -616,8 +637,10 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
                 text("SELECT * FROM channel_identities ORDER BY id")
             ).mappings().all():
                 external_user_id = str(row["external_user_id"])
-                # wechat 是全局 wxid,scope 恒空。企微旧身份只有在历史会话或唯一
-                # tenant scope 能确定归属时才迁移；多企业歧义必须留在 legacy 隔离区。
+                # wechat 是全局 wxid,scope 恒空。企微存量 identity 的 scope 回填优先级:
+                # ①被会话引用(单 scope)按其会话所在 binding;多 scope 歧义留 legacy 并
+                # 隔离相关会话;②无会话引用取该 tenant+channel 最早 active binding;
+                # ③取不到归 legacy。
                 if str(row["channel"]) == "wecom":
                     if external_user_id.startswith("group_"):
                         external_user_id = f"group:{external_user_id.removeprefix('group_')}"
@@ -627,40 +650,38 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
                         external_user_id,
                     )
                     session_scopes = identity_session_scopes.get(identity_key, set())
-                    tenant_scopes = scopes_by_tenant_channel.get(
-                        (str(row["tenant_id"]), str(row["channel"])), set()
-                    )
                     if len(session_scopes) == 1:
                         scope = next(iter(session_scopes))
-                    elif not session_scopes and len(tenant_scopes) == 1:
-                        scope = next(iter(tenant_scopes))
-                    else:
+                    elif len(session_scopes) > 1:
                         scope = "legacy"
-                        if len(session_scopes) > 1:
-                            for session_id in session_ids_by_identity.get(identity_key, set()):
-                                conn.execute(
-                                    text(
-                                        "UPDATE sessions SET external_conv_id = :conv "
-                                        "WHERE id = :id"
-                                    ),
-                                    {
-                                        "id": session_id,
-                                        "conv": (
-                                            f"legacy_ambiguous_identity:{session_id}:"
-                                            + str(
-                                                next(
-                                                    (
-                                                        session_row.get("external_conv_id")
-                                                        for session_row in session_rows
-                                                        if str(session_row["id"]) == session_id
-                                                    ),
-                                                    "",
-                                                )
-                                                or ""
+                        for session_id in session_ids_by_identity.get(identity_key, set()):
+                            conn.execute(
+                                text(
+                                    "UPDATE sessions SET external_conv_id = :conv "
+                                    "WHERE id = :id"
+                                ),
+                                {
+                                    "id": session_id,
+                                    "conv": (
+                                        f"legacy_ambiguous_identity:{session_id}:"
+                                        + str(
+                                            next(
+                                                (
+                                                    session_row.get("external_conv_id")
+                                                    for session_row in session_rows
+                                                    if str(session_row["id"]) == session_id
+                                                ),
+                                                "",
                                             )
-                                        ),
-                                    },
-                                )
+                                            or ""
+                                        )
+                                    ),
+                                },
+                            )
+                    else:
+                        scope = active_scope_by_tenant_channel.get(
+                            (str(row["tenant_id"]), str(row["channel"])), "legacy"
+                        )
                 else:
                     scope = ""
                 current_user_id = str(row.get("staffdeck_user_id") or "")

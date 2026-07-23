@@ -5,6 +5,7 @@ import logging
 import queue
 import threading
 import time
+from datetime import timedelta
 from typing import Any
 
 from sqlmodel import Session, select
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 RECONCILE_SECONDS = 30.0
 SEND_TIMEOUT_SECONDS = 15.0
+# 企微长连接持续未 connected 超过该阈值时,给绑定创建者发一次性断开告警
+WECOM_DISCONNECT_ALERT_MINUTES = 15
 
 
 def is_self_frame(frame: dict[str, Any]) -> bool:
@@ -51,8 +54,12 @@ def normalize_wecom_frame(frame: dict[str, Any], *, account_scope: str = "") -> 
         return None
     chat_id = str(body.get("chatid") or "").strip()
     chattype = str(body.get("chattype") or "").strip()
-    # 官方文档：chatid 仅群聊返回；chattype 兜底
-    is_group = bool(chat_id) or chattype == "group"
+    if chattype == "group" and not chat_id:
+        # 群消息缺 chatid 时按私聊降级,避免群会话退化为每人一个会话
+        logger.warning("企微群消息缺少 chatid,按私聊降级处理 msgid=%s", body.get("msgid"))
+        chattype = "single"
+    # 官方文档：chatid 仅群聊返回
+    is_group = bool(chat_id)
     headers = frame.get("headers") or {}
     event_id = str(body.get("msgid") or body.get("msg_id") or headers.get("req_id") or "").strip()
     if not event_id:
@@ -87,6 +94,8 @@ class _StreamState:
         # 每绑定一个入站工作线程:WS loop 线程只入队,AgentLoop 轮在 worker 里跑,心跳不被阻塞
         self.worker: threading.Thread | None = None
         self.stop = threading.Event()
+        # join 超时后的强制退役:worker 完成当前条后退出并清理(不再接新消息)
+        self.retired = threading.Event()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client: Any = None
         self.queue: queue.Queue = queue.Queue()
@@ -145,6 +154,9 @@ class WeComStreamManager:
             worker = state.worker
             if worker and worker.is_alive():
                 worker.join(timeout=max(0.0, deadline - time.monotonic()))
+            if worker and worker.is_alive():
+                # join 超时:强制退役,worker 完成当前条后自行退出清理
+                state.retired.set()
         if reconcile_thread and reconcile_thread.is_alive():
             reconcile_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         return all(
@@ -163,10 +175,13 @@ class WeComStreamManager:
             if binding_id in self._paused:
                 return
             state = self._streams.get(binding_id)
-            if state and (
-                (state.thread and state.thread.is_alive())
-                or (state.worker and state.worker.is_alive())
-            ):
+            if state and state.thread and state.thread.is_alive():
+                return
+            if state and state.worker and state.worker.is_alive():
+                # stream 死 + worker 活:视为待回收——强制退役让 worker 完成当前条后
+                # 退出并清理(退出路径会从 _streams 清除该 state),本轮不新建,
+                # 下轮 reconcile 即可正常重建
+                state.retired.set()
                 return
             state = _StreamState()
             state.config_revision = config_revision
@@ -230,11 +245,17 @@ class WeComStreamManager:
         if thread and thread.is_alive():
             return False
         if not self._signal_worker_after_producers(state, deadline):
+            # worker 在 deadline 内未收尾:强制退役,完成当前条后自行退出清理
+            state.retired.set()
             return False
         worker = state.worker
         if worker and worker.is_alive():
             worker.join(timeout=max(0.0, deadline - time.monotonic()))
-        return not ((thread and thread.is_alive()) or (worker and worker.is_alive()))
+        if worker and worker.is_alive():
+            # join 超时:强制退役,不挂死后续重建
+            state.retired.set()
+            return False
+        return True
 
     @staticmethod
     def _signal_worker_after_producers(
@@ -311,6 +332,8 @@ class WeComStreamManager:
                 self._stream_connected(row.id) if row.id in running_ids else False,
                 config_revision=row.config_revision,
             )
+            # 断开超时主动告警(一次性,重连后允许再次告警)
+            self._maybe_alert_disconnect_timeout(row.id)
 
     def _stream_connected(self, binding_id: str) -> bool:
         """运行中绑定的 SDK 实况连接状态(client 缺失或未暴露 is_connected 视为 False)。"""
@@ -362,11 +385,48 @@ class WeComStreamManager:
                     return
                 if binding.connected != connected:
                     binding.connected = connected
+                    if connected:
+                        # 记录最近一次成功连接时间,并清除断开告警标记(允许下次再告警)
+                        binding.last_connected_at = utc_now()
+                        config = dict(binding.config_json or {})
+                        if config.pop("disconnect_alerted_at", None) is not None:
+                            binding.config_json = config
                     binding.updated_at = utc_now()
                     db.add(binding)
                     db.commit()
         except Exception:
             logger.exception("企微连接状态落库失败 binding=%s", binding_id)
+
+    def _maybe_alert_disconnect_timeout(self, binding_id: str) -> None:
+        """active 但持续未 connected 超阈值:给绑定创建者发一次性断开告警(config 标记防重复)。"""
+        try:
+            with Session(self._engine) as db:
+                binding = db.get(ChannelBinding, binding_id)
+                if not binding or binding.status != "active" or binding.connected:
+                    return
+                config = dict(binding.config_json or {})
+                if config.get("disconnect_alerted_at"):
+                    return
+                # 时间基准:最近成功连接时间;从未连上过则以最近更新(保存凭证)时刻起算
+                baseline = binding.last_connected_at or binding.updated_at
+                if not baseline or utc_now() - baseline < timedelta(
+                    minutes=WECOM_DISCONNECT_ALERT_MINUTES
+                ):
+                    return
+                config["disconnect_alerted_at"] = utc_now().isoformat()
+                binding.config_json = config
+                binding.updated_at = utc_now()
+                db.add(binding)
+                db.commit()
+                from app.channels.service_outbox import notify_binding_creator
+
+                notify_binding_creator(
+                    db,
+                    binding,
+                    "企业微信渠道长连接已断开超过 15 分钟，请在渠道接入页检查机器人配置或网络。",
+                )
+        except Exception:
+            logger.exception("企微断开超时告警失败 binding=%s", binding_id)
 
     def _wire_client(self, binding_id: str, client, state: _StreamState, account_scope: str = "") -> None:
         def on_authenticated(*_args) -> None:
@@ -409,27 +469,38 @@ class WeComStreamManager:
         """单 worker 串行消费本绑定入站消息(与同会话串行锁语义一致)。"""
         from app.channels.service_intake import process_inbound
 
-        while True:
-            item = state.queue.get()
-            if item is None:
-                return
-            if isinstance(item, tuple) and len(item) == 2:
-                item_revision, inbound = item
-            else:
-                item_revision, inbound = state.config_revision, item
-            try:
-                with Session(self._engine) as db:
-                    binding = db.get(ChannelBinding, binding_id)
-                    if (
-                        not binding
-                        or binding.status != "active"
-                        or binding.config_revision != item_revision
-                    ):
-                        continue
-                    db.expunge(binding)
-                process_inbound(binding, inbound, db_engine=self._engine)
-            except Exception:
-                logger.exception("企微入站消息处理失败 binding=%s", binding_id)
+        try:
+            while True:
+                # 强制退役:完成当前条后退出,不再接新消息
+                if state.retired.is_set():
+                    return
+                item = state.queue.get()
+                if item is None:
+                    return
+                if isinstance(item, tuple) and len(item) == 2:
+                    item_revision, inbound = item
+                else:
+                    item_revision, inbound = state.config_revision, item
+                try:
+                    with Session(self._engine) as db:
+                        binding = db.get(ChannelBinding, binding_id)
+                        if (
+                            not binding
+                            or binding.status != "active"
+                            or binding.config_revision != item_revision
+                        ):
+                            continue
+                        db.expunge(binding)
+                    process_inbound(binding, inbound, db_engine=self._engine)
+                except Exception:
+                    logger.exception("企微入站消息处理失败 binding=%s", binding_id)
+        finally:
+            # 退出路径清理死 state(identity 守卫,不清除已被替换的新 state),
+            # 下轮 reconcile 才能正常重建
+            with self._lock:
+                current = self._streams.get(binding_id)
+                if current is state and not (state.thread and state.thread.is_alive()):
+                    del self._streams[binding_id]
 
     def _run_stream(self, binding_id: str, state: _StreamState) -> None:
         loop = asyncio.new_event_loop()
@@ -487,10 +558,18 @@ class WeComAdapter:
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None:
         return normalize_wecom_frame(raw)
 
-    def send(self, binding: ChannelBinding, target: dict[str, Any], text: str) -> None:
+    def send(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        text: str,
+        *,
+        dedupe_key: str | None = None,
+    ) -> None:
         chat_id = str(target.get("to_user_id") or "").strip()
         if not chat_id:
             raise ValueError("企微投递目标缺少 to_user_id(chatid)")
+        # dedupe_key:企微 WS 协议的 req_id 由 SDK 内部生成,无客户端幂等标识可注入,仅保留签名一致
         from app.channels import get_wecom_stream_manager
 
         stream = get_wecom_stream_manager().get_stream(binding.id)

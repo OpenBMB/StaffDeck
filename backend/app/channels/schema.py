@@ -75,6 +75,8 @@ class MyIdentityBindingRead(BaseModel):
     external_user_id: str
     display_name: Optional[str] = None
     bound_at: str
+    # 渠道账号作用域(前端 scope 标签;wechat 为空串)
+    external_account_scope: str = ""
 
 
 class WeComCredentialsRequest(BaseModel):

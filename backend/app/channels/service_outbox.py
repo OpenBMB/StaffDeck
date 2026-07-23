@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 from datetime import timedelta
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -12,14 +14,17 @@ from app.db.models import (
     ChannelBinding,
     ChannelBindingAgent,
     ChannelDelivery,
+    ChannelIdentity,
     ChatSession,
     Message,
+    new_id,
     utc_now,
 )
 
 logger = logging.getLogger(__name__)
 
 _DELIVERY_BATCH_SIZE = 20
+_SQLITE_SUPPORTS_RETURNING = sqlite3.sqlite_version_info >= (3, 35, 0)
 _delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
 
@@ -129,16 +134,68 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
         logger.exception("渠道投递登记失败 session=%s", getattr(chat_session, "id", None))
 
 
-def _deliver_due(db: Session) -> int:
+def _claim_due_deliveries(db: Session, limit: int = _DELIVERY_BATCH_SIZE) -> list[ChannelDelivery]:
+    """单语句原子抢占 pending 投递:并发守护不会拿到同一行。
+
+    SQLite 3.35+ 用 UPDATE ... RETURNING;旧版本走"UPDATE 后按 sending_since 回查"
+    的等价路径(写入串行化下同样互斥)。
+    """
     now = utc_now()
-    due = db.exec(
+    if _SQLITE_SUPPORTS_RETURNING:
+        rows = db.execute(
+            text(
+                """
+                UPDATE channel_deliveries
+                SET status = 'sending', sending_since = :now, updated_at = :now
+                WHERE id IN (
+                    SELECT id FROM channel_deliveries
+                    WHERE status = 'pending' AND next_attempt_at <= :now
+                    ORDER BY next_attempt_at
+                    LIMIT :limit
+                )
+                RETURNING id
+                """
+            ),
+            {"now": now, "limit": limit},
+        ).all()
+        db.commit()
+        claimed_ids = [row[0] for row in rows]
+    else:
+        statement = text(
+            """
+            UPDATE channel_deliveries
+            SET status = 'sending', sending_since = :now, updated_at = :now
+            WHERE id IN (
+                SELECT id FROM channel_deliveries
+                WHERE status = 'pending' AND next_attempt_at <= :now
+                ORDER BY next_attempt_at
+                LIMIT :limit
+            )
+            """
+        )
+        db.execute(statement, {"now": now, "limit": limit})
+        db.commit()
+        claimed_ids = [
+            row[0]
+            for row in db.execute(
+                text(
+                    "SELECT id FROM channel_deliveries "
+                    "WHERE status = 'sending' AND sending_since = :now"
+                ),
+                {"now": now},
+            ).all()
+        ]
+    if not claimed_ids:
+        return []
+    return db.exec(
         select(ChannelDelivery)
-        .where(ChannelDelivery.status == "pending")
-        .where(ChannelDelivery.next_attempt_at.is_not(None))
-        .where(ChannelDelivery.next_attempt_at <= now)
-        .order_by(ChannelDelivery.created_at)
-        .limit(_DELIVERY_BATCH_SIZE)
+        .where(ChannelDelivery.id.in_(claimed_ids))
+        .order_by(ChannelDelivery.next_attempt_at)
     ).all()
+
+
+def _deliver_due(db: Session) -> int:
+    due = _claim_due_deliveries(db)
     for delivery in due:
         _deliver_one(db, delivery)
     return len(due)
@@ -152,6 +209,7 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
     if not binding or binding.status != "active":
         delivery.status = "failed"
         delivery.last_error = "渠道绑定不存在或已停用"
+        delivery.sending_since = None
         delivery.updated_at = utc_now()
         db.add(delivery)
         db.commit()
@@ -171,6 +229,7 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
             delivery.status = "failed"
             delivery.last_error = "渠道会话与绑定账号不一致"
             delivery.next_attempt_at = None
+            delivery.sending_since = None
             delivery.updated_at = utc_now()
             db.add(delivery)
             db.commit()
@@ -182,9 +241,15 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
     db.commit()
     try:
         adapter = get_channel_adapter(binding.channel)
-        adapter.send(binding, dict(delivery.target_json or {}), delivery.text)
+        adapter.send(
+            binding,
+            dict(delivery.target_json or {}),
+            delivery.text,
+            dedupe_key=delivery.idempotency_key,
+        )
     except Exception as exc:
         delivery.last_error = str(exc)[:500]
+        delivery.sending_since = None
         if delivery.attempts >= settings.channel_delivery_max_attempts:
             delivery.status = "failed"
             delivery.next_attempt_at = None
@@ -200,6 +265,7 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
     delivery.status = "delivered"
     delivery.delivered_at = utc_now()
     delivery.last_error = None
+    delivery.sending_since = None
     delivery.updated_at = utc_now()
     db.add(delivery)
     db.commit()
@@ -262,3 +328,59 @@ def stop_delivery_daemon(timeout_seconds: float = 5.0) -> bool:
     if stopped:
         _delivery_thread = None
     return stopped
+
+
+def notify_binding_creator(db: Session, binding: ChannelBinding, text: str) -> None:
+    """渠道异常主动告警:给绑定创建者发一条 kind=admin_alert 的渠道消息。
+
+    创建者在该渠道已有身份(channel_identities 匹配)时才投递:优先取其最近私聊
+    会话的 channel_target_json(含有效 context_token);无会话则按身份基本信息构造
+    (微信侧缺 context_token 时投递会重试后失败,仅记日志可接受)。任何异常仅记日志。
+    """
+    try:
+        if not binding.created_by_user_id:
+            return
+        identity = db.exec(
+            select(ChannelIdentity).where(
+                ChannelIdentity.tenant_id == binding.tenant_id,
+                ChannelIdentity.channel == binding.channel,
+                ChannelIdentity.staffdeck_user_id == binding.created_by_user_id,
+            )
+        ).first()
+        if not identity:
+            logger.info("渠道告警跳过:创建者在该渠道无身份 binding=%s", binding.id)
+            return
+        chat_session = db.exec(
+            select(ChatSession)
+            .where(
+                ChatSession.tenant_id == binding.tenant_id,
+                ChatSession.channel == binding.channel,
+                ChatSession.user_id == binding.created_by_user_id,
+                ChatSession.external_conv_id.is_not(None),
+            )
+            .order_by(ChatSession.updated_at.desc())
+            .limit(1)
+        ).first()
+        if chat_session and (chat_session.channel_target_json or {}).get("to_user_id"):
+            target = dict(chat_session.channel_target_json)
+            session_id = chat_session.id
+        else:
+            target = {"to_user_id": identity.external_user_id, "context_token": ""}
+            session_id = f"alert:{identity.id}"
+        db.add(
+            ChannelDelivery(
+                tenant_id=binding.tenant_id,
+                binding_id=binding.id,
+                session_id=session_id,
+                message_id=None,
+                target_json=target,
+                kind="admin_alert",
+                text=text,
+                status="pending",
+                next_attempt_at=utc_now(),
+                idempotency_key=new_id("chalert"),
+            )
+        )
+        db.commit()
+    except Exception:
+        logger.exception("渠道告警投递登记失败 binding=%s", binding.id)

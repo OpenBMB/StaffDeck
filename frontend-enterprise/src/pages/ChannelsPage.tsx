@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { notify } from '@/components/ui/app-toast';
 
 import AppHeader from '@/components/AppHeader';
@@ -21,6 +21,7 @@ import IconAlignJustify from '../assets/icons/align-justify.svg?react';
 import IconChat from '../assets/icons/chat.svg?react';
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconAccount from '../assets/icons/sys-accounts.svg?react';
+import IconWarningFill from '../assets/icons/warning-fill.svg?react';
 import type { EnterpriseAuthUser } from '../auth';
 import { canManageEmployeeAgent, employeeDisplayName } from '../employee';
 import { getDateLocale } from '@/i18n';
@@ -109,6 +110,16 @@ function isSessionRecovering(binding: ChannelBindingRead): boolean {
   );
 }
 
+function attentionText(item: ChannelBindingRead): string {
+  if (item.status === 'expired') {
+    return item.channel === 'wechat'
+      ? 'token 已失效，请重新扫码'
+      : '当前未连接，请检查凭证或网络';
+  }
+  if (isSessionRecovering(item)) return '会话恢复中，系统将自动重试';
+  return '当前未连接，请检查凭证或网络';
+}
+
 function formatDay(value: string): string {
   const date = parseBackendDateTime(value);
   if (Number.isNaN(date.getTime())) return '-';
@@ -173,13 +184,22 @@ export default function ChannelsPage({
   const [bindCodeLoading, setBindCodeLoading] = useState(false);
   const [bindCodeRemain, setBindCodeRemain] = useState(0);
   const [identityBindings, setIdentityBindings] = useState<ChannelIdentityBindingRead[]>([]);
-  const [unbindIdentityOpen, setUnbindIdentityOpen] = useState(false);
+  const [unbindIdentityTarget, setUnbindIdentityTarget] =
+    useState<ChannelIdentityBindingRead | null>(null);
   const [unbindingIdentity, setUnbindingIdentity] = useState(false);
 
   const binding = bindings.find((item) => item.id === selectedId) || null;
-  const currentIdentity =
-    identityBindings.find((item) => item.channel === binding?.channel) || null;
+  const channelIdentities = identityBindings.filter((item) => item.channel === binding?.channel);
   const bindCodeChannelName = binding ? channelName(binding.channel) : '微信';
+  const selectedIdRef = useRef('');
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  function ifStale(snapshot: string): boolean {
+    return snapshot !== selectedIdRef.current;
+  }
 
   useEffect(() => {
     if (!bindCodeOpen || !bindCode) return undefined;
@@ -255,14 +275,14 @@ export default function ChannelsPage({
   }
 
   async function confirmUnbindIdentity() {
-    if (!binding) return;
+    if (!unbindIdentityTarget) return;
     setUnbindingIdentity(true);
     try {
       await api.delete(
-        `/api/enterprise/channels/my-identity-bindings/${binding.channel}?tenant_id=${TENANT_ID}`,
+        `/api/enterprise/channels/my-identity-bindings/${unbindIdentityTarget.channel}?tenant_id=${TENANT_ID}&external_user_id=${encodeURIComponent(unbindIdentityTarget.external_user_id)}`,
       );
       notify.success('已解除绑定');
-      setUnbindIdentityOpen(false);
+      setUnbindIdentityTarget(null);
       await loadIdentityBindings();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '解除绑定失败');
@@ -271,18 +291,28 @@ export default function ChannelsPage({
     }
   }
 
+  function scopeLabel(identity: ChannelIdentityBindingRead): string {
+    const scope = identity.external_account_scope || '';
+    if (!scope) return channelName(identity.channel);
+    if (binding?.corp_id && scope === binding.corp_id) return `企业： ${scope}`;
+    return `Bot: ${scope}`;
+  }
+
   async function loadDeliveries(bindingId: string, offset = 0) {
+    const snapshot = selectedId;
     setDeliveriesLoading(true);
     try {
       const page = await api.get<ChannelDeliveryDayPage>(
         `/api/enterprise/channels/${bindingId}/deliveries/days?tenant_id=${TENANT_ID}&offset=${offset}&limit=7`,
       );
+      if (ifStale(snapshot)) return;
       setDeliveryDays((current) => (offset === 0 ? page.days : [...current, ...page.days]));
       setDeliveryTotalDays(page.total_days);
       if (offset === 0 && page.days.length > 0) {
         setExpandedDays(new Set([page.days[0].date]));
       }
     } catch (error) {
+      if (ifStale(snapshot)) return;
       notify.error(error instanceof Error ? error.message : '加载投递日志失败');
     } finally {
       setDeliveriesLoading(false);
@@ -302,14 +332,17 @@ export default function ChannelsPage({
   }
 
   async function loadConversations(bindingId: string, offset = 0) {
+    const snapshot = selectedId;
     setConversationsLoading(true);
     try {
       const page = await api.get<PagedResponse<ChannelConversationRead>>(
         `/api/enterprise/channels/${bindingId}/conversations?tenant_id=${TENANT_ID}&offset=${offset}&limit=20`,
       );
+      if (ifStale(snapshot)) return;
       setConversations((current) => (offset === 0 ? page.items : [...current, ...page.items]));
       setConversationsTotal(page.total);
     } catch (error) {
+      if (ifStale(snapshot)) return;
       notify.error(error instanceof Error ? error.message : '加载对话记录失败');
     } finally {
       setConversationsLoading(false);
@@ -318,6 +351,7 @@ export default function ChannelsPage({
 
   async function openConversation(item: ChannelConversationRead) {
     if (!binding) return;
+    const snapshot = selectedId;
     setActiveConversation(item);
     setMessages([]);
     setMessagesLoading(true);
@@ -325,8 +359,10 @@ export default function ChannelsPage({
       const rows = await api.get<ChannelConversationMessageRead[]>(
         `/api/enterprise/channels/${binding.id}/conversations/${item.session_id}/messages?tenant_id=${TENANT_ID}`,
       );
+      if (ifStale(snapshot)) return;
       setMessages(rows);
     } catch (error) {
+      if (ifStale(snapshot)) return;
       notify.error(error instanceof Error ? error.message : '加载会话消息失败');
     } finally {
       setMessagesLoading(false);
@@ -503,6 +539,9 @@ export default function ChannelsPage({
   }
 
   const bindingStatus = binding ? BINDING_STATUS_BADGE[binding.status] : undefined;
+  const attentionBindings = bindings.filter(
+    (item) => item.status === 'expired' || (item.status === 'active' && !item.connected),
+  );
   // bot_id / ilink_bot_id 是 DTO 顶层字段(后端不回传 config_json)
   const botId = binding?.ilink_bot_id || binding?.bot_id || '';
   const mountedAgents = binding?.agents || [];
@@ -539,6 +578,23 @@ export default function ChannelsPage({
 
   const listView = (
     <div className="mt-[20px] flex flex-col gap-[16px]">
+      {attentionBindings.length > 0 && (
+        <div className="flex flex-col gap-[6px] rounded-[12px] border border-[#f3d28b] bg-[#fff8e8] px-[18px] py-[12px] text-[#6f4500]">
+          {attentionBindings.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setSelectedId(item.id)}
+              className="flex items-center gap-[8px] text-left text-[13px] leading-[20px] transition-opacity hover:opacity-70"
+            >
+              <IconWarningFill className="size-[14px] shrink-0 text-[#f59e0b]" />
+              <span>
+                {channelName(item.channel)}：{attentionText(item)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="flex items-center justify-end gap-[8px]">
         <UIButton
           onClick={openCreate}
@@ -655,6 +711,9 @@ export default function ChannelsPage({
             </UIButton>
           </div>
         </div>
+        {binding.status === 'expired' && setupKindFor(binding.channel) !== 'qrcode' && (
+          <span className="text-[12px] text-[#d20b0b]">当前未连接，请检查凭证或网络</span>
+        )}
         {setupKindFor(binding.channel) === 'credentials' ? (
           <WecomSetup
             key={binding.id}
@@ -689,29 +748,39 @@ export default function ChannelsPage({
           <IconAccount className="size-[14px] shrink-0" />
           <span className="text-[14px] font-normal leading-none">身份绑定</span>
         </div>
-        <div className="flex flex-wrap items-center gap-[10px] rounded-[14px] border border-[#eef0f4] p-[16px]">
-          {currentIdentity ? (
-            <>
-              <StatusBadge tone="green">
-                {`已绑定：${currentIdentity.display_name || currentIdentity.external_user_id}`}
-              </StatusBadge>
+        <div className="flex flex-col gap-[10px] rounded-[14px] border border-[#eef0f4] p-[16px]">
+          {channelIdentities.length > 0 ? (
+            channelIdentities.map((identity) => (
+              <div
+                key={`${identity.channel}_${identity.external_user_id}_${identity.external_account_scope || ''}`}
+                className="flex flex-wrap items-center gap-[10px]"
+              >
+                <StatusBadge tone="green">
+                  {`已绑定：${identity.display_name || identity.external_user_id}`}
+                </StatusBadge>
+                <span className="rounded-full bg-[#f2f3f7] px-[8px] py-[2px] text-[10px] text-[#858b9c]">
+                  {scopeLabel(identity)}
+                </span>
+                <UIButton
+                  variant="outline"
+                  onClick={() => setUnbindIdentityTarget(identity)}
+                  className={OUTLINE_BUTTON_CLASS}
+                >
+                  解除绑定
+                </UIButton>
+              </div>
+            ))
+          ) : (
+            <div className="flex flex-wrap items-center gap-[10px]">
               <UIButton
                 variant="outline"
-                onClick={() => setUnbindIdentityOpen(true)}
+                onClick={() => void openBindCode()}
+                disabled={bindCodeLoading}
                 className={OUTLINE_BUTTON_CLASS}
               >
-                解除绑定
+                {`绑定我的${channelName(binding.channel)}`}
               </UIButton>
-            </>
-          ) : (
-            <UIButton
-              variant="outline"
-              onClick={() => void openBindCode()}
-              disabled={bindCodeLoading}
-              className={OUTLINE_BUTTON_CLASS}
-            >
-              {`绑定我的${channelName(binding.channel)}`}
-            </UIButton>
+            </div>
           )}
         </div>
       </section>
@@ -1175,8 +1244,10 @@ export default function ChannelsPage({
       />
 
       <ConfirmDialog
-        open={unbindIdentityOpen}
-        onOpenChange={setUnbindIdentityOpen}
+        open={Boolean(unbindIdentityTarget)}
+        onOpenChange={(open) => {
+          if (!open) setUnbindIdentityTarget(null);
+        }}
         loading={unbindingIdentity}
         title="解除身份绑定？"
         description="解除后，该渠道对话将与你的账号分离，历史会话与记忆迁回渠道账号。确定解除绑定吗？"
