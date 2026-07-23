@@ -14,8 +14,10 @@ from app.db.models import (
     ChannelBinding,
     ChannelBindingAgent,
     ChannelDelivery,
+    ChannelIdentity,
     ChatSession,
     Message,
+    new_id,
     utc_now,
 )
 
@@ -326,3 +328,59 @@ def stop_delivery_daemon(timeout_seconds: float = 5.0) -> bool:
     if stopped:
         _delivery_thread = None
     return stopped
+
+
+def notify_binding_creator(db: Session, binding: ChannelBinding, text: str) -> None:
+    """渠道异常主动告警:给绑定创建者发一条 kind=admin_alert 的渠道消息。
+
+    创建者在该渠道已有身份(channel_identities 匹配)时才投递:优先取其最近私聊
+    会话的 channel_target_json(含有效 context_token);无会话则按身份基本信息构造
+    (微信侧缺 context_token 时投递会重试后失败,仅记日志可接受)。任何异常仅记日志。
+    """
+    try:
+        if not binding.created_by_user_id:
+            return
+        identity = db.exec(
+            select(ChannelIdentity).where(
+                ChannelIdentity.tenant_id == binding.tenant_id,
+                ChannelIdentity.channel == binding.channel,
+                ChannelIdentity.staffdeck_user_id == binding.created_by_user_id,
+            )
+        ).first()
+        if not identity:
+            logger.info("渠道告警跳过:创建者在该渠道无身份 binding=%s", binding.id)
+            return
+        chat_session = db.exec(
+            select(ChatSession)
+            .where(
+                ChatSession.tenant_id == binding.tenant_id,
+                ChatSession.channel == binding.channel,
+                ChatSession.user_id == binding.created_by_user_id,
+                ChatSession.external_conv_id.is_not(None),
+            )
+            .order_by(ChatSession.updated_at.desc())
+            .limit(1)
+        ).first()
+        if chat_session and (chat_session.channel_target_json or {}).get("to_user_id"):
+            target = dict(chat_session.channel_target_json)
+            session_id = chat_session.id
+        else:
+            target = {"to_user_id": identity.external_user_id, "context_token": ""}
+            session_id = f"alert:{identity.id}"
+        db.add(
+            ChannelDelivery(
+                tenant_id=binding.tenant_id,
+                binding_id=binding.id,
+                session_id=session_id,
+                message_id=None,
+                target_json=target,
+                kind="admin_alert",
+                text=text,
+                status="pending",
+                next_attempt_at=utc_now(),
+                idempotency_key=new_id("chalert"),
+            )
+        )
+        db.commit()
+    except Exception:
+        logger.exception("渠道告警投递登记失败 binding=%s", binding.id)

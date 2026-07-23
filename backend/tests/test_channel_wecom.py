@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import time
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -22,10 +23,12 @@ from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
+    ChannelIdentity,
     ChannelInboundEvent,
     ChatSession,
     Tenant,
     User,
+    utc_now,
 )
 
 
@@ -1413,3 +1416,89 @@ def test_group_without_chatid_degrades_to_p2p_with_warning(caplog) -> None:
     group = normalize_wecom_frame(_text_frame(chatid="wr_1", chattype="group"))
     assert group is not None and group.is_group is True
     assert group.external_conv_id == "wecom_group_wr_1"
+
+
+# ---------- 断开超时主动告警 ----------
+
+
+def _seed_disconnect_alert_binding(engine, *, age_minutes: float) -> str:
+    with Session(engine) as db:
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="aib_bot1",
+                external_user_id="owner_uid",
+                staffdeck_user_id="user_owner",
+                display_name="owner",
+            )
+        )
+        db.add(
+            ChatSession(
+                id="s_owner",
+                tenant_id="tenant_demo",
+                user_id="user_owner",
+                agent_id="agent_1",
+                channel="wecom",
+                external_conv_id="wecom_aib_bot1_p2p_owner_uid",
+                channel_target_json={"to_user_id": "owner_uid", "context_token": "owner_uid"},
+            )
+        )
+        binding_id = _seed_wecom_binding(engine)
+        binding = db.get(ChannelBinding, binding_id)
+        binding.connected = False
+        binding.updated_at = utc_now() - timedelta(minutes=age_minutes)
+        binding.last_connected_at = None
+        db.add(binding)
+        db.commit()
+        return binding_id
+
+
+def test_disconnect_timeout_alerts_once_and_clears_on_reconnect() -> None:
+    from app.db.models import ChannelDelivery
+
+    engine = _test_engine()
+    binding_id = _seed_disconnect_alert_binding(engine, age_minutes=20)
+    manager = WeComStreamManager(db_engine=engine, client_factory=lambda bot_id, secret: FakeWSClient())
+
+    # 阻止 reconcile 热拉起线程,专注告警判定
+    manager.ensure_binding = lambda binding_id: None  # noqa: E731
+    manager.reconcile_once()
+
+    with Session(engine) as db:
+        alerts = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "admin_alert")
+        ).all()
+        assert len(alerts) == 1
+        assert "断开超过 15 分钟" in alerts[0].text
+        assert alerts[0].target_json["to_user_id"] == "owner_uid"
+        config = db.get(ChannelBinding, binding_id).config_json
+        assert config["disconnect_alerted_at"]
+
+        # 防重复:再次 reconcile 不再告警
+        manager.reconcile_once()
+        assert (
+            db.exec(select(ChannelDelivery).where(ChannelDelivery.kind == "admin_alert")).all()
+            == alerts
+        )
+
+        # 重连:清除告警标记并记录 last_connected_at,允许下次断连再告警
+        manager._set_connected(binding_id, True)
+        binding = db.get(ChannelBinding, binding_id)
+        assert binding.connected is True
+        assert binding.last_connected_at is not None
+        assert "disconnect_alerted_at" not in (binding.config_json or {})
+
+
+def test_disconnect_timeout_not_fired_before_threshold() -> None:
+    from app.db.models import ChannelDelivery
+
+    engine = _test_engine()
+    binding_id = _seed_disconnect_alert_binding(engine, age_minutes=5)
+    manager = WeComStreamManager(db_engine=engine, client_factory=lambda bot_id, secret: FakeWSClient())
+    manager.ensure_binding = lambda binding_id: None  # noqa: E731
+    manager.reconcile_once()
+    with Session(engine) as db:
+        assert db.exec(select(ChannelDelivery)).all() == []
+        assert "disconnect_alerted_at" not in (db.get(ChannelBinding, binding_id).config_json or {})

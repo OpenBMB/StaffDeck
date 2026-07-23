@@ -5,6 +5,7 @@ import logging
 import queue
 import threading
 import time
+from datetime import timedelta
 from typing import Any
 
 from sqlmodel import Session, select
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 RECONCILE_SECONDS = 30.0
 SEND_TIMEOUT_SECONDS = 15.0
+# 企微长连接持续未 connected 超过该阈值时,给绑定创建者发一次性断开告警
+WECOM_DISCONNECT_ALERT_MINUTES = 15
 
 
 def is_self_frame(frame: dict[str, Any]) -> bool:
@@ -329,6 +332,8 @@ class WeComStreamManager:
                 self._stream_connected(row.id) if row.id in running_ids else False,
                 config_revision=row.config_revision,
             )
+            # 断开超时主动告警(一次性,重连后允许再次告警)
+            self._maybe_alert_disconnect_timeout(row.id)
 
     def _stream_connected(self, binding_id: str) -> bool:
         """运行中绑定的 SDK 实况连接状态(client 缺失或未暴露 is_connected 视为 False)。"""
@@ -380,11 +385,48 @@ class WeComStreamManager:
                     return
                 if binding.connected != connected:
                     binding.connected = connected
+                    if connected:
+                        # 记录最近一次成功连接时间,并清除断开告警标记(允许下次再告警)
+                        binding.last_connected_at = utc_now()
+                        config = dict(binding.config_json or {})
+                        if config.pop("disconnect_alerted_at", None) is not None:
+                            binding.config_json = config
                     binding.updated_at = utc_now()
                     db.add(binding)
                     db.commit()
         except Exception:
             logger.exception("企微连接状态落库失败 binding=%s", binding_id)
+
+    def _maybe_alert_disconnect_timeout(self, binding_id: str) -> None:
+        """active 但持续未 connected 超阈值:给绑定创建者发一次性断开告警(config 标记防重复)。"""
+        try:
+            with Session(self._engine) as db:
+                binding = db.get(ChannelBinding, binding_id)
+                if not binding or binding.status != "active" or binding.connected:
+                    return
+                config = dict(binding.config_json or {})
+                if config.get("disconnect_alerted_at"):
+                    return
+                # 时间基准:最近成功连接时间;从未连上过则以最近更新(保存凭证)时刻起算
+                baseline = binding.last_connected_at or binding.updated_at
+                if not baseline or utc_now() - baseline < timedelta(
+                    minutes=WECOM_DISCONNECT_ALERT_MINUTES
+                ):
+                    return
+                config["disconnect_alerted_at"] = utc_now().isoformat()
+                binding.config_json = config
+                binding.updated_at = utc_now()
+                db.add(binding)
+                db.commit()
+                from app.channels.service_outbox import notify_binding_creator
+
+                notify_binding_creator(
+                    db,
+                    binding,
+                    "企业微信渠道长连接已断开超过 15 分钟，请在渠道接入页检查机器人配置或网络。",
+                )
+        except Exception:
+            logger.exception("企微断开超时告警失败 binding=%s", binding_id)
 
     def _wire_client(self, binding_id: str, client, state: _StreamState, account_scope: str = "") -> None:
         def on_authenticated(*_args) -> None:

@@ -741,12 +741,21 @@ class WeChatPollManager:
         )
 
     def _mark_session_expired(self, binding_id: str) -> None:
-        _patch_runtime_config(
+        marked = _patch_runtime_config(
             self._engine,
             binding_id,
             set_values={"session_expired": True, "get_updates_buf": ""},
             binding_values={"status": "expired", "connected": False},
         )
+        if not marked:
+            return
+        # 自愈失败转真过期:主动告警绑定创建者重新扫码(helper 内部整体兜底)
+        from app.channels.service_outbox import notify_binding_creator
+
+        with Session(self._engine) as db:
+            binding = db.get(ChannelBinding, binding_id)
+            if binding:
+                notify_binding_creator(db, binding, "微信渠道 token 已失效，请在渠道接入页重新扫码。")
 
 
 # 模块导入即注册微信适配器(渠道内核按注册表发现渠道)

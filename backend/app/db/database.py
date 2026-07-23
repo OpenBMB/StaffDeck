@@ -178,6 +178,11 @@ def _migrate_sqlite_skill_schema() -> None:
             if "manual_pin_until" not in conv_columns:
                 conn.execute(text("ALTER TABLE channel_conv_states ADD COLUMN manual_pin_until DATETIME"))
 
+        if "channel_bindings" in tables:
+            binding_columns = {column["name"] for column in inspector.get_columns("channel_bindings")}
+            if "last_connected_at" not in binding_columns:
+                conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN last_connected_at DATETIME"))
+
         if "channel_deliveries" in tables:
             delivery_columns = {column["name"] for column in inspector.get_columns("channel_deliveries")}
             if "sending_since" not in delivery_columns:

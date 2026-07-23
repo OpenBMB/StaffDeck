@@ -7,7 +7,17 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.channels.adapters.base import register_channel_adapter
 from app.channels.service_outbox import run_delivery_daemon, stage_channel_delivery
 from app.config import get_settings
-from app.db.models import ChannelBinding, ChannelDelivery, ChatSession, Message, Tenant, utc_now
+from app.channels.crypto import encrypt_channel_secret
+from app.db.models import (
+    ChannelBinding,
+    ChannelDelivery,
+    ChannelIdentity,
+    ChatSession,
+    Message,
+    Tenant,
+    User,
+    utc_now,
+)
 
 
 class FakeAdapter:
@@ -495,3 +505,102 @@ def test_claim_orders_by_next_attempt_at() -> None:
         late = db.exec(select(ChannelDelivery).where(ChannelDelivery.idempotency_key == "msg_late")).one()
         assert late.status == "pending"
         assert late.sending_since is None
+
+
+# ---------- 渠道异常主动告警 ----------
+
+
+def _seed_alertable_wechat_binding(engine, *, with_identity: bool, with_session: bool) -> str:
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_web", tenant_id="tenant_demo", username="zhangsan", password_hash="x"))
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat",
+            status="active",
+            connected=True,
+            credentials_enc=encrypt_channel_secret("tok"),
+            config_json={"baseurl": "https://ilinkai.weixin.qq.com", "ilink_bot_id": "bot@im.bot"},
+            created_by_user_id="user_web",
+        )
+        db.add(binding)
+        db.flush()
+        if with_identity:
+            db.add(
+                ChannelIdentity(
+                    tenant_id="tenant_demo",
+                    channel="wechat",
+                    external_account_scope="",
+                    external_user_id="wxid_creator",
+                    staffdeck_user_id="user_web",
+                    display_name="张三",
+                )
+            )
+        if with_session:
+            db.add(
+                ChatSession(
+                    id="s_creator",
+                    tenant_id="tenant_demo",
+                    user_id="user_web",
+                    agent_id="agent_1",
+                    channel="wechat",
+                    external_conv_id="wechat_p2p_wxid_creator",
+                    channel_target_json={"to_user_id": "wxid_creator", "context_token": "ctx_1"},
+                    channel_binding_id=binding.id,
+                )
+            )
+        db.commit()
+        return binding.id
+
+
+def test_wechat_expired_alerts_creator_via_admin_alert() -> None:
+    from app.channels.adapters.wechat import WeChatPollManager
+
+    engine = _test_engine()
+    binding_id = _seed_alertable_wechat_binding(engine, with_identity=True, with_session=True)
+    manager = WeChatPollManager(db_engine=engine)
+    manager._mark_session_expired(binding_id)
+
+    with Session(engine) as db:
+        alerts = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "admin_alert")
+        ).all()
+        assert len(alerts) == 1
+        alert = alerts[0]
+        assert "微信渠道 token 已失效" in alert.text
+        assert alert.binding_id == binding_id
+        # 目标取创建者最近私聊会话的 channel_target_json
+        assert alert.target_json == {"to_user_id": "wxid_creator", "context_token": "ctx_1"}
+        assert alert.session_id == "s_creator"
+        assert db.get(ChannelBinding, binding_id).status == "expired"
+
+
+def test_notify_skips_when_creator_has_no_identity() -> None:
+    from app.channels.adapters.wechat import WeChatPollManager
+
+    engine = _test_engine()
+    binding_id = _seed_alertable_wechat_binding(engine, with_identity=False, with_session=False)
+    manager = WeChatPollManager(db_engine=engine)
+    # 无身份:跳过仅记日志,不影响主流程(过期标记照常落)
+    manager._mark_session_expired(binding_id)
+    with Session(engine) as db:
+        assert db.exec(select(ChannelDelivery)).all() == []
+        assert db.get(ChannelBinding, binding_id).status == "expired"
+
+
+def test_notify_uses_identity_basics_without_session() -> None:
+    from app.channels.adapters.wechat import WeChatPollManager
+
+    engine = _test_engine()
+    binding_id = _seed_alertable_wechat_binding(engine, with_identity=True, with_session=False)
+    manager = WeChatPollManager(db_engine=engine)
+    manager._mark_session_expired(binding_id)
+    with Session(engine) as db:
+        alerts = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "admin_alert")
+        ).all()
+        assert len(alerts) == 1
+        # 无会话:按身份基本信息构造 to_user_id
+        assert alerts[0].target_json["to_user_id"] == "wxid_creator"
+        assert alerts[0].session_id.startswith("alert:")

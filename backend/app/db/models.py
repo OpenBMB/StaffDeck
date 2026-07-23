@@ -557,6 +557,8 @@ class ChannelBinding(SQLModel, table=True):
         sa_column=Column(Integer, nullable=False, server_default="0"),
     )
     connected: bool = False
+    # 最近一次成功连上渠道的时间(企微断开超时告警的时间基准)
+    last_connected_at: Optional[datetime] = None
     created_by_user_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

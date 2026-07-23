@@ -21,6 +21,7 @@ import IconAlignJustify from '../assets/icons/align-justify.svg?react';
 import IconChat from '../assets/icons/chat.svg?react';
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconAccount from '../assets/icons/sys-accounts.svg?react';
+import IconWarningFill from '../assets/icons/warning-fill.svg?react';
 import type { EnterpriseAuthUser } from '../auth';
 import { canManageEmployeeAgent, employeeDisplayName } from '../employee';
 import { getDateLocale } from '@/i18n';
@@ -107,6 +108,16 @@ function isSessionRecovering(binding: ChannelBindingRead): boolean {
     binding.status !== 'expired' &&
     Boolean(binding.session_expired ?? binding.config_json?.session_expired)
   );
+}
+
+function attentionText(item: ChannelBindingRead): string {
+  if (item.status === 'expired') {
+    return item.channel === 'wechat'
+      ? 'token 已失效，请重新扫码'
+      : '当前未连接，请检查凭证或网络';
+  }
+  if (isSessionRecovering(item)) return '会话恢复中，系统将自动重试';
+  return '当前未连接，请检查凭证或网络';
 }
 
 function formatDay(value: string): string {
@@ -528,6 +539,9 @@ export default function ChannelsPage({
   }
 
   const bindingStatus = binding ? BINDING_STATUS_BADGE[binding.status] : undefined;
+  const attentionBindings = bindings.filter(
+    (item) => item.status === 'expired' || (item.status === 'active' && !item.connected),
+  );
   // bot_id / ilink_bot_id 是 DTO 顶层字段(后端不回传 config_json)
   const botId = binding?.ilink_bot_id || binding?.bot_id || '';
   const mountedAgents = binding?.agents || [];
@@ -564,6 +578,23 @@ export default function ChannelsPage({
 
   const listView = (
     <div className="mt-[20px] flex flex-col gap-[16px]">
+      {attentionBindings.length > 0 && (
+        <div className="flex flex-col gap-[6px] rounded-[12px] border border-[#f3d28b] bg-[#fff8e8] px-[18px] py-[12px] text-[#6f4500]">
+          {attentionBindings.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setSelectedId(item.id)}
+              className="flex items-center gap-[8px] text-left text-[13px] leading-[20px] transition-opacity hover:opacity-70"
+            >
+              <IconWarningFill className="size-[14px] shrink-0 text-[#f59e0b]" />
+              <span>
+                {channelName(item.channel)}：{attentionText(item)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="flex items-center justify-end gap-[8px]">
         <UIButton
           onClick={openCreate}
@@ -680,6 +711,9 @@ export default function ChannelsPage({
             </UIButton>
           </div>
         </div>
+        {binding.status === 'expired' && setupKindFor(binding.channel) !== 'qrcode' && (
+          <span className="text-[12px] text-[#d20b0b]">当前未连接，请检查凭证或网络</span>
+        )}
         {setupKindFor(binding.channel) === 'credentials' ? (
           <WecomSetup
             key={binding.id}
