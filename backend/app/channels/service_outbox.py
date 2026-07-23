@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import timedelta
-from time import sleep
 
 from sqlmodel import Session, select
 
@@ -26,13 +25,17 @@ _delivery_stop = threading.Event()
 
 
 def _find_active_binding_for_agent(db: Session, chat_session: ChatSession) -> ChannelBinding | None:
-    """挂载感知反查:active 且挂载集(含 agent_id 回退)包含会话员工的同渠道绑定。"""
+    """仅为无 binding_id 的 legacy 会话按稳定账号键恢复 active binding。"""
+    account_key = str(chat_session.channel_account_key or "").strip()
+    if not account_key:
+        return None
     candidates = db.exec(
         select(ChannelBinding)
         .where(
             ChannelBinding.tenant_id == chat_session.tenant_id,
             ChannelBinding.channel == chat_session.channel,
             ChannelBinding.status == "active",
+            ChannelBinding.external_account_key == account_key,
         )
         .order_by(ChannelBinding.created_at)
     ).all()
@@ -60,17 +63,46 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
     try:
         if not getattr(chat_session, "channel", None):
             return
-        # 优先按会话直挂的 channel_binding_id 直查;失败(绑定删除/停用或存量空值)回退挂载感知反查
+        # 已锚定会话绝不跨 binding 回退，避免携带旧 target/context_token 串 Bot。
         binding = None
         binding_id = getattr(chat_session, "channel_binding_id", None)
         if binding_id:
             binding = db.get(ChannelBinding, binding_id)
-            if binding and binding.status != "active":
-                binding = None
-        if not binding:
+            if not binding or binding.status != "active":
+                return
+            if binding.tenant_id != chat_session.tenant_id or binding.channel != chat_session.channel:
+                return
+            if (
+                not chat_session.channel_account_key
+                or chat_session.channel_account_key != binding.external_account_key
+            ):
+                return
+        else:
             binding = _find_active_binding_for_agent(db, chat_session)
         if not binding:
             return
+        if not binding_id:
+            # 精确恢复成功后持久化归属，后续 staging/delivery 不再走 legacy 分支。
+            conflicting_session = db.exec(
+                select(ChatSession).where(
+                    ChatSession.id != chat_session.id,
+                    ChatSession.agent_id == chat_session.agent_id,
+                    ChatSession.channel == chat_session.channel,
+                    ChatSession.channel_binding_id == binding.id,
+                    ChatSession.external_conv_id == chat_session.external_conv_id,
+                )
+            ).first()
+            if conflicting_session:
+                logger.warning(
+                    "legacy 渠道会话认领冲突，跳过投递 session=%s existing=%s binding=%s",
+                    chat_session.id,
+                    conflicting_session.id,
+                    binding.id,
+                )
+                return
+            chat_session.channel_binding_id = binding.id
+            db.add(chat_session)
+            db.flush()
         target = dict(chat_session.channel_target_json or {})
         if not target.get("to_user_id") or not target.get("context_token"):
             return
@@ -124,6 +156,25 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
         db.add(delivery)
         db.commit()
         return
+    if delivery.kind == "reply":
+        chat_session = db.get(ChatSession, delivery.session_id)
+        invalid_session = (
+            not chat_session
+            or chat_session.tenant_id != delivery.tenant_id
+            or binding.tenant_id != delivery.tenant_id
+            or chat_session.channel_binding_id != binding.id
+            or chat_session.channel != binding.channel
+            or not chat_session.channel_account_key
+            or chat_session.channel_account_key != binding.external_account_key
+        )
+        if invalid_session:
+            delivery.status = "failed"
+            delivery.last_error = "渠道会话与绑定账号不一致"
+            delivery.next_attempt_at = None
+            delivery.updated_at = utc_now()
+            db.add(delivery)
+            db.commit()
+            return
     delivery.status = "sending"
     delivery.attempts += 1
     delivery.updated_at = utc_now()
@@ -183,7 +234,8 @@ def run_delivery_daemon(
             logger.exception("渠道投递守护轮询失败")
         if once or _delivery_stop.is_set():
             return
-        sleep(max(0.2, interval))
+        if _delivery_stop.wait(max(0.2, interval)):
+            return
 
 
 def start_delivery_daemon(*, db_engine=None) -> None:
@@ -200,5 +252,13 @@ def start_delivery_daemon(*, db_engine=None) -> None:
     _delivery_thread.start()
 
 
-def stop_delivery_daemon() -> None:
+def stop_delivery_daemon(timeout_seconds: float = 5.0) -> bool:
+    global _delivery_thread
     _delivery_stop.set()
+    thread = _delivery_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=max(0.0, timeout_seconds))
+    stopped = not (thread and thread.is_alive())
+    if stopped:
+        _delivery_thread = None
+    return stopped

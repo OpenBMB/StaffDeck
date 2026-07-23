@@ -34,7 +34,13 @@ def _test_engine():
 
 def _seed_binding(db: Session, *, channel: str = "fake", status: str = "active") -> ChannelBinding:
     db.add(Tenant(id="tenant_demo", name="Demo"))
-    binding = ChannelBinding(tenant_id="tenant_demo", agent_id="agent_1", channel=channel, status=status)
+    binding = ChannelBinding(
+        tenant_id="tenant_demo",
+        agent_id="agent_1",
+        channel=channel,
+        status=status,
+        external_account_key=f"{channel}:account",
+    )
     db.add(binding)
     db.commit()
     return binding
@@ -49,6 +55,8 @@ def _channel_session(binding: ChannelBinding) -> ChatSession:
         channel=binding.channel,
         external_conv_id="fake_p2p_u1",
         channel_target_json={"to_user_id": "u1", "context_token": "ctx"},
+        channel_binding_id=binding.id,
+        channel_account_key=binding.external_account_key,
     )
 
 
@@ -136,6 +144,32 @@ def test_staging_never_breaks_main_flow() -> None:
     stage_channel_delivery(BrokenDb(), chat_session, message)
 
 
+def test_legacy_session_claim_conflict_does_not_poison_main_transaction() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        existing = _channel_session(binding)
+        existing.id = "session_existing"
+        legacy = _channel_session(binding)
+        legacy.id = "session_legacy"
+        legacy.channel_binding_id = None
+        message = _assistant_message(legacy.id, "msg_legacy")
+        db.add(existing)
+        db.add(legacy)
+        db.add(message)
+        db.commit()
+
+        stage_channel_delivery(db, legacy, message)
+        message.content = "主事务仍可提交"
+        db.add(message)
+        db.commit()
+
+        db.refresh(legacy)
+        assert legacy.channel_binding_id is None
+        assert db.exec(select(ChannelDelivery)).all() == []
+        assert db.get(Message, message.id).content == "主事务仍可提交"
+
+
 def test_missing_target_skips_staging() -> None:
     engine = _test_engine()
     with Session(engine) as db:
@@ -166,6 +200,18 @@ def _make_delivery(db: Session, binding: ChannelBinding, **overrides) -> Channel
         "idempotency_key": "msg_chan",
     }
     values.update(overrides)
+    session_id = values["session_id"]
+    if not db.get(ChatSession, session_id):
+        db.add(
+            ChatSession(
+                id=session_id,
+                tenant_id=binding.tenant_id,
+                agent_id=binding.agent_id,
+                channel=binding.channel,
+                channel_binding_id=binding.id,
+                channel_account_key=binding.external_account_key,
+            )
+        )
     delivery = ChannelDelivery(**values)
     db.add(delivery)
     db.commit()
@@ -190,6 +236,28 @@ def test_daemon_delivers_pending() -> None:
         assert delivery.delivered_at is not None
         assert delivery.attempts == 1
     assert adapter.sent == [(binding_id, {"to_user_id": "u1", "context_token": "ctx"}, "回复内容")]
+
+
+def test_daemon_rejects_reply_when_session_account_does_not_match_binding() -> None:
+    engine = _test_engine()
+    adapter = FakeAdapter()
+    register_channel_adapter("fake", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        chat_session = _channel_session(binding)
+        chat_session.channel_account_key = "fake:other-account"
+        db.add(chat_session)
+        db.commit()
+        delivery = _make_delivery(db, binding)
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "failed"
+        assert delivery.last_error == "渠道会话与绑定账号不一致"
+    assert adapter.sent == []
 
 
 def test_daemon_retries_with_backoff_then_fails(monkeypatch) -> None:
