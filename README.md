@@ -209,6 +209,37 @@ Replace `up --detach` with another lifecycle argument when needed:
 5. **Intervene when necessary**: Continue with queued requests, cancel a run, hand work to a person, or process pending answers.
 6. **Operate continuously**: Improve employee capabilities over time through memory, feedback, conversation logs, and scheduled tasks.
 
+## Channel Integration (WeChat / WeCom)
+
+Digital employees can serve users directly over IM channels: users chat with employees in WeChat or WeCom, while multi-agent dispatch, intent-based auto routing, identity merging, and conversation observability are built into the platform. The channel kernel is channel-agnostic (adapter registry) — new channels only need a new adapter.
+
+**Capabilities**
+
+- Mount multiple digital employees on one channel account; dispatch with `/员工`, `/切换 <name>`, `/当前`, `/帮助`;
+- Intent auto-routing: each message is classified by an LLM and routed to the best-matching employee (stricter threshold during SOPs; sticky during human handoff and after manual switches);
+- Identity merge: channel users run `/绑定 <one-time code>` to merge their channel identity into an existing StaffDeck account (memory and sessions unified; `/解绑` to revert);
+- Conversation history and delivery logs grouped by day with pagination; admins and employee creators can review all channel conversations per permission;
+- Reliability: inbound idempotency, crash recovery, outbound retry with backoff, token-expiry alerts, and WeChat session self-healing.
+
+**WeChat (personal, iLink protocol)**
+
+1. Open "渠道接入" (Channel Integration) in the sidebar → "接入渠道" → choose "微信" and pick a default employee;
+2. Click "扫码接入" and scan with WeChat (QR expires in ~2 minutes and auto-refreshes);
+3. Message the bound WeChat account (DM or group) to chat.
+
+**WeCom (bot WebSocket)**
+
+1. WeCom admin console → Apps → Bot, create a bot and copy its Bot ID and Secret;
+2. "接入渠道" → choose "企业微信", pick a default employee and create;
+3. Enter Bot ID and Secret (optionally fill in 企业 ID/Corp ID to distinguish duplicate userids across enterprises — recommended);
+4. The long connection is established automatically; once it shows "已连接", messages flow.
+
+**Production checklist**
+
+- Set a strong random `APP_SECRET` (channel credentials encryption derives from it; better to also set an independent `CHANNEL_SECRET`);
+- Channel credentials (bot tokens/secrets) are stored Fernet-encrypted and never returned by any API;
+- Binding management is restricted to admins or the binding creator; mounting an employee exposes it to all users of that channel — grant with care.
+
 ## Project Structure
 
 ```text
@@ -246,7 +277,7 @@ Marketplace resources are reusable templates. Regular users can copy or bind aut
 ## Roadmap
 
 - [ ] Group chat, multi-digital-employee communication, and task division
-- [ ] More enterprise connectors and reviewed marketplace resources
+- [x] More enterprise connectors and reviewed marketplace resources (WeChat and WeCom channel integration shipped)
 - [ ] Fine-grained approval policies for high-risk tool actions
 
 Roadmap priorities are driven by real deployment needs. Please open an [Issue](https://github.com/OpenBMB/StaffDeck/issues) with a reproducible scenario and expected behavior.
