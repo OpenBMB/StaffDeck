@@ -420,6 +420,7 @@ def test_staging_prefers_channel_binding_id() -> None:
             channel="wechat",
             status="active",
             created_by_user_id="user_owner",
+            external_account_key="wechat:ilink_bot:legacy",
         )
         db.add(binding)
         db.commit()
@@ -430,6 +431,7 @@ def test_staging_prefers_channel_binding_id() -> None:
             channel="wechat",
             external_conv_id="wechat_p2p_u1",
             channel_target_json={"to_user_id": "u1", "context_token": "ctx"},
+            channel_account_key=binding.external_account_key,
             channel_binding_id=binding.id,
         )
         message = Message(
@@ -460,6 +462,7 @@ def test_staging_fallback_without_channel_binding_id() -> None:
             channel="wechat",
             status="active",
             created_by_user_id="user_owner",
+            external_account_key="wechat:ilink_bot:legacy",
         )
         db.add(binding)
         db.commit()
@@ -470,6 +473,7 @@ def test_staging_fallback_without_channel_binding_id() -> None:
             channel="wechat",
             external_conv_id="wechat_p2p_u1",
             channel_target_json={"to_user_id": "u1", "context_token": "ctx"},
+            channel_account_key=binding.external_account_key,
         )
         message = Message(
             id="msg_legacy",
@@ -485,6 +489,7 @@ def test_staging_fallback_without_channel_binding_id() -> None:
         stage_channel_delivery(db, chat_session, message)
         db.commit()
         assert len(db.exec(select(ChannelDelivery)).all()) == 1
+        assert db.get(ChatSession, chat_session.id).channel_binding_id == binding.id
 
 
 def test_staging_skips_when_binding_id_points_to_disabled() -> None:

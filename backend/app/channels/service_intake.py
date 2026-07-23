@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
-from datetime import timedelta
 
+from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -47,12 +48,81 @@ logger = logging.getLogger(__name__)
 ERROR_NOTICE_TEXT = "处理出错，请稍后再试。"
 INTERRUPTED_NOTICE_TEXT = "上一条消息处理中断，请重新发送。"
 _DEDUP_LOOKBACK = 50
-# 入站事件 processing 卡死阈值:超过视为崩溃残留,允许接管重跑
-STALE_PROCESSING_SECONDS = 120
+_processor_run_pid: int | None = None
+_processor_run_id: str | None = None
+_processor_run_guard = threading.Lock()
+
+
+def current_processor_run_id() -> str:
+    global _processor_run_pid, _processor_run_id
+    pid = os.getpid()
+    if _processor_run_pid == pid and _processor_run_id:
+        return _processor_run_id
+    with _processor_run_guard:
+        if _processor_run_pid != pid or not _processor_run_id:
+            _processor_run_pid = pid
+            _processor_run_id = new_id("chnrun")
+        return _processor_run_id
 
 # 进程级会话串行锁：同一渠道会话的入站消息顺序处理（拉模式天然有序）
 _session_locks: dict[str, threading.Lock] = {}
 _session_locks_guard = threading.Lock()
+
+
+def _claim_stale_event(db: Session, event_id: str) -> bool:
+    """原子认领旧进程事件；当前进程持有的事件永不被墙钟接管。"""
+    run_id = current_processor_run_id()
+    result = db.exec(
+        update(ChannelInboundEvent)
+        .where(
+            ChannelInboundEvent.id == event_id,
+            ChannelInboundEvent.status == "processing",
+            or_(
+                ChannelInboundEvent.processor_run_id.is_(None),
+                ChannelInboundEvent.processor_run_id != run_id,
+            ),
+        )
+        .values(processor_run_id=run_id, updated_at=utc_now())
+    )
+    db.commit()
+    return result.rowcount == 1
+
+
+def _release_stale_event_claim(db_engine, event_id: str) -> None:
+    """Release only this process's claim after recovery infrastructure fails."""
+    run_id = current_processor_run_id()
+    with Session(db_engine) as db:
+        db.exec(
+            update(ChannelInboundEvent)
+            .where(
+                ChannelInboundEvent.id == event_id,
+                ChannelInboundEvent.status == "processing",
+                ChannelInboundEvent.processor_run_id == run_id,
+            )
+            .values(processor_run_id=None, updated_at=utc_now())
+        )
+        db.commit()
+
+
+def _release_stale_event_claim_by_key(
+    db_engine,
+    binding_id: str,
+    external_event_id: str,
+) -> None:
+    """Release the currently surviving row after delete-and-recreate recovery fails."""
+    run_id = current_processor_run_id()
+    with Session(db_engine) as db:
+        db.exec(
+            update(ChannelInboundEvent)
+            .where(
+                ChannelInboundEvent.binding_id == binding_id,
+                ChannelInboundEvent.event_id == external_event_id,
+                ChannelInboundEvent.status == "processing",
+                ChannelInboundEvent.processor_run_id == run_id,
+            )
+            .values(processor_run_id=None, updated_at=utc_now())
+        )
+        db.commit()
 
 
 def _session_lock(session_id: str) -> threading.Lock:
@@ -93,14 +163,28 @@ def _find_turn_user_message_in_conv(
     client_turn_id: str,
 ) -> Message | None:
     """在该 binding 的渠道会话(tenant 限定)内找此 client_turn_id 的用户消息。"""
-    session_ids = db.exec(
-        select(ChatSession.id).where(
+    sessions = db.exec(
+        select(ChatSession).where(
             ChatSession.tenant_id == binding.tenant_id,
             ChatSession.channel == binding.channel,
             ChatSession.channel_binding_id == binding.id,
-            ChatSession.external_conv_id == external_conv_id,
         )
     ).all()
+    legacy_prefixes = (
+        "legacy_ambiguous_identity:",
+        "legacy_cross_tenant:",
+        "legacy_identity_mismatch:",
+    )
+    session_ids = []
+    for chat_session in sessions:
+        stored_conv = str(chat_session.external_conv_id or "")
+        if stored_conv == external_conv_id:
+            session_ids.append(chat_session.id)
+            continue
+        if stored_conv.startswith(legacy_prefixes):
+            legacy_parts = stored_conv.split(":", 2)
+            if len(legacy_parts) == 3 and legacy_parts[2] == external_conv_id:
+                session_ids.append(chat_session.id)
     for session_id in session_ids:
         rows = db.exec(
             select(Message)
@@ -167,6 +251,35 @@ def _stage_error_notice(db: Session, binding: ChannelBinding, chat_session: Chat
             status="pending",
             next_attempt_at=utc_now(),
             idempotency_key=new_id("chnotice"),
+        )
+    )
+
+
+def _stage_interrupted_notice(
+    db: Session,
+    binding: ChannelBinding,
+    session_id: str,
+    target: dict,
+    event_id: str,
+) -> None:
+    idempotency_key = f"channel-interrupted:{binding.id}:{event_id}"
+    existing = db.exec(
+        select(ChannelDelivery).where(ChannelDelivery.idempotency_key == idempotency_key)
+    ).first()
+    if existing:
+        return
+    db.add(
+        ChannelDelivery(
+            tenant_id=binding.tenant_id,
+            binding_id=binding.id,
+            session_id=session_id,
+            message_id=None,
+            target_json=dict(target),
+            kind="error_notice",
+            text=INTERRUPTED_NOTICE_TEXT,
+            status="pending",
+            next_attempt_at=utc_now(),
+            idempotency_key=idempotency_key,
         )
     )
 
@@ -264,6 +377,27 @@ def _migrate_memories(
         db.add(row)
 
 
+def _claim_bind_code(
+    db: Session,
+    binding: ChannelBinding,
+    record: ChannelBindCode,
+    submitted_code: str,
+    now,
+) -> bool:
+    claim = db.exec(
+        update(ChannelBindCode)
+        .where(
+            ChannelBindCode.tenant_id == binding.tenant_id,
+            ChannelBindCode.id == record.id,
+            ChannelBindCode.code == submitted_code,
+            ChannelBindCode.used_at.is_(None),
+            ChannelBindCode.expires_at > now,
+        )
+        .values(used_at=now)
+    )
+    return claim.rowcount == 1
+
+
 def _bind_external_identity(
     db: Session,
     binding: ChannelBinding,
@@ -280,7 +414,6 @@ def _bind_external_identity(
             ChannelBindCode.tenant_id == binding.tenant_id,
             ChannelBindCode.code == code,
         )
-        .order_by(ChannelBindCode.created_at.desc())
     ).first()
     if not record or record.used_at is not None or record.expires_at <= now:
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
@@ -298,6 +431,10 @@ def _bind_external_identity(
             display = current.display_name or current.username
             label = channel_label(binding.channel)
             return f"该{label}账号已绑定到 StaffDeck 账号「{display}」，请先发送 /解绑 解除后再绑定。"
+
+    if not _claim_bind_code(db, binding, record, code, now):
+        db.rollback()
+        return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
 
     # ① 身份指针改指码主账号(无记录则新建)
     if identity:
@@ -317,9 +454,6 @@ def _bind_external_identity(
     if old_user_id and old_user_id != owner.id:
         _migrate_sessions(db, binding, from_user_id=old_user_id, to_user=owner)
         _migrate_memories(db, from_user_id=old_user_id, to_user=owner)
-    # ③ 码核销
-    record.used_at = now
-    db.add(record)
     display = owner.display_name or owner.username
     return f"绑定成功，微信对话将与你的 StaffDeck 账号「{display}」共享记忆与对话记录。"
 
@@ -407,6 +541,7 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
             event_id=inbound.event_id,
             payload_json=inbound.raw,
             status="processing",
+            processor_run_id=current_processor_run_id(),
         )
         db.add(event)
         try:
@@ -420,51 +555,64 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
                     ChannelInboundEvent.event_id == inbound.event_id,
                 )
             ).first()
-            if stale and stale.status == "processing" and stale.updated_at <= utc_now() - timedelta(
-                seconds=STALE_PROCESSING_SECONDS
+            if (
+                stale
+                and stale.status == "processing"
+                and _claim_stale_event(db, stale.id)
             ):
-                turn_message = _find_turn_user_message_in_conv(
-                    db, binding, inbound.external_conv_id, inbound.event_id
-                )
-                if not turn_message:
-                    # 消息未落库(崩溃在登记后):删除旧行接管重跑
-                    logger.warning(
-                        "接管卡死的入站事件 binding=%s event=%s(status=%s,updated_at=%s)",
-                        binding.id,
-                        inbound.event_id,
-                        stale.status,
-                        stale.updated_at,
+                claimed_id = stale.id
+                try:
+                    stale = db.get(ChannelInboundEvent, claimed_id)
+                    turn_message = _find_turn_user_message_in_conv(
+                        db, binding, inbound.external_conv_id, inbound.event_id
                     )
-                    db.delete(stale)
-                    db.commit()
-                    return process_inbound(binding, inbound, db_engine=db_engine)
-                if not _turn_reply_exists(db, binding, turn_message):
-                    # 消息已落库但 turn 未完成:不重跑(避免工具副作用重复),
-                    # 标 failed + 向该会话发中断通知
-                    logger.warning(
-                        "入站事件 turn 未完成(崩溃窗口),标记失败 binding=%s event=%s",
-                        binding.id,
-                        inbound.event_id,
-                    )
-                    stale.status = "failed"
-                    stale.error = "process_exit_incomplete_turn"
-                    stale.updated_at = utc_now()
-                    db.add(stale)
-                    db.add(
-                        ChannelDelivery(
-                            tenant_id=binding.tenant_id,
-                            binding_id=binding.id,
-                            session_id=turn_message.session_id,
-                            message_id=None,
-                            target_json=dict(target),
-                            kind="error_notice",
-                            text=INTERRUPTED_NOTICE_TEXT,
-                            status="pending",
-                            next_attempt_at=utc_now(),
-                            idempotency_key=new_id("chnotice"),
+                    if not turn_message:
+                        # 消息未落库(崩溃在登记后):删除旧行接管重跑
+                        logger.warning(
+                            "接管卡死的入站事件 binding=%s event=%s(status=%s,updated_at=%s)",
+                            binding.id,
+                            inbound.event_id,
+                            stale.status,
+                            stale.updated_at,
                         )
+                        db.delete(stale)
+                        db.commit()
+                        return process_inbound(binding, inbound, db_engine=db_engine)
+                    if not _turn_reply_exists(db, binding, turn_message):
+                        # 消息已落库但 turn 未完成:不重跑(避免工具副作用重复),
+                        # 标 failed + 向该会话发中断通知
+                        logger.warning(
+                            "入站事件 turn 未完成(崩溃窗口),标记失败 binding=%s event=%s",
+                            binding.id,
+                            inbound.event_id,
+                        )
+                        stale.status = "failed"
+                        stale.error = "process_exit_incomplete_turn"
+                        stale.updated_at = utc_now()
+                        db.add(stale)
+                        _stage_interrupted_notice(
+                            db,
+                            binding,
+                            turn_message.session_id,
+                            target,
+                            inbound.event_id,
+                        )
+                        db.commit()
+                    else:
+                        stale.status = "done"
+                        stale.error = None
+                        stale.processed_at = utc_now()
+                        stale.updated_at = utc_now()
+                        db.add(stale)
+                        db.commit()
+                except Exception:
+                    db.rollback()
+                    _release_stale_event_claim_by_key(
+                        use_engine,
+                        binding.id,
+                        inbound.event_id,
                     )
-                    db.commit()
+                    raise
             return False
 
         # 指令拦截:早于身份解析与会话创建,指令消息不进 AgentLoop
@@ -491,6 +639,20 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
         user = resolve_or_provision_user(
             db, binding.tenant_id, binding.channel, external_id, display_name, scope
         )
+        # 先在仍保持原 external_conv_id 的历史会话中去重。身份不一致会在后续
+        # session 创建时隔离旧会话，若等隔离后再查会漏掉已落库的 turn。
+        if _client_turn_seen_in_conv(
+            db,
+            binding,
+            inbound.external_conv_id,
+            inbound.event_id,
+        ):
+            event.status = "done"
+            event.processed_at = utc_now()
+            event.updated_at = utc_now()
+            db.add(event)
+            db.commit()
+            return False
         current_agent_id, pointer_reset = resolve_current_agent(db, binding, inbound.external_conv_id)
         pre_route_agent_id = current_agent_id
         # 智能前台:LLM 意图分类自动分发(开关/挂载数/粘性保护由 maybe_auto_route 把关,异常全部回退当前)
@@ -579,17 +741,21 @@ def process_inbound(binding: ChannelBinding, msg: dict | ChannelInbound, *, db_e
 
 
 def sweep_stale_inbound_events(*, db_engine=None) -> int:
-    """启动恢复:接管超过阈值的陈旧 processing 事件并重新处理,返回接管数。
+    """启动恢复:接管其他进程代次遗留的 processing 事件,返回重跑数。
 
     事件 payload 即原始帧,交给 process_inbound(其内部陈旧接管逻辑会删旧行重走)。
     """
     use_engine = db_engine or engine
+    run_id = current_processor_run_id()
     taken = 0
     with Session(use_engine) as db:
         stale_rows = db.exec(
             select(ChannelInboundEvent).where(
                 ChannelInboundEvent.status == "processing",
-                ChannelInboundEvent.updated_at <= utc_now() - timedelta(seconds=STALE_PROCESSING_SECONDS),
+                or_(
+                    ChannelInboundEvent.processor_run_id.is_(None),
+                    ChannelInboundEvent.processor_run_id != run_id,
+                ),
             )
         ).all()
         candidates = [(row.binding_id, row.event_id, row.payload_json) for row in stale_rows]
@@ -604,6 +770,16 @@ def sweep_stale_inbound_events(*, db_engine=None) -> int:
                 taken += 1
         except Exception:
             logger.exception("陈旧入站事件接管失败 binding=%s event=%s", binding_id, event_id)
+            with Session(use_engine) as db:
+                claimed = db.exec(
+                    select(ChannelInboundEvent).where(
+                        ChannelInboundEvent.binding_id == binding_id,
+                        ChannelInboundEvent.event_id == event_id,
+                    )
+                ).first()
+                claimed_id = claimed.id if claimed else None
+            if claimed_id:
+                _release_stale_event_claim(use_engine, claimed_id)
     if taken:
         logger.info("启动恢复:接管重跑 %s 个卡死入站事件", taken)
     return taken

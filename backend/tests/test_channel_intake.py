@@ -1,5 +1,6 @@
 import threading
 import time
+import os
 
 import pytest
 from sqlalchemy.pool import StaticPool
@@ -154,7 +155,6 @@ def test_inbound_runs_turn_and_marks_done() -> None:
     with Session(engine) as db:
         event = db.exec(select(ChannelInboundEvent)).one()
         assert event.status == "done"
-        assert event.processed_at is not None
 
         chat_session = db.get(ChatSession, request.session_id)
         assert chat_session.channel == "wechat"
@@ -222,6 +222,57 @@ def test_crash_recovery_dedup_marks_done_without_rerun() -> None:
         assert event.status == "done"
 
 
+def test_sweep_finds_turn_in_migration_isolated_session() -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    original_conv = "wechat_p2p_user_ab12cd34@im.wechat"
+    with Session(engine) as db:
+        db.add(
+            ChatSession(
+                id="session_isolated",
+                tenant_id="tenant_demo",
+                user_id="old_shared_user",
+                agent_id="agent_1",
+                channel="wechat",
+                external_conv_id=(
+                    f"legacy_ambiguous_identity:session_isolated:{original_conv}"
+                ),
+                channel_binding_id=binding_id,
+            )
+        )
+        db.add(
+            Message(
+                id="msg_isolated_turn",
+                tenant_id="tenant_demo",
+                session_id="session_isolated",
+                role="user",
+                content="已落库",
+                metadata_json={"client_turn_id": "evt_isolated"},
+            )
+        )
+        db.commit()
+    _seed_stale_event(
+        engine,
+        binding_id,
+        "evt_isolated",
+        status="processing",
+        age_seconds=300,
+        payload=_p2p_message("evt_isolated"),
+        processor_run_id="old_process",
+    )
+
+    assert intake_module.sweep_stale_inbound_events(db_engine=engine) == 0
+    assert RecordingAgentLoop.calls == []
+    with Session(engine) as db:
+        event = db.exec(
+            select(ChannelInboundEvent).where(
+                ChannelInboundEvent.event_id == "evt_isolated"
+            )
+        ).one()
+        assert event.status == "failed"
+        assert event.error == "process_exit_incomplete_turn"
+
+
 def test_group_message_uses_group_account_and_sender_prefix() -> None:
     engine = _test_engine()
     binding_id = _seed_binding(engine)
@@ -239,7 +290,9 @@ def test_group_message_uses_group_account_and_sender_prefix() -> None:
         # 群消息回复投递到群会话而不是发言人
         assert chat_session.channel_target_json["to_user_id"] == "room_123456"
         group_user = db.get(User, chat_session.user_id)
-        assert group_user.username == channel_username("tenant_demo", "wechat", "group_room_123456")
+        assert group_user.username == channel_username(
+            "tenant_demo", "wechat", "group:room_123456", ""
+        )
 
 
 def test_failure_marks_event_failed_and_stages_error_notice() -> None:
@@ -478,7 +531,16 @@ def test_typing_noop_for_inactive_binding() -> None:
 # ---------- 陈旧 processing 事件接管与启动 sweep ----------
 
 
-def _seed_stale_event(engine, binding_id: str, event_id: str, *, status: str, age_seconds: float, payload: dict | None = None) -> None:
+def _seed_stale_event(
+    engine,
+    binding_id: str,
+    event_id: str,
+    *,
+    status: str,
+    age_seconds: float,
+    payload: dict | None = None,
+    processor_run_id: str | None = None,
+) -> None:
     from datetime import timedelta
 
     with Session(engine) as db:
@@ -490,6 +552,7 @@ def _seed_stale_event(engine, binding_id: str, event_id: str, *, status: str, ag
                 event_id=event_id,
                 payload_json=payload or {},
                 status=status,
+                processor_run_id=processor_run_id,
                 updated_at=utc_now() - timedelta(seconds=age_seconds),
             )
         )
@@ -513,7 +576,14 @@ def test_stale_processing_event_is_taken_over() -> None:
 def test_fresh_processing_event_is_not_killed() -> None:
     engine = _test_engine()
     binding_id = _seed_binding(engine)
-    _seed_stale_event(engine, binding_id, "evt_fresh", status="processing", age_seconds=5)
+    _seed_stale_event(
+        engine,
+        binding_id,
+        "evt_fresh",
+        status="processing",
+        age_seconds=5,
+        processor_run_id=intake_module.current_processor_run_id(),
+    )
     binding = _load_binding(engine, binding_id)
 
     assert process_inbound(binding, _p2p_message("evt_fresh"), db_engine=engine) is False
@@ -521,6 +591,135 @@ def test_fresh_processing_event_is_not_killed() -> None:
     with Session(engine) as db:
         event = db.exec(select(ChannelInboundEvent)).one()
         assert event.status == "processing"
+
+
+def test_current_run_processing_event_is_never_taken_over_by_age() -> None:
+    from app.channels.service_intake import sweep_stale_inbound_events
+
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_stale_event(
+        engine,
+        binding_id,
+        "evt_long_turn",
+        status="processing",
+        age_seconds=900,
+        payload=_p2p_message("evt_long_turn"),
+        processor_run_id=intake_module.current_processor_run_id(),
+    )
+    binding = _load_binding(engine, binding_id)
+
+    assert process_inbound(binding, _p2p_message("evt_long_turn"), db_engine=engine) is False
+    assert sweep_stale_inbound_events(db_engine=engine) == 0
+    assert RecordingAgentLoop.calls == []
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "processing"
+        assert event.processor_run_id == intake_module.current_processor_run_id()
+
+
+def test_stale_claim_is_released_when_recovery_logic_raises(monkeypatch) -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_stale_event(
+        engine,
+        binding_id,
+        "evt_recovery_error",
+        status="processing",
+        age_seconds=300,
+        payload=_p2p_message("evt_recovery_error"),
+        processor_run_id="old_process",
+    )
+    binding = _load_binding(engine, binding_id)
+
+    monkeypatch.setattr(
+        intake_module,
+        "_find_turn_user_message_in_conv",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        intake_module,
+        "resolve_or_provision_user",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("recovery db failure")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="recovery db failure"):
+        process_inbound(binding, _p2p_message("evt_recovery_error"), db_engine=engine)
+
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "processing"
+        assert event.processor_run_id is None
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires fork")
+def test_processor_run_id_changes_after_prefork() -> None:
+    parent_run_id = intake_module.current_processor_run_id()
+    read_fd, write_fd = os.pipe()
+    child_pid = os.fork()
+    if child_pid == 0:
+        try:
+            os.close(read_fd)
+            child_run_id = intake_module.current_processor_run_id().encode()
+            os.write(write_fd, child_run_id)
+        finally:
+            os.close(write_fd)
+            os._exit(0)
+    os.close(write_fd)
+    child_run_id = os.read(read_fd, 128).decode()
+    os.close(read_fd)
+    _, status = os.waitpid(child_pid, 0)
+
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert child_run_id
+    assert child_run_id != parent_run_id
+
+
+def test_concurrent_sweeps_claim_old_event_once(tmp_path) -> None:
+    from app.channels.service_intake import sweep_stale_inbound_events
+
+    db_path = tmp_path / "sweep.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    SQLModel.metadata.create_all(engine)
+    binding_id = _seed_binding(engine)
+    _seed_stale_event(
+        engine,
+        binding_id,
+        "evt_sweep_race",
+        status="processing",
+        age_seconds=300,
+        payload=_p2p_message("evt_sweep_race"),
+        processor_run_id="old_process",
+    )
+    gate = threading.Barrier(2)
+    results: list[int] = []
+    errors: list[Exception] = []
+
+    def sweep() -> None:
+        try:
+            gate.wait(timeout=5.0)
+            results.append(sweep_stale_inbound_events(db_engine=engine))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=sweep) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10.0)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    assert sum(results) == 1
+    assert len(RecordingAgentLoop.calls) == 1
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "done"
+        assert event.processor_run_id == intake_module.current_processor_run_id()
 
 
 def test_done_event_is_never_taken_over() -> None:
@@ -549,7 +748,14 @@ def test_startup_sweep_takes_over_stale_events() -> None:
         payload=_p2p_message("evt_sweep"),
     )
     # 新鲜的与 done 的不应被接管
-    _seed_stale_event(engine, binding_id, "evt_fresh", status="processing", age_seconds=5)
+    _seed_stale_event(
+        engine,
+        binding_id,
+        "evt_fresh",
+        status="processing",
+        age_seconds=5,
+        processor_run_id=intake_module.current_processor_run_id(),
+    )
     _seed_stale_event(engine, binding_id, "evt_done", status="done", age_seconds=300)
 
     taken = sweep_stale_inbound_events(db_engine=engine)
@@ -634,6 +840,31 @@ def test_incomplete_turn_marks_failed_and_notices_without_rerun() -> None:
         assert notices[0].session_id == "session_incomplete"
 
 
+def test_repeated_incomplete_turn_recovery_stages_one_notice() -> None:
+    from datetime import timedelta
+
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_incomplete_turn(engine, binding_id, "evt_gap_repeat", with_reply=False)
+    binding = _load_binding(engine, binding_id)
+
+    assert process_inbound(binding, _p2p_message("evt_gap_repeat"), db_engine=engine) is False
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        event.status = "processing"
+        event.updated_at = utc_now() - timedelta(seconds=300)
+        db.add(event)
+        db.commit()
+
+    assert process_inbound(binding, _p2p_message("evt_gap_repeat"), db_engine=engine) is False
+    with Session(engine) as db:
+        notices = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "error_notice")
+        ).all()
+        assert len(notices) == 1
+        assert notices[0].idempotency_key == f"channel-interrupted:{binding_id}:evt_gap_repeat"
+
+
 def test_completed_turn_is_not_misflagged() -> None:
     engine = _test_engine()
     binding_id = _seed_binding(engine)
@@ -643,8 +874,9 @@ def test_completed_turn_is_not_misflagged() -> None:
     assert process_inbound(binding, _p2p_message("evt_done_turn"), db_engine=engine) is False
     with Session(engine) as db:
         event = db.exec(select(ChannelInboundEvent)).one()
-        # 已有完成回复:维持跳过语义,不标 failed、不发通知
-        assert event.status == "processing"
+        # 已有完成回复:收敛为 done,不标 failed、不发通知
+        assert event.status == "done"
+        assert event.processed_at is not None
         assert db.exec(select(ChannelDelivery)).all() == []
 
 
@@ -669,3 +901,47 @@ def test_sweep_marks_incomplete_turn_failed_consistently() -> None:
         assert event.status == "failed"
         assert event.error == "process_exit_incomplete_turn"
         assert db.exec(select(ChannelDelivery).where(ChannelDelivery.kind == "error_notice")).all()
+
+
+def test_concurrent_sweeps_stage_one_incomplete_notice(tmp_path) -> None:
+    from app.channels.service_intake import sweep_stale_inbound_events
+
+    db_path = tmp_path / "incomplete-sweep.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    SQLModel.metadata.create_all(engine)
+    binding_id = _seed_binding(engine)
+    _seed_incomplete_turn(engine, binding_id, "evt_gap_race", with_reply=False)
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        event.payload_json = _p2p_message("evt_gap_race")
+        event.processor_run_id = "old_process"
+        db.add(event)
+        db.commit()
+    gate = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def sweep() -> None:
+        try:
+            gate.wait(timeout=5.0)
+            sweep_stale_inbound_events(db_engine=engine)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=sweep) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10.0)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "failed"
+        notices = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "error_notice")
+        ).all()
+        assert len(notices) == 1

@@ -1,6 +1,9 @@
 from datetime import timedelta
+import threading
 
 import pytest
+from sqlalchemy import text as sa_text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -297,11 +300,181 @@ def test_create_bind_code_invalidates_stale_codes() -> None:
         codes = db.exec(
             select(ChannelBindCode).where(ChannelBindCode.user_id == owner.id)
         ).all()
-        assert len(codes) == 2
-        stale = next(row for row in codes if row.code == first.code)
-        fresh = next(row for row in codes if row.id != stale.id)
-        assert stale.expires_at <= utc_now()
-        assert fresh.expires_at > utc_now()
+        assert len(codes) == 1
+        assert codes[0].code == second.code
+        assert codes[0].code != first.code
+        assert codes[0].expires_at > utc_now()
+
+
+def test_bind_code_generation_retries_tenant_code_collision(monkeypatch) -> None:
+    import app.api.channels as channels_api
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        first_user = User(
+            id="user_first", tenant_id="tenant_demo", username="first", password_hash="x"
+        )
+        second_user = User(
+            id="user_second", tenant_id="tenant_demo", username="second", password_hash="x"
+        )
+        db.add(first_user)
+        db.add(second_user)
+        db.commit()
+        values = iter([0, 0, 1])
+        monkeypatch.setattr(channels_api.secrets, "randbelow", lambda _limit: next(values))
+
+        first = create_bind_code(tenant_id="tenant_demo", current_user=first_user, db=db)
+        second = create_bind_code(tenant_id="tenant_demo", current_user=second_user, db=db)
+
+        assert first.code == "100000"
+        assert second.code == "100001"
+        assert len(db.exec(select(ChannelBindCode)).all()) == 2
+
+
+def test_bind_code_is_claimed_once_under_concurrency(tmp_path) -> None:
+    db_path = tmp_path / "bind-code.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    SQLModel.metadata.create_all(engine)
+    binding_id = _seed_binding(engine)
+    _seed_web_user(engine)
+    with Session(engine) as db:
+        db.add(
+            ChannelBindCode(
+                tenant_id="tenant_demo",
+                user_id="user_web",
+                code="123456",
+                expires_at=utc_now() + timedelta(minutes=10),
+            )
+        )
+        db.commit()
+    binding = _load_binding(engine, binding_id)
+    gate = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def bind(external_id: str, event_id: str) -> None:
+        message = _p2p_message(event_id, "/绑定 123456")
+        message["from_user_id"] = external_id
+        message["session_id"] = f"{external_id}#bot_1@im.bot"
+        try:
+            gate.wait(timeout=5.0)
+            process_inbound(binding, message, db_engine=engine)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=bind, args=("wx_user_a", "evt_bind_a")),
+        threading.Thread(target=bind, args=("wx_user_b", "evt_bind_b")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10.0)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    with Session(engine) as db:
+        record = db.exec(select(ChannelBindCode)).one()
+        assert record.used_at is not None
+        identities = db.exec(
+            select(ChannelIdentity).where(ChannelIdentity.staffdeck_user_id == "user_web")
+        ).all()
+        assert len(identities) == 1
+        notices = db.exec(select(ChannelDelivery).where(ChannelDelivery.kind == "notice")).all()
+        assert len(notices) == 2
+        assert sum("绑定成功" in row.text for row in notices) == 1
+        assert sum("无效或已过期" in row.text for row in notices) == 1
+
+
+def test_stale_submitted_code_cannot_claim_rotated_row(tmp_path) -> None:
+    from app.channels.service_intake import _claim_bind_code
+
+    db_path = tmp_path / "rotated-code.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+    binding_id = _seed_binding(engine)
+    with Session(engine) as db:
+        record = ChannelBindCode(
+            tenant_id="tenant_demo",
+            user_id="user_web",
+            code="111111",
+            expires_at=utc_now() + timedelta(minutes=10),
+        )
+        db.add(record)
+        db.commit()
+        record_id = record.id
+    stale_record = ChannelBindCode(
+        id=record_id,
+        tenant_id="tenant_demo",
+        user_id="user_web",
+        code="111111",
+        expires_at=utc_now() + timedelta(minutes=10),
+    )
+    with Session(engine) as db:
+        current = db.get(ChannelBindCode, record_id)
+        current.code = "222222"
+        db.add(current)
+        db.commit()
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert _claim_bind_code(db, binding, stale_record, "111111", utc_now()) is False
+        db.rollback()
+        current = db.get(ChannelBindCode, record_id)
+        assert current.code == "222222"
+        assert current.used_at is None
+
+
+def test_bind_code_migration_removes_ambiguous_legacy_rows(monkeypatch, tmp_path) -> None:
+    from app.db import database
+
+    db_path = tmp_path / "bind-code-legacy.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(
+            sa_text(
+                """
+                CREATE TABLE channel_bind_codes (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR,
+                    user_id VARCHAR,
+                    code VARCHAR,
+                    expires_at DATETIME,
+                    used_at DATETIME,
+                    created_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            sa_text(
+                "INSERT INTO channel_bind_codes VALUES "
+                "('a', 'tenant_demo', 'u1', '111111', datetime('now','+10 minute'), NULL, '2026-01-01'),"
+                "('b', 'tenant_demo', 'u2', '111111', datetime('now','+10 minute'), NULL, '2026-01-02'),"
+                "('c', 'tenant_demo', 'u3', '222222', datetime('now','+10 minute'), NULL, '2026-01-01'),"
+                "('d', 'tenant_demo', 'u3', '333333', datetime('now','+10 minute'), NULL, '2026-01-02'),"
+                "('e', 'tenant_demo', 'u4', '444444', datetime('now','-1 minute'), NULL, '2026-01-01')"
+            )
+        )
+    monkeypatch.setattr(database, "database_url", f"sqlite:///{db_path}")
+    monkeypatch.setattr(database, "engine", engine)
+
+    database._migrate_sqlite_skill_schema()
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sa_text("SELECT user_id, code FROM channel_bind_codes ORDER BY user_id")
+        ).all()
+        assert rows == [("u3", "333333")]
+        with pytest.raises(IntegrityError):
+            conn.execute(
+                sa_text(
+                    "INSERT INTO channel_bind_codes VALUES "
+                    "('f', 'tenant_demo', 'u5', '333333', datetime('now','+10 minute'), NULL, '2026-01-03')"
+                )
+            )
 
 
 # ---------- /绑定 全流程 ----------
