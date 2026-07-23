@@ -61,6 +61,48 @@ def test_create_then_reuse_channel_session() -> None:
         assert second.title == "你好，帮我查下订单"
 
 
+def test_user_mismatch_archives_legacy_session_and_starts_clean() -> None:
+    engine = _test_engine(with_unique_index=True)
+    with Session(engine) as db:
+        binding, old_user = _seed(db)
+        new_user = User(
+            tenant_id="tenant_demo",
+            username="wechat_wxid_rebound",
+            password_hash="x",
+        )
+        db.add(new_user)
+        db.commit()
+        legacy = find_or_create_channel_session(
+            db,
+            binding,
+            old_user,
+            "agent_1",
+            "wechat_p2p_wxid_1",
+            "旧身份消息",
+        )
+        legacy.channel_target_json = {"to_user_id": "wxid_1", "context_token": "old"}
+        db.add(legacy)
+        db.commit()
+
+        current = find_or_create_channel_session(
+            db,
+            binding,
+            new_user,
+            "agent_1",
+            "wechat_p2p_wxid_1",
+            "新身份消息",
+        )
+        db.commit()
+
+        db.refresh(legacy)
+        assert current.id != legacy.id
+        assert current.user_id == new_user.id
+        assert current.external_conv_id == "wechat_p2p_wxid_1"
+        assert legacy.status == "archived"
+        assert legacy.external_conv_id.startswith("legacy_identity_mismatch:")
+        assert legacy.channel_target_json is None
+
+
 def test_title_truncated_to_20_chars() -> None:
     engine = _test_engine()
     with Session(engine) as db:

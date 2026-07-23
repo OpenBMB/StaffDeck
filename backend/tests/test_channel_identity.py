@@ -3,6 +3,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.channels.service_identity import (
     channel_username,
+    external_account_key,
     external_identity_for_message,
     resolve_or_provision_user,
 )
@@ -34,8 +35,17 @@ def test_external_identity_for_p2p_and_group() -> None:
     external_id, display = external_identity_for_message(
         "wechat", is_group=True, conv_key="room_123456", from_user_id="sender"
     )
-    assert external_id == "group_room_123456"
+    assert external_id == "group:room_123456"
     assert display == "微信群聊 3456"
+
+
+def test_wecom_account_key_is_unambiguous_for_delimiter_like_ids() -> None:
+    first = external_account_key("wecom", {"corp_id": "x:bot:y", "bot_id": "z"})
+    second = external_account_key("wecom", {"corp_id": "x", "bot_id": "y:bot:z"})
+
+    assert first == "wecom:corp:7:x:bot:y:bot:1:z"
+    assert second == "wecom:corp:1:x:bot:7:y:bot:z"
+    assert first != second
 
 
 def test_provision_creates_member_user_and_identity() -> None:
@@ -73,6 +83,51 @@ def test_second_call_hits_existing_mapping() -> None:
             select(ChannelIdentity).where(ChannelIdentity.external_user_id == "wxid_ab12cd34")
         ).all()
         assert len(identities) == 1
+
+
+def test_corrupt_cross_tenant_identity_is_replaced_in_current_tenant() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_a", name="A"))
+        db.add(Tenant(id="tenant_b", name="B"))
+        foreign_user = User(
+            id="user_a",
+            tenant_id="tenant_a",
+            username="foreign_user",
+            password_hash="x",
+        )
+        db.add(foreign_user)
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_b",
+                channel="wecom",
+                external_account_scope="corpB",
+                external_user_id="zhangsan",
+                staffdeck_user_id=foreign_user.id,
+            )
+        )
+        db.commit()
+
+        current_user = resolve_or_provision_user(
+            db,
+            "tenant_b",
+            "wecom",
+            "zhangsan",
+            "张三",
+            "corpB",
+        )
+        db.commit()
+
+        assert current_user.tenant_id == "tenant_b"
+        identity = db.exec(
+            select(ChannelIdentity).where(
+                ChannelIdentity.tenant_id == "tenant_b",
+                ChannelIdentity.external_account_scope == "corpB",
+                ChannelIdentity.external_user_id == "zhangsan",
+            )
+        ).one()
+        assert identity.staffdeck_user_id == current_user.id
+        assert identity.staffdeck_user_id != foreign_user.id
 
 
 def test_group_account_provision() -> None:

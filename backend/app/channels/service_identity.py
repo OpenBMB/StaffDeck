@@ -27,6 +27,10 @@ _USERNAME_UNSAFE = re.compile(r"[^a-zA-Z0-9_.@-]")
 _CHANNEL_LABELS = {"wechat": "微信", "wecom": "企微"}
 
 
+class IdentityScopeConflict(RuntimeError):
+    pass
+
+
 def channel_label(channel: str) -> str:
     return _CHANNEL_LABELS.get(channel, channel)
 
@@ -40,7 +44,31 @@ def scope_from_config(config: dict, binding: ChannelBinding) -> str:
 
 def external_account_scope(db: Session, binding: ChannelBinding) -> str:
     """渠道账号作用域:以绑定当前配置为准(corp_id > bot_id > binding.id)。"""
+    if binding.identity_scope_key is not None:
+        return binding.identity_scope_key
     return scope_from_config(dict(binding.config_json or {}), binding)
+
+
+def external_account_key(channel: str, config: dict) -> str | None:
+    """provider Bot 的全部署稳定连接键。"""
+    if channel == "wecom":
+        corp_id = str(config.get("corp_id") or "").strip()
+        bot_id = str(config.get("bot_id") or "").strip()
+        if corp_id and bot_id:
+            return f"wecom:corp:{len(corp_id)}:{corp_id}:bot:{len(bot_id)}:{bot_id}"
+        # 仅兼容尚未补企业 ID 的存量 PR 数据；新激活必须提供 corp_id。
+        return f"wecom:bot:{bot_id}" if bot_id else None
+    if channel == "wechat":
+        bot_id = str(config.get("ilink_bot_id") or "").strip()
+        return f"wechat:ilink_bot:{bot_id}" if bot_id else None
+    return None
+
+
+def legacy_external_account_keys(channel: str, config: dict) -> set[str]:
+    if channel != "wecom":
+        return set()
+    bot_id = str(config.get("bot_id") or "").strip()
+    return {f"wecom:bot:{bot_id}"} if bot_id else set()
 
 
 def p2p_external_conv_id(channel: str, account_scope: str, from_user_id: str) -> str:
@@ -66,9 +94,8 @@ def external_identity_for_message(
     """返回 (external_user_id, display_name)：群聊映射群账号，私聊映射个人账号。"""
     label = channel_label(channel)
     if is_group:
-        # 群账号 external_id 内嵌 scope(跨企业同 chatid 隔离)
-        group_key = f"{account_scope}_{conv_key}" if account_scope else conv_key
-        return f"group_{group_key}", f"{label}群聊 {_id_suffix(conv_key, 4)}"
+        # scope 已是身份唯一键的独立字段,subject id 只保留 provider 原始群 ID
+        return f"group:{conv_key}", f"{label}群聊 {_id_suffix(conv_key, 4)}"
     return from_user_id, f"{label}用户 {_id_suffix(from_user_id, 8)}"
 
 
@@ -121,14 +148,26 @@ def resolve_or_provision_user(
 ) -> User:
     """按 (tenant, channel, scope, external_id) 解析 StaffDeck 用户，不存在则开通懒建账号。"""
     identity = find_channel_identity(db, tenant_id, channel, external_id, account_scope)
+    if not identity and external_id.startswith("group:"):
+        # 兼容 PR 早期数据:group_{scope}_{chatid} → group:{chatid}
+        conv_key = external_id.removeprefix("group:")
+        legacy_id = f"group_{account_scope}_{conv_key}" if account_scope else f"group_{conv_key}"
+        legacy = find_channel_identity(db, tenant_id, channel, legacy_id, account_scope)
+        if legacy:
+            legacy.external_user_id = external_id
+            legacy.updated_at = utc_now()
+            db.add(legacy)
+            db.flush()
+            identity = legacy
     if identity:
         user = db.get(User, identity.staffdeck_user_id)
-        if user:
+        if user and user.tenant_id == tenant_id:
             return user
+        # 损坏或跨租户 identity 不能继续占据正常 scope 唯一键。
+        db.delete(identity)
+        db.flush()
 
-    # 群账号 external_id 已内嵌 scope,username 不再重复加 scope 段
-    username_scope = "" if external_id.startswith("group_") else account_scope
-    username = channel_username(tenant_id, channel, external_id, username_scope)
+    username = channel_username(tenant_id, channel, external_id, account_scope)
     user = User(
         tenant_id=tenant_id,
         username=username,
@@ -156,8 +195,10 @@ def resolve_or_provision_user(
         identity = find_channel_identity(db, tenant_id, channel, external_id, account_scope)
         if identity:
             user = db.get(User, identity.staffdeck_user_id)
-            if user:
+            if user and user.tenant_id == tenant_id:
                 return user
+            db.delete(identity)
+            db.flush()
         user = db.exec(
             select(User).where(User.tenant_id == tenant_id, User.username == username)
         ).first()
@@ -188,7 +229,7 @@ def unbind_external_identity(
     """解绑外部身份:指针移回懒建账号(缺则按原规则创建),迁回该私聊身份的渠道会话与对应记忆。
 
     返回原绑定的 web 账号;未绑定(无映射或映射不是 web 账号)返回 None。
-    群身份(group_ 开头)不属于个人,不应调用本函数。
+    群身份(group: 开头)不属于个人,不应调用本函数。
     """
     identity = find_channel_identity(db, tenant_id, channel, external_id, account_scope)
     current = db.get(User, identity.staffdeck_user_id) if identity else None
@@ -258,10 +299,8 @@ def migrate_scope_for_binding(
     仅允许"首次补充企业信息"形态:旧 scope 是本 binding 派生值(binding.id 或
     config_json.bot_id)且新 scope 是 corp_id;corpA→corpB 等跨企业变更不迁移
     (端点应已拦截 400,此处防御性零操作)。
-    - channel_identities:仅迁移"该 binding 会话引用到的账号集合"内的旧 scope 行;
-      冲突(新 scope 下已存在同 external_user_id 的行)时合并:该 binding 会话的
-      user_id 改指新 scope 既有账号(会话链接的记忆同步),删除旧 scope 行——
-      杜绝"身份没迁、会话已迁"的不一致,并记审计日志。
+    - channel_identities:迁移旧 Bot scope 下全部身份,包括尚无会话的 /绑定 身份;
+      目标 scope 已存在且指向不同 User 时整体中止,不自动合并账号与记忆。
     - sessions / channel_conv_states:仅当前 binding 的 wecom conv 旧前缀替换。
     返回各项迁移数量统计。
     """
@@ -280,42 +319,36 @@ def migrate_scope_for_binding(
         )
         return stats
 
-    binding_sessions = db.exec(
-        select(ChatSession).where(
-            ChatSession.tenant_id == binding.tenant_id,
-            ChatSession.channel == binding.channel,
-            ChatSession.channel_binding_id == binding.id,
-        )
-    ).all()
-    referenced_user_ids = {row.user_id for row in binding_sessions if row.user_id}
-
     identities = db.exec(
         select(ChannelIdentity).where(
             ChannelIdentity.tenant_id == binding.tenant_id,
             ChannelIdentity.channel == binding.channel,
             ChannelIdentity.external_account_scope == old_scope,
-            ChannelIdentity.staffdeck_user_id.in_(referenced_user_ids),
         )
-    ).all() if referenced_user_ids else []
-    merged_accounts: dict[str, str] = {}
+    ).all()
+    migration_rows: list[tuple[ChannelIdentity, str, ChannelIdentity | None]] = []
     for row in identities:
+        new_external_id = row.external_user_id
+        legacy_group_prefix = f"group_{old_scope}_"
+        if new_external_id.startswith(legacy_group_prefix):
+            new_external_id = f"group:{new_external_id.removeprefix(legacy_group_prefix)}"
         conflict = find_channel_identity(
-            db, binding.tenant_id, binding.channel, row.external_user_id, new_scope
+            db, binding.tenant_id, binding.channel, new_external_id, new_scope
         )
-        if conflict:
-            stats["identities_conflicted"] += 1
-            logger.warning(
-                "scope 迁移冲突合并:external_user_id=%s 旧 scope=%s 身份行删除,"
-                "会话改指新 scope 既有账号 %s binding=%s",
-                row.external_user_id,
-                old_scope,
-                conflict.staffdeck_user_id,
-                binding.id,
+        if conflict and conflict.id != row.id and conflict.staffdeck_user_id != row.staffdeck_user_id:
+            raise IdentityScopeConflict(
+                "目标企业中该渠道身份已关联其他 StaffDeck 用户: "
+                f"external_user_id={new_external_id}"
             )
-            merged_accounts[row.staffdeck_user_id] = conflict.staffdeck_user_id
+        migration_rows.append((row, new_external_id, conflict))
+
+    for row, new_external_id, conflict in migration_rows:
+        if conflict and conflict.id != row.id:
+            stats["identities_conflicted"] += 1
             db.delete(row)
             continue
         row.external_account_scope = new_scope
+        row.external_user_id = new_external_id
         row.updated_at = utc_now()
         db.add(row)
         stats["identities"] += 1
@@ -333,8 +366,6 @@ def migrate_scope_for_binding(
         ).all()
         for row in sessions:
             row.external_conv_id = new_prefix + row.external_conv_id[len(old_prefix):]
-            if row.user_id in merged_accounts:
-                row.user_id = merged_accounts[row.user_id]
             db.add(row)
             stats["sessions"] += 1
         states = db.exec(
@@ -350,20 +381,4 @@ def migrate_scope_for_binding(
             db.add(row)
             stats["conv_states"] += 1
 
-    # 冲突合并的会话改了归属:会话链接的记忆同步到新账号,保持身份/数据一致
-    for old_user_id, new_user_id in merged_accounts.items():
-        session_ids = {row.id for row in binding_sessions if row.user_id == new_user_id}
-        if not session_ids:
-            continue
-        new_user = db.get(User, new_user_id)
-        memories = db.exec(
-            select(MemoryRecord).where(
-                MemoryRecord.user_id == old_user_id,
-                MemoryRecord.session_id.in_(session_ids),
-            )
-        ).all()
-        for row in memories:
-            row.user_id = new_user_id
-            row.username = new_user.username if new_user else row.username
-            db.add(row)
     return stats
