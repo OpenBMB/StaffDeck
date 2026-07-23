@@ -156,7 +156,9 @@ class LLMClient:
                 )
             )
             empty_diagnostics: list[str] = []
+            current_max_tokens = max_output_tokens
             for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
+                request["max_tokens"] = current_max_tokens
                 span = start_llm_call(
                     model=self.model,
                     endpoint=_endpoint_label(getattr(self, "base_url", "")),
@@ -165,7 +167,7 @@ class LLMClient:
                     attempt=attempt + 1,
                     retry_count=attempt,
                     max_attempts=EMPTY_RESPONSE_RETRIES + 1,
-                    max_output_tokens=max_output_tokens,
+                    max_output_tokens=current_max_tokens,
                     thinking_mode=getattr(self, "thinking_mode", "") or "provider_default",
                     **request_shape,
                 )
@@ -199,6 +201,15 @@ class LLMClient:
                     **metrics,
                 )
                 empty_diagnostics.append(_completion_empty_diagnostic(completion, attempt + 1))
+                # Reasoning models (e.g. deepseek-v4-flash) share the max_tokens budget
+                # between reasoning_content and content. When finish_reason=length cuts off
+                # before the answer, retry with a doubled budget so reasoning has room to
+                # finish and content can be produced.
+                if (
+                    metrics.get("finish_reason") == "length"
+                    and metrics.get("reasoning_chars", 0) > 0
+                ):
+                    current_max_tokens = min(current_max_tokens * 2, 32768)
                 if attempt >= EMPTY_RESPONSE_RETRIES:
                     raise LLMError(_empty_response_detail(self, empty_diagnostics))
         except Exception as exc:
@@ -231,6 +242,7 @@ class LLMClient:
         )
         try:
             empty_diagnostics: list[str] = []
+            current_max_tokens = max_output_tokens
             for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
                 span = start_llm_call(
                     model=self.model,
@@ -240,7 +252,7 @@ class LLMClient:
                     attempt=attempt + 1,
                     retry_count=attempt,
                     max_attempts=EMPTY_RESPONSE_RETRIES + 1,
-                    max_output_tokens=max_output_tokens,
+                    max_output_tokens=current_max_tokens,
                     thinking_mode=getattr(self, "thinking_mode", "") or "provider_default",
                     **request_shape,
                 )
@@ -261,7 +273,7 @@ class LLMClient:
                         "model": self.model,
                         "messages": request_messages,
                         "temperature": self.temperature,
-                        "max_tokens": max_output_tokens,
+                        "max_tokens": current_max_tokens,
                         **_thinking_request_kwargs(
                             getattr(self, "thinking_mode", ""),
                             getattr(self, "extra_body", {}),
@@ -359,6 +371,10 @@ class LLMClient:
                         response_ids,
                     )
                 )
+                # Reasoning models share the max_tokens budget between reasoning and answer.
+                # When length-truncated with only reasoning output, double the budget on retry.
+                if "length" in finish_reasons and reasoning_chars > 0:
+                    current_max_tokens = min(current_max_tokens * 2, 32768)
             raise LLMError(_empty_response_detail(self, empty_diagnostics))
         except Exception as exc:
             if isinstance(exc, LLMError):
