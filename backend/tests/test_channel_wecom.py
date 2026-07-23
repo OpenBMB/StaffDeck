@@ -1351,3 +1351,65 @@ def test_delete_serializes_against_concurrent_credentials_update(monkeypatch, tm
     assert starts == [False]
     with Session(engine) as db:
         assert db.get(ChannelBinding, binding_id) is None
+
+
+# ---------- worker 退役收尾与群 chatid 降级 ----------
+
+
+def test_worker_retirement_and_reconcile_rebuild(monkeypatch) -> None:
+    engine = _test_engine()
+    binding_id = _seed_wecom_binding(engine)
+    started = threading.Event()
+    release = threading.Event()
+    processed: list[str] = []
+
+    def slow_process_inbound(binding, inbound, *, db_engine=None):
+        started.set()
+        release.wait(timeout=5.0)
+        processed.append(inbound.event_id)
+        return True
+
+    monkeypatch.setattr(intake_module, "process_inbound", slow_process_inbound)
+    fake = FakeWSClient()
+    manager = WeComStreamManager(db_engine=engine, client_factory=lambda bot_id, secret: fake)
+    manager.ensure_binding(binding_id)
+    assert _wait_for(lambda: fake.connect_calls == 1)
+
+    fake.emit_local("message", _text_frame(msgid="msg_slow"))
+    assert started.wait(timeout=5.0)
+
+    # 长任务中 stop:join 超时 → retired 置位,worker 完成当前条后自动退出清理
+    manager.stop_binding(binding_id)
+    state = manager._streams.get(binding_id)
+    assert not manager.wait_binding_stopped(binding_id, timeout_seconds=0.2)
+    assert state is not None and state.retired.is_set()
+
+    release.set()
+    assert _wait_for(lambda: not (state.worker and state.worker.is_alive()))
+    assert processed == ["msg_slow"]
+    # 退出路径已从注册表清除死 state,无残留
+    assert manager._streams.get(binding_id) is None
+
+    # 下轮 reconcile 正常重建且只有一份 state
+    manager.reconcile_once()
+    assert _wait_for(lambda: manager.get_stream(binding_id) is not None)
+    assert len(list(manager._streams.values())) == 1
+    manager.stop_binding(binding_id)
+
+
+def test_group_without_chatid_degrades_to_p2p_with_warning(caplog) -> None:
+    import logging
+
+    frame = _text_frame(chattype="group", chatid="")
+    with caplog.at_level(logging.WARNING, logger="app.channels.adapters.wecom"):
+        inbound = normalize_wecom_frame(frame)
+    assert inbound is not None
+    # chattype=group 但缺 chatid:降级私聊,不退化为"每人一个群会话"
+    assert inbound.is_group is False
+    assert inbound.external_conv_id == "wecom_p2p_zhangsan"
+    assert any("缺少 chatid" in record.message for record in caplog.records)
+
+    # 有 chatid 的群形态不变
+    group = normalize_wecom_frame(_text_frame(chatid="wr_1", chattype="group"))
+    assert group is not None and group.is_group is True
+    assert group.external_conv_id == "wecom_group_wr_1"

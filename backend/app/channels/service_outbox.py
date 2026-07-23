@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 from datetime import timedelta
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -20,6 +22,7 @@ from app.db.models import (
 logger = logging.getLogger(__name__)
 
 _DELIVERY_BATCH_SIZE = 20
+_SQLITE_SUPPORTS_RETURNING = sqlite3.sqlite_version_info >= (3, 35, 0)
 _delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
 
@@ -129,16 +132,68 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
         logger.exception("渠道投递登记失败 session=%s", getattr(chat_session, "id", None))
 
 
-def _deliver_due(db: Session) -> int:
+def _claim_due_deliveries(db: Session, limit: int = _DELIVERY_BATCH_SIZE) -> list[ChannelDelivery]:
+    """单语句原子抢占 pending 投递:并发守护不会拿到同一行。
+
+    SQLite 3.35+ 用 UPDATE ... RETURNING;旧版本走"UPDATE 后按 sending_since 回查"
+    的等价路径(写入串行化下同样互斥)。
+    """
     now = utc_now()
-    due = db.exec(
+    if _SQLITE_SUPPORTS_RETURNING:
+        rows = db.execute(
+            text(
+                """
+                UPDATE channel_deliveries
+                SET status = 'sending', sending_since = :now, updated_at = :now
+                WHERE id IN (
+                    SELECT id FROM channel_deliveries
+                    WHERE status = 'pending' AND next_attempt_at <= :now
+                    ORDER BY next_attempt_at
+                    LIMIT :limit
+                )
+                RETURNING id
+                """
+            ),
+            {"now": now, "limit": limit},
+        ).all()
+        db.commit()
+        claimed_ids = [row[0] for row in rows]
+    else:
+        statement = text(
+            """
+            UPDATE channel_deliveries
+            SET status = 'sending', sending_since = :now, updated_at = :now
+            WHERE id IN (
+                SELECT id FROM channel_deliveries
+                WHERE status = 'pending' AND next_attempt_at <= :now
+                ORDER BY next_attempt_at
+                LIMIT :limit
+            )
+            """
+        )
+        db.execute(statement, {"now": now, "limit": limit})
+        db.commit()
+        claimed_ids = [
+            row[0]
+            for row in db.execute(
+                text(
+                    "SELECT id FROM channel_deliveries "
+                    "WHERE status = 'sending' AND sending_since = :now"
+                ),
+                {"now": now},
+            ).all()
+        ]
+    if not claimed_ids:
+        return []
+    return db.exec(
         select(ChannelDelivery)
-        .where(ChannelDelivery.status == "pending")
-        .where(ChannelDelivery.next_attempt_at.is_not(None))
-        .where(ChannelDelivery.next_attempt_at <= now)
-        .order_by(ChannelDelivery.created_at)
-        .limit(_DELIVERY_BATCH_SIZE)
+        .where(ChannelDelivery.id.in_(claimed_ids))
+        .order_by(ChannelDelivery.next_attempt_at)
     ).all()
+
+
+def _deliver_due(db: Session) -> int:
+    due = _claim_due_deliveries(db)
     for delivery in due:
         _deliver_one(db, delivery)
     return len(due)
@@ -152,6 +207,7 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
     if not binding or binding.status != "active":
         delivery.status = "failed"
         delivery.last_error = "渠道绑定不存在或已停用"
+        delivery.sending_since = None
         delivery.updated_at = utc_now()
         db.add(delivery)
         db.commit()
@@ -171,6 +227,7 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
             delivery.status = "failed"
             delivery.last_error = "渠道会话与绑定账号不一致"
             delivery.next_attempt_at = None
+            delivery.sending_since = None
             delivery.updated_at = utc_now()
             db.add(delivery)
             db.commit()
@@ -182,9 +239,15 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
     db.commit()
     try:
         adapter = get_channel_adapter(binding.channel)
-        adapter.send(binding, dict(delivery.target_json or {}), delivery.text)
+        adapter.send(
+            binding,
+            dict(delivery.target_json or {}),
+            delivery.text,
+            dedupe_key=delivery.idempotency_key,
+        )
     except Exception as exc:
         delivery.last_error = str(exc)[:500]
+        delivery.sending_since = None
         if delivery.attempts >= settings.channel_delivery_max_attempts:
             delivery.status = "failed"
             delivery.next_attempt_at = None
@@ -200,6 +263,7 @@ def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
     delivery.status = "delivered"
     delivery.delivered_at = utc_now()
     delivery.last_error = None
+    delivery.sending_since = None
     delivery.updated_at = utc_now()
     db.add(delivery)
     db.commit()

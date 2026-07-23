@@ -234,12 +234,13 @@ class WeChatClient:
         resp.raise_for_status()
         return dict(resp.json() or {})
 
-    def send_message(self, to_user_id: str, context_token: str, text: str) -> None:
+    def send_message(self, to_user_id: str, context_token: str, text: str, client_id: str = "") -> None:
         payload = {
             "msg": {
                 "from_user_id": "",
                 "to_user_id": to_user_id,
-                "client_id": f"staffdeck:{int(time.time() * 1000)}:{uuid4().hex[:8]}",
+                # 确定性幂等:同一投递的重试复用同一 client_id;未指定时保持随机
+                "client_id": client_id or f"staffdeck:{int(time.time() * 1000)}:{uuid4().hex[:8]}",
                 "message_type": 2,
                 "message_state": 2,
                 "context_token": context_token,
@@ -299,14 +300,23 @@ class WeChatAdapter:
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None:
         return normalize_wechat_message(raw)
 
-    def send(self, binding: ChannelBinding, target: dict[str, Any], text: str) -> None:
+    def send(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        text: str,
+        *,
+        dedupe_key: str | None = None,
+    ) -> None:
         to_user_id = str(target.get("to_user_id") or "").strip()
         context_token = str(target.get("context_token") or "").strip()
         if not to_user_id or not context_token:
             raise ValueError("微信投递目标缺少 to_user_id 或 context_token")
+        # 同一投递的每次重试使用同一 client_id,服务端可幂等去重
+        client_id = f"staffdeck:{dedupe_key}" if dedupe_key else ""
         client = self._client_factory(binding)
         for chunk in split_wechat_text(text):
-            client.send_message(to_user_id, context_token, chunk)
+            client.send_message(to_user_id, context_token, chunk, client_id=client_id)
 
     def send_typing(
         self,

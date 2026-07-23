@@ -677,6 +677,8 @@ class ChannelDelivery(SQLModel, table=True):
     status: str = Field(default="pending", index=True)
     attempts: int = 0
     next_attempt_at: Optional[datetime] = Field(default=None, index=True)
+    # 原子 claim 的抢占时间(守护据此重置卡死投递)
+    sending_since: Optional[datetime] = None
     last_error: Optional[str] = None
     # 回复类投递 = message_id，天然幂等
     idempotency_key: str = Field(unique=True, index=True)

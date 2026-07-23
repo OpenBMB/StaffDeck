@@ -48,7 +48,14 @@ class ChannelAdapter(Protocol):
 
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None: ...
 
-    def send(self, binding: ChannelBinding, target: dict[str, Any], text: str) -> None: ...
+    def send(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        text: str,
+        *,
+        dedupe_key: str | None = None,
+    ) -> None: ...
 
     def start_ingress(self, binding_id: str) -> None: ...
 

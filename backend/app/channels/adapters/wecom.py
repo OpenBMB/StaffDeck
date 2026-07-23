@@ -51,8 +51,12 @@ def normalize_wecom_frame(frame: dict[str, Any], *, account_scope: str = "") -> 
         return None
     chat_id = str(body.get("chatid") or "").strip()
     chattype = str(body.get("chattype") or "").strip()
-    # 官方文档：chatid 仅群聊返回；chattype 兜底
-    is_group = bool(chat_id) or chattype == "group"
+    if chattype == "group" and not chat_id:
+        # 群消息缺 chatid 时按私聊降级,避免群会话退化为每人一个会话
+        logger.warning("企微群消息缺少 chatid,按私聊降级处理 msgid=%s", body.get("msgid"))
+        chattype = "single"
+    # 官方文档：chatid 仅群聊返回
+    is_group = bool(chat_id)
     headers = frame.get("headers") or {}
     event_id = str(body.get("msgid") or body.get("msg_id") or headers.get("req_id") or "").strip()
     if not event_id:
@@ -87,6 +91,8 @@ class _StreamState:
         # 每绑定一个入站工作线程:WS loop 线程只入队,AgentLoop 轮在 worker 里跑,心跳不被阻塞
         self.worker: threading.Thread | None = None
         self.stop = threading.Event()
+        # join 超时后的强制退役:worker 完成当前条后退出并清理(不再接新消息)
+        self.retired = threading.Event()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client: Any = None
         self.queue: queue.Queue = queue.Queue()
@@ -145,6 +151,9 @@ class WeComStreamManager:
             worker = state.worker
             if worker and worker.is_alive():
                 worker.join(timeout=max(0.0, deadline - time.monotonic()))
+            if worker and worker.is_alive():
+                # join 超时:强制退役,worker 完成当前条后自行退出清理
+                state.retired.set()
         if reconcile_thread and reconcile_thread.is_alive():
             reconcile_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         return all(
@@ -163,10 +172,13 @@ class WeComStreamManager:
             if binding_id in self._paused:
                 return
             state = self._streams.get(binding_id)
-            if state and (
-                (state.thread and state.thread.is_alive())
-                or (state.worker and state.worker.is_alive())
-            ):
+            if state and state.thread and state.thread.is_alive():
+                return
+            if state and state.worker and state.worker.is_alive():
+                # stream 死 + worker 活:视为待回收——强制退役让 worker 完成当前条后
+                # 退出并清理(退出路径会从 _streams 清除该 state),本轮不新建,
+                # 下轮 reconcile 即可正常重建
+                state.retired.set()
                 return
             state = _StreamState()
             state.config_revision = config_revision
@@ -230,11 +242,17 @@ class WeComStreamManager:
         if thread and thread.is_alive():
             return False
         if not self._signal_worker_after_producers(state, deadline):
+            # worker 在 deadline 内未收尾:强制退役,完成当前条后自行退出清理
+            state.retired.set()
             return False
         worker = state.worker
         if worker and worker.is_alive():
             worker.join(timeout=max(0.0, deadline - time.monotonic()))
-        return not ((thread and thread.is_alive()) or (worker and worker.is_alive()))
+        if worker and worker.is_alive():
+            # join 超时:强制退役,不挂死后续重建
+            state.retired.set()
+            return False
+        return True
 
     @staticmethod
     def _signal_worker_after_producers(
@@ -409,27 +427,38 @@ class WeComStreamManager:
         """单 worker 串行消费本绑定入站消息(与同会话串行锁语义一致)。"""
         from app.channels.service_intake import process_inbound
 
-        while True:
-            item = state.queue.get()
-            if item is None:
-                return
-            if isinstance(item, tuple) and len(item) == 2:
-                item_revision, inbound = item
-            else:
-                item_revision, inbound = state.config_revision, item
-            try:
-                with Session(self._engine) as db:
-                    binding = db.get(ChannelBinding, binding_id)
-                    if (
-                        not binding
-                        or binding.status != "active"
-                        or binding.config_revision != item_revision
-                    ):
-                        continue
-                    db.expunge(binding)
-                process_inbound(binding, inbound, db_engine=self._engine)
-            except Exception:
-                logger.exception("企微入站消息处理失败 binding=%s", binding_id)
+        try:
+            while True:
+                # 强制退役:完成当前条后退出,不再接新消息
+                if state.retired.is_set():
+                    return
+                item = state.queue.get()
+                if item is None:
+                    return
+                if isinstance(item, tuple) and len(item) == 2:
+                    item_revision, inbound = item
+                else:
+                    item_revision, inbound = state.config_revision, item
+                try:
+                    with Session(self._engine) as db:
+                        binding = db.get(ChannelBinding, binding_id)
+                        if (
+                            not binding
+                            or binding.status != "active"
+                            or binding.config_revision != item_revision
+                        ):
+                            continue
+                        db.expunge(binding)
+                    process_inbound(binding, inbound, db_engine=self._engine)
+                except Exception:
+                    logger.exception("企微入站消息处理失败 binding=%s", binding_id)
+        finally:
+            # 退出路径清理死 state(identity 守卫,不清除已被替换的新 state),
+            # 下轮 reconcile 才能正常重建
+            with self._lock:
+                current = self._streams.get(binding_id)
+                if current is state and not (state.thread and state.thread.is_alive()):
+                    del self._streams[binding_id]
 
     def _run_stream(self, binding_id: str, state: _StreamState) -> None:
         loop = asyncio.new_event_loop()
@@ -487,10 +516,18 @@ class WeComAdapter:
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None:
         return normalize_wecom_frame(raw)
 
-    def send(self, binding: ChannelBinding, target: dict[str, Any], text: str) -> None:
+    def send(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        text: str,
+        *,
+        dedupe_key: str | None = None,
+    ) -> None:
         chat_id = str(target.get("to_user_id") or "").strip()
         if not chat_id:
             raise ValueError("企微投递目标缺少 to_user_id(chatid)")
+        # dedupe_key:企微 WS 协议的 req_id 由 SDK 内部生成,无客户端幂等标识可注入,仅保留签名一致
         from app.channels import get_wecom_stream_manager
 
         stream = get_wecom_stream_manager().get_stream(binding.id)

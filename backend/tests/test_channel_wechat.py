@@ -918,3 +918,25 @@ def test_cursor_patch_preserves_api_owned_config_fields() -> None:
         assert binding.config_json["auto_route"] is False
         assert binding.config_json["ilink_bot_id"] == "bot@im.bot"
         assert binding.config_json["get_updates_buf"] == "new"
+
+
+def test_wechat_adapter_client_id_deterministic_per_dedupe_key() -> None:
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={})
+
+    client = _client(handler)
+    adapter = WeChatAdapter(client_factory=lambda binding: client)
+    binding = ChannelBinding(tenant_id="t", agent_id="a", channel="wechat", status="active")
+    target = {"to_user_id": "u1", "context_token": "ctx"}
+    adapter.send(binding, target, "hi", dedupe_key="msg_1")
+    adapter.send(binding, target, "hi", dedupe_key="msg_1")
+    adapter.send(binding, target, "hi")
+
+    client_ids = [payload["msg"]["client_id"] for payload in sent]
+    # 同一投递重试 client_id 一致;不传 dedupe_key 时保持随机
+    assert client_ids[0] == "staffdeck:msg_1"
+    assert client_ids[1] == "staffdeck:msg_1"
+    assert client_ids[2] != "staffdeck:msg_1"
