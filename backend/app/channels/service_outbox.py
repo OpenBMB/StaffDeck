@@ -393,6 +393,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     if invalid_binding:
         delivery.status = "failed"
         delivery.last_error = "渠道绑定不存在或已停用"
+        delivery.sending_since = None
         delivery.updated_at = utc_now()
         db.add(delivery)
         db.commit()
@@ -446,6 +447,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
             delivery.status = "failed"
             delivery.last_error = "渠道会话与绑定账号不一致"
             delivery.next_attempt_at = None
+            delivery.sending_since = None
             delivery.updated_at = utc_now()
             db.add(delivery)
             db.commit()
@@ -519,6 +521,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     delivery.status = "delivered"
     delivery.delivered_at = utc_now()
     delivery.last_error = None
+    delivery.sending_since = None
     delivery.updated_at = utc_now()
     db.add(delivery)
     if binding.channel == "feishu" and delivery.kind not in _REACTION_KINDS:

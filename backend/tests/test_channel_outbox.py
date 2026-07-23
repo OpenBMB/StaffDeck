@@ -29,6 +29,7 @@ class FakeAdapter:
     def __init__(self, *, fail_times: int = 0):
         self.fail_times = fail_times
         self.sent: list[tuple[str, dict, str]] = []
+        self.dedupe_keys: list[str | None] = []
 
     def send(
         self,
@@ -38,6 +39,7 @@ class FakeAdapter:
         *,
         idempotency_key: str | None = None,
     ) -> None:
+        self.dedupe_keys.append(idempotency_key)
         if self.fail_times > 0:
             self.fail_times -= 1
             raise RuntimeError("模拟发送失败")
@@ -892,3 +894,104 @@ def _clean_adapter_registry():
 
     _adapters.pop("fake", None)
     _adapters.pop("unknown_channel", None)
+
+
+# ---------- 原子 claim 与确定性幂等 ----------
+
+
+def test_concurrent_daemons_claim_disjoint_deliveries(tmp_path) -> None:
+    import threading
+
+    import app.channels.service_outbox as outbox
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'outbox_claim.db'}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        all_ids = set()
+        for index in range(30):
+            delivery = _make_delivery(db, binding, message_id=f"msg_{index}", idempotency_key=f"msg_{index}")
+            all_ids.add(delivery.id)
+
+    claimed: list[set] = []
+    barrier = threading.Barrier(3)
+
+    def claim() -> None:
+        barrier.wait()
+        mine: set[str] = set()
+        with Session(engine) as db:
+            for delivery_id in sorted(all_ids):
+                if outbox._claim_delivery(db, delivery_id, now=utc_now(), reaction_lane=False):
+                    mine.add(delivery_id)
+        claimed.append(mine)
+
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(claimed) == 2
+    # 两个并发守护拿到互不重叠的行集,且合起来覆盖全部到期投递
+    assert claimed[0].isdisjoint(claimed[1])
+    assert claimed[0] | claimed[1] == all_ids
+
+
+def test_delivery_retries_pass_same_dedupe_key() -> None:
+    engine = _test_engine()
+    adapter = FakeAdapter(fail_times=1)
+    register_channel_adapter("fake", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        delivery = _make_delivery(db, binding)
+        delivery_id = delivery.id
+        idem = delivery.idempotency_key
+
+    run_delivery_daemon(once=True, db_engine=engine)
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "pending"
+        delivery.next_attempt_at = utc_now() - timedelta(seconds=1)
+        db.add(delivery)
+        db.commit()
+
+    run_delivery_daemon(once=True, db_engine=engine)
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    # 同一投递的每次重试都把 idempotency_key 作为 dedupe_key 传给适配器
+    assert adapter.dedupe_keys == [idem, idem]
+
+
+def test_claim_orders_by_next_attempt_at() -> None:
+    engine = _test_engine()
+    adapter = FakeAdapter()
+    register_channel_adapter("fake", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        _make_delivery(
+            db,
+            binding,
+            message_id="msg_late",
+            idempotency_key="msg_late",
+            next_attempt_at=utc_now() + timedelta(hours=1),
+        )
+        early = _make_delivery(
+            db,
+            binding,
+            message_id="msg_early",
+            idempotency_key="msg_early",
+            next_attempt_at=utc_now() - timedelta(seconds=10),
+        )
+        early_id = early.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, early_id).status == "delivered"
+        # 未到期的不被 claim
+        late = db.exec(select(ChannelDelivery).where(ChannelDelivery.idempotency_key == "msg_late")).one()
+        assert late.status == "pending"
+        assert late.sending_since is None

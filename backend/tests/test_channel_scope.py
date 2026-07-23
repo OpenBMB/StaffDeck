@@ -609,9 +609,11 @@ def test_scope_rebuild_uses_session_binding_in_multi_corp_tenant(
         )
         assert scopes == {
             "ci_alice": "corpB",
-            "ci_ambiguous": "legacy",
+            # ②无会话引用:取该 tenant+channel 最早 active binding(chan_corpA)的 scope
+            "ci_ambiguous": "corpA",
             "ci_group": "corpB",
             "ci_polluted": "legacy_cross_tenant",
+            # 多 scope 会话引用歧义:留 legacy 并隔离会话(安全例外)
             "ci_shared": "legacy",
         }
         group_identity = conn.execute(
@@ -1516,3 +1518,82 @@ def test_channel_account_key_failure_rolls_back_real_legacy_schema(
             sa_text("SELECT channel_account_key FROM sessions WHERE id='session_a'")
         ).scalar_one()
         assert session_key == keys["chan_a"]
+
+
+# ---------- scope 回填三优先级 ----------
+
+
+def test_scope_backfill_priority_rules(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "scope-priority.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    _build_legacy_scope_schema(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            sa_text(
+                "CREATE TABLE users ("
+                "id VARCHAR PRIMARY KEY, tenant_id VARCHAR, username VARCHAR, source VARCHAR)"
+            )
+        )
+        # 两个 active wecom binding:chan_corpA(最早)与 chan_corpB
+        conn.execute(
+            sa_text(
+                "INSERT INTO channel_bindings (id, tenant_id, agent_id, channel, status, config_json) "
+                "VALUES ('chan_corpB', 'tenant_demo', 'agent_2', 'wecom', 'active', "
+                "'{\"bot_id\":\"bot_b\",\"corp_id\":\"corpB\"}')"
+            )
+        )
+        conn.execute(
+            sa_text(
+                "INSERT INTO users (id, tenant_id, username, source) VALUES "
+                "('u_alice', 'tenant_demo', 'alice', 'wecom'), "
+                "('u_nobody', 'tenant_demo', 'nobody', 'wecom'), "
+                "('u_ghost', 'tenant_b', 'ghost', 'wecom')"
+            )
+        )
+        conn.execute(
+            sa_text(
+                "INSERT INTO channel_identities (id, tenant_id, channel, external_user_id, staffdeck_user_id) VALUES "
+                "('id_alice', 'tenant_demo', 'wecom', 'alice', 'u_alice'), "
+                "('id_nobody', 'tenant_demo', 'wecom', 'nobody', 'u_nobody'), "
+                "('id_ghost', 'tenant_b', 'wecom', 'ghost', 'u_ghost')"
+            )
+        )
+        conn.execute(
+            sa_text(
+                "INSERT INTO sessions (id, tenant_id, user_id, agent_id, channel, external_conv_id, channel_binding_id) VALUES "
+                "('s_alice', 'tenant_demo', 'u_alice', 'agent_2', 'wecom', 'wecom_p2p_alice', 'chan_corpB')"
+            )
+        )
+    monkeypatch.setattr(database, "database_url", f"sqlite:///{db_path}")
+    monkeypatch.setattr(database, "engine", engine)
+
+    database._migrate_sqlite_skill_schema()
+    with engine.begin() as conn:
+        scopes = dict(
+            conn.execute(
+                sa_text(
+                    "SELECT id, external_account_scope FROM channel_identities "
+                    "WHERE id IN ('id_alice', 'id_nobody', 'id_ghost')"
+                )
+            ).all()
+        )
+        assert scopes == {
+            # ①被会话引用:按其会话所在 binding(chan_corpB)的 scope
+            "id_alice": "corpB",
+            # ②无会话引用:取该 tenant+channel 最早创建的 active binding(chan_corpA)的 scope
+            "id_nobody": "corpA",
+            # ③取不到(tenant_b 无任何 binding):归 legacy
+            "id_ghost": "legacy",
+        }
+
+    # 幂等:重跑不炸、数据不变
+    database._migrate_sqlite_skill_schema()
+    with engine.begin() as conn:
+        assert dict(
+            conn.execute(
+                sa_text(
+                    "SELECT id, external_account_scope FROM channel_identities "
+                    "WHERE id IN ('id_alice', 'id_nobody', 'id_ghost')"
+                )
+            ).all()
+        ) == scopes
