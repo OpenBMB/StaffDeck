@@ -1990,5 +1990,6 @@
   "轮换 Secret": "Rotate Secret",
   "待配置": "Pending configuration",
   "收到确认": "Receipt reaction",
-  "确认清理": "Receipt cleanup"
+  "确认清理": "Receipt cleanup",
+  "企业： {1}": "Enterprise: {1}"
 }
