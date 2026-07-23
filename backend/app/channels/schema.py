@@ -45,6 +45,7 @@ class ChannelBindingRead(BaseModel):
     baseurl: Optional[str] = None
     bot_id: Optional[str] = None
     corp_id: Optional[str] = None
+    config_revision: int = 0
     session_expired: bool = False
     bound_at: Optional[str] = None
     created_by_user_id: Optional[str] = None
@@ -80,8 +81,8 @@ class WeComCredentialsRequest(BaseModel):
     tenant_id: str
     bot_id: str
     secret: str
-    # 可选:企业 ID,有则作为身份作用域首选(跨企业同 userid 隔离)
-    corp_id: Optional[str] = None
+    # 企业 ID 是企微 userid 的真实唯一边界,首次激活即必须提供
+    corp_id: str
 
 
 class ChannelCredentialFieldRead(BaseModel):
@@ -190,6 +191,7 @@ def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBinding
         baseurl=config.get("baseurl"),
         bot_id=config.get("bot_id"),
         corp_id=config.get("corp_id"),
+        config_revision=binding.config_revision,
         session_expired=bool(config.get("session_expired")),
         bound_at=str(bound_at) if bound_at else None,
         created_by_user_id=binding.created_by_user_id,

@@ -756,6 +756,7 @@ export type ChannelBindingRead = {
   baseurl?: string | null;
   bot_id?: string | null;
   corp_id?: string | null;
+  config_revision?: number;
   session_expired?: boolean;
   bound_at?: string | null;
   created_by_user_id?: string | null;

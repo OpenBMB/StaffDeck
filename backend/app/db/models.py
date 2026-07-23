@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import Column, JSON, UniqueConstraint
+from sqlalchemy import Column, Integer, JSON, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -528,6 +528,8 @@ class ChatSession(SQLModel, table=True):
     channel_target_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
     # 渠道会话直挂绑定:出站 staging 优先按它直查,不再靠 (agent_id, channel) 反查
     channel_binding_id: Optional[str] = None
+    # 渠道外部账号稳定键:绑定删除后仍保留,仅允许同一外部 Bot 精确认领历史会话
+    channel_account_key: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -545,6 +547,15 @@ class ChannelBinding(SQLModel, table=True):
     credentials_enc: Optional[str] = None
     # ilink_bot_id、baseurl、get_updates_buf 游标、session_expired、bound_at 等
     config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # provider 侧 Bot 的稳定连接键,全部署唯一;pending 绑定激活前允许为空
+    external_account_key: Optional[str] = Field(default=None, unique=True, index=True)
+    # 身份作用域稳定键:企微为 corp_id,微信为空字符串
+    identity_scope_key: Optional[str] = Field(default=None, index=True)
+    # 每次凭证/账号配置成功提交后递增,用于 ingress 代际隔离
+    config_revision: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
     connected: bool = False
     created_by_user_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
@@ -589,6 +600,10 @@ class ChannelBindCode(SQLModel, table=True):
     """微信身份自助绑定码:网页端生成,微信侧 /绑定 <码> 核销。"""
 
     __tablename__ = "channel_bind_codes"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_channel_bind_code_tenant_code"),
+        UniqueConstraint("tenant_id", "user_id", name="uq_channel_bind_code_tenant_user"),
+    )
 
     id: str = Field(default_factory=lambda: new_id("chbc"), primary_key=True)
     tenant_id: str = Field(index=True)
@@ -637,6 +652,8 @@ class ChannelInboundEvent(SQLModel, table=True):
     payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     # received/processing/done/failed
     status: str = Field(default="received", index=True)
+    # 创建/接管该事件的进程启动代次；当前代次仍在运行时禁止按墙钟误接管。
+    processor_run_id: Optional[str] = Field(default=None, index=True)
     error: Optional[str] = None
     processed_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
