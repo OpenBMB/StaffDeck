@@ -828,6 +828,7 @@ export type ChannelIdentityBindingRead = {
   external_user_id: string;
   display_name: string;
   bound_at: string;
+  external_account_scope?: string | null;
 };
 
 export type ChannelCredentialFieldRead = {

@@ -1984,5 +1984,6 @@
   "加载更多（已显示 {1} / 共 {2} 条）": "Load more (showing {1} of {2})",
   "加载更多天（已显示 {1} / 共 {2} 天）": "Load more days (showing {1} of {2})",
   "用于跨企业区分相同 userid；不填则以机器人 ID 区分（删除重建绑定后身份可能断开）": "Distinguishes identical userids across enterprises. If empty, the bot ID is used instead (identity may break after deleting and recreating the binding).",
-  "企业 ID：{1}": "Corp ID: {1}"
+  "企业 ID：{1}": "Corp ID: {1}",
+  "企业： {1}": "Enterprise: {1}"
 }
