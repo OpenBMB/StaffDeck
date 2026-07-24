@@ -295,7 +295,6 @@ class GeneralSkillRunner:
                 "name": skill.name,
                 "description": skill.description,
                 "homepage": skill.homepage,
-                "markdown": skill.skill_markdown,
                 "package": _skill_package_payload(skill),
             },
             "runtime": {
@@ -321,7 +320,7 @@ class GeneralSkillRunner:
         )
         with llm_operation("general_skill.plan"):
             raw = LLMClient(_with_min_tokens(model_config, GENERAL_SKILL_MAX_TOKENS)).generate_json(
-                unified_system_prompt(),
+                unified_system_prompt(skill.skill_markdown),
                 payload,
             )
         plan = GeneralSkillExecutionPlan.model_validate(raw)
@@ -455,7 +454,6 @@ class GeneralSkillRunner:
                 "name": skill.name,
                 "description": skill.description,
                 "homepage": skill.homepage,
-                "markdown": skill.skill_markdown,
                 "package": _skill_package_payload(skill),
             },
             "runtime": {
@@ -482,7 +480,7 @@ class GeneralSkillRunner:
         )
         with llm_operation("general_skill.repair", attempt=next_attempt):
             raw = LLMClient(_with_min_tokens(model_config, GENERAL_SKILL_MAX_TOKENS)).generate_json(
-                unified_system_prompt(),
+                unified_system_prompt(skill.skill_markdown),
                 payload,
             )
         plan = GeneralSkillExecutionPlan.model_validate(raw)
@@ -727,7 +725,6 @@ class GeneralSkillRunner:
                 "name": skill.name,
                 "description": skill.description,
                 "homepage": skill.homepage,
-                "markdown": _truncate(skill.skill_markdown, 6000),
                 "package": _skill_package_payload(skill, preview_limit=6000),
             },
             "runner": {
@@ -752,7 +749,7 @@ class GeneralSkillRunner:
         try:
             with llm_operation("general_skill.review", attempt=attempt):
                 raw = LLMClient(model_config).generate_json(
-                    unified_system_prompt(), payload
+                    unified_system_prompt(skill.skill_markdown), payload
                 )
             review = GeneralSkillExecutionReview.model_validate(raw).model_dump(mode="json")
         except Exception as exc:
@@ -822,11 +819,27 @@ def _skill_files(skill: GeneralSkill) -> list[dict[str, Any]]:
 
 
 def _skill_package_payload(skill: GeneralSkill, preview_limit: int = 12000) -> dict[str, Any]:
+    # SKILL.md's content is already sent in full via the sibling "markdown"
+    # field on every call site that includes a package payload; echoing it
+    # again here as a content_preview doubles the token cost of every plan/
+    # repair/review call for no benefit, since the model already has it.
+    markdown = str(getattr(skill, "skill_markdown", "") or "")
     files = _skill_files(skill)
     previews: list[dict[str, Any]] = []
     remaining = preview_limit
     for file in files:
         content = str(file.get("content") or "")
+        if file.get("path") == "SKILL.md" and content == markdown:
+            previews.append(
+                {
+                    "path": file["path"],
+                    "size": file.get("size"),
+                    "mime_type": file.get("mime_type"),
+                    "content_preview": "（与上方 skill.markdown 字段内容相同，不重复展开）",
+                    "truncated": False,
+                }
+            )
+            continue
         preview = content[: max(0, min(len(content), remaining))]
         remaining -= len(preview)
         previews.append(

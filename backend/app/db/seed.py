@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from app import paths
@@ -856,8 +857,14 @@ def seed_demo_data(session: Session) -> None:
         )
 
     # 桌面/单机版默认管理员账号（admin / admin）。权限只读取数据库 role 字段。
+    # 用 id=="admin" 或 username=="admin" 匹配：管理员可能被改了用户名（id 仍是
+    # admin）也可能种子时 id 就不是 admin（username 仍是 admin）——只认一边会在
+    # 另一边插入重复行，撞 id 主键或 (tenant_id, username) 唯一约束。
     admin_user = session.exec(
-        select(User).where(User.tenant_id == "tenant_demo", User.username == "admin")
+        select(User).where(
+            User.tenant_id == "tenant_demo",
+            or_(User.id == "admin", User.username == "admin"),
+        )
     ).first()
     if not admin_user:
         session.add(
