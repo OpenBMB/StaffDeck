@@ -388,8 +388,12 @@ def _anthropic_request(request: dict[str, Any]) -> dict[str, Any]:
         "model": request["model"],
         "messages": converted,
         "max_tokens": request["max_tokens"],
-        "temperature": request["temperature"],
     }
+    # Some gateways expose reasoning models (e.g. Claude Opus 4.8) that reject the
+    # `temperature` parameter outright. Only include it when a value is provided.
+    temperature = request.get("temperature")
+    if temperature is not None:
+        payload["temperature"] = temperature
     system = "\n\n".join(part for part in system_parts if part)
     if system:
         payload["system"] = system
