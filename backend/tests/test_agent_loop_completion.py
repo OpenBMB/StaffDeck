@@ -933,6 +933,42 @@ def test_drop_unavailable_skill_state_removes_disabled_sop_frames() -> None:
     assert loop.events.records[-1][3]["removed_skill_ids"] == ["archived_sop"]
 
 
+def test_drop_unavailable_skill_state_repairs_removed_active_step() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    skill = _purchase_skill()
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id=skill.skill_id,
+        active_step_id="removed_confirmation_step",
+        slots_json={"product_id": "A1"},
+        awaiting_input_json={
+            "task_id": "task_purchase",
+            "skill_id": skill.skill_id,
+            "step_id": "removed_confirmation_step",
+            "expected_fields": ["confirmation"],
+        },
+        last_agent_question="请确认",
+    )
+
+    changed = loop._drop_unavailable_skill_state("tenant_demo", session, [skill])
+
+    assert changed is True
+    assert session.active_skill_id == skill.skill_id
+    assert session.active_step_id == "collect_user_name"
+    assert session.slots_json == {"product_id": "A1"}
+    assert session.awaiting_input_json == {"task_id": "task_purchase"}
+    assert session.last_agent_question is None
+    assert loop.events.records[-1][3]["repaired_steps"] == [
+        {
+            "skill_id": skill.skill_id,
+            "from_step_id": "removed_confirmation_step",
+            "to_step_id": "collect_user_name",
+        }
+    ]
+
+
 def test_skill_state_payload_filters_disabled_sop_frames() -> None:
     loop = object.__new__(AgentLoop)
     session = ChatSession(
@@ -1153,6 +1189,133 @@ def test_apply_step_result_records_skill_context_for_step_change() -> None:
     assert payload["to_skill_id"] == "skill_purchase_001"
     assert payload["from_step_id"] == "collect_user_name"
     assert payload["to_step_id"] == "confirm_purchase"
+
+
+def test_apply_step_result_persists_and_consumes_awaiting_confirmation() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    skill = Skill(
+        tenant_id="tenant_demo",
+        skill_id="meeting_room_book",
+        name="会议室预订",
+        content_json=_graph_content(
+            "meeting_room_book",
+            "会议室预订",
+            [
+                {
+                    "node_id": "confirm_booking",
+                    "name": "确认预订",
+                    "expected_user_info": ["confirmation"],
+                    "allowed_actions": ["answer_user"],
+                },
+                {
+                    "node_id": "book_room",
+                    "type": "tool_call",
+                    "name": "提交预订",
+                    "allowed_actions": ["call_tool:admin.room_book"],
+                },
+            ],
+        ),
+        status="published",
+    )
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id=skill.skill_id,
+        active_step_id="confirm_booking",
+        slots_json={"employee_id": "123456"},
+        awaiting_input_json={"task_id": "task_booking"},
+    )
+
+    loop._apply_step_result(
+        "tenant_demo",
+        session,
+        StepAgentResult(action="ask_user", reply="请确认是否提交预订？"),
+        skill,
+    )
+
+    assert session.awaiting_input_json == {
+        "task_id": "task_booking",
+        "skill_id": "meeting_room_book",
+        "step_id": "confirm_booking",
+        "expected_fields": ["confirmation"],
+        "question_summary": "请确认是否提交预订？",
+    }
+    assert session.last_agent_question == "请确认是否提交预订？"
+
+    loop._apply_step_result(
+        "tenant_demo",
+        session,
+        StepAgentResult(
+            action="advance",
+            slot_updates={"confirmation": True},
+            next_step_id="book_room",
+            is_step_completed=True,
+        ),
+        skill,
+    )
+
+    assert session.active_step_id == "book_room"
+    assert session.awaiting_input_json == {"task_id": "task_booking"}
+    assert session.last_agent_question is None
+
+
+def test_apply_step_result_preserves_awaiting_input_after_invalid_next_step() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    skill = _purchase_skill()
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id=skill.skill_id,
+        active_step_id="collect_user_name",
+        awaiting_input_json={
+            "skill_id": skill.skill_id,
+            "step_id": "collect_user_name",
+            "expected_fields": ["user_name"],
+            "question_summary": "请提供姓名",
+        },
+        last_agent_question="请提供姓名",
+    )
+
+    result = StepAgentResult(
+        action="advance",
+        next_step_id="missing_step",
+        is_step_completed=True,
+    )
+    loop._apply_step_result("tenant_demo", session, result, skill)
+
+    assert session.active_step_id == "collect_user_name"
+    assert session.awaiting_input_json == {
+        "skill_id": skill.skill_id,
+        "step_id": "collect_user_name",
+        "expected_fields": ["user_name"],
+        "question_summary": "请提供姓名",
+    }
+    assert result.next_step_id is None
+    assert result.is_step_completed is False
+
+
+def test_apply_step_result_does_not_treat_plain_reply_as_awaiting_input() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    skill = _purchase_skill()
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id=skill.skill_id,
+        active_step_id="collect_user_name",
+    )
+
+    loop._apply_step_result(
+        "tenant_demo",
+        session,
+        StepAgentResult(action="reply", reply="商品信息已为您保留。"),
+        skill,
+    )
+
+    assert session.awaiting_input_json is None
+    assert session.last_agent_question is None
 
 
 def test_record_runtime_event_skips_noop_step_change() -> None:

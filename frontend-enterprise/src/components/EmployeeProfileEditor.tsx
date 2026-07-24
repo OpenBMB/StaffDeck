@@ -291,6 +291,10 @@ function TagsField({
           </span>
         ))}
         <input
+          autoComplete="off"
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-bwignore="true"
           value={draft}
           placeholder={value.length ? '' : placeholder}
           onChange={(event) => setDraft(event.target.value)}

@@ -782,6 +782,10 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
             <label className="flex h-[34px] w-[300px] items-center gap-[8px] overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] transition-colors focus-within:border-[#18181a] max-[900px]:w-full">
               <IconSearch className="size-[14px] shrink-0 text-[#858b9c]" />
               <input
+                autoComplete="off"
+                data-1p-ignore="true"
+                data-lpignore="true"
+                data-bwignore="true"
                 value={searchText}
                 placeholder="搜索技能名称、Slug、描述或主页"
                 onChange={(event) => setSearchText(event.target.value)}
@@ -938,6 +942,10 @@ function ClawHubDialog({
             支持开源平台地址、GitHub repo/tree/raw SKILL.md 或 owner/repo 形式。本地 zip 或 Markdown 文件请在编辑页使用「导入 &gt; 选择文件」。
           </p>
           <input
+            autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-bwignore="true"
             value={source}
             onChange={(event) => onSourceChange(event.target.value)}
             placeholder="例如 alchaincyf/nuwa-skill 或 https://github.com/owner/repo/tree/main/skill"

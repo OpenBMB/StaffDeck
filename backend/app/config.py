@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     app_name: str = "Skill Agent Loop Service"
     database_url: str = "sqlite:///./skill_agent_loop.db"
     app_secret: str = "change-me-in-development"
-    demo_model_base_url: str = "http://58.57.119.12:52010/v1"
+    demo_model_base_url: str = "http://localhost:52010/v1"
     demo_model_name: str = "qwen3.6-27b"
     demo_model_api_key: str = ""
     model_api_timeout_seconds: float = 600.0
@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     general_skill_pip_index_url: str = ""
     general_skill_pip_timeout_seconds: int = 180
     general_skill_network_install: bool = False
+    channel_secret: str = ""
+    staffdeck_role: str = "all"
+    wechat_ilink_base_url: str = "https://ilinkai.weixin.qq.com"
+    channel_delivery_poll_seconds: float = 1.0
+    channel_delivery_max_attempts: int = 8
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),

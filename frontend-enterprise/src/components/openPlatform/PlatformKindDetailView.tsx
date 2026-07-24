@@ -166,6 +166,10 @@ export default function PlatformKindDetailView({
           <label className="flex h-[34px] w-full max-w-[360px] items-center gap-[8px] overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] transition-colors focus-within:border-[#18181a]">
             <IconSearch className="size-[14px] shrink-0 text-[#858b9c]" />
             <input
+              autoComplete="off"
+              data-1p-ignore="true"
+              data-lpignore="true"
+              data-bwignore="true"
               value={searchText}
               placeholder={`搜索${countLabel}`}
               onChange={(event) => setSearchText(event.target.value)}

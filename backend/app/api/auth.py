@@ -43,6 +43,7 @@ class UserRead(BaseModel):
     username: str
     display_name: Optional[str] = None
     role: Literal["admin", "member"]
+    source: str = "web"
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -107,13 +108,16 @@ def create_user(
 @router.get("/users", response_model=list[UserRead])
 def list_users(
     tenant_id: str = Query(...),
+    include_channel: bool = Query(False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> list[UserRead]:
     _require_admin(current_user, tenant_id)
-    rows = db.exec(
-        select(User).where(User.tenant_id == tenant_id).order_by(User.created_at.desc())
-    ).all()
+    statement = select(User).where(User.tenant_id == tenant_id)
+    if not include_channel:
+        # 渠道懒建账号(source != 'web')默认从用户管理列表隐藏
+        statement = statement.where(User.source == "web")
+    rows = db.exec(statement.order_by(User.created_at.desc())).all()
     return [_user_read(row) for row in rows]
 
 
@@ -171,6 +175,7 @@ def _user_read(user: User) -> UserRead:
         username=user.username,
         display_name=user.display_name,
         role=user.role,
+        source=user.source,
         created_at=user.created_at.isoformat() if user.created_at else None,
         updated_at=user.updated_at.isoformat() if user.updated_at else None,
     )

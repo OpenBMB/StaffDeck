@@ -7,6 +7,7 @@ from sqlmodel import Session
 from app.api import (
     agents,
     auth,
+    channels,
     chat,
     feedback,
     general_skills,
@@ -24,6 +25,7 @@ from app.api import (
     ui_config,
 )
 from app.async_jobs import shutdown_async_jobs
+from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
@@ -54,10 +56,12 @@ def on_startup() -> None:
     with Session(engine) as db:
         seed_demo_data(db)
     start_background_worker()
+    start_channel_services()
 
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
+    stop_channel_services()
     stop_background_worker()
     shutdown_async_jobs()
 
@@ -85,6 +89,7 @@ app.include_router(scheduled_tasks.enterprise_router)
 app.include_router(scheduled_tasks.chat_router)
 app.include_router(scheduled_tasks.chat_draft_router)
 app.include_router(ui_config.enterprise_router)
+app.include_router(channels.router)
 app.include_router(tools.router)
 app.include_router(tools.mcp_router)
 app.include_router(sessions.router)

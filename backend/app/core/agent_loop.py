@@ -54,6 +54,7 @@ from app.db.models import (
 )
 from app.general_skills import GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import GeneralSkillRunResponse, GeneralSkillSelection
+from app.channels.service_outbox import stage_channel_delivery
 from app.knowledge import KnowledgeService
 from app.knowledge.citations import (
     compact_knowledge_citation_labels,
@@ -4866,6 +4867,8 @@ class AgentLoop:
         step_result: StepAgentResult,
         active_skill: Skill | None = None,
     ) -> None:
+        source_skill_id = chat_session.active_skill_id
+        source_step_id = chat_session.active_step_id
         if step_result.slot_updates:
             chat_session.slots_json = {
                 **(chat_session.slots_json or {}),
@@ -4878,12 +4881,10 @@ class AgentLoop:
                 {"slot_updates": step_result.slot_updates, "slots": chat_session.slots_json},
             )
 
-        if not chat_session.active_skill_id:
-            return
-
         active_skill_matches = bool(
             active_skill and active_skill.skill_id == chat_session.active_skill_id
         )
+        invalid_next_step = False
         if active_skill_matches and step_result.next_step_id:
             next_step_id = str(step_result.next_step_id).strip()
             if not self._skill_has_step(active_skill, next_step_id):
@@ -4899,8 +4900,23 @@ class AgentLoop:
                     },
                 )
                 step_result.next_step_id = None
-                return
+                step_result.is_step_completed = False
+                invalid_next_step = True
 
+        self._sync_awaiting_input_from_step_result(
+            chat_session,
+            step_result,
+            active_skill,
+            source_skill_id=source_skill_id,
+            source_step_id=source_step_id,
+        )
+
+        if not chat_session.active_skill_id:
+            return
+        if invalid_next_step:
+            return
+        if active_skill_matches and step_result.next_step_id:
+            next_step_id = str(step_result.next_step_id).strip()
             source_step_id = chat_session.active_step_id
             pending_steps = self._graph_pending_steps(chat_session)
             if pending_steps:
@@ -4947,6 +4963,62 @@ class AgentLoop:
                 reason="graph_pending_step",
             ):
                 step_result.next_step_id = chat_session.active_step_id
+
+    def _sync_awaiting_input_from_step_result(
+        self,
+        chat_session: ChatSession,
+        step_result: StepAgentResult,
+        active_skill: Skill | None,
+        *,
+        source_skill_id: str | None,
+        source_step_id: str | None,
+    ) -> None:
+        if not active_skill or active_skill.skill_id != source_skill_id or not source_step_id:
+            return
+
+        step = self._current_skill_step(active_skill, source_step_id)
+        if not step:
+            return
+        missing_fields = [
+            str(field)
+            for field in step.get("expected_user_info", [])
+            if not self._skill_slot_satisfied(chat_session.slots_json or {}, str(field))
+        ]
+        is_waiting_reply = step_result.action in {"ask_user", "clarify"}
+        if is_waiting_reply and missing_fields:
+            previous = (
+                chat_session.awaiting_input_json
+                if isinstance(chat_session.awaiting_input_json, dict)
+                else {}
+            )
+            awaiting_input = {
+                "skill_id": source_skill_id,
+                "step_id": source_step_id,
+                "expected_fields": missing_fields,
+                "question_summary": str(step_result.reply or "").strip() or None,
+            }
+            if previous.get("task_id"):
+                awaiting_input["task_id"] = previous["task_id"]
+            chat_session.awaiting_input_json = awaiting_input
+            chat_session.last_agent_question = awaiting_input["question_summary"]
+            return
+
+        should_clear = bool(
+            step_result.next_step_id
+            or step_result.tool_call
+            or step_result.is_step_completed
+            or not missing_fields
+        )
+        awaiting = chat_session.awaiting_input_json
+        if not should_clear or not isinstance(awaiting, dict):
+            return
+        if awaiting.get("skill_id") not in {None, source_skill_id}:
+            return
+        if awaiting.get("step_id") not in {None, source_step_id}:
+            return
+        task_id = awaiting.get("task_id")
+        chat_session.awaiting_input_json = {"task_id": task_id} if task_id else None
+        chat_session.last_agent_question = None
 
     def _change_active_step(
         self,
@@ -6318,9 +6390,11 @@ class AgentLoop:
         chat_session: ChatSession,
         skills: list[Skill],
     ) -> bool:
-        available_skill_ids = {skill.skill_id for skill in skills}
+        skills_by_id = {skill.skill_id: skill for skill in skills}
+        available_skill_ids = set(skills_by_id)
         changed = False
         removed_skill_ids: set[str] = set()
+        repaired_steps: list[dict[str, str | None]] = []
 
         if chat_session.skill_stack_json or chat_session.resume_after_answer_json:
             chat_session.skill_stack_json = []
@@ -6350,6 +6424,32 @@ class AgentLoop:
             chat_session.awaiting_input_json = None
             chat_session.resume_after_answer_json = None
             changed = True
+        elif active_skill_id:
+            active_skill = skills_by_id[active_skill_id]
+            active_step_id = str(chat_session.active_step_id or "").strip()
+            restored_step_id = self._first_step_id(active_skill)
+            if (
+                restored_step_id
+                and active_step_id != restored_step_id
+                and not self._skill_has_step(active_skill, active_step_id)
+            ):
+                chat_session.active_step_id = restored_step_id
+                awaiting = (
+                    chat_session.awaiting_input_json
+                    if isinstance(chat_session.awaiting_input_json, dict)
+                    else {}
+                )
+                task_id = awaiting.get("task_id")
+                chat_session.awaiting_input_json = {"task_id": task_id} if task_id else None
+                chat_session.last_agent_question = None
+                repaired_steps.append(
+                    {
+                        "skill_id": active_skill_id,
+                        "from_step_id": active_step_id,
+                        "to_step_id": restored_step_id,
+                    }
+                )
+                changed = True
 
         for attr in ("pending_tasks_json",):
             value = getattr(chat_session, attr) or []
@@ -6375,7 +6475,10 @@ class AgentLoop:
                     tenant_id,
                     chat_session.id,
                     "skill_state_pruned",
-                    {"removed_skill_ids": sorted(removed_skill_ids)},
+                    {
+                        "removed_skill_ids": sorted(removed_skill_ids),
+                        "repaired_steps": repaired_steps,
+                    },
                 )
         return changed
 
@@ -6913,6 +7016,7 @@ class AgentLoop:
             reply,
             metadata=assistant_metadata,
         )
+        stage_channel_delivery(self.db, chat_session, assistant_message)
         event_payload: dict[str, Any] = {
             "message_id": assistant_message.id,
             "assistant_message_id": assistant_message.id,

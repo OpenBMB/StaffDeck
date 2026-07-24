@@ -41,6 +41,8 @@ hiddenimports = (
         # 动态导入补充：pydantic/starlette/anyio 等
         "pydantic", "pydantic_settings", "pydantic.deprecated.decorator",
         "starlette", "anyio", "email_validator", "sqlalchemy",
+        # 企微渠道适配器在函数内懒导入（PyInstaller 静态分析检测不到）
+        "aibot", "websockets", "aiohttp", "pyee", "dotenv",
     ]
 )
 

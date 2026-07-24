@@ -42,7 +42,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const text = await response.text();
     throw new ApiError(response.status, text, response.statusText);
   }
-  return response.json() as Promise<T>;
+  const text = await response.text();
+  return (text ? JSON.parse(text) : {}) as T;
 }
 
 async function keepalivePost<T>(path: string, body?: unknown): Promise<T> {

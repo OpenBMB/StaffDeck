@@ -35,8 +35,8 @@ connect_args = {"check_same_thread": False, "timeout": 30} if database_url.start
 engine: Engine = create_engine(database_url, echo=False, connect_args=connect_args)
 
 _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID = "20260712_default_model_output_tokens_8192"
-_MODEL_API_PROTOCOLS_MIGRATION_ID = "20260722_model_api_protocols_v1"
 _LEGACY_DEFAULT_MODEL_OUTPUT_TOKENS = 2048
+_MODEL_API_PROTOCOLS_MIGRATION_ID = "20260722_model_api_protocols_v1"
 _DEFAULT_MODEL_OUTPUT_TOKENS = 8192
 _MODEL_API_PROTOCOL_COLUMNS = {
     "extra_body_json",
@@ -54,6 +54,12 @@ _MODEL_API_PROTOCOL_COLUMNS = {
     "security_revision",
     "key_revision",
 }
+
+_CHANNEL_BINDING_AGENTS_BACKFILL_MIGRATION_ID = "20260718_channel_binding_agents_backfill"
+_USER_SOURCE_BACKFILL_MIGRATION_ID = "20260718_user_source_wechat_backfill"
+_CHANNEL_SCOPE_REBUILD_MIGRATION_ID = "20260719_channel_scope_rebuild"
+_CHANNEL_BINDINGS_MULTI_MIGRATION_ID = "20260721_channel_bindings_multi"
+_CHANNEL_ACCOUNT_KEY_MIGRATION_ID = "20260723_channel_account_key_v1"
 
 
 def init_db() -> None:
@@ -88,11 +94,20 @@ def _migrate_sqlite_skill_schema() -> None:
     with _sqlite_immediate_connection() as conn:
         _migrate_model_api_protocols(conn, tables)
         _migrate_default_model_output_limit(conn, tables)
+        _migrate_channel_binding_agents_backfill(conn, tables)
+        _migrate_channel_scope_rebuild(conn, inspector, tables)
+        _migrate_channel_bindings_multi(conn, inspector, tables)
+        _migrate_channel_account_key_schema(conn, tables)
+        _migrate_channel_inbound_run_schema(conn, tables)
+        _migrate_channel_bind_code_constraints(conn, tables)
 
         if "users" in tables:
             user_columns = {column["name"] for column in inspector.get_columns("users")}
             if "role" not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'member'"))
+            if "source" not in user_columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN source VARCHAR NOT NULL DEFAULT 'web'"))
+            _migrate_user_source_backfill(conn)
 
         if "sessions" in tables:
             session_columns = {column["name"] for column in inspector.get_columns("sessions")}
@@ -121,6 +136,47 @@ def _migrate_sqlite_skill_schema() -> None:
             if "context_state_json" not in session_columns:
                 conn.execute(text("ALTER TABLE sessions ADD COLUMN context_state_json JSON"))
                 conn.execute(text("UPDATE sessions SET context_state_json = '{}'"))
+            if "channel" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel VARCHAR"))
+            if "external_conv_id" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN external_conv_id VARCHAR"))
+            if "channel_target_json" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_target_json JSON"))
+            if "channel_binding_id" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_binding_id VARCHAR"))
+            if "channel_account_key" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_account_key VARCHAR"))
+            # SQLite 唯一索引中 NULL 互不相等，web 会话（channel 为空）不受约束；
+            # 含 channel_binding_id 以隔离同企业多 Bot(老三列索引先 DROP 再按新四列重建)
+            session_index_columns = {
+                tuple(index["column_names"])
+                for index in inspector.get_indexes("sessions")
+                if index["name"] == "uq_sessions_agent_channel_extconv"
+            }
+            if ("agent_id", "channel", "external_conv_id") in session_index_columns:
+                conn.execute(text("DROP INDEX IF EXISTS uq_sessions_agent_channel_extconv"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_agent_channel_extconv "
+                    "ON sessions(agent_id, channel, channel_binding_id, external_conv_id)"
+                )
+            )
+            if "channel_bindings" in tables:
+                conn.execute(
+                    text(
+                        "UPDATE sessions SET channel_account_key = ("
+                        "SELECT external_account_key FROM channel_bindings "
+                        "WHERE channel_bindings.id = sessions.channel_binding_id) "
+                        "WHERE channel_binding_id IS NOT NULL AND EXISTS ("
+                        "SELECT 1 FROM channel_bindings "
+                        "WHERE channel_bindings.id = sessions.channel_binding_id)"
+                    )
+                )
+
+        if "channel_conv_states" in tables:
+            conv_columns = {column["name"] for column in inspector.get_columns("channel_conv_states")}
+            if "manual_pin_until" not in conv_columns:
+                conn.execute(text("ALTER TABLE channel_conv_states ADD COLUMN manual_pin_until DATETIME"))
 
         if "messages" in tables:
             message_columns = {column["name"] for column in inspector.get_columns("messages")}
@@ -322,6 +378,671 @@ def _migrate_default_model_output_limit(conn, tables: set[str]) -> None:
         text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
         {"id": _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID},
     )
+
+
+def _migrate_channel_binding_agents_backfill(conn, tables: set[str]) -> None:
+    """为存量渠道绑定补挂载行(binding_id, agent_id, is_default=1),只跑一次。"""
+    if "channel_bindings" not in tables or "channel_binding_agents" not in tables:
+        return
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _CHANNEL_BINDING_AGENTS_BACKFILL_MIGRATION_ID},
+    ).first()
+    if applied:
+        return
+
+    rows = conn.execute(
+        text("SELECT id, tenant_id, agent_id FROM channel_bindings")
+    ).mappings().all()
+    for row in rows:
+        existing = conn.execute(
+            text(
+                "SELECT id FROM channel_binding_agents "
+                "WHERE binding_id = :binding_id AND agent_id = :agent_id"
+            ),
+            {"binding_id": row["id"], "agent_id": row["agent_id"]},
+        ).first()
+        if existing:
+            continue
+        conn.execute(
+            text(
+                """
+                INSERT INTO channel_binding_agents (
+                    id, tenant_id, binding_id, agent_id, is_default, sort_order, created_at
+                )
+                VALUES (:id, :tenant_id, :binding_id, :agent_id, 1, 0, CURRENT_TIMESTAMP)
+                """
+            ),
+            {
+                "id": f"chba_{row['id']}",
+                "tenant_id": row["tenant_id"],
+                "binding_id": row["id"],
+                "agent_id": row["agent_id"],
+            },
+        )
+    conn.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _CHANNEL_BINDING_AGENTS_BACKFILL_MIGRATION_ID},
+    )
+
+
+def _migrate_user_source_backfill(conn) -> None:
+    """存量渠道懒建账号(username 以 wechat_ 开头,含群账号)source 置 'wechat',只跑一次。"""
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _USER_SOURCE_BACKFILL_MIGRATION_ID},
+    ).first()
+    if applied:
+        return
+    conn.execute(
+        text("UPDATE users SET source = 'wechat' WHERE substr(username, 1, 7) = 'wechat_' AND source = 'web'")
+    )
+    conn.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _USER_SOURCE_BACKFILL_MIGRATION_ID},
+    )
+
+
+def _wecom_scope_from_config(config: object, binding_id: str) -> str:
+    if isinstance(config, dict):
+        return str(config.get("corp_id") or config.get("bot_id") or "").strip() or binding_id
+    return binding_id
+
+
+def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
+    """身份作用域重构(一次性,app_data_migrations 守卫):
+
+    1) channel_identities 重建:加 external_account_scope 列,唯一约束改
+       (tenant_id, channel, external_account_scope, external_user_id);存量行按
+       "同 tenant 同 channel 的现存绑定"回填 scope,取不到绑定的归 'legacy'。
+    2) channel_inbound_events 重建:唯一约束 (channel, event_id) 改 (binding_id, event_id)。
+    3) sessions 的 wecom external_conv_id 改写为 wecom_{scope}_p2p_/group_ 格式(孤儿归 legacy)。
+    """
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _CHANNEL_SCOPE_REBUILD_MIGRATION_ID},
+    ).first()
+    if applied:
+        return
+
+    scope_by_binding_id: dict[str, str] = {}
+    scopes_by_tenant_channel: dict[tuple[str, str], set[str]] = {}
+    if "channel_bindings" in tables:
+        for row in conn.execute(
+            text("SELECT id, tenant_id, channel, config_json FROM channel_bindings")
+        ).mappings().all():
+            if row["channel"] != "wecom":
+                scope = ""
+            else:
+                scope = _wecom_scope_from_config(
+                    _json_object(row.get("config_json")), str(row["id"])
+                )
+            scope_by_binding_id[str(row["id"])] = scope
+            scopes_by_tenant_channel.setdefault(
+                (str(row["tenant_id"]), str(row["channel"])), set()
+            ).add(scope)
+
+    # 旧全局 identity bug 可能让 tenantB session 指向 tenantA User。迁移时立即
+    # 解除错误 User 关联并隔离会话，避免升级后被正常 external_conv_id 再次命中。
+    if "sessions" in tables and "users" in tables:
+        session_columns = {column["name"] for column in inspector.get_columns("sessions")}
+        user_columns = {column["name"] for column in inspector.get_columns("users")}
+        if {"id", "tenant_id", "user_id", "channel", "external_conv_id"} <= session_columns and {
+            "id",
+            "tenant_id",
+        } <= user_columns:
+            polluted_rows = conn.execute(
+                text(
+                    "SELECT s.id, s.external_conv_id FROM sessions s JOIN users u ON u.id = s.user_id "
+                    "WHERE s.channel IN ('wechat', 'wecom') AND s.tenant_id != u.tenant_id"
+                )
+            ).mappings().all()
+            for polluted in polluted_rows:
+                conn.execute(
+                    text(
+                        "UPDATE sessions SET user_id = NULL, external_conv_id = :conv "
+                        "WHERE id = :id"
+                    ),
+                    {
+                        "id": polluted["id"],
+                        "conv": (
+                            f"legacy_cross_tenant:{polluted['id']}:"
+                            f"{polluted.get('external_conv_id') or ''}"
+                        ),
+                    },
+                )
+
+    identity_session_scopes: dict[tuple[str, str, str], set[str]] = {}
+    session_ids_by_identity: dict[tuple[str, str, str], set[str]] = {}
+    user_tenant_by_id: dict[str, str] | None = None
+    if "users" in tables:
+        user_columns = {column["name"] for column in inspector.get_columns("users")}
+        if {"id", "tenant_id"} <= user_columns:
+            user_tenant_by_id = {
+                str(row["id"]): str(row["tenant_id"])
+                for row in conn.execute(text("SELECT id, tenant_id FROM users")).mappings().all()
+            }
+    if "sessions" in tables:
+        session_columns = {column["name"] for column in inspector.get_columns("sessions")}
+        if {
+            "tenant_id",
+            "user_id",
+            "channel",
+            "channel_binding_id",
+            "external_conv_id",
+        } <= session_columns:
+            session_rows = conn.execute(
+                text(
+                    "SELECT id, tenant_id, user_id, channel_binding_id, external_conv_id "
+                    "FROM sessions WHERE channel = 'wecom' "
+                    "AND user_id IS NOT NULL AND channel_binding_id IS NOT NULL"
+                )
+            ).mappings().all()
+            for session_row in session_rows:
+                scope = scope_by_binding_id.get(str(session_row["channel_binding_id"]))
+                conv = str(session_row.get("external_conv_id") or "")
+                if not scope:
+                    continue
+                if conv.startswith("wecom_p2p_"):
+                    external_id = conv.removeprefix("wecom_p2p_")
+                elif conv.startswith("wecom_group_"):
+                    external_id = f"group:{conv.removeprefix('wecom_group_')}"
+                else:
+                    continue
+                identity_key = (
+                    str(session_row["tenant_id"]),
+                    str(session_row["user_id"]),
+                    external_id,
+                )
+                identity_session_scopes.setdefault(identity_key, set()).add(scope)
+                session_ids_by_identity.setdefault(identity_key, set()).add(str(session_row["id"]))
+
+    if "channel_identities" in tables:
+        columns = {column["name"] for column in inspector.get_columns("channel_identities")}
+        if "external_account_scope" not in columns:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE channel_identities_new (
+                        id VARCHAR PRIMARY KEY,
+                        tenant_id VARCHAR,
+                        channel VARCHAR,
+                        external_account_scope VARCHAR NOT NULL DEFAULT '',
+                        external_user_id VARCHAR NOT NULL,
+                        staffdeck_user_id VARCHAR,
+                        display_name VARCHAR,
+                        created_at DATETIME,
+                        updated_at DATETIME,
+                        CONSTRAINT uq_channel_identity_scope_external UNIQUE (
+                            tenant_id, channel, external_account_scope, external_user_id
+                        )
+                    )
+                    """
+                )
+            )
+            identity_owner_by_key: dict[tuple[str, str, str, str], tuple[str, str]] = {}
+            for row in conn.execute(
+                text("SELECT * FROM channel_identities ORDER BY id")
+            ).mappings().all():
+                external_user_id = str(row["external_user_id"])
+                # wechat 是全局 wxid,scope 恒空。企微旧身份只有在历史会话或唯一
+                # tenant scope 能确定归属时才迁移；多企业歧义必须留在 legacy 隔离区。
+                if str(row["channel"]) == "wecom":
+                    if external_user_id.startswith("group_"):
+                        external_user_id = f"group:{external_user_id.removeprefix('group_')}"
+                    identity_key = (
+                        str(row["tenant_id"]),
+                        str(row.get("staffdeck_user_id") or ""),
+                        external_user_id,
+                    )
+                    session_scopes = identity_session_scopes.get(identity_key, set())
+                    tenant_scopes = scopes_by_tenant_channel.get(
+                        (str(row["tenant_id"]), str(row["channel"])), set()
+                    )
+                    if len(session_scopes) == 1:
+                        scope = next(iter(session_scopes))
+                    elif not session_scopes and len(tenant_scopes) == 1:
+                        scope = next(iter(tenant_scopes))
+                    else:
+                        scope = "legacy"
+                        if len(session_scopes) > 1:
+                            for session_id in session_ids_by_identity.get(identity_key, set()):
+                                conn.execute(
+                                    text(
+                                        "UPDATE sessions SET external_conv_id = :conv "
+                                        "WHERE id = :id"
+                                    ),
+                                    {
+                                        "id": session_id,
+                                        "conv": (
+                                            f"legacy_ambiguous_identity:{session_id}:"
+                                            + str(
+                                                next(
+                                                    (
+                                                        session_row.get("external_conv_id")
+                                                        for session_row in session_rows
+                                                        if str(session_row["id"]) == session_id
+                                                    ),
+                                                    "",
+                                                )
+                                                or ""
+                                            )
+                                        ),
+                                    },
+                                )
+                else:
+                    scope = ""
+                current_user_id = str(row.get("staffdeck_user_id") or "")
+                if user_tenant_by_id is not None and user_tenant_by_id.get(
+                    current_user_id
+                ) != str(row["tenant_id"]):
+                    # 丢失 User 或跨租户 User 指针不可进入正常 scope；保留记录供审计，
+                    # 正常入站会在当前 tenant 重新建立 User 与 identity。
+                    scope = "legacy_cross_tenant"
+                unique_key = (
+                    str(row["tenant_id"]),
+                    str(row["channel"]),
+                    scope,
+                    external_user_id,
+                )
+                prior = identity_owner_by_key.get(unique_key)
+                if prior:
+                    if prior[0] == current_user_id:
+                        continue
+                    raise RuntimeError(
+                        "渠道身份迁移冲突:规范化后同一身份指向不同 User "
+                        f"identities={prior[1]},{row['id']}"
+                    )
+                identity_owner_by_key[unique_key] = (current_user_id, str(row["id"]))
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO channel_identities_new (
+                            id, tenant_id, channel, external_account_scope, external_user_id,
+                            staffdeck_user_id, display_name, created_at, updated_at
+                        )
+                        VALUES (
+                            :id, :tenant_id, :channel, :scope, :external_user_id,
+                            :staffdeck_user_id, :display_name, :created_at, :updated_at
+                        )
+                        """
+                    ),
+                    {
+                        "id": row["id"],
+                        "tenant_id": row["tenant_id"],
+                        "channel": row["channel"],
+                        "scope": scope,
+                        "external_user_id": external_user_id,
+                        "staffdeck_user_id": row["staffdeck_user_id"],
+                        "display_name": row.get("display_name"),
+                        "created_at": row.get("created_at"),
+                        "updated_at": row.get("updated_at"),
+                    },
+                )
+            conn.execute(text("DROP TABLE channel_identities"))
+            conn.execute(text("ALTER TABLE channel_identities_new RENAME TO channel_identities"))
+            for index_sql in (
+                "CREATE INDEX IF NOT EXISTS ix_channel_identities_tenant_id ON channel_identities (tenant_id)",
+                "CREATE INDEX IF NOT EXISTS ix_channel_identities_channel ON channel_identities (channel)",
+                "CREATE INDEX IF NOT EXISTS ix_channel_identities_external_account_scope ON channel_identities (external_account_scope)",
+                "CREATE INDEX IF NOT EXISTS ix_channel_identities_staffdeck_user_id ON channel_identities (staffdeck_user_id)",
+            ):
+                conn.execute(text(index_sql))
+
+    if "channel_inbound_events" in tables:
+        # 新形态判定:SQLite 内联唯一约束在 get_indexes 中不可见,按 sqlite_master 的 DDL 文本判定
+        compact = _table_sql_compact(conn, "channel_inbound_events")
+        if "UNIQUE(CHANNEL,EVENT_ID)" in compact:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE channel_inbound_events_new (
+                        id VARCHAR PRIMARY KEY,
+                        tenant_id VARCHAR,
+                        binding_id VARCHAR,
+                        channel VARCHAR,
+                        event_id VARCHAR NOT NULL,
+                        payload_json JSON,
+                        status VARCHAR,
+                        processor_run_id VARCHAR,
+                        error VARCHAR,
+                        processed_at DATETIME,
+                        created_at DATETIME,
+                        updated_at DATETIME,
+                        CONSTRAINT uq_channel_inbound_event_binding UNIQUE (binding_id, event_id)
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO channel_inbound_events_new ("
+                    "id, tenant_id, binding_id, channel, event_id, payload_json, status, "
+                    "error, processed_at, created_at, updated_at) "
+                    "SELECT id, tenant_id, binding_id, channel, event_id, payload_json, status, "
+                    "error, processed_at, created_at, updated_at FROM channel_inbound_events"
+                )
+            )
+            conn.execute(text("DROP TABLE channel_inbound_events"))
+            conn.execute(
+                text("ALTER TABLE channel_inbound_events_new RENAME TO channel_inbound_events")
+            )
+            for index_sql in (
+                "CREATE INDEX IF NOT EXISTS ix_channel_inbound_events_tenant_id ON channel_inbound_events (tenant_id)",
+                "CREATE INDEX IF NOT EXISTS ix_channel_inbound_events_binding_id ON channel_inbound_events (binding_id)",
+                "CREATE INDEX IF NOT EXISTS ix_channel_inbound_events_channel ON channel_inbound_events (channel)",
+                "CREATE INDEX IF NOT EXISTS ix_channel_inbound_events_status ON channel_inbound_events (status)",
+                "CREATE INDEX IF NOT EXISTS ix_channel_inbound_events_processor_run_id ON channel_inbound_events (processor_run_id)",
+            ):
+                conn.execute(text(index_sql))
+
+    if "sessions" in tables:
+        # 列级守卫:老库 sessions 可能尚无渠道列(本函数内的 ALTER 在其后执行),
+        # 没有这些列就不可能有 wecom 会话数据,直接跳过
+        session_columns = {column["name"] for column in inspector.get_columns("sessions")}
+        if {"channel_binding_id", "external_conv_id"} <= session_columns:
+            rows = conn.execute(
+                text(
+                    "SELECT id, channel_binding_id, external_conv_id FROM sessions "
+                    "WHERE external_conv_id LIKE 'wecom\\_p2p\\_%' ESCAPE '\\' "
+                    "OR external_conv_id LIKE 'wecom\\_group\\_%' ESCAPE '\\'"
+                )
+            ).mappings().all()
+            for row in rows:
+                conv = str(row["external_conv_id"])
+                scope = scope_by_binding_id.get(str(row["channel_binding_id"] or ""), "legacy")
+                if conv.startswith("wecom_p2p_"):
+                    new_conv = f"wecom_{scope}_p2p_{conv.removeprefix('wecom_p2p_')}"
+                else:
+                    new_conv = f"wecom_{scope}_group_{conv.removeprefix('wecom_group_')}"
+                conn.execute(
+                    text("UPDATE sessions SET external_conv_id = :conv WHERE id = :id"),
+                    {"conv": new_conv, "id": row["id"]},
+                )
+
+    conn.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _CHANNEL_SCOPE_REBUILD_MIGRATION_ID},
+    )
+
+
+def _table_sql_compact(conn, table_name: str) -> str:
+    """sqlite_master 中表 DDL 的去空白大写文本(SQLite 内联约束在 get_indexes 不可见时用它判定)。"""
+    row = conn.execute(
+        text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = :name"),
+        {"name": table_name},
+    ).first()
+    if not row or not row[0]:
+        return ""
+    return "".join(str(row[0]).split()).upper()
+
+
+def _migrate_channel_bindings_multi(conn, inspector, tables: set[str]) -> None:
+    """channel_bindings 重建:移除 (agent_id, channel) 表级唯一约束,支持同 Agent 多渠道实例。"""
+    if "channel_bindings" not in tables:
+        return
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _CHANNEL_BINDINGS_MULTI_MIGRATION_ID},
+    ).first()
+    if applied:
+        return
+    if "UNIQUE(AGENT_ID,CHANNEL)" in _table_sql_compact(conn, "channel_bindings"):
+        conn.execute(
+            text(
+                """
+                CREATE TABLE channel_bindings_new (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR,
+                    agent_id VARCHAR,
+                    channel VARCHAR,
+                    status VARCHAR,
+                    credentials_enc VARCHAR,
+                    config_json JSON,
+                    connected BOOLEAN,
+                    created_by_user_id VARCHAR,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(text("INSERT INTO channel_bindings_new SELECT * FROM channel_bindings"))
+        conn.execute(text("DROP TABLE channel_bindings"))
+        conn.execute(text("ALTER TABLE channel_bindings_new RENAME TO channel_bindings"))
+        for column in ("tenant_id", "agent_id", "channel", "status", "created_by_user_id"):
+            conn.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_channel_bindings_{column} "
+                    f"ON channel_bindings ({column})"
+                )
+            )
+    conn.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _CHANNEL_BINDINGS_MULTI_MIGRATION_ID},
+    )
+
+
+def _channel_account_key_from_row(channel: str, config: object) -> str | None:
+    parsed = _json_object(config)
+    if channel == "wecom":
+        corp_id = str(parsed.get("corp_id") or "").strip()
+        bot_id = str(parsed.get("bot_id") or "").strip()
+        if corp_id and bot_id:
+            return f"wecom:corp:{len(corp_id)}:{corp_id}:bot:{len(bot_id)}:{bot_id}"
+        return f"wecom:bot:{bot_id}" if bot_id else None
+    if channel == "wechat":
+        bot_id = str(parsed.get("ilink_bot_id") or "").strip()
+        return f"wechat:ilink_bot:{bot_id}" if bot_id else None
+    return None
+
+
+def _migrate_channel_inbound_run_schema(conn, tables: set[str]) -> None:
+    if "channel_inbound_events" not in tables:
+        return
+    columns = {
+        str(row[1])
+        for row in conn.execute(text("PRAGMA table_info(channel_inbound_events)")).all()
+    }
+    if "processor_run_id" not in columns:
+        conn.execute(text("ALTER TABLE channel_inbound_events ADD COLUMN processor_run_id VARCHAR"))
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_channel_inbound_events_processor_run_id "
+            "ON channel_inbound_events(processor_run_id)"
+        )
+    )
+
+
+def _migrate_channel_bind_code_constraints(conn, tables: set[str]) -> None:
+    if "channel_bind_codes" not in tables:
+        return
+    # 已使用/过期码不再参与当前码模型，先清理以释放六位码空间。
+    conn.execute(
+        text(
+            "DELETE FROM channel_bind_codes "
+            "WHERE used_at IS NOT NULL OR expires_at <= CURRENT_TIMESTAMP"
+        )
+    )
+    # 同一码存在多个 owner 时归属已不可信，整组作废，要求用户重新生成。
+    conn.execute(
+        text(
+            "DELETE FROM channel_bind_codes WHERE (tenant_id, code) IN ("
+            "SELECT tenant_id, code FROM channel_bind_codes "
+            "GROUP BY tenant_id, code HAVING COUNT(*) > 1)"
+        )
+    )
+    # 同一用户多个有效码只保留最新一条。
+    conn.execute(
+        text(
+            "DELETE FROM channel_bind_codes AS older WHERE EXISTS ("
+            "SELECT 1 FROM channel_bind_codes AS newer "
+            "WHERE newer.tenant_id = older.tenant_id "
+            "AND newer.user_id = older.user_id "
+            "AND (COALESCE(newer.created_at, '') > COALESCE(older.created_at, '') "
+            "OR (COALESCE(newer.created_at, '') = COALESCE(older.created_at, '') "
+            "AND newer.id > older.id)))"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_channel_bind_code_tenant_code "
+            "ON channel_bind_codes(tenant_id, code)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_channel_bind_code_tenant_user "
+            "ON channel_bind_codes(tenant_id, user_id)"
+        )
+    )
+
+
+def _migrate_channel_account_key_schema(conn, tables: set[str]) -> None:
+    """为渠道绑定补稳定账号键、身份 scope 与 revision，并回填会话账号锚点。"""
+    if "channel_bindings" not in tables:
+        return
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(channel_bindings)")).all()
+    }
+    if "external_account_key" not in columns:
+        conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN external_account_key VARCHAR"))
+    if "identity_scope_key" not in columns:
+        conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN identity_scope_key VARCHAR"))
+    if "config_revision" not in columns:
+        conn.execute(
+            text(
+                "ALTER TABLE channel_bindings ADD COLUMN config_revision "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+
+    rows = conn.execute(
+        text("SELECT id, channel, config_json, external_account_key FROM channel_bindings")
+    ).mappings().all()
+    seen: dict[str, str] = {}
+    legacy_wecom_bots: dict[str, str] = {}
+    scoped_wecom_bots: dict[str, str] = {}
+    for row in rows:
+        config = _json_object(row.get("config_json"))
+        if str(row["channel"]) == "wecom":
+            bot_id = str(config.get("bot_id") or "").strip()
+            corp_id = str(config.get("corp_id") or "").strip()
+            if bot_id and corp_id:
+                legacy_owner = legacy_wecom_bots.get(bot_id)
+                if legacy_owner:
+                    raise RuntimeError(
+                        "检测到缺少 corp_id 的存量 Bot 与企业 Bot 冲突: "
+                        f"bot_id={bot_id} bindings={legacy_owner},{row['id']}"
+                    )
+                scoped_wecom_bots.setdefault(bot_id, str(row["id"]))
+            elif bot_id:
+                scoped_owner = scoped_wecom_bots.get(bot_id)
+                if scoped_owner:
+                    raise RuntimeError(
+                        "检测到缺少 corp_id 的存量 Bot 与企业 Bot 冲突: "
+                        f"bot_id={bot_id} bindings={row['id']},{scoped_owner}"
+                    )
+                legacy_wecom_bots.setdefault(bot_id, str(row["id"]))
+        derived_account_key = _channel_account_key_from_row(
+            str(row["channel"]), row.get("config_json")
+        )
+        account_key = (
+            derived_account_key
+            or str(row.get("external_account_key") or "").strip()
+            or None
+        )
+        if account_key:
+            owner = seen.get(account_key)
+            if owner and owner != str(row["id"]):
+                raise RuntimeError(
+                    "检测到同一外部 Bot 被多个 binding 使用: "
+                    f"account_key={account_key} bindings={owner},{row['id']}"
+                )
+            seen[account_key] = str(row["id"])
+        if str(row["channel"]) == "wecom":
+            scope_key = str(config.get("corp_id") or config.get("bot_id") or row["id"]).strip()
+        else:
+            scope_key = ""
+        conn.execute(
+            text(
+                "UPDATE channel_bindings SET external_account_key = :account_key, "
+                "identity_scope_key = :scope_key WHERE id = :id"
+            ),
+            {"id": row["id"], "account_key": account_key, "scope_key": scope_key},
+        )
+    conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_channel_bindings_external_account_key "
+            "ON channel_bindings(external_account_key) WHERE external_account_key IS NOT NULL"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_channel_bindings_identity_scope_key "
+            "ON channel_bindings(identity_scope_key)"
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _CHANNEL_ACCOUNT_KEY_MIGRATION_ID},
+    ).first()
+    if not applied:
+        conn.execute(
+            text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+            {"id": _CHANNEL_ACCOUNT_KEY_MIGRATION_ID},
+        )
 
 
 def _migrate_model_api_protocols(conn, tables: set[str]) -> None:
