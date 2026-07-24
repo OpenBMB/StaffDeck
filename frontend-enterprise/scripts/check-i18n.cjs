@@ -5,6 +5,7 @@ const ts = require('typescript');
 const projectRoot = path.resolve(__dirname, '..');
 const sourceRoot = path.join(projectRoot, 'src');
 const catalog = require(path.join(sourceRoot, 'i18n', 'en.json'));
+const indonesianCatalog = require(path.join(sourceRoot, 'i18n', 'id.json'));
 const ignoredFiles = new Set([
   path.join(sourceRoot, 'components', 'LanguageSwitcher.tsx'),
 ]);
@@ -63,7 +64,12 @@ const invalidTargets = Object.entries(catalog).filter(
   ([, target]) => !target.trim() || /[\u3400-\u9fff]/.test(target),
 );
 
-if (missing.size || invalidTargets.length) {
+const idMissingKeys = Object.keys(catalog).filter((key) => !(key in indonesianCatalog));
+const idInvalidTargets = Object.entries(indonesianCatalog).filter(
+  ([, target]) => !target.trim(),
+);
+
+if (missing.size || invalidTargets.length || idMissingKeys.length || idInvalidTargets.length) {
   if (missing.size) {
     console.error(`Missing English translations (${missing.size}):`);
     for (const [location, value] of missing) {
@@ -76,7 +82,21 @@ if (missing.size || invalidTargets.length) {
       console.error(`- ${JSON.stringify(source)} => ${JSON.stringify(target)}`);
     }
   }
+  if (idMissingKeys.length) {
+    console.error(`Missing Indonesian translations (${idMissingKeys.length}):`);
+    for (const key of idMissingKeys.slice(0, 20)) {
+      console.error(`- ${JSON.stringify(key)}`);
+    }
+    if (idMissingKeys.length > 20) console.error(`  ... and ${idMissingKeys.length - 20} more`);
+  }
+  if (idInvalidTargets.length) {
+    console.error(`Invalid Indonesian translations (${idInvalidTargets.length}):`);
+    for (const [source, target] of idInvalidTargets.slice(0, 20)) {
+      console.error(`- ${JSON.stringify(source)} => ${JSON.stringify(target)}`);
+    }
+    if (idInvalidTargets.length > 20) console.error(`  ... and ${idInvalidTargets.length - 20} more`);
+  }
   process.exit(1);
 }
 
-console.log(`i18n coverage OK: ${Object.keys(catalog).length} English translations.`);
+console.log(`i18n coverage OK: ${Object.keys(catalog).length} English translations, ${Object.keys(indonesianCatalog).length} Indonesian translations.`);
