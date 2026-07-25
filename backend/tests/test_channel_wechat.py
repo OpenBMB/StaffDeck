@@ -936,7 +936,37 @@ def test_wechat_adapter_client_id_deterministic_per_dedupe_key() -> None:
     adapter.send(binding, target, "hi")
 
     client_ids = [payload["msg"]["client_id"] for payload in sent]
-    # 同一投递重试 client_id 一致;不传 idempotency_key 时保持随机
-    assert client_ids[0] == "staffdeck:msg_1"
-    assert client_ids[1] == "staffdeck:msg_1"
-    assert client_ids[2] != "staffdeck:msg_1"
+    # 同一投递重试 client_id 一致(带分片下标);不传 idempotency_key 时保持随机
+    assert client_ids[0] == "staffdeck:msg_1:0"
+    assert client_ids[1] == "staffdeck:msg_1:0"
+    assert client_ids[2] != "staffdeck:msg_1:0"
+
+
+def test_chunk_client_id_carries_chunk_index() -> None:
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={})
+
+    client = _client(handler)
+    adapter = WeChatAdapter(client_factory=lambda binding: client)
+    binding = ChannelBinding(tenant_id="t", agent_id="a", channel="wechat", status="active")
+    target = {"to_user_id": "u1", "context_token": "ctx"}
+
+    # 三分片:client_id 依次带 chunk_index,服务端按 client_id 幂等也不会丢后续分片
+    adapter.send(binding, target, "x" * 4500, idempotency_key="msg_1")
+    ids = [payload["msg"]["client_id"] for payload in sent]
+    assert ids == ["staffdeck:msg_1:0", "staffdeck:msg_1:1", "staffdeck:msg_1:2"]
+
+    # 同一片重试恒等
+    sent.clear()
+    adapter.send(binding, target, "x" * 4500, idempotency_key="msg_1")
+    assert [payload["msg"]["client_id"] for payload in sent] == ids
+
+    # 无 idempotency_key:每片随机且互不相同
+    sent.clear()
+    adapter.send(binding, target, "x" * 4500)
+    random_ids = [payload["msg"]["client_id"] for payload in sent]
+    assert len(set(random_ids)) == 3
+    assert all(not cid.startswith("staffdeck:msg_1") for cid in random_ids)

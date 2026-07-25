@@ -312,10 +312,10 @@ class WeChatAdapter:
         context_token = str(target.get("context_token") or "").strip()
         if not to_user_id or not context_token:
             raise ValueError("微信投递目标缺少 to_user_id 或 context_token")
-        # 同一投递的每次重试使用同一 client_id,服务端可幂等去重
-        client_id = f"staffdeck:{idempotency_key}" if idempotency_key else ""
+        # 同一投递的每次重试使用同一 client_id 前缀,分片按下标区分(服务端按 client_id 幂等)
         client = self._client_factory(binding)
-        for chunk in split_wechat_text(text):
+        for index, chunk in enumerate(split_wechat_text(text)):
+            client_id = f"staffdeck:{idempotency_key}:{index}" if idempotency_key else ""
             client.send_message(to_user_id, context_token, chunk, client_id=client_id)
 
     def send_typing(

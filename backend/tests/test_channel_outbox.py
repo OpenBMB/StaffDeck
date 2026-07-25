@@ -1097,3 +1097,107 @@ def test_notify_uses_identity_basics_without_session() -> None:
         # 无会话:按身份基本信息构造 to_user_id
         assert alerts[0].target_json["to_user_id"] == "wxid_creator"
         assert alerts[0].session_id.startswith("alert:")
+
+
+# ---------- sending 重置陈旧阈值 ----------
+
+
+def test_reset_stuck_only_resets_stale_sending() -> None:
+    from app.channels.service_outbox import SENDING_STALE_SECONDS, _reset_stuck_deliveries
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        fresh = _make_delivery(db, binding, idempotency_key="fresh", status="sending", sending_since=utc_now())
+        stale = _make_delivery(
+            db,
+            binding,
+            idempotency_key="stale",
+            status="sending",
+            sending_since=utc_now() - timedelta(seconds=SENDING_STALE_SECONDS + 60),
+        )
+        empty = _make_delivery(db, binding, idempotency_key="empty", status="sending", sending_since=None)
+        fresh_id, stale_id, empty_id = fresh.id, stale.id, empty.id
+
+        _reset_stuck_deliveries(db)
+
+        # 阈值内的在飞发送不重置(避免交错启动重复投递)
+        fresh = db.get(ChannelDelivery, fresh_id)
+        assert fresh.status == "sending"
+        assert fresh.sending_since is not None
+        # 陈旧与空 sending_since 重置回 pending
+        for row_id in (stale_id, empty_id):
+            row = db.get(ChannelDelivery, row_id)
+            assert row.status == "pending"
+            assert row.sending_since is None
+            assert row.next_attempt_at is not None
+
+
+# ---------- 创建者告警会话限定 binding ----------
+
+
+def test_notify_scopes_session_lookup_to_own_binding() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_web", tenant_id="tenant_demo", username="zhangsan", password_hash="x"))
+        binding_a = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_web",
+        )
+        binding_b = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_web",
+        )
+        db.add(binding_a)
+        db.add(binding_b)
+        db.flush()
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wechat",
+                external_account_scope="",
+                external_user_id="wxid_creator",
+                staffdeck_user_id="user_web",
+            )
+        )
+        # 同一创建者在两个微信账号下各有私聊会话(目标地址不同)
+        db.add(
+            ChatSession(
+                id="s_a",
+                tenant_id="tenant_demo",
+                user_id="user_web",
+                agent_id="agent_1",
+                channel="wechat",
+                external_conv_id="wechat_p2p_wxid_creator",
+                channel_target_json={"to_user_id": "wxid_A", "context_token": "ctx_A"},
+                channel_binding_id=binding_a.id,
+            )
+        )
+        db.add(
+            ChatSession(
+                id="s_b",
+                tenant_id="tenant_demo",
+                user_id="user_web",
+                agent_id="agent_1",
+                channel="wechat",
+                external_conv_id="wechat_p2p_wxid_creator",
+                channel_target_json={"to_user_id": "wxid_B", "context_token": "ctx_B"},
+                channel_binding_id=binding_b.id,
+            )
+        )
+        db.commit()
+
+        from app.channels.service_outbox import notify_binding_creator
+
+        notify_binding_creator(db, db.get(ChannelBinding, binding_b.id), "测试告警")
+        alert = db.exec(select(ChannelDelivery).where(ChannelDelivery.kind == "admin_alert")).one()
+        # 只取本绑定(B)会话的目标,绝不串到 A 账号
+        assert alert.target_json == {"to_user_id": "wxid_B", "context_token": "ctx_B"}
+        assert alert.session_id == "s_b"

@@ -4,7 +4,7 @@ import logging
 import threading
 from datetime import timedelta
 
-from sqlalchemy import func, update
+from sqlalchemy import func, or_, update
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 _DELIVERY_BATCH_SIZE = 20
 _REACTION_KINDS = {"reaction_add", "reaction_remove"}
+# 启动重置卡死投递的阈值:仅重置 sending_since 为空或早于此秒数的 sending 行,
+# 阈值内的视为仍被在飞 daemon 持有(避免交错启动重复投递)
+SENDING_STALE_SECONDS = 120
 _delivery_thread: threading.Thread | None = None
 _reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
@@ -260,6 +263,8 @@ def _claim_delivery(
             status="sending",
             attempts=ChannelDelivery.attempts + 1,
             first_attempt_at=func.coalesce(ChannelDelivery.first_attempt_at, now),
+            # 标记领取时刻:_reset_stuck_deliveries 据此区分在飞与卡死(120s 阈值)
+            sending_since=now,
             updated_at=now,
         )
     )
@@ -603,7 +608,14 @@ def cleanup_feishu_reactions_before_binding_delete(
 
 def _reset_stuck_deliveries(db: Session, *, reaction_lane: bool = False) -> None:
     now = utc_now()
-    statement = select(ChannelDelivery).where(ChannelDelivery.status == "sending")
+    stale_before = now - timedelta(seconds=SENDING_STALE_SECONDS)
+    statement = select(ChannelDelivery).where(
+        ChannelDelivery.status == "sending",
+        or_(
+            ChannelDelivery.sending_since.is_(None),
+            ChannelDelivery.sending_since <= stale_before,
+        ),
+    )
     if reaction_lane:
         statement = statement.where(ChannelDelivery.kind.in_(_REACTION_KINDS))
     else:
@@ -626,6 +638,7 @@ def _reset_stuck_deliveries(db: Session, *, reaction_lane: bool = False) -> None
             db.add(row)
             continue
         row.status = "pending"
+        row.sending_since = None
         row.next_attempt_at = now
         row.updated_at = now
         db.add(row)
@@ -746,6 +759,8 @@ def notify_binding_creator(db: Session, binding: ChannelBinding, text: str) -> N
             .where(
                 ChatSession.tenant_id == binding.tenant_id,
                 ChatSession.channel == binding.channel,
+                # 限定本绑定:同一用户多账号时不得拿 A 账号的目标经 B 账号发送
+                ChatSession.channel_binding_id == binding.id,
                 ChatSession.user_id == binding.created_by_user_id,
                 ChatSession.external_conv_id.is_not(None),
             )
