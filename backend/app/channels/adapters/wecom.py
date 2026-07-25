@@ -410,7 +410,7 @@ class WeComStreamManager:
                 if result.rowcount == 1:
                     if connected:
                         # 断开告警标记在重连成功时清除(允许下次再告警)
-                        db.exec(
+                        db.execute(
                             text(
                                 "UPDATE channel_bindings "
                                 "SET config_json = json_remove(config_json, '$.disconnect_alerted_at'), "
