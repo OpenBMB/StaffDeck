@@ -24,6 +24,21 @@ import {
 } from '../auth';
 import LanguageSwitcher from './LanguageSwitcher';
 
+/** 只允许 http/https/data:image/blob 协议的图片地址,其余一律视为无效。 */
+function safeImageUrl(value: string): string {
+  const text = value.trim();
+  if (!text) return '';
+  try {
+    const parsed = new URL(text, window.location.origin);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.href;
+    if (parsed.protocol === 'blob:') return parsed.href;
+    if (parsed.protocol === 'data:' && /^data:image\//i.test(text)) return text;
+  } catch {
+    // 非法 URL 视为无效
+  }
+  return '';
+}
+
 export type AppHeaderProps = {
   /**
    * Page-specific content rendered on the left side of the header. When
@@ -73,9 +88,9 @@ export default function AppHeader({
   const initial = (displayName || userName || '').trim()?.[0]?.toUpperCase();
   const isAdmin = user?.role === 'admin';
   const avatarUrl = previewUrl || user?.avatar_url || '';
-  // 仅放行 http(s)/data:image/blob 协议,防止动态 URL 被注入 javascript: 等可执行协议
-  const safeAvatarUrl = /^(https:\/\/|data:image\/|blob:)/i.test(avatarUrl.trim()) ? avatarUrl : '';
-  const safePreviewUrl = /^(https:\/\/|data:image\/|blob:)/i.test(previewUrl.trim()) ? previewUrl : '';
+  // 仅放行 http/https/data:image/blob 协议,阻止 javascript: 等可执行协议注入
+  const safeAvatarUrl = safeImageUrl(avatarUrl);
+  const safePreviewUrl = safeImageUrl(previewUrl);
 
   function clearPendingAvatar() {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
