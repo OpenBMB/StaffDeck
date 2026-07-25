@@ -1,6 +1,9 @@
 import { useRef, useState, type ReactNode } from 'react';
 
 import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -204,13 +207,6 @@ export default function AppHeader({
                           <IconEdit className="size-[9px]" />
                         </span>
                       </div>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(event) => pickAvatar(event.target.files?.[0] || null)}
-                      />
                       <div className="flex min-w-0 flex-col gap-[2px]">
                         <span className="truncate text-[14px] font-medium text-[#18181a]">
                           {displayName}
@@ -222,55 +218,35 @@ export default function AppHeader({
                         )}
                       </div>
                     </div>
-                    {pendingFile ? (
-                      <div className="flex items-center gap-[8px]">
-                        <UIButton
-                          onClick={() => void saveAvatar()}
-                          disabled={avatarSaving}
-                          className="h-7 rounded-[8px] bg-[#18181a] px-[12px] text-[12px] font-normal text-white hover:bg-[#303030]"
-                        >
-                          保存
-                        </UIButton>
-                        <UIButton
-                          variant="outline"
-                          onClick={clearPendingAvatar}
-                          disabled={avatarSaving}
-                          className="h-7 rounded-[8px] px-[12px] text-[12px] font-normal"
-                        >
-                          取消
-                        </UIButton>
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-between gap-[12px]">
-                        <div className="flex items-center gap-[10px]">
-                          <span
-                            className={cn(
-                              'inline-flex items-center rounded-full px-[12px] py-[4px] text-[10px] leading-none whitespace-nowrap',
-                              isAdmin
-                                ? 'bg-[#e8f0ff] text-[#1a71ff]'
-                                : 'bg-[#f2f3f7] text-[#858b9c]',
-                            )}
-                          >
-                            {isAdmin ? '管理员' : '成员'}
-                          </span>
-                          {user.avatar_url && (
-                            <button
-                              type="button"
-                              onClick={() => void removeAvatar()}
-                              disabled={avatarSaving}
-                              className="text-[11px] text-[#a0a8bd] transition-colors hover:text-[#d20b0b] disabled:opacity-50"
-                            >
-                              移除头像
-                            </button>
+                    <div className="flex items-center justify-between gap-[12px]">
+                      <div className="flex items-center gap-[10px]">
+                        <span
+                          className={cn(
+                            'inline-flex items-center rounded-full px-[12px] py-[4px] text-[10px] leading-none whitespace-nowrap',
+                            isAdmin
+                              ? 'bg-[#e8f0ff] text-[#1a71ff]'
+                              : 'bg-[#f2f3f7] text-[#858b9c]',
                           )}
-                        </div>
-                        {isAdmin && (
-                          <span className="max-w-[150px] truncate text-[11px] text-[#a0a8bd]">
-                            {user.tenant_id}
-                          </span>
+                        >
+                          {isAdmin ? '管理员' : '成员'}
+                        </span>
+                        {user.avatar_url && (
+                          <button
+                            type="button"
+                            onClick={() => void removeAvatar()}
+                            disabled={avatarSaving}
+                            className="text-[11px] text-[#a0a8bd] transition-colors hover:text-[#d20b0b] disabled:opacity-50"
+                          >
+                            移除头像
+                          </button>
                         )}
                       </div>
-                    )}
+                      {isAdmin && (
+                        <span className="max-w-[150px] truncate text-[11px] text-[#a0a8bd]">
+                          {user.tenant_id}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="mx-[6px] mb-[6px] h-px bg-[#eef0f4]" />
                 </>
@@ -286,6 +262,49 @@ export default function AppHeader({
           </DropdownMenu>
         )}
       </div>
+      {/* 文件 input 常驻在 header 根部(不在下拉菜单内),菜单关闭也不会被卸载;
+          预览与保存放在独立 Dialog 中,不受下拉焦点变化影响 */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => pickAvatar(event.target.files?.[0] || null)}
+      />
+      <Dialog
+        open={Boolean(pendingFile)}
+        onOpenChange={(open) => {
+          if (!open && !avatarSaving) clearPendingAvatar();
+        }}
+      >
+        <DialogContent className="flex w-[320px] flex-col items-center gap-[16px] rounded-[14px] px-[24px] py-[20px]">
+          <DialogTitle className="text-[14px] font-normal text-[#757f9c]">更换头像</DialogTitle>
+          {previewUrl && (
+            <img
+              src={previewUrl}
+              alt=""
+              className="size-[96px] overflow-hidden rounded-full object-cover"
+            />
+          )}
+          <div className="flex items-center gap-[8px]">
+            <UIButton
+              onClick={() => void saveAvatar()}
+              disabled={avatarSaving}
+              className="h-8 rounded-[10px] bg-[#18181a] px-[16px] text-[12px] font-normal text-white hover:bg-[#303030]"
+            >
+              保存
+            </UIButton>
+            <UIButton
+              variant="outline"
+              onClick={clearPendingAvatar}
+              disabled={avatarSaving}
+              className="h-8 rounded-[10px] px-[16px] text-[12px] font-normal"
+            >
+              取消
+            </UIButton>
+          </div>
+        </DialogContent>
+      </Dialog>
     </header>
   );
 }
