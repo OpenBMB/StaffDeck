@@ -1,9 +1,6 @@
 import { useRef, useState, type ReactNode } from 'react';
 
 import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -79,31 +76,21 @@ export default function AppHeader({
   className,
 }: AppHeaderProps) {
   const [user, setUser] = useState(() => getEnterpriseAuthSession()?.user);
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState('');
+  const [uploadPreviewUrl, setUploadPreviewUrl] = useState('');
   const [avatarSaving, setAvatarSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const displayName = user?.display_name || user?.username || '';
   const initial = (displayName || userName || '').trim()?.[0]?.toUpperCase();
   const isAdmin = user?.role === 'admin';
-  const avatarUrl = previewUrl || user?.avatar_url || '';
+  const avatarUrl = uploadPreviewUrl || user?.avatar_url || '';
   // 仅放行 http/https/data:image/blob 协议,阻止 javascript: 等可执行协议注入
   const safeAvatarUrl = safeImageUrl(avatarUrl);
-  const safePreviewUrl = safeImageUrl(previewUrl);
 
-  function clearPendingAvatar() {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setPreviewUrl('');
-    setPendingFile(null);
+  function clearUploadPreview() {
+    if (uploadPreviewUrl) URL.revokeObjectURL(uploadPreviewUrl);
+    setUploadPreviewUrl('');
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }
-
-  function pickAvatar(file: File | null) {
-    if (!file) return;
-    clearPendingAvatar();
-    setPendingFile(file);
-    setPreviewUrl(URL.createObjectURL(file));
   }
 
   async function refreshSessionUser() {
@@ -118,13 +105,17 @@ export default function AppHeader({
     }
   }
 
-  async function saveAvatar() {
-    if (!pendingFile || avatarSaving) return;
+  // 选图即传:本地预览乐观渲染,成功后刷新会话;失败回滚并提示
+  async function pickAvatar(file: File | null) {
+    if (!file || avatarSaving) return;
+    clearUploadPreview();
+    const objectUrl = URL.createObjectURL(file);
+    setUploadPreviewUrl(objectUrl);
     setAvatarSaving(true);
     try {
       const session = getEnterpriseAuthSession();
       const form = new FormData();
-      form.append('file', pendingFile);
+      form.append('file', file);
       const apiBase = import.meta.env.VITE_API_BASE_URL || '';
       const response = await fetch(`${apiBase}/api/auth/me/avatar`, {
         method: 'PUT',
@@ -133,12 +124,12 @@ export default function AppHeader({
       });
       if (!response.ok) throw new Error('上传头像失败');
       notify.success('头像已更新');
-      clearPendingAvatar();
       await refreshSessionUser();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '上传头像失败');
     } finally {
       setAvatarSaving(false);
+      clearUploadPreview();
     }
   }
 
@@ -207,7 +198,10 @@ export default function AppHeader({
                             if (fileInputRef.current) fileInputRef.current.value = '';
                             fileInputRef.current?.click();
                           }}
-                          className="block size-[40px] overflow-hidden rounded-full"
+                          className={cn(
+                            'block size-[40px] overflow-hidden rounded-full transition-opacity',
+                            avatarSaving && 'pointer-events-none opacity-60',
+                          )}
                         >
                           {safeAvatarUrl ? (
                             <img
@@ -221,9 +215,16 @@ export default function AppHeader({
                             </span>
                           )}
                         </button>
-                        <span className="pointer-events-none absolute -bottom-[2px] -right-[2px] grid size-[16px] place-items-center rounded-full bg-[#18181a] text-white">
-                          <IconEdit className="size-[9px]" />
-                        </span>
+                        {avatarSaving && (
+                          <span className="pointer-events-none absolute inset-0 grid place-items-center">
+                            <span className="size-[18px] animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                          </span>
+                        )}
+                        {!avatarSaving && (
+                          <span className="pointer-events-none absolute -bottom-[2px] -right-[2px] grid size-[16px] place-items-center rounded-full bg-[#18181a] text-white">
+                            <IconEdit className="size-[9px]" />
+                          </span>
+                        )}
                       </div>
                       <div className="flex min-w-0 flex-col gap-[2px]">
                         <span className="truncate text-[14px] font-medium text-[#18181a]">
@@ -281,7 +282,7 @@ export default function AppHeader({
         )}
       </div>
       {/* 文件 input 常驻在 header 根部(不在下拉菜单内),菜单关闭也不会被卸载;
-          预览与保存放在独立 Dialog 中,不受下拉焦点变化影响 */}
+          选图即传:本地预览乐观渲染,上传成功刷新会话,失败回滚 */}
       <input
         ref={fileInputRef}
         type="file"
@@ -289,40 +290,6 @@ export default function AppHeader({
         className="hidden"
         onChange={(event) => pickAvatar(event.target.files?.[0] || null)}
       />
-      <Dialog
-        open={Boolean(pendingFile)}
-        onOpenChange={(open) => {
-          if (!open && !avatarSaving) clearPendingAvatar();
-        }}
-      >
-        <DialogContent className="flex w-[320px] flex-col items-center gap-[16px] rounded-[14px] px-[24px] py-[20px]">
-          <DialogTitle className="text-[14px] font-normal text-[#757f9c]">更换头像</DialogTitle>
-          {previewUrl && (
-            <img
-              src={safePreviewUrl}
-              alt=""
-              className="size-[96px] overflow-hidden rounded-full object-cover"
-            />
-          )}
-          <div className="flex items-center gap-[8px]">
-            <UIButton
-              onClick={() => void saveAvatar()}
-              disabled={avatarSaving}
-              className="h-8 rounded-[10px] bg-[#18181a] px-[16px] text-[12px] font-normal text-white hover:bg-[#303030]"
-            >
-              保存
-            </UIButton>
-            <UIButton
-              variant="outline"
-              onClick={clearPendingAvatar}
-              disabled={avatarSaving}
-              className="h-8 rounded-[10px] px-[16px] text-[12px] font-normal"
-            >
-              取消
-            </UIButton>
-          </div>
-        </DialogContent>
-      </Dialog>
     </header>
   );
 }
