@@ -181,7 +181,11 @@ export default function AppHeader({
                           type="button"
                           title="更换头像"
                           aria-label="更换头像"
-                          onClick={() => fileInputRef.current?.click()}
+                          onClick={() => {
+                            // 打开文件对话框前清空 input,确保重复选择同一文件也能触发 onChange
+                            if (fileInputRef.current) fileInputRef.current.value = '';
+                            fileInputRef.current?.click();
+                          }}
                           className="block size-[40px] overflow-hidden rounded-full"
                         >
                           {avatarUrl ? (
