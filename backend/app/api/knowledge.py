@@ -839,67 +839,125 @@ def bucket_read_with_stats(row: KnowledgeBucket, chunk_count: int) -> KnowledgeB
     return item
 
 
+_BUCKET_ROW_FIELDS = (
+    "id",
+    "tenant_id",
+    "knowledge_base_id",
+    "knowledge_base_version_id",
+    "document_id",
+    "bucket_key",
+    "title",
+    "summary",
+    "token_estimate",
+    "metadata_json",
+    "created_at",
+    "updated_at",
+)
+_CHUNK_ROW_FIELDS = (
+    "id",
+    "tenant_id",
+    "knowledge_base_id",
+    "knowledge_base_version_id",
+    "document_id",
+    "bucket_id",
+    "chunk_index",
+    "content",
+    "summary",
+    "source_ref",
+    "metadata_json",
+    "created_at",
+    "updated_at",
+)
+
+
+def _model_row_mapping(row: Any, fields: tuple[str, ...]) -> Mapping[str, Any]:
+    """ORM 对象转与原 CAST AS BLOB 查询同形的 Mapping(下游统一走 _safe_* 读取)。"""
+    return {field: getattr(row, field) for field in fields}
+
+
 def _safe_document_bucket_rows(
     db: Session, tenant_id: str, document_id: str
 ) -> list[Mapping[str, Any]]:
-    return list(
-        db.execute(
-            text(
-                """
-                SELECT
-                    id,
-                    tenant_id,
-                    knowledge_base_id,
-                    knowledge_base_version_id,
-                    document_id,
-                    CAST(bucket_key AS BLOB) AS bucket_key,
-                    CAST(title AS BLOB) AS title,
-                    CAST(summary AS BLOB) AS summary,
-                    token_estimate,
-                    CAST(metadata_json AS BLOB) AS metadata_json,
-                    created_at,
-                    updated_at
-                FROM knowledge_buckets
-                WHERE tenant_id = :tenant_id AND document_id = :document_id
-                ORDER BY created_at ASC
-                """
-            ),
-            {"tenant_id": tenant_id, "document_id": document_id},
+    # SQLite:文本列可能混入非 UTF-8 字节,CAST AS BLOB 取原始字节交给 _safe_text 解码;
+    # 其它后端走 ORM(驱动返回规范 str,无需 BLOB 兜底)
+    if db.get_bind().url.get_backend_name() == "sqlite":
+        return list(
+            db.execute(
+                text(
+                    """
+                    SELECT
+                        id,
+                        tenant_id,
+                        knowledge_base_id,
+                        knowledge_base_version_id,
+                        document_id,
+                        CAST(bucket_key AS BLOB) AS bucket_key,
+                        CAST(title AS BLOB) AS title,
+                        CAST(summary AS BLOB) AS summary,
+                        token_estimate,
+                        CAST(metadata_json AS BLOB) AS metadata_json,
+                        created_at,
+                        updated_at
+                    FROM knowledge_buckets
+                    WHERE tenant_id = :tenant_id AND document_id = :document_id
+                    ORDER BY created_at ASC
+                    """
+                ),
+                {"tenant_id": tenant_id, "document_id": document_id},
+            )
+            .mappings()
+            .all()
         )
-        .mappings()
-        .all()
-    )
+    rows = db.exec(
+        select(KnowledgeBucket)
+        .where(
+            KnowledgeBucket.tenant_id == tenant_id,
+            KnowledgeBucket.document_id == document_id,
+        )
+        .order_by(KnowledgeBucket.created_at.asc())
+    ).all()
+    return [_model_row_mapping(row, _BUCKET_ROW_FIELDS) for row in rows]
 
 
 def _safe_bucket_chunk_rows(db: Session, tenant_id: str, bucket_id: str) -> list[Mapping[str, Any]]:
-    return list(
-        db.execute(
-            text(
-                """
-                SELECT
-                    id,
-                    tenant_id,
-                    knowledge_base_id,
-                    knowledge_base_version_id,
-                    document_id,
-                    bucket_id,
-                    chunk_index,
-                    CAST(content AS BLOB) AS content,
-                    CAST(summary AS BLOB) AS summary,
-                    CAST(source_ref AS BLOB) AS source_ref,
-                    CAST(metadata_json AS BLOB) AS metadata_json,
-                    created_at,
-                    updated_at
-                FROM knowledge_chunks
-                WHERE tenant_id = :tenant_id AND bucket_id = :bucket_id
-                ORDER BY chunk_index ASC
-                """
-            ),
-            {"tenant_id": tenant_id, "bucket_id": bucket_id},
+    if db.get_bind().url.get_backend_name() == "sqlite":
+        return list(
+            db.execute(
+                text(
+                    """
+                    SELECT
+                        id,
+                        tenant_id,
+                        knowledge_base_id,
+                        knowledge_base_version_id,
+                        document_id,
+                        bucket_id,
+                        chunk_index,
+                        CAST(content AS BLOB) AS content,
+                        CAST(summary AS BLOB) AS summary,
+                        CAST(source_ref AS BLOB) AS source_ref,
+                        CAST(metadata_json AS BLOB) AS metadata_json,
+                        created_at,
+                        updated_at
+                    FROM knowledge_chunks
+                    WHERE tenant_id = :tenant_id AND bucket_id = :bucket_id
+                    ORDER BY chunk_index ASC
+                    """
+                ),
+                {"tenant_id": tenant_id, "bucket_id": bucket_id},
+            )
+            .mappings()
+            .all()
         )
-        .mappings()
-        .all()
-    )
+    rows = db.exec(
+        select(KnowledgeChunk)
+        .where(
+            KnowledgeChunk.tenant_id == tenant_id,
+            KnowledgeChunk.bucket_id == bucket_id,
+        )
+        .order_by(KnowledgeChunk.chunk_index.asc())
+    ).all()
+    return [_model_row_mapping(row, _CHUNK_ROW_FIELDS) for row in rows]
 
 
 def _bucket_read_mapping_with_stats(

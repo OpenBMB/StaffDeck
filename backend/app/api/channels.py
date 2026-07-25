@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import secrets
 import threading
@@ -8,7 +7,7 @@ import time
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import case, text, update
+from sqlalchemy import case, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -66,6 +65,7 @@ from app.channels.service_session import (
 )
 from app.config import get_settings
 from app.db import get_session
+from app.db.dialect import get_dialect
 from app.db.models import (
     AgentProfile,
     ChannelBindCode,
@@ -100,24 +100,20 @@ def _patch_binding_config_key(
     key: str,
     value: object,
 ) -> None:
-    """Patch one API-owned config key against the latest JSON value."""
-    result = db.exec(
-        text(
-            "UPDATE channel_bindings "
-            "SET config_json = json_set(COALESCE(config_json, '{}'), :path, json(:value)), "
-            "updated_at = :updated_at "
-            "WHERE id = :binding_id AND tenant_id = :tenant_id"
-        ),
-        params={
-            "path": f"$.{key}",
-            "value": json.dumps(value, ensure_ascii=False),
-            "updated_at": utc_now(),
-            "binding_id": binding_id,
-            "tenant_id": tenant_id,
-        },
-    )
-    if result.rowcount != 1:
+    """Patch one API-owned config key against the latest JSON value.
+
+    ORM 读-改-写(方言助手收口,通用实现);先 refresh 绕过会话缓存,
+    对齐原 json_set 原子更新"基于最新 JSON 值"的语义。
+    """
+    binding = db.get(ChannelBinding, binding_id)
+    if not binding or binding.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="渠道绑定不存在")
+    db.refresh(binding)
+    binding.config_json = get_dialect(db.get_bind().url.get_backend_name()).json_config_set(
+        binding.config_json, key, value
+    )
+    binding.updated_at = utc_now()
+    db.add(binding)
 
 SUPPORTED_CHANNELS = {"wechat", "wecom", "feishu", "dingtalk"}
 INGRESS_QUIESCE_TIMEOUT_SECONDS = 5.0
@@ -1177,8 +1173,10 @@ def list_channel_delivery_days(
     _ensure_binding_manager(db, tenant_id, binding, current_user)
     from sqlalchemy import func
 
-    # 按服务器本地时区的自然日分桶(SQLite date(created_at, 'localtime'))
-    day_bucket = func.date(ChannelDelivery.created_at, "localtime")
+    # 按应用时区的自然日分桶(方言助手收口:SQLite=服务器本地 date(localtime))
+    day_bucket = get_dialect(db.get_bind().url.get_backend_name()).day_bucket(
+        ChannelDelivery.created_at
+    )
     day_rows = db.exec(
         select(day_bucket, func.count())
         .where(ChannelDelivery.binding_id == binding.id)
