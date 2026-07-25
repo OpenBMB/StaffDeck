@@ -388,12 +388,15 @@ def delete_my_identity_binding(
     channel: str,
     tenant_id: str = Query(...),
     external_user_id: str | None = Query(None),
+    external_account_scope: str | None = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> Response:
     """页面侧解除当前用户在指定渠道的身份绑定(效果同 /解绑 指令)。
 
-    传 external_user_id 时只解绑该外部身份那一行;未传时按 channel 全部解绑。
+    传 external_user_id 时只解绑该外部身份:同时传 external_account_scope 按完整
+    身份键精确定位一行;未传 scope 而该外部身份在多 scope(多企业)下均有绑定时
+    返回 400 要求指定 scope,不盲删。未传 external_user_id 时按 channel 全部解绑。
     """
     ensure_current_user_tenant(tenant_id, current_user)
     statement = select(ChannelIdentity).where(
@@ -403,9 +406,20 @@ def delete_my_identity_binding(
     )
     if external_user_id:
         statement = statement.where(ChannelIdentity.external_user_id == external_user_id)
+        if external_account_scope is not None:
+            statement = statement.where(
+                ChannelIdentity.external_account_scope == external_account_scope
+            )
     identities = db.exec(statement).all()
     if not identities:
         raise HTTPException(status_code=404, detail="Identity binding not found")
+    if external_user_id and external_account_scope is None:
+        scopes = {identity.external_account_scope for identity in identities}
+        if len(scopes) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="该外部身份在多个企业账号下均有绑定，请指定 external_account_scope 后再解绑",
+            )
     for identity in identities:
         unbind_external_identity(
             db, tenant_id, channel, identity.external_user_id, identity.external_account_scope

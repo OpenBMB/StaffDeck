@@ -488,8 +488,8 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
     1) channel_identities 重建:加 external_account_scope 列,唯一约束改
        (tenant_id, channel, external_account_scope, external_user_id)。存量行 scope
        回填优先级:①被会话引用的 identity 按其会话所在 binding 的 scope(多 scope
-       歧义则留 legacy 并隔离相关会话);②无会话引用时取该 tenant+channel 最早创建
-       的 active binding 的 scope;③取不到归 'legacy'。
+       歧义则留 legacy 并隔离相关会话);②无会话引用且该 tenant+channel 现存 scope
+       唯一时用之(多 scope 不猜);③取不到归 'legacy'。
     2) channel_inbound_events 重建:唯一约束 (channel, event_id) 改 (binding_id, event_id)。
     3) sessions 的 wecom external_conv_id 改写为 wecom_{scope}_p2p_/group_ 格式(孤儿归 legacy)。
     """
@@ -512,7 +512,6 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
 
     scope_by_binding_id: dict[str, str] = {}
     scopes_by_tenant_channel: dict[tuple[str, str], set[str]] = {}
-    active_scope_by_tenant_channel: dict[tuple[str, str], str] = {}
     if "channel_bindings" in tables:
         for row in conn.execute(
             text(
@@ -530,11 +529,6 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
             scopes_by_tenant_channel.setdefault(
                 (str(row["tenant_id"]), str(row["channel"])), set()
             ).add(scope)
-            # 回填优先级②的候选:该 tenant+channel 最早创建的 active binding
-            if str(row["channel"]) == "wecom" and str(row.get("status") or "") == "active":
-                active_scope_by_tenant_channel.setdefault(
-                    (str(row["tenant_id"]), str(row["channel"])), scope
-                )
 
     # 旧全局 identity bug 可能让 tenantB session 指向 tenantA User。迁移时立即
     # 解除错误 User 关联并隔离会话，避免升级后被正常 external_conv_id 再次命中。
@@ -641,8 +635,8 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
                 external_user_id = str(row["external_user_id"])
                 # wechat 是全局 wxid,scope 恒空。企微存量 identity 的 scope 回填优先级:
                 # ①被会话引用(单 scope)按其会话所在 binding;多 scope 歧义留 legacy 并
-                # 隔离相关会话;②无会话引用取该 tenant+channel 最早 active binding;
-                # ③取不到归 legacy。
+                # 隔离相关会话;②无会话引用且该 tenant+channel 现存 scope 唯一时用之
+                # (创建时间不能证明归属,多 scope 不猜);③取不到归 legacy。
                 if str(row["channel"]) == "wecom":
                     if external_user_id.startswith("group_"):
                         external_user_id = f"group:{external_user_id.removeprefix('group_')}"
@@ -681,9 +675,10 @@ def _migrate_channel_scope_rebuild(conn, inspector, tables: set[str]) -> None:
                                 },
                             )
                     else:
-                        scope = active_scope_by_tenant_channel.get(
-                            (str(row["tenant_id"]), str(row["channel"])), "legacy"
+                        tenant_scopes = scopes_by_tenant_channel.get(
+                            (str(row["tenant_id"]), str(row["channel"])), set()
                         )
+                        scope = next(iter(tenant_scopes)) if len(tenant_scopes) == 1 else "legacy"
                 else:
                     scope = ""
                 current_user_id = str(row.get("staffdeck_user_id") or "")

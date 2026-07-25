@@ -283,7 +283,7 @@ export default function ChannelsPage({
     setUnbindingIdentity(true);
     try {
       await api.delete(
-        `/api/enterprise/channels/my-identity-bindings/${unbindIdentityTarget.channel}?tenant_id=${TENANT_ID}&external_user_id=${encodeURIComponent(unbindIdentityTarget.external_user_id)}`,
+        `/api/enterprise/channels/my-identity-bindings/${unbindIdentityTarget.channel}?tenant_id=${TENANT_ID}&external_user_id=${encodeURIComponent(unbindIdentityTarget.external_user_id)}&external_account_scope=${encodeURIComponent(unbindIdentityTarget.external_account_scope || '')}`,
       );
       notify.success('已解除绑定');
       setUnbindIdentityTarget(null);

@@ -75,38 +75,68 @@ def current_processor_run_id() -> str:
 _session_locks: dict[str, threading.Lock] = {}
 _session_locks_guard = threading.Lock()
 
-# /绑定 校验失败限流:按 (channel, external_user_id) 进程内计数(单进程够用,
-# 重启清零可接受)——连续 5 次失败冷却 10 分钟
+# /绑定 校验失败限流:按完整身份键 (tenant_id, channel, external_account_scope,
+# external_user_id) 进程内计数(单进程够用,重启清零可接受)——其他租户/企业的失败
+# 不影响本企业;连续 5 次失败冷却 10 分钟;1 小时无再失败淘汰,最多 10000 条
+# (超出淘汰最旧),避免无界增长
 _BIND_FAILURE_LIMIT = 5
 _BIND_FAILURE_COOLDOWN_SECONDS = 600.0
+_BIND_FAILURE_TTL_SECONDS = 3600.0
+_BIND_FAILURE_MAX_ENTRIES = 10000
 _BIND_COOLDOWN_TEXT = "尝试次数过多，请 10 分钟后再试。"
-_bind_failures: dict[tuple[str, str], tuple[int, float]] = {}
+_bind_failures: dict[tuple[str, str, str, str], tuple[int, float]] = {}
 _bind_failures_lock = threading.Lock()
 
 
-def _bind_cooldown_remaining(channel: str, external_id: str) -> float:
+def _prune_bind_failures(now: float) -> None:
+    """淘汰 1 小时无再失败的条目;仍超硬上限则按最后失败时间淘汰最旧。
+
+    调用方必须持有 _bind_failures_lock。
+    """
+    expired = [
+        key
+        for key, (_failures, since) in _bind_failures.items()
+        if now - since > _BIND_FAILURE_TTL_SECONDS
+    ]
+    for key in expired:
+        _bind_failures.pop(key, None)
+    overflow = len(_bind_failures) - _BIND_FAILURE_MAX_ENTRIES
+    if overflow > 0:
+        oldest = sorted(_bind_failures, key=lambda key: _bind_failures[key][1])
+        for key in oldest[:overflow]:
+            _bind_failures.pop(key, None)
+
+
+def _bind_cooldown_remaining(
+    tenant_id: str, channel: str, account_scope: str, external_id: str
+) -> float:
     """冷却剩余秒数;冷却结束自动清零重新计数。"""
     now = time.monotonic()
     with _bind_failures_lock:
-        failures, since = _bind_failures.get((channel, external_id), (0, 0.0))
+        key = (tenant_id, channel, account_scope, external_id)
+        failures, since = _bind_failures.get(key, (0, 0.0))
         if failures < _BIND_FAILURE_LIMIT:
             return 0.0
         remaining = _BIND_FAILURE_COOLDOWN_SECONDS - (now - since)
         if remaining > 0:
             return remaining
-        _bind_failures.pop((channel, external_id), None)
+        _bind_failures.pop(key, None)
     return 0.0
 
 
-def _record_bind_failure(channel: str, external_id: str) -> None:
+def _record_bind_failure(tenant_id: str, channel: str, account_scope: str, external_id: str) -> None:
+    now = time.monotonic()
     with _bind_failures_lock:
-        failures, _since = _bind_failures.get((channel, external_id), (0, 0.0))
-        _bind_failures[(channel, external_id)] = (failures + 1, time.monotonic())
+        key = (tenant_id, channel, account_scope, external_id)
+        failures, _since = _bind_failures.get(key, (0, 0.0))
+        _bind_failures[key] = (failures + 1, now)
+        # 插入后淘汰:刚写入的 key 时间最新,不会被 TTL/上限误淘汰
+        _prune_bind_failures(now)
 
 
-def _reset_bind_failures(channel: str, external_id: str) -> None:
+def _reset_bind_failures(tenant_id: str, channel: str, account_scope: str, external_id: str) -> None:
     with _bind_failures_lock:
-        _bind_failures.pop((channel, external_id), None)
+        _bind_failures.pop((tenant_id, channel, account_scope, external_id), None)
 
 
 def _claim_stale_event(db: Session, event_id: str) -> bool:
@@ -544,8 +574,9 @@ def _bind_external_identity(
     if not code:
         return "用法：/绑定 <6位绑定码>。绑定码请在 StaffDeck 网页端生成。"
     external_id = inbound.from_user_id
-    # 限流:连续错码/过期码达上限后冷却,冷却期内连正确码也拒绝
-    if _bind_cooldown_remaining(binding.channel, external_id) > 0:
+    scope = external_account_scope(db, binding)
+    # 限流:按完整身份键计数,连续错码/过期码达上限后冷却,冷却期内连正确码也拒绝
+    if _bind_cooldown_remaining(binding.tenant_id, binding.channel, scope, external_id) > 0:
         return _BIND_COOLDOWN_TEXT
     now = utc_now()
     record = db.exec(
@@ -556,14 +587,13 @@ def _bind_external_identity(
         )
     ).first()
     if not record or record.used_at is not None or record.expires_at <= now:
-        _record_bind_failure(binding.channel, external_id)
+        _record_bind_failure(binding.tenant_id, binding.channel, scope, external_id)
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
     owner = db.get(User, record.user_id)
     if not owner:
-        _record_bind_failure(binding.channel, external_id)
+        _record_bind_failure(binding.tenant_id, binding.channel, scope, external_id)
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
 
-    scope = external_account_scope(db, binding)
     identity = find_channel_identity(db, binding.tenant_id, binding.channel, external_id, scope)
     old_user_id = identity.staffdeck_user_id if identity else None
     if old_user_id and old_user_id != owner.id:
@@ -575,9 +605,9 @@ def _bind_external_identity(
 
     if not _claim_bind_code(db, binding, record, code, now):
         db.rollback()
-        _record_bind_failure(binding.channel, external_id)
+        _record_bind_failure(binding.tenant_id, binding.channel, scope, external_id)
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
-    _reset_bind_failures(binding.channel, external_id)
+    _reset_bind_failures(binding.tenant_id, binding.channel, scope, external_id)
 
     # ① 身份指针改指码主账号(无记录则新建)
     if identity:

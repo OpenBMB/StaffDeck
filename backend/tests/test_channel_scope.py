@@ -609,8 +609,8 @@ def test_scope_rebuild_uses_session_binding_in_multi_corp_tenant(
         )
         assert scopes == {
             "ci_alice": "corpB",
-            # ②无会话引用:取该 tenant+channel 最早 active binding(chan_corpA)的 scope
-            "ci_ambiguous": "corpA",
+            # ②无会话引用但 tenant 下 scope 不唯一(corpA/corpB):不猜归属,留 legacy
+            "ci_ambiguous": "legacy",
             "ci_group": "corpB",
             "ci_polluted": "legacy_cross_tenant",
             # 多 scope 会话引用歧义:留 legacy 并隔离会话(安全例外)
@@ -1534,7 +1534,7 @@ def test_scope_backfill_priority_rules(monkeypatch, tmp_path) -> None:
                 "id VARCHAR PRIMARY KEY, tenant_id VARCHAR, username VARCHAR, source VARCHAR)"
             )
         )
-        # 两个 active wecom binding:chan_corpA(最早)与 chan_corpB
+        # 两个 active wecom binding:chan_corpA 与 chan_corpB(tenant 下 scope 不唯一)
         conn.execute(
             sa_text(
                 "INSERT INTO channel_bindings (id, tenant_id, agent_id, channel, status, config_json) "
@@ -1580,8 +1580,8 @@ def test_scope_backfill_priority_rules(monkeypatch, tmp_path) -> None:
         assert scopes == {
             # ①被会话引用:按其会话所在 binding(chan_corpB)的 scope
             "id_alice": "corpB",
-            # ②无会话引用:取该 tenant+channel 最早创建的 active binding(chan_corpA)的 scope
-            "id_nobody": "corpA",
+            # ②无会话引用且 tenant 下 scope 不唯一(corpA/corpB):不猜归属,归 legacy
+            "id_nobody": "legacy",
             # ③取不到(tenant_b 无任何 binding):归 legacy
             "id_ghost": "legacy",
         }

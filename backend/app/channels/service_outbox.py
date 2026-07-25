@@ -20,6 +20,7 @@ from app.db.models import (
     new_id,
     utc_now,
 )
+from app.channels.service_identity import external_account_scope
 
 logger = logging.getLogger(__name__)
 
@@ -737,22 +738,29 @@ def stop_delivery_daemon(timeout_seconds: float = 5.0) -> bool:
 def notify_binding_creator(db: Session, binding: ChannelBinding, text: str) -> None:
     """渠道异常主动告警:给绑定创建者发一条 kind=admin_alert 的渠道消息。
 
-    创建者在该渠道已有身份(channel_identities 匹配)时才投递:优先取其最近私聊
-    会话的 channel_target_json(含有效 context_token);无会话则按身份基本信息构造
-    (微信侧缺 context_token 时投递会重试后失败,仅记日志可接受)。任何异常仅记日志。
+    创建者在该渠道且与本 binding 同 scope(external_account_scope)下已有身份时才
+    投递——多企业身份不跨 scope 发送;优先取其最近私聊会话的 channel_target_json
+    (含有效 context_token);无会话则按身份基本信息构造(微信侧缺 context_token
+    时投递会重试后失败,仅记日志可接受)。任何异常仅记日志。
     """
     try:
         if not binding.created_by_user_id:
             return
+        scope = external_account_scope(db, binding)
         identity = db.exec(
             select(ChannelIdentity).where(
                 ChannelIdentity.tenant_id == binding.tenant_id,
                 ChannelIdentity.channel == binding.channel,
+                ChannelIdentity.external_account_scope == scope,
                 ChannelIdentity.staffdeck_user_id == binding.created_by_user_id,
             )
         ).first()
         if not identity:
-            logger.info("渠道告警跳过:创建者在该渠道无身份 binding=%s", binding.id)
+            logger.info(
+                "渠道告警跳过:创建者在该渠道同 scope 下无身份 binding=%s scope=%s",
+                binding.id,
+                scope,
+            )
             return
         chat_session = db.exec(
             select(ChatSession)

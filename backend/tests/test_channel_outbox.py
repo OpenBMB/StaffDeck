@@ -1201,3 +1201,85 @@ def test_notify_scopes_session_lookup_to_own_binding() -> None:
         # 只取本绑定(B)会话的目标,绝不串到 A 账号
         assert alert.target_json == {"to_user_id": "wxid_B", "context_token": "ctx_B"}
         assert alert.session_id == "s_b"
+
+
+# ---------- 创建者告警身份 fallback 限定 scope ----------
+
+
+def test_notify_identity_fallback_uses_own_binding_scope() -> None:
+    """corpA/corpB 两条身份:从 corpB binding 触发,fallback 目标必须是 corpB 的 external_user_id。"""
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_web", tenant_id="tenant_demo", username="zhangsan", password_hash="x"))
+        binding_b = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wecom",
+            status="active",
+            config_json={"corp_id": "corpB", "bot_id": "bot_b"},
+            created_by_user_id="user_web",
+        )
+        db.add(binding_b)
+        db.flush()
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corpA",
+                external_user_id="zhangsan_corp_a",
+                staffdeck_user_id="user_web",
+            )
+        )
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corpB",
+                external_user_id="zhangsan_corp_b",
+                staffdeck_user_id="user_web",
+            )
+        )
+        db.commit()
+
+        from app.channels.service_outbox import notify_binding_creator
+
+        # 无会话:走身份 fallback;不得拿 corpA 的 external_user_id 经 corpB 发送
+        notify_binding_creator(db, db.get(ChannelBinding, binding_b.id), "测试告警")
+        alert = db.exec(select(ChannelDelivery).where(ChannelDelivery.kind == "admin_alert")).one()
+        assert alert.target_json["to_user_id"] == "zhangsan_corp_b"
+        assert alert.binding_id == binding_b.id
+
+
+def test_notify_identity_fallback_skips_when_scope_missing() -> None:
+    """创建者只有其他 scope 的身份:跳过告警,不跨 scope 投递。"""
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_web", tenant_id="tenant_demo", username="zhangsan", password_hash="x"))
+        binding_b = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wecom",
+            status="active",
+            config_json={"corp_id": "corpB", "bot_id": "bot_b"},
+            created_by_user_id="user_web",
+        )
+        db.add(binding_b)
+        db.flush()
+        # 创建者只有 corpA 身份,与 corpB binding 的 scope 不匹配
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corpA",
+                external_user_id="zhangsan_corp_a",
+                staffdeck_user_id="user_web",
+            )
+        )
+        db.commit()
+
+        from app.channels.service_outbox import notify_binding_creator
+
+        notify_binding_creator(db, db.get(ChannelBinding, binding_b.id), "测试告警")
+        assert db.exec(select(ChannelDelivery)).all() == []

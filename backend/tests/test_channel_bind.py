@@ -1124,7 +1124,7 @@ def test_bind_failure_throttle_cooldown_and_recovery() -> None:
         assert db.exec(select(ChannelIdentity)).all() == []
 
     # 冷却结束后:正确码可用
-    key = ("wechat", "user_ab12cd34@im.wechat")
+    key = ("tenant_demo", "wechat", "", "user_ab12cd34@im.wechat")
     with intake_module._bind_failures_lock:
         failures, _since = intake_module._bind_failures[key]
         intake_module._bind_failures[key] = (failures, time_mod.monotonic() - 601)
@@ -1152,6 +1152,57 @@ def test_bind_success_resets_failure_count() -> None:
     process_inbound(binding, _p2p_message("evt_rx4", "/绑定 000000"), db_engine=engine)
     assert process_inbound(binding, _p2p_message("evt_rx5", "/绑定 123456"), db_engine=engine) is False
     assert _notice_texts(engine)[-1] == "尝试次数过多，请 10 分钟后再试。"
+
+
+def test_bind_failure_throttle_isolated_by_tenant_and_scope() -> None:
+    """其他 tenant/其他 scope 的失败不计入本企业冷却判定。"""
+    for _ in range(intake_module._BIND_FAILURE_LIMIT):
+        intake_module._record_bind_failure("tenant_other", "wecom", "corpX", "zhangsan")
+        intake_module._record_bind_failure("tenant_demo", "wecom", "corpB", "zhangsan")
+    # 本企业(corpA)同 external_user_id 不受牵连
+    assert (
+        intake_module._bind_cooldown_remaining("tenant_demo", "wecom", "corpA", "zhangsan") == 0.0
+    )
+    # 另外两个身份键各自进入冷却
+    assert intake_module._bind_cooldown_remaining("tenant_other", "wecom", "corpX", "zhangsan") > 0
+    assert intake_module._bind_cooldown_remaining("tenant_demo", "wecom", "corpB", "zhangsan") > 0
+
+
+def test_bind_failures_ttl_eviction() -> None:
+    """1 小时无再失败的条目在下一次计数时被淘汰。"""
+    import time as time_mod
+
+    stale_key = ("tenant_demo", "wecom", "corpA", "stale_user")
+    with intake_module._bind_failures_lock:
+        intake_module._bind_failures[stale_key] = (
+            1,
+            time_mod.monotonic() - intake_module._BIND_FAILURE_TTL_SECONDS - 1,
+        )
+    # 记录新失败触发淘汰:过期条目被清,新条目保留
+    intake_module._record_bind_failure("tenant_demo", "wecom", "corpA", "fresh_user")
+    with intake_module._bind_failures_lock:
+        assert stale_key not in intake_module._bind_failures
+        assert ("tenant_demo", "wecom", "corpA", "fresh_user") in intake_module._bind_failures
+
+
+def test_bind_failures_cap_evicts_oldest(monkeypatch) -> None:
+    """超出硬上限时按最后失败时间淘汰最旧条目。"""
+    import time as time_mod
+
+    monkeypatch.setattr(intake_module, "_BIND_FAILURE_MAX_ENTRIES", 3)
+    base = time_mod.monotonic()
+    with intake_module._bind_failures_lock:
+        for index in range(3):
+            intake_module._bind_failures[("tenant_demo", "wecom", "corpA", f"u{index}")] = (
+                1,
+                base - 100 + index,
+            )
+    intake_module._record_bind_failure("tenant_demo", "wecom", "corpA", "u_new")
+    with intake_module._bind_failures_lock:
+        assert len(intake_module._bind_failures) == 3
+        # 最旧的 u0 被淘汰,其余保留
+        assert ("tenant_demo", "wecom", "corpA", "u0") not in intake_module._bind_failures
+        assert ("tenant_demo", "wecom", "corpA", "u_new") in intake_module._bind_failures
 
 
 def test_bind_code_generation_rate_limit_and_window_recovery() -> None:
@@ -1298,3 +1349,54 @@ def test_delete_my_identity_binding_by_external_user_id_404() -> None:
     with Session(engine) as db:
         # 404 不动现有绑定
         assert db.exec(select(ChannelIdentity)).one().staffdeck_user_id == users["web"].id
+
+
+def test_delete_my_identity_binding_ambiguous_scope_requires_explicit_param() -> None:
+    """同一 external_user_id 在 corpA/corpB 各绑一行:不带 scope 解绑返回 400,不盲删。"""
+    engine = _test_engine()
+    users = _seed_web_users(engine)
+    web = users["web"]
+    _seed_wecom_bound_identity(engine, web, "zhangsan", "corpA")
+    _seed_wecom_bound_identity(engine, web, "zhangsan", "corpB")
+
+    client = _make_api_client(engine)
+    response = client.delete(
+        "/api/enterprise/channels/my-identity-bindings/wecom",
+        params={"tenant_id": "tenant_demo", "external_user_id": "zhangsan"},
+        headers=_auth(web),
+    )
+    assert response.status_code == 400
+    with Session(engine) as db:
+        rows = db.exec(select(ChannelIdentity)).all()
+        # 两行都保持绑定,未被误删
+        assert len(rows) == 2
+        assert all(row.staffdeck_user_id == web.id for row in rows)
+
+
+def test_delete_my_identity_binding_by_row_with_scope() -> None:
+    """同一 external_user_id 不同 scope 两行:带 scope 只解绑对应行,另一行仍在。"""
+    engine = _test_engine()
+    users = _seed_web_users(engine)
+    web = users["web"]
+    _seed_wecom_bound_identity(engine, web, "zhangsan", "corpA")
+    _seed_wecom_bound_identity(engine, web, "zhangsan", "corpB")
+
+    client = _make_api_client(engine)
+    deleted = client.delete(
+        "/api/enterprise/channels/my-identity-bindings/wecom",
+        params={
+            "tenant_id": "tenant_demo",
+            "external_user_id": "zhangsan",
+            "external_account_scope": "corpA",
+        },
+        headers=_auth(web),
+    )
+    assert deleted.status_code == 204
+    with Session(engine) as db:
+        rows = {
+            row.external_account_scope: row.staffdeck_user_id
+            for row in db.exec(select(ChannelIdentity)).all()
+        }
+        # corpA 行已解绑(指针回懒建账号),corpB 行仍绑在 web 账号
+        assert rows["corpA"] != web.id
+        assert rows["corpB"] == web.id
