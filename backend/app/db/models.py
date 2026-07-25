@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import JSON, Column, Index, Integer, UniqueConstraint
+from sqlalchemy import Column, Index, Integer, JSON, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -589,6 +589,17 @@ class KnowledgeIngestJob(SQLModel, table=True):
 
 class ModelConfig(SQLModel, table=True):
     __tablename__ = "model_configs"
+    __table_args__ = (
+        # 每租户至多一条默认模型:部分唯一索引(仅 SQLite/PG;不支持部分索引的
+        # 后端由方言适配器声明 supports_partial_index=False 并在 DDL 层跳过)
+        Index(
+            "uq_model_configs_tenant_default",
+            "tenant_id",
+            unique=True,
+            sqlite_where=text("is_default = 1"),
+            postgresql_where=text("is_default"),
+        ),
+    )
 
     id: str = Field(default_factory=lambda: new_id("model"), primary_key=True)
     tenant_id: str = Field(index=True)
@@ -795,6 +806,18 @@ class MockOrder(SQLModel, table=True):
 
 class ChatSession(SQLModel, table=True):
     __tablename__ = "sessions"
+    __table_args__ = (
+        # SQLite/PG 唯一索引中 NULL 互不相等,web 会话(channel 为空)不受约束;
+        # 含 channel_binding_id 以隔离同企业多 Bot(与 SQLite 迁移中的同名索引一致)
+        Index(
+            "uq_sessions_agent_channel_extconv",
+            "agent_id",
+            "channel",
+            "channel_binding_id",
+            "external_conv_id",
+            unique=True,
+        ),
+    )
 
     id: str = Field(primary_key=True)
     tenant_id: str = Field(index=True)
