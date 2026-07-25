@@ -5,10 +5,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import Engine, inspect, text
+from sqlalchemy.engine import make_url
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
+from app.db.dialect import get_dialect
 
 
 def _normalize_database_url(url: str) -> str:
@@ -19,8 +21,9 @@ def _normalize_database_url(url: str) -> str:
 settings = get_settings()
 
 database_url = _normalize_database_url(settings.database_url)
-connect_args = {"check_same_thread": False, "timeout": 30} if database_url.startswith("sqlite") else {}
-engine: Engine = create_engine(database_url, echo=False, connect_args=connect_args)
+# 引擎创建参数由方言提供者收口(SQLite=check_same_thread/timeout,行为不变)
+_dialect = get_dialect(make_url(database_url).get_backend_name())
+engine: Engine = create_engine(database_url, echo=False, **_dialect.engine_kwargs(database_url))
 
 _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID = "20260712_default_model_output_tokens_8192"
 _LEGACY_DEFAULT_MODEL_OUTPUT_TOKENS = 2048

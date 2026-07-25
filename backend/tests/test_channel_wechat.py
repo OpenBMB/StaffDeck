@@ -1065,3 +1065,103 @@ def test_chunk_client_id_carries_chunk_index() -> None:
     random_ids = [payload["msg"]["client_id"] for payload in sent]
     assert len(set(random_ids)) == 3
     assert all(not cid.startswith("staffdeck:msg_1") for cid in random_ids)
+# ---------- _patch_runtime_config 读-改-写 + revision CAS ----------
+
+
+def test_patch_runtime_config_revision_cas_and_expected_values() -> None:
+    from app.channels.adapters.wechat import _patch_runtime_config
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat",
+            status="active",
+            config_json={"get_updates_buf": "old", "typing_ticket": "t1"},
+        )
+        db.add(binding)
+        db.commit()
+        db.refresh(binding)
+        binding_id = binding.id
+        revision = binding.config_revision
+
+    # stale expected_revision:CAS 拒绝且不落库
+    assert (
+        _patch_runtime_config(
+            engine,
+            binding_id,
+            set_values={"get_updates_buf": "new"},
+            expected_revision=revision + 1,
+        )
+        is False
+    )
+    # JSON 键 CAS 不符:拒绝
+    assert (
+        _patch_runtime_config(
+            engine,
+            binding_id,
+            remove_keys=("typing_ticket",),
+            expected_values={"typing_ticket": "other"},
+        )
+        is False
+    )
+    with Session(engine) as db:
+        row = db.get(ChannelBinding, binding_id)
+        assert row.config_json["get_updates_buf"] == "old"
+        assert row.config_json["typing_ticket"] == "t1"
+
+    # revision 与 expected_values 均匹配:set/remove/列值一并原子落库
+    assert (
+        _patch_runtime_config(
+            engine,
+            binding_id,
+            set_values={"get_updates_buf": "new"},
+            remove_keys=("typing_ticket",),
+            expected_revision=revision,
+            expected_values={"typing_ticket": "t1"},
+            binding_values={"connected": True},
+        )
+        is True
+    )
+    with Session(engine) as db:
+        row = db.get(ChannelBinding, binding_id)
+        assert row.config_json == {"get_updates_buf": "new"}
+        assert row.connected is True
+
+
+def test_patch_runtime_config_require_active_and_field_whitelist() -> None:
+    from app.channels.adapters.wechat import _patch_runtime_config
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat",
+            status="expired",
+            config_json={},
+        )
+        db.add(binding)
+        db.commit()
+        db.refresh(binding)
+        binding_id = binding.id
+
+    # 非 active:require_active 拒绝
+    assert (
+        _patch_runtime_config(
+            engine, binding_id, set_values={"get_updates_buf": "x"}, require_active=True
+        )
+        is False
+    )
+    # 白名单外列:拒绝
+    try:
+        _patch_runtime_config(engine, binding_id, binding_values={"tenant_id": "evil"})
+    except ValueError as error:
+        assert "unsupported binding runtime field" in str(error)
+    else:
+        raise AssertionError("白名单外字段必须拒绝")
+    # 不存在的 binding:False
+    assert _patch_runtime_config(engine, "chan_missing", set_values={"a": 1}) is False

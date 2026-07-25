@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import logging
 import os
 import shutil
@@ -21,6 +20,7 @@ import httpx
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from sqlalchemy import text
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from app.channels.adapters.base import (
@@ -202,6 +202,19 @@ def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -
             f"微信媒体解密后大小不匹配 expected={expected_size} actual={len(decrypted)}",
         )
     return decrypted
+# 同进程运行时补丁串行锁:读-改-写不是单条 SQL,避免并发补丁互相覆盖
+# (跨会话/进程的 API 侧写由下方 config_revision CAS 兜底——API 改配置必递增 revision)
+_runtime_patch_locks: dict[str, threading.Lock] = {}
+_runtime_patch_locks_guard = threading.Lock()
+
+
+def _runtime_patch_lock(binding_id: str) -> threading.Lock:
+    with _runtime_patch_locks_guard:
+        lock = _runtime_patch_locks.get(binding_id)
+        if lock is None:
+            lock = threading.Lock()
+            _runtime_patch_locks[binding_id] = lock
+        return lock
 
 
 def _patch_runtime_config(
@@ -215,49 +228,49 @@ def _patch_runtime_config(
     expected_values: dict[str, Any] | None = None,
     binding_values: dict[str, Any] | None = None,
 ) -> bool:
-    """Atomically patch connector-owned JSON keys without replacing API configuration."""
-    config_expr = "COALESCE(config_json, '{}')"
-    params: dict[str, Any] = {"binding_id": binding_id, "updated_at": utc_now()}
-    for index, (key, value) in enumerate((set_values or {}).items()):
-        params[f"set_path_{index}"] = f"$.{key}"
-        params[f"set_value_{index}"] = json.dumps(value, ensure_ascii=False)
-        config_expr = (
-            f"json_set({config_expr}, :set_path_{index}, json(:set_value_{index}))"
-        )
-    for index, key in enumerate(remove_keys):
-        params[f"remove_path_{index}"] = f"$.{key}"
-        config_expr = f"json_remove({config_expr}, :remove_path_{index})"
+    """Atomically patch connector-owned JSON keys without replacing API configuration.
 
-    assignments = ["updated_at = :updated_at"]
-    if set_values or remove_keys:
-        assignments.insert(0, f"config_json = {config_expr}")
+    ORM 读-改-写 + config_revision CAS:写回为
+    UPDATE ... WHERE id=? AND config_revision=?(读到的 revision),rowcount!=1 即
+    并发冲突返回 False。expected_values(JSON 键 CAS)在 Python 侧校验后随 revision
+    CAS 写回——API 侧改配置必递增 revision,校验到写回之间的并发 API 写会被 CAS
+    拦下;同进程运行时补丁由 _runtime_patch_lock 串行,并发语义与原实现一致。
+    """
     allowed_binding_values = {"connected", "status"}
+    column_values: dict[str, Any] = {}
     for key, value in (binding_values or {}).items():
         if key not in allowed_binding_values:
             raise ValueError(f"unsupported binding runtime field: {key}")
-        params[f"binding_value_{key}"] = value
-        assignments.append(f"{key} = :binding_value_{key}")
+        column_values[key] = value
 
-    predicates = ["id = :binding_id"]
-    if require_active:
-        predicates.append("status = 'active'")
-    if expected_revision is not None:
-        params["expected_revision"] = expected_revision
-        predicates.append("config_revision = :expected_revision")
-    for index, (key, value) in enumerate((expected_values or {}).items()):
-        params[f"expected_path_{index}"] = f"$.{key}"
-        params[f"expected_value_{index}"] = value
-        predicates.append(
-            f"json_extract(config_json, :expected_path_{index}) = :expected_value_{index}"
-        )
+    with _runtime_patch_lock(binding_id), Session(db_engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        if not binding:
+            return False
+        if require_active and binding.status != "active":
+            return False
+        revision = binding.config_revision
+        if expected_revision is not None and revision != expected_revision:
+            return False
+        config = dict(binding.config_json or {})
+        for key, value in (expected_values or {}).items():
+            if config.get(key) != value:
+                return False
+        for key, value in (set_values or {}).items():
+            config[key] = value
+        for key in remove_keys:
+            config.pop(key, None)
 
-    with Session(db_engine) as db:
+        values: dict[str, Any] = {"updated_at": utc_now(), **column_values}
+        if set_values or remove_keys:
+            values["config_json"] = config
         result = db.exec(
-            text(
-                f"UPDATE channel_bindings SET {', '.join(assignments)} "
-                f"WHERE {' AND '.join(predicates)}"
-            ),
-            params=params,
+            update(ChannelBinding)
+            .where(
+                ChannelBinding.id == binding_id,
+                ChannelBinding.config_revision == revision,
+            )
+            .values(**values)
         )
         db.commit()
         return result.rowcount == 1
