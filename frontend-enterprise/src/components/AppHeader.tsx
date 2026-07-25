@@ -73,6 +73,9 @@ export default function AppHeader({
   const initial = (displayName || userName || '').trim()?.[0]?.toUpperCase();
   const isAdmin = user?.role === 'admin';
   const avatarUrl = previewUrl || user?.avatar_url || '';
+  // 仅放行 http(s)/data:image/blob 协议,防止动态 URL 被注入 javascript: 等可执行协议
+  const safeAvatarUrl = /^(https:\/\/|data:image\/|blob:)/i.test(avatarUrl.trim()) ? avatarUrl : '';
+  const safePreviewUrl = /^(https:\/\/|data:image\/|blob:)/i.test(previewUrl.trim()) ? previewUrl : '';
 
   function clearPendingAvatar() {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -163,8 +166,8 @@ export default function AppHeader({
               className="flex h-[32px] shrink-0 items-center gap-[8px] rounded-[10px] pl-[4px] pr-[8px] outline-none"
             >
               <span className="grid size-[32px] shrink-0 place-items-center overflow-hidden rounded-full bg-[#eef1fb] text-[14px] font-medium leading-none text-[#7e96dc]">
-                {avatarUrl ? (
-                  <img src={avatarUrl} alt="" className="size-full object-cover" />
+                {safeAvatarUrl ? (
+                  <img src={safeAvatarUrl} alt="" className="size-full object-cover" />
                 ) : (
                   (initial ?? '--')
                 )}
@@ -191,9 +194,9 @@ export default function AppHeader({
                           }}
                           className="block size-[40px] overflow-hidden rounded-full"
                         >
-                          {avatarUrl ? (
+                          {safeAvatarUrl ? (
                             <img
-                              src={avatarUrl}
+                              src={safeAvatarUrl}
                               alt=""
                               className="size-full object-cover"
                             />
@@ -281,7 +284,7 @@ export default function AppHeader({
           <DialogTitle className="text-[14px] font-normal text-[#757f9c]">更换头像</DialogTitle>
           {previewUrl && (
             <img
-              src={previewUrl}
+              src={safePreviewUrl}
               alt=""
               className="size-[96px] overflow-hidden rounded-full object-cover"
             />
