@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 
 import {
   DropdownMenu,
@@ -6,11 +6,19 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui';
+import { Button as UIButton } from '@/components/ui/button';
+import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
+import IconEdit from '../assets/icons/edit.svg?react';
 import IconLogout from '../assets/icons/logout.svg?react';
-import { getEnterpriseAuthSession } from '../auth';
+import { api } from '../api/client';
+import {
+  getEnterpriseAuthSession,
+  setEnterpriseAuthSession,
+  type EnterpriseAuthUser,
+} from '../auth';
 import LanguageSwitcher from './LanguageSwitcher';
 
 export type AppHeaderProps = {
@@ -52,10 +60,80 @@ export default function AppHeader({
   userName,
   className,
 }: AppHeaderProps) {
-  const user = getEnterpriseAuthSession()?.user;
+  const [user, setUser] = useState(() => getEnterpriseAuthSession()?.user);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [avatarSaving, setAvatarSaving] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   const displayName = user?.display_name || user?.username || '';
   const initial = (displayName || userName || '').trim()?.[0]?.toUpperCase();
   const isAdmin = user?.role === 'admin';
+  const avatarUrl = previewUrl || user?.avatar_url || '';
+
+  function clearPendingAvatar() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl('');
+    setPendingFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  function pickAvatar(file: File | null) {
+    if (!file) return;
+    clearPendingAvatar();
+    setPendingFile(file);
+    setPreviewUrl(URL.createObjectURL(file));
+  }
+
+  async function refreshSessionUser() {
+    const session = getEnterpriseAuthSession();
+    if (!session?.token) return;
+    try {
+      const fresh = await api.get<EnterpriseAuthUser>('/api/auth/me');
+      setEnterpriseAuthSession({ token: session.token, user: fresh });
+      setUser(fresh);
+    } catch {
+      // 头像操作已成功时会话刷新失败不阻断,下次登录/刷新自然同步
+    }
+  }
+
+  async function saveAvatar() {
+    if (!pendingFile || avatarSaving) return;
+    setAvatarSaving(true);
+    try {
+      const session = getEnterpriseAuthSession();
+      const form = new FormData();
+      form.append('file', pendingFile);
+      const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+      const response = await fetch(`${apiBase}/api/auth/me/avatar`, {
+        method: 'PUT',
+        headers: session?.token ? { Authorization: `Bearer ${session.token}` } : {},
+        body: form,
+      });
+      if (!response.ok) throw new Error('上传头像失败');
+      notify.success('头像已更新');
+      clearPendingAvatar();
+      await refreshSessionUser();
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '上传头像失败');
+    } finally {
+      setAvatarSaving(false);
+    }
+  }
+
+  async function removeAvatar() {
+    if (avatarSaving) return;
+    setAvatarSaving(true);
+    try {
+      await api.delete('/api/auth/me/avatar');
+      notify.success('头像已移除');
+      await refreshSessionUser();
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '移除头像失败');
+    } finally {
+      setAvatarSaving(false);
+    }
+  }
 
   const leftContent = left ?? (
     (title !== undefined || description !== undefined) ? (
@@ -82,7 +160,11 @@ export default function AppHeader({
               className="flex h-[32px] shrink-0 items-center gap-[8px] rounded-[10px] pl-[4px] pr-[8px] outline-none"
             >
               <span className="grid size-[32px] shrink-0 place-items-center overflow-hidden rounded-full bg-[#eef1fb] text-[14px] font-medium leading-none text-[#7e96dc]">
-                {initial ?? '--'}
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt="" className="size-full object-cover" />
+                ) : (
+                  (initial ?? '--')
+                )}
               </span>
               <IconChevronDown className="size-[14px] shrink-0 text-[#757F9C]" />
             </DropdownMenuTrigger>
@@ -94,9 +176,37 @@ export default function AppHeader({
                 <>
                   <div className="flex max-w-[240px] flex-col gap-[10px] px-[12px] pt-[8px] pb-[12px]">
                     <div className="flex items-center gap-[10px]">
-                      <span className="grid size-[40px] shrink-0 place-items-center overflow-hidden rounded-full bg-[#eef1fb] text-[16px] font-medium leading-none text-[#7e96dc]">
-                        {initial ?? '--'}
-                      </span>
+                      <div className="relative shrink-0">
+                        <button
+                          type="button"
+                          title="更换头像"
+                          aria-label="更换头像"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="block size-[40px] overflow-hidden rounded-full"
+                        >
+                          {avatarUrl ? (
+                            <img
+                              src={avatarUrl}
+                              alt=""
+                              className="size-full object-cover"
+                            />
+                          ) : (
+                            <span className="grid size-full place-items-center bg-[#eef1fb] text-[16px] font-medium leading-none text-[#7e96dc]">
+                              {initial ?? '--'}
+                            </span>
+                          )}
+                        </button>
+                        <span className="pointer-events-none absolute -bottom-[2px] -right-[2px] grid size-[16px] place-items-center rounded-full bg-[#18181a] text-white">
+                          <IconEdit className="size-[9px]" />
+                        </span>
+                      </div>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(event) => pickAvatar(event.target.files?.[0] || null)}
+                      />
                       <div className="flex min-w-0 flex-col gap-[2px]">
                         <span className="truncate text-[14px] font-medium text-[#18181a]">
                           {displayName}
@@ -108,21 +218,55 @@ export default function AppHeader({
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center justify-between gap-[12px]">
-                      <span
-                        className={cn(
-                          'inline-flex items-center rounded-full px-[12px] py-[4px] text-[10px] leading-none whitespace-nowrap',
-                          isAdmin ? 'bg-[#e8f0ff] text-[#1a71ff]' : 'bg-[#f2f3f7] text-[#858b9c]',
+                    {pendingFile ? (
+                      <div className="flex items-center gap-[8px]">
+                        <UIButton
+                          onClick={() => void saveAvatar()}
+                          disabled={avatarSaving}
+                          className="h-7 rounded-[8px] bg-[#18181a] px-[12px] text-[12px] font-normal text-white hover:bg-[#303030]"
+                        >
+                          保存
+                        </UIButton>
+                        <UIButton
+                          variant="outline"
+                          onClick={clearPendingAvatar}
+                          disabled={avatarSaving}
+                          className="h-7 rounded-[8px] px-[12px] text-[12px] font-normal"
+                        >
+                          取消
+                        </UIButton>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-[12px]">
+                        <div className="flex items-center gap-[10px]">
+                          <span
+                            className={cn(
+                              'inline-flex items-center rounded-full px-[12px] py-[4px] text-[10px] leading-none whitespace-nowrap',
+                              isAdmin
+                                ? 'bg-[#e8f0ff] text-[#1a71ff]'
+                                : 'bg-[#f2f3f7] text-[#858b9c]',
+                            )}
+                          >
+                            {isAdmin ? '管理员' : '成员'}
+                          </span>
+                          {user.avatar_url && (
+                            <button
+                              type="button"
+                              onClick={() => void removeAvatar()}
+                              disabled={avatarSaving}
+                              className="text-[11px] text-[#a0a8bd] transition-colors hover:text-[#d20b0b] disabled:opacity-50"
+                            >
+                              移除头像
+                            </button>
+                          )}
+                        </div>
+                        {isAdmin && (
+                          <span className="max-w-[150px] truncate text-[11px] text-[#a0a8bd]">
+                            {user.tenant_id}
+                          </span>
                         )}
-                      >
-                        {isAdmin ? '管理员' : '成员'}
-                      </span>
-                      {isAdmin && (
-                        <span className="max-w-[150px] truncate text-[11px] text-[#a0a8bd]">
-                          {user.tenant_id}
-                        </span>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                   <div className="mx-[6px] mb-[6px] h-px bg-[#eef0f4]" />
                 </>

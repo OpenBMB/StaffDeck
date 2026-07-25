@@ -41,6 +41,19 @@ class User(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class UserAvatar(SQLModel, table=True):
+    """用户头像:小图以 data_url 直接存库(与聊天附件内联方式一致),
+
+    独立小表避免 users 热表膨胀;create_all 建表,无需 ALTER。
+    """
+
+    __tablename__ = "user_avatars"
+
+    user_id: str = Field(primary_key=True)
+    data_url: str
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class Skill(SQLModel, table=True):
     __tablename__ = "skills"
     __table_args__ = (UniqueConstraint("tenant_id", "skill_id", name="uq_skill_tenant_skill_id"),)

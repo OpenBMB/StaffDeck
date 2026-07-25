@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import base64
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.db.models import User, utc_now
+from app.db.models import User, UserAvatar, utc_now
 from app.security.auth import create_access_token, get_current_user, hash_password, verify_password
 from app.security.permissions import MEMBER_ROLE, is_admin_user
 from app.security.tenant import ensure_tenant
@@ -44,8 +45,14 @@ class UserRead(BaseModel):
     display_name: Optional[str] = None
     role: Literal["admin", "member"]
     source: str = "web"
+    # 仅 /me 与 /login 带出(头像为大字段,用户列表等批量端点不携带)
+    avatar_url: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+
+class AvatarRead(BaseModel):
+    avatar_url: str
 
 
 class LoginResponse(BaseModel):
@@ -66,12 +73,73 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
     if not user or not verify_password(request.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    return LoginResponse(token=create_access_token(user), user=_user_read(user))
+    return LoginResponse(
+        token=create_access_token(user),
+        user=_user_read(user, _avatar_url_for(db, user.id)),
+    )
 
 
 @router.get("/me", response_model=UserRead)
-def me(user: User = Depends(get_current_user)) -> UserRead:
-    return _user_read(user)
+def me(user: User = Depends(get_current_user), db: Session = Depends(get_session)) -> UserRead:
+    return _user_read(user, _avatar_url_for(db, user.id))
+
+
+MAX_AVATAR_BYTES = 2 * 1024 * 1024
+# 头像类型嗅探:以实际字节头为准(防伪装 content-type),仅 png/jpeg/webp/gif
+_AVATAR_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def _sniff_avatar_content_type(data: bytes) -> Optional[str]:
+    """按字节头识别图片类型,返回规范 content-type;非支持图片返回 None。"""
+    for magic, content_type in _AVATAR_MAGIC:
+        if data.startswith(magic):
+            return content_type
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+@router.put("/me/avatar", response_model=AvatarRead)
+async def update_my_avatar(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AvatarRead:
+    """上传/覆盖当前用户头像:multipart 单文件,图片 ≤2MB,以 data_url 存库(upsert)。"""
+    data = await file.read()
+    if len(data) > MAX_AVATAR_BYTES:
+        raise HTTPException(status_code=413, detail="头像文件超过 2MB 大小限制")
+    content_type = _sniff_avatar_content_type(data)
+    if not content_type:
+        raise HTTPException(status_code=400, detail="仅支持 png/jpeg/webp/gif 格式的图片")
+    data_url = f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
+    avatar = db.get(UserAvatar, current_user.id)
+    if avatar:
+        avatar.data_url = data_url
+        avatar.updated_at = utc_now()
+    else:
+        avatar = UserAvatar(user_id=current_user.id, data_url=data_url)
+    db.add(avatar)
+    db.commit()
+    return AvatarRead(avatar_url=data_url)
+
+
+@router.delete("/me/avatar", status_code=204)
+def delete_my_avatar(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> Response:
+    """删除当前用户头像(无头像时幂等 204)。"""
+    avatar = db.get(UserAvatar, current_user.id)
+    if avatar:
+        db.delete(avatar)
+        db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/users", response_model=UserRead)
@@ -168,7 +236,7 @@ def delete_user(
     return {"ok": True}
 
 
-def _user_read(user: User) -> UserRead:
+def _user_read(user: User, avatar_url: Optional[str] = None) -> UserRead:
     return UserRead(
         id=user.id,
         tenant_id=user.tenant_id,
@@ -176,9 +244,15 @@ def _user_read(user: User) -> UserRead:
         display_name=user.display_name,
         role=user.role,
         source=user.source,
+        avatar_url=avatar_url,
         created_at=user.created_at.isoformat() if user.created_at else None,
         updated_at=user.updated_at.isoformat() if user.updated_at else None,
     )
+
+
+def _avatar_url_for(db: Session, user_id: str) -> Optional[str]:
+    avatar = db.get(UserAvatar, user_id)
+    return avatar.data_url if avatar else None
 
 
 def _require_admin(user: User, tenant_id: str) -> None:
