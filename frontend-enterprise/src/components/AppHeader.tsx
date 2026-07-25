@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconLogout from '../assets/icons/logout.svg?react';
+import { getEnterpriseAuthSession } from '../auth';
 import LanguageSwitcher from './LanguageSwitcher';
 
 export type AppHeaderProps = {
@@ -51,7 +52,10 @@ export default function AppHeader({
   userName,
   className,
 }: AppHeaderProps) {
-  const initial = userName?.trim()?.[0]?.toUpperCase();
+  const user = getEnterpriseAuthSession()?.user;
+  const displayName = user?.display_name || user?.username || '';
+  const initial = (displayName || userName || '').trim()?.[0]?.toUpperCase();
+  const isAdmin = user?.role === 'admin';
 
   const leftContent = left ?? (
     (title !== undefined || description !== undefined) ? (
@@ -86,6 +90,43 @@ export default function AppHeader({
               align="end"
               className="w-fit min-w-0 rounded-[14px] border-0 bg-white p-[6px] shadow-[0px_16px_15px_rgba(0,0,0,0.1)] ring-0 [--accent:#F6F6F6] [--accent-foreground:#18181A]"
             >
+              {user && (
+                <>
+                  <div className="flex max-w-[240px] flex-col gap-[10px] px-[12px] pt-[8px] pb-[12px]">
+                    <div className="flex items-center gap-[10px]">
+                      <span className="grid size-[40px] shrink-0 place-items-center overflow-hidden rounded-full bg-[#eef1fb] text-[16px] font-medium leading-none text-[#7e96dc]">
+                        {initial ?? '--'}
+                      </span>
+                      <div className="flex min-w-0 flex-col gap-[2px]">
+                        <span className="truncate text-[14px] font-medium text-[#18181a]">
+                          {displayName}
+                        </span>
+                        {user.username && user.username !== displayName && (
+                          <span className="truncate text-[12px] text-[#858b9c]">
+                            @{user.username}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-[12px]">
+                      <span
+                        className={cn(
+                          'inline-flex items-center rounded-full px-[12px] py-[4px] text-[10px] leading-none whitespace-nowrap',
+                          isAdmin ? 'bg-[#e8f0ff] text-[#1a71ff]' : 'bg-[#f2f3f7] text-[#858b9c]',
+                        )}
+                      >
+                        {isAdmin ? '管理员' : '成员'}
+                      </span>
+                      {isAdmin && (
+                        <span className="max-w-[150px] truncate text-[11px] text-[#a0a8bd]">
+                          {user.tenant_id}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mx-[6px] mb-[6px] h-px bg-[#eef0f4]" />
+                </>
+              )}
               <DropdownMenuItem
                 onSelect={() => onLogout?.()}
                 className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
