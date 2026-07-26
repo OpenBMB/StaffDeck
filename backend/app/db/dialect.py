@@ -38,6 +38,7 @@ class DatabaseDialect(Protocol):
 
     name: str  # sqlite / postgresql / mysql / dm / ...
     supports_partial_index: bool  # 部分唯一索引(WHERE 子句)能力
+    session_scoped_advisory_lock: bool  # advisory lock 是否随会话存活(持锁会话须常驻)
 
     def engine_kwargs(self, url: str) -> dict[str, Any]: ...
 
@@ -60,10 +61,11 @@ class BaseDialect:
 
     name = "generic"
     supports_partial_index = False
+    session_scoped_advisory_lock = False
 
     def __init__(self, backend_name: str = "generic") -> None:
         self.name = backend_name
-        self._lock_handles: dict[str, Any] = {}
+        self._lock_handles: dict[str, tuple[int, Any]] = {}
 
     def engine_kwargs(self, url: str) -> dict[str, Any]:
         return {}
@@ -85,9 +87,18 @@ class BaseDialect:
         return patched
 
     def acquire_advisory_lock(self, session, key: str) -> bool:
-        """数据目录文件锁(与渠道 connector 现行行为一致);已持有同 key 锁时重入成功。"""
-        if key in self._lock_handles:
-            return True
+        """数据目录文件锁(与渠道 connector 现行行为一致);已持有同 key 锁时重入成功。
+
+        fork 防护:继承自父进程的句柄不算持有(只关闭不解锁——解锁会把父进程
+        的锁一起放掉),随后按本进程身份真实抢锁。
+        """
+        held = self._lock_handles.get(key)
+        if held is not None:
+            held_pid, held_handle = held
+            if held_pid == os.getpid():
+                return True
+            held_handle.close()
+            self._lock_handles.pop(key, None)
         bind = session.get_bind()
         database_path = getattr(getattr(bind, "url", None), "database", None)
         if not database_path or database_path == ":memory:":
@@ -114,12 +125,17 @@ class BaseDialect:
         except (BlockingIOError, OSError):
             handle.close()
             return False
-        self._lock_handles[key] = handle
+        self._lock_handles[key] = (os.getpid(), handle)
         return True
 
     def release_advisory_lock(self, session, key: str) -> None:
-        handle = self._lock_handles.pop(key, None)
-        if handle is None:
+        held = self._lock_handles.pop(key, None)
+        if held is None:
+            return
+        held_pid, handle = held
+        if held_pid != os.getpid():
+            # fork 子进程:仅关闭继承句柄,不解父进程的锁
+            handle.close()
             return
         try:
             if os.name == "nt":
@@ -152,9 +168,12 @@ class SQLiteDialect(BaseDialect):
 
 
 class PostgresDialect(BaseDialect):
-    """PostgreSQL/高斯:psycopg3 驱动(postgresql+psycopg://),全能力。"""
+    """PostgreSQL/高斯:psycopg3 驱动(postgresql+psycopg://),全能力。
+
+    advisory lock 随连接存活:持锁会话必须由调用方常驻(连接关闭即释放)。"""
 
     supports_partial_index = True
+    session_scoped_advisory_lock = True
 
     def __init__(self) -> None:
         super().__init__("postgresql")

@@ -52,6 +52,7 @@ class FeishuProcessSupervisor:
         self,
         *,
         runtime_path: str = PRODUCTION_RUNTIME,
+        database_url: str | None = None,
         database_path: Path | None = None,
         data_dir: Path | None = None,
         watchdog_seconds: float = 2.5,
@@ -68,7 +69,12 @@ class FeishuProcessSupervisor:
         self._ctx = multiprocessing.get_context("spawn")
         self._runtime_path = runtime_path
         root = (data_dir or Path.cwd()).expanduser().resolve()
-        self._database_path = (database_path or root / "skill_agent_loop.db").expanduser().resolve()
+        # database_path 为兼容旧参数;子进程统一按完整 SQLAlchemy URL 自建引擎
+        if database_url:
+            self._database_url = database_url
+        else:
+            legacy_path = (database_path or root / "skill_agent_loop.db").expanduser().resolve()
+            self._database_url = f"sqlite:///{legacy_path}"
         self._watchdog_seconds = watchdog_seconds
         self._terminate_grace_seconds = terminate_grace_seconds
         self._max_processes = max_processes
@@ -160,7 +166,7 @@ class FeishuProcessSupervisor:
     def _spawn_reserved_binding(
         self, binding_id: str, config_revision: int
     ) -> ConnectorRecord:
-        lock_path = binding_lock_path(binding_id, self._database_path)
+        lock_path = binding_lock_path(binding_id, self._database_url)
         if not self._wait_for_binding_lock(lock_path, self._lock_wait_seconds):
             raise RuntimeError(f"Feishu connector binding lock is still held: {binding_id}")
         nonce = secrets.token_hex(16)
@@ -171,7 +177,7 @@ class FeishuProcessSupervisor:
             child_nonce=nonce,
             runtime_path=self._runtime_path,
             binding_lock_path=str(lock_path),
-            database_path=str(self._database_path),
+            database_url=self._database_url,
             watchdog_seconds=self._watchdog_seconds,
         )
         process = self._ctx.Process(

@@ -3,9 +3,6 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
-import logging
-from pathlib import Path
-
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine
 
@@ -284,12 +281,14 @@ def _build_event_dispatcher(handler_class, receive):
 def run_feishu_runtime(spec, control, watchdog) -> None:
     if importlib.metadata.version("lark-channel-sdk") != SDK_CONTRACT_VERSION:
         raise RuntimeError(f"lark-channel-sdk must be exactly {SDK_CONTRACT_VERSION}")
-    database_path = Path(spec.database_path).expanduser().resolve()
-    stage_engine = create_engine(
-        f"sqlite:///{database_path}",
-        connect_args={"check_same_thread": False, "timeout": 0.5},
-        poolclass=NullPool,
+    # 子进程按完整 SQLAlchemy URL 自建引擎;非 SQLite 不传 check_same_thread
+    database_url = spec.database_url
+    connect_args = (
+        {"check_same_thread": False, "timeout": 0.5}
+        if database_url.startswith("sqlite")
+        else {}
     )
+    stage_engine = create_engine(database_url, connect_args=connect_args, poolclass=NullPool)
     with Session(stage_engine) as db:
         binding = db.get(ChannelBinding, spec.binding_id)
         if (
