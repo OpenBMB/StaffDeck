@@ -13,8 +13,10 @@ jobs:
 
       - name: Start openGauss
         run: |
+          GAUSS_PASSWORD="Gs$(openssl rand -hex 9)_aB1"
+          echo "GAUSS_PASSWORD=$GAUSS_PASSWORD" >> "$GITHUB_ENV"
           docker run -d --name opengauss \
-            -e GS_PASSWORD='Staffdeck@123' \
+            -e GS_PASSWORD="$GAUSS_PASSWORD" \
             -p 5432:5432 \
             enmotech/opengauss:5.0.0
           for i in $(seq 1 120); do
@@ -43,7 +45,7 @@ jobs:
 
       - name: create_all + dialect smoke on openGauss
         env:
-          DATABASE_URL: postgresql+psycopg://postgres:Staffdeck%40123@127.0.0.1:5432/postgres
+          DATABASE_URL: postgresql+psycopg://postgres:${{ env.GAUSS_PASSWORD }}@127.0.0.1:5432/postgres
           STAFFDECK_ROLE: all
         working-directory: backend
         run: |
@@ -74,7 +76,7 @@ jobs:
 
       - name: Boot app and API smoke on openGauss
         env:
-          DATABASE_URL: postgresql+psycopg://postgres:Staffdeck%40123@127.0.0.1:5432/postgres
+          DATABASE_URL: postgresql+psycopg://postgres:${{ env.GAUSS_PASSWORD }}@127.0.0.1:5432/postgres
           STAFFDECK_ROLE: all
           ULTRARAG_PORT: 5199
         working-directory: backend
