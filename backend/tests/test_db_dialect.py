@@ -1,5 +1,6 @@
 """方言提供者单测:注册表、engine_kwargs、日分桶表达式形态、JSON 读改写、锁。"""
 
+import os
 from types import SimpleNamespace
 
 from sqlalchemy import Column, DateTime
@@ -164,3 +165,30 @@ def test_create_all_contains_channel_session_unique_index() -> None:
         ).scalar_one()
         # 部分唯一索引:仅默认模型一行受约束
         assert "WHERE is_default = 1" in index_sql
+
+
+def test_sqlite_file_lock_fork_child_does_not_inherit(tmp_path, monkeypatch) -> None:
+    """fork 防护:继承句柄不作数(重抢并登记新进程号);父进程仍持锁时真实抢锁失败。"""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'fork.db'}",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    dialect = SQLiteDialect()
+    sibling = SQLiteDialect()  # 模拟父进程仍存活持有的同一把锁
+    real_pid = os.getpid()
+    with Session(engine) as session:
+        assert dialect.acquire_advisory_lock(session, "k") is True
+        # 进入"子进程"视角(getpid 被 mock 成另一个进程号):继承句柄被关闭并按
+        # 本进程身份重抢(同进程内等价:旧锁已随句柄关闭释放),锁登记到新进程号
+        monkeypatch.setattr(os, "getpid", lambda: real_pid + 100000)
+        assert dialect.acquire_advisory_lock(session, "k") is True
+        assert dialect._lock_handles["k"][0] == real_pid + 100000
+        dialect.release_advisory_lock(session, "k")
+        # 父进程仍持锁(sibling 句柄打开):子进程身份真实抢锁失败
+        assert sibling.acquire_advisory_lock(session, "k") is True
+        assert dialect.acquire_advisory_lock(session, "k") is False
+        sibling.release_advisory_lock(session, "k")
+        # 父释放后可得
+        assert dialect.acquire_advisory_lock(session, "k") is True
+        dialect.release_advisory_lock(session, "k")

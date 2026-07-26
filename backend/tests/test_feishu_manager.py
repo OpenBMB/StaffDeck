@@ -11,7 +11,7 @@ from app.db.models import ChannelBinding, Tenant
 
 class FakeSupervisor:
     def __init__(self, **kwargs):
-        self.database_path = kwargs["database_path"]
+        self.database_url = kwargs["database_url"]
         self.started = []
         self.stopped = []
         self.states = {}
@@ -302,3 +302,29 @@ def test_feishu_adapter_is_registered() -> None:
 
     channels._ensure_adapters_registered()
     assert get_channel_adapter("feishu").__class__.__name__ == "FeishuAdapter"
+
+
+# ---------- 数据库 URL 透传(P2 方言化) ----------
+
+
+def test_manager_accepts_non_sqlite_database_url() -> None:
+    """非 SQLite 不再报"仅支持文件 SQLite":完整 URL(密码不遮蔽)透传给子进程。"""
+    engine = create_engine("postgresql+psycopg://user:secret@db.internal:5432/staffdeck")
+    manager = FeishuProcessManager(db_engine=engine, reconcile_seconds=60)
+    assert (
+        manager._database_url
+        == "postgresql+psycopg://user:secret@db.internal:5432/staffdeck"
+    )
+
+
+def test_manager_rejects_memory_sqlite() -> None:
+    """内存 SQLite 子进程无法共享,仍然拒绝(与方言无关的物理限制)。"""
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine("sqlite://", poolclass=StaticPool)
+    try:
+        FeishuProcessManager(db_engine=engine)
+    except RuntimeError as error:
+        assert "内存数据库" in str(error)
+    else:
+        raise AssertionError("内存 SQLite 必须拒绝(子进程无法共享)")

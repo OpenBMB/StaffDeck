@@ -837,7 +837,7 @@ def test_child_owned_lock_is_released_after_parent_pipe_closes(tmp_path: Path, m
         time.sleep(0.01)
     record.process.join(timeout=1.0)
     assert not record.process.is_alive()
-    lock = BindingProcessLock(binding_lock_path("binding-orphan", database))
+    lock = BindingProcessLock(binding_lock_path("binding-orphan", f"sqlite:///{database}"))
     assert lock.acquire()
     lock.release()
     assert supervisor.stop(timeout=2.0)

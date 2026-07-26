@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from pathlib import Path
 from typing import Callable
 
 from sqlalchemy import update
@@ -28,9 +27,12 @@ class FeishuProcessManager:
     ):
         self._engine = db_engine or engine
         database = self._engine.url.database
-        if self._engine.url.get_backend_name() != "sqlite" or not database or database == ":memory:":
-            raise RuntimeError("飞书长连接首版仅支持文件 SQLite")
-        self._database_path = Path(database).expanduser().resolve()
+        if self._engine.url.get_backend_name() == "sqlite" and (
+            not database or database == ":memory:"
+        ):
+            raise RuntimeError("飞书长连接子进程无法共享 SQLite 内存数据库")
+        # 子进程按完整 SQLAlchemy URL 自建引擎(密码不遮蔽)
+        self._database_url = self._engine.url.render_as_string(hide_password=False)
         self._supervisor_factory = supervisor_factory
         self._supervisor: FeishuProcessSupervisor | None = None
         self._reconcile_seconds = reconcile_seconds
@@ -45,7 +47,7 @@ class FeishuProcessManager:
     def _get_supervisor(self) -> FeishuProcessSupervisor:
         with self._lock:
             if self._supervisor is None:
-                self._supervisor = self._supervisor_factory(database_path=self._database_path)
+                self._supervisor = self._supervisor_factory(database_url=self._database_url)
             return self._supervisor
 
     def start(self) -> None:

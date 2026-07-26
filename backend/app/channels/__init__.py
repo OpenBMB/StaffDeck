@@ -5,8 +5,6 @@ import os
 import threading
 import time
 from contextlib import contextmanager
-from pathlib import Path
-from typing import IO
 
 from app.config import get_settings
 
@@ -19,74 +17,74 @@ _feishu_process_manager = None
 _dingtalk_stream_manager = None
 _binding_lifecycle_locks: dict[str, threading.RLock] = {}
 _binding_lifecycle_locks_guard = threading.Lock()
-_connector_lock_file: IO[bytes] | None = None
+# connector 单实例锁:统一锁 key;PG 持锁会话常驻(_connector_lock_session)
+_CONNECTOR_LOCK_KEY = "staffdeck-connector"
 _connector_lock_pid: int | None = None
+_connector_lock_session = None
 _intake_sweep_thread: threading.Thread | None = None
 
 
 def _acquire_connector_process_lock() -> bool:
-    global _connector_lock_file, _connector_lock_pid
+    """单实例 connector 锁:走方言提供者(PG=advisory lock,其它=数据目录文件锁)。
+
+    preload+fork 部署下,子进程不得把继承的锁状态当作自己持有。
+    """
+    global _connector_lock_pid, _connector_lock_session
     current_pid = os.getpid()
-    if _connector_lock_file is not None and _connector_lock_pid == current_pid:
+    if _connector_lock_pid == current_pid:
         return True
-    if _connector_lock_file is not None:
-        # preload 后 fork 的子进程不能把继承句柄当作自己已持有锁。
-        _connector_lock_file.close()
-        _connector_lock_file = None
+    if _connector_lock_pid is not None:
+        # fork 子进程:继承的会话/句柄只丢弃引用,不在共享连接上做任何操作
+        _connector_lock_session = None
         _connector_lock_pid = None
+    from sqlmodel import Session
+
     from app.db import engine
+    from app.db.dialect import get_dialect
 
-    database_path = engine.url.database
-    if engine.url.get_backend_name() != "sqlite" or not database_path or database_path == ":memory:":
-        logger.error("渠道服务要求文件 SQLite 进程锁；当前数据库不支持可靠的单实例 Outbox")
-        return False
-    lock_path = Path(database_path).resolve().with_name(f"{Path(database_path).name}.connector.lock")
-    handle = lock_path.open("a+b")
-    try:
-        if os.name == "nt":
-            import msvcrt
-
-            handle.seek(0)
-            if handle.read(1) == b"":
-                handle.write(b"0")
-                handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (BlockingIOError, OSError):
-        handle.close()
-        return False
-    _connector_lock_file = handle
+    dialect = get_dialect(engine.url.get_backend_name())
+    if dialect.session_scoped_advisory_lock:
+        # PG advisory lock 随连接存活:持锁会话常驻模块级,release 时才关闭
+        session = Session(engine)
+        if not dialect.acquire_advisory_lock(session, _CONNECTOR_LOCK_KEY):
+            session.close()
+            logger.error("另一 connector 进程已持有该数据库的 advisory lock")
+            return False
+        _connector_lock_session = session
+    else:
+        # SQLite/其它:数据目录文件锁(锁句柄由方言实例持有,行为不变)
+        with Session(engine) as session:
+            if not dialect.acquire_advisory_lock(session, _CONNECTOR_LOCK_KEY):
+                return False
     _connector_lock_pid = current_pid
     return True
 
 
 def _release_connector_process_lock() -> None:
-    global _connector_lock_file, _connector_lock_pid
-    handle = _connector_lock_file
-    if handle is None:
+    global _connector_lock_pid, _connector_lock_session
+    if _connector_lock_pid is None:
         return
     if _connector_lock_pid != os.getpid():
-        handle.close()
-        _connector_lock_file = None
+        # fork 子进程:仅丢弃引用,不解父进程的锁
+        _connector_lock_session = None
         _connector_lock_pid = None
         return
+    from sqlmodel import Session
+
+    from app.db import engine
+    from app.db.dialect import get_dialect
+
+    dialect = get_dialect(engine.url.get_backend_name())
+    session, _connector_lock_session = _connector_lock_session, None
     try:
-        if os.name == "nt":
-            import msvcrt
-
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        if session is not None:
+            dialect.release_advisory_lock(session, _CONNECTOR_LOCK_KEY)
         else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            with Session(engine) as fallback_session:
+                dialect.release_advisory_lock(fallback_session, _CONNECTOR_LOCK_KEY)
     finally:
-        handle.close()
-        _connector_lock_file = None
+        if session is not None:
+            session.close()
         _connector_lock_pid = None
 
 

@@ -39,12 +39,12 @@ def _user_data_dir() -> Path:
     return Path.home() / ".local" / "share" / "StaffDeck"
 
 
-def binding_lock_path(binding_id: str, database_path: Path) -> Path:
-    database = database_path.expanduser().resolve()
-    database_fingerprint = hashlib.sha256(str(database).encode("utf-8")).hexdigest()[:16]
+def binding_lock_path(binding_id: str, database_url: str) -> Path:
+    """binding 级进程锁路径:指纹取自数据库 URL 字符串(纯哈希,不解析)。"""
+    database_fingerprint = hashlib.sha256(database_url.encode("utf-8")).hexdigest()[:16]
     binding_fingerprint = hashlib.sha256(binding_id.encode("utf-8")).hexdigest()[:16]
     return (
-        database.parent
+        _user_data_dir()
         / "connector-locks"
         / f"feishu-{database_fingerprint}-{binding_fingerprint}.lock"
     )
@@ -104,7 +104,8 @@ class ConnectorChildSpec:
     child_nonce: str
     runtime_path: str
     binding_lock_path: str
-    database_path: str = ""
+    # 完整 SQLAlchemy URL:子进程按它自建引擎(非 SQLite 不传 check_same_thread)
+    database_url: str = ""
     watchdog_seconds: float = 2.5
 
 
