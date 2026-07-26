@@ -378,7 +378,7 @@ def test_switching_default_clears_existing_row_before_setting_new(tmp_path) -> N
     with _db(tmp_path) as db:
         db.exec(
             text(
-                "CREATE UNIQUE INDEX uq_model_configs_tenant_default "
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_model_configs_tenant_default "
                 "ON model_configs(tenant_id) WHERE is_default = 1"
             )
         )
