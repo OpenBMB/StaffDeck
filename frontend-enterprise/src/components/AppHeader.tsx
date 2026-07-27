@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import {
   DropdownMenu,
@@ -77,6 +77,7 @@ export default function AppHeader({
 }: AppHeaderProps) {
   const [user, setUser] = useState(() => getEnterpriseAuthSession()?.user);
   const [uploadPreviewUrl, setUploadPreviewUrl] = useState('');
+  const uploadPreviewUrlRef = useRef('');
   const [avatarSaving, setAvatarSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -87,11 +88,25 @@ export default function AppHeader({
   // 仅放行 http/https/data:image/blob 协议,阻止 javascript: 等可执行协议注入
   const safeAvatarUrl = safeImageUrl(avatarUrl);
 
+  // 预览 blob URL 由 ref 跟踪:替换/清除/组件卸载时都能 revoke 到最新值,不受闭包快照影响
+  function replaceUploadPreview(next: string) {
+    const prev = uploadPreviewUrlRef.current;
+    if (prev && prev !== next) URL.revokeObjectURL(prev);
+    uploadPreviewUrlRef.current = next;
+    setUploadPreviewUrl(next);
+  }
+
   function clearUploadPreview() {
-    if (uploadPreviewUrl) URL.revokeObjectURL(uploadPreviewUrl);
-    setUploadPreviewUrl('');
+    replaceUploadPreview('');
     if (fileInputRef.current) fileInputRef.current.value = '';
   }
+
+  useEffect(
+    () => () => {
+      if (uploadPreviewUrlRef.current) URL.revokeObjectURL(uploadPreviewUrlRef.current);
+    },
+    [],
+  );
 
   async function refreshSessionUser() {
     const session = getEnterpriseAuthSession();
@@ -110,7 +125,7 @@ export default function AppHeader({
     if (!file || avatarSaving) return;
     clearUploadPreview();
     const objectUrl = URL.createObjectURL(file);
-    setUploadPreviewUrl(objectUrl);
+    replaceUploadPreview(objectUrl);
     setAvatarSaving(true);
     try {
       const session = getEnterpriseAuthSession();

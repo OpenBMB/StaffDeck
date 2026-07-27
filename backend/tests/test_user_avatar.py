@@ -164,6 +164,17 @@ def test_upload_rejects_oversize() -> None:
     assert response.status_code == 413
 
 
+def test_upload_rejects_oversize_by_content_length() -> None:
+    """请求体 Content-Length 明显超限(>2MB+multipart 开销):预检直接 413,不读完整内容。"""
+    engine = _test_engine()
+    user = _seed_user(engine)
+    client = _make_client(engine)
+
+    oversize = b"\x89PNG\r\n\x1a\n" + b"\x00" * (2 * 1024 * 1024 + 128 * 1024)
+    response = _upload(client, user, oversize)
+    assert response.status_code == 413
+
+
 def test_upload_rejects_fake_content_type() -> None:
     """声明 image/png 但字节头不是图片:按内容嗅探拒绝。"""
     engine = _test_engine()

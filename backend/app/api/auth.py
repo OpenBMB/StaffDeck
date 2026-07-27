@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -85,6 +85,8 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_session
 
 
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
+# multipart 边界与头部开销的上限估计:Content-Length 预检放行正常图片,拦截明显超限请求
+_AVATAR_MULTIPART_OVERHEAD = 64 * 1024
 # 头像类型嗅探:以实际字节头为准(防伪装 content-type),仅 png/jpeg/webp/gif
 _AVATAR_MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -106,12 +108,19 @@ def _sniff_avatar_content_type(data: bytes) -> Optional[str]:
 
 @router.put("/me/avatar", response_model=AvatarRead)
 async def update_my_avatar(
+    request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> AvatarRead:
     """上传/覆盖当前用户头像:multipart 单文件,图片 ≤2MB,以 data_url 存库(upsert)。"""
-    data = await file.read()
+    # 先按 Content-Length 快速拒绝明显超限的请求,避免把超大请求体完整读入内存
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit():
+        if int(content_length) > MAX_AVATAR_BYTES + _AVATAR_MULTIPART_OVERHEAD:
+            raise HTTPException(status_code=413, detail="头像文件超过 2MB 大小限制")
+    # 限量读取(最多 MAX+1 字节)做硬性兜底,覆盖 Content-Length 缺失或虚报的情况
+    data = await file.read(MAX_AVATAR_BYTES + 1)
     if len(data) > MAX_AVATAR_BYTES:
         raise HTTPException(status_code=413, detail="头像文件超过 2MB 大小限制")
     content_type = _sniff_avatar_content_type(data)
