@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import Column, Index, Integer, JSON, UniqueConstraint, text
+from sqlalchemy import Column, DDL, Index, Integer, JSON, UniqueConstraint, event
 from sqlmodel import Field, SQLModel
 
 
@@ -531,17 +531,6 @@ class KnowledgeIngestJob(SQLModel, table=True):
 
 class ModelConfig(SQLModel, table=True):
     __tablename__ = "model_configs"
-    __table_args__ = (
-        # 每租户至多一条默认模型:部分唯一索引(仅 SQLite/PG;不支持部分索引的
-        # 后端由方言适配器声明 supports_partial_index=False 并在 DDL 层跳过)
-        Index(
-            "uq_model_configs_tenant_default",
-            "tenant_id",
-            unique=True,
-            sqlite_where=text("is_default = 1"),
-            postgresql_where=text("is_default"),
-        ),
-    )
 
     id: str = Field(default_factory=lambda: new_id("model"), primary_key=True)
     tenant_id: str = Field(index=True)
@@ -572,6 +561,28 @@ class ModelConfig(SQLModel, table=True):
     enabled: bool = True
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+# 每租户至多一条默认模型:部分唯一索引只按方言显式创建(SQLite=1 字面量,PG=布尔)。
+# 不把该索引挂在 metadata 上:sqlite_where/postgresql_where 在其它方言下会被静默
+# 丢弃,退化为全量唯一索引(MySQL/达梦下变成"每租户仅一条模型配置");不支持
+# 部分索引的后端由 init_db 的启动校验兜底(见 database.py)。
+event.listen(
+    ModelConfig.__table__,
+    "after_create",
+    DDL(
+        "CREATE UNIQUE INDEX uq_model_configs_tenant_default "
+        "ON model_configs (tenant_id) WHERE is_default = 1"
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    ModelConfig.__table__,
+    "after_create",
+    DDL(
+        "CREATE UNIQUE INDEX uq_model_configs_tenant_default "
+        "ON model_configs (tenant_id) WHERE is_default"
+    ).execute_if(dialect="postgresql"),
+)
 
 
 class PersonaConfig(SQLModel, table=True):

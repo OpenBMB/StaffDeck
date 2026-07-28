@@ -1070,3 +1070,23 @@ def test_patch_runtime_config_require_active_and_field_whitelist() -> None:
         raise AssertionError("白名单外字段必须拒绝")
     # 不存在的 binding:False
     assert _patch_runtime_config(engine, "chan_missing", set_values={"a": 1}) is False
+
+
+def test_runtime_patch_lock_dropped_after_thread_stopped() -> None:
+    """补丁锁清理:wait_binding_stopped 确认线程退出后删除锁字典项,防无上限累积。"""
+    from app.channels.adapters.wechat import (
+        WeChatPollManager,
+        _runtime_patch_lock,
+        _runtime_patch_locks,
+    )
+
+    engine = _test_engine()
+    first = _runtime_patch_lock("b1")
+    assert _runtime_patch_lock("b1") is first
+
+    manager = WeChatPollManager(db_engine=engine, client_factory=lambda binding: None)
+    # 无线程存活:wait_binding_stopped 直接 True 并清理该 binding 的补丁锁
+    assert manager.wait_binding_stopped("b1", 0) is True
+    assert "b1" not in _runtime_patch_locks
+    assert _runtime_patch_lock("b1") is not first
+    _runtime_patch_locks.pop("b1", None)

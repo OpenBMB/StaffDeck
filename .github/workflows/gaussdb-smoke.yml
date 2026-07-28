@@ -41,7 +41,7 @@ jobs:
       - name: Install backend deps
         run: |
           python -m venv .venv
-          .venv/bin/pip install -q -e backend[dev] 2>/dev/null || (cd backend && ../.venv/bin/pip install -q -e . && ../.venv/bin/pip install -q pytest pytest-asyncio ruff httpx)
+          .venv/bin/pip install -q -e "backend[dev,postgres]" 2>/dev/null || (cd backend && ../.venv/bin/pip install -q -e ".[dev,postgres]" && ../.venv/bin/pip install -q pytest pytest-asyncio ruff httpx)
 
       - name: create_all + dialect smoke on openGauss
         env:
@@ -64,10 +64,12 @@ jobs:
           from sqlmodel import Session
           d = get_dialect(engine.url.get_backend_name())
           print("dialect:", d.name)
-          assert d.acquire_advisory_lock("staffdeck-connector")
-          print("advisory lock acquire: OK")
-          d.release_advisory_lock("staffdeck-connector")
-          print("advisory lock release: OK")
+          with Session(engine) as lock_session:
+              assert d.acquire_advisory_lock(lock_session, "staffdeck-connector")
+              assert d.check_advisory_lock(lock_session, "staffdeck-connector")
+              print("advisory lock acquire+check: OK")
+              d.release_advisory_lock(lock_session, "staffdeck-connector")
+              print("advisory lock release: OK")
           with Session(engine) as db:
               from app.db.models import User
               db.exec(__import__("sqlmodel").select(User)).all()
