@@ -22,6 +22,9 @@ _CONNECTOR_LOCK_KEY = "staffdeck-connector"
 _connector_lock_pid: int | None = None
 _connector_lock_session = None
 _intake_sweep_thread: threading.Thread | None = None
+_connector_lock_watchdog_thread: threading.Thread | None = None
+# PG advisory lock 存活校验周期(秒):连接被服务端掐断后锁会静默释放,须定期核实
+_CONNECTOR_LOCK_CHECK_SECONDS = 15.0
 
 
 def _acquire_connector_process_lock() -> bool:
@@ -77,15 +80,53 @@ def _release_connector_process_lock() -> None:
     dialect = get_dialect(engine.url.get_backend_name())
     session, _connector_lock_session = _connector_lock_session, None
     try:
-        if session is not None:
-            dialect.release_advisory_lock(session, _CONNECTOR_LOCK_KEY)
-        else:
-            with Session(engine) as fallback_session:
-                dialect.release_advisory_lock(fallback_session, _CONNECTOR_LOCK_KEY)
+        try:
+            if session is not None:
+                dialect.release_advisory_lock(session, _CONNECTOR_LOCK_KEY)
+            else:
+                with Session(engine) as fallback_session:
+                    dialect.release_advisory_lock(fallback_session, _CONNECTOR_LOCK_KEY)
+        except Exception:
+            # 会话可能已随连接中断死亡(锁实际已被服务端释放),释放失败只记录不抛出
+            logger.exception("释放 connector 锁失败(锁可能已随断连释放)")
     finally:
         if session is not None:
             session.close()
         _connector_lock_pid = None
+
+
+def _connector_lock_healthy() -> bool:
+    """会话级 advisory lock 存活校验;文件锁无静默失效模式,恒为 True。"""
+    if _connector_lock_session is None:
+        return True
+    from app.db import engine
+    from app.db.dialect import get_dialect
+
+    dialect = get_dialect(engine.url.get_backend_name())
+    try:
+        return dialect.check_advisory_lock(_connector_lock_session, _CONNECTOR_LOCK_KEY)
+    except Exception:
+        logger.exception("connector 锁存活校验异常")
+        return False
+
+
+def _connector_lock_watchdog() -> None:
+    """PG advisory lock 断连检测:锁静默失效后主动降级(停渠道服务,避免双 connector)。"""
+    while True:
+        time.sleep(_CONNECTOR_LOCK_CHECK_SECONDS)
+        if _connector_lock_pid != os.getpid() or _connector_lock_session is None:
+            return  # 锁已正常释放或本进程不再持有,看门狗退出
+        if _connector_lock_healthy():
+            continue
+        logger.error(
+            "connector advisory lock 已失效(数据库连接中断),渠道服务主动降级停止;"
+            "恢复后请重启进程重新接管"
+        )
+        try:
+            stop_channel_services()
+        except Exception:
+            logger.exception("渠道服务降级停止失败")
+        return
 
 
 def get_wechat_poll_manager():
@@ -223,7 +264,7 @@ def restart_binding_ingress(channel: str, binding_id: str, *, wait_seconds: floa
 
 
 def start_channel_services() -> None:
-    global _intake_sweep_thread
+    global _intake_sweep_thread, _connector_lock_watchdog_thread
     if not channel_services_enabled():
         logger.info("staffdeck_role=%s,渠道服务不启动", get_settings().staffdeck_role)
         return
@@ -250,6 +291,14 @@ def start_channel_services() -> None:
             daemon=True,
         )
         _intake_sweep_thread.start()
+        if _connector_lock_session is not None:
+            # 会话级 advisory lock(PG):定期核实锁仍持有,断连静默失效时主动降级
+            _connector_lock_watchdog_thread = threading.Thread(
+                target=_connector_lock_watchdog,
+                name="staffdeck-connector-lock-watchdog",
+                daemon=True,
+            )
+            _connector_lock_watchdog_thread.start()
     except Exception:
         stop_channel_services()
         raise

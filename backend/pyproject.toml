@@ -19,7 +19,6 @@ dependencies = [
   "pydantic>=2.7.0",
   "pydantic-settings>=2.3.0",
   "pypdf>=4.2.0",
-  "psycopg[binary]>=3.1",
   "python-multipart>=0.0.9",
   "python-docx>=1.1.2",
   "python-dotenv>=1.0.1",
@@ -37,6 +36,10 @@ dev = [
   "pytest>=8.2.0",
   "pytest-asyncio>=0.23.0",
   "ruff>=0.5.0"
+]
+# PostgreSQL/openGauss 驱动按需安装(默认 SQLite 的桌面端不背 ~20MB 二进制)
+postgres = [
+  "psycopg[binary]>=3.1"
 ]
 packaging = [
   "pyinstaller>=6.6.0",

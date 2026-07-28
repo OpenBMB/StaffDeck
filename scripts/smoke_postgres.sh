@@ -47,6 +47,21 @@ backend = engine.url.get_backend_name()
 dialect = get_dialect(backend)
 print(f"backend={backend} dialect={dialect.name}")
 
+# advisory lock 闭环:acquire → check → release(真实 PG 验证会话级锁与 pg_locks 校验)
+with Session(engine) as lock_session:
+    assert dialect.acquire_advisory_lock(lock_session, "smoke-connector"), "acquire 失败"
+    assert dialect.check_advisory_lock(lock_session, "smoke-connector"), "check 未持锁"
+    dialect.release_advisory_lock(lock_session, "smoke-connector")
+    assert not dialect.check_advisory_lock(lock_session, "smoke-connector"), "release 后仍持锁"
+print("advisory lock roundtrip ok")
+
+# 部分唯一索引存在(PG 方言按方言 DDL 创建,不进 metadata)
+from sqlalchemy import inspect as sa_inspect
+
+index_names = {i["name"] for i in sa_inspect(engine).get_indexes("model_configs")}
+assert "uq_model_configs_tenant_default" in index_names, index_names
+print("partial index present ok")
+
 with Session(engine) as db:
     binding = ChannelBinding(
         tenant_id="smoke_tenant",
