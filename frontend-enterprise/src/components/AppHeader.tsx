@@ -78,22 +78,33 @@ export default function AppHeader({
   const [user, setUser] = useState(() => getEnterpriseAuthSession()?.user);
   const [uploadPreviewUrl, setUploadPreviewUrl] = useState('');
   const uploadPreviewUrlRef = useRef('');
+  const [avatarBlobUrl, setAvatarBlobUrl] = useState('');
+  const avatarBlobUrlRef = useRef('');
   const [avatarSaving, setAvatarSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const displayName = user?.display_name || user?.username || '';
   const initial = (displayName || userName || '').trim()?.[0]?.toUpperCase();
   const isAdmin = user?.role === 'admin';
-  const avatarUrl = uploadPreviewUrl || user?.avatar_url || '';
+  // avatar_url 是资源指针(非图片地址):渲染只用预览/已拉取的 blob URL
+  const avatarUrl = uploadPreviewUrl || avatarBlobUrl;
   // 仅放行 http/https/data:image/blob 协议,阻止 javascript: 等可执行协议注入
   const safeAvatarUrl = safeImageUrl(avatarUrl);
 
-  // 预览 blob URL 由 ref 跟踪:替换/清除/组件卸载时都能 revoke 到最新值,不受闭包快照影响
-  function replaceUploadPreview(next: string) {
-    const prev = uploadPreviewUrlRef.current;
+  // blob URL 由 ref 跟踪:替换/清除/组件卸载时都能 revoke 到最新值,不受闭包快照影响
+  function replaceTrackedUrl(ref: { current: string }, set: (v: string) => void, next: string) {
+    const prev = ref.current;
     if (prev && prev !== next) URL.revokeObjectURL(prev);
-    uploadPreviewUrlRef.current = next;
-    setUploadPreviewUrl(next);
+    ref.current = next;
+    set(next);
+  }
+
+  function replaceUploadPreview(next: string) {
+    replaceTrackedUrl(uploadPreviewUrlRef, setUploadPreviewUrl, next);
+  }
+
+  function replaceAvatarBlob(next: string) {
+    replaceTrackedUrl(avatarBlobUrlRef, setAvatarBlobUrl, next);
   }
 
   function clearUploadPreview() {
@@ -101,9 +112,40 @@ export default function AppHeader({
     if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
+  // 头像二进制不随 login/me 内联:凭指针用认证请求拉字节,转 blob URL 渲染
+  async function loadAvatar() {
+    const session = getEnterpriseAuthSession();
+    if (!session?.token || !session.user?.avatar_url) {
+      replaceAvatarBlob('');
+      return;
+    }
+    try {
+      const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+      const response = await fetch(`${apiBase}/api/auth/me/avatar`, {
+        headers: { Authorization: `Bearer ${session.token}` },
+      });
+      if (!response.ok) {
+        replaceAvatarBlob('');
+        return;
+      }
+      const blob = await response.blob();
+      replaceAvatarBlob(URL.createObjectURL(blob));
+    } catch {
+      // 头像加载失败不阻断,回退为首字母
+    }
+  }
+
+  const avatarPointer = user?.avatar_url || '';
+  const userId = user?.id || '';
+  useEffect(() => {
+    void loadAvatar();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [avatarPointer, userId]);
+
   useEffect(
     () => () => {
       if (uploadPreviewUrlRef.current) URL.revokeObjectURL(uploadPreviewUrlRef.current);
+      if (avatarBlobUrlRef.current) URL.revokeObjectURL(avatarBlobUrlRef.current);
     },
     [],
   );
@@ -140,6 +182,8 @@ export default function AppHeader({
       if (!response.ok) throw new Error('上传头像失败');
       notify.success('头像已更新');
       await refreshSessionUser();
+      // 覆盖上传时指针字符串不变,effect 不会重触发,显式重拉头像字节
+      await loadAvatar();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '上传头像失败');
     } finally {
@@ -155,6 +199,7 @@ export default function AppHeader({
       await api.delete('/api/auth/me/avatar');
       notify.success('头像已移除');
       await refreshSessionUser();
+      await loadAvatar();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '移除头像失败');
     } finally {

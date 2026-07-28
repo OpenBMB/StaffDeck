@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
@@ -13,6 +14,8 @@ from app.security.auth import create_access_token, get_current_user, hash_passwo
 from app.security.permissions import MEMBER_ROLE, is_admin_user
 from app.security.tenant import ensure_tenant
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -45,7 +48,8 @@ class UserRead(BaseModel):
     display_name: Optional[str] = None
     role: Literal["admin", "member"]
     source: str = "web"
-    # 仅 /me 与 /login 带出(头像为大字段,用户列表等批量端点不携带)
+    # 仅 /me 与 /login 带出:头像资源指针(存在性标识),不内联二进制——
+    # 完整 data_url 可达 2.67MB,内联会把登录/会话刷新响应与前端 localStorage 撑爆
     avatar_url: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -75,18 +79,20 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
 
     return LoginResponse(
         token=create_access_token(user),
-        user=_user_read(user, _avatar_url_for(db, user.id)),
+        user=_user_read(user, _avatar_pointer_for(db, user.id)),
     )
 
 
 @router.get("/me", response_model=UserRead)
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_session)) -> UserRead:
-    return _user_read(user, _avatar_url_for(db, user.id))
+    return _user_read(user, _avatar_pointer_for(db, user.id))
 
 
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 # multipart 边界与头部开销的上限估计:Content-Length 预检放行正常图片,拦截明显超限请求
 _AVATAR_MULTIPART_OVERHEAD = 64 * 1024
+# 头像资源路径:login/me 返回的 avatar_url 即此指针,前端凭它用认证请求拉取字节
+AVATAR_RESOURCE_PATH = "/api/auth/me/avatar"
 # 头像类型嗅探:以实际字节头为准(防伪装 content-type),仅 png/jpeg/webp/gif
 _AVATAR_MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -104,6 +110,27 @@ def _sniff_avatar_content_type(data: bytes) -> Optional[str]:
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
     return None
+
+
+@router.get("/me/avatar")
+def get_my_avatar(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> Response:
+    """头像资源端点:返回图片字节(不内联进 login/me,避免大字段进会话存储)。"""
+    avatar = db.get(UserAvatar, current_user.id)
+    if not avatar:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    parsed = _parse_avatar_data_url(avatar.data_url)
+    if not parsed:
+        logger.warning("用户 %s 的头像数据损坏,按不存在处理", current_user.id)
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    data, content_type = parsed
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Cache-Control": "private, no-cache"},
+    )
 
 
 @router.put("/me/avatar", response_model=AvatarRead)
@@ -135,7 +162,8 @@ async def update_my_avatar(
         avatar = UserAvatar(user_id=current_user.id, data_url=data_url)
     db.add(avatar)
     db.commit()
-    return AvatarRead(avatar_url=data_url)
+    # 响应同样不内联二进制:返回资源指针,前端经 GET /me/avatar 拉取字节
+    return AvatarRead(avatar_url=AVATAR_RESOURCE_PATH)
 
 
 @router.delete("/me/avatar", status_code=204)
@@ -240,6 +268,10 @@ def delete_user(
         raise HTTPException(status_code=404, detail="Account not found")
     if user.id == current_user.id or is_admin_user(user):
         raise HTTPException(status_code=400, detail="Administrator account cannot be deleted")
+    # 头像为独立小表、无外键级联:显式随用户删除,避免残留孤儿记录
+    avatar = db.get(UserAvatar, user_id)
+    if avatar:
+        db.delete(avatar)
     db.delete(user)
     db.commit()
     return {"ok": True}
@@ -259,9 +291,22 @@ def _user_read(user: User, avatar_url: Optional[str] = None) -> UserRead:
     )
 
 
-def _avatar_url_for(db: Session, user_id: str) -> Optional[str]:
+def _avatar_pointer_for(db: Session, user_id: str) -> Optional[str]:
+    """头像存在性指针:有头像返回资源路径,无返回 None(绝不内联二进制)。"""
     avatar = db.get(UserAvatar, user_id)
-    return avatar.data_url if avatar else None
+    return AVATAR_RESOURCE_PATH if avatar else None
+
+
+def _parse_avatar_data_url(data_url: str) -> Optional[tuple[bytes, str]]:
+    """拆解 data:image/*;base64,... 为(字节, content-type);非法返回 None。"""
+    try:
+        meta, payload = data_url.split(",", 1)
+        content_type = meta.removeprefix("data:").removesuffix(";base64")
+        if not content_type.startswith("image/"):
+            return None
+        return base64.b64decode(payload), content_type
+    except (ValueError, TypeError):
+        return None
 
 
 def _require_admin(user: User, tenant_id: str) -> None:

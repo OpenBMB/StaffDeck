@@ -1998,6 +1998,7 @@
   "头像已移除": "Avatar removed",
   "上传头像失败": "Failed to upload avatar",
   "移除头像失败": "Failed to remove avatar",
+  "浏览器存储空间不足，请清理站点数据后重试": "Browser storage is full. Clear site data and try again.",
   "企业： {1}": "Enterprise: {1}",
   "token 已失效，请重新扫码": "Token expired. Please scan the QR code again",
   "当前未连接，请检查凭证或网络": "Disconnected. Check credentials or network",
