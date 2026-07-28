@@ -2,15 +2,18 @@ import hashlib
 import json
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+import logging
 from pathlib import Path
 
-from sqlalchemy import Engine, inspect, text
+from sqlalchemy import Engine, func, inspect, text
 from sqlalchemy.engine import make_url
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
 from app.db.dialect import get_dialect
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_database_url(url: str) -> str:
@@ -64,9 +67,64 @@ _CAPABILITY_SCOPE_TABLES = (
 def init_db() -> None:
     import app.db.models  # noqa: F401
 
+    _ensure_driver_available()
     _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
     _migrate_sqlite_skill_schema()
+    _validate_default_model_invariant()
+    _warn_backend_constraints()
+
+
+def _ensure_driver_available() -> None:
+    """PG/高斯驱动为可选依赖:缺失时在启动处给出明确安装指引,而不是连接期栈trace。"""
+    if engine.url.get_backend_name() != "postgresql":
+        return
+    try:
+        import psycopg  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "PostgreSQL/openGauss 需要可选驱动:pip install 'skill-agent-loop-backend[postgres]'"
+        ) from exc
+
+
+def _validate_default_model_invariant() -> None:
+    """不支持部分唯一索引的后端:启动校验"每租户至多一条默认模型"未被破坏。
+
+    该类后端不会创建 uq_model_configs_tenant_default(见 models.py 的按方言 DDL),
+    约束退化为代码层维护(默认切换在同事务先清后设)+ 此处启动兜底。
+    """
+    if _dialect.supports_partial_index:
+        return
+    from app.db.models import ModelConfig
+
+    with Session(engine) as db:
+        duplicates = db.exec(
+            select(ModelConfig.tenant_id)
+            .where(ModelConfig.is_default == True)  # noqa: E712
+            .group_by(ModelConfig.tenant_id)
+            .having(func.count() > 1)
+        ).all()
+    if duplicates:
+        raise RuntimeError(
+            "当前数据库后端不支持部分唯一索引,且检测到以下租户存在多条默认模型: "
+            f"{sorted(duplicates)};请人工清理至每租户至多一条后再启动"
+        )
+
+
+def _warn_backend_constraints() -> None:
+    """非 SQLite 后端的显式约束与配置陷阱告警(启动期一次性)。"""
+    backend = engine.url.get_backend_name()
+    if backend == "sqlite":
+        if (get_settings().app_timezone or "").strip():
+            logger.warning(
+                "app_timezone 对 SQLite 不生效(日分桶恒为服务器本地时区),该配置将被忽略"
+            )
+        return
+    logger.warning(
+        "数据库后端 %s 当前仅支持全新库初始化(create_all),无存量 schema 迁移通路;"
+        "版本升级若涉及 models 变更需人工对齐 schema(Alembic 迁移为后续任务)",
+        backend,
+    )
 
 
 def _configure_sqlite_runtime() -> None:

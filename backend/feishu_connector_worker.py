@@ -39,18 +39,20 @@ def _user_data_dir() -> Path:
     return Path.home() / ".local" / "share" / "StaffDeck"
 
 
-def binding_lock_path(binding_id: str, database_url: str) -> Path:
-    """binding 级进程锁路径:指纹取自数据库 URL 字符串(纯哈希,不解析)。"""
-    database_fingerprint = hashlib.sha256(database_url.encode("utf-8")).hexdigest()[:16]
-    binding_fingerprint = hashlib.sha256(binding_id.encode("utf-8")).hexdigest()[:16]
-    return (
-        _user_data_dir()
-        / "connector-locks"
-        / f"feishu-{database_fingerprint}-{binding_fingerprint}.lock"
-    )
+def binding_lock_key(binding_id: str) -> str:
+    """binding 级进程锁的统一 key:方言 advisory lock,锁身份 = 数据库作用域 + key。
+
+    同一数据库内同一 binding 互斥;不再取 database_url 指纹(指纹随密码轮换
+    漂移,且跨 HOME/容器互不可见)。
+    """
+    return f"staffdeck-binding-{binding_id}"
 
 
 class BindingProcessLock:
+    """用户数据目录文件锁:仅作 spec.database_url 为空(单测直构造 spec)时的兜底。
+
+    生产路径一律走 _DialectBindingLock(方言 advisory lock,数据库作用域)。"""
+
     def __init__(self, path: Path):
         self.path = path
         self._handle = None
@@ -97,13 +99,60 @@ class BindingProcessLock:
             self._handle = None
 
 
+class _DialectBindingLock:
+    """binding 级方言 advisory lock:engine 与持锁 session 常驻至 release()。
+
+    PG 锁随会话存活(session 关闭即释放);SQLite 为数据库文件旁的文件锁,
+    句柄由方言实现管理。engine 用 NullPool:持锁期间不需要连接池复用。
+    """
+
+    def __init__(self, database_url: str, key: str) -> None:
+        self._database_url = database_url
+        self._key = key
+        self._dialect = None
+        self._session = None
+        self._engine = None
+
+    def acquire(self) -> bool:
+        from sqlalchemy.pool import NullPool
+        from sqlmodel import Session, create_engine
+
+        from app.db.dialect import get_dialect
+
+        self._engine = create_engine(self._database_url, poolclass=NullPool)
+        self._session = Session(self._engine)
+        self._dialect = get_dialect(self._engine.url.get_backend_name())
+        if self._dialect.acquire_advisory_lock(self._session, self._key):
+            return True
+        self._session.close()
+        self._session = None
+        self._engine.dispose()
+        self._engine = None
+        return False
+
+    def release(self) -> None:
+        if self._session is not None:
+            self._dialect.release_advisory_lock(self._session, self._key)
+            self._session.close()
+            self._session = None
+        if self._engine is not None:
+            self._engine.dispose()
+            self._engine = None
+
+
+def _fallback_binding_lock(binding_id: str) -> BindingProcessLock:
+    """无 database_url 时的兜底文件锁(仅单测直构造 spec 场景)。"""
+    digest = hashlib.sha256(binding_id.encode("utf-8")).hexdigest()[:16]
+    path = _user_data_dir() / "connector-locks" / f"feishu-binding-{digest}.lock"
+    return BindingProcessLock(path)
+
+
 @dataclass(frozen=True)
 class ConnectorChildSpec:
     binding_id: str
     config_revision: int
     child_nonce: str
     runtime_path: str
-    binding_lock_path: str
     # 完整 SQLAlchemy URL:子进程按它自建引擎(非 SQLite 不传 check_same_thread)
     database_url: str = ""
     watchdog_seconds: float = 2.5
@@ -269,7 +318,13 @@ def _load_runtime(path: str) -> Callable[[ConnectorChildSpec, ChildControl, Fram
 
 
 def connector_child_entry(spec: ConnectorChildSpec, connection) -> None:
-    lock = BindingProcessLock(Path(spec.binding_lock_path))
+    # 生产路径:方言 advisory lock(数据库作用域,key 与父进程探测一致);
+    # spec.database_url 为空(单测直构造 spec)时回退用户数据目录文件锁。
+    lock: BindingProcessLock | _DialectBindingLock
+    if spec.database_url:
+        lock = _DialectBindingLock(spec.database_url, binding_lock_key(spec.binding_id))
+    else:
+        lock = _fallback_binding_lock(spec.binding_id)
     if not lock.acquire():
         try:
             connection.send(

@@ -24,12 +24,30 @@ from lark_channel.ws.enum import FrameType, MessageType
 from lark_channel.ws.pb.pbbp2_pb2 import Frame
 
 from app.channels.feishu_process import ConnectorState, FeishuProcessSupervisor
-from feishu_connector_worker import BindingProcessLock, binding_lock_path
+from app.db.dialect import get_dialect
+from feishu_connector_worker import binding_lock_key
 
 SDK_RUNTIME = "feishu_connector_worker:run_sdk_contract_runtime"
 IDLE_RUNTIME = "feishu_connector_worker:run_idle_contract_runtime"
 PARENT_WATCHDOG_RUNTIME = "feishu_connector_worker:run_parent_watchdog_contract_runtime"
 UNSTOPPABLE_RUNTIME = "feishu_connector_worker:run_unstoppable_contract_runtime"
+
+
+def _binding_lock_free(database: Path, binding_id: str) -> bool:
+    """方言探测 binding 锁是否空闲(与父进程同语义:短会话 try-acquire + release)。"""
+    from sqlmodel import Session, create_engine
+
+    engine = create_engine(f"sqlite:///{database}")
+    try:
+        dialect = get_dialect(engine.url.get_backend_name())
+        key = binding_lock_key(binding_id)
+        with Session(engine) as session:
+            if not dialect.acquire_advisory_lock(session, key):
+                return False
+            dialect.release_advisory_lock(session, key)
+            return True
+    finally:
+        engine.dispose()
 
 
 class _LocalFeishuServer:
@@ -837,9 +855,7 @@ def test_child_owned_lock_is_released_after_parent_pipe_closes(tmp_path: Path, m
         time.sleep(0.01)
     record.process.join(timeout=1.0)
     assert not record.process.is_alive()
-    lock = BindingProcessLock(binding_lock_path("binding-orphan", f"sqlite:///{database}"))
-    assert lock.acquire()
-    lock.release()
+    assert _binding_lock_free(database, "binding-orphan")
     assert supervisor.stop(timeout=2.0)
 
 
@@ -1156,10 +1172,7 @@ def test_replace_binding_stops_old_generation_before_revision_commit(
     commit_observations: list[tuple[int | None, bool]] = []
 
     def commit_revision() -> bool:
-        lock = BindingProcessLock(Path(old.spec.binding_lock_path))
-        lock_free = lock.acquire()
-        if lock_free:
-            lock.release()
+        lock_free = _binding_lock_free(tmp_path / "replace.db", "binding-replace")
         commit_observations.append((old.exit_code, lock_free))
         return True
 
@@ -1289,12 +1302,12 @@ def test_stop_does_not_mark_closed_until_binding_locks_are_free(
     original_lock_check = supervisor._binding_lock_is_free
     checks = 0
 
-    def first_check_blocked(path: Path) -> bool:
+    def first_check_blocked(binding_id: str) -> bool:
         nonlocal checks
         checks += 1
         if checks == 1:
             return False
-        return original_lock_check(path)
+        return original_lock_check(binding_id)
 
     monkeypatch.setattr(supervisor, "_binding_lock_is_free", first_check_blocked)
     assert not supervisor.stop(timeout=2.0)

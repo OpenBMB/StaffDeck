@@ -203,7 +203,7 @@ def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -
         )
     return decrypted
 # 同进程运行时补丁串行锁:读-改-写不是单条 SQL,避免并发补丁互相覆盖
-# (跨会话/进程的 API 侧写由下方 config_revision CAS 兜底——API 改配置必递增 revision)
+# (跨会话/进程的并发写由 SELECT ... FOR UPDATE 行锁互斥,见 _patch_runtime_config)
 _runtime_patch_locks: dict[str, threading.Lock] = {}
 _runtime_patch_locks_guard = threading.Lock()
 
@@ -215,6 +215,12 @@ def _runtime_patch_lock(binding_id: str) -> threading.Lock:
             lock = threading.Lock()
             _runtime_patch_locks[binding_id] = lock
         return lock
+
+
+def _drop_runtime_patch_lock(binding_id: str) -> None:
+    """binding ingress 停止后清理其补丁锁,避免锁字典随绑定增删无上限累积。"""
+    with _runtime_patch_locks_guard:
+        _runtime_patch_locks.pop(binding_id, None)
 
 
 def _patch_runtime_config(
@@ -230,11 +236,11 @@ def _patch_runtime_config(
 ) -> bool:
     """Atomically patch connector-owned JSON keys without replacing API configuration.
 
-    ORM 读-改-写 + config_revision CAS:写回为
-    UPDATE ... WHERE id=? AND config_revision=?(读到的 revision),rowcount!=1 即
-    并发冲突返回 False。expected_values(JSON 键 CAS)在 Python 侧校验后随 revision
-    CAS 写回——API 侧改配置必递增 revision,校验到写回之间的并发 API 写会被 CAS
-    拦下;同进程运行时补丁由 _runtime_patch_lock 串行,并发语义与原实现一致。
+    ORM 读-改-写 + SELECT ... FOR UPDATE 行锁 + config_revision CAS:读取即锁定
+    目标行直到提交,与 API 侧补丁(_patch_binding_config_key,同样持 FOR UPDATE)
+    互斥,关闭整份 JSON 读-改-写的丢写窗口;PG 真实加锁,SQLite 不支持 FOR UPDATE
+    由 SQLAlchemy 自动省略(单行 WAL 写串行 + 同进程补丁锁,行为不变)。
+    expected_revision/expected_values 在 Python 侧校验后随写回一并执行。
     """
     allowed_binding_values = {"connected", "status"}
     column_values: dict[str, Any] = {}
@@ -244,7 +250,11 @@ def _patch_runtime_config(
         column_values[key] = value
 
     with _runtime_patch_lock(binding_id), Session(db_engine) as db:
-        binding = db.get(ChannelBinding, binding_id)
+        binding = db.exec(
+            select(ChannelBinding)
+            .where(ChannelBinding.id == binding_id)
+            .with_for_update()
+        ).first()
         if not binding:
             return False
         if require_active and binding.status != "active":
@@ -944,7 +954,11 @@ class WeChatPollManager:
         if thread and thread.is_alive():
             deadline = time.monotonic() + max(0.0, timeout_seconds)
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        return not (thread and thread.is_alive())
+        stopped = not (thread and thread.is_alive())
+        if stopped:
+            # 线程确认退出后清理其运行时补丁锁,避免锁字典随绑定增删无上限累积
+            _drop_runtime_patch_lock(binding_id)
+        return stopped
 
     def running_binding_ids(self) -> set[str]:
         with self._lock:
