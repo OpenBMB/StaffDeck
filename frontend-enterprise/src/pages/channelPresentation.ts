@@ -28,6 +28,13 @@ const BUILT_IN_CHANNELS: Record<string, ChannelPresentation> = {
     blurb: '填入飞书应用凭证，通过长连接接入数字员工。',
     disconnectDescription: '断开后飞书接入将停止服务，需要重新配置应用凭证才能恢复；对话记录保留。确定断开接入吗？',
   },
+  dingtalk: {
+    name: '钉钉',
+    identifierLabel: 'Client ID',
+    userLabel: '钉钉用户',
+    blurb: '填入钉钉 Stream 应用凭证，通过长连接接入数字员工。',
+    disconnectDescription: '断开后钉钉接入将停止服务，需要重新配置应用凭证才能恢复；对话记录保留。确定断开接入吗？',
+  },
 };
 
 export function getChannelPresentation(channel: string, configuredName?: string): ChannelPresentation {

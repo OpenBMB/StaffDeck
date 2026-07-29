@@ -757,6 +757,7 @@ export type ChannelBindingRead = {
   bot_id?: string | null;
   corp_id?: string | null;
   app_id?: string | null;
+  client_id?: string | null;
   bot_open_id?: string | null;
   bot_name?: string | null;
   provider_tenant_key?: string | null;

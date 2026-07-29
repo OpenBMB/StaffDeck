@@ -44,6 +44,7 @@ import type {
 import WechatSetup from './channels/WechatSetup';
 import WecomSetup from './channels/WecomSetup';
 import FeishuSetup from './channels/FeishuSetup';
+import DingTalkSetup from './channels/DingTalkSetup';
 import { getChannelPresentation } from './channelPresentation';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { formatTime, type BadgeTone } from './scheduled-tasks/shared';
@@ -740,6 +741,14 @@ export default function ChannelsPage({
               setBindings((current) =>
                 current.map((item) => (item.id === updated.id ? updated : item)),
               )
+            }
+          />
+        ) : binding.channel === 'dingtalk' ? (
+          <DingTalkSetup
+            key={binding.id}
+            binding={binding}
+            onChanged={(updated) =>
+              setBindings((current) => current.map((item) => (item.id === updated.id ? updated : item)))
             }
           />
         ) : setupKindFor(binding.channel) === 'credentials' ? (
