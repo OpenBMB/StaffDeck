@@ -48,9 +48,20 @@ dialect = get_dialect(backend)
 print(f"backend={backend} dialect={dialect.name}")
 
 # advisory lock 闭环:acquire → check → release(真实 PG 验证会话级锁与 pg_locks 校验)
+from sqlalchemy import text as sa_text
+
 with Session(engine) as lock_session:
     assert dialect.acquire_advisory_lock(lock_session, "smoke-connector"), "acquire 失败"
     assert dialect.check_advisory_lock(lock_session, "smoke-connector"), "check 未持锁"
+    # 回归:制造并发池流量(其他连接频繁 checkout)后,锁校验必须仍 True——
+    # 专属 Connection 不归池,pg_backend_pid 稳定;Session.commit 方案在此会误判
+    for _ in range(3):
+        with engine.connect() as busy_conn:
+            busy_conn.execute(sa_text("SELECT 1"))
+        with Session(engine) as busy_session:
+            busy_session.execute(sa_text("SELECT 1"))
+            busy_session.commit()
+    assert dialect.check_advisory_lock(lock_session, "smoke-connector"), "并发 checkout 后锁校验误判"
     dialect.release_advisory_lock(lock_session, "smoke-connector")
     assert not dialect.check_advisory_lock(lock_session, "smoke-connector"), "release 后仍持锁"
 print("advisory lock roundtrip ok")
