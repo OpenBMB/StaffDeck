@@ -2,7 +2,16 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.memories import clear_my_memories, list_memories
-from app.db.models import AgentProfile, ChatSession, MemoryRecord, Message, ModelConfig, Tenant, User
+from app.db.models import (
+    AgentEvent,
+    AgentProfile,
+    ChatSession,
+    MemoryRecord,
+    Message,
+    ModelConfig,
+    Tenant,
+    User,
+)
 from app.llm.client import LLMClient
 from app.memory.jobs import _conversation_messages_for_turn
 from app.memory.service import MemoryService, memory_rows_for_read
@@ -507,3 +516,105 @@ def _test_session() -> Session:
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+def test_memory_job_skips_group_sessions(monkeypatch) -> None:
+    """群记忆红线:群聊会话的后台记忆任务直接跳过,不调用 capture、不写入。"""
+    from app.memory.jobs import run_memory_capture_job
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            ModelConfig(
+                id="model_1",
+                tenant_id="tenant_demo",
+                name="m",
+                model="gpt-x",
+                api_key_encrypted="x",
+            )
+        )
+        db.add(
+            ChatSession(
+                id="s_group",
+                tenant_id="tenant_demo",
+                user_id="user_group",
+                agent_id="agent_1",
+                channel="wecom",
+                external_conv_id="wecom_corpA_group_wr_1",
+            )
+        )
+        db.add(
+            ChatSession(
+                id="s_p2p",
+                tenant_id="tenant_demo",
+                user_id="user_web",
+                agent_id="agent_1",
+                channel="wecom",
+                external_conv_id="wecom_corpA_p2p_zhangsan",
+            )
+        )
+        db.commit()
+    monkeypatch.setattr("app.memory.jobs.engine", engine)
+    calls: list[str] = []
+
+    def fake_capture(self, request, chat_session, step_result, tool_result, model_config, messages):  # noqa: ANN001
+        calls.append(chat_session.id)
+        return []
+
+    monkeypatch.setattr(MemoryService, "capture_turn", fake_capture)
+
+    with Session(engine) as db:
+        # 私聊会话补一条用户消息事件与对应消息历史(capture 前置要求)
+        db.add(
+            AgentEvent(
+                tenant_id="tenant_demo",
+                session_id="s_p2p",
+                event_type="user_message_received",
+                payload_json={"turn_id": "t1"},
+            )
+        )
+        db.add(
+            Message(
+                tenant_id="tenant_demo",
+                session_id="s_p2p",
+                role="user",
+                content="hi",
+                metadata_json={"turn_id": "t1"},
+            )
+        )
+        db.add(
+            Message(
+                tenant_id="tenant_demo",
+                session_id="s_p2p",
+                role="assistant",
+                content="你好",
+                metadata_json={"turn_id": "t1"},
+            )
+        )
+        db.commit()
+
+    def _payload(session_id: str) -> dict:
+        return {
+            "request": ChatTurnRequest(
+                tenant_id="tenant_demo", message="hi", user_id="u", agent_id="agent_1"
+            ).model_dump(mode="json"),
+            "session_id": session_id,
+            "model_config_id": "model_1",
+            "step_result": StepAgentResult().model_dump(mode="json"),
+            "tool_result": None,
+        }
+
+    # 群会话:跳过
+    run_memory_capture_job(_payload("s_group"))
+    assert calls == []
+    with Session(engine) as db:
+        assert db.exec(select(MemoryRecord)).all() == []
+    # 私聊会话:正常进入 capture(不误伤)
+    run_memory_capture_job(_payload("s_p2p"))
+    assert calls == ["s_p2p"]
