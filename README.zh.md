@@ -270,13 +270,14 @@ StaffDeck 的全部状态存放在一个 SQL 数据库中，默认使用本地 S
 | --- | --- | --- |
 | SQLite（默认） | 支持 | 文件库；进程锁为数据库文件旁的文件锁。 |
 | PostgreSQL / openGauss | 实验性 | 通过 `postgresql` 方言提供全能力。需先安装可选驱动：`pip install "skill-agent-loop-backend[postgres]"`，再在 `backend/.env` 设置 `DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"`。 |
-| MySQL / 达梦 | 需适配器 | 注册一个小方言适配器即可（见 `dialect.py` 模块 docstring)。此类引擎不支持部分唯一索引，"每租户至多一条默认模型"改由代码层维护 + 启动校验兜底；未实现原生 advisory lock 时，connector 锁会在启动期响亮失败，而不是静默错锁。 |
+| MySQL / 达梦 | 需适配器 | 注册一个小方言适配器即可（见 `dialect.py` 模块 docstring)。此类引擎不支持部分唯一索引，"每租户至多一条默认模型"改由代码层维护 + 启动校验兜底（运行期无 DB 级约束）；未实现原生 advisory lock 时，connector 锁会在启动期响亮失败，而不是静默错锁。JSON 列经 `PortableJSON` 降级为 CLOB，长文本列显式 `Text`(MySQL 不会退化为 VARCHAR(255))。 |
 
 在 PostgreSQL/openGauss 上运行的当前限制：
 
 - **仅支持全新库**:`create_all` 负责初始化新库，暂无存量 schema 的迁移通路（Alembic 迁移为后续任务），启动时会输出提醒告警；
+- **单写者启动**：首次启动/升级只跑一个应用 worker——多 worker 并发 `create_all` + 演示数据播种会撞键（SQLite 靠写锁串行化无此问题）,PG 部署请先用单 worker 完成初始化；
 - `APP_TIMEZONE` 只对 PostgreSQL 日分桶生效；SQLite 的日分桶恒为服务器本地时区；
-- 每个数据库只允许运行一个 connector 进程——单实例守护使用会话级 PostgreSQL advisory lock，并带定期存活校验（锁失效时渠道服务主动降级停止）。
+- 每个数据库只允许运行一个 connector 进程——单实例守护使用会话级 PostgreSQL advisory lock（常驻于一条专属 AUTOCOMMIT 连接），并带定期存活校验（锁失效时渠道服务主动降级停止）。
 
 ## 项目结构
 
