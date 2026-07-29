@@ -7,8 +7,9 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.channels.adapters import base as adapter_registry
 from app.channels.adapters.base import register_channel_adapter
+from app.channels.service_durable_inbox import reaction_target
 from app.channels.service_outbox import (
-    cleanup_feishu_reactions_before_binding_delete,
+    cleanup_channel_reactions_before_binding_delete,
     run_delivery_daemon,
     run_reaction_delivery_daemon,
     stage_channel_delivery,
@@ -50,6 +51,9 @@ class FakeAdapter:
 
 
 class FakeFeishuAdapter(FakeAdapter):
+    reaction_token = "Get"
+    reaction_attach_idempotent = False
+
     def __init__(
         self,
         *,
@@ -60,14 +64,16 @@ class FakeFeishuAdapter(FakeAdapter):
         self.fail_reaction_add = fail_reaction_add
         self.recovered_reaction_id = recovered_reaction_id
         self.calls: list[tuple[str, str, str]] = []
+        self.reaction_targets: list[dict] = []
 
     def add_reaction(
         self,
         binding: ChannelBinding,
-        message_id: str,
+        target: dict,
         emoji_type: str,
     ) -> str:
-        self.calls.append(("add", message_id, emoji_type))
+        self.reaction_targets.append(dict(target))
+        self.calls.append(("add", str(target.get("message_id") or ""), emoji_type))
         if self.fail_reaction_add:
             raise RuntimeError("reaction unavailable")
         return "reaction_123"
@@ -75,19 +81,21 @@ class FakeFeishuAdapter(FakeAdapter):
     def find_own_reaction(
         self,
         binding: ChannelBinding,
-        message_id: str,
+        target: dict,
         emoji_type: str,
     ) -> str | None:
-        self.calls.append(("find", message_id, emoji_type))
+        self.reaction_targets.append(dict(target))
+        self.calls.append(("find", str(target.get("message_id") or ""), emoji_type))
         return self.recovered_reaction_id
 
     def remove_reaction(
         self,
         binding: ChannelBinding,
-        message_id: str,
+        target: dict,
         reaction_id: str,
     ) -> None:
-        self.calls.append(("remove", message_id, reaction_id))
+        self.reaction_targets.append(dict(target))
+        self.calls.append(("remove", str(target.get("message_id") or ""), reaction_id))
 
     def send(
         self,
@@ -798,7 +806,7 @@ def test_binding_delete_cleanup_removes_known_feishu_reactions(monkeypatch) -> N
         db.add(event)
         db.commit()
 
-        cleanup_feishu_reactions_before_binding_delete(db, binding)
+        cleanup_channel_reactions_before_binding_delete(db, binding)
         db.commit()
 
         assert db.get(ChannelInboundEvent, event.id).reaction_id is None
@@ -822,11 +830,156 @@ def test_binding_delete_cleanup_reconciles_unknown_reaction(
         db.add(reaction_add)
         db.commit()
 
-        cleanup_feishu_reactions_before_binding_delete(db, binding)
+        cleanup_channel_reactions_before_binding_delete(db, binding)
     assert adapter.calls == [
         ("find", "om_feishu", "Get"),
         ("remove", "om_feishu", "reaction_recovered"),
     ]
+
+
+class FakeDingTalkAdapter(FakeAdapter):
+    """钉钉没有"查询我加过的表情"接口。
+
+    这个假适配器刻意不提供 find_own_reaction，用来固定"声明重挂幂等的渠道不得走
+    回查路径"这条契约——否则 outbox 会抛"不支持 reaction 恢复"。
+    """
+
+    reaction_token = "🤔思考中"
+    reaction_attach_idempotent = True
+
+    def __init__(self):
+        super().__init__()
+        self.calls: list[tuple[str, str, str]] = []
+
+    def add_reaction(self, binding: ChannelBinding, target: dict, token: str) -> str:
+        self.calls.append(("add", str(target.get("message_id") or ""), token))
+        return "emotion:2659900"
+
+    def remove_reaction(self, binding: ChannelBinding, target: dict, handle: str) -> None:
+        self.calls.append(("remove", str(target.get("message_id") or ""), handle))
+
+
+def _seed_dingtalk_reaction_event(db: Session, binding: ChannelBinding) -> ChannelInboundEvent:
+    event = ChannelInboundEvent(
+        id="event_dingtalk",
+        tenant_id=binding.tenant_id,
+        binding_id=binding.id,
+        channel="dingtalk",
+        event_id="msg_dingtalk",
+        target_json={
+            "message_id": "msg_dingtalk",
+            "conversation_id": "conv_dingtalk",
+            "to_user_id": "staff_1",
+            "context_token": "https://oapi.dingtalk.com/robot/send?session=x",
+        },
+        status="done",
+    )
+    db.add(event)
+    db.commit()
+    return event
+
+
+def _seed_dingtalk_delivery(
+    db: Session,
+    binding: ChannelBinding,
+    event: ChannelInboundEvent,
+    *,
+    kind: str,
+    status: str = "pending",
+) -> ChannelDelivery:
+    target = reaction_target(event)
+    if kind not in {"reaction_add", "reaction_remove"}:
+        target["reaction_final"] = True
+    delivery = ChannelDelivery(
+        tenant_id=binding.tenant_id,
+        binding_id=binding.id,
+        session_id=f"event:{event.id}",
+        target_json=target,
+        kind=kind,
+        text="🤔思考中" if kind == "reaction_add" else "处理完成",
+        status=status,
+        next_attempt_at=utc_now() if status == "pending" else None,
+        idempotency_key=f"test:{kind}",
+    )
+    db.add(delivery)
+    db.commit()
+    return delivery
+
+
+def test_dingtalk_reaction_is_recalled_after_response_delivery(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeDingTalkAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "dingtalk", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="dingtalk")
+        event = _seed_dingtalk_reaction_event(db, binding)
+        _seed_dingtalk_delivery(db, binding, event, kind="reaction_add")
+        _seed_dingtalk_delivery(db, binding, event, kind="notice")
+        event_id = event.id
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, event_id).reaction_id == "emotion:2659900"
+
+    # 最终回复送达后才登记撤回，撤回本身走 reaction lane。
+    run_delivery_daemon(once=True, db_engine=engine)
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelInboundEvent, event_id).reaction_id is None
+        removal = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "reaction_remove")
+        ).first()
+        assert removal.status == "delivered"
+        assert removal.idempotency_key.startswith("dingtalk-reaction-remove:")
+        # 撤回目标必须带上 openConversationId，否则钉钉 emotion 接口定位不到消息。
+        assert removal.target_json["conversation_id"] == "conv_dingtalk"
+    assert adapter.calls == [
+        ("add", "msg_dingtalk", "🤔思考中"),
+        ("remove", "msg_dingtalk", "emotion:2659900"),
+    ]
+
+
+def test_dingtalk_reaction_retry_reattaches_without_query(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeDingTalkAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "dingtalk", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="dingtalk")
+        event = _seed_dingtalk_reaction_event(db, binding)
+        delivery = _seed_dingtalk_delivery(db, binding, event, kind="reaction_add")
+        delivery.attempts = 1
+        db.add(delivery)
+        db.commit()
+        delivery_id = delivery.id
+        event_id = event.id
+
+    run_reaction_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+        assert db.get(ChannelInboundEvent, event_id).reaction_id == "emotion:2659900"
+    assert adapter.calls == [("add", "msg_dingtalk", "🤔思考中")]
+
+
+def test_dingtalk_binding_delete_cleanup_recalls_without_query(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeDingTalkAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "dingtalk", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="dingtalk")
+        event = _seed_dingtalk_reaction_event(db, binding)
+        uncertain = _seed_dingtalk_delivery(
+            db, binding, event, kind="reaction_add", status="failed"
+        )
+        uncertain.attempts = 1
+        db.add(uncertain)
+        db.commit()
+
+        cleanup_channel_reactions_before_binding_delete(db, binding)
+
+    # 挂没挂上无从查证，只能按与挂上对称的参数无条件撤回。
+    assert adapter.calls == [("remove", "msg_dingtalk", "")]
 
 
 def test_two_workers_atomically_claim_one_delivery(tmp_path) -> None:

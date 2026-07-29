@@ -533,23 +533,24 @@ def delete_channel_binding(
         try:
             binding = _get_binding(db, tenant_id, binding_id)
             _ensure_revision(binding, expected_revision)
-            if binding.channel == "feishu":
-                from app.channels.service_outbox import (
-                    cleanup_feishu_reactions_before_binding_delete,
-                )
+            from app.channels.service_outbox import (
+                cleanup_channel_reactions_before_binding_delete,
+            )
 
-                try:
-                    cleanup_feishu_reactions_before_binding_delete(db, binding)
-                except Exception as exc:
-                    logger.warning(
-                        "删除飞书绑定前清理 reaction 失败 binding=%s: %s",
-                        binding.id,
-                        exc,
-                    )
-                    raise HTTPException(
-                        status_code=409,
-                        detail="飞书消息确认尚未清理，请稍后重试删除",
-                    ) from exc
+            try:
+                # 渠道不支持 reaction 时该调用自身即为空操作。
+                cleanup_channel_reactions_before_binding_delete(db, binding)
+            except Exception as exc:
+                logger.warning(
+                    "删除渠道绑定前清理 reaction 失败 channel=%s binding=%s: %s",
+                    binding.channel,
+                    binding.id,
+                    exc,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="渠道消息确认尚未清理，请稍后重试删除",
+                ) from exc
             db.exec(
                 update(ChannelDelivery)
                 .where(

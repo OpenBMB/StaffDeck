@@ -683,7 +683,8 @@ class ChannelInboundEvent(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSON, nullable=False, server_default="{}"),
     )
-    # 飞书收到确认 reaction 的远端 ID；最终回复送达后据此异步删除
+    # 收到确认标记的句柄；最终回复送达后据此异步撤回。飞书存远端 reaction_id；
+    # 钉钉 emotion 接口不返回 ID，存本地哨兵值表示"已挂上待撤回"。
     reaction_id: Optional[str] = Field(default=None, index=True)
     # received/processing/done/failed
     status: str = Field(default="received", index=True)

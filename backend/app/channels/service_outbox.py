@@ -20,6 +20,8 @@ from app.db.models import (
     new_id,
     utc_now,
 )
+from app.channels.adapters.base import channel_reaction_token
+from app.channels.service_durable_inbox import reaction_target
 from app.channels.service_identity import external_account_scope
 
 logger = logging.getLogger(__name__)
@@ -283,6 +285,7 @@ def _claim_delivery(
 def _reaction_event_for_delivery(
     db: Session,
     delivery: ChannelDelivery,
+    channel: str,
 ) -> ChannelInboundEvent | None:
     target = dict(delivery.target_json or {})
     message_id = str(target.get("message_id") or "").strip()
@@ -294,7 +297,7 @@ def _reaction_event_for_delivery(
             event
             and event.binding_id == delivery.binding_id
             and event.tenant_id == delivery.tenant_id
-            and event.channel == "feishu"
+            and event.channel == channel
             and event.event_id == message_id
         )
 
@@ -306,7 +309,7 @@ def _reaction_event_for_delivery(
         select(ChannelInboundEvent).where(
             ChannelInboundEvent.tenant_id == delivery.tenant_id,
             ChannelInboundEvent.binding_id == delivery.binding_id,
-            ChannelInboundEvent.channel == "feishu",
+            ChannelInboundEvent.channel == channel,
             ChannelInboundEvent.event_id == message_id,
         )
     ).first()
@@ -320,25 +323,26 @@ def _stage_reaction_removal(
     reaction_id = str(event.reaction_id or "").strip()
     if not reaction_id:
         return
-    idempotency_key = f"feishu-reaction-remove:{event.id}:{reaction_id}"
+    idempotency_key = f"{event.channel}-reaction-remove:{event.id}:{reaction_id}"
     existing = db.exec(
         select(ChannelDelivery).where(ChannelDelivery.idempotency_key == idempotency_key)
     ).first()
     if existing:
         return
+    token = channel_reaction_token(event.channel) or ""
+    # 撤回接口没有 token 参数,渠道若需要标记名(如钉钉 emotion)只能从目标里读。
+    removal_target = {**reaction_target(event), "reaction_id": reaction_id}
+    if token:
+        removal_target["reaction_token"] = token
     db.add(
         ChannelDelivery(
             tenant_id=delivery.tenant_id,
             binding_id=delivery.binding_id,
             session_id=f"event:{event.id}",
             message_id=None,
-            target_json={
-                "message_id": event.event_id,
-                "event_pk": event.id,
-                "reaction_id": reaction_id,
-            },
+            target_json=removal_target,
             kind="reaction_remove",
-            text="",
+            text=token,
             status="pending",
             next_attempt_at=utc_now(),
             idempotency_key=idempotency_key,
@@ -384,9 +388,10 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
 
     settings = get_settings()
     binding = db.get(ChannelBinding, delivery.binding_id)
+    # 绑定停用后仍要允许收尾:撤回残留标记,以及重试可能已挂上的标记。
     allow_inactive_reaction = bool(
         binding
-        and binding.channel == "feishu"
+        and channel_reaction_token(binding.channel)
         and binding.credentials_enc
         and (
             delivery.kind == "reaction_remove"
@@ -408,7 +413,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
         return
     reaction_event = None
     if delivery.kind in _REACTION_KINDS:
-        if binding.channel != "feishu":
+        if not channel_reaction_token(binding.channel):
             delivery.status = "failed"
             delivery.last_error = "reaction 渠道无效"
             delivery.next_attempt_at = None
@@ -416,7 +421,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
             db.add(delivery)
             db.commit()
             return
-        reaction_event = _reaction_event_for_delivery(db, delivery)
+        reaction_event = _reaction_event_for_delivery(db, delivery, binding.channel)
         if not reaction_event:
             delivery.status = "failed"
             delivery.last_error = "reaction 事件边界无效"
@@ -468,21 +473,16 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
             if not callable(add_reaction):
                 raise RuntimeError("渠道适配器不支持 reaction")
             reaction_id = None
-            if delivery.attempts > 1:
+            # 重挂会产生第二个标记的渠道必须先回查;声明重挂幂等的渠道直接重发。
+            if delivery.attempts > 1 and not getattr(
+                adapter, "reaction_attach_idempotent", False
+            ):
                 find_reaction = getattr(adapter, "find_own_reaction", None)
                 if not callable(find_reaction):
                     raise RuntimeError("渠道适配器不支持 reaction 恢复")
-                reaction_id = find_reaction(
-                    binding,
-                    str(target.get("message_id") or ""),
-                    delivery.text,
-                )
+                reaction_id = find_reaction(binding, target, delivery.text)
             if not reaction_id and binding.status == "active":
-                reaction_id = add_reaction(
-                    binding,
-                    str(target.get("message_id") or ""),
-                    delivery.text,
-                )
+                reaction_id = add_reaction(binding, target, delivery.text)
             if reaction_id:
                 reaction_event.reaction_id = reaction_id
                 reaction_event.updated_at = utc_now()
@@ -495,11 +495,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
             remove_reaction = getattr(adapter, "remove_reaction", None)
             if not callable(remove_reaction):
                 raise RuntimeError("渠道适配器不支持 reaction 清理")
-            remove_reaction(
-                binding,
-                str(target.get("message_id") or ""),
-                str(target.get("reaction_id") or ""),
-            )
+            remove_reaction(binding, target, str(target.get("reaction_id") or ""))
             if reaction_event.reaction_id == str(target.get("reaction_id") or ""):
                 reaction_event.reaction_id = None
                 reaction_event.updated_at = utc_now()
@@ -532,8 +528,8 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     delivery.sending_since = None
     delivery.updated_at = utc_now()
     db.add(delivery)
-    if binding.channel == "feishu" and delivery.kind not in _REACTION_KINDS:
-        event = _reaction_event_for_delivery(db, delivery)
+    if channel_reaction_token(binding.channel) and delivery.kind not in _REACTION_KINDS:
+        event = _reaction_event_for_delivery(db, delivery, binding.channel)
         target = delivery.target_json or {}
         is_final = delivery.kind in {"reply", "error_notice"} or bool(
             target.get("reaction_final")
@@ -543,12 +539,13 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     db.commit()
 
 
-def cleanup_feishu_reactions_before_binding_delete(
+def cleanup_channel_reactions_before_binding_delete(
     db: Session,
     binding: ChannelBinding,
 ) -> None:
     """Delete known remote reactions before their binding credentials are removed."""
-    if binding.channel != "feishu":
+    token = channel_reaction_token(binding.channel)
+    if not token:
         return
     from app.channels.adapters import get_channel_adapter
 
@@ -561,38 +558,46 @@ def cleanup_feishu_reactions_before_binding_delete(
             ChannelDelivery.status.in_({"pending", "sending", "failed"}),
         )
     ).all()
-    adapter = get_channel_adapter("feishu")
-    find_reaction = getattr(adapter, "find_own_reaction", None)
+    adapter = get_channel_adapter(binding.channel)
     remove_reaction = getattr(adapter, "remove_reaction", None)
-    if not callable(find_reaction) or not callable(remove_reaction):
-        raise RuntimeError("飞书适配器不支持 reaction 恢复与清理")
+    if not callable(remove_reaction):
+        raise RuntimeError("渠道适配器不支持 reaction 清理")
+    # 重挂幂等的渠道(钉钉)没有回查接口,但撤回参数与挂上完全对称,可以无条件撤回。
+    attach_idempotent = bool(getattr(adapter, "reaction_attach_idempotent", False))
+    find_reaction = getattr(adapter, "find_own_reaction", None)
+    if not attach_idempotent and not callable(find_reaction):
+        raise RuntimeError("渠道适配器不支持 reaction 恢复")
     event_by_id = {
         event.id: event
         for event in db.exec(
             select(ChannelInboundEvent).where(
                 ChannelInboundEvent.tenant_id == binding.tenant_id,
                 ChannelInboundEvent.binding_id == binding.id,
-                ChannelInboundEvent.channel == "feishu",
+                ChannelInboundEvent.channel == binding.channel,
             )
         ).all()
     }
     for delivery in uncertain_adds:
         event = event_by_id.get(str((delivery.target_json or {}).get("event_pk") or ""))
         if not event:
-            raise RuntimeError("飞书 reaction 事件边界无效")
+            raise RuntimeError("reaction 事件边界无效")
         if event.reaction_id:
             continue
         message_id = str((delivery.target_json or {}).get("message_id") or "").strip()
         if not message_id or message_id != event.event_id:
-            raise RuntimeError("飞书 reaction 事件边界无效")
-        reaction_id = find_reaction(binding, message_id, delivery.text)
+            raise RuntimeError("reaction 事件边界无效")
+        target = reaction_target(event)
+        if attach_idempotent:
+            remove_reaction(binding, target, "")
+            continue
+        reaction_id = find_reaction(binding, target, delivery.text)
         if reaction_id:
-            remove_reaction(binding, message_id, reaction_id)
+            remove_reaction(binding, target, reaction_id)
     events = db.exec(
         select(ChannelInboundEvent).where(
             ChannelInboundEvent.tenant_id == binding.tenant_id,
             ChannelInboundEvent.binding_id == binding.id,
-            ChannelInboundEvent.channel == "feishu",
+            ChannelInboundEvent.channel == binding.channel,
             ChannelInboundEvent.reaction_id.is_not(None),
         )
     ).all()
@@ -600,7 +605,7 @@ def cleanup_feishu_reactions_before_binding_delete(
         reaction_id = str(event.reaction_id or "").strip()
         if not reaction_id:
             continue
-        remove_reaction(binding, event.event_id, reaction_id)
+        remove_reaction(binding, reaction_target(event), reaction_id)
         event.reaction_id = None
         event.updated_at = utc_now()
         db.add(event)

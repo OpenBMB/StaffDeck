@@ -62,6 +62,35 @@ class ChannelAdapter(Protocol):
     def stop_ingress(self, binding_id: str) -> None: ...
 
 
+class ChannelReactionAdapter(Protocol):
+    """可选能力:给入站消息挂"处理中"标记,最终回复送达后撤回。
+
+    target 传整个投递目标字典而非单个消息 ID:飞书只需要 message_id,钉钉的
+    emotion 接口还要求 openConversationId。
+
+    reaction_attach_idempotent 决定重试语义。为 False 时适配器必须另外提供
+    find_own_reaction(),重试前回查远端已挂上的标记;为 True 时表示重复挂同一
+    标记无副作用,重试直接重发。
+    """
+
+    reaction_token: str
+    reaction_attach_idempotent: bool
+
+    def add_reaction(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        token: str,
+    ) -> str | None: ...
+
+    def remove_reaction(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        handle: str,
+    ) -> None: ...
+
+
 _adapters: dict[str, ChannelAdapter] = {}
 
 
@@ -74,6 +103,22 @@ def get_channel_adapter(channel: str) -> ChannelAdapter:
     if adapter is None:
         raise ValueError(f"未注册的渠道适配器: {channel}")
     return adapter
+
+
+def channel_reaction_token(channel: str) -> str | None:
+    """该渠道"处理中"标记的标识;不支持 reaction 时返回 None。
+
+    intake 与 outbox 都以此作为能力门禁,不再按渠道名字判断。
+    """
+    adapter = _adapters.get(channel)
+    if adapter is None:
+        return None
+    if not callable(getattr(adapter, "add_reaction", None)) or not callable(
+        getattr(adapter, "remove_reaction", None)
+    ):
+        return None
+    token = str(getattr(adapter, "reaction_token", "") or "").strip()
+    return token or None
 
 
 def split_channel_text(text: str, limit: int = CHANNEL_TEXT_LIMIT) -> list[str]:

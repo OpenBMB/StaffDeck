@@ -148,11 +148,10 @@ def test_reaction_add_and_remove_use_message_reaction_api() -> None:
         return _response(200, {"code": 0, "data": {"reaction_id": "rx_123"}}, url)
 
     adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
-    existing_reaction_id = adapter.find_own_reaction(
-        _binding(), "om_source", "Get"
-    )
-    reaction_id = adapter.add_reaction(_binding(), "om_source", "Get")
-    adapter.remove_reaction(_binding(), "om_source", reaction_id)
+    target = {"message_id": "om_source"}
+    existing_reaction_id = adapter.find_own_reaction(_binding(), target, "Get")
+    reaction_id = adapter.add_reaction(_binding(), target, "Get")
+    adapter.remove_reaction(_binding(), target, reaction_id)
 
     assert existing_reaction_id == "rx_existing"
     assert reaction_id == "rx_123"
@@ -170,7 +169,7 @@ def test_reaction_remove_treats_404_as_idempotent_success() -> None:
         return _response(404, {"code": 231003}, url)
 
     adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
-    adapter.remove_reaction(_binding(), "om_source", "rx_missing")
+    adapter.remove_reaction(_binding(), {"message_id": "om_source"}, "rx_missing")
 
 
 def test_401_refreshes_token_exactly_once() -> None:

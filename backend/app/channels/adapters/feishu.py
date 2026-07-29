@@ -14,6 +14,7 @@ from app.db.models import ChannelBinding
 
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 TOKEN_REFRESH_SKEW_SECONDS = 300
+FEISHU_REACTION_TOKEN = "Get"
 _TOKEN_INVALID_CODES = {99991663, 99991664, 99991668}
 _PERMANENT_MESSAGE_CODES = {
     230001,  # invalid request/target
@@ -150,6 +151,11 @@ def validate_feishu_credentials(
 
 
 class FeishuAdapter:
+    # 飞书 reaction 会返回远端 reaction_id，重复挂会产生第二个表情，因此重试前必须
+    # 先用 find_own_reaction() 回查，不能直接重发。
+    reaction_attach_idempotent = False
+    reaction_token = FEISHU_REACTION_TOKEN
+
     def __init__(
         self,
         *,
@@ -236,10 +242,10 @@ class FeishuAdapter:
     def add_reaction(
         self,
         binding: ChannelBinding,
-        message_id: str,
-        emoji_type: str = "Get",
+        target: dict[str, Any],
+        emoji_type: str = FEISHU_REACTION_TOKEN,
     ) -> str:
-        message_id = str(message_id or "").strip()
+        message_id = str((target or {}).get("message_id") or "").strip()
         emoji_type = str(emoji_type or "").strip()
         if not message_id or not emoji_type:
             raise FeishuPermanentError("飞书 reaction 参数无效")
@@ -257,10 +263,10 @@ class FeishuAdapter:
     def find_own_reaction(
         self,
         binding: ChannelBinding,
-        message_id: str,
-        emoji_type: str = "Get",
+        target: dict[str, Any],
+        emoji_type: str = FEISHU_REACTION_TOKEN,
     ) -> str | None:
-        message_id = str(message_id or "").strip()
+        message_id = str((target or {}).get("message_id") or "").strip()
         emoji_type = str(emoji_type or "").strip()
         app_id = str((binding.config_json or {}).get("app_id") or "").strip()
         if not message_id or not emoji_type or not app_id:
@@ -299,10 +305,10 @@ class FeishuAdapter:
     def remove_reaction(
         self,
         binding: ChannelBinding,
-        message_id: str,
+        target: dict[str, Any],
         reaction_id: str,
     ) -> None:
-        message_id = str(message_id or "").strip()
+        message_id = str((target or {}).get("message_id") or "").strip()
         reaction_id = str(reaction_id or "").strip()
         if not message_id or not reaction_id:
             raise FeishuPermanentError("飞书 reaction 清理参数无效")
