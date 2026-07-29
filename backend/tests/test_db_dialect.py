@@ -453,6 +453,7 @@ def test_mysql_long_text_columns_are_not_varchar255() -> None:
         ModelConfig,
         PersonaConfig,
         Tool,
+        UserAvatar,
     )
 
     dialect = mysql_dialect.dialect()
@@ -467,6 +468,8 @@ def test_mysql_long_text_columns_are_not_varchar255() -> None:
         (ModelConfig, "api_key_encrypted"),
         (Tool, "url"),
         (Tool, "description"),
+        # 头像 base64 ~2.8MB:MySQL 须 MEDIUMTEXT(超 TEXT 64KB 上限)
+        (UserAvatar, "data_url"),
     ]
     for table, column in long_columns:
         compiled = str(table.__table__.c[column].type.compile(dialect=dialect))
