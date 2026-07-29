@@ -1404,6 +1404,16 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     }
   }, [appendQueuedTurnPreview, notifyQueue, persistQueuedTurns]);
 
+  const removeQueuedTurn = useCallback((turnId: string) => {
+    if (!turnId) return;
+    const queuedTurn = queuedTurnsRef.current.find((turn) => turn.turnId === turnId);
+    if (!queuedTurn) return;
+    queuedTurnsRef.current = queuedTurnsRef.current.filter((turn) => turn.turnId !== turnId);
+    persistQueuedTurns();
+    removeQueuedTurnPreview(queuedTurn);
+    notifyQueue();
+  }, [notifyQueue, persistQueuedTurns, removeQueuedTurnPreview]);
+
   useEffect(() => {
     if (queuedTurnPreviewsRestoredRef.current) return;
     queuedTurnPreviewsRestoredRef.current = true;
@@ -3325,6 +3335,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     handleChatMessagesScroll,
     send,
     abortStream,
+    removeQueuedTurn,
     rateMessage,
     setActiveCitation,
     activeCitation,

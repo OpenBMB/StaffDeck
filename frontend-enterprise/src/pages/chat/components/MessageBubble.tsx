@@ -31,6 +31,8 @@ import {
   CHAT_MESSAGE_ITEM_CLASS,
   CHAT_MESSAGE_MODE_CHIP_CLASS,
   CHAT_PLAIN_ANSWER_CLASS,
+  CHAT_QUEUED_BUBBLE_CLASS,
+  CHAT_QUEUED_DELETE_BTN_CLASS,
   CHAT_QUEUED_MESSAGE_ITEM_CLASS,
   CHAT_QUEUED_STATUS_CLASS,
   CHAT_QUEUED_STATUS_ROW_CLASS,
@@ -70,7 +72,14 @@ type MessageBubbleProps = {
 };
 
 export default function MessageBubble({ chat, item, render }: MessageBubbleProps) {
-  const { toggleTrace, rateMessage, setActiveCitation, confirmScheduledTask, dismissScheduledTaskDraft } = chat;
+  const {
+    toggleTrace,
+    rateMessage,
+    setActiveCitation,
+    confirmScheduledTask,
+    dismissScheduledTaskDraft,
+    removeQueuedTurn,
+  } = chat;
   const {
     traceTurnId,
     summary,
@@ -91,8 +100,22 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
     <div className={cn(CHAT_MESSAGE_ITEM_CLASS, queuedMessage && CHAT_QUEUED_MESSAGE_ITEM_CLASS)}>
       <div className={chatRowClass(item.role)}>
         <div
-          className={chatBubbleClass(item.role, item.isError)}
+          className={cn(
+            chatBubbleClass(item.role, item.isError),
+            queuedMessage && CHAT_QUEUED_BUBBLE_CLASS,
+          )}
         >
+          {queuedMessage && (
+            <button
+              type="button"
+              className={CHAT_QUEUED_DELETE_BTN_CLASS}
+              aria-label="删除排队消息"
+              title="删除排队消息"
+              onClick={() => removeQueuedTurn(item.turnId || '')}
+            >
+              <StaffdeckIcon name="trash" size={14} />
+            </button>
+          )}
           {statusOnly ? (
             <div className="text-[13px] text-[#858b9c]">{visibleContent}</div>
           ) : showInlineTrace && summary ? (

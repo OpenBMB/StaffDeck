@@ -47,6 +47,10 @@ export const CHAT_BUBBLE_ASSISTANT_CLASS =
 export const CHAT_BUBBLE_USER_CLASS =
   'rounded-[14px] bg-[#f6f6f6] px-[16px] py-[11px] text-[#18181a]';
 export const CHAT_BUBBLE_ERROR_CLASS = 'border-[#f38989] bg-[#fce7e7] text-[#d20b0b]';
+export const CHAT_QUEUED_BUBBLE_CLASS =
+  'border border-dashed border-[#c9d2e4] bg-[#fafbfc] pr-[42px] text-[#464c5e]';
+export const CHAT_QUEUED_DELETE_BTN_CLASS =
+  'absolute right-[8px] top-[8px] inline-grid size-[24px] place-items-center rounded-[7px] border-0 bg-transparent p-0 text-[#a2a8b8] transition-colors hover:bg-[#eef0f4] hover:text-[#18181a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c9d2e4]';
 export function chatRowClass(role: 'user' | 'assistant' | 'system' | 'tool'): string {
   return cn(
     CHAT_MESSAGE_ROW_BASE_CLASS,
