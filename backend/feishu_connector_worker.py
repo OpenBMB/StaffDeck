@@ -102,8 +102,9 @@ class BindingProcessLock:
 class _DialectBindingLock:
     """binding 级方言 advisory lock:engine 与持锁 session 常驻至 release()。
 
-    PG 锁随会话存活(session 关闭即释放);SQLite 为数据库文件旁的文件锁,
-    句柄由方言实现管理。engine 用 NullPool:持锁期间不需要连接池复用。
+    PG 锁随连接存活(专属 AUTOCOMMIT 连接由方言内部常驻,进程退出即释放);
+    SQLite 为数据库文件旁的文件锁,句柄由方言实现管理。engine 用 NullPool:
+    持锁期间不需要连接池复用。engine/session 仅作 bind 来源常驻至 release()。
     """
 
     def __init__(self, database_url: str, key: str) -> None:

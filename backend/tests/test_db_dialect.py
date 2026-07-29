@@ -53,7 +53,9 @@ def test_register_dialect_override() -> None:
 def test_engine_kwargs_sqlite_matches_legacy_behavior() -> None:
     kwargs = get_dialect("sqlite").engine_kwargs("sqlite:///x.db")
     assert kwargs == {"connect_args": {"check_same_thread": False, "timeout": 30}}
-    assert get_dialect("postgresql").engine_kwargs("postgresql+psycopg://h/db") == {}
+    # PG 连接池加固:pre_ping 防陈旧连接、recycle 防 idle 掐断、池容随 binding 增长
+    pg_kwargs = get_dialect("postgresql").engine_kwargs("postgresql+psycopg://h/db")
+    assert pg_kwargs["pool_pre_ping"] is True
 
 
 def test_day_bucket_sqlite_keeps_localtime_date() -> None:
@@ -131,15 +133,19 @@ def test_sqlite_file_advisory_lock_excludes_other_holder(tmp_path) -> None:
         second.release_advisory_lock(session, "connector")
 
 
-class _StubSession:
-    """最小 PG 会话桩:记录 SQL/事务调用并按预设返回 scalar/first。"""
+class _StubConn:
+    """PG 专属连接桩:记录 SQL、AUTOCOMMIT 设置与关闭状态。"""
 
-    def __init__(self, scalar, *, first_row=None) -> None:
+    def __init__(self, scalar=1, *, first_row=(1,)) -> None:
         self._scalar = scalar
         self._first_row = first_row
         self.calls: list[tuple[str, dict]] = []
-        self.commits = 0
-        self.rollbacks = 0
+        self.isolation: str | None = None
+        self.closed = False
+
+    def execution_options(self, **kwargs):
+        self.isolation = kwargs.get("isolation_level")
+        return self
 
     def execute(self, statement, params=None):
         self.calls.append((str(statement), params))
@@ -148,40 +154,105 @@ class _StubSession:
             first=lambda: self._first_row,
         )
 
-    def commit(self) -> None:
-        self.commits += 1
-
-    def rollback(self) -> None:
-        self.rollbacks += 1
+    def close(self) -> None:
+        self.closed = True
 
 
-def test_postgres_advisory_lock_roundtrip() -> None:
+class _StubEngine:
+    """connect() 按需产出新 _StubConn 的引擎桩。"""
+
+    def __init__(self) -> None:
+        self.conns: list[_StubConn] = []
+        self.scalar = 1
+        self.first_row = (1,)
+
+    def connect(self):
+        conn = _StubConn(self.scalar, first_row=self.first_row)
+        self.conns.append(conn)
+        return conn
+
+
+class _StubSession:
+    """最小会话桩:仅作 bind 来源(锁实现不得 commit/rollback 它)。"""
+
+    def __init__(self, engine: _StubEngine) -> None:
+        self._engine = engine
+
+    def get_bind(self):
+        return self._engine
+
+
+def test_postgres_advisory_lock_uses_dedicated_autocommit_connection() -> None:
+    """acquire/check/release 全程使用同一条专属 AUTOCOMMIT Connection,不归池。"""
     dialect = PostgresDialect()
-    session = _StubSession(1)
+    engine = _StubEngine()
+    session = _StubSession(engine)
+
     assert dialect.acquire_advisory_lock(session, "connector") is True
-    assert "pg_try_advisory_lock(hashtext(:key), 0)" in session.calls[0][0]
-    assert session.calls[0][1] == {"key": "connector"}
-    # acquire 后立即提交:advisory lock 随会话存活,不能留着 idle-in-transaction
-    assert session.commits == 1
-    dialect.release_advisory_lock(session, "connector")
-    assert "pg_advisory_unlock(hashtext(:key), 0)" in session.calls[1][0]
-    assert session.commits == 2
-    # 锁被占用时返回 False
-    assert dialect.acquire_advisory_lock(_StubSession(0), "connector") is False
+    assert len(engine.conns) == 1
+    conn = engine.conns[0]
+    assert conn.isolation == "AUTOCOMMIT"
+    assert "pg_try_advisory_lock(hashtext(:key), 0)" in conn.calls[0][0]
+    assert conn.closed is False
 
-
-def test_postgres_check_advisory_lock_queries_pg_locks() -> None:
-    dialect = PostgresDialect()
-    session = _StubSession(None, first_row=(1,))
+    # check 在同一连接上查 pg_locks(pid 稳定),不再从池里取新连接
     assert dialect.check_advisory_lock(session, "connector") is True
-    sql = session.calls[0][0]
+    assert len(engine.conns) == 1
+    sql = conn.calls[1][0]
     assert "pg_locks" in sql and "locktype = 'advisory'" in sql
     assert "pg_backend_pid()" in sql
-    # 校验查询开启的事务必须回滚,避免持锁连接 idle-in-transaction
-    assert session.rollbacks == 1
 
-    missing = _StubSession(None, first_row=None)
-    assert dialect.check_advisory_lock(missing, "connector") is False
+    dialect.release_advisory_lock(session, "connector")
+    assert "pg_advisory_unlock(hashtext(:key), 0)" in conn.calls[2][0]
+    assert conn.closed is True
+
+    # 释放后再取:新连接
+    assert dialect.acquire_advisory_lock(session, "connector") is True
+    assert len(engine.conns) == 2
+    dialect.release_advisory_lock(session, "connector")
+
+
+def test_postgres_advisory_lock_contention_closes_connection() -> None:
+    """抢锁失败:专属连接立即关闭,不驻留;check 判 False。"""
+    dialect = PostgresDialect()
+    engine = _StubEngine()
+    engine.scalar = 0
+    session = _StubSession(engine)
+
+    assert dialect.acquire_advisory_lock(session, "connector") is False
+    assert engine.conns[0].closed is True
+    assert dialect.check_advisory_lock(session, "connector") is False
+
+
+def test_postgres_advisory_lock_reentrant_and_fork_guard(monkeypatch) -> None:
+    """同进程重入不新建连接;fork 子进程视角下继承连接不作数,按新身份真实抢锁。"""
+    parent = PostgresDialect()
+    engine = _StubEngine()
+    session = _StubSession(engine)
+    assert parent.acquire_advisory_lock(session, "k") is True
+    assert parent.acquire_advisory_lock(session, "k") is True
+    assert len(engine.conns) == 1
+
+    # 模拟另一"进程"(独立方言实例 + 另一进程号):继承状态不作数
+    child = PostgresDialect()
+    child._pg_lock_conns = dict(parent._pg_lock_conns)  # fork 继承的是内存副本
+    real_pid = os.getpid()
+    monkeypatch.setattr(os, "getpid", lambda: real_pid + 100000)
+    assert child.check_advisory_lock(session, "k") is False
+    assert child.acquire_advisory_lock(session, "k") is True
+    assert len(engine.conns) == 2
+    child.release_advisory_lock(session, "k")
+    monkeypatch.undo()
+    # 父进程锁不受子进程动作影响
+    assert parent.check_advisory_lock(session, "k") is True
+    parent.release_advisory_lock(session, "k")
+
+
+def test_postgres_engine_kwargs_pool_hardening() -> None:
+    kwargs = PostgresDialect().engine_kwargs("postgresql+psycopg://u:p@h/db")
+    assert kwargs["pool_pre_ping"] is True
+    assert kwargs["pool_recycle"] > 0
+    assert kwargs["pool_size"] >= 10
 
 
 def test_generic_file_lock_refuses_non_sqlite_backend() -> None:
@@ -348,3 +419,83 @@ def test_validate_default_model_invariant_skipped_when_partial_index_supported(
     monkeypatch.setattr(database, "engine", engine)
     monkeypatch.setattr(database, "_dialect", SimpleNamespace(supports_partial_index=True))
     database._validate_default_model_invariant()
+
+
+# ---------- MySQL/Oracle 可移植性:全表 DDL 编译扫描 + 类型策略 ----------
+
+
+def test_all_tables_compile_on_mysql_and_oracle() -> None:
+    """42 张表在 mysql/oracle 方言下 DDL 全部可编译(JSON 列经 PortableJSON 降级)。"""
+    from sqlalchemy.dialects import mysql as mysql_dialect
+    from sqlalchemy.dialects import oracle as oracle_dialect
+    from sqlalchemy.schema import CreateTable
+
+    import app.db.models  # noqa: F401 - 注册全部表模型
+
+    tables = SQLModel.metadata.sorted_tables
+    assert len(tables) >= 40
+    for table in tables:
+        assert str(CreateTable(table).compile(dialect=mysql_dialect.dialect()))
+        assert str(CreateTable(table).compile(dialect=oracle_dialect.dialect()))
+
+
+def test_mysql_long_text_columns_are_not_varchar255() -> None:
+    """MySQL 对无长度 str 列默认 VARCHAR(255):长文本列必须显式 Text(抽验关键列)。"""
+    from sqlalchemy.dialects import mysql as mysql_dialect
+
+    from app.db.models import (
+        AgentProfile,
+        ChannelBinding,
+        ChannelDelivery,
+        KnowledgeChunk,
+        MemoryRecord,
+        Message,
+        ModelConfig,
+        PersonaConfig,
+        Tool,
+    )
+
+    dialect = mysql_dialect.dialect()
+    long_columns = [
+        (Message, "content"),
+        (KnowledgeChunk, "content"),
+        (PersonaConfig, "system_prompt"),
+        (AgentProfile, "persona_prompt"),
+        (ChannelDelivery, "text"),
+        (ChannelBinding, "credentials_enc"),
+        (MemoryRecord, "content"),
+        (ModelConfig, "api_key_encrypted"),
+        (Tool, "url"),
+        (Tool, "description"),
+    ]
+    for table, column in long_columns:
+        compiled = str(table.__table__.c[column].type.compile(dialect=dialect))
+        assert "TEXT" in compiled.upper(), (table.__tablename__, column, compiled)
+        assert "VARCHAR(255)" not in compiled.upper(), (table.__tablename__, column, compiled)
+
+
+def test_portable_json_roundtrip_and_oracle_fallback() -> None:
+    """PortableJSON:pg/sqlite/mysql 走原生 JSON;oracle/dm 序列化进 CLOB 并还原。"""
+    from sqlalchemy.dialects import oracle as oracle_dialect
+    from sqlalchemy.dialects import postgresql as pg_dialect
+
+    from app.db.models import PortableJSON
+
+    portable = PortableJSON()
+    oracle = oracle_dialect.dialect()
+    pg = pg_dialect.dialect()
+
+    value = {"key": ["a", 1], "中文": True}
+    # oracle:序列化为文本,读出还原
+    bound = portable.process_bind_param(value, oracle)
+    assert isinstance(bound, str)
+    assert portable.process_result_value(bound, oracle) == value
+    # pg:原样透传(由原生 JSON 类型处理)
+    assert portable.process_bind_param(value, pg) is value
+    assert portable.process_result_value(value, pg) is value
+    # None 两方言都透传
+    assert portable.process_bind_param(None, oracle) is None
+    assert portable.process_result_value(None, oracle) is None
+    # oracle 下 DDL 类型为 CLOB,pg 下为 JSON
+    assert "CLOB" in str(portable.compile(dialect=oracle)).upper()
+    assert "JSON" in str(portable.compile(dialect=pg)).upper()

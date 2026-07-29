@@ -44,7 +44,7 @@ class DatabaseDialect(Protocol):
 
     name: str  # sqlite / postgresql / mysql / dm / ...
     supports_partial_index: bool  # 部分唯一索引(WHERE 子句)能力
-    session_scoped_advisory_lock: bool  # advisory lock 是否随会话存活(持锁会话须常驻)
+    session_scoped_advisory_lock: bool  # advisory lock 是否随连接存活(方言须常驻专属连接)
 
     def engine_kwargs(self, url: str) -> dict[str, Any]: ...
 
@@ -194,13 +194,30 @@ class SQLiteDialect(BaseDialect):
 class PostgresDialect(BaseDialect):
     """PostgreSQL/高斯:psycopg3 驱动(postgresql+psycopg://),全能力。
 
-    advisory lock 随连接存活:持锁会话必须由调用方常驻(连接关闭即释放)。"""
+    advisory lock 属于**连接**而非会话:持锁期间由本方言常驻一条专属
+    `engine.connect()` Connection(AUTOCOMMIT——每条语句即提即放,不留
+    idle-in-transaction;Connection 不归池,commit/rollback 不脱钩,
+    `pg_backend_pid()` 全程稳定)。绝不能用 Session.commit() 代替:
+    commit 会把连接归还池中,锁静默释放或后续 check 取到别的连接。"""
 
     supports_partial_index = True
     session_scoped_advisory_lock = True
 
     def __init__(self) -> None:
         super().__init__("postgresql")
+        # key -> (pid, Connection);fork 防护同 BaseDialect 文件锁
+        self._pg_lock_conns: dict[str, tuple[int, Any]] = {}
+
+    def engine_kwargs(self, url: str) -> dict[str, Any]:
+        return {
+            # 陈旧连接(PG 重启/idle 超时后)首用前先 ping,失效即重连而非报错
+            "pool_pre_ping": True,
+            # 主动回收长闲连接,避开服务端/LB 的 idle 掐断
+            "pool_recycle": 1800,
+            # 后台线程随 binding 数增长,默认 5+10 不够
+            "pool_size": 10,
+            "max_overflow": 20,
+        }
 
     def day_bucket(self, column) -> Any:
         tz = (get_settings().app_timezone or "").strip()
@@ -212,29 +229,64 @@ class PostgresDialect(BaseDialect):
         interval = literal(offset, type_=Interval)
         return cast(column + interval, Date)
 
+    def _engine_of(self, session):
+        bind = session.get_bind()
+        return getattr(bind, "engine", bind)
+
     def acquire_advisory_lock(self, session, key: str) -> bool:
+        """以专属 AUTOCOMMIT Connection 取锁并常驻;重入成功,fork 继承不作数。"""
+        held = self._pg_lock_conns.get(key)
+        if held is not None:
+            held_pid, held_conn = held
+            if held_pid == os.getpid():
+                return True
+            # fork 子进程:继承的连接只丢弃引用,不在共享 socket 上做任何操作
+            self._pg_lock_conns.pop(key, None)
         # 双 int4 键形式(classid=hashtext(key), objid=0):便于在 pg_locks 中直接校验
-        locked = session.execute(
-            text("SELECT pg_try_advisory_lock(hashtext(:key), 0)"),
-            {"key": key},
-        ).scalar()
-        # advisory lock 随会话(连接)存活而非事务:立即提交,避免持锁连接
-        # 永久 idle in transaction(阻塞 VACUUM、钉住 xmin horizon)
-        session.commit()
-        return bool(locked)
+        conn = self._engine_of(session).connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        )
+        try:
+            locked = conn.execute(
+                text("SELECT pg_try_advisory_lock(hashtext(:key), 0)"),
+                {"key": key},
+            ).scalar()
+        except Exception:
+            conn.close()
+            raise
+        if not locked:
+            conn.close()
+            return False
+        self._pg_lock_conns[key] = (os.getpid(), conn)
+        return True
 
     def release_advisory_lock(self, session, key: str) -> None:
-        session.execute(text("SELECT pg_advisory_unlock(hashtext(:key), 0)"), {"key": key})
-        session.commit()
+        held = self._pg_lock_conns.pop(key, None)
+        if held is None:
+            return
+        held_pid, conn = held
+        if held_pid != os.getpid():
+            # fork 子进程:仅丢弃引用,不解父进程的锁
+            return
+        try:
+            conn.execute(text("SELECT pg_advisory_unlock(hashtext(:key), 0)"), {"key": key})
+        finally:
+            conn.close()
 
     def check_advisory_lock(self, session, key: str) -> bool:
-        """校验当前会话仍持有该 advisory lock。
+        """校验本进程常驻的那条连接仍持有该 advisory lock。
 
-        连接被服务端掐断(PG 重启/idle 超时/网络抖动)后锁会静默释放;连接池
-        透明重连会让"SELECT 1"假健康,因此必须在 pg_locks 里按 pid+键核实。
+        必须在**同一条专属 Connection** 上查 pg_locks(pid 稳定);连接被服务端
+        掐断后锁已静默释放,查询会抛错——同样判 False。
         """
+        held = self._pg_lock_conns.get(key)
+        if held is None:
+            return False
+        held_pid, conn = held
+        if held_pid != os.getpid():
+            return False
         try:
-            held = session.execute(
+            row = conn.execute(
                 text(
                     "SELECT 1 FROM pg_locks "
                     "WHERE locktype = 'advisory' AND pid = pg_backend_pid() "
@@ -242,13 +294,10 @@ class PostgresDialect(BaseDialect):
                 ),
                 {"key": key},
             ).first()
-            return held is not None
+            return row is not None
         except Exception:
             logger.exception("PG advisory lock 存活校验失败 key=%s", key)
             return False
-        finally:
-            # 校验查询自身会开启事务,及时回滚避免持锁连接再次 idle in transaction
-            session.rollback()
 
 
 class GenericDialect(BaseDialect):

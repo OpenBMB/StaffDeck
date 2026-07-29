@@ -17,7 +17,7 @@ _feishu_process_manager = None
 _dingtalk_stream_manager = None
 _binding_lifecycle_locks: dict[str, threading.RLock] = {}
 _binding_lifecycle_locks_guard = threading.Lock()
-# connector 单实例锁:统一锁 key;PG 持锁会话常驻(_connector_lock_session)
+# connector 单实例锁:统一锁 key;PG 持锁连接由方言常驻(_connector_lock_session 仅作 bind 来源)
 _CONNECTOR_LOCK_KEY = "staffdeck-connector"
 _connector_lock_pid: int | None = None
 _connector_lock_session = None
@@ -47,7 +47,7 @@ def _acquire_connector_process_lock() -> bool:
 
     dialect = get_dialect(engine.url.get_backend_name())
     if dialect.session_scoped_advisory_lock:
-        # PG advisory lock 随连接存活:持锁会话常驻模块级,release 时才关闭
+        # PG advisory lock 随连接存活:专属连接由方言内部常驻,此会话仅作 bind 来源
         session = Session(engine)
         if not dialect.acquire_advisory_lock(session, _CONNECTOR_LOCK_KEY):
             session.close()
