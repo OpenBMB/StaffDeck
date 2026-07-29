@@ -6,6 +6,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from sqlalchemy import Column, DDL, Index, Integer, JSON, Text, TypeDecorator, UniqueConstraint, event
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlmodel import Field, SQLModel
 
 
@@ -38,6 +39,11 @@ class PortableJSON(TypeDecorator):
         if value is not None and dialect.name in ("oracle", "dm"):
             return json.loads(value)
         return value
+
+
+# 超过 TEXT(64KB)上限的大字段(如 base64 头像 ~2.8MB):MySQL 用 MEDIUMTEXT,
+# 其它方言 TEXT 本身无界(SQLite/PG)或映射 CLOB(Oracle/达梦)
+HugeText = Text().with_variant(MEDIUMTEXT(), "mysql")
 
 
 class Tenant(SQLModel, table=True):
@@ -74,7 +80,7 @@ class UserAvatar(SQLModel, table=True):
     __tablename__ = "user_avatars"
 
     user_id: str = Field(primary_key=True)
-    data_url: str
+    data_url: str = Field(sa_column=Column(HugeText))
     updated_at: datetime = Field(default_factory=utc_now)
 
 
