@@ -46,6 +46,7 @@ class ChannelBindingRead(BaseModel):
     bot_id: Optional[str] = None
     corp_id: Optional[str] = None
     app_id: Optional[str] = None
+    client_id: Optional[str] = None
     bot_open_id: Optional[str] = None
     bot_name: Optional[str] = None
     provider_tenant_key: Optional[str] = None
@@ -96,6 +97,12 @@ class FeishuCredentialsRequest(BaseModel):
     tenant_id: str
     app_id: str
     app_secret: str
+
+
+class DingTalkCredentialsRequest(BaseModel):
+    tenant_id: str
+    client_id: str
+    client_secret: str
 
 
 class ChannelCredentialFieldRead(BaseModel):
@@ -215,6 +222,7 @@ def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBinding
         bot_id=config.get("bot_id"),
         corp_id=config.get("corp_id"),
         app_id=config.get("app_id"),
+        client_id=config.get("client_id"),
         bot_open_id=config.get("bot_open_id"),
         bot_name=config.get("bot_name"),
         provider_tenant_key=binding.provider_tenant_key,

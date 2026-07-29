@@ -19,6 +19,10 @@ from app.channels import (
     resume_binding_ingress,
     wait_binding_ingress_stopped,
 )
+from app.channels.adapters.dingtalk import (
+    DingTalkPermanentError,
+    validate_dingtalk_credentials,
+)
 from app.channels.adapters.feishu import (
     FeishuPermanentError,
     validate_feishu_credentials,
@@ -40,6 +44,7 @@ from app.channels.schema import (
     ChannelMetaRead,
     ChannelQRCodeRead,
     ChannelQRCodeStatusRead,
+    DingTalkCredentialsRequest,
     FeishuCredentialsRequest,
     MyIdentityBindingRead,
     WeComCredentialsRequest,
@@ -114,7 +119,7 @@ def _patch_binding_config_key(
     if result.rowcount != 1:
         raise HTTPException(status_code=404, detail="渠道绑定不存在")
 
-SUPPORTED_CHANNELS = {"wechat", "wecom", "feishu"}
+SUPPORTED_CHANNELS = {"wechat", "wecom", "feishu", "dingtalk"}
 INGRESS_QUIESCE_TIMEOUT_SECONDS = 5.0
 
 # 渠道描述:前端接入页据此渲染渠道卡片与凭证表单,新渠道只加条目不动页面骨架
@@ -150,6 +155,16 @@ CHANNEL_META = [
         "credential_fields": [
             {"key": "app_id", "label": "App ID", "placeholder": "cli_xxx", "secret": False},
             {"key": "app_secret", "label": "App Secret", "placeholder": None, "secret": True},
+        ],
+        "capabilities": [],
+    },
+    {
+        "channel": "dingtalk",
+        "name": "钉钉",
+        "setup": "credentials",
+        "credential_fields": [
+            {"key": "client_id", "label": "Client ID", "placeholder": "钉钉开放平台获取", "secret": False},
+            {"key": "client_secret", "label": "Client Secret", "placeholder": None, "secret": True},
         ],
         "capabilities": [],
     },
@@ -993,6 +1008,79 @@ def save_feishu_credentials(
             _resume_binding(channel, binding_id, start=should_run)
             raise
         _resume_binding(channel, binding_id, start=True)
+    return channel_binding_read(db, binding)
+
+
+@router.post("/{binding_id}/dingtalk/credentials", response_model=ChannelBindingRead)
+def save_dingtalk_credentials(
+    binding_id: str,
+    request: DingTalkCredentialsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> ChannelBindingRead:
+    """Validate and save DingTalk Stream credentials, then start its connector."""
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    binding = _get_binding(db, request.tenant_id, binding_id)
+    _ensure_binding_manager(db, request.tenant_id, binding, current_user)
+    if binding.channel != "dingtalk":
+        raise HTTPException(status_code=400, detail="该绑定不是钉钉渠道")
+    client_id = request.client_id.strip()
+    client_secret = request.client_secret.strip()
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=400, detail="Client ID 与 Client Secret 均不能为空")
+    old_client_id = str((binding.config_json or {}).get("client_id") or "").strip()
+    if old_client_id and old_client_id != client_id:
+        raise HTTPException(status_code=400, detail="应用变更不允许直接修改，请删除后重新创建绑定")
+    try:
+        validate_dingtalk_credentials(client_id, client_secret)
+    except DingTalkPermanentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("验证钉钉凭证失败 binding=%s", binding_id, exc_info=True)
+        raise HTTPException(status_code=502, detail="钉钉凭证验证暂时失败，请稍后重试") from exc
+    account_key = external_account_key("dingtalk", {"client_id": client_id})
+    if not account_key:
+        raise HTTPException(status_code=400, detail="Client ID 无效")
+    _ensure_external_account_available(db, account_key, binding_id)
+    db.rollback()
+    with binding_lifecycle_lock(binding_id):
+        binding = _get_binding(db, request.tenant_id, binding_id)
+        expected_revision = binding.config_revision
+        should_run = bool(binding.status == "active" and binding.credentials_enc)
+        current_client_id = str((binding.config_json or {}).get("client_id") or "").strip()
+        if current_client_id and current_client_id != client_id:
+            raise HTTPException(status_code=409, detail="渠道配置已被其他请求修改，请重试")
+        db.rollback()
+        _quiesce_binding_or_409(binding.channel, binding_id, should_run=should_run)
+        try:
+            binding = _get_binding(db, request.tenant_id, binding_id)
+            _ensure_revision(binding, expected_revision)
+            latest_client_id = str((binding.config_json or {}).get("client_id") or "").strip()
+            if latest_client_id and latest_client_id != client_id:
+                raise HTTPException(status_code=409, detail="渠道配置已被其他请求修改，请重试")
+            _ensure_external_account_available(db, account_key, binding_id)
+            config = dict(binding.config_json or {})
+            config.update({"client_id": client_id, "bot_name": "钉钉机器人", "bound_at": utc_now().isoformat()})
+            binding.credentials_enc = encrypt_channel_secret(client_secret)
+            binding.config_json = config
+            binding.external_account_key = account_key
+            binding.config_revision += 1
+            binding.status = "active"
+            binding.connected = False
+            binding.updated_at = utc_now()
+            db.add(binding)
+            adopt_orphan_channel_sessions(db, binding)
+            db.commit()
+            db.refresh(binding)
+        except IntegrityError as exc:
+            db.rollback()
+            _resume_binding(binding.channel, binding_id, start=should_run)
+            raise HTTPException(status_code=409, detail="该钉钉应用已被其他渠道绑定使用") from exc
+        except Exception:
+            db.rollback()
+            _resume_binding(binding.channel, binding_id, start=should_run)
+            raise
+        _resume_binding(binding.channel, binding_id, start=True)
     return channel_binding_read(db, binding)
 
 

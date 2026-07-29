@@ -25,7 +25,8 @@ dependencies = [
   "sqlmodel>=0.0.21",
   "tzdata>=2025.2",
   "uvicorn[standard]>=0.30.0",
-  "wecom-aibot-python-sdk>=1.0.2"
+  "wecom-aibot-python-sdk>=1.0.2",
+  "dingtalk-stream>=0.24.3,<0.25.0"
 ]
 
 [project.optional-dependencies]

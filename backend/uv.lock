@@ -485,6 +485,19 @@ wheels = [
 ]
 
 [[package]]
+name = "dingtalk-stream"
+version = "0.24.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "requests" },
+    { name = "websockets" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4c/44/102dede3f371277598df6aa9725b82e3add068c729333c7a5dbc12764579/dingtalk_stream-0.24.3-py3-none-any.whl", hash = "sha256:2160403656985962878bf60cdf5adf41619f21067348e06f07a7c7eebf5943ad", size = 27813, upload-time = "2025-10-24T09:36:57.497Z" },
+]
+
+[[package]]
 name = "distro"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1885,6 +1898,7 @@ dependencies = [
     { name = "anthropic" },
     { name = "beautifulsoup4" },
     { name = "cryptography" },
+    { name = "dingtalk-stream" },
     { name = "fastapi" },
     { name = "greenlet" },
     { name = "httpx" },
@@ -1921,6 +1935,7 @@ requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.12.3" },
     { name = "certifi", marker = "extra == 'packaging'", specifier = ">=2024.2.2" },
     { name = "cryptography", specifier = ">=42.0.0,<49.0.0" },
+    { name = "dingtalk-stream", specifier = ">=0.24.3,<0.25.0" },
     { name = "fastapi", specifier = ">=0.111.0" },
     { name = "greenlet", specifier = ">=3.0.3" },
     { name = "httpx", specifier = ">=0.27.0" },

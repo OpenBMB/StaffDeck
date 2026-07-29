@@ -9,9 +9,14 @@ from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.channels.adapters.base import ChannelInbound, get_channel_adapter
+from app.channels.adapters.base import (
+    ChannelInbound,
+    channel_reaction_token,
+    get_channel_adapter,
+)
 from app.channels.adapters.wechat import normalize_wechat_message
 from app.channels.service_autoroute import maybe_auto_route, record_auto_route_event
+from app.channels.service_durable_inbox import reaction_target
 from app.channels.service_identity import (
     channel_label,
     external_account_scope,
@@ -28,6 +33,7 @@ from app.channels.service_routing import (
     run_command,
 )
 from app.channels.service_session import find_or_create_channel_session
+from app.config import get_settings
 from app.db import engine
 from app.db.models import (
     ChannelBindCode,
@@ -166,7 +172,7 @@ def claim_staged_inbound(event_id: str, *, db_engine=None) -> bool:
             update(ChannelInboundEvent)
             .where(
                 ChannelInboundEvent.id == event_id,
-                ChannelInboundEvent.channel.in_({"feishu", "wecom"}),
+                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
                 ChannelInboundEvent.status == "received",
             )
             .values(
@@ -449,12 +455,23 @@ def _valid_notice_target(channel: str, target: dict) -> bool:
     return bool(target.get("to_user_id") and target.get("context_token"))
 
 
-def _stage_feishu_received_reaction(
+def _reaction_staging_enabled(channel: str) -> bool:
+    """钉钉 emotion 常量与权限真机验证通过前默认不登记,避免堆积失败投递。"""
+    if channel == "dingtalk":
+        return get_settings().channel_dingtalk_reaction_enabled
+    return True
+
+
+def _stage_received_reaction(
     db: Session,
     binding: ChannelBinding,
     event: ChannelInboundEvent,
 ) -> None:
-    idempotency_key = f"feishu-reaction-add:{binding.id}:{event.event_id}"
+    """给已收到的入站事件登记"处理中"标记;渠道不支持 reaction 时直接跳过。"""
+    token = channel_reaction_token(binding.channel)
+    if not token or not _reaction_staging_enabled(binding.channel):
+        return
+    idempotency_key = f"{binding.channel}-reaction-add:{binding.id}:{event.event_id}"
     existing = db.exec(
         select(ChannelDelivery).where(ChannelDelivery.idempotency_key == idempotency_key)
     ).first()
@@ -466,9 +483,9 @@ def _stage_feishu_received_reaction(
             binding_id=binding.id,
             session_id=f"event:{event.id}",
             message_id=None,
-            target_json={"message_id": event.event_id, "event_pk": event.id},
+            target_json=reaction_target(event),
             kind="reaction_add",
-            text="Get",
+            text=token,
             status="pending",
             next_attempt_at=utc_now(),
             idempotency_key=idempotency_key,
@@ -965,7 +982,7 @@ def process_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
                 update(ChannelInboundEvent)
                 .where(
                     ChannelInboundEvent.id == event_pk,
-                    ChannelInboundEvent.channel.in_({"feishu", "wecom"}),
+                    ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
                     ChannelInboundEvent.status == "processing",
                     ChannelInboundEvent.processor_run_id == current_processor_run_id(),
                 )
@@ -1003,8 +1020,7 @@ def _process_claimed_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
             db.add(event)
             db.commit()
             return False
-        if event.channel == "feishu":
-            _stage_feishu_received_reaction(db, binding, event)
+        _stage_received_reaction(db, binding, event)
         db.commit()
         db.refresh(binding)
         db.expunge(binding)
@@ -1062,7 +1078,7 @@ def run_staged_inbound_daemon(
                 event_ids = db.exec(
                     select(ChannelInboundEvent.id)
                     .where(
-                        ChannelInboundEvent.channel.in_({"feishu", "wecom"}),
+                        ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
                         ChannelInboundEvent.status == "received",
                     )
                     .order_by(ChannelInboundEvent.created_at)
@@ -1141,6 +1157,25 @@ def _decode_and_validate_staged_event(
         if not scope or external_account_scope(None, binding) != scope:
             raise ValueError("replay_account_mismatch")
         return inbound
+    if event.channel == "dingtalk":
+        from app.channels.service_dingtalk_inbox import (
+            decode_replay_envelope,
+            dingtalk_account_key,
+            dingtalk_identity_scope,
+        )
+
+        inbound = decode_replay_envelope(payload)
+        client_id = str((account or {}).get("client_id") or "").strip()
+        tenant_key = str((account or {}).get("tenant_key") or "").strip()
+        if (
+            not client_id
+            or not tenant_key
+            or binding.external_account_key != dingtalk_account_key(client_id)
+            or binding.provider_tenant_key != tenant_key
+            or binding.identity_scope_key != dingtalk_identity_scope(client_id, tenant_key)
+        ):
+            raise ValueError("replay_account_mismatch")
+        return inbound
     raise ValueError("unsupported_envelope_channel")
 
 
@@ -1190,7 +1225,7 @@ def _recover_stale_durable_event(event_pk: str, *, db_engine=None) -> bool:
             update(ChannelInboundEvent)
             .where(
                 ChannelInboundEvent.id == event_pk,
-                ChannelInboundEvent.channel.in_({"feishu", "wecom"}),
+                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
                 ChannelInboundEvent.status == "processing",
                 or_(
                     ChannelInboundEvent.processor_run_id.is_(None),
@@ -1232,11 +1267,11 @@ def sweep_stale_inbound_events(*, db_engine=None) -> int:
             binding = db.get(ChannelBinding, binding_id)
             if not binding:
                 continue
-            if channel not in {"feishu", "wecom"} and binding.status != "active":
+            if channel not in {"feishu", "wecom", "dingtalk"} and binding.status != "active":
                 continue
             db.expunge(binding)
         try:
-            if channel in {"feishu", "wecom"}:
+            if channel in {"feishu", "wecom", "dingtalk"}:
                 if _recover_stale_durable_event(event_pk, db_engine=use_engine):
                     taken += 1
                 continue
