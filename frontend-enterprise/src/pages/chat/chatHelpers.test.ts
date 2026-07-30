@@ -47,6 +47,20 @@ describe('chat history consumer contract', () => {
     expect(rendered.match(/href=/g)).toHaveLength(2);
   });
 
+  it('makes www links clickable by adding a safe HTTPS target', () => {
+    const rendered = renderToStaticMarkup(
+      createElement(
+        'div',
+        null,
+        ...renderInlineMarkdown('随便给你一个网站：www.baidu.com。', 'test-www'),
+      ),
+    );
+
+    expect(rendered).toContain(
+      '<a href="https://www.baidu.com" target="_blank" rel="noreferrer">www.baidu.com</a>。',
+    );
+  });
+
   it('keeps only inline citations, deduplicates content, and orders labels', () => {
     const item = message({
       metadata: {

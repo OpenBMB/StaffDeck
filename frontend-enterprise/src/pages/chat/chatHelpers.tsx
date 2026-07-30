@@ -150,7 +150,7 @@ export function placeQueuedMessagesLast(messages: ChatMessage[]): ChatMessage[] 
 
 function renderBareLinks(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /https?:\/\/[^\s<>"'`]+/gi;
+  const pattern = /(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
   const trailingPunctuation = /[.,!?;:\uff0c\u3002\uff01\uff1f\uff1b\uff1a\u3001)\]}>]+$/;
   let cursor = 0;
   let index = 0;
@@ -158,15 +158,16 @@ function renderBareLinks(text: string, keyPrefix: string): ReactNode[] {
 
   while ((match = pattern.exec(text)) !== null) {
     const candidate = match[0];
-    const href = candidate.replace(trailingPunctuation, '');
-    if (!href) continue;
+    const label = candidate.replace(trailingPunctuation, '');
+    if (!label) continue;
+    const href = /^www\./i.test(label) ? `https://${label}` : label;
     if (match.index > cursor) nodes.push(text.slice(cursor, match.index));
     nodes.push(
       <a key={`${keyPrefix}-url-${index}`} href={href} target="_blank" rel="noreferrer">
-        {href}
+        {label}
       </a>,
     );
-    const trailing = candidate.slice(href.length);
+    const trailing = candidate.slice(label.length);
     if (trailing) nodes.push(trailing);
     cursor = match.index + candidate.length;
     index += 1;
