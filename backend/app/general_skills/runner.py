@@ -38,6 +38,7 @@ RUNNER_PROMPT = PROMPT_DIR / "general_skill_runner_prompt.md"
 REPAIR_PROMPT = PROMPT_DIR / "general_skill_repair_prompt.md"
 REVIEW_PROMPT = PROMPT_DIR / "general_skill_review_prompt.md"
 REPLY_PROMPT = PROMPT_DIR / "general_skill_reply_prompt.md"
+READ_PROMPT = PROMPT_DIR / "general_skill_read_prompt.md"
 RUN_TIMEOUT_SECONDS = 12
 MAX_OUTPUT_CHARS = 20000
 GENERAL_SKILL_MAX_TOKENS = 8192
@@ -46,10 +47,17 @@ TraceSink = Callable[[dict[str, Any]], None]
 GENERAL_SKILL_SELECTION_OUTPUT = {
     "use_general_skill": "boolean",
     "selected_slug": "string?",
+    "operation": "read | execute",
     "use_knowledge": "boolean",
     "knowledge_query": "string?",
     "confidence": "number",
     "reason": "string?",
+}
+GENERAL_SKILL_READ_OUTPUT = {
+    "reply": "string",
+    "summary": "string?",
+    "inputs": ["string"],
+    "side_effects": ["string"],
 }
 GENERAL_SKILL_PLAN_OUTPUT = {
     "code": "string",
@@ -106,6 +114,90 @@ class GeneralSkillSelector:
         if decision.use_general_skill and decision.selected_slug in slugs:
             return decision
         return decision.model_copy(update={"use_general_skill": False, "selected_slug": None})
+
+
+class GeneralSkillReader:
+    """Explain a skill package without generating or executing runner code."""
+
+    def read(
+        self,
+        skill: GeneralSkill,
+        query: str,
+        model_config: ModelConfig,
+        conversation_context: dict[str, object] | None = None,
+        memory_context: list[dict[str, object]] | None = None,
+    ) -> GeneralSkillRunResponse:
+        trace: list[dict[str, Any]] = [
+            {"phase": "skill_loaded", "message": f"已加载通用技能 {skill.name}", "slug": skill.slug},
+            {"phase": "read_started", "message": "正在阅读 Skill 内容"},
+        ]
+        payload = stage_payload(
+            phase="Step Agent / General Skill Read",
+            user_message=query,
+            conversation_context=conversation_context,
+            memory_context=memory_context,
+            instructions=READ_PROMPT.read_text(encoding="utf-8"),
+            stage_data={
+                "skill": {
+                    "slug": skill.slug,
+                    "name": skill.name,
+                    "description": skill.description,
+                    "homepage": skill.homepage,
+                    "markdown": skill.skill_markdown,
+                    "package": _skill_package_payload(skill),
+                }
+            },
+            output_contract=GENERAL_SKILL_READ_OUTPUT,
+        )
+        try:
+            with llm_operation("general_skill.read"):
+                raw = LLMClient(model_config).generate_json(unified_system_prompt(), payload)
+            reply = str(raw.get("reply") or "").strip()
+            if not reply:
+                raise LLMError("General skill read reply is empty")
+        except LLMError as exc:
+            trace.append(
+                {
+                    "phase": "read_failed",
+                    "message": "Skill 内容读取失败",
+                    "error": str(exc),
+                }
+            )
+            return GeneralSkillRunResponse(
+                skill_slug=skill.slug,
+                operation="read",
+                execution_trace=trace,
+                stderr=str(exc),
+                structured_result={
+                    "success": False,
+                    "operation": "read",
+                    "error": "skill_read_failed",
+                    "message": str(exc),
+                },
+                reply="抱歉，当前无法完成这个 Skill 的只读说明。",
+            )
+        structured = {
+            "success": True,
+            "operation": "read",
+            "summary": str(raw.get("summary") or "").strip(),
+            "inputs": raw.get("inputs") if isinstance(raw.get("inputs"), list) else [],
+            "side_effects": raw.get("side_effects")
+            if isinstance(raw.get("side_effects"), list)
+            else [],
+        }
+        trace.extend(
+            [
+                {"phase": "read_created", "message": "已完成 Skill 内容说明"},
+                {"phase": "reply_created", "message": "已生成只读说明"},
+            ]
+        )
+        return GeneralSkillRunResponse(
+            skill_slug=skill.slug,
+            operation="read",
+            execution_trace=trace,
+            structured_result=structured,
+            reply=reply,
+        )
 
 
 class GeneralSkillRunner:

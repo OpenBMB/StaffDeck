@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -72,6 +72,7 @@ class GeneralSkillRunRequest(BaseModel):
     agent_id: Optional[str] = None
     user_id: str = ""
     query: str
+    operation: Literal["read", "execute"] = "execute"
     session_id: Optional[str] = None
     model_config_id: Optional[str] = None
     max_attempts: int = Field(default=10, ge=1, le=10)
@@ -79,6 +80,7 @@ class GeneralSkillRunRequest(BaseModel):
 
 class GeneralSkillRunResponse(BaseModel):
     skill_slug: str
+    operation: Literal["read", "execute"] = "execute"
     execution_trace: list[dict[str, Any]] = Field(default_factory=list)
     generated_code: str = ""
     stdout: str = ""
@@ -90,6 +92,7 @@ class GeneralSkillRunResponse(BaseModel):
 class GeneralSkillSelection(BaseModel):
     use_general_skill: bool = False
     selected_slug: Optional[str] = None
+    operation: Literal["read", "execute"] = "execute"
     use_knowledge: bool = False
     knowledge_query: Optional[str] = None
     confidence: float = 0.0
