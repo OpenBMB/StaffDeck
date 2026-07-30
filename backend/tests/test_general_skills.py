@@ -33,7 +33,7 @@ from app.db.models import (
     Tenant,
     User,
 )
-from app.general_skills.runner import GeneralSkillRunner, GeneralSkillSelector
+from app.general_skills.runner import GeneralSkillReader, GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import (
     GeneralSkillClawHubImportRequest,
     GeneralSkillImportRequest,
@@ -116,6 +116,66 @@ def test_capability_selector_still_checks_knowledge_without_general_skills(monke
     assert decision.use_general_skill is False
     assert decision.use_knowledge is True
     assert decision.knowledge_query == "员工报销的审批要求"
+
+
+def test_general_skill_reader_does_not_generate_runner_code(monkeypatch) -> None:
+    monkeypatch.setattr(LLMClient, "__init__", lambda self, model_config: None)
+
+    def fake_generate_json(self, system_prompt, payload):  # noqa: ANN001
+        instructions = payload["_agent_stage"]["instructions"]
+        assert "只读说明器" in instructions
+        return {
+            "reply": "这是一个天气查询 Skill，只负责查询天气，不会修改业务数据。",
+            "summary": "查询天气",
+            "inputs": ["城市"],
+            "side_effects": [],
+        }
+
+    monkeypatch.setattr(LLMClient, "generate_json", fake_generate_json)
+    skill = GeneralSkill(
+        tenant_id="tenant_demo",
+        slug="weather-zh",
+        name="中国城市天气",
+        description="查询中国城市实时天气",
+        skill_markdown=WEATHER_SKILL_MD,
+        status="published",
+    )
+
+    response = GeneralSkillReader().read(skill, "介绍这个 Skill", SimpleNamespace())
+
+    assert response.operation == "read"
+    assert response.generated_code == ""
+    assert response.structured_result["operation"] == "read"
+    assert any(item["phase"] == "read_created" for item in response.execution_trace)
+
+
+def test_general_skill_reader_returns_structured_failure(monkeypatch) -> None:
+    monkeypatch.setattr(LLMClient, "__init__", lambda self, model_config: None)
+    monkeypatch.setattr(
+        LLMClient,
+        "generate_json",
+        lambda self, system_prompt, payload: (_ for _ in ()).throw(
+            LLMError("model unavailable")
+        ),
+    )
+    skill = GeneralSkill(
+        tenant_id="tenant_demo",
+        slug="weather-zh",
+        name="中国城市天气",
+        skill_markdown=WEATHER_SKILL_MD,
+        status="published",
+    )
+
+    response = GeneralSkillReader().read(skill, "介绍这个 Skill", SimpleNamespace())
+
+    assert response.operation == "read"
+    assert response.structured_result == {
+        "success": False,
+        "operation": "read",
+        "error": "skill_read_failed",
+        "message": "model unavailable",
+    }
+    assert any(item["phase"] == "read_failed" for item in response.execution_trace)
 
 
 def test_capability_knowledge_is_merged_into_general_skill_result() -> None:
@@ -704,6 +764,7 @@ def test_import_clawhub_skill_rejects_plain_html_page(monkeypatch) -> None:
 
 def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
     captured_model_ids: list[str] = []
+    read_queries: list[str] = []
 
     def fake_run(
         self, skill, query, model_config, user_id="enterprise_demo", max_attempts=5, event_sink=None
@@ -720,6 +781,17 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
         }
 
     monkeypatch.setattr(GeneralSkillRunner, "run", fake_run)
+
+    def fake_read(self, skill, query, model_config, **kwargs):  # noqa: ANN001
+        read_queries.append(query)
+        return GeneralSkillRunResponse(
+            skill_slug=skill.slug,
+            operation="read",
+            structured_result={"success": True, "operation": "read"},
+            reply=f"{query} read",
+        )
+
+    monkeypatch.setattr(GeneralSkillReader, "read", fake_read)
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
@@ -794,6 +866,21 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
         )
         assert selected_result["reply"] == "上海天气 ok"
         assert captured_model_ids[-1] == "model_selected"
+
+        read_result = run_general_skill(
+            imported.slug,
+            GeneralSkillRunRequest(
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                query="介绍这个 Skill",
+                operation="read",
+            ),
+            db,
+            _admin_user(),
+        )
+        assert read_result.operation == "read"
+        assert read_result.reply == "介绍这个 Skill read"
+        assert read_queries == ["介绍这个 Skill"]
 
         deleted = delete_general_skill(
             imported.slug,
@@ -1169,7 +1256,6 @@ def test_general_skill_and_active_scene_run_in_the_same_turn(monkeypatch) -> Non
             decision="continue_active",
             target_skill_id="purchase",
             user_intent="购买 a1 并查询北京天气",
-            general_intent="查询北京天气",
         )
         tools = loop._tools_with_general_skills(
             "tenant_demo", [], overall_agent.id
@@ -1201,14 +1287,17 @@ def test_general_skill_and_active_scene_run_in_the_same_turn(monkeypatch) -> Non
 
         assert initial_result.tool_call == ToolCall(
             name="general_skill.weather-zh",
-            arguments={"query": "查询北京天气"},
+            arguments={
+                "query": "我想买 a1，同时帮我看下北京天气",
+                "operation": "execute",
+            },
         )
         assert tool_result is not None and tool_result.success is True
         assert final_result.reply == "北京当前天气晴。请问您想购买多少数量的 a1？"
         assert chat_session.active_skill_id == "purchase"
         assert chat_session.active_step_id == "collect_product"
-        assert selector_calls == ["查询北京天气"]
-        assert runner_calls == ["查询北京天气"]
+        assert selector_calls == ["我想买 a1，同时帮我看下北京天气"]
+        assert runner_calls == ["我想买 a1，同时帮我看下北京天气"]
         assert step_calls == [[]]
         event_types = {
             event.event_type
@@ -1218,6 +1307,204 @@ def test_general_skill_and_active_scene_run_in_the_same_turn(monkeypatch) -> Non
         }
         assert "general_skill_selected" in event_types
         assert "tool_call_finished" in event_types
+
+
+def test_scene_general_skill_read_does_not_mutate_sop_state(monkeypatch) -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        overall_agent = AgentProfile(
+            id="agent_overall_scene_read",
+            tenant_id="tenant_demo",
+            name="开放广场",
+            is_overall=True,
+        )
+        scene_skill = _purchase_scene_skill()
+        general_skill = GeneralSkill(
+            tenant_id="tenant_demo",
+            slug="weather-zh",
+            name="中国城市天气",
+            description="中国城市天气查询工具",
+            skill_markdown=WEATHER_SKILL_MD,
+            status="published",
+        )
+        original_slots = {"product_id": "a1"}
+        chat_session = ChatSession(
+            id="session_scene_read",
+            tenant_id="tenant_demo",
+            user_id="user_demo",
+            agent_id=overall_agent.id,
+            active_skill_id="purchase",
+            active_step_id="collect_product",
+            slots_json=dict(original_slots),
+        )
+        db.add(overall_agent)
+        db.add(scene_skill)
+        db.add(general_skill)
+        db.add(chat_session)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", scene_skill.id, "active")
+        ensure_open_gallery_binding(
+            db, "tenant_demo", "general_skill", general_skill.id, "active"
+        )
+        db.commit()
+
+        loop = AgentLoop(db)
+        monkeypatch.setattr(
+            loop.general_skill_selector,
+            "decide",
+            lambda *args, **kwargs: GeneralSkillSelection(
+                use_general_skill=True,
+                selected_slug="weather-zh",
+                operation="read",
+                confidence=0.99,
+                reason="用户只想了解 Skill。",
+            ),
+        )
+        monkeypatch.setattr(
+            loop.general_skill_reader,
+            "read",
+            lambda *args, **kwargs: GeneralSkillRunResponse(
+                skill_slug="weather-zh",
+                operation="read",
+                execution_trace=[{"phase": "read_created", "message": "已读取"}],
+                structured_result={"success": True, "operation": "read"},
+                reply="这是一个天气查询 Skill。",
+            ),
+        )
+        monkeypatch.setattr(
+            loop.step_agent,
+            "run",
+            lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("read must not continue through the SOP step agent")
+            ),
+        )
+        model_config = db.exec(
+            select(ModelConfig).where(ModelConfig.tenant_id == "tenant_demo")
+        ).first()
+        request = ChatTurnRequest(
+            tenant_id="tenant_demo",
+            session_id=chat_session.id,
+            user_id="user_demo",
+            message="介绍一下天气 Skill，不要执行",
+        )
+        tools = loop._tools_with_general_skills("tenant_demo", [], overall_agent.id)
+
+        initial_result = loop._run_step_agent_with_context_repair(
+            request,
+            chat_session,
+            scene_skill,
+            tools,
+            model_config,
+            RouterDecision(decision="continue_active", target_skill_id="purchase"),
+        )
+        final_result, tool_result = loop._execute_tool_action_cycle(
+            request,
+            chat_session,
+            scene_skill,
+            tools,
+            model_config,
+            initial_result,
+        )
+
+        assert tool_result is not None and tool_result.success is True
+        assert tool_result.data["operation"] == "read"
+        assert final_result.reply == "这是一个天气查询 Skill。"
+        assert final_result.is_step_completed is False
+        assert chat_session.active_skill_id == "purchase"
+        assert chat_session.active_step_id == "collect_product"
+        assert chat_session.slots_json == original_slots
+
+
+def test_knowledge_query_step_still_runs_general_skill_selector(monkeypatch) -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        overall_agent = AgentProfile(
+            id="agent_overall_knowledge_selector",
+            tenant_id="tenant_demo",
+            name="开放广场",
+            is_overall=True,
+        )
+        scene_skill = _purchase_scene_skill()
+        scene_skill.content_json["steps"][0]["type"] = "knowledge_query"
+        general_skill = GeneralSkill(
+            tenant_id="tenant_demo",
+            slug="weather-zh",
+            name="中国城市天气",
+            skill_markdown=WEATHER_SKILL_MD,
+            status="published",
+        )
+        chat_session = ChatSession(
+            id="session_knowledge_selector",
+            tenant_id="tenant_demo",
+            user_id="user_demo",
+            agent_id=overall_agent.id,
+            active_skill_id="purchase",
+            active_step_id="collect_product",
+        )
+        db.add(overall_agent)
+        db.add(scene_skill)
+        db.add(general_skill)
+        db.add(chat_session)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", scene_skill.id, "active")
+        ensure_open_gallery_binding(
+            db, "tenant_demo", "general_skill", general_skill.id, "active"
+        )
+        db.commit()
+        loop = AgentLoop(db)
+        selector_queries: list[str] = []
+
+        def fake_select(query, *args, **kwargs):  # noqa: ANN001
+            selector_queries.append(query)
+            return GeneralSkillSelection(
+                use_general_skill=True,
+                selected_slug="weather-zh",
+                confidence=0.9,
+            )
+
+        monkeypatch.setattr(loop.general_skill_selector, "decide", fake_select)
+        model_config = db.exec(
+            select(ModelConfig).where(ModelConfig.tenant_id == "tenant_demo")
+        ).first()
+        request = ChatTurnRequest(
+            tenant_id="tenant_demo",
+            user_id="user_demo",
+            message="查一下北京天气",
+        )
+
+        result = loop._run_step_agent_with_context_repair(
+            request,
+            chat_session,
+            scene_skill,
+            loop._tools_with_general_skills("tenant_demo", [], overall_agent.id),
+            model_config,
+            RouterDecision(decision="continue_active", target_skill_id="purchase"),
+        )
+
+        assert selector_queries == ["查一下北京天气"]
+        assert result.tool_call is not None
+        assert result.tool_call.name == "general_skill.weather-zh"
+
+
+def test_general_skill_tool_rejects_explicit_invalid_operation() -> None:
+    loop = object.__new__(AgentLoop)
+    result = loop._execute_general_skill_tool_call(
+        ChatTurnRequest(
+            tenant_id="tenant_demo",
+            user_id="user_demo",
+            message="介绍天气 Skill",
+        ),
+        ChatSession(id="session_invalid_operation", tenant_id="tenant_demo"),
+        ToolCall(
+            name="general_skill.weather-zh",
+            arguments={"query": "介绍天气 Skill", "operation": "inspect"},
+        ),
+        None,
+    )
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.code == "INVALID_GENERAL_SKILL_OPERATION"
 
 
 def test_scene_tool_call_to_general_skill_records_expandable_trace(monkeypatch) -> None:
