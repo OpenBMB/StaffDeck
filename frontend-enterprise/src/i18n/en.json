@@ -3108,5 +3108,21 @@
   "需求澄清": "Requirements Clarification",
   "采购需求": "Procurement Requirements",
   "里程碑": "Milestones",
-  "指标口径": "Metric Definitions"
+  "指标口径": "Metric Definitions",
+  "描述这个技能做什么、什么时候使用（保存时由上方表单字段重新生成）": "Describe what this skill does and when to use it (regenerated from the form fields above on save)",
+  "在这里编写技能的使用说明（步骤、示例、边界情况）。正文会写入 SKILL.md,": "Write the skill instructions here (steps, examples, edge cases). This body goes into SKILL.md,",
+  "frontmatter 由上方表单生成：name 取 Slug,description 取描述。": "frontmatter is generated from the form above: name from Slug, description from Description.",
+  "许可证（license）": "License",
+  "可选，如 Apache-2.0、MIT": "Optional, e.g. Apache-2.0, MIT",
+  "运行环境要求（compatibility）": "Compatibility",
+  "可选，如 Requires network、Python 3.12+": "Optional, e.g. Requires network, Python 3.12+",
+  "预授权工具（allowed-tools）": "Allowed tools",
+  "可选，空格分隔，如 Bash(curl:*) Read；不含 Bash 则只用 Python 运行": "Optional, space-separated, e.g. Bash(curl:*) Read; without Bash it runs with Python only",
+  "导出技能包": "Export Skill Package",
+  "已导出技能包": "Skill package exported",
+  "导出技能包失败": "Failed to export skill package",
+  "展开运行结果": "Expand run result",
+  "收起运行结果": "Collapse run result",
+  "description: 描述这个技能做什么、什么时候使用（保存时由上方表单字段重新生成）": "description: Describe what this skill does and when to use it (regenerated from the form fields above on save)",
+  "# 技能说明": "# Skill Instructions"
 }

@@ -21,6 +21,10 @@ class GeneralSkillImportRequest(BaseModel):
     slug: Optional[str] = None
     description: Optional[str] = None
     homepage: Optional[str] = None
+    # Agent Skills 规范可选 frontmatter 字段(保存时写入 SKILL.md)
+    license: Optional[str] = None
+    compatibility: Optional[str] = None
+    allowed_tools: Optional[str] = None
     markdown: Optional[str] = None
     files: list[GeneralSkillFile] = Field(default_factory=list)
     directories: Optional[list[str]] = None
@@ -61,6 +65,10 @@ class GeneralSkillRead(BaseModel):
     name: str
     description: Optional[str] = None
     homepage: Optional[str] = None
+    # Agent Skills 规范可选 frontmatter 字段(从 SKILL.md 解析)
+    license: Optional[str] = None
+    compatibility: Optional[str] = None
+    allowed_tools: Optional[str] = None
     skill_markdown: str
     skill_files: list[GeneralSkillFile] = Field(default_factory=list)
     skill_directories: list[str] = Field(default_factory=list)

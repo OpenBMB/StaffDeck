@@ -295,6 +295,9 @@ export type GeneralSkillRead = {
   description?: string;
   capability_scope?: CapabilityScope;
   homepage?: string;
+  license?: string;
+  compatibility?: string;
+  allowed_tools?: string;
   skill_markdown: string;
   skill_files: Array<{
     path: string;

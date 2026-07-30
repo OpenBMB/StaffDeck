@@ -292,7 +292,8 @@ def test_import_general_skill_uses_user_supplied_metadata() -> None:
         assert rows[0].name == "用户改名天气技能"
         assert rows[0].description == "用户改写描述"
         assert rows[0].homepage == "https://example.com/weather-cn"
-        assert rows[0].skill_markdown.startswith("# 天气 demo")
+        assert rows[0].skill_markdown.startswith("---\nname: weather-zh")
+        assert "# 天气 demo" in rows[0].skill_markdown
 
         try:
             import_general_skill(
@@ -300,6 +301,7 @@ def test_import_general_skill_uses_user_supplied_metadata() -> None:
                     tenant_id="tenant_demo",
                     name="非法改 slug",
                     slug="weather-cn",
+                    description="中国城市天气查询",
                     original_slug="weather-zh",
                     markdown=WEATHER_SKILL_MD,
                 ),
@@ -327,6 +329,7 @@ def test_import_general_skill_without_original_slug_does_not_overwrite_existing(
                 tenant_id="tenant_demo",
                 name="已有天气技能",
                 slug="weather-zh",
+                description="中国城市天气查询",
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
@@ -339,6 +342,7 @@ def test_import_general_skill_without_original_slug_does_not_overwrite_existing(
                     tenant_id="tenant_demo",
                     name="新导入天气技能",
                     slug="weather-zh",
+                    description="中国城市天气查询",
                     markdown="# 新内容",
                 ),
                 db,
@@ -353,7 +357,10 @@ def test_import_general_skill_without_original_slug_does_not_overwrite_existing(
         assert len(rows) == 1
         assert rows[0].id == first.id
         assert rows[0].name == "已有天气技能"
-        assert rows[0].skill_markdown == WEATHER_SKILL_MD.strip()
+        from app.general_skills.standard import split_frontmatter
+
+        _, saved_body = split_frontmatter(rows[0].skill_markdown)
+        assert saved_body.strip() == WEATHER_SKILL_MD.strip()
 
 
 def test_deleted_open_gallery_general_skill_binding_is_not_restored_by_ensure() -> None:
@@ -371,6 +378,7 @@ def test_deleted_open_gallery_general_skill_binding_is_not_restored_by_ensure() 
                 tenant_id="tenant_demo",
                 name="天气技能",
                 slug="weather-zh",
+                description="中国城市天气查询",
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
@@ -422,6 +430,7 @@ def test_reimport_restores_deleted_private_skill_binding() -> None:
                 agent_id="agent_branch",
                 name="天气技能",
                 slug="weather-zh",
+                description="中国城市天气查询",
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
@@ -539,7 +548,7 @@ def test_import_general_skill_folder_reads_skill_md_metadata() -> None:
         assert row.homepage == "https://example.com/weather"
         assert row.metadata["name"] == "中国城市天气"
         assert [file.path for file in row.skill_files] == ["SKILL.md", "data/cities.json"]
-        assert row.skill_markdown.startswith("---\nname: 中国城市天气")
+        assert row.skill_markdown.startswith("---\nname: weather-zh")
 
 
 def test_import_general_skill_persists_empty_directories_across_updates() -> None:
@@ -587,7 +596,7 @@ def test_import_clawhub_skill_reads_zip_package_without_overwriting(monkeypatch)
     with ZipFile(package, "w") as archive:
         archive.writestr(
             "skill-pack-main/weather/SKILL.md",
-            "---\nname: 天气包\nslug: weather-pack\n---\n\n# 天气包\n",
+            "---\nname: 天气包\nslug: weather-pack\ndescription: 天气查询技能\n---\n\n# 天气包\n",
         )
         archive.writestr("skill-pack-main/weather/scripts/run.py", "print('ok')\n")
         archive.writestr("skill-pack-main/weather/data/cities.json", '{"北京": "101010100"}')
@@ -622,7 +631,7 @@ def test_import_clawhub_skill_reads_zip_package_without_overwriting(monkeypatch)
             "scripts/run.py",
             "data/cities.json",
         ]
-        assert first.skill_markdown.startswith("---\nname: 天气包")
+        assert first.skill_markdown.startswith("---\nname: weather-pack")
 
 
 def test_import_general_skill_package_upload_keeps_full_zip_folder() -> None:
@@ -630,7 +639,7 @@ def test_import_general_skill_package_upload_keeps_full_zip_folder() -> None:
     with ZipFile(package, "w") as archive:
         archive.writestr(
             "nuwa-skill-main/skill/SKILL.md",
-            "---\nname: Nuwa Skill\nslug: nuwa-skill\n---\n\n# Nuwa Skill\n",
+            "---\nname: Nuwa Skill\nslug: nuwa-skill\ndescription: Nuwa 示例技能\n---\n\n# Nuwa Skill\n",
         )
         archive.writestr("nuwa-skill-main/skill/scripts/run.py", "print('nuwa')\n")
         archive.writestr("nuwa-skill-main/skill/assets/config.json", '{"mode":"demo"}')
@@ -655,11 +664,11 @@ def test_import_general_skill_package_upload_keeps_full_zip_folder() -> None:
             "scripts/run.py",
             "assets/config.json",
         ]
-        assert row.skill_markdown.startswith("---\nname: Nuwa Skill")
+        assert row.skill_markdown.startswith("---\nname: nuwa-skill")
 
 
 def test_import_general_skill_package_upload_treats_single_markdown_as_skill_md() -> None:
-    markdown = "---\nname: 单文件技能\nslug: single-file-skill\n---\n\n# 单文件技能\n"
+    markdown = "---\nname: 单文件技能\nslug: single-file-skill\ndescription: 单文件示例技能\n---\n\n# 单文件技能\n"
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
@@ -715,7 +724,7 @@ def test_import_clawhub_skill_reads_github_directory_package(monkeypatch) -> Non
 
     def fake_download(url: str):  # noqa: ANN001
         content = {
-            "https://raw.githubusercontent.com/example/skill-pack/main/weather/SKILL.md": "---\nname: 目录天气\nslug: weather-dir\n---\n\n# 天气\n",
+            "https://raw.githubusercontent.com/example/skill-pack/main/weather/SKILL.md": "---\nname: 目录天气\nslug: weather-dir\ndescription: 目录天气技能\n---\n\n# 天气\n",
             "https://raw.githubusercontent.com/example/skill-pack/main/weather/scripts/run.py": "print('ok')\n",
             "https://raw.githubusercontent.com/example/skill-pack/main/weather/data/cities.json": '{"北京":"101010100"}',
         }.get(url)
@@ -754,7 +763,7 @@ def test_import_clawhub_skill_follows_page_to_real_skill_package(monkeypatch) ->
                 "text/html",
             )
         content = {
-            "https://raw.githubusercontent.com/example/skill-pack/main/weather/SKILL.md": "---\nname: 页面天气\nslug: weather-page\n---\n\n# 天气\n",
+            "https://raw.githubusercontent.com/example/skill-pack/main/weather/SKILL.md": "---\nname: 页面天气\nslug: weather-page\ndescription: 页面天气技能\n---\n\n# 天气\n",
         }.get(url)
         if content is None:
             raise AssertionError(f"unexpected url: {url}")
@@ -793,7 +802,7 @@ def test_import_clawhub_skill_uses_clawhub_download_api_for_page_url(monkeypatch
     with ZipFile(package, "w") as archive:
         archive.writestr(
             "SKILL.md",
-            "---\nname: weather\n---\n\n# 天气\n",
+            "---\nname: weather\ndescription: 天气技能\n---\n\n# 天气\n",
         )
         archive.writestr("scripts/weather.py", "print('weather')\n")
         archive.writestr("references/weather_details.md", "# details\n")
@@ -832,7 +841,7 @@ def test_import_clawhub_skill_uses_clawhub_download_api_for_page_url(monkeypatch
 def test_import_clawhub_skill_accepts_cli_slug(monkeypatch) -> None:
     package = BytesIO()
     with ZipFile(package, "w") as archive:
-        archive.writestr("SKILL.md", "---\nname: weather\n---\n\n# 天气\n")
+        archive.writestr("SKILL.md", "---\nname: weather\ndescription: 天气技能\n---\n\n# 天气\n")
 
     def fake_download(url: str):  # noqa: ANN001
         assert url == "https://wry-manatee-359.convex.site/api/v1/download?slug=maomao-weather"
@@ -930,6 +939,7 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
                 tenant_id="tenant_demo",
                 name="天气",
                 slug="weather-zh",
+                description="中国城市天气查询",
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
@@ -1133,6 +1143,7 @@ def test_non_overall_agent_delete_hides_general_skill_only_in_branch() -> None:
                 tenant_id="tenant_demo",
                 name="天气",
                 slug="weather-zh",
+                description="中国城市天气查询",
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
@@ -1662,3 +1673,201 @@ def _test_session():
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+# ---------- Agent Skills 规范对齐:归一化/发布校验/导出/allowed-tools 门控 ----------
+
+
+def _seed_standard_skill_tenant(db: Session) -> None:
+    _seed_minimal_tenant(db)
+    db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+    db.commit()
+
+
+def test_save_normalizes_skill_md_frontmatter_and_preserves_optional_fields() -> None:
+    with _test_session() as db:
+        _seed_standard_skill_tenant(db)
+        row = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="天气技能",
+                slug="weather-zh",
+                description="中国城市天气查询",
+                license="Apache-2.0",
+                compatibility="Requires network",
+                allowed_tools="Bash(curl:*) Read",
+                markdown="# 使用说明\n按城市查询天气。",
+            ),
+            db,
+            _admin_user(),
+        )
+        from app.general_skills.standard import split_frontmatter
+
+        metadata, body = split_frontmatter(row.skill_markdown)
+        # frontmatter 以表单字段重组:name 恒等于 slug;可选字段透传;正文保留
+        assert metadata["name"] == "weather-zh"
+        assert metadata["description"] == "中国城市天气查询"
+        assert metadata["license"] == "Apache-2.0"
+        assert metadata["compatibility"] == "Requires network"
+        assert metadata["allowed-tools"] == "Bash(curl:*) Read"
+        assert body == "# 使用说明\n按城市查询天气。"
+        # DTO 透出三个可选字段
+        assert row.license == "Apache-2.0"
+        assert row.compatibility == "Requires network"
+        assert row.allowed_tools == "Bash(curl:*) Read"
+
+
+def test_save_rejects_invalid_slug_and_published_without_description() -> None:
+    with _test_session() as db:
+        _seed_standard_skill_tenant(db)
+        try:
+            import_general_skill(
+                GeneralSkillImportRequest(
+                    tenant_id="tenant_demo",
+                    name="坏技能",
+                    slug="Weather_ZH",
+                    description="x",
+                    markdown="# x",
+                ),
+                db,
+                _admin_user(),
+            )
+            raise AssertionError("expected invalid slug rejected")
+        except HTTPException as error:
+            assert error.status_code == 400
+            assert "连字符" in error.detail or "小写" in error.detail
+
+        try:
+            import_general_skill(
+                GeneralSkillImportRequest(
+                    tenant_id="tenant_demo",
+                    name="无描述技能",
+                    slug="no-desc",
+                    markdown="# x",
+                    status="published",
+                ),
+                db,
+                _admin_user(),
+            )
+            raise AssertionError("expected published-without-description rejected")
+        except HTTPException as error:
+            assert error.status_code == 400
+            assert "description 必填" in error.detail
+
+        # 草稿允许无描述;发布时再校验
+        draft = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="草稿技能",
+                slug="draft-skill",
+                markdown="# x",
+                status="draft",
+            ),
+            db,
+            _admin_user(),
+        )
+        assert draft.status == "draft"
+        try:
+            publish_general_skill(draft.slug, "tenant_demo", db, current_user=_admin_user())
+            raise AssertionError("expected publish without description rejected")
+        except HTTPException as error:
+            assert error.status_code == 400
+            assert "发布失败" in error.detail and "description 必填" in error.detail
+
+
+def test_export_produces_standard_zip_roundtrip() -> None:
+    with _test_session() as db:
+        _seed_standard_skill_tenant(db)
+        row = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="天气技能",
+                slug="weather-zh",
+                description="中国城市天气查询",
+                markdown="# 使用说明",
+                files=[
+                    {"path": "SKILL.md", "content": "# 使用说明", "mime_type": "text/markdown"},
+                    {"path": "scripts/query.py", "content": "print('q')", "mime_type": "text/plain"},
+                ],
+            ),
+            db,
+            _admin_user(),
+        )
+        from app.api.general_skills import export_general_skill
+
+        response = export_general_skill(row.slug, "tenant_demo", db)
+        assert response.media_type == "application/zip"
+        # StreamingResponse 直接迭代 body_iterator 收集 zip 字节
+        import asyncio
+
+        async def _collect() -> bytes:
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
+            return b"".join(chunks)
+
+        data = asyncio.run(_collect())
+        with ZipFile(BytesIO(data)) as archive:
+            names = set(archive.namelist())
+            assert names == {"weather-zh/SKILL.md", "weather-zh/scripts/query.py"}
+            exported_md = archive.read("weather-zh/SKILL.md").decode("utf-8")
+        from app.general_skills.standard import split_frontmatter
+
+        metadata, body = split_frontmatter(exported_md)
+        # 根目录=slug,frontmatter name 与目录名一致(规范硬性要求)
+        assert metadata["name"] == "weather-zh"
+        assert metadata["description"] == "中国城市天气查询"
+        assert body == "# 使用说明"
+
+
+def test_materialized_workspace_skill_md_is_standardized() -> None:
+    """存量无 frontmatter 的技能:运行时物化到工作区的 SKILL.md 也是规范形态。"""
+    from app.general_skills.runner import _materialize_skill_package
+
+    legacy = GeneralSkill(
+        tenant_id="tenant_demo",
+        slug="legacy-skill",
+        name="存量技能",
+        description="存量描述",
+        skill_markdown="# 旧正文\n没有 frontmatter。",
+        skill_files_json=[{"path": "data/x.txt", "content": "v", "mime_type": "text/plain"}],
+        metadata_json={},
+        status="published",
+    )
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _materialize_skill_package(legacy, Path(tmp))
+        materialized = (Path(tmp) / "SKILL.md").read_text(encoding="utf-8")
+        assert (Path(tmp) / "data" / "x.txt").exists()
+    from app.general_skills.standard import split_frontmatter
+
+    metadata, body = split_frontmatter(materialized)
+    assert metadata["name"] == "legacy-skill"
+    assert metadata["description"] == "存量描述"
+    assert body.startswith("# 旧正文")
+
+
+def test_allowed_tools_gates_bash_runtime() -> None:
+    from app.general_skills.runner import _bash_allowed, _runtime_languages
+
+    with_bash = SimpleNamespace(
+        slug="a",
+        description="d",
+        skill_markdown="---\nname: a\ndescription: d\nallowed-tools: Bash(git:*) Read\n---\n正文",
+        skill_files_json=[],
+    )
+    without_bash = SimpleNamespace(
+        slug="b",
+        description="d",
+        skill_markdown="---\nname: b\ndescription: d\nallowed-tools: Read\n---\n正文",
+        skill_files_json=[],
+    )
+    undeclared = SimpleNamespace(slug="c", description="d", skill_markdown="# 正文", skill_files_json=[])
+
+    assert _bash_allowed(with_bash) is True
+    assert _runtime_languages(with_bash) == ["bash", "python"]
+    assert _bash_allowed(without_bash) is False
+    assert _runtime_languages(without_bash) == ["python"]
+    # 未声明 allowed-tools:不限制
+    assert _bash_allowed(undeclared) is True
