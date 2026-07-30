@@ -95,6 +95,7 @@ class LegacyGeneralSkillAction:
             payload: dict[str, object] = {
                 "skill_slug": skill.slug,
                 "skill_name": skill.name,
+                "operation": str(tool_call.arguments.get("operation") or "execute"),
                 **trace_item,
             }
             self.events.record(
@@ -132,6 +133,7 @@ class LegacyGeneralSkillAction:
         is_success = True if success is None else bool(success)
         finished_payload: dict[str, object] = {
             "skill_slug": response.skill_slug,
+            "operation": response.operation,
             "success": is_success,
             "stdout_preview": response.stdout[:600],
             "stderr_preview": response.stderr[:600],
@@ -148,6 +150,7 @@ class LegacyGeneralSkillAction:
             stream_events.append(("general_skill_run_finished", finished_payload))
         data = {
             "skill_slug": response.skill_slug,
+            "operation": response.operation,
             "reply": response.reply,
             "structured_result": response.structured_result,
             "stdout": response.stdout,

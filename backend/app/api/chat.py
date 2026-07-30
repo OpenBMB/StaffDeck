@@ -2935,10 +2935,12 @@ def _event_trace_line(
         }
     if event.event_type == "general_skill_run_finished":
         success = bool(payload.get("success"))
+        operation = str(payload.get("operation") or "execute")
+        action = "阅读" if operation == "read" else "运行"
         return {
             "id": f"general_skill_finished_{event.id}",
             "kind": "skill",
-            "text": "通用技能运行完成" if success else "通用技能运行失败",
+            "text": f"通用技能{action}{'完成' if success else '失败'}",
             "detail": str(payload.get("skill_slug") or "") or None,
             "state": "completed" if success else "failed",
         }

@@ -81,7 +81,7 @@ from app.db.models import (
     new_id,
     utc_now,
 )
-from app.general_skills import GeneralSkillRunner, GeneralSkillSelector
+from app.general_skills import GeneralSkillReader, GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import GeneralSkillRunResponse, GeneralSkillSelection
 from app.knowledge import KnowledgeService
 from app.knowledge.citations import (
@@ -194,6 +194,7 @@ class AgentLoop:
         self.response_generator = ResponseGenerator()
         self.general_skill_selector = GeneralSkillSelector()
         self.general_skill_runner = GeneralSkillRunner()
+        self.general_skill_reader = GeneralSkillReader()
         self.general_skill_catalog = general_skill_catalog or LocalGeneralSkillCatalog(db)
         self.tool_executor = ToolExecutor(db)
         self.memory = MemoryService(db)
@@ -483,6 +484,7 @@ class AgentLoop:
                 {
                     "skill_slug": skill.slug,
                     "skill_name": skill.name,
+                    "operation": selection.operation,
                     "confidence": selection.confidence,
                     "reason": selection.reason,
                     "scene_router_decision": router_decision.model_dump(mode="json"),
@@ -498,6 +500,7 @@ class AgentLoop:
                 {
                     "skill_slug": skill.slug,
                     "skill_name": skill.name,
+                    "operation": selection.operation,
                     "confidence": selection.confidence,
                     "reason": selection.reason,
                     "scene_router_decision": router_decision.model_dump(mode="json"),
@@ -508,11 +511,12 @@ class AgentLoop:
         skill_snapshot = self._general_skill_runtime_snapshot(
             request, chat_session, skill, user_message_id
         )
-        run_response = self.general_skill_runner.run(
+        run_response = self._run_general_skill_operation(
             skill_snapshot,
             request.message,
             model_config,
             request.user_id,
+            selection.operation,
             conversation_context=conversation_context,
             memory_context=memory_context,
         )
@@ -582,6 +586,7 @@ class AgentLoop:
         )
         data = {
             "skill_slug": run_response.skill_slug,
+            "operation": run_response.operation,
             "reply": run_response.reply,
             "structured_result": run_response.structured_result,
             "stdout": run_response.stdout,
@@ -603,6 +608,40 @@ class AgentLoop:
             tool_call=None,
         )
         return step_result, tool_result
+
+    def _run_general_skill_operation(
+        self,
+        skill: GeneralSkill,
+        query: str,
+        model_config: ModelConfig,
+        user_id: str,
+        operation: str = "execute",
+        *,
+        conversation_context: dict[str, object] | None = None,
+        memory_context: list[dict[str, object]] | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> GeneralSkillRunResponse:
+        if operation == "read":
+            response = self.general_skill_reader.read(
+                skill,
+                query,
+                model_config,
+                conversation_context=conversation_context,
+                memory_context=memory_context,
+            )
+            if event_sink:
+                for item in response.execution_trace:
+                    event_sink(item)
+            return response
+        return self.general_skill_runner.run(
+            skill,
+            query,
+            model_config,
+            user_id,
+            event_sink=event_sink,
+            conversation_context=conversation_context,
+            memory_context=memory_context,
+        )
 
     @staticmethod
     def _merge_capability_knowledge(
@@ -666,6 +705,7 @@ class AgentLoop:
                 {
                     "skill_slug": skill.slug,
                     "skill_name": skill.name,
+                    "operation": selection.operation,
                     "confidence": selection.confidence,
                     "reason": selection.reason,
                     "scene_router_decision": router_decision.model_dump(mode="json")
@@ -683,6 +723,7 @@ class AgentLoop:
                 {
                     "skill_slug": skill.slug,
                     "skill_name": skill.name,
+                    "operation": selection.operation,
                     "confidence": selection.confidence,
                     "reason": selection.reason,
                     "scene_router_decision": router_decision.model_dump(mode="json")
@@ -729,11 +770,16 @@ class AgentLoop:
                 user_message_id,
             ),
         )
+        operation_text = "正在阅读通用技能" if selection.operation == "read" else "正在运行通用技能"
         yield self._stream_status(
             chat_session,
             "general_skill_running",
-            "正在运行通用技能",
-            {"skill_slug": skill.slug, "skill_name": skill.name},
+            operation_text,
+            {
+                "skill_slug": skill.slug,
+                "skill_name": skill.name,
+                "operation": selection.operation,
+            },
             user_message_id=user_message_id,
         )
         general_skill_events: queue.Queue[tuple[str, Any] | None] = queue.Queue()
@@ -747,11 +793,12 @@ class AgentLoop:
 
         def general_skill_worker() -> None:
             try:
-                response = GeneralSkillRunner().run(
+                response = self._run_general_skill_operation(
                     skill_snapshot,
                     request.message,
                     model_snapshot,
                     request.user_id,
+                    selection.operation,
                     event_sink=general_skill_sink,
                     conversation_context=conversation_context,
                     memory_context=memory_context,
@@ -3520,24 +3567,17 @@ class AgentLoop:
     ) -> StepAgentResult:
         if conversation_context is None:
             conversation_context = self._conversation_context(chat_session)
-        current_step = (
-            self._current_skill_step(active_skill, chat_session.active_step_id)
-            if active_skill
-            else None
+        selected_general_result = self._preselect_general_skill_for_scene(
+            request,
+            chat_session,
+            active_skill,
+            tools,
+            model_config,
+            router_decision,
+            memory_context,
+            conversation_context,
+            stream_events,
         )
-        selected_general_result = None
-        if str((current_step or {}).get("type") or "") != "knowledge_query":
-            selected_general_result = self._preselect_general_skill_for_scene(
-                request,
-                chat_session,
-                active_skill,
-                tools,
-                model_config,
-                router_decision,
-                memory_context,
-                conversation_context,
-                stream_events,
-            )
         if selected_general_result is not None:
             return selected_general_result
         step_result = self._run_step_agent_once(
@@ -3611,11 +3651,23 @@ class AgentLoop:
     ) -> StepAgentResult | None:
         if active_skill is None:
             return None
-        general_query = str(router_decision.general_intent or "").strip()
-        if not general_query:
+        # General-skill selection is independent from the scene Router decision.
+        # The Router may provide a hint, but must not gate this second capability check.
+        selection_query = str(request.message or "").strip()
+        if not selection_query:
+            return None
+        enabled_general_tools = {
+            str(getattr(tool, "name", "") or "")
+            for tool in tools
+            if getattr(tool, "enabled", False)
+            and str(getattr(tool, "name", "") or "").startswith(
+                GENERAL_SKILL_TOOL_PREFIX
+            )
+        }
+        if not enabled_general_tools:
             return None
         skill, selection = self._select_general_capability(
-            general_query,
+            selection_query,
             model_config,
             chat_session.agent_id,
             conversation_context,
@@ -3624,20 +3676,19 @@ class AgentLoop:
         if skill is None:
             return None
         tool_name = f"{GENERAL_SKILL_TOOL_PREFIX}{skill.slug}"
-        if not any(
-            getattr(tool, "enabled", False)
-            and str(getattr(tool, "name", "") or "") == tool_name
-            for tool in tools
-        ):
+        if tool_name not in enabled_general_tools:
             return None
 
-        query = general_query
+        # Prefer the Router's focused subtask as the execution query when it exists;
+        # selection itself remains independent and always uses the original message.
+        query = str(router_decision.general_intent or "").strip() or selection_query
         self._validated_general_skill_calls.add(
             self._general_skill_call_key(chat_session.id, tool_name, query)
         )
         selection_payload = {
             "skill_slug": skill.slug,
             "skill_name": skill.name,
+            "operation": selection.operation,
             "confidence": selection.confidence,
             "reason": selection.reason,
             "scene_router_decision": router_decision.model_dump(mode="json"),
@@ -3665,7 +3716,10 @@ class AgentLoop:
 
         result = StepAgentResult(
             action="call_tool",
-            tool_call=ToolCall(name=tool_name, arguments={"query": query}),
+            tool_call=ToolCall(
+                name=tool_name,
+                arguments={"query": query, "operation": selection.operation},
+            ),
         )
         self.events.record(
             request.tenant_id,
@@ -4511,6 +4565,22 @@ class AgentLoop:
         conversation_context: dict[str, object] | None = None,
         memory_context: list[dict[str, object]] | None = None,
     ) -> ToolResult:
+        raw_operation = tool_call.arguments.get("operation")
+        operation = (
+            "execute"
+            if raw_operation is None
+            else str(raw_operation).strip().lower()
+        )
+        if operation not in {"read", "execute"}:
+            return ToolResult(
+                tool_name=tool_call.name,
+                success=False,
+                data={"operation": operation},
+                error=ToolError(
+                    code="INVALID_GENERAL_SKILL_OPERATION",
+                    message="通用技能 operation 只能是 read 或 execute。",
+                ),
+            )
         return LegacyGeneralSkillAction(getattr(self, "events", None)).execute_tool_call(
             request,
             chat_session,
@@ -4524,11 +4594,10 @@ class AgentLoop:
             model_resolver=self._get_request_model,
             precondition_error_type=AgentLoopPreconditionError,
             validator=self._validate_general_skill_tool_match,
-            runner=lambda selected_skill, *args, **kwargs: self.general_skill_runner.run(
-                self._general_skill_runtime_snapshot(
-                    request, chat_session, selected_skill
-                ),
+            runner=lambda selected_skill, *args, **kwargs: self._run_general_skill_operation(
+                self._general_skill_runtime_snapshot(request, chat_session, selected_skill),
                 *args,
+                operation=operation,
                 **kwargs,
             ),
         )
@@ -4693,6 +4762,12 @@ class AgentLoop:
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
     ) -> bool:
+        if (
+            tool_result
+            and isinstance(tool_result.data, dict)
+            and tool_result.data.get("operation") == "read"
+        ):
+            return False
         return LegacyReflectionPolicy.should_try(
             router_decision,
             step_result,
@@ -5571,6 +5646,7 @@ class AgentLoop:
                     self._turn_payload(
                         {
                             "skill_slug": run_response.skill_slug,
+                            "operation": run_response.operation,
                             **item,
                         },
                         user_message_id,
@@ -5583,6 +5659,7 @@ class AgentLoop:
             self._turn_payload(
                 {
                     "skill_slug": run_response.skill_slug,
+                    "operation": run_response.operation,
                     "success": bool(run_response.structured_result.get("success", True)),
                     "stdout_preview": run_response.stdout[:600],
                     "stderr_preview": run_response.stderr[:600],

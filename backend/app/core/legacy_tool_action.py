@@ -94,7 +94,13 @@ class LegacyToolAction:
                 conversation_context=conversation_context,
                 memory_context=memory_context,
             )
-            callbacks.record_result(chat_session, tool_call, tool_result)
+            is_read_only_general_skill = (
+                callbacks.is_general_skill_tool(tool_call.name)
+                and str(tool_call.arguments.get("operation") or "execute").strip().lower()
+                == "read"
+            )
+            if not is_read_only_general_skill:
+                callbacks.record_result(chat_session, tool_call, tool_result)
             if stream_events is not None:
                 stream_events.append(
                     (
@@ -110,6 +116,28 @@ class LegacyToolAction:
                 )
             self.db.commit()
             self.db.refresh(chat_session)
+            if is_read_only_general_skill:
+                data = tool_result.data if isinstance(tool_result.data, dict) else {}
+                reply = str(data.get("reply") or "").strip()
+                if not reply and tool_result.error is not None:
+                    reply = tool_result.error.message
+                step_result = StepAgentResult(
+                    reply=reply or "已完成 Skill 内容读取。",
+                    knowledge_results=current_knowledge,
+                    is_step_completed=False,
+                )
+                payload = callbacks.decision_payload(
+                    iteration + 1, "respond_after_read"
+                )
+                self.events.record(
+                    request.tenant_id,
+                    chat_session.id,
+                    "agent_loop_completed",
+                    payload,
+                )
+                if stream_events is not None:
+                    stream_events.append(("agent_loop_completed", payload))
+                break
             if not tool_result.success:
                 if (
                     model_config

@@ -8,7 +8,7 @@ import re
 import threading
 import time
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from html import unescape
 from io import BytesIO
 from urllib.error import HTTPError, URLError
@@ -46,7 +46,7 @@ from app.general_skills import (
     GeneralSkillRunRequest,
     GeneralSkillRunResponse,
 )
-from app.general_skills.runner import GeneralSkillRunner
+from app.general_skills.runner import GeneralSkillReader, GeneralSkillRunner
 from app.general_skills.schema import GeneralSkillFile
 from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.security.auth import get_current_user
@@ -600,12 +600,12 @@ def run_general_skill(
     require_agent_scope_viewer(request.tenant_id, request.agent_id, current_user, db)
     _ensure_general_skill_visible(db, request.tenant_id, skill, request.agent_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-    return GeneralSkillRunner().run(
-        _general_skill_snapshot(skill),
-        request.query,
+    skill_snapshot = _general_skill_snapshot(skill)
+    return _run_general_skill_operation(
+        skill_snapshot,
+        request,
         model_config,
         current_user.id,
-        request.max_attempts,
     )
 
 
@@ -633,12 +633,11 @@ def run_general_skill_stream(
 
         def worker() -> None:
             try:
-                response = GeneralSkillRunner().run(
+                response = _run_general_skill_operation(
                     skill_snapshot,
-                    request.query,
+                    request,
                     model_snapshot,
                     current_user.id,
-                    request.max_attempts,
                     sink,
                 )
                 events.put(("complete", response.model_dump(mode="json")))
@@ -650,7 +649,11 @@ def run_general_skill_stream(
         threading.Thread(target=worker, daemon=True).start()
         yield _sse(
             "stream_started",
-            {"skill_slug": skill_snapshot.slug, "max_attempts": request.max_attempts},
+            {
+                "skill_slug": skill_snapshot.slug,
+                "operation": request.operation,
+                "max_attempts": request.max_attempts,
+            },
         )
         last_worker_event_at = time.monotonic()
         while True:
@@ -664,7 +667,7 @@ def run_general_skill_stream(
                     yield _sse(
                         "error",
                         {
-                            "message": "通用技能运行超时，请检查模型配置或稍后重试。",
+                            "message": "通用技能处理超时，请检查模型配置或稍后重试。",
                             "code": "general_skill_stream_timeout",
                         },
                     )
@@ -678,6 +681,29 @@ def run_general_skill_stream(
             yield _sse(event, payload)
 
     return StreamingResponse(stream_events(), media_type="text/event-stream")
+
+
+def _run_general_skill_operation(
+    skill: GeneralSkillRuntimeSnapshot,
+    request: GeneralSkillRunRequest,
+    model_config: ModelConfig,
+    user_id: str,
+    event_sink: Callable[[dict[str, object]], None] | None = None,
+) -> GeneralSkillRunResponse:
+    if request.operation == "read":
+        response = GeneralSkillReader().read(skill, request.query, model_config)
+        if event_sink is not None:
+            for trace_item in response.execution_trace:
+                event_sink(trace_item)
+        return response
+    return GeneralSkillRunner().run(
+        skill,
+        request.query,
+        model_config,
+        user_id,
+        request.max_attempts,
+        event_sink,
+    )
 
 
 def _get_general_skill(db: Session, tenant_id: str, slug: str) -> GeneralSkill:
