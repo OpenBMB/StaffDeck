@@ -12,7 +12,7 @@ import {
 import type { ChangeEvent, DragEvent, HTMLAttributes, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Ban, CircleCheck, Copy, Users } from 'lucide-react';
+import { Ban, CircleCheck, Copy, Eye, EyeOff, Users } from 'lucide-react';
 import { ContextMenu } from 'radix-ui';
 
 import { api, streamPost, TENANT_ID } from '../api/client';
@@ -52,6 +52,7 @@ import {
 import { StatCard } from '@/components/StatCard';
 import { ResourceImportDialog } from '@/components/ResourceImportDialog';
 import CodeBlock, { renderCodeTokens } from '../components/CodeBlock';
+import { renderMarkdownBlocks } from './chat/chatHelpers';
 import IconAdd from '../assets/icons/add.svg?react';
 import IconArrowRight from '../assets/icons/arrow-right.svg?react';
 import IconFolder from '../assets/icons/cap-folder.svg?react';
@@ -123,8 +124,14 @@ const SKILL_FILE_PANE_CLASS =
   'grid min-w-0 grid-rows-[auto_minmax(0,1fr)]';
 const SKILL_FILE_TAB_CLASS =
   'flex min-h-[44px] items-center gap-2 border-b border-[#e3e7f1] bg-[#f6f6f6] px-[14px] text-[12px] font-medium text-[#757f9c]';
+const SKILL_FILE_TAB_ACTION_BUTTON_CLASS =
+  'inline-flex h-[28px] shrink-0 items-center gap-[4px] rounded-[6px] px-[8px] text-[12px] font-medium text-[#757f9c] transition-colors hover:bg-[#edf1f7] hover:text-[#18181a] disabled:pointer-events-none disabled:opacity-40';
 const SKILL_CODE_EDITOR_CLASS =
   'relative min-h-0 overflow-hidden bg-[#fafafa] font-mono text-[13px] leading-[1.7] tab-[2] shadow-[inset_0_1px_0_#e3e7f1]';
+const SKILL_MARKDOWN_PREVIEW_CLASS =
+  'min-h-0 overflow-auto bg-white p-[18px_20px] text-[14px] leading-[1.8] text-[#18181a]';
+const SKILL_MARKDOWN_PREVIEW_BODY_CLASS =
+  '[&>h1]:mb-4 [&>h1]:text-[22px] [&>h1]:font-semibold [&>h1]:leading-[1.35] [&>h2]:mb-3 [&>h2]:mt-6 [&>h2]:text-[18px] [&>h2]:font-semibold [&>h2]:leading-[1.4] [&>h3]:mb-2 [&>h3]:mt-5 [&>h3]:text-[16px] [&>h3]:font-semibold [&>p]:mb-3 [&>p]:whitespace-pre-wrap [&>ul]:mb-3 [&>ol]:mb-3 [&>ul]:pl-6 [&>ol]:pl-6 [&>li]:mb-1 [&>blockquote]:mb-3 [&>blockquote]:border-l-2 [&>blockquote]:border-[#e3e7f1] [&>blockquote]:pl-4 [&>blockquote]:text-[#757f9c] [&>code]:rounded-[4px] [&>code]:bg-[#f6f7fb] [&>code]:px-1 [&>code]:py-[1px] [&>code]:font-mono [&>pre]:mb-3 [&>pre]:overflow-auto [&>pre]:rounded-[10px] [&>pre]:bg-[#f6f7fb] [&>pre]:p-4 [&_table]:mb-3 [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[#e3e7f1] [&_th]:bg-[#f6f7fb] [&_th]:px-3 [&_th]:py-2 [&_td]:border [&_td]:border-[#e3e7f1] [&_td]:px-3 [&_td]:py-2';
 const SKILL_CODE_HIGHLIGHT_CLASS =
   'pointer-events-none absolute inset-0 z-[1] m-0 overflow-hidden whitespace-pre p-[18px_20px] text-[#18181a] tab-[2]';
 const SKILL_CODE_HIGHLIGHT_CODE_CLASS =
@@ -1192,6 +1199,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const [dragActive, setDragActive] = useState(false);
   const [selectedFilePath, setSelectedFilePath] = useState('SKILL.md');
   const [editorScroll, setEditorScroll] = useState({ top: 0, left: 0 });
+  const [markdownPreviewOpen, setMarkdownPreviewOpen] = useState(false);
   const [clawhubModalOpen, setClawhubModalOpen] = useState(false);
   const [clawhubSource, setClawhubSource] = useState('');
   const [clawhubLoading, setClawhubLoading] = useState(false);
@@ -1225,6 +1233,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     [skillFiles, selectedFilePath],
   );
   const selectedFileLanguage = useMemo(() => languageFromFilePath(selectedFile?.path), [selectedFile?.path]);
+  const selectedFileCanPreview = selectedFileLanguage === 'markdown';
   const isNew = mode === 'new';
   const currentAgent = useMemo(() => agents.find((item) => item.id === agentId), [agents, agentId]);
   const canManageCurrentScope = currentAgent
@@ -1318,6 +1327,12 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setEditorScroll({ top: 0, left: 0 });
   }, [selectedFilePath]);
 
+  useEffect(() => {
+    if (!selectedFileCanPreview) {
+      setMarkdownPreviewOpen(false);
+    }
+  }, [selectedFileCanPreview]);
+
   function hasUnsavedEditingChanges(): boolean {
     if (!editingSlug) return false;
     const original = rows.find((row) => row.slug === editingSlug);
@@ -1397,6 +1412,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setRunResult(null);
     setLiveResult(null);
     setResultExpanded(false);
+    setMarkdownPreviewOpen(false);
   }
 
   function editSkill(row: GeneralSkillRead) {
@@ -1412,6 +1428,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setRunResult(null);
     setLiveResult(null);
     setResultExpanded(false);
+    setMarkdownPreviewOpen(false);
   }
 
   function replaceRow(row: GeneralSkillRead) {
@@ -1481,6 +1498,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setRunResult(null);
     setLiveResult(null);
     setResultExpanded(false);
+    setMarkdownPreviewOpen(false);
   }
 
   async function withImportPreparation(importAction: () => void | Promise<void>) {
@@ -1873,6 +1891,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSkillFiles([nextFile]);
     setSelectedFilePath('SKILL.md');
     setMarkdown(text);
+    setMarkdownPreviewOpen(false);
     applyMetadata(text, { setSkillName, setSkillSlug, setSkillDescription, setSkillHomepage });
     notify.success(`已读取 ${target.name}`);
   }
@@ -1901,6 +1920,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     nextFiles.sort((a, b) => a.path.localeCompare(b.path));
     startImportedDraft();
     setSkillFiles(nextFiles);
+    setMarkdownPreviewOpen(false);
     const skillFile = nextFiles.find((item) => item.path.split('/').pop()?.toLowerCase() === 'skill.md');
     if (skillFile) {
       setMarkdown(skillFile.content);
@@ -2223,29 +2243,52 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
                 <div className={SKILL_FILE_TAB_CLASS}>
                   <IconProfileFile className="size-[14px] shrink-0 text-[#757f9c]" />
                   <span className="min-w-0 truncate text-[#18181a]">{selectedFile?.path || '未选择文件'}</span>
+                  <div className="ml-auto flex items-center gap-1">
+                    {selectedFileCanPreview && (
+                      <button
+                        type="button"
+                        className={SKILL_FILE_TAB_ACTION_BUTTON_CLASS}
+                        aria-label={markdownPreviewOpen ? '切换到编辑' : '切换到渲染'}
+                        aria-pressed={markdownPreviewOpen}
+                        title={markdownPreviewOpen ? '编辑' : '渲染'}
+                        onClick={() => setMarkdownPreviewOpen((current) => !current)}
+                      >
+                        {markdownPreviewOpen ? <EyeOff className="size-[14px]" /> : <Eye className="size-[14px]" />}
+                        <span>{markdownPreviewOpen ? '编辑' : '渲染'}</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className={SKILL_CODE_EDITOR_CLASS} data-language={selectedFileLanguage}>
-                  <pre className={SKILL_CODE_HIGHLIGHT_CLASS} aria-hidden="true">
-                    <code
-                      className={SKILL_CODE_HIGHLIGHT_CODE_CLASS}
-                      style={{
-                        transform: `translate(${-editorScroll.left}px, ${-editorScroll.top}px)`,
-                      }}
-                    >
-                      {renderCodeTokens(selectedFile?.content || '\u200b', selectedFileLanguage)}
-                    </code>
-                  </pre>
-                  <textarea
-                    className={SKILL_CODE_INPUT_CLASS}
-                    value={selectedFile?.content || ''}
-                    onChange={(event) => updateSelectedFile(event.target.value)}
-                    onScroll={(event) => setEditorScroll({
-                      top: event.currentTarget.scrollTop,
-                      left: event.currentTarget.scrollLeft,
-                    })}
-                    spellCheck={false}
-                  />
-                </div>
+                {selectedFileCanPreview && markdownPreviewOpen ? (
+                  <div className={SKILL_MARKDOWN_PREVIEW_CLASS}>
+                    <div className={SKILL_MARKDOWN_PREVIEW_BODY_CLASS}>
+                      {renderMarkdownBlocks(selectedFile?.content || '暂无内容')}
+                    </div>
+                  </div>
+                ) : (
+                  <div className={SKILL_CODE_EDITOR_CLASS} data-language={selectedFileLanguage}>
+                    <pre className={SKILL_CODE_HIGHLIGHT_CLASS} aria-hidden="true">
+                      <code
+                        className={SKILL_CODE_HIGHLIGHT_CODE_CLASS}
+                        style={{
+                          transform: `translate(${-editorScroll.left}px, ${-editorScroll.top}px)`,
+                        }}
+                      >
+                        {renderCodeTokens(selectedFile?.content || '\u200b', selectedFileLanguage)}
+                      </code>
+                    </pre>
+                    <textarea
+                      className={SKILL_CODE_INPUT_CLASS}
+                      value={selectedFile?.content || ''}
+                      onChange={(event) => updateSelectedFile(event.target.value)}
+                      onScroll={(event) => setEditorScroll({
+                        top: event.currentTarget.scrollTop,
+                        left: event.currentTarget.scrollLeft,
+                      })}
+                      spellCheck={false}
+                    />
+                  </div>
+                )}
               </section>
             </div>
           </SectionCard>
