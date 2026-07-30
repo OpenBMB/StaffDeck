@@ -1182,6 +1182,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const [query, setQuery] = useState('');
   const [runResult, setRunResult] = useState<GeneralSkillRunResponse | null>(null);
   const [liveResult, setLiveResult] = useState<Partial<GeneralSkillRunResponse> | null>(null);
+  const [resultExpanded, setResultExpanded] = useState(false);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [selectedRunModelId, setSelectedRunModelId] = useState(
     () => window.localStorage.getItem(`${GENERAL_SKILL_RUN_MODEL_STORAGE_KEY}:${TENANT_ID}`) || '',
@@ -1395,6 +1396,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setQuery('');
     setRunResult(null);
     setLiveResult(null);
+    setResultExpanded(false);
   }
 
   function editSkill(row: GeneralSkillRead) {
@@ -1408,6 +1410,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSelectedSlug(row.slug);
     setEditingSlug(row.slug);
     setRunResult(null);
+    setLiveResult(null);
+    setResultExpanded(false);
   }
 
   function replaceRow(row: GeneralSkillRead) {
@@ -1476,6 +1480,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSelectedSlug(undefined);
     setRunResult(null);
     setLiveResult(null);
+    setResultExpanded(false);
   }
 
   async function withImportPreparation(importAction: () => void | Promise<void>) {
@@ -1762,6 +1767,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       notify.warning('请输入测试问题');
       return;
     }
+    setResultExpanded(true);
     setLoading(true);
     setRunResult(null);
     setLiveResult({
@@ -2034,7 +2040,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         )}
       </div>
 
-      <div className="grid grid-cols-1 gap-[20px] xl:grid-cols-2 xl:grid-rows-[auto_minmax(0,1fr)] xl:items-stretch">
+      <div className="grid grid-cols-1 gap-[20px] xl:grid-cols-2 xl:items-start">
           <SectionCard title="基本信息">
             <div className="grid grid-cols-1 gap-[16px] md:grid-cols-2">
               <Field label="技能名称">
@@ -2120,7 +2126,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
 
           <SectionCard
             className={cn(
-              'flex h-full min-h-0 flex-col xl:col-start-1 xl:row-start-2',
+              'order-4 flex min-h-0 flex-col xl:col-span-2 xl:row-start-3',
               dragActive && SKILL_EDITOR_DRAG_ACTIVE_CLASS,
             )}
             bodyClassName="relative flex min-h-0 flex-1 flex-col p-0"
@@ -2245,8 +2251,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
           </SectionCard>
 
           <SectionCard
-            className="flex h-full min-h-0 flex-col xl:col-start-2 xl:row-start-2"
-            bodyClassName="flex min-h-0 flex-1 flex-col overflow-auto p-[18px]"
+            className="order-3 min-h-0 xl:col-span-2 xl:row-start-2"
+            bodyClassName={cn('min-h-0 overflow-auto p-[18px]', !resultExpanded && 'hidden')}
             title={(
               <span className="flex items-center gap-[8px]">
                 <IconPlay className="size-[14px] shrink-0 text-[#757f9c]" />
@@ -2259,6 +2265,19 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
                     : <span className="inline-flex items-center gap-[4px] rounded-full bg-[#fce7e7] px-[8px] py-px text-[12px] font-bold text-[#d20b0b]"><CloseCircleOutlined />失败</span>
                 )}
               </span>
+            )}
+            extra={(
+              <button
+                type="button"
+                className="inline-flex size-[32px] items-center justify-center rounded-[6px] text-[#757f9c] transition-colors hover:bg-[#f2f3f7] hover:text-[#18181a]"
+                aria-label={resultExpanded ? '收起运行结果' : '展开运行结果'}
+                aria-expanded={resultExpanded}
+                onClick={() => setResultExpanded((current) => !current)}
+              >
+                <IconChevronDown
+                  className={cn('size-[14px] transition-transform', resultExpanded && 'rotate-180')}
+                />
+              </button>
             )}
           >
             {activeResult ? (
@@ -2345,7 +2364,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
                 })()}
               </div>
             ) : (
-              <div className="flex min-h-[560px] flex-1 flex-col items-center justify-center gap-[8px] text-center text-[13px] text-muted-foreground xl:min-h-0">
+              <div className="flex min-h-[120px] flex-col items-center justify-center gap-[8px] text-center text-[13px] text-muted-foreground">
                 运行后将在这里显示回复、执行流程、代码和输出
               </div>
             )}
