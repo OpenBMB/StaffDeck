@@ -16,7 +16,7 @@ import { Ban, ChevronRight, CircleCheck, Copy, Eye, EyeOff, FilePlus2, FolderPlu
 import { ContextMenu } from 'radix-ui';
 
 import { api, streamPost, TENANT_ID } from '../api/client';
-import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
+import { getEnterpriseAuthSession, isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
 import CapabilityScopeLoading from '@/components/CapabilityScopeLoading';
 import {
@@ -101,9 +101,17 @@ const STATUS_BADGE: Record<GeneralSkillRead['status'], { tone: BadgeTone; text: 
   archived: { tone: 'gray', text: '已停用' },
 };
 
-const EMPTY_SKILL_MARKDOWN = `# 技能说明
-
-在这里编写技能文档。名称、Slug 和描述由上方表单维护，系统不会从文档中自动抽取。`;
+const EMPTY_SKILL_MARKDOWN = [
+  '---',
+  'name: my-skill',
+  'description: 描述这个技能做什么、什么时候使用（保存时由上方表单字段重新生成）',
+  '---',
+  '',
+  '# 技能说明',
+  '',
+  '在这里编写技能的使用说明（步骤、示例、边界情况）。正文会写入 SKILL.md,',
+  'frontmatter 由上方表单生成：name 取 Slug,description 取描述。',
+].join('\n');
 
 const SECTION_CARD_CLASS =
   'flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-[#FFF] p-[18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]';
@@ -1428,6 +1436,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const [skillDescription, setSkillDescription] = useState('');
   const [skillHomepage, setSkillHomepage] = useState('');
   const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('general');
+  const [skillLicense, setSkillLicense] = useState('');
+  const [skillCompatibility, setSkillCompatibility] = useState('');
+  const [skillAllowedTools, setSkillAllowedTools] = useState('');
   const [skillFiles, setSkillFiles] = useState<GeneralSkillFile[]>([
     { path: 'SKILL.md', content: EMPTY_SKILL_MARKDOWN, size: EMPTY_SKILL_MARKDOWN.length, mime_type: 'text/markdown' },
   ]);
@@ -1667,6 +1678,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         description: skillDescription.trim() || undefined,
         homepage: skillHomepage.trim() || undefined,
         capability_scope: capabilityScope,
+        license: skillLicense.trim() || undefined,
+        compatibility: skillCompatibility.trim() || undefined,
+        allowed_tools: skillAllowedTools.trim() || undefined,
         markdown,
         files: skillFiles.length ? skillFiles : [{ path: 'SKILL.md', content: markdown }],
         directories: skillDirectories,
@@ -1682,6 +1696,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       setSkillDescription(row.description || '');
       setSkillHomepage(row.homepage || '');
       setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
+      setSkillLicense(row.license || '');
+      setSkillCompatibility(row.compatibility || '');
+      setSkillAllowedTools(row.allowed_tools || '');
       setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
       setSkillDirectories(row.skill_directories || []);
       setSelectedFilePath((row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md' }])[0].path);
@@ -1701,6 +1718,30 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     }
   }
 
+  // 导出标准 Agent Skills 包(zip):SKILL.md 为后端规范化版本,目录名即 slug
+  async function exportSkillPackage() {
+    if (!editingSlug) return;
+    try {
+      const session = getEnterpriseAuthSession();
+      const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+      const response = await fetch(
+        `${apiBase}/api/enterprise/general-skills/${encodeURIComponent(editingSlug)}/export?tenant_id=${TENANT_ID}`,
+        { headers: session?.token ? { Authorization: `Bearer ${session.token}` } : {} },
+      );
+      if (!response.ok) throw new Error('导出技能包失败');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${editingSlug}.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+      notify.success('已导出技能包');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '导出技能包失败');
+    }
+  }
+
   function newSkill() {
     setMarkdown(EMPTY_SKILL_MARKDOWN);
     setSkillName('');
@@ -1708,6 +1749,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSkillDescription('');
     setSkillHomepage('');
     setCapabilityScope('general');
+    setSkillLicense('');
+    setSkillCompatibility('');
+    setSkillAllowedTools('');
     setSkillFiles([{ path: 'SKILL.md', content: EMPTY_SKILL_MARKDOWN, size: EMPTY_SKILL_MARKDOWN.length, mime_type: 'text/markdown' }]);
     setSkillDirectories([]);
     setSelectedFilePath('SKILL.md');
@@ -1728,6 +1772,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSkillDescription(row.description || '');
     setSkillHomepage(row.homepage || '');
     setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
+    setSkillLicense(row.license || '');
+    setSkillCompatibility(row.compatibility || '');
+    setSkillAllowedTools(row.allowed_tools || '');
     setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
     setSkillDirectories(row.skill_directories || []);
     setSelectedFilePath((row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md' }])[0].path);
@@ -2524,6 +2571,11 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
             新建技能
           </UIButton>
         )}
+        {!isNew && editingSlug && (
+          <UIButton variant="outline" className={RETURN_BUTTON_CLASS} onClick={() => void exportSkillPackage()}>
+            导出技能包
+          </UIButton>
+        )}
         {importMenu}
         {canManageCurrentScope && (
           <UIButton disabled={saving} className={PRIMARY_BUTTON_CLASS} onClick={() => void importSkill()}>
@@ -2568,6 +2620,30 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
                   onChange={(event) => setSkillHomepage(event.target.value)}
                   disabled={!canManageCurrentScope}
                   placeholder="可选，参考文档或项目主页"
+                />
+              </Field>
+              <Field label="许可证（license）">
+                <Input
+                  value={skillLicense}
+                  onChange={(event) => setSkillLicense(event.target.value)}
+                  disabled={!canManageCurrentScope}
+                  placeholder="可选，如 Apache-2.0、MIT"
+                />
+              </Field>
+              <Field label="运行环境要求（compatibility）">
+                <Input
+                  value={skillCompatibility}
+                  onChange={(event) => setSkillCompatibility(event.target.value)}
+                  disabled={!canManageCurrentScope}
+                  placeholder="可选，如 Requires network、Python 3.12+"
+                />
+              </Field>
+              <Field label="预授权工具（allowed-tools）">
+                <Input
+                  value={skillAllowedTools}
+                  onChange={(event) => setSkillAllowedTools(event.target.value)}
+                  disabled={!canManageCurrentScope}
+                  placeholder="可选，空格分隔，如 Bash(curl:*) Read；不含 Bash 则只用 Python 运行"
                 />
               </Field>
               <div className="md:col-span-2">

@@ -61,6 +61,14 @@ from app.general_skills import (
 )
 from app.general_skills.runner import GeneralSkillReader, GeneralSkillRunner
 from app.general_skills.schema import GeneralSkillFile
+from app.general_skills.standard import (
+    compose_skill_markdown,
+    frontmatter_for_skill,
+    split_frontmatter,
+    standard_package_files,
+    validate_skill_description,
+    validate_skill_name,
+)
 from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.security.auth import get_current_user
 from app.security.permissions import (
@@ -96,6 +104,7 @@ def _agent_id_or_none(agent_id: object | None) -> str | None:
 
 
 def general_skill_read(row: GeneralSkill, status_override: str | None = None) -> GeneralSkillRead:
+    frontmatter = frontmatter_for_skill(row)
     return GeneralSkillRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -103,6 +112,9 @@ def general_skill_read(row: GeneralSkill, status_override: str | None = None) ->
         name=row.name,
         description=row.description,
         homepage=row.homepage,
+        license=frontmatter["license"] or None,
+        compatibility=frontmatter["compatibility"] or None,
+        allowed_tools=frontmatter["allowed_tools"] or None,
         skill_markdown=row.skill_markdown,
         skill_files=[
             GeneralSkillFile.model_validate(item) for item in _skill_files_or_markdown(row)
@@ -148,6 +160,29 @@ def import_general_skill(
     )
     _validate_slug(slug)
     lookup_slug = _optional_text(request.original_slug)
+    # Agent Skills 规范校验:新建时 slug(即规范 name,与目录名一致)必须合规;
+    # 存量 slug 不可修改,编辑时宽限(只拦新格式违规的新建)
+    if not lookup_slug and (error := validate_skill_name(slug)):
+        raise HTTPException(status_code=400, detail=f"Slug(name):{error}")
+    if error := validate_skill_description(description, required=request.status == "published"):
+        raise HTTPException(status_code=400, detail=error)
+    # SKILL.md 归一化:frontmatter 以表单/规范字段重组(name 恒等于 slug),正文保留
+    existing_frontmatter, markdown_body = split_frontmatter(markdown)
+    markdown = compose_skill_markdown(
+        name=slug,
+        description=description or "",
+        body=markdown_body,
+        license=_optional_text(request.license) or str(existing_frontmatter.get("license") or ""),
+        compatibility=_optional_text(request.compatibility)
+        or str(existing_frontmatter.get("compatibility") or ""),
+        allowed_tools=_optional_text(request.allowed_tools)
+        or str(existing_frontmatter.get("allowed-tools") or ""),
+        metadata=(
+            existing_frontmatter.get("metadata")
+            if isinstance(existing_frontmatter.get("metadata"), dict)
+            else {}
+        ),
+    )
     agent_id = _agent_id_or_none(request.agent_id)
     agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
     is_private_agent_scope = bool(agent and not agent.is_overall)
@@ -405,6 +440,26 @@ def _create_imported_general_skill(
         or _clawhub_homepage_from_source(import_source)
     )
     _validate_slug(resolved_slug)
+    # Agent Skills 规范:slug 必须合规范(name 形态);不合规的导入名经 _slugify 清洗
+    if validate_skill_name(resolved_slug):
+        resolved_slug = _unique_slug(db, tenant_id, _slugify(resolved_slug))
+    if error := validate_skill_description(resolved_description, required=status == "published"):
+        raise HTTPException(status_code=400, detail=error)
+    # SKILL.md 归一化:frontmatter 以解析/规范字段重组(name 恒等于 slug),正文保留
+    existing_frontmatter, markdown_body = split_frontmatter(markdown)
+    markdown = compose_skill_markdown(
+        name=resolved_slug,
+        description=resolved_description or "",
+        body=markdown_body,
+        license=str(existing_frontmatter.get("license") or ""),
+        compatibility=str(existing_frontmatter.get("compatibility") or ""),
+        allowed_tools=str(existing_frontmatter.get("allowed-tools") or ""),
+        metadata=(
+            existing_frontmatter.get("metadata")
+            if isinstance(existing_frontmatter.get("metadata"), dict)
+            else {}
+        ),
+    )
     now = utc_now()
     resolved_agent_id = _agent_id_or_none(agent_id)
     agent = ensure_agent_scope_manager(db, tenant_id, resolved_agent_id, current_user)
@@ -533,6 +588,28 @@ def get_general_skill(
     return general_skill_read(row)
 
 
+@router.get("/{slug}/export", dependencies=[Depends(require_agent_scope_viewer)])
+def export_general_skill(
+    slug: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    agent_id: str | None = Query(None),
+) -> StreamingResponse:
+    """导出标准 Agent Skills 包(zip):根目录为 slug,SKILL.md 为规范化版本。"""
+    row = _get_general_skill(db, tenant_id, slug)
+    _ensure_general_skill_visible(db, tenant_id, row, agent_id)
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file in standard_package_files(row):
+            archive.writestr(f"{row.slug}/{file['path']}", file["content"])
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{row.slug}.zip"'},
+    )
+
+
 @router.post("/{slug}/publish", response_model=GeneralSkillRead)
 def publish_general_skill(
     slug: str,
@@ -558,6 +635,11 @@ def publish_general_skill(
         db.commit()
         return general_skill_read(row, status_override="published")
     ensure_open_gallery_admin(tenant_id, current_user)
+    # 发布前必须通过 Agent Skills 规范校验(name/description 必填且合规)
+    if error := validate_skill_name(row.slug):
+        raise HTTPException(status_code=400, detail=f"发布失败:slug(name):{error}")
+    if error := validate_skill_description(row.description, required=True):
+        raise HTTPException(status_code=400, detail=f"发布失败:{error}")
     row.status = "published"
     mark_resource_open_gallery(row, row.metadata_json or {})
     row.updated_at = utc_now()
