@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 import type { ChatMessage } from '@/types';
 
@@ -7,6 +9,7 @@ import {
   canRateMessage,
   knowledgeCitations,
   messageAttachments,
+  renderInlineMarkdown,
   scheduledDraftForMessage,
 } from './chatHelpers';
 
@@ -22,6 +25,28 @@ function message(patch: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 describe('chat history consumer contract', () => {
+  it('renders bare HTTP links without changing existing Markdown links or inline code', () => {
+    const rendered = renderToStaticMarkup(
+      createElement(
+        'div',
+        null,
+        ...renderInlineMarkdown(
+          '详情见 https://example.com/docs?a=1。[官网](https://example.org) `https://internal.test`',
+          'test',
+        ),
+      ),
+    );
+
+    expect(rendered).toContain(
+      '<a href="https://example.com/docs?a=1" target="_blank" rel="noreferrer">https://example.com/docs?a=1</a>。',
+    );
+    expect(rendered).toContain(
+      '<a href="https://example.org" target="_blank" rel="noreferrer">官网</a>',
+    );
+    expect(rendered).toContain('<code>https://internal.test</code>');
+    expect(rendered.match(/href=/g)).toHaveLength(2);
+  });
+
   it('keeps only inline citations, deduplicates content, and orders labels', () => {
     const item = message({
       metadata: {

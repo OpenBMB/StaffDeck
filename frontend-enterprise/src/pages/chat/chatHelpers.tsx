@@ -148,6 +148,34 @@ export function placeQueuedMessagesLast(messages: ChatMessage[]): ChatMessage[] 
   return [...timeline, ...queued];
 }
 
+function renderBareLinks(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /https?:\/\/[^\s<>"'`]+/gi;
+  const trailingPunctuation = /[.,!?;:\uff0c\u3002\uff01\uff1f\uff1b\uff1a\u3001)\]}>]+$/;
+  let cursor = 0;
+  let index = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    const candidate = match[0];
+    const href = candidate.replace(trailingPunctuation, '');
+    if (!href) continue;
+    if (match.index > cursor) nodes.push(text.slice(cursor, match.index));
+    nodes.push(
+      <a key={`${keyPrefix}-url-${index}`} href={href} target="_blank" rel="noreferrer">
+        {href}
+      </a>,
+    );
+    const trailing = candidate.slice(href.length);
+    if (trailing) nodes.push(trailing);
+    cursor = match.index + candidate.length;
+    index += 1;
+  }
+
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
+}
+
 export function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]*\]\([^\)\n]+\))/g;
@@ -157,7 +185,7 @@ export function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode
 
   while ((match = pattern.exec(text)) !== null) {
     if (match.index > cursor) {
-      nodes.push(text.slice(cursor, match.index));
+      nodes.push(...renderBareLinks(text.slice(cursor, match.index), `${keyPrefix}-${index}`));
     }
     const token = match[0];
     const key = `${keyPrefix}-inline-${index}`;
@@ -199,7 +227,7 @@ export function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode
   }
 
   if (cursor < text.length) {
-    nodes.push(text.slice(cursor));
+    nodes.push(...renderBareLinks(text.slice(cursor), `${keyPrefix}-${index}`));
   }
   return nodes;
 }
