@@ -537,7 +537,7 @@ export default function OpenPlatformPage({
             window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', {
               detail: { agentId: overall.id },
             }));
-            navigate('/enterprise/general-skills/new');
+            navigate('/enterprise/general-skills/new?scope=gallery');
           } : undefined}
           onOpenItem={(item) => setDetailItem({ kind: selectedKind, item })}
           onLogout={onLogout}

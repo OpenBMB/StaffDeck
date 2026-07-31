@@ -1194,6 +1194,9 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' } & GeneralSkillPageProps) {
   const navigate = useNavigate();
   const { slug: routeSlug } = useParams();
+  const [editorSearchParams] = useSearchParams();
+  const forceGalleryScope = editorSearchParams.get('scope') === 'gallery';
+  const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
   const [rows, setRows] = useState<GeneralSkillRead[]>([]);
   const [markdown, setMarkdown] = useState(EMPTY_SKILL_MARKDOWN);
   const [skillName, setSkillName] = useState('');
@@ -1286,21 +1289,34 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   };
 
   useEffect(() => {
-    if (mode === 'new') {
-      newSkill();
-    }
+    if (mode === 'new') newSkill();
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode === 'new' || (forceGalleryScope && !agentScopeLoaded)) return;
     void load();
-  }, [agentId, mode, routeSlug]);
+  }, [agentId, mode, routeSlug, forceGalleryScope, agentScopeLoaded]);
 
   useEffect(() => {
     api
       .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
       .then((items) => {
         setAgents(items);
-        setIsOverallAgent(Boolean(items.find((item) => item.id === agentId)?.is_overall ?? true));
+        const scopedAgent = forceGalleryScope
+          ? items.find((item) => item.is_overall)
+          : items.find((item) => item.id === agentId);
+        if (scopedAgent && scopedAgent.id !== agentId) {
+          window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, scopedAgent.id);
+          setAgentId(scopedAgent.id);
+        }
+        setIsOverallAgent(Boolean(scopedAgent?.is_overall ?? true));
+        setAgentScopeLoaded(true);
       })
-      .catch(() => setIsOverallAgent(true));
-  }, [agentId]);
+      .catch(() => {
+        setIsOverallAgent(true);
+        setAgentScopeLoaded(true);
+      });
+  }, [agentId, forceGalleryScope]);
 
   useEffect(() => {
     api
@@ -1322,12 +1338,13 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
+      if (forceGalleryScope) return;
       const detail = (event as CustomEvent<{ agentId?: string }>).detail;
       setAgentId(detail?.agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
-  }, []);
+  }, [forceGalleryScope]);
 
   useEffect(() => {
     folderInputRef.current?.setAttribute('webkitdirectory', '');
@@ -1406,8 +1423,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         const withoutSaved = current.filter((item) => item.id !== row.id && item.slug !== row.slug);
         return [row, ...withoutSaved];
       });
-      navigate(`/enterprise/general-skills/${encodeURIComponent(row.slug)}/edit`, { replace: !editingSlug });
-      void load();
+      const scopeQuery = row.metadata?.scope === 'open_gallery' ? '?scope=gallery' : '';
+      navigate(`/enterprise/general-skills/${encodeURIComponent(row.slug)}/edit${scopeQuery}`, { replace: !editingSlug });
       return row;
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '保存技能失败');
