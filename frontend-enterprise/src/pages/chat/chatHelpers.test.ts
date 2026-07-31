@@ -7,6 +7,7 @@ import type { ChatMessage } from '@/types';
 import {
   STREAM_TERMINAL_EVENTS,
   canRateMessage,
+  harnessWorkspaceArtifacts,
   knowledgeCitations,
   messageAttachments,
   renderInlineMarkdown,
@@ -109,6 +110,38 @@ describe('chat history consumer contract', () => {
 
     expect(scheduledDraftForMessage(item)).toEqual(draft);
     expect(messageAttachments(item)).toEqual([attachment]);
+  });
+
+  it('keeps only valid, unique workspace artifacts from persisted metadata', () => {
+    const item = message({
+      metadata: {
+        harness_artifacts: [
+          {
+            type: 'workspace_file',
+            task_frame_id: 'task-1',
+            path: 'reports/result.txt',
+            size: 12,
+          },
+          {
+            type: 'workspace_file',
+            task_frame_id: 'task-1',
+            path: 'reports/result.txt',
+            size: 14,
+          },
+          { type: 'human_handoff', handoff_id: 'handoff-1' },
+          { type: 'workspace_file', task_frame_id: '', path: 'invalid.txt' },
+        ],
+      },
+    });
+
+    expect(harnessWorkspaceArtifacts(item)).toEqual([
+      {
+        type: 'workspace_file',
+        task_frame_id: 'task-1',
+        path: 'reports/result.txt',
+        size: 12,
+      },
+    ]);
   });
 
   it('allows feedback only for committed assistant messages', () => {

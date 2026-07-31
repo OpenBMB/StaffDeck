@@ -19,6 +19,7 @@ from app.agents.branching import (
     visible_tool_rows,
 )
 from app.config import get_settings
+from app.capability_scope import normalize_capability_scope
 from app.db import get_session
 from app.db.models import AgentProfile, AgentResourceBinding, MCPServer, Tool, User, utc_now
 from app.security.auth import ensure_current_user_tenant, get_current_user
@@ -79,6 +80,7 @@ def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
         output_schema=row.output_schema or {},
         allowed_skills=row.allowed_skills_json or [],
         mcp_server_id=row.mcp_server_id,
+        capability_scope=normalize_capability_scope(row.capability_scope),
         enabled=row.enabled,
         metadata=dict(metadata or {}),
         created_at=row.created_at.isoformat(),
@@ -155,6 +157,7 @@ def create_tool(
         input_schema=request.input_schema,
         output_schema=request.output_schema,
         allowed_skills_json=request.allowed_skills,
+        capability_scope=request.capability_scope,
         enabled=request.enabled,
     )
     db.add(row)
@@ -306,14 +309,19 @@ def update_tool(
     row.url = request.url
     row.headers_json = request.headers
     row.auth_json = request.auth
-    row.config_json = _tool_config(
+    updated_config = _tool_config(
         request.mcp_config,
         request.execution_policy,
         existing=row.config_json,
     )
+    row.config_json = updated_config
     row.input_schema = request.input_schema
     row.output_schema = request.output_schema
     row.allowed_skills_json = request.allowed_skills
+    if request.capability_scope is not None:
+        row.capability_scope = request.capability_scope
+        if row.mcp_server_id:
+            row.capability_scope_inherited = False
     row.enabled = request.enabled
     row.updated_at = utc_now()
     db.add(row)
@@ -474,6 +482,8 @@ def _ensure_private_tool_for_agent(
         output_schema=dict(row.output_schema or {}),
         allowed_skills_json=list(row.allowed_skills_json or []),
         mcp_server_id=row.mcp_server_id,
+        capability_scope=normalize_capability_scope(row.capability_scope),
+        capability_scope_inherited=row.capability_scope_inherited,
         enabled=row.enabled,
         created_at=now,
         updated_at=now,
@@ -623,12 +633,25 @@ def mcp_server_read(row: MCPServer, db: Session) -> MCPServerRead:
         description=row.description,
         bucket=row.bucket or "MCP 工具",
         connection=_server_connection(row),
+        capability_scope=normalize_capability_scope(row.capability_scope),
         enabled=row.enabled,
         last_synced_at=row.last_synced_at.isoformat() if row.last_synced_at else None,
         tool_count=tool_count,
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
+
+
+def _update_inherited_mcp_tool_scopes(db: Session, server: MCPServer) -> None:
+    """Cascade a server default without overwriting explicit child-tool choices."""
+
+    for tool in db.exec(select(Tool).where(Tool.mcp_server_id == server.id)).all():
+        if tool.capability_scope_inherited is False:
+            continue
+        tool.capability_scope = normalize_capability_scope(server.capability_scope)
+        tool.capability_scope_inherited = True
+        tool.updated_at = utc_now()
+        db.add(tool)
 
 
 @mcp_router.get(
@@ -675,6 +698,7 @@ def create_mcp_server(
         args_json=conn.args,
         env_json=conn.env,
         cwd=conn.cwd,
+        capability_scope=request.capability_scope,
         enabled=request.enabled,
     )
     db.add(row)
@@ -714,6 +738,9 @@ def update_mcp_server(
     row.args_json = conn.args
     row.env_json = conn.env
     row.cwd = conn.cwd
+    if request.capability_scope is not None:
+        row.capability_scope = request.capability_scope
+        _update_inherited_mcp_tool_scopes(db, row)
     row.enabled = request.enabled
     row.updated_at = utc_now()
     db.add(row)
@@ -788,6 +815,9 @@ def discover_mcp_tools(
                 tool.imported = True
                 tool.tool_id = match.id
                 tool.enabled = match.enabled
+                tool.capability_scope = normalize_capability_scope(match.capability_scope)
+            else:
+                tool.capability_scope = normalize_capability_scope(row.capability_scope)
     return response
 
 
@@ -821,7 +851,9 @@ def sync_mcp_tools(
         if selected and tool.name not in selected:
             continue
         current = existing.get(tool.name)
+        scope_override = request.capability_scope_overrides.get(tool.name)
         if current is None:
+            inherited_scope = scope_override is None
             new_row = Tool(
                 tenant_id=row.tenant_id,
                 name=_scoped_tool_name(row.name, tool.name),
@@ -838,6 +870,10 @@ def sync_mcp_tools(
                 output_schema=tool.output_schema or {},
                 allowed_skills_json=[],
                 mcp_server_id=row.id,
+                capability_scope=normalize_capability_scope(
+                    scope_override or row.capability_scope
+                ),
+                capability_scope_inherited=inherited_scope,
                 enabled=True,
             )
             db.add(new_row)
@@ -848,7 +884,14 @@ def sync_mcp_tools(
             current.description = tool.description or current.description
             current.input_schema = tool.input_schema or current.input_schema
             current.output_schema = tool.output_schema or current.output_schema
-            current.config_json = {**(current.config_json or {}), "tool": tool.name}
+            current_config = {**(current.config_json or {}), "tool": tool.name}
+            if scope_override is not None:
+                current.capability_scope = scope_override
+                current.capability_scope_inherited = False
+            elif current.capability_scope_inherited:
+                current.capability_scope = normalize_capability_scope(row.capability_scope)
+                current.capability_scope_inherited = True
+            current.config_json = current_config
             current.updated_at = utc_now()
             db.add(current)
             touched_tool_ids.append(current.id)

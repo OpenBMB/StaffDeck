@@ -1,3 +1,15 @@
+export type CapabilityScope = 'general' | 'sop_specific';
+
+export type SkillCapabilityRefs = {
+  general_skill_ids: string[];
+  tool_ids: string[];
+  knowledge_base_ids: string[];
+};
+
+export type SkillGraphNode = Record<string, unknown> & {
+  capability_refs?: SkillCapabilityRefs;
+};
+
 export type SkillCard = {
   skill_id: string;
   name: string;
@@ -8,7 +20,7 @@ export type SkillCard = {
   user_utterance_examples: string[];
   goal: string[];
   required_info: string[];
-  nodes: Array<Record<string, unknown>>;
+  nodes: SkillGraphNode[];
   edges: Array<Record<string, unknown>>;
   start_node_id: string;
   terminal_node_ids: string[];
@@ -38,6 +50,7 @@ export type KnowledgeBaseRead = {
   tenant_id: string;
   name: string;
   description?: string;
+  capability_scope?: CapabilityScope;
   status: string;
   version?: string;
   branch_sync_state?: string;
@@ -265,6 +278,7 @@ export type GeneralSkillRead = {
   slug: string;
   name: string;
   description?: string;
+  capability_scope?: CapabilityScope;
   homepage?: string;
   skill_markdown: string;
   skill_files: Array<{
@@ -350,6 +364,7 @@ export type ToolRead = {
   name: string;
   display_name?: string;
   description?: string;
+  capability_scope?: CapabilityScope;
   bucket: string;
   tool_type: 'http' | 'mcp' | string;
   method: string;
@@ -387,6 +402,7 @@ export type MCPServerRead = {
   description?: string;
   bucket: string;
   connection: MCPServerConnection;
+  capability_scope?: CapabilityScope;
   enabled: boolean;
   last_synced_at?: string | null;
   tool_count: number;
@@ -402,6 +418,7 @@ export type MCPDiscoveredTool = {
   imported: boolean;
   tool_id?: string | null;
   enabled?: boolean | null;
+  capability_scope?: CapabilityScope | null;
 };
 
 export type MCPDiscoverResponse = {
@@ -526,6 +543,23 @@ export type KnowledgeCitation = {
   concept_type?: string;
 };
 
+export type HarnessWorkspaceArtifact = {
+  type: 'workspace_file';
+  task_frame_id: string;
+  path: string;
+  sha256?: string | null;
+  size?: number | null;
+  operation?: string | null;
+};
+
+export type HarnessArtifact =
+  | HarnessWorkspaceArtifact
+  | {
+      type: 'human_handoff' | string;
+      handoff_id?: string | null;
+      [key: string]: unknown;
+    };
+
 export type ChatMessage = {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -534,6 +568,7 @@ export type ChatMessage = {
     attachments?: ChatAttachmentRead[];
     knowledge_citations?: KnowledgeCitation[];
     knowledge_query?: Record<string, unknown>;
+    harness_artifacts?: HarnessArtifact[];
     [key: string]: unknown;
   };
   created_at: string;

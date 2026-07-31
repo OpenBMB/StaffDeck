@@ -152,6 +152,22 @@ export const CHAT_ATTACHMENT_NAME_CLASS = 'truncate text-[12px] font-medium text
 export const CHAT_ATTACHMENT_META_CLASS = 'truncate text-[11px] text-[#858b9c]';
 
 // ---------------------------------------------------------------------------
+// Harness-generated artifacts
+// ---------------------------------------------------------------------------
+export const CHAT_ARTIFACTS_CLASS =
+  'mt-[12px] grid min-w-0 max-w-full gap-[8px] border-t border-[#f0f1f4] pt-[10px]';
+export const CHAT_ARTIFACT_HEADING_CLASS =
+  'inline-flex items-center gap-[6px] text-[12px] font-semibold text-[#757f9c]';
+export const CHAT_ARTIFACT_LIST_CLASS = 'grid min-w-0 max-w-[320px] gap-[6px]';
+export const CHAT_ARTIFACT_BUTTON_CLASS =
+  'grid min-h-[46px] w-full grid-cols-[32px_minmax(0,1fr)_24px] items-center gap-[9px] rounded-[10px] border border-[#e3e7f1] bg-[#fafbfc] px-[8px] py-[6px] text-left text-[#464c5e] transition-colors hover:border-[#c9d2e4] hover:bg-white disabled:cursor-wait disabled:opacity-60';
+export const CHAT_ARTIFACT_ICON_CLASS =
+  'inline-grid size-[32px] place-items-center rounded-[8px] bg-[#eef0f4] text-[#464c5e]';
+export const CHAT_ARTIFACT_COPY_CLASS = 'grid min-w-0 gap-px';
+export const CHAT_ARTIFACT_NAME_CLASS = 'truncate text-[12px] font-medium text-[#18181a]';
+export const CHAT_ARTIFACT_META_CLASS = 'truncate text-[11px] text-[#858b9c]';
+
+// ---------------------------------------------------------------------------
 // Feedback actions
 // ---------------------------------------------------------------------------
 export const CHAT_FEEDBACK_CLASS = 'mt-[10px] flex items-center gap-[4px]';

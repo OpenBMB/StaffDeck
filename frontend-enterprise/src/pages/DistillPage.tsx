@@ -37,6 +37,7 @@ import {
 } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
+  Checkbox,
   Dialog,
   DialogContent,
   DialogFooter,
@@ -60,6 +61,7 @@ import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import AppHeader from '@/components/AppHeader';
+import { CapabilityScopeBadge } from '@/components/CapabilityScopeControl';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
 import { cn } from '@/lib/utils';
 import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
@@ -250,7 +252,16 @@ import {
   type ToolStatusBadgeVariant,
 } from './distillPageStyles';
 import { api, ApiError, streamGet, streamPost, TENANT_ID } from '../api/client';
-import type { ModelConfigRead, SkillCard, SkillRead, ToolProbeResponse, ToolRead, ToolSuggestion } from '../types';
+import type {
+  GeneralSkillRead,
+  KnowledgeBaseRead,
+  ModelConfigRead,
+  SkillCard,
+  SkillRead,
+  ToolProbeResponse,
+  ToolRead,
+  ToolSuggestion,
+} from '../types';
 
 type ChatItem = {
   id: string;
@@ -307,6 +318,12 @@ type ViewMode = 'source' | 'flow';
 type SelectOption = {
   value: string;
   label: string;
+};
+
+type CapabilityReferenceOption = SelectOption & {
+  description?: string;
+  capabilityScope?: unknown;
+  unavailableReason?: string;
 };
 
 const NODE_TYPE_OPTIONS: SelectOption[] = [
@@ -527,6 +544,8 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   const [toolDetailMessageId, setToolDetailMessageId] = useState<string | null>(null);
   const [probeArgsText, setProbeArgsText] = useState('');
   const [tools, setTools] = useState<ToolRead[]>([]);
+  const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [selectedRewriteModelId, setSelectedRewriteModelId] = useState(
     () => window.localStorage.getItem(`${DISTILL_REWRITE_MODEL_STORAGE_KEY}:${TENANT_ID}`) || '',
@@ -732,10 +751,21 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   }, [active]);
 
   useEffect(() => {
-    api
-      .get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentQuery}`)
-      .then(setTools)
-      .catch(() => setTools([]));
+    void Promise.all([
+      api
+        .get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentQuery}`)
+        .catch(() => [] as ToolRead[]),
+      api
+        .get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentQuery}`)
+        .catch(() => [] as GeneralSkillRead[]),
+      api
+        .get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentQuery}`)
+        .catch(() => [] as KnowledgeBaseRead[]),
+    ]).then(([toolRows, skillRows, knowledgeRows]) => {
+      setTools(toolRows);
+      setGeneralSkills(skillRows);
+      setKnowledgeBases(knowledgeRows);
+    });
   }, [agentQuery]);
 
   useEffect(() => {
@@ -942,7 +972,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   ) {
     if (!currentDraft) return;
     setSourceAutoScroll(false);
-    const editableDraft = lockSkillIdForDraft(currentDraft, lockedSkillId);
+    const editableDraft = canonicalizeSkillCapabilityRefs(lockSkillIdForDraft(currentDraft, lockedSkillId));
     const previousDraft = cloneSkill(editableDraft);
     const targets = targetPathsOverride?.length
       ? targetPathsOverride
@@ -1083,7 +1113,9 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
       notify.info('当前没有内容变化，无需保存草稿。');
       return;
     }
-    let finalDraft: SkillCard = lockSkillIdForDraft(saveReviewDraft, lockedSkillId);
+    let finalDraft: SkillCard = canonicalizeSkillCapabilityRefs(
+      lockSkillIdForDraft(saveReviewDraft, lockedSkillId),
+    );
     let renamedSkillId = '';
     try {
       let savedSkill: SkillRead;
@@ -2399,6 +2431,9 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
               textDiffs={textDiffs}
               toolDescriptions={toolDescriptions}
               toolStatuses={toolStatuses}
+              generalSkills={generalSkills}
+              tools={tools}
+              knowledgeBases={knowledgeBases}
               containerRef={sourceScrollRef}
               lockSkillId={Boolean(lockedSkillId)}
               onToggle={toggleTarget}
@@ -2894,6 +2929,9 @@ function SkillSource({
   textDiffs,
   toolDescriptions,
   toolStatuses,
+  generalSkills,
+  tools,
+  knowledgeBases,
   containerRef,
   lockSkillId,
   onToggle,
@@ -2907,6 +2945,9 @@ function SkillSource({
   textDiffs: TextDiffAnimation[];
   toolDescriptions: ToolDescriptionMap;
   toolStatuses: ToolStatusMap;
+  generalSkills: GeneralSkillRead[];
+  tools: ToolRead[];
+  knowledgeBases: KnowledgeBaseRead[];
   containerRef: RefObject<HTMLDivElement>;
   lockSkillId?: boolean;
   onToggle: (target: TargetSelection) => void;
@@ -2927,7 +2968,13 @@ function SkillSource({
 
   function editStep(index: number, field: string, value: string | string[] | boolean | Record<string, unknown>) {
     const next = cloneSkill(skill);
-    const listValue = field === 'expected_user_info' || field === 'allowed_actions'
+    const listValue = [
+      'expected_user_info',
+      'allowed_actions',
+      'general_skill_ids',
+      'tool_ids',
+      'knowledge_base_ids',
+    ].includes(field)
       ? Array.isArray(value)
         ? value
         : splitEditableList(String(value))
@@ -2961,7 +3008,15 @@ function SkillSource({
       onEdit(next, stepTargetPath(index));
       return;
     }
-    currentNode[nodeField] = listValue;
+    if (['general_skill_ids', 'tool_ids', 'knowledge_base_ids'].includes(nodeField)) {
+      const currentRefs = nodeCapabilityRefs(currentNode);
+      currentNode.capability_refs = { ...currentRefs, [nodeField]: listValue };
+      delete currentNode.general_skill_ids;
+      delete currentNode.tool_ids;
+      delete currentNode.knowledge_base_ids;
+    } else {
+      currentNode[nodeField] = listValue;
+    }
     next.nodes[index] = currentNode;
     onEdit(next, stepTargetPath(index));
   }
@@ -3029,6 +3084,11 @@ function SkillSource({
       condition: '',
       expected_user_info: [],
       allowed_actions: ['continue_flow'],
+      capability_refs: {
+        general_skill_ids: [],
+        tool_ids: [],
+        knowledge_base_ids: [],
+      },
       knowledge_scope: {},
       retry_policy: {},
       metadata: {},
@@ -3203,6 +3263,27 @@ function SkillSource({
     };
   });
   const actionOptions = buildActionOptions(toolDescriptions, toolStatuses, steps);
+  const generalSkillOptions: CapabilityReferenceOption[] = generalSkills.map((item) => ({
+    value: item.id,
+    label: item.name || item.slug,
+    description: item.description || item.slug,
+    capabilityScope: item.capability_scope,
+    unavailableReason: item.status === 'published' ? undefined : '技能未启用',
+  }));
+  const toolOptions: CapabilityReferenceOption[] = tools.map((item) => ({
+    value: item.id,
+    label: item.display_name || item.name,
+    description: item.description || item.name,
+    capabilityScope: item.capability_scope,
+    unavailableReason: item.enabled ? undefined : '工具已停用',
+  }));
+  const knowledgeBaseOptions: CapabilityReferenceOption[] = knowledgeBases.map((item) => ({
+    value: item.id,
+    label: item.name,
+    description: item.description,
+    capabilityScope: item.capability_scope,
+    unavailableReason: item.status === 'active' || item.status === 'published' ? undefined : '知识库已下线',
+  }));
 
   return (
     <div className={SOURCE_MD_CLASS} ref={containerRef}>
@@ -3304,6 +3385,27 @@ function SkillSource({
                       toolDescriptions={toolDescriptions}
                       toolStatuses={toolStatuses}
                       onChange={(value) => editStep(index, 'allowed_actions', value)}
+                    />
+                    <EditableCapabilityReferencesLine
+                      label="SOP 技能"
+                      values={asStringList(step.general_skill_ids)}
+                      options={generalSkillOptions}
+                      emptyText="未指定技能"
+                      onChange={(value) => editStep(index, 'general_skill_ids', value)}
+                    />
+                    <EditableCapabilityReferencesLine
+                      label="SOP 工具"
+                      values={asStringList(step.tool_ids)}
+                      options={toolOptions}
+                      emptyText="未指定工具"
+                      onChange={(value) => editStep(index, 'tool_ids', value)}
+                    />
+                    <EditableCapabilityReferencesLine
+                      label="SOP 知识库"
+                      values={asStringList(step.knowledge_base_ids)}
+                      options={knowledgeBaseOptions}
+                      emptyText="未指定知识库"
+                      onChange={(value) => editStep(index, 'knowledge_base_ids', value)}
                     />
                     <EditableFlowRulesLine
                       sourceNodeId={stepId}
@@ -3636,22 +3738,37 @@ function PlainChipList({ values }: { values: unknown }) {
 
 function skillGraphSteps(skill: SkillCard): Array<Record<string, unknown>> {
   if (Array.isArray(skill.nodes) && skill.nodes.length > 0) {
-    return skill.nodes.map((node, index) => ({
-      step_id: node.node_id || `node_${index + 1}`,
-      node_id: node.node_id || `node_${index + 1}`,
-      type: node.type || 'collect_info',
-      name: node.name || node.node_id || `节点 ${index + 1}`,
-      instruction: node.instruction || '',
-      optional: Boolean(node.optional),
-      condition: node.condition || '',
-      expected_user_info: asStringList(node.expected_user_info),
-      allowed_actions: asStringList(node.allowed_actions),
-      knowledge_scope: isRecord(node.knowledge_scope) ? node.knowledge_scope : {},
-      retry_policy: isRecord(node.retry_policy) ? node.retry_policy : {},
-      metadata: isRecord(node.metadata) ? node.metadata : {},
-    }));
+    return skill.nodes.map((node, index) => {
+      const capabilityRefs = nodeCapabilityRefs(node);
+      return {
+        step_id: node.node_id || `node_${index + 1}`,
+        node_id: node.node_id || `node_${index + 1}`,
+        type: node.type || 'collect_info',
+        name: node.name || node.node_id || `节点 ${index + 1}`,
+        instruction: node.instruction || '',
+        optional: Boolean(node.optional),
+        condition: node.condition || '',
+        expected_user_info: asStringList(node.expected_user_info),
+        allowed_actions: asStringList(node.allowed_actions),
+        general_skill_ids: capabilityRefs.general_skill_ids,
+        tool_ids: capabilityRefs.tool_ids,
+        knowledge_base_ids: capabilityRefs.knowledge_base_ids,
+        knowledge_scope: isRecord(node.knowledge_scope) ? node.knowledge_scope : {},
+        retry_policy: isRecord(node.retry_policy) ? node.retry_policy : {},
+        metadata: isRecord(node.metadata) ? node.metadata : {},
+      };
+    });
   }
   return [];
+}
+
+function nodeCapabilityRefs(node: Record<string, unknown>) {
+  const refs = isRecord(node.capability_refs) ? node.capability_refs : {};
+  return {
+    general_skill_ids: asStringList(refs.general_skill_ids ?? node.general_skill_ids),
+    tool_ids: asStringList(refs.tool_ids ?? node.tool_ids),
+    knowledge_base_ids: asStringList(refs.knowledge_base_ids ?? node.knowledge_base_ids),
+  };
 }
 
 function skillGraphEdgeMap(skill: SkillCard): Record<string, Array<Record<string, unknown>>> {
@@ -4752,6 +4869,152 @@ function EditableSourceActionLine({
   );
 }
 
+function EditableCapabilityReferencesLine({
+  label,
+  values,
+  options,
+  emptyText,
+  onChange,
+}: {
+  label: string;
+  values: string[];
+  options: CapabilityReferenceOption[];
+  emptyText: string;
+  onChange: (value: string[]) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const mergedOptions = mergeCapabilityReferenceOptions(options, values);
+  const selected = new Set(values);
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredOptions = mergedOptions
+    .filter((option) => {
+      if (!normalizedQuery) return true;
+      return [option.label, option.value, option.description]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedQuery);
+    })
+    .sort((left, right) => Number(selected.has(right.value)) - Number(selected.has(left.value)));
+
+  function toggle(value: string, checked: boolean) {
+    if (checked) {
+      onChange(Array.from(new Set([...values, value])));
+      return;
+    }
+    onChange(values.filter((item) => item !== value));
+  }
+
+  return (
+    <div className={SOURCE_LINE_CLASS}>
+      <span className={SOURCE_KEY_CLASS}>{label}</span>
+      <span className={SOURCE_VALUE_CLASS}>
+        <EditableSourceField>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="flex min-h-[34px] w-full items-center justify-between gap-[10px] rounded-[8px] border border-[#dfe3eb] bg-white px-[10px] py-[6px] text-left outline-none transition-colors hover:border-[#c7cedc] focus-visible:border-[#1a71ff] focus-visible:ring-2 focus-visible:ring-[#1a71ff]/15"
+              >
+                <span className="flex min-w-0 flex-1 flex-wrap gap-[5px]">
+                  {values.length === 0 ? (
+                    <span className="text-[12px] text-[#a0a7b8]">{emptyText}</span>
+                  ) : (
+                    values.map((value) => {
+                      const option = mergedOptions.find((item) => item.value === value);
+                      return (
+                        <span
+                          key={value}
+                          className="inline-flex max-w-[180px] items-center rounded-full bg-[#eef3fb] px-[8px] py-[3px] text-[11px] text-[#464c5e]"
+                          title={option?.label || value}
+                        >
+                          <span className="truncate">{option?.label || value}</span>
+                        </span>
+                      );
+                    })
+                  )}
+                </span>
+                <span className="shrink-0 text-[11px] text-[#1a71ff]">
+                  {values.length > 0 ? `已选择 ${values.length} 个` : '选择'}
+                </span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[min(420px,calc(100vw-32px))] p-0">
+              <div className="border-b border-[#eceef1] p-[10px]">
+                <Input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={`搜索${label}`}
+                  className="h-[32px]"
+                />
+              </div>
+              <div className="max-h-[300px] overflow-y-auto p-[6px]">
+                {filteredOptions.length === 0 ? (
+                  <div className="px-[10px] py-[24px] text-center text-[12px] text-[#858b9c]">暂无可选能力</div>
+                ) : (
+                  filteredOptions.map((option) => {
+                    const checked = selected.has(option.value);
+                    const disabled = Boolean(option.unavailableReason) && !checked;
+                    return (
+                      <label
+                        key={option.value}
+                        className={cn(
+                          'flex items-start gap-[10px] rounded-[8px] px-[9px] py-[8px]',
+                          disabled ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:bg-[#f6f8fb]',
+                        )}
+                      >
+                        <Checkbox
+                          checked={checked}
+                          disabled={disabled}
+                          className="mt-[2px]"
+                          onCheckedChange={(next) => toggle(option.value, next === true)}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex min-w-0 flex-wrap items-center gap-[6px]">
+                            <strong className="truncate text-[12px] font-medium text-[#18181a]">{option.label}</strong>
+                            <CapabilityScopeBadge value={option.capabilityScope} />
+                            {option.unavailableReason && (
+                              <span className="text-[10px] text-[#d20b0b]">{option.unavailableReason}</span>
+                            )}
+                          </span>
+                          <span className="mt-[2px] block truncate text-[11px] text-[#858b9c]">
+                            {option.description || option.value}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+              <div className="border-t border-[#eceef1] px-[12px] py-[8px] text-[11px] leading-[1.45] text-[#858b9c]">
+                仅限 SOP 的能力只有被当前步骤选中后，才会提供给执行模型。
+              </div>
+            </PopoverContent>
+          </Popover>
+        </EditableSourceField>
+      </span>
+    </div>
+  );
+}
+
+function mergeCapabilityReferenceOptions(
+  options: CapabilityReferenceOption[],
+  values: string[],
+): CapabilityReferenceOption[] {
+  const existing = new Set(options.map((option) => option.value));
+  return [
+    ...options,
+    ...values
+      .filter((value) => !existing.has(value))
+      .map((value) => ({
+        value,
+        label: value,
+        description: '资源当前不可用，可取消引用',
+        unavailableReason: '资源不可用',
+      })),
+  ];
+}
+
 function EditableActionList({
   actions,
   options,
@@ -5331,7 +5594,19 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
   const condition = extractJsonStringField(fragment, 'condition') || '';
   const expectedUserInfo = extractJsonStringArrayField(fragment, 'expected_user_info') || [];
   const allowedActions = extractJsonStringArrayField(fragment, 'allowed_actions') || [];
-  if (!nodeId && !name && !instruction && expectedUserInfo.length === 0 && allowedActions.length === 0) {
+  const generalSkillIds = extractJsonStringArrayField(fragment, 'general_skill_ids') || [];
+  const toolIds = extractJsonStringArrayField(fragment, 'tool_ids') || [];
+  const knowledgeBaseIds = extractJsonStringArrayField(fragment, 'knowledge_base_ids') || [];
+  if (
+    !nodeId
+    && !name
+    && !instruction
+    && expectedUserInfo.length === 0
+    && allowedActions.length === 0
+    && generalSkillIds.length === 0
+    && toolIds.length === 0
+    && knowledgeBaseIds.length === 0
+  ) {
     return null;
   }
   return {
@@ -5343,6 +5618,11 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
     condition,
     expected_user_info: expectedUserInfo,
     allowed_actions: allowedActions,
+    capability_refs: {
+      general_skill_ids: generalSkillIds,
+      tool_ids: toolIds,
+      knowledge_base_ids: knowledgeBaseIds,
+    },
     knowledge_scope: {},
     retry_policy: {},
     metadata: {},
@@ -5351,6 +5631,7 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
 
 function normalizeNodePreview(node: Record<string, unknown>, index = 0): Record<string, unknown> {
   const nodeId = stringValue(node.node_id, `node_${index + 1}`);
+  const capabilityRefs = nodeCapabilityRefs(node);
   return {
     node_id: nodeId,
     type: stringValue(node.type, 'collect_info'),
@@ -5360,6 +5641,7 @@ function normalizeNodePreview(node: Record<string, unknown>, index = 0): Record<
     condition: stringValue(node.condition, ''),
     expected_user_info: asStringList(node.expected_user_info),
     allowed_actions: asStringList(node.allowed_actions),
+    capability_refs: capabilityRefs,
     knowledge_scope: isRecord(node.knowledge_scope) ? node.knowledge_scope : {},
     retry_policy: isRecord(node.retry_policy) ? node.retry_policy : {},
     metadata: isRecord(node.metadata) ? node.metadata : {},
@@ -5877,6 +6159,19 @@ function cloneSkill(skill: SkillCard): SkillCard {
   return JSON.parse(JSON.stringify(skill)) as SkillCard;
 }
 
+function canonicalizeSkillCapabilityRefs(skill: SkillCard): SkillCard {
+  const next = cloneSkill(skill);
+  next.nodes = (Array.isArray(next.nodes) ? next.nodes : []).map((node) => {
+    const normalized = { ...node, capability_refs: nodeCapabilityRefs(node) };
+    const legacyFields = normalized as Record<string, unknown>;
+    delete legacyFields.general_skill_ids;
+    delete legacyFields.tool_ids;
+    delete legacyFields.knowledge_base_ids;
+    return normalized;
+  });
+  return next;
+}
+
 function uniqueDraftSkillId(skillId: string): string {
   const normalized = (skillId || 'skill')
     .trim()
@@ -5995,6 +6290,11 @@ function blankSkillForAnimation(skill: SkillCard): SkillCard {
     condition: '',
     expected_user_info: [],
     allowed_actions: [],
+    capability_refs: {
+      general_skill_ids: [],
+      tool_ids: [],
+      knowledge_base_ids: [],
+    },
     knowledge_scope: {},
     retry_policy: {},
     metadata: {},
@@ -6060,7 +6360,18 @@ function collectTextDiffs(previousDraft: SkillCard, nextDraft: SkillCard, change
     }
     const stepIndex = stepIndexFromPath(path);
     if (stepIndex === null) return;
-    ['step_id', 'type', 'condition', 'name', 'instruction', 'expected_user_info', 'allowed_actions'].forEach((field) => {
+    [
+      'step_id',
+      'type',
+      'condition',
+      'name',
+      'instruction',
+      'expected_user_info',
+      'allowed_actions',
+      'general_skill_ids',
+      'tool_ids',
+      'knowledge_base_ids',
+    ].forEach((field) => {
       const diff = makeTextDiff(
         path,
         field,
@@ -6134,6 +6445,9 @@ function isListField(field: string): boolean {
     'response_rules',
     'expected_user_info',
     'allowed_actions',
+    'general_skill_ids',
+    'tool_ids',
+    'knowledge_base_ids',
   ].includes(field);
 }
 
@@ -6264,6 +6578,9 @@ function fieldLabel(field: string): string {
     instruction: '节点说明',
     expected_user_info: '期望字段',
     allowed_actions: '允许动作',
+    general_skill_ids: 'SOP 技能',
+    tool_ids: 'SOP 工具',
+    knowledge_base_ids: 'SOP 知识库',
   };
   return labels[field] || field;
 }

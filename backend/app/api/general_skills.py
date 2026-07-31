@@ -36,6 +36,7 @@ from app.capabilities.local_general_skill import (
     GeneralSkillRuntimeSnapshot,
     local_runtime_snapshot,
 )
+from app.capability_scope import normalize_capability_scope
 from app.db import get_session
 from app.db.models import AgentResourceBinding, GeneralSkill, ModelConfig, User, utc_now
 from app.general_skills import (
@@ -94,6 +95,7 @@ def general_skill_read(row: GeneralSkill, status_override: str | None = None) ->
         ],
         metadata=dict(row.metadata_json or {}),
         status=status_override or row.status,
+        capability_scope=normalize_capability_scope(row.capability_scope),
         permissions=row.permissions_json or {},
         runtime_config=row.runtime_config_json or {},
         created_at=row.created_at.isoformat(),
@@ -132,6 +134,7 @@ def import_general_skill(
     if not is_private_agent_scope:
         ensure_open_gallery_admin(request.tenant_id, current_user)
     row = None
+    inherited_capability_scope = "general"
     if lookup_slug:
         row = db.exec(
             select(GeneralSkill).where(
@@ -141,6 +144,7 @@ def import_general_skill(
         ).first()
         if not row:
             raise HTTPException(status_code=404, detail="General skill to update was not found")
+        inherited_capability_scope = normalize_capability_scope(row.capability_scope)
         if slug != row.slug:
             raise HTTPException(status_code=400, detail="General skill slug cannot be modified")
         if is_private_agent_scope:
@@ -196,6 +200,8 @@ def import_general_skill(
         row.skill_files_json = [file.model_dump(mode="json") for file in files]
         row.metadata_json = metadata
         row.status = request.status
+        if request.capability_scope is not None:
+            row.capability_scope = request.capability_scope
         row.updated_at = now
     else:
         row = GeneralSkill(
@@ -208,6 +214,9 @@ def import_general_skill(
             skill_files_json=[file.model_dump(mode="json") for file in files],
             metadata_json=metadata,
             status=request.status,
+            capability_scope=normalize_capability_scope(
+                request.capability_scope or inherited_capability_scope
+            ),
             permissions_json={"network": True, "python": True},
             runtime_config_json={"runtime": "python", "timeout_seconds": 12},
             created_at=now,
@@ -263,6 +272,7 @@ def import_skillhub_skill(
         slug=request.slug,
         description=request.description,
         homepage=request.homepage,
+        capability_scope=request.capability_scope,
         current_user=current_user,
     )
 
@@ -313,6 +323,7 @@ def import_general_skill_package(
         slug=request.slug,
         description=request.description,
         homepage=request.homepage,
+        capability_scope=request.capability_scope,
         current_user=current_user,
     )
 
@@ -329,6 +340,7 @@ def _create_imported_general_skill(
     slug: str | None = None,
     description: str | None = None,
     homepage: str | None = None,
+    capability_scope: str = "general",
     current_user: object | None = None,
 ) -> GeneralSkillRead:
     markdown = _skill_markdown_from_files(files)
@@ -370,6 +382,7 @@ def _create_imported_general_skill(
             current_user, {**metadata, "import_source": import_source}
         ),
         status=status,
+        capability_scope=normalize_capability_scope(capability_scope),
         permissions_json={"network": True, "python": True},
         runtime_config_json={"runtime": "python", "timeout_seconds": 12},
         created_at=now,

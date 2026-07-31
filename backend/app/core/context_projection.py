@@ -403,6 +403,7 @@ def _project_node(node: dict[str, Any]) -> dict[str, Any]:
                 "expected_user_info",
                 "allowed_actions",
                 "knowledge_scope",
+                "capability_refs",
                 "retry_policy",
             )
         }
@@ -421,6 +422,7 @@ def _project_step_agent_node(node: dict[str, Any]) -> dict[str, Any]:
             "expected_user_info": node.get("expected_user_info"),
             "allowed_actions": node.get("allowed_actions"),
             "knowledge_scope": node.get("knowledge_scope"),
+            "capability_refs": node.get("capability_refs"),
         }
     )
 

@@ -7,6 +7,7 @@ from typing import Any, Iterable, TypeVar
 
 from sqlmodel import Session, SQLModel, select
 
+from app.capability_scope import normalize_capability_scope
 from app.agents.branching import (
     agent_private_metadata,
     ensure_open_gallery_binding,
@@ -247,6 +248,11 @@ def _seed_general_skills(
             "skill_files_json": _json_list(row.get("skill_files_json")),
             "metadata_json": _open_gallery_seed_metadata(row.get("metadata_json")),
             "status": "published",
+            "capability_scope": normalize_capability_scope(
+                row.get("capability_scope")
+                if row.get("capability_scope") is not None
+                else getattr(existing, "capability_scope", None)
+            ),
             "permissions_json": _json_object(row.get("permissions_json")),
             "runtime_config_json": _json_object(row.get("runtime_config_json")),
         }
@@ -300,6 +306,16 @@ def _seed_tools(
             "output_schema": _json_object(row.get("output_schema")),
             "allowed_skills_json": _json_list(row.get("allowed_skills_json")),
             "mcp_server_id": row.get("mcp_server_id"),
+            "capability_scope": normalize_capability_scope(
+                row.get("capability_scope")
+                if row.get("capability_scope") is not None
+                else getattr(existing, "capability_scope", None)
+            ),
+            "capability_scope_inherited": bool(
+                row.get("capability_scope_inherited")
+                if row.get("capability_scope_inherited") is not None
+                else getattr(existing, "capability_scope_inherited", True)
+            ),
             "enabled": bool(row.get("enabled", True)),
         }
         if existing:
@@ -352,6 +368,11 @@ def _seed_knowledge(
             "name": name,
             "description": row.get("description"),
             "status": row.get("status") or "active",
+            "capability_scope": normalize_capability_scope(
+                row.get("capability_scope")
+                if row.get("capability_scope") is not None
+                else getattr(existing, "capability_scope", None)
+            ),
             "metadata_json": _open_gallery_seed_metadata(row.get("metadata_json")),
         }
         if existing:
@@ -382,6 +403,7 @@ def _seed_knowledge_versions(
         kb_id = id_maps["knowledge_base"].get(str(row.get("knowledge_base_id") or ""))
         if not kb_id:
             continue
+        knowledge_base = session.get(KnowledgeBase, kb_id)
         version = str(row.get("version") or "1.0.0")
         source_id = str(row.get("id") or "")
         existing_by_id = session.get(KnowledgeBaseVersion, source_id)
@@ -400,6 +422,15 @@ def _seed_knowledge_versions(
             "name": row.get("name") or version,
             "description": row.get("description"),
             "status": row.get("status") or "active",
+            "capability_scope": normalize_capability_scope(
+                row.get("capability_scope")
+                if row.get("capability_scope") is not None
+                else getattr(
+                    existing,
+                    "capability_scope",
+                    getattr(knowledge_base, "capability_scope", None),
+                )
+            ),
             "metadata_json": _open_gallery_seed_metadata(row.get("metadata_json")),
         }
         if existing:

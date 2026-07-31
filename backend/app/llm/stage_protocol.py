@@ -63,6 +63,39 @@ ROUTER_OUTPUT_SCHEMA: dict[str, Any] = {
     ],
 }
 
+TURN_PLANNER_OUTPUT_SCHEMA: dict[str, Any] = {
+    "decision": "continue_active | switch_to_pending | complete_task | start_new_task | answer_only | handoff_human | clarify",
+    "selected_task_id": "string?",
+    "confidence": "number",
+    "user_intent": "string?",
+    "reason": "string?",
+    "clarification_question": "string?",
+    "task_frames": [
+        {
+            "task_id": "string?",
+            "kind": "sop | conversation",
+            "decision": "continue_active | switch_to_pending | start_new_task | answer_only | clarify",
+            "target_skill_id": "string?",
+            "target_step_id": "string?",
+            "user_intent": "string?",
+            "requirements": ["string"],
+            "slot_hints": "object?",
+            "depends_on_task_ids": ["string"],
+        }
+    ],
+    "task_updates": [
+        {
+            "task_id": "string",
+            "status": "string?",
+            "target_skill_id": "string?",
+            "target_step_id": "string?",
+            "user_intent": "string?",
+            "slot_hints": "object?",
+            "remove": "boolean?",
+        }
+    ],
+}
+
 STEP_AGENT_OUTPUT_SCHEMA: dict[str, Any] = {
     "action": "ask_user | clarify | reply | advance | call_tool | query_knowledge | handoff",
     "reply": "string?",
@@ -111,7 +144,7 @@ def stage_payload(
     )
     turn_time = metadata.get("current_turn_time") if isinstance(metadata, dict) else None
     memory_text = ""
-    if phase == "Router":
+    if phase in {"Router", "TurnPlanner"}:
         memory_text = (
             _memory_text(memory_context)
             if isinstance(memory_context, list)

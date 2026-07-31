@@ -28,10 +28,19 @@ from app.capabilities.local_general_skill import (
     runtime_snapshot_from_package,
 )
 from app.channels.service_outbox import stage_channel_delivery
+from app.config import get_settings
 from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled, is_chat_turn_cancelled
 from app.core.conversation_context import build_conversation_context
+from app.core.harness_agent import HarnessExecutionCancelled
+from app.core.harness_session_lock import HarnessSessionBusy
+from app.core.harness_turn_store import HarnessTurnConflict
 from app.core.human_handoff_service import HumanHandoffService
+from app.core.harness_v2_engine import (
+    HarnessV2Engine,
+    _with_recoverable_first_session,
+    get_or_create_harness_session,
+)
 from app.core.legacy_conversation_projection import LegacyConversationProjection
 from app.core.legacy_general_skill_action import LegacyGeneralSkillAction
 from app.core.legacy_graph_rules import LegacyGraphRules
@@ -71,6 +80,7 @@ from app.db.models import (
     AgentResourceBinding,
     ChatSession,
     GeneralSkill,
+    HarnessTurnRecord,
     HumanHandoffRequest,
     Message,
     ModelConfig,
@@ -244,7 +254,13 @@ class AgentLoop:
         chat_session: ChatSession | None = None
         memory_model_config: ModelConfig | None = None
         prepared_user_message_id: str | None = None
+        harness_v2_engine: HarnessV2Engine | None = None
         try:
+            if self._uses_harness_v2(request):
+                harness_v2_engine = HarnessV2Engine(self)
+                response = harness_v2_engine.run(request)
+                harness_v2_engine.close()
+                return response
             prepared = self._prepare_turn(request)
             prepared_user_message_id = prepared.user_message_id
             if prepared.general_response:
@@ -395,10 +411,70 @@ class AgentLoop:
                             {"pending_tasks": chat_session.pending_tasks_json or []},
                         )
 
+        except (HarnessTurnConflict, HarnessSessionBusy) as exc:
+            if harness_v2_engine is not None:
+                chat_session = harness_v2_engine.session
+                harness_v2_engine.close()
+            self.db.rollback()
+            chat_session = chat_session or self._get_or_create_session(request)
+            return ChatTurnResponse(
+                reply=format_runtime_failure_reply(
+                    "Harness 并发或重复请求已阻止",
+                    exc,
+                    "HARNESS_TURN_CONFLICT",
+                    "请等待原请求完成，或为新请求使用新的 client_turn_id。",
+                ),
+                session_id=chat_session.id,
+                step_result=StepAgentResult(action="reply"),
+                session_state=public_session(chat_session),
+            )
+        except HarnessExecutionCancelled:
+            if harness_v2_engine is not None:
+                chat_session = harness_v2_engine.session
+                prepared_user_message_id = harness_v2_engine.user_message_id
+                try:
+                    harness_v2_engine.mark_cancelled()
+                finally:
+                    harness_v2_engine.close()
+            chat_session = chat_session or self._get_or_create_session(request)
+            if prepared_user_message_id:
+                self._persist_cancelled_assistant_message(
+                    request.tenant_id,
+                    chat_session,
+                    prepared_user_message_id,
+                    request.client_turn_id,
+                )
+            self.db.commit()
+            for turn_id in (
+                prepared_user_message_id,
+                request.client_turn_id,
+            ):
+                if turn_id:
+                    clear_chat_turn_cancelled(chat_session.id, turn_id)
+            return ChatTurnResponse(
+                reply=CANCELLED_ASSISTANT_REPLY,
+                session_id=chat_session.id,
+                step_result=StepAgentResult(action="reply"),
+                session_state=public_session(chat_session),
+            )
         except AgentLoopPreconditionError as exc:
+            if harness_v2_engine is not None:
+                chat_session = harness_v2_engine.session
+                prepared_user_message_id = harness_v2_engine.user_message_id
+                try:
+                    harness_v2_engine.mark_interrupted(exc.code, exc.message)
+                finally:
+                    harness_v2_engine.close()
             chat_session = chat_session or self._get_or_create_session(request)
             return self._finish_with_error(chat_session, exc.code, exc.message)
         except LLMError as exc:
+            if harness_v2_engine is not None:
+                chat_session = harness_v2_engine.session
+                prepared_user_message_id = harness_v2_engine.user_message_id
+                try:
+                    harness_v2_engine.mark_interrupted("LLM_ERROR", str(exc))
+                finally:
+                    harness_v2_engine.close()
             chat_session = chat_session or self._get_or_create_session(request)
             self.events.record(
                 request.tenant_id,
@@ -410,6 +486,16 @@ class AgentLoop:
                 "模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc)
             )
         except Exception as exc:
+            if harness_v2_engine is not None:
+                chat_session = harness_v2_engine.session
+                prepared_user_message_id = harness_v2_engine.user_message_id
+                try:
+                    harness_v2_engine.mark_interrupted(
+                        "AGENT_LOOP_ERROR",
+                        str(exc),
+                    )
+                finally:
+                    harness_v2_engine.close()
             chat_session = chat_session or self._get_or_create_session(request)
             self.events.record(
                 request.tenant_id,
@@ -1281,6 +1367,9 @@ class AgentLoop:
         )
 
     def handle_turn_stream(self, request: ChatTurnRequest) -> Iterator[dict[str, object]]:
+        if self._uses_harness_v2(request):
+            yield from self._handle_turn_stream_v2(request)
+            return
         LegacyKnowledgeAction.reset_turn()
         router_decision: RouterDecision | None = None
         step_result = StepAgentResult()
@@ -2144,6 +2233,168 @@ class AgentLoop:
                 "AGENT_LOOP_ERROR",
                 "请查看执行记录或服务日志定位具体原因。",
             )
+
+    def _uses_harness_v2(self, request: ChatTurnRequest) -> bool:
+        agent_id = str(request.agent_id or "").strip()
+        if not agent_id and request.session_id:
+            get_row = getattr(self.db, "get", None)
+            if not callable(get_row):
+                return False
+            session = get_row(ChatSession, request.session_id)
+            agent_id = str(getattr(session, "agent_id", "") or "").strip()
+        if not agent_id:
+            return False
+        get_row = getattr(self.db, "get", None)
+        if not callable(get_row):
+            return False
+        agent = get_row(AgentProfile, agent_id)
+        if (
+            agent is None
+            or agent.tenant_id != request.tenant_id
+            or agent.status != "active"
+        ):
+            return False
+        metadata = agent.metadata_json if isinstance(agent.metadata_json, dict) else {}
+        configured = str(
+            metadata.get("execution_engine")
+            or metadata.get("agent_loop_engine")
+            or ""
+        ).strip()
+        if configured:
+            return configured == "harness_v2"
+        return bool(get_settings().harness_v2_default_enabled)
+
+    def _handle_turn_stream_v2(
+        self, request: ChatTurnRequest
+    ) -> Iterator[dict[str, object]]:
+        session_request = _with_recoverable_first_session(request)
+        existing_session = (
+            self.db.get(ChatSession, session_request.session_id)
+            if session_request.session_id
+            else None
+        )
+        chat_session = get_or_create_harness_session(
+            self,
+            session_request,
+        )
+        created_session = existing_session is None
+        scoped_request = request.model_copy(
+            update={"session_id": chat_session.id}
+        )
+        initial_turn_id = str(request.client_turn_id or "").strip() or None
+        if created_session:
+            yield self._stream_event(
+                "session_created",
+                chat_session,
+                {
+                    "sessionId": chat_session.id,
+                    "turn_id": initial_turn_id,
+                    "client_turn_id": request.client_turn_id,
+                    "execution_engine": "harness_v2",
+                },
+            )
+        yield self._stream_event(
+            "user_message_received",
+            chat_session,
+            self._turn_payload(
+                {
+                    "sessionId": chat_session.id,
+                    "client_turn_id": request.client_turn_id,
+                    "execution_engine": "harness_v2",
+                },
+                initial_turn_id,
+            ),
+        )
+        yield self._stream_status(
+            chat_session,
+            "planning",
+            "正在规划本轮任务",
+            {"execution_engine": "harness_v2"},
+            user_message_id=initial_turn_id,
+        )
+        response = self.handle_turn(scoped_request)
+        chat_session = self.db.get(ChatSession, response.session_id)
+        if chat_session is None:
+            return
+        user_message = None
+        client_turn_id = str(request.client_turn_id or "").strip()
+        if client_turn_id:
+            receipt = self.db.exec(
+                select(HarnessTurnRecord).where(
+                    HarnessTurnRecord.tenant_id == request.tenant_id,
+                    HarnessTurnRecord.session_id == response.session_id,
+                    HarnessTurnRecord.client_turn_id == client_turn_id,
+                )
+            ).first()
+            if receipt is not None and receipt.user_message_id:
+                candidate = self.db.get(Message, receipt.user_message_id)
+                if (
+                    candidate is not None
+                    and candidate.tenant_id == request.tenant_id
+                    and candidate.session_id == response.session_id
+                    and candidate.role == "user"
+                ):
+                    user_message = candidate
+        if user_message is None and not client_turn_id:
+            user_message = self.db.exec(
+                select(Message)
+                .where(
+                    Message.tenant_id == request.tenant_id,
+                    Message.session_id == response.session_id,
+                    Message.role == "user",
+                )
+                .order_by(Message.created_at.desc())
+            ).first()
+        user_message_id = user_message.id if user_message else None
+        if response.reply == CANCELLED_ASSISTANT_REPLY:
+            yield self._stream_event(
+                "stream_cancelled",
+                chat_session,
+                self._turn_payload(
+                    {
+                        "phase": "cancelled",
+                        "text": CANCELLED_ASSISTANT_REPLY,
+                        "client_turn_id": request.client_turn_id,
+                        "execution_engine": "harness_v2",
+                    },
+                    user_message_id or initial_turn_id,
+                ),
+            )
+            return
+        for chunk in self.response_generator.chunk_text(response.reply):
+            event = self._stream_event(
+                "stream_delta",
+                chat_session,
+                self._turn_payload(
+                    {
+                        "content": chunk,
+                        "execution_engine": "harness_v2",
+                    },
+                    user_message_id,
+                ),
+            )
+            self.db.commit()
+            yield event
+        end_event = self._stream_event(
+            "stream_end",
+            chat_session,
+            self._turn_payload(
+                {"execution_engine": "harness_v2"}, user_message_id
+            ),
+        )
+        self.db.commit()
+        yield end_event
+        yield self._stream_event(
+            "complete",
+            chat_session,
+            self._turn_payload(
+                {
+                    **response.model_dump(mode="json"),
+                    "execution_engine": "harness_v2",
+                },
+                user_message_id,
+            ),
+        )
 
     def _stream_status(
         self,
@@ -5734,11 +5985,14 @@ class AgentLoop:
         step_result: StepAgentResult | None = None,
         source_message: str | None = None,
         user_message_id: str | None = None,
+        assistant_metadata_override: dict[str, Any] | None = None,
     ) -> str:
         chat_session.updated_at = utc_now()
         if chat_session.status != "handoff":
             chat_session.status = "active"
         metadata = self._assistant_message_metadata(step_result, chat_session, source_message)
+        if assistant_metadata_override:
+            metadata = {**metadata, **dict(assistant_metadata_override)}
         reply = restore_truncated_atomic_references(
             reply, metadata.get("knowledge_citations")
         )

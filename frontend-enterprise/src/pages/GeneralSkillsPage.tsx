@@ -18,6 +18,11 @@ import { ContextMenu } from 'radix-ui';
 import { api, streamPost, TENANT_ID } from '../api/client';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
+import {
+  CapabilityScopeBadge,
+  CapabilityScopeControl,
+  normalizeCapabilityScope,
+} from '@/components/CapabilityScopeControl';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
@@ -77,7 +82,13 @@ import {
 import { useClientPagination } from '../hooks/useClientPagination';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import type { BadgeTone } from './scheduled-tasks/shared';
-import type { AgentProfileRead, GeneralSkillRead, GeneralSkillRunResponse, ModelConfigRead } from '../types';
+import type {
+  AgentProfileRead,
+  CapabilityScope,
+  GeneralSkillRead,
+  GeneralSkillRunResponse,
+  ModelConfigRead,
+} from '../types';
 
 const GENERAL_SKILL_PAGE_SIZE = 10;
 const GENERAL_SKILL_RUN_MODEL_STORAGE_KEY = 'general-skill-run-model';
@@ -661,6 +672,12 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
       render: (row) => `${row.skill_files?.length || 1} 个`,
     },
     {
+      key: 'capability_scope',
+      title: '能力范围',
+      width: 105,
+      render: (row) => <CapabilityScopeBadge value={row.capability_scope} />,
+    },
+    {
       key: 'creator',
       title: '创建者',
       width: 120,
@@ -710,7 +727,10 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
           <p className="mt-[8px] line-clamp-2 text-[12px] leading-[1.55] text-[#858b9c]">{row.description}</p>
         )}
         <div className="mt-[10px] flex items-center justify-between gap-[10px] text-[12px] text-[#858b9c]">
-          <StatusBadge tone={preset.tone}>{preset.text}</StatusBadge>
+          <div className="flex items-center gap-[6px]">
+            <StatusBadge tone={preset.tone}>{preset.text}</StatusBadge>
+            <CapabilityScopeBadge value={row.capability_scope} />
+          </div>
           <span>{row.skill_files?.length || 1} 个文件 · {formatDateTime(row.updated_at)}</span>
         </div>
       </article>
@@ -1181,6 +1201,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const [skillSlug, setSkillSlug] = useState('');
   const [skillDescription, setSkillDescription] = useState('');
   const [skillHomepage, setSkillHomepage] = useState('');
+  const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('general');
   const [skillFiles, setSkillFiles] = useState<GeneralSkillFile[]>([
     { path: 'SKILL.md', content: EMPTY_SKILL_MARKDOWN, size: EMPTY_SKILL_MARKDOWN.length, mime_type: 'text/markdown' },
   ]);
@@ -1344,6 +1365,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       || stableSlug !== original.slug
       || skillDescription !== (original.description || '')
       || skillHomepage !== (original.homepage || '')
+      || capabilityScope !== normalizeCapabilityScope(original.capability_scope)
       || normalizedSkillFiles(skillFiles) !== normalizedSkillFiles(
         original.skill_files?.length ? original.skill_files : [{ path: 'SKILL.md', content: original.skill_markdown }],
       )
@@ -1368,6 +1390,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         slug: editingSlug || skillSlug.trim() || undefined,
         description: skillDescription.trim() || undefined,
         homepage: skillHomepage.trim() || undefined,
+        capability_scope: capabilityScope,
         markdown,
         files: skillFiles.length ? skillFiles : [{ path: 'SKILL.md', content: markdown }],
         status: 'published',
@@ -1381,6 +1404,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       setSkillSlug(row.slug);
       setSkillDescription(row.description || '');
       setSkillHomepage(row.homepage || '');
+      setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
       setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
       setSelectedFilePath((row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md' }])[0].path);
       setRows((current) => {
@@ -1404,6 +1428,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSkillSlug('');
     setSkillDescription('');
     setSkillHomepage('');
+    setCapabilityScope('general');
     setSkillFiles([{ path: 'SKILL.md', content: EMPTY_SKILL_MARKDOWN, size: EMPTY_SKILL_MARKDOWN.length, mime_type: 'text/markdown' }]);
     setSelectedFilePath('SKILL.md');
     setEditingSlug(null);
@@ -1421,6 +1446,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSkillSlug(row.slug);
     setSkillDescription(row.description || '');
     setSkillHomepage(row.homepage || '');
+    setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
     setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
     setSelectedFilePath((row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md' }])[0].path);
     setSelectedSlug(row.slug);
@@ -1438,6 +1464,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       setSkillSlug(row.slug);
       setSkillDescription(row.description || '');
       setSkillHomepage(row.homepage || '');
+      setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
       setMarkdown(row.skill_markdown);
       setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
       setSelectedFilePath((row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md' }])[0].path);
@@ -2098,6 +2125,13 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
                   placeholder="可选，参考文档或项目主页"
                 />
               </Field>
+              <div className="md:col-span-2">
+                <CapabilityScopeControl
+                  value={capabilityScope}
+                  onChange={setCapabilityScope}
+                  disabled={!canManageCurrentScope}
+                />
+              </div>
             </div>
           </SectionCard>
 

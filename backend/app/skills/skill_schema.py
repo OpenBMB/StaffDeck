@@ -5,6 +5,14 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class SkillCapabilityRefs(BaseModel):
+    """Capabilities explicitly exposed while this SOP node is active."""
+
+    general_skill_ids: list[str] = Field(default_factory=list)
+    tool_ids: list[str] = Field(default_factory=list)
+    knowledge_base_ids: list[str] = Field(default_factory=list)
+
+
 class SkillGraphNode(BaseModel):
     node_id: str
     type: str = "collect_info"
@@ -15,6 +23,7 @@ class SkillGraphNode(BaseModel):
     expected_user_info: list[str] = Field(default_factory=list)
     allowed_actions: list[str] = Field(default_factory=list)
     knowledge_scope: dict[str, Any] = Field(default_factory=dict)
+    capability_refs: SkillCapabilityRefs = Field(default_factory=SkillCapabilityRefs)
     retry_policy: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

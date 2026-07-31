@@ -4,11 +4,14 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.capability_scope import CapabilityScope
+
 
 class KnowledgeBaseCreateRequest(BaseModel):
     tenant_id: str
     name: str
     description: Optional[str] = None
+    capability_scope: CapabilityScope = "general"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -17,6 +20,7 @@ class KnowledgeBaseUpdateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     status: Optional[Literal["active", "archived"]] = None
+    capability_scope: Optional[CapabilityScope] = None
     metadata: Optional[dict[str, Any]] = None
 
 
@@ -32,6 +36,7 @@ class KnowledgeBaseRead(BaseModel):
     name: str
     description: Optional[str] = None
     status: str
+    capability_scope: CapabilityScope
     version: Optional[str] = None
     branch_sync_state: Optional[str] = None
     branch_base_version: Optional[str] = None
@@ -52,6 +57,7 @@ class KnowledgeDocumentUploadRequest(BaseModel):
     filename: str
     content_base64: str
     title: Optional[str] = None
+    capability_scope: CapabilityScope = "general"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

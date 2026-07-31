@@ -820,6 +820,8 @@ def _seed_mcp_servers(session: Session) -> None:
                 "output_schema": tool_def.get("output_schema") or {},
                 "allowed_skills_json": tool_def.get("allowed_skills_json") or [],
                 "mcp_server_id": server.id,
+                "capability_scope": server.capability_scope,
+                "capability_scope_inherited": True,
                 "enabled": True,
             }
             if not tool:

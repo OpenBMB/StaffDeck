@@ -2,28 +2,37 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import re
 import threading
 import time
 import traceback
 from collections.abc import Callable, Iterator
 from datetime import timedelta
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlmodel import Session, select
+from starlette.background import BackgroundTask
 
 from app.agents.branching import model_for_agent
 from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn
+from app.core.harness_session_cleanup import (
+    harness_task_workspace_path,
+    remove_harness_session_workspace,
+    stage_harness_session_record_deletion,
+)
 from app.db import engine, get_session
 from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
+    HarnessTaskFrameRecord,
     HumanHandoffRequest,
     KnowledgeChunk,
     KnowledgeConcept,
@@ -48,9 +57,17 @@ from app.observability.spans import (
 from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
+from app.harness import (
+    HarnessArtifactAccessError,
+    normalize_harness_artifact_path,
+    open_harness_artifact,
+)
 from app.scheduled_tasks.schema import ScheduledTaskDraftRead
 from app.scheduled_tasks.service import DEFAULT_TASK_TIME, detect_scheduled_task_draft
-from app.session.attachments import parse_chat_attachment
+from app.session.attachments import (
+    parse_chat_attachment,
+    validate_chat_turn_attachments,
+)
 from app.session.helpers import public_session
 from app.session.session_schema import (
     ChatAttachmentRead,
@@ -881,6 +898,20 @@ def _reply_chunks(reply: str) -> Iterator[str]:
         yield reply[index : index + STREAM_REPLY_CHUNK_SIZE]
 
 
+def _validate_chat_turn_attachments(
+    request: ChatTurnRequest,
+) -> ChatTurnRequest:
+    try:
+        attachments = validate_chat_turn_attachments(
+            request.attachments,
+            max_attachments=MAX_CHAT_ATTACHMENTS,
+            max_attachment_bytes=MAX_CHAT_ATTACHMENT_BYTES,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return request.model_copy(update={"attachments": attachments})
+
+
 @router.post("/attachments", response_model=list[ChatAttachmentRead])
 async def upload_chat_attachments(
     tenant_id: str = Query(...),
@@ -911,6 +942,7 @@ def chat_turn(
 ) -> ChatTurnResponse:
     _ensure_request_tenant(request.tenant_id, current_user)
     request = request.model_copy(update={"user_id": current_user.id})
+    request = _validate_chat_turn_attachments(request)
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
         request = _bind_request_to_session_agent(db, request, chat_session, current_user)
@@ -950,6 +982,7 @@ def chat_stream(
 ) -> StreamingResponse:
     _ensure_request_tenant(request.tenant_id, current_user)
     request = request.model_copy(update={"user_id": current_user.id})
+    request = _validate_chat_turn_attachments(request)
     ensure_tenant(db, request.tenant_id)
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
@@ -1801,6 +1834,11 @@ def delete_chat_session(
     skill_feedback_rows = db.exec(
         select(SkillFeedback).where(SkillFeedback.tenant_id == tenant_id, SkillFeedback.session_id == session_id)
     ).all()
+    stage_harness_session_record_deletion(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+    )
     for message in messages:
         db.delete(message)
     for event in events:
@@ -1811,6 +1849,18 @@ def delete_chat_session(
         db.delete(feedback)
     db.delete(row)
     db.commit()
+    try:
+        remove_harness_session_workspace(
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+    except OSError:
+        logger.warning(
+            "Failed to remove Harness workspace for tenant=%s session=%s",
+            tenant_id,
+            session_id,
+            exc_info=True,
+        )
     return {"status": "deleted"}
 
 
@@ -1841,6 +1891,75 @@ def list_chat_messages(
     turn_ids_by_message = _message_turn_ids_from_events(events)
     feedback_by_message = _feedback_by_message(db, tenant_id, current_user.id, [row.id for row in rows])
     return [message_read(row, feedback_by_message.get(row.id), turn_ids_by_message.get(row.id), db) for row in rows]
+
+
+@router.get("/sessions/{session_id}/artifacts/{task_frame_id}")
+def download_harness_artifact(
+    session_id: str,
+    task_frame_id: str,
+    tenant_id: str = Query(...),
+    path: str = Query(..., min_length=1),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> StreamingResponse:
+    """Download a file explicitly published by a Harness TaskFrame."""
+
+    _ensure_request_tenant(tenant_id, current_user)
+    _get_readable_chat_session(db, tenant_id, current_user, session_id)
+    frame = db.exec(
+        select(HarnessTaskFrameRecord).where(
+            HarnessTaskFrameRecord.tenant_id == tenant_id,
+            HarnessTaskFrameRecord.session_id == session_id,
+            HarnessTaskFrameRecord.task_id == task_frame_id,
+        )
+    ).first()
+    if frame is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = _published_workspace_artifact(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        task_frame_id=task_frame_id,
+        requested_path=path,
+    )
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    opened = None
+    try:
+        opened = open_harness_artifact(
+            harness_task_workspace_path(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                task_frame_id=task_frame_id,
+            ),
+            path,
+        )
+        digest = opened.sha256()
+    except (HarnessArtifactAccessError, OSError):
+        if opened is not None:
+            opened.close()
+        raise HTTPException(status_code=404, detail="Artifact not found") from None
+
+    filename = _safe_artifact_download_name(opened.filename)
+    fallback_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
+    fallback_filename = (fallback_filename or "artifact")[:120]
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return StreamingResponse(
+        opened.iter_bytes(),
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": (
+                f'attachment; filename="{fallback_filename}"; '
+                f"filename*=UTF-8''{quote(filename, safe='')}"
+            ),
+            "Content-Length": str(opened.size),
+            "ETag": f'"sha256:{digest}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+        background=BackgroundTask(opened.close),
+    )
 
 
 @router.get("/sessions/{session_id}/events")
@@ -2118,6 +2237,58 @@ def _get_readable_chat_session(db: Session, tenant_id: str, current_user: User, 
     if _user_can_read_handoff_session(db, tenant_id, current_user, session_id):
         return row
     raise HTTPException(status_code=404, detail="Session not found")
+
+
+def _published_workspace_artifact(
+    db: Session,
+    *,
+    tenant_id: str,
+    session_id: str,
+    task_frame_id: str,
+    requested_path: str,
+) -> dict[str, object] | None:
+    try:
+        normalized_requested_path = normalize_harness_artifact_path(requested_path)
+    except HarnessArtifactAccessError:
+        return None
+    rows = db.exec(
+        select(Message).where(
+            Message.tenant_id == tenant_id,
+            Message.session_id == session_id,
+            Message.role == "assistant",
+        )
+    ).all()
+    for row in rows:
+        artifacts = (row.metadata_json or {}).get("harness_artifacts")
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            if artifact.get("type") != "workspace_file":
+                continue
+            if str(artifact.get("task_frame_id") or "") != task_frame_id:
+                continue
+            stored_path = artifact.get("path")
+            if not isinstance(stored_path, str):
+                continue
+            try:
+                normalized_stored_path = normalize_harness_artifact_path(stored_path)
+            except HarnessArtifactAccessError:
+                continue
+            if normalized_stored_path == normalized_requested_path:
+                return dict(artifact)
+    return None
+
+
+def _safe_artifact_download_name(filename: str) -> str:
+    cleaned = "".join(
+        character
+        for character in filename
+        if character not in {"\r", "\n", "\x00"}
+        and (character.isprintable() or character == "\t")
+    ).strip()
+    return cleaned[:180] or "artifact"
 
 
 def _user_can_read_handoff_session(db: Session, tenant_id: str, current_user: User, session_id: str) -> bool:

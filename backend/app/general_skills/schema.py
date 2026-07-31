@@ -4,6 +4,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.capability_scope import CapabilityScope
+
 
 class GeneralSkillFile(BaseModel):
     path: str
@@ -22,6 +24,7 @@ class GeneralSkillImportRequest(BaseModel):
     markdown: Optional[str] = None
     files: list[GeneralSkillFile] = Field(default_factory=list)
     status: str = "published"
+    capability_scope: Optional[CapabilityScope] = None
     original_slug: Optional[str] = None
 
 
@@ -34,6 +37,7 @@ class GeneralSkillClawHubImportRequest(BaseModel):
     description: Optional[str] = None
     homepage: Optional[str] = None
     status: str = "published"
+    capability_scope: CapabilityScope = "general"
 
 
 class GeneralSkillPackageUploadRequest(BaseModel):
@@ -46,6 +50,7 @@ class GeneralSkillPackageUploadRequest(BaseModel):
     description: Optional[str] = None
     homepage: Optional[str] = None
     status: str = "published"
+    capability_scope: CapabilityScope = "general"
 
 
 class GeneralSkillRead(BaseModel):
@@ -59,6 +64,7 @@ class GeneralSkillRead(BaseModel):
     skill_files: list[GeneralSkillFile] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     status: str
+    capability_scope: CapabilityScope
     permissions: dict[str, Any] = Field(default_factory=dict)
     runtime_config: dict[str, Any] = Field(default_factory=dict)
     created_at: str

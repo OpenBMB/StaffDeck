@@ -262,18 +262,31 @@ class ResponseGenerator:
                 else []
             )
             compact_knowledge = compact_knowledge_context(knowledge_context)
+            task_citations = (
+                item.get("knowledge_citations")
+                if isinstance(item.get("knowledge_citations"), list)
+                else knowledge_citations_from_results(knowledge_context)
+            )
             projected.append(
                 {
                     "task": item.get("task") or "当前任务",
+                    "task_frame_id": item.get("task_frame_id"),
+                    "status": item.get("status"),
+                    "task_summary": item.get("task_summary"),
                     "current_step": compact_current_step(
                         content, str(item.get("current_step_id") or "") or None
                     ),
                     "slots": item.get("slots") if isinstance(item.get("slots"), dict) else {},
                     "step_summary": compact_response_step_result(step_result),
                     "tool_result": item.get("tool_result"),
+                    "artifacts": (
+                        item.get("artifacts")
+                        if isinstance(item.get("artifacts"), list)
+                        else []
+                    ),
                     "retrieved_knowledge": compact_knowledge,
                     "knowledge_citation_hints": compact_citation_hints(
-                        knowledge_citations_from_results(knowledge_context)
+                        task_citations
                     ),
                     "response_rules": content.get("response_rules", []),
                 }
