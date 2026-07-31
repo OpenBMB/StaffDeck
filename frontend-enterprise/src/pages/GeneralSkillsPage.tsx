@@ -444,6 +444,19 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
     }
   }
 
+  async function publishSkillToGallery(row: GeneralSkillRead) {
+    if (!agentId) return;
+    try {
+      const next = await api.post<GeneralSkillRead>(
+        `/api/enterprise/general-skills/${encodeURIComponent(row.slug)}/publish-to-gallery?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(agentId)}`,
+      );
+      setRows((current) => current.map((item) => (item.id === next.id ? next : item)));
+      notify.success('已发布到技能广场');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '发布到广场失败');
+    }
+  }
+
   async function confirmDeleteSkill() {
     const row = deleteTarget;
     if (!row) return;
@@ -615,6 +628,12 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
             <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void setSkillPublished(row, true)}>
               <CircleCheck />
               启用
+            </DropdownMenuItem>
+          )}
+          {!isOverallAgent && row.metadata?.scope === 'agent_private' && (
+            <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void publishSkillToGallery(row)}>
+              <UploadOutlined />
+              发布到广场
             </DropdownMenuItem>
           )}
           <DropdownMenuSeparator className="my-[2px] bg-[#eef0f4]" />

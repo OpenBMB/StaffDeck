@@ -17,6 +17,7 @@ from app.api.general_skills import (
     import_general_skill_package,
     list_general_skills,
     publish_general_skill,
+    publish_general_skill_to_gallery,
     run_general_skill,
 )
 from app.agents.branching import ensure_open_gallery_binding
@@ -426,6 +427,107 @@ def test_deleted_open_gallery_general_skill_is_hidden_from_agent_branch_binding(
 
         assert list_general_skills("tenant_demo", db, agent_id="agent_branch") == []
         assert AgentLoop(db)._list_published_general_skills("tenant_demo", "agent_branch") == []
+
+
+def test_reimport_restores_deleted_private_skill_binding() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False
+            )
+        )
+        db.commit()
+
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                agent_id="agent_branch",
+                name="天气技能",
+                slug="weather-zh",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            _admin_user(),
+        )
+        delete_general_skill(
+            imported.slug,
+            "tenant_demo",
+            db,
+            agent_id="agent_branch",
+            current_user=_admin_user(),
+        )
+
+        restored = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                agent_id="agent_branch",
+                name="更新后的天气技能",
+                slug="weather-zh",
+                markdown=WEATHER_SKILL_MD.replace("中国城市天气查询工具", "更新后的天气工具"),
+            ),
+            db,
+            _admin_user(),
+        )
+
+        assert restored.id == imported.id
+        assert restored.slug == "weather-zh"
+        assert restored.name == "更新后的天气技能"
+        assert [row.id for row in list_general_skills("tenant_demo", db, agent_id="agent_branch")] == [
+            imported.id
+        ]
+
+
+def test_private_skill_can_be_published_to_open_gallery() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False
+            )
+        )
+        db.commit()
+
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                agent_id="agent_branch",
+                name="天气技能",
+                slug="weather-zh",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            _admin_user(),
+        )
+        published = publish_general_skill_to_gallery(
+            imported.slug,
+            "tenant_demo",
+            "agent_branch",
+            db,
+            _admin_user(),
+        )
+
+        assert published.id == imported.id
+        assert list_general_skills("tenant_demo", db) == [published]
+        binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == "tenant_demo",
+                AgentResourceBinding.agent_id == "agent_overall",
+                AgentResourceBinding.resource_type == "general_skill",
+                AgentResourceBinding.resource_id == imported.id,
+            )
+        ).one()
+        assert binding.status == "active"
 
 
 def test_import_general_skill_folder_reads_skill_md_metadata() -> None:

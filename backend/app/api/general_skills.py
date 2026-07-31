@@ -166,6 +166,12 @@ def import_general_skill(
                 conflict,
             ):
                 slug = _unique_slug(db, request.tenant_id, slug)
+            elif is_private_agent_scope and _private_skill_owned_by_agent(
+                db, request.tenant_id, conflict, agent.id
+            ):
+                # A private skill removed from this agent keeps its entity so
+                # other references remain stable; re-import should restore it.
+                row = conflict
             else:
                 raise HTTPException(status_code=409, detail="General skill slug already exists")
     now = utc_now()
@@ -228,6 +234,7 @@ def import_general_skill(
             row.id,
             "active" if request.status == "published" else "inactive",
             metadata_json=metadata,
+            revive=True,
         )
     else:
         ensure_open_gallery_binding(
@@ -554,6 +561,43 @@ def archive_general_skill(
     return general_skill_read(row)
 
 
+@router.post("/{slug}/publish-to-gallery", response_model=GeneralSkillRead)
+def publish_general_skill_to_gallery(
+    slug: str,
+    tenant_id: str = Query(...),
+    agent_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> GeneralSkillRead:
+    """Promote an agent-private skill to the tenant's open gallery."""
+    row = _get_general_skill(db, tenant_id, slug)
+    agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
+    if agent is None or agent.is_overall:
+        raise HTTPException(status_code=400, detail="A non-overall agent is required")
+    if is_open_gallery_resource(db, tenant_id, "general_skill", row):
+        return general_skill_read(row)
+    if not _private_skill_owned_by_agent(db, tenant_id, row, agent.id):
+        raise HTTPException(status_code=403, detail="Only the skill owner can publish it")
+
+    row.status = "published"
+    mark_resource_open_gallery(row, row.metadata_json or {})
+    row.updated_at = utc_now()
+    db.add(row)
+    db.flush()
+    ensure_open_gallery_binding(
+        db,
+        tenant_id,
+        "general_skill",
+        row.id,
+        "active",
+        metadata_json=row.metadata_json or {},
+        revive=True,
+    )
+    db.commit()
+    db.refresh(row)
+    return general_skill_read(row)
+
+
 @router.delete("/{slug}")
 def delete_general_skill(
     slug: str,
@@ -714,6 +758,23 @@ def _get_general_skill(db: Session, tenant_id: str, slug: str) -> GeneralSkill:
     if not row:
         raise HTTPException(status_code=404, detail="General skill not found")
     return row
+
+
+def _private_skill_owned_by_agent(
+    db: Session, tenant_id: str, row: GeneralSkill, agent_id: str
+) -> bool:
+    metadata = row.metadata_json or {}
+    if metadata.get("owner_agent_id") == agent_id and metadata.get("scope") == "agent_private":
+        return True
+    binding = db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == agent_id,
+            AgentResourceBinding.resource_type == "general_skill",
+            AgentResourceBinding.resource_id == row.id,
+        )
+    ).first()
+    return bool(binding and (binding.metadata_json or {}).get("scope") == "agent_private")
 
 
 def _ensure_general_skill_visible(
