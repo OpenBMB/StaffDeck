@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.db.models import ModelConfig, User, utc_now
 from app.llm import LLMClient, LLMError
+from app.llm.codex_config import load_local_codex_model_config
 from app.llm.model_config_resolver import resolve_model_config_for_verification
 from app.llm.model_protocols import (
     LEGACY_OPENAI_PROVIDER,
@@ -20,6 +21,7 @@ from app.llm.model_protocols import (
     current_protocol_options,
     model_config_fingerprint,
     normalize_chat_protocol_options,
+    normalize_responses_protocol_options,
     resolve_api_protocol,
     validate_model_base_url,
 )
@@ -126,6 +128,80 @@ def create_model_config(
         enabled=False,
         trust_status="unverified",
     )
+    db.add(row)
+    _commit_or_conflict(db)
+    db.refresh(row)
+    return model_config_read(row)
+
+
+@router.post("/import-codex", response_model=ModelConfigRead)
+def import_local_codex_model_config(
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ModelConfigRead:
+    ensure_tenant_admin(tenant_id, current_user)
+    ensure_tenant(db, tenant_id)
+    source = load_local_codex_model_config()
+    protocol = source["api_protocol"]
+    validate_model_base_url(source["base_url"])
+    source_options = dict(source["protocol_options"])
+    matching_rows = db.exec(
+        select(ModelConfig).where(
+            ModelConfig.tenant_id == tenant_id,
+            ModelConfig.name == source["name"],
+        )
+    ).all()
+    row = max(matching_rows, key=lambda candidate: (candidate.updated_at, candidate.id), default=None)
+    if row is None:
+        row = ModelConfig(
+            tenant_id=tenant_id,
+            name=source["name"],
+            provider=LEGACY_OPENAI_PROVIDER,
+            api_protocol=protocol.value,
+            base_url=source["base_url"],
+            api_key_encrypted=encrypt_secret(source["api_key"]),
+            model=source["model"],
+            temperature=0.2,
+            max_output_tokens=8192,
+            extra_body_json=source_options,
+            protocol_options_json={protocol.value: source_options},
+            is_default=False,
+            enabled=False,
+            trust_status="unverified",
+        )
+    else:
+        key_changed = decrypt_secret(row.api_key_encrypted) != source["api_key"]
+        security_changed = (
+            row.api_protocol != protocol.value
+            or row.base_url != source["base_url"]
+            or row.model != source["model"]
+            or key_changed
+            or current_protocol_options(row.protocol_options_json, protocol) != source_options
+        )
+        if not security_changed:
+            return model_config_read(row)
+        row.provider = LEGACY_OPENAI_PROVIDER
+        row.api_protocol = protocol.value
+        row.base_url = source["base_url"]
+        row.model = source["model"]
+        row.extra_body_json = source_options
+        row.protocol_options_json = {protocol.value: source_options}
+        if key_changed:
+            row.api_key_encrypted = encrypt_secret(source["api_key"])
+            row.key_revision += 1
+        row.config_revision += 1
+        row.security_revision += 1
+        row.trust_status = "unverified"
+        row.verified_at = None
+        row.verified_fingerprint = None
+        row.verification_attempt_id = None
+        row.verification_started_at = None
+        row.verification_attempt_status = "idle"
+        row.verification_attempt_error_code = None
+        row.enabled = False
+        row.is_default = False
+        row.updated_at = utc_now()
     db.add(row)
     _commit_or_conflict(db)
     db.refresh(row)
@@ -476,6 +552,10 @@ def _request_protocol_options(
         if (protocol_options is not None and protocol_options != {}) or extra_body:
             raise HTTPException(status_code=422, detail="MODEL_PROTOCOL_OPTIONS_INVALID")
         return {}
+    if protocol is ModelApiProtocol.OPENAI_RESPONSES:
+        if protocol_options is not None:
+            return normalize_responses_protocol_options(protocol_options)
+        return normalize_responses_protocol_options(extra_body)
     if protocol_options is not None:
         return normalize_chat_protocol_options(protocol_options)
     return normalize_chat_protocol_options(extra_body)

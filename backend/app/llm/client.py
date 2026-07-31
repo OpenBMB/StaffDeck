@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator, Mapping
 import copy
 import hashlib
 import json
 import math
 import re
+from collections.abc import Iterator, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from openai import OpenAI
 from anthropic import Anthropic
+from openai import OpenAI
 
 from app.config import get_settings
 from app.db.models import ModelConfig
@@ -23,6 +23,7 @@ from app.llm.protocol_drivers import (
     CancellationToken,
     ChatCompletionsDriver,
     GeminiGenerateContentDriver,
+    OpenAIResponsesDriver,
     ProtocolCallError,
 )
 from app.llm.stage_protocol import (
@@ -85,13 +86,20 @@ class LLMClient:
             or DEFAULT_MODEL_API_TIMEOUT_SECONDS
         )
         self.base_url = str(model_config.base_url or "")
-        if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
+        if protocol in {
+            ModelApiProtocol.OPENAI_CHAT_COMPLETIONS,
+            ModelApiProtocol.OPENAI_RESPONSES,
+        }:
             self.client = OpenAI(
                 api_key=api_key,
                 base_url=self.base_url,
                 timeout=self.timeout_seconds,
             )
-            self.driver = ChatCompletionsDriver(self.client)
+            self.driver = (
+                ChatCompletionsDriver(self.client)
+                if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS
+                else OpenAIResponsesDriver(self.client)
+            )
         elif protocol is ModelApiProtocol.ANTHROPIC_MESSAGES:
             kwargs: dict[str, Any] = {
                 "api_key": api_key,
@@ -119,10 +127,15 @@ class LLMClient:
         self.max_output_tokens = model_config.max_output_tokens
         legacy_extra_body = getattr(model_config, "legacy_extra_body", {})
         protocol_options = getattr(model_config, "protocol_options", {})
+        self.protocol_options = _normalize_extra_body(protocol_options)
         self.extra_body = _normalize_extra_body(
             legacy_extra_body
             or getattr(model_config, "extra_body_json", {})
-            or protocol_options
+            or (
+                self.protocol_options
+                if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS
+                else {}
+            )
         )
         settings = get_settings()
         self.thinking_mode = (
@@ -132,7 +145,7 @@ class LLMClient:
                 getattr(settings, "model_thinking_models", ""),
                 self.model,
             )
-        )
+        ) if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS else ""
 
     def generate_text(
         self,
@@ -167,12 +180,7 @@ class LLMClient:
                 request["_cancellation"] = cancellation
             if response_format:
                 request["response_format"] = response_format
-            request.update(
-                _thinking_request_kwargs(
-                    getattr(self, "thinking_mode", ""),
-                    getattr(self, "extra_body", {}),
-                )
-            )
+            request.update(self._protocol_request_options())
             empty_diagnostics: list[str] = []
             current_max_tokens = max_output_tokens
             for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
@@ -292,10 +300,7 @@ class LLMClient:
                         "messages": request_messages,
                         "temperature": self.temperature,
                         "max_tokens": current_max_tokens,
-                        **_thinking_request_kwargs(
-                            getattr(self, "thinking_mode", ""),
-                            getattr(self, "extra_body", {}),
-                        ),
+                        **self._protocol_request_options(),
                     }
                     if cancellation is not None:
                         stream_request["_cancellation"] = cancellation
@@ -404,7 +409,12 @@ class LLMClient:
 
     def _protocol_driver(
         self,
-    ) -> ChatCompletionsDriver | AnthropicMessagesDriver | GeminiGenerateContentDriver:
+    ) -> (
+        ChatCompletionsDriver
+        | OpenAIResponsesDriver
+        | AnthropicMessagesDriver
+        | GeminiGenerateContentDriver
+    ):
         driver = getattr(self, "driver", None)
         if driver is None:
             if getattr(self, "api_protocol", ModelApiProtocol.OPENAI_CHAT_COMPLETIONS) is (
@@ -416,10 +426,26 @@ class LLMClient:
                     getattr(self, "api_key", ""),
                     self.model,
                 )
+            elif getattr(self, "api_protocol", ModelApiProtocol.OPENAI_CHAT_COMPLETIONS) is (
+                ModelApiProtocol.OPENAI_RESPONSES
+            ):
+                driver = OpenAIResponsesDriver(self.client)
             else:
                 driver = ChatCompletionsDriver(self.client)
             self.driver = driver
         return driver
+
+    def _protocol_request_options(self) -> dict[str, Any]:
+        protocol = getattr(self, "api_protocol", ModelApiProtocol.OPENAI_CHAT_COMPLETIONS)
+        if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
+            return _thinking_request_kwargs(
+                getattr(self, "thinking_mode", ""),
+                getattr(self, "extra_body", {}),
+            )
+        if protocol is ModelApiProtocol.OPENAI_RESPONSES:
+            options = getattr(self, "protocol_options", {})
+            return {"protocol_options": options} if options else {}
+        return {}
 
     def generate_json(
         self,
@@ -506,8 +532,10 @@ class LLMClient:
                 kwargs["cancellation"] = cancellation
             return self.generate_text(prompt, payload, **kwargs)
 
-        if getattr(self, "api_protocol", ModelApiProtocol.OPENAI_CHAT_COMPLETIONS) is (
-            ModelApiProtocol.ANTHROPIC_MESSAGES
+        protocol = getattr(self, "api_protocol", ModelApiProtocol.OPENAI_CHAT_COMPLETIONS)
+        if protocol is ModelApiProtocol.ANTHROPIC_MESSAGES or (
+            protocol is ModelApiProtocol.OPENAI_RESPONSES
+            and getattr(self, "protocol_options", {}).get("json_mode", "prompt") != "native"
         ):
             return call_generate_text(
                 system_prompt.rstrip()

@@ -8,16 +8,17 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.db.models import ModelConfig
+from app.llm.client import _normalize_extra_body
 from app.llm.model_config_resolver import (
     resolve_model_config_for_runtime,
     resolve_model_config_for_verification,
 )
-from app.llm.client import _normalize_extra_body
 from app.llm.model_protocols import (
     ModelApiProtocol,
     available_model_protocols,
     model_config_fingerprint,
     normalize_chat_protocol_options,
+    normalize_responses_protocol_options,
     resolve_api_protocol,
 )
 
@@ -66,6 +67,15 @@ def test_chat_thinking_options_are_strictly_typed() -> None:
     ) == {"thinking": {"type": "disabled", "clear_thinking": True}}
     with pytest.raises(HTTPException) as exc_info:
         normalize_chat_protocol_options({"thinking": {"type": "disabled", "vendor": 1}})
+    assert exc_info.value.detail == "MODEL_PROTOCOL_OPTIONS_INVALID"
+
+
+def test_responses_options_allow_only_store_flag() -> None:
+    assert normalize_responses_protocol_options(
+        {"store": False, "json_mode": "prompt"}
+    ) == {"store": False, "json_mode": "prompt"}
+    with pytest.raises(HTTPException) as exc_info:
+        normalize_responses_protocol_options({"thinking": {"type": "disabled"}})
     assert exc_info.value.detail == "MODEL_PROTOCOL_OPTIONS_INVALID"
 
 
@@ -133,6 +143,7 @@ def test_verified_runtime_requires_matching_fingerprint() -> None:
 def test_all_implemented_protocols_are_available() -> None:
     assert available_model_protocols() == [
         "openai_chat_completions",
+        "openai_responses",
         "anthropic_messages",
         "gemini_generate_content",
     ]

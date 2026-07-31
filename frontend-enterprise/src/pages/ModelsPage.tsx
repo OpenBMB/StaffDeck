@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, FlaskConical, LoaderCircle } from 'lucide-react';
+import { Check, FlaskConical, Import, LoaderCircle } from 'lucide-react';
 
 import { api, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
@@ -44,7 +44,7 @@ const MODEL_PAGE_SIZE = 8;
 
 type ModelForm = {
   name: string;
-  api_protocol: 'openai_chat_completions' | 'anthropic_messages' | 'gemini_generate_content';
+  api_protocol: 'openai_chat_completions' | 'openai_responses' | 'anthropic_messages' | 'gemini_generate_content';
   base_url: string;
   model: string;
   api_key: string;
@@ -96,6 +96,7 @@ export default function ModelsPage({
   const [selected, setSelected] = useState<ModelConfigRead | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [importingCodex, setImportingCodex] = useState(false);
   const testingModelIdsRef = useRef(new Set<string>());
   const [testingModelIds, setTestingModelIds] = useState<Set<string>>(new Set());
   const [form, setForm] = useState<ModelForm>(BLANK_MODEL_FORM);
@@ -257,6 +258,20 @@ export default function ModelsPage({
       notify.error(modelActionError(error, '设为默认失败'));
     }
   }
+  async function importCodex() {
+    setImportingCodex(true);
+    try {
+      const imported = await api.post<ModelConfigRead>(
+        `/api/enterprise/model-configs/import-codex?tenant_id=${TENANT_ID}`,
+      );
+      notify.success(`已导入 ${imported.name}，请测试后启用`);
+      await load();
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '导入 Codex 配置失败');
+    } finally {
+      setImportingCodex(false);
+    }
+  }
 
   async function test(row: ModelConfigRead): Promise<boolean> {
     if (testingModelIdsRef.current.has(row.id)) return false;
@@ -396,6 +411,15 @@ export default function ModelsPage({
           刷新
         </UIButton>
         <UIButton
+          variant="outline"
+          onClick={() => void importCodex()}
+          disabled={importingCodex}
+          className="h-[34px] gap-[4px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[20px] text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
+        >
+          {importingCodex ? <LoaderCircle className="size-[14px] animate-spin" /> : <Import className="size-[14px]" />}
+          导入 Codex
+        </UIButton>
+        <UIButton
           data-guide-target="models-create"
           onClick={createBlank}
           className="h-[34px] gap-[4px] rounded-[10px] bg-[#18181a] px-[20px] text-[12px] font-normal text-white hover:bg-[#303030]"
@@ -501,6 +525,9 @@ export default function ModelsPage({
                     {availableProtocols.includes('openai_chat_completions') && (
                       <SelectItem value="openai_chat_completions">OpenAI Chat Completions</SelectItem>
                     )}
+                    {availableProtocols.includes('openai_responses') && (
+                      <SelectItem value="openai_responses">OpenAI Responses</SelectItem>
+                    )}
                     {availableProtocols.includes('anthropic_messages') && (
                       <SelectItem value="anthropic_messages">Anthropic Messages</SelectItem>
                     )}
@@ -513,7 +540,7 @@ export default function ModelsPage({
               <LabeledField label="Base URL">
                 <Input
                   value={form.base_url}
-                  placeholder={form.api_protocol === 'openai_chat_completions'
+                  placeholder={form.api_protocol === 'openai_chat_completions' || form.api_protocol === 'openai_responses'
                     ? 'https://llm-center.modelbest.cn/llm/v1'
                     : 'https://llm-center.modelbest.cn/llm'}
                   onChange={(event) => updateForm('base_url', event.target.value)}
