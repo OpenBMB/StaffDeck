@@ -77,7 +77,7 @@ function modelActionError(error: unknown, fallback: string): string {
     return '请先启用该模型，再设为默认';
   }
   if (message.includes('MODEL_CONFIG_VERIFICATION_REQUIRED')) {
-    return '请先完成模型测试，再设为默认';
+    return '请先完成模型测试，再启用或设为默认';
   }
   return message || fallback;
 }
@@ -209,24 +209,40 @@ export default function ModelsPage({
       temperature,
       max_output_tokens: maxOutputTokens,
       extra_body: extraBody,
-      is_default: form.is_default,
-      enabled: form.enabled,
+      // Activation is completed only after the automatic verification below.
+      is_default: false,
+      enabled: false,
       api_key: form.api_key || undefined,
     };
     setSaving(true);
     try {
+      let saved: ModelConfigRead;
       if (selected) {
-        await api.put(`/api/enterprise/model-configs/${selected.id}`, payload);
+        saved = await api.put<ModelConfigRead>(`/api/enterprise/model-configs/${selected.id}`, payload);
       } else {
-        await api.post('/api/enterprise/model-configs', payload);
+        saved = await api.post<ModelConfigRead>('/api/enterprise/model-configs', payload);
       }
-      notify.success('已保存');
+      let completed = true;
+      if (form.enabled) {
+        const verified = await test(saved);
+        if (verified) {
+          await api.put<ModelConfigRead>(`/api/enterprise/model-configs/${saved.id}`, {
+            tenant_id: TENANT_ID,
+            enabled: true,
+            is_default: form.is_default,
+          });
+          notify.success(form.is_default ? '测试通过，已启用并设为默认模型' : '测试通过，已启用');
+        } else completed = false;
+      } else {
+        notify.success('已保存');
+      }
+      if (!completed) return;
       setEditorOpen(false);
       setSelected(null);
       setForm(BLANK_MODEL_FORM);
       await load();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '保存失败');
+      notify.error(modelActionError(error, '保存失败'));
     } finally {
       setSaving(false);
     }
@@ -242,8 +258,8 @@ export default function ModelsPage({
     }
   }
 
-  async function test(row: ModelConfigRead) {
-    if (testingModelIdsRef.current.has(row.id)) return;
+  async function test(row: ModelConfigRead): Promise<boolean> {
+    if (testingModelIdsRef.current.has(row.id)) return false;
     testingModelIdsRef.current.add(row.id);
     setTestingModelIds(new Set(testingModelIdsRef.current));
     try {
@@ -251,18 +267,17 @@ export default function ModelsPage({
         `/api/enterprise/model-configs/${row.id}/test?tenant_id=${TENANT_ID}&activate_if_initial=true`,
       );
       if (result.success) {
-        notify.success(
-          result.activated
-            ? '测试通过，已启用并设为默认模型'
-            : result.output || result.message,
-        );
+        if (!result.activated) notify.success(result.output || result.message);
+        return true;
       } else if (result.message === 'MODEL_VERIFICATION_STALE') {
         notify.warning('模型配置或测试状态已发生变化，本次结果未生效，请刷新后重新测试');
       } else {
         notify.error(result.message);
       }
+      return false;
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '测试失败');
+      return false;
     } finally {
       await load(false);
       testingModelIdsRef.current.delete(row.id);
