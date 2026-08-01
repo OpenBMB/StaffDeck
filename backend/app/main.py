@@ -16,6 +16,7 @@ from app.api import (
     memories,
     mock,
     model_configs,
+    oidc_auth,
     persona,
     scheduled_tasks,
     sessions,
@@ -75,6 +76,7 @@ app.include_router(chat.router)
 app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)
 app.include_router(auth.router)
+app.include_router(oidc_auth.router)
 app.include_router(agents.scope_router)
 app.include_router(agents.enterprise_router)
 app.include_router(general_skills.router)

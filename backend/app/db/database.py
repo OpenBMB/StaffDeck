@@ -109,7 +109,16 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'member'"))
             if "source" not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN source VARCHAR NOT NULL DEFAULT 'web'"))
+            if "oidc_sub" not in user_columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN oidc_sub VARCHAR"))
             _migrate_user_source_backfill(conn)
+            # OIDC 用户按 sub 稳定映射;partial unique index 保证普通账号不受约束
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_oidc_sub "
+                    "ON users(tenant_id, oidc_sub) WHERE oidc_sub IS NOT NULL"
+                )
+            )
 
         if "sessions" in tables:
             session_columns = {column["name"] for column in inspector.get_columns("sessions")}
