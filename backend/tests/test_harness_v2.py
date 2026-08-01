@@ -32,6 +32,7 @@ from app.core.harness_capability_invoker import (
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_v2_engine import (
     HarnessV2Engine,
+    _globalize_citations,
     _with_recoverable_first_session,
 )
 from app.core.task_frame_store import (
@@ -43,6 +44,7 @@ from app.core.task_frame_store import (
 from app.core.task_request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
+    TaskExecutionResult,
     TaskRequestCompiler,
     TaskRequirement,
 )
@@ -327,6 +329,8 @@ def test_turn_planner_retries_schema_invalid_json(monkeypatch) -> None:
     )
 
     assert len(payloads) == 2
+    assert "available_sops" in payloads[0]
+    assert "available_skills" not in payloads[0]
     repair = payloads[1]["_schema_repair"]
     assert isinstance(repair, dict)
     assert repair["previous_output"] == {
@@ -343,6 +347,50 @@ def test_turn_planner_retries_schema_invalid_json(monkeypatch) -> None:
     assert len(plan.task_frames) == 1
     assert plan.task_frames[0].kind == "conversation"
     assert plan.task_frames[0].slot_hints == {}
+
+
+def test_turn_planner_exposes_sops_but_not_runtime_capabilities(monkeypatch) -> None:
+    payloads: list[dict[str, object]] = []
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            payloads.append(deepcopy(payload))
+            return {
+                "decision": "start_new_task",
+                "user_intent": "申请退款",
+                "reason": "匹配退款 SOP。",
+                "task_frames": [
+                    {
+                        "kind": "sop",
+                        "decision": "start_new_task",
+                        "target_skill_id": "refund",
+                        "requirements": ["完成退款申请"],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(turn_planner_module, "LLMClient", FakeLLMClient)
+
+    plan = TurnPlanner().plan(
+        "我要退款",
+        _chat_session(),
+        available_skills=[_refund_skill()],
+        model_config=_model_config(),
+    )
+
+    assert payloads[0]["available_sops"] == [
+        {
+            "skill_id": "refund",
+            "name": "退款流程",
+        }
+    ]
+    assert "available_skills" not in payloads[0]
+    assert plan.task_frames[0].target_skill_id == "refund"
 
 
 def test_turn_planner_discards_an_unknown_sop_target() -> None:
@@ -1102,6 +1150,7 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
     monkeypatch,
 ) -> None:
     payloads: list[dict[str, object]] = []
+    system_prompts: list[str] = []
     actions = iter(
         [
             {
@@ -1128,8 +1177,9 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
             pass
 
         def generate_json(
-            self, _system_prompt: str, payload: dict[str, object]
+            self, system_prompt: str, payload: dict[str, object]
         ) -> dict[str, object]:
+            system_prompts.append(system_prompt)
             payloads.append(deepcopy(payload))
             return next(actions)
 
@@ -1201,6 +1251,98 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
     assert "OUTER_CONTEXT_MUST_NOT_LEAK" not in json.dumps(
         payloads, ensure_ascii=False
     )
+    assert "不得为了“更精准”而在零检索、零工具结果时提前结束" in system_prompts[0]
+
+
+def test_harness_agent_keeps_knowledge_results_and_citations_linked(
+    monkeypatch,
+) -> None:
+    actions = iter(
+        [
+            {
+                "action": "tool",
+                "tool_name": "knowledge_search",
+                "arguments": {"query": "差旅费报销制度"},
+            },
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "差旅费制度已查询。[1]",
+                "task_summary": "已基于制度知识库答复。",
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, _payload: dict[str, object]
+        ) -> dict[str, object]:
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    evidence = {
+        "evidence_pack": [
+            {
+                "chunk_id": "chunk-travel",
+                "source_path": "差旅费管理制度.pdf",
+                "section_path": "住宿标准",
+                "content": "住宿标准按职级和城市分类执行。",
+            }
+        ]
+    }
+    citation = {
+        "id": "kref_1",
+        "label": "[1]",
+        "kind": "evidence",
+        "chunk_id": "chunk-travel",
+        "source_path": "差旅费管理制度.pdf",
+        "title": "住宿标准",
+        "excerpt": "住宿标准按职级和城市分类执行。",
+    }
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-travel-policy",
+            kind="sop",
+            goal="查询差旅费报销制度",
+            requirements=["先检索通用制度，再确认个性化字段"],
+            required_slots=["employee_level", "city"],
+            capability_manifest=CapabilityManifest(
+                available=[
+                    CapabilityDescriptor(
+                        capability_id="knowledge.search",
+                        name="knowledge_search",
+                        kind="knowledge",
+                    )
+                ]
+            ),
+        ),
+        _model_config(),
+        lambda name, arguments: {
+            "success": name == "knowledge_search",
+            "data": evidence,
+            "citations": [citation],
+        },
+        max_actions=2,
+    )
+
+    assert result.status == "completed"
+    assert result.evidence_results == [evidence]
+    assert result.citations == [citation]
+    assert result.capability_results[0]["tool_name"] == "knowledge_search"
+
+    second = TaskExecutionResult(
+        task_frame_id="task-followup",
+        status="completed",
+        citations=[dict(citation)],
+    )
+    globalized = _globalize_citations([result, second])
+    assert globalized == [citation]
+    assert result.citations[0]["label"] == "[1]"
+    assert second.citations[0]["label"] == "[1]"
 
 
 def test_harness_agent_projects_only_validated_current_turn_images(

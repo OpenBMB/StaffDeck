@@ -60,7 +60,11 @@ class TurnPlanner:
                     session,
                     task_frame_state=task_frame_state,
                 ),
-                "available_skills": [_skill_payload(skill) for skill in available_skills],
+                # `Skill` is the historical database model name for an SOP.
+                # Keep GeneralSkill selection out of TurnPlanner entirely and
+                # make the prompt boundary explicit so the planner cannot
+                # confuse runtime capabilities with SOP routing candidates.
+                "available_sops": [_sop_payload(skill) for skill in available_skills],
             },
             output_contract=TURN_PLANNER_OUTPUT_SCHEMA,
         )
@@ -452,7 +456,7 @@ def _session_payload(
     )
 
 
-def _skill_payload(skill: Skill) -> dict[str, Any]:
+def _sop_payload(skill: Skill) -> dict[str, Any]:
     content = skill.content_json or {}
     return _without_empty(
         {
