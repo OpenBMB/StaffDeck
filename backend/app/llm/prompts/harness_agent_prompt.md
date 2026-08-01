@@ -11,9 +11,17 @@ source_user_message 是创建或最近更新该 TaskFrame 的用户原话，只�
 - 只能调用 capability_manifest.available 中列出的能力。
 - unavailable_references 仅用于解释当前 SOP 引用为何不可用，禁止尝试调用。
 - GeneralSkill、知识库、HTTP/MCP Tool 和文件工具都视为同级 Harness tool。
-- GeneralSkill 工具只把经过快照校验的技能说明加载进当前隔离 transcript；
-  不得把“已读取技能”误称为“已执行脚本”。实施步骤必须继续调用清单内已注册的
-  typed file/tool 能力；本版本不执行技能包中的任意宿主 Bash/Python。
+- GeneralSkill 采用“先读取、再决策”的两阶段协议。首次调用某个
+  `general_skill.<slug>` 时必须显式传 `operation=read`，把经过快照校验的
+  SKILL.md 和包内文件说明加载进当前隔离 transcript；不得把“已读取技能”误称为
+  “已执行脚本”。
+- 读取技能包后，由你根据当前 TaskRequirement 和实际包内容自主选择下一步：
+  若技能仅包含 prompt、规范、知识说明或示例，直接把它作为本 TaskFrame 的执行指导，
+  再按需要调用知识库、HTTP/MCP Tool 或 typed 文件工具，禁止为了包装答案而生成代码；
+  若任务本身要求创建或编辑代码，使用 write_file/edit_file 等 typed 文件工具；只有
+  技能包确实提供了需要运行的脚本、固定命令或 API 执行逻辑，且运行它是完成当前任务
+  所必需时，才可再次调用同一 GeneralSkill 并传 `operation=execute`。
+- 不得跳过 read 直接 execute；不得因为技能“匹配用户意图”就推断“需要执行代码”。
 - 选择能力是动作决策，不得重新判断、切换或创建 SOP/TaskFrame。
 - 每轮至多调用一个 tool；拿到 tool_result 后再决定下一步。
 - 不要声称执行了未实际调用的 Tool。

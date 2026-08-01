@@ -103,20 +103,28 @@ class CapabilityManifestBuilder:
                     input_schema={
                         "type": "object",
                         "properties": {
-                            "query": {"type": "string"},
+                            "query": {
+                                "type": "string",
+                                "description": "当前 TaskFrame 中要交给该技能处理的具体需求。",
+                            },
                             "operation": {
                                 "type": "string",
-                                "enum": ["execute", "read"],
-                                "default": "execute",
+                                "enum": ["read", "execute"],
+                                "description": (
+                                    "首次必须使用 read 加载并理解技能包；读取后由 AgentLoop "
+                                    "判断是直接应用说明、调用其他 Harness 工具，还是确有必要时 "
+                                    "使用 execute 运行技能包代码。"
+                                ),
                             },
                         },
-                        "required": ["query"],
+                        "required": ["query", "operation"],
                     },
                     metadata={
                         "slug": row.slug,
                         "content_digest": general_skill_snapshot_digest(row),
                         "package_digest": package_from_row(row).digest,
-                        "script_execution": "general_skill_runner",
+                        "execution_policy": "inspect_then_decide",
+                        "script_execution": "explicit_after_read",
                         "permissions": dict(row.permissions_json or {}),
                         "runtime_config": dict(row.runtime_config_json or {}),
                     },

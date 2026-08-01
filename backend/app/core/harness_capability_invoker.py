@@ -103,6 +103,10 @@ class HarnessCapabilityInvoker:
             for item in manifest.available
             if item.available
         }
+        # GeneralSkill is a two-stage capability in Harness v2.  The task agent
+        # must inspect the frozen package before it can decide whether the
+        # instructions are sufficient or executable code is actually needed.
+        self._loaded_general_skill_ids: set[str] = set()
 
     def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self._raise_if_cancelled()
@@ -385,14 +389,38 @@ class HarnessCapabilityInvoker:
         query = str(arguments.get("query") or "").strip()
         if not query:
             return _failure("INVALID_ARGUMENTS", "通用技能 query 不能为空。")
-        operation = str(arguments.get("operation") or "execute").strip().lower()
+        # Fail safe for old callers that omit operation: loading instructions is
+        # non-executing and gives the AgentLoop enough context to choose its next
+        # action.  Never turn an omitted field into generated code.
+        operation = str(arguments.get("operation") or "read").strip().lower()
         if operation not in {"read", "execute"}:
             return _failure(
                 "INVALID_ARGUMENTS",
                 "通用技能 operation 只能是 read 或 execute。",
             )
         if operation == "read":
-            return self._read_general_skill_package(skill, metadata, query)
+            result = self._read_general_skill_package(skill, metadata, query)
+            self._loaded_general_skill_ids.add(skill.id)
+            self._emit_trace(
+                "general_skill_trace",
+                {
+                    "skill_slug": skill.slug,
+                    "skill_name": skill.name,
+                    "operation": "read",
+                    "phase": "instructions_loaded",
+                    "message": "已加载技能说明，等待 AgentLoop 判断执行方式",
+                },
+            )
+            return result
+
+        if skill.id not in self._loaded_general_skill_ids:
+            return _failure(
+                "GENERAL_SKILL_NOT_INSPECTED",
+                (
+                    "执行技能包前必须先使用 operation=read 加载说明；"
+                    "由 AgentLoop 阅读后判断是否确实需要运行代码。"
+                ),
+            )
 
         package = package_from_row(skill)
         snapshot = runtime_snapshot_from_package(skill, package)
@@ -491,7 +519,9 @@ class HarnessCapabilityInvoker:
                 "package": _skill_package_preview(skill),
                 "notice": (
                     "技能包说明已加载到当前隔离 Harness transcript；"
-                    "如需运行技能，请使用 operation=execute。"
+                    "请由 AgentLoop 判断下一步：仅含 prompt、规则或示例时直接应用说明，"
+                    "并按任务需要调用知识库、原装 Tool 或文件工具；只有确实需要运行"
+                    "技能包代码时才使用 operation=execute。"
                 ),
             },
         }

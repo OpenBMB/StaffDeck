@@ -699,13 +699,14 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     shared_descriptor = next(
         item for item in first.available if item.name == "general_skill.shared"
     )
-    assert shared_descriptor.input_schema["properties"]["operation"] == {
-        "type": "string",
-        "enum": ["execute", "read"],
-        "default": "execute",
-    }
+    operation_schema = shared_descriptor.input_schema["properties"]["operation"]
+    assert operation_schema["type"] == "string"
+    assert operation_schema["enum"] == ["read", "execute"]
+    assert "default" not in operation_schema
+    assert shared_descriptor.input_schema["required"] == ["query", "operation"]
+    assert shared_descriptor.metadata["execution_policy"] == "inspect_then_decide"
     assert shared_descriptor.metadata["script_execution"] == (
-        "general_skill_runner"
+        "explicit_after_read"
     )
 
 
@@ -1018,7 +1019,123 @@ def test_general_skill_harness_tool_reads_full_package_when_requested(
         item["path"] for item in read_result["data"]["package"]["files"]
     ] == ["SKILL.md", "scripts/run.sh"]
     assert read_result["data"]["operation"] == "read"
-    assert "operation=execute" in read_result["data"]["notice"]
+    assert "只有确实需要" in read_result["data"]["notice"]
+
+
+def test_general_skill_harness_tool_defaults_to_read_instead_of_generating_code(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    skill = GeneralSkill(
+        id="instruction-only",
+        tenant_id="tenant-demo",
+        slug="policy-guide",
+        name="Policy Guide",
+        skill_markdown="# Policy Guide\nAnswer using the supplied policy knowledge.",
+        status="published",
+    )
+    descriptor = CapabilityDescriptor(
+        capability_id=skill.id,
+        name="general_skill.policy-guide",
+        kind="general_skill",
+        metadata={
+            "slug": skill.slug,
+            "content_digest": general_skill_snapshot_digest(skill),
+        },
+    )
+
+    def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("instruction loading must not generate a runner")
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.GeneralSkillRunner.run",
+        unexpected_run,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(skill)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(user_id="user-1"),
+            task_frame_id="task-policy",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[descriptor]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        result = invoker._invoke_general_skill(
+            skill.id,
+            descriptor.metadata,
+            {"query": "差旅费怎么报"},
+        )
+
+    assert result["success"] is True
+    assert result["data"]["operation"] == "read"
+    skill_file = next(
+        item
+        for item in result["data"]["package"]["files"]
+        if item["path"] == "SKILL.md"
+    )
+    assert skill_file["content_preview"].startswith("# Policy Guide")
+
+
+def test_general_skill_harness_tool_rejects_execute_before_read(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    skill = GeneralSkill(
+        id="guarded-runner",
+        tenant_id="tenant-demo",
+        slug="guarded-runner",
+        name="Guarded Runner",
+        skill_markdown="# Guarded Runner",
+        status="published",
+    )
+    descriptor = CapabilityDescriptor(
+        capability_id=skill.id,
+        name="general_skill.guarded-runner",
+        kind="general_skill",
+        metadata={
+            "slug": skill.slug,
+            "content_digest": general_skill_snapshot_digest(skill),
+        },
+    )
+
+    def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("execute must be fenced until the package is read")
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.GeneralSkillRunner.run",
+        unexpected_run,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(skill)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(user_id="user-1"),
+            task_frame_id="task-guarded",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[descriptor]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        result = invoker._invoke_general_skill(
+            skill.id,
+            descriptor.metadata,
+            {"query": "run it", "operation": "execute"},
+        )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "GENERAL_SKILL_NOT_INSPECTED"
 
 
 def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
@@ -1124,7 +1241,13 @@ def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
         result = invoker._invoke_general_skill(
             skill.id,
             descriptor.metadata,
-            {"query": "北京天气如何"},
+            {"query": "北京天气如何", "operation": "read"},
+        )
+        assert result["success"] is True
+        result = invoker._invoke_general_skill(
+            skill.id,
+            descriptor.metadata,
+            {"query": "北京天气如何", "operation": "execute"},
         )
 
     assert result["success"] is True
@@ -1139,11 +1262,13 @@ def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
     assert captured["skill"].package_digest
     assert [event_type for event_type, _ in trace_events] == [
         "general_skill_trace",
+        "general_skill_trace",
         "general_skill_run_finished",
     ]
-    assert trace_events[0][1]["phase"] == "plan_created"
-    assert trace_events[0][1]["skill_slug"] == "weather"
-    assert trace_events[1][1]["success"] is True
+    assert trace_events[0][1]["phase"] == "instructions_loaded"
+    assert trace_events[1][1]["phase"] == "plan_created"
+    assert trace_events[1][1]["skill_slug"] == "weather"
+    assert trace_events[2][1]["success"] is True
 
 
 def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
@@ -1252,6 +1377,8 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
         payloads, ensure_ascii=False
     )
     assert "不得为了“更精准”而在零检索、零工具结果时提前结束" in system_prompts[0]
+    assert "首次调用某个" in system_prompts[0]
+    assert "不得跳过 read 直接 execute" in system_prompts[0]
 
 
 def test_harness_agent_keeps_knowledge_results_and_citations_linked(
