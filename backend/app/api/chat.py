@@ -2708,6 +2708,95 @@ def _general_skill_trace_output(payload: dict, phase: str) -> dict[str, str]:
     return {}
 
 
+def _harness_event_trace_line(event: AgentEvent) -> dict | None:
+    payload = event.payload_json or {}
+    event_type = event.event_type
+    frame_id = str(payload.get("task_frame_id") or event.id).strip()
+    iteration = str(payload.get("iteration") or "").strip()
+    tool_name = str(payload.get("tool_name") or "").strip()
+
+    if event_type == "task_frame_started":
+        kind = str(payload.get("kind") or "conversation").strip()
+        step_id = str(payload.get("step_id") or "").strip()
+        detail_parts = [
+            "SOP TaskFrame" if kind == "sop" else "对话 TaskFrame",
+            f"步骤 {step_id}" if step_id else "",
+        ]
+        return {
+            "id": f"harness_frame_{frame_id}",
+            "kind": "skill" if kind == "sop" else "decision",
+            "text": "开始执行任务",
+            "detail": " · ".join(part for part in detail_parts if part) or None,
+            "state": "running",
+        }
+    if event_type == "task_frame_finished":
+        status = str(payload.get("status") or "completed").strip()
+        action_count = payload.get("action_count")
+        failed = status in {"failed", "blocked", "cancelled"}
+        detail_parts = [
+            f"状态 {status}",
+            f"执行 {action_count} 个动作" if isinstance(action_count, int) else "",
+        ]
+        return {
+            "id": f"harness_frame_{frame_id}",
+            "kind": "decision",
+            "text": "任务执行失败" if failed else "任务执行完成",
+            "detail": " · ".join(part for part in detail_parts if part) or None,
+            "state": "failed" if failed else "completed",
+        }
+    if event_type == "harness_action_created":
+        action = str(payload.get("action") or "").strip()
+        if action == "tool":
+            return {
+                "id": f"harness_action_{frame_id}_{iteration or event.id}",
+                "kind": "tool",
+                "text": f"调用能力 {tool_name}" if tool_name else "调用能力",
+                "detail": f"第 {iteration} 个动作" if iteration else None,
+                "state": "running",
+            }
+        if action == "finish":
+            return {
+                "id": f"harness_finish_{frame_id}_{iteration or event.id}",
+                "kind": "decision",
+                "text": "整理任务结果",
+                "detail": f"第 {iteration} 个动作" if iteration else None,
+                "state": "completed",
+            }
+        return None
+    if event_type == "harness_tool_completed":
+        success = bool(payload.get("success"))
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        error_detail = " · ".join(
+            part
+            for part in (
+                str(error.get("code") or "").strip(),
+                str(error.get("message") or "").strip(),
+            )
+            if part
+        )
+        output = _trace_payload_text(payload.get("result"))
+        return {
+            "id": f"harness_action_{frame_id}_{iteration or event.id}",
+            "kind": "tool",
+            "text": (
+                f"能力调用完成 {tool_name}"
+                if success and tool_name
+                else f"能力调用失败 {tool_name}"
+                if tool_name
+                else "能力调用完成"
+                if success
+                else "能力调用失败"
+            ),
+            "detail": error_detail or None,
+            "output": output or None,
+            "outputLanguage": _trace_payload_language(output) if output else None,
+            "outputTitle": "查看能力结果" if output else None,
+            "collapsible": bool(output),
+            "state": "completed" if success else "failed",
+        }
+    return None
+
+
 def _ensure_request_tenant(tenant_id: str, current_user: User) -> None:
     if tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
@@ -2926,6 +3015,13 @@ def _event_trace_line(
     event: AgentEvent, skill_names: dict[str, str], skill_hint: str | None = None
 ) -> dict | list[dict] | None:
     payload = event.payload_json or {}
+    if event.event_type in {
+        "task_frame_started",
+        "task_frame_finished",
+        "harness_action_created",
+        "harness_tool_completed",
+    }:
+        return _harness_event_trace_line(event)
     if event.event_type == "stream_status":
         phase = str(payload.get("phase") or "").strip()
         text = str(payload.get("text") or "").strip()

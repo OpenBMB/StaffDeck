@@ -93,6 +93,7 @@ def general_skill_read(row: GeneralSkill, status_override: str | None = None) ->
         skill_files=[
             GeneralSkillFile.model_validate(item) for item in _skill_files_or_markdown(row)
         ],
+        skill_directories=_skill_directories(row),
         metadata=dict(row.metadata_json or {}),
         status=status_override or row.status,
         capability_scope=normalize_capability_scope(row.capability_scope),
@@ -111,6 +112,11 @@ def import_general_skill(
 ) -> GeneralSkillRead:
     ensure_tenant(db, request.tenant_id)
     files = _normalize_skill_files(request.files, request.markdown)
+    requested_directories = (
+        _skill_directories_from_values(request.directories, files)
+        if request.directories is not None
+        else None
+    )
     markdown = _skill_markdown_from_files(files)
     parsed_metadata = _parse_skill_metadata(markdown)
     metadata = user_creator_metadata(current_user, parsed_metadata)
@@ -175,6 +181,15 @@ def import_general_skill(
     now = utc_now()
     if row:
         metadata = metadata_preserving_creator(row.metadata_json, parsed_metadata)
+        directories = (
+            requested_directories
+            if requested_directories is not None
+            else _skill_directories(row)
+        )
+        if directories:
+            metadata["skill_directories"] = directories
+        else:
+            metadata.pop("skill_directories", None)
         if slug != row.slug:
             conflict = db.exec(
                 select(GeneralSkill).where(
@@ -204,6 +219,8 @@ def import_general_skill(
             row.capability_scope = request.capability_scope
         row.updated_at = now
     else:
+        if requested_directories:
+            metadata["skill_directories"] = requested_directories
         row = GeneralSkill(
             tenant_id=request.tenant_id,
             slug=slug,
@@ -899,6 +916,39 @@ def _normalize_skill_files(
             continue
         normalized.append(file.model_copy(update={"path": file.path[len(prefix) :]}))
     return normalized
+
+
+def _skill_directories_from_values(
+    values: list[str],
+    files: list[GeneralSkillFile],
+) -> list[str]:
+    file_paths = {file.path for file in files}
+    directories: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        path = _clean_package_path(value)
+        if path in file_paths or any(path.startswith(f"{file_path}/") for file_path in file_paths):
+            raise HTTPException(
+                status_code=400,
+                detail=f"General skill directory conflicts with a file path: {value}",
+            )
+        if path not in seen:
+            seen.add(path)
+            directories.append(path)
+    return directories
+
+
+def _skill_directories(row: GeneralSkill) -> list[str]:
+    metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+    values = metadata.get("skill_directories")
+    if not isinstance(values, list):
+        return []
+    files = [GeneralSkillFile.model_validate(item) for item in _skill_files_or_markdown(row)]
+    valid_values = [str(value) for value in values if isinstance(value, str) and value.strip()]
+    try:
+        return _skill_directories_from_values(valid_values, files)
+    except HTTPException:
+        return []
 
 
 def _clean_package_path(path: str) -> str:

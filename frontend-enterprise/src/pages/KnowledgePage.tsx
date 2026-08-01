@@ -1481,6 +1481,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
           <CapabilityScopeControl
             value={knowledgeBaseDraft.capability_scope}
             onChange={(value) => setKnowledgeBaseDraft((prev) => ({ ...prev, capability_scope: value }))}
+            resourceType="knowledge_base"
           />
         </div>
       </KDialog>
@@ -1874,7 +1875,11 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
             ))}
           </div>
         )}
-        <CapabilityScopeControl value={capabilityScope} onChange={setCapabilityScope} />
+        <CapabilityScopeControl
+          value={capabilityScope}
+          onChange={setCapabilityScope}
+          resourceType="knowledge_base"
+        />
         <FileDropzone
           multiple
           accept=".doc,.docx,.txt,.md,.markdown,.html,.htm,.pdf"

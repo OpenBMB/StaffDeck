@@ -79,7 +79,7 @@ TURN_PLANNER_OUTPUT_SCHEMA: dict[str, Any] = {
             "target_step_id": "string?",
             "user_intent": "string?",
             "requirements": ["string"],
-            "slot_hints": "object?",
+            "slot_hints": "object (use {} when empty; never null)",
             "depends_on_task_ids": ["string"],
         }
     ],
@@ -90,7 +90,7 @@ TURN_PLANNER_OUTPUT_SCHEMA: dict[str, Any] = {
             "target_skill_id": "string?",
             "target_step_id": "string?",
             "user_intent": "string?",
-            "slot_hints": "object?",
+            "slot_hints": "object (use {} when empty; never null)",
             "remove": "boolean?",
         }
     ],

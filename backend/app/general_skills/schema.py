@@ -23,6 +23,7 @@ class GeneralSkillImportRequest(BaseModel):
     homepage: Optional[str] = None
     markdown: Optional[str] = None
     files: list[GeneralSkillFile] = Field(default_factory=list)
+    directories: Optional[list[str]] = None
     status: str = "published"
     capability_scope: Optional[CapabilityScope] = None
     original_slug: Optional[str] = None
@@ -62,6 +63,7 @@ class GeneralSkillRead(BaseModel):
     homepage: Optional[str] = None
     skill_markdown: str
     skill_files: list[GeneralSkillFile] = Field(default_factory=list)
+    skill_directories: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     status: str
     capability_scope: CapabilityScope

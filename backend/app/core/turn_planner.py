@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
+
+from pydantic import ValidationError
 
 from app import paths
 from app.core.context_projection import (
@@ -16,7 +19,7 @@ from app.llm.stage_protocol import (
     stage_payload,
     unified_system_prompt,
 )
-from app.observability.spans import llm_operation
+from app.observability.spans import llm_operation, llm_span_attributes
 from app.session.session_schema import (
     PendingTask,
     PlannedTaskFrame,
@@ -30,6 +33,7 @@ from app.session.slot_policy import strip_router_generated_message_slots
 PROMPT_PATH = (
     paths.resource_dir() / "app" / "llm" / "prompts" / "turn_planner_prompt.md"
 )
+SCHEMA_REPAIR_ATTEMPTS = 1
 
 
 class TurnPlanner:
@@ -61,11 +65,13 @@ class TurnPlanner:
             output_contract=TURN_PLANNER_OUTPUT_SCHEMA,
         )
         try:
+            client = LLMClient(model_config)
             with llm_operation("turn_planner.plan"):
-                raw = LLMClient(model_config).generate_json(
-                    unified_system_prompt(), payload
+                plan = self._generate_validated_plan(
+                    client,
+                    unified_system_prompt(),
+                    payload,
                 )
-            plan = TurnPlan.model_validate(raw)
         except Exception as exc:
             if isinstance(exc, LLMError):
                 raise
@@ -77,6 +83,41 @@ class TurnPlanner:
             available_skills,
             task_frame_state,
         )
+
+    def _generate_validated_plan(
+        self,
+        client: LLMClient,
+        system_prompt: str,
+        payload: dict[str, Any],
+    ) -> TurnPlan:
+        base_payload = deepcopy(payload)
+        next_payload = payload
+        max_attempts = SCHEMA_REPAIR_ATTEMPTS + 1
+        for attempt in range(max_attempts):
+            with llm_span_attributes(
+                schema_attempt=attempt + 1,
+                schema_retry_count=attempt,
+                schema_max_attempts=max_attempts,
+            ):
+                raw = client.generate_json(system_prompt, next_payload)
+            try:
+                return TurnPlan.model_validate(raw)
+            except ValidationError as exc:
+                if attempt >= SCHEMA_REPAIR_ATTEMPTS:
+                    raise
+                next_payload = deepcopy(base_payload)
+                next_payload["_schema_repair"] = {
+                    "attempt": attempt + 1,
+                    "max_attempts": SCHEMA_REPAIR_ATTEMPTS,
+                    "previous_output": raw,
+                    "validation_errors": _compact_validation_errors(exc),
+                    "instruction": (
+                        "上一轮输出是合法 JSON，但不符合输出字段类型。"
+                        "请保留原任务语义，修正列出的字段后重新输出完整 JSON object。"
+                        "空 object 使用 {}，空 array 使用 []，不要为容器字段输出 null。"
+                    ),
+                }
+        raise AssertionError("unreachable")
 
     def _normalize(
         self,
@@ -256,6 +297,20 @@ class TurnPlanner:
         plan.task_updates = _sanitize_task_updates(plan, known_frames)
         plan.user_intent = _one_line(plan.user_intent or first.user_intent or message)
         return plan
+
+
+def _compact_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
+    compact: list[dict[str, str]] = []
+    for error in exc.errors(include_url=False, include_input=False):
+        location = error.get("loc") or ()
+        compact.append(
+            {
+                "path": ".".join(str(part) for part in location),
+                "type": str(error.get("type") or "validation_error"),
+                "message": str(error.get("msg") or "Invalid value"),
+            }
+        )
+    return compact
 
 
 def turn_plan_router_decision(plan: TurnPlan) -> RouterDecision:

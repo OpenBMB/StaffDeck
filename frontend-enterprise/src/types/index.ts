@@ -287,6 +287,7 @@ export type GeneralSkillRead = {
     size?: number;
     mime_type?: string;
   }>;
+  skill_directories?: string[];
   metadata: Record<string, unknown>;
   status: 'draft' | 'published' | 'archived';
   permissions: Record<string, unknown>;

@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import ensure_open_gallery_binding
 from app.core import harness_agent as harness_agent_module
+from app.core import turn_planner as turn_planner_module
 from app.core.agent_loop import AgentLoop
 from app.core.capability_manifest import (
     CapabilityManifestBuilder,
@@ -50,13 +51,23 @@ from app.db.models import (
     AgentProfile,
     ChatSession,
     GeneralSkill,
+    HarnessInvocationRecord,
     HarnessRunRecord,
     HarnessTaskFrameRecord,
+    HarnessTurnRecord,
+    Message,
     ModelConfig,
+    ScheduledTask,
+    ScheduledTaskRun,
     Skill,
     Tenant,
     Tool,
     utc_now,
+)
+from app.general_skills.schema import GeneralSkillRunResponse
+from app.scheduled_tasks.service import (
+    _finish_task_schedule,
+    _scheduled_harness_outcome,
 )
 from app.session.session_schema import (
     ChatAttachmentRead,
@@ -87,6 +98,31 @@ def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
     assert first.session_id != other_user.session_id
     assert "client-turn-1" not in first.session_id
     assert request.session_id is None
+
+
+def test_every_turn_always_selects_harness_v2() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        loop = AgentLoop(db)
+
+        assert loop._uses_harness_v2(
+            ChatTurnRequest(
+                tenant_id="tenant-demo",
+                agent_id="legacy-or-missing-agent",
+                message="普通对话",
+                channel="web",
+                interaction_mode="normal",
+            )
+        ) is True
+        assert loop._uses_harness_v2(
+            ChatTurnRequest(
+                tenant_id="tenant-demo",
+                agent_id="legacy-or-missing-agent",
+                message="执行自动任务",
+                channel="scheduled_task",
+                interaction_mode="scheduled_task",
+            )
+        ) is True
 
 
 def test_first_harness_turn_recovers_from_a_concurrent_session_insert(
@@ -221,6 +257,92 @@ def test_turn_planner_falls_back_to_an_isolated_conversation_frame() -> None:
     assert frame.source_message == "请解释退款规则"
     assert frame.target_skill_id is None
     assert frame.target_step_id is None
+
+
+def test_turn_plan_defaults_null_container_fields() -> None:
+    plan = TurnPlan.model_validate(
+        {
+            "decision": "answer_only",
+            "task_frames": [
+                {
+                    "kind": "conversation",
+                    "requirements": None,
+                    "slot_hints": None,
+                    "depends_on_task_ids": None,
+                }
+            ],
+            "task_updates": None,
+        }
+    )
+
+    assert plan.task_updates == []
+    assert len(plan.task_frames) == 1
+    assert plan.task_frames[0].requirements == []
+    assert plan.task_frames[0].slot_hints == {}
+    assert plan.task_frames[0].depends_on_task_ids == []
+
+
+def test_turn_planner_retries_schema_invalid_json(monkeypatch) -> None:
+    payloads: list[dict[str, object]] = []
+    outputs = iter(
+        [
+            {
+                "decision": "answer_only",
+                "task_frames": [{"kind": "not-a-kind"}],
+            },
+            {
+                "decision": "answer_only",
+                "user_intent": "打招呼",
+                "task_frames": [
+                    {
+                        "kind": "conversation",
+                        "decision": "answer_only",
+                        "requirements": ["友好回复用户问候"],
+                        "slot_hints": {},
+                        "depends_on_task_ids": [],
+                    }
+                ],
+                "task_updates": [],
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            payloads.append(deepcopy(payload))
+            return next(outputs)
+
+    monkeypatch.setattr(turn_planner_module, "LLMClient", FakeLLMClient)
+
+    plan = TurnPlanner().plan(
+        "你好",
+        _chat_session(),
+        available_skills=[],
+        model_config=_model_config(),
+    )
+
+    assert len(payloads) == 2
+    repair = payloads[1]["_schema_repair"]
+    assert isinstance(repair, dict)
+    assert repair["previous_output"] == {
+        "decision": "answer_only",
+        "task_frames": [{"kind": "not-a-kind"}],
+    }
+    assert repair["validation_errors"] == [
+        {
+            "path": "task_frames.0.kind",
+            "type": "literal_error",
+            "message": "Input should be 'sop' or 'conversation'",
+        }
+    ]
+    assert len(plan.task_frames) == 1
+    assert plan.task_frames[0].kind == "conversation"
+    assert plan.task_frames[0].slot_hints == {}
 
 
 def test_turn_planner_discards_an_unknown_sop_target() -> None:
@@ -526,6 +648,174 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     assert "general_skill.first-only" not in conversation.allowed_names()
     assert "general_skill.second-only" not in conversation.allowed_names()
     assert "refund.lookup" not in conversation.allowed_names()
+    shared_descriptor = next(
+        item for item in first.available if item.name == "general_skill.shared"
+    )
+    assert shared_descriptor.input_schema["properties"]["operation"] == {
+        "type": "string",
+        "enum": ["execute", "read"],
+        "default": "execute",
+    }
+    assert shared_descriptor.metadata["script_execution"] == (
+        "general_skill_runner"
+    )
+
+
+def test_scheduled_harness_outcome_uses_taskframes_and_records_sop_scope() -> None:
+    engine = _test_engine()
+    now = utc_now()
+    with Session(engine) as db:
+        scheduled_run = ScheduledTaskRun(
+            id="schedrun-1",
+            tenant_id="tenant-demo",
+            scheduled_task_id="scheduled-1",
+            agent_id="agent-1",
+            user_id="user-1",
+            session_id="session-scheduled",
+            scheduled_for=now,
+            status="running",
+        )
+        receipt = HarnessTurnRecord(
+            id="hturn-scheduled",
+            tenant_id="tenant-demo",
+            session_id="session-scheduled",
+            client_turn_id=scheduled_run.id,
+            request_digest="sha256:test",
+            status="completed",
+            lease_owner="turn-owner",
+            lease_expires_at=now + timedelta(minutes=5),
+            user_message_id="message-scheduled",
+        )
+        frame = HarnessTaskFrameRecord(
+            id="htask-scheduled",
+            tenant_id="tenant-demo",
+            session_id="session-scheduled",
+            source_turn_id="message-scheduled",
+            task_id="task-refund",
+            kind="sop",
+            skill_id="refund",
+            status="completed",
+            result_json={"status": "completed"},
+        )
+        harness_run = HarnessRunRecord(
+            id="hrun-scheduled",
+            tenant_id="tenant-demo",
+            session_id="session-scheduled",
+            task_frame_record_id=frame.id,
+            task_id=frame.task_id,
+            source_turn_id="message-scheduled",
+            status="completed",
+            capability_snapshot_json={
+                "available": [
+                    {
+                        "capability_id": "specific-refund",
+                        "name": "general_skill.refund-policy",
+                        "kind": "general_skill",
+                        "capability_scope": "sop_specific",
+                    },
+                    {
+                        "capability_id": "knowledge.search",
+                        "name": "knowledge_search",
+                        "kind": "knowledge",
+                        "capability_scope": "general",
+                        "metadata": {
+                            "knowledge_scope_by_base_id": {
+                                "kb-general": "general",
+                                "kb-refund": "sop_specific",
+                            }
+                        },
+                    },
+                ]
+            },
+        )
+        invocation = HarnessInvocationRecord(
+            tenant_id="tenant-demo",
+            session_id="session-scheduled",
+            task_id=frame.task_id,
+            run_id=harness_run.id,
+            call_id="call-1",
+            tool_name="general_skill.refund-policy",
+            request_digest="sha256:call",
+            status="completed",
+        )
+        db.add(scheduled_run)
+        db.add(receipt)
+        db.add(frame)
+        db.add(harness_run)
+        db.add(invocation)
+        db.commit()
+
+        response = ChatTurnResponse(
+            reply="退款完成",
+            session_id="session-scheduled",
+            session_state=SessionPublic(
+                session_id="session-scheduled",
+                tenant_id="tenant-demo",
+            ),
+        )
+        completed = _scheduled_harness_outcome(db, scheduled_run, response)
+
+        assert completed["status"] == "succeeded"
+        assert completed["trace"]["execution_engine"] == "harness_v2"
+        assert completed["trace"]["sop_scope"] == {
+            "includes_sop": True,
+            "skill_ids": ["refund"],
+            "sop_specific_authorized": [
+                {
+                    "capability_id": "kb-refund",
+                    "name": "knowledge_search:kb-refund",
+                    "kind": "knowledge",
+                },
+                {
+                    "capability_id": "specific-refund",
+                    "name": "general_skill.refund-policy",
+                    "kind": "general_skill",
+                },
+            ],
+            "sop_specific_invoked": ["general_skill.refund-policy"],
+        }
+
+        frame.status = "awaiting_user"
+        frame.result_json = {"status": "awaiting_user"}
+        db.add(frame)
+        db.commit()
+        waiting = _scheduled_harness_outcome(db, scheduled_run, response)
+
+        assert waiting["status"] == "needs_input"
+        assert waiting["error"] == "自动任务需要补充输入后才能继续。"
+
+
+def test_one_shot_scheduled_task_stays_retryable_when_harness_needs_input() -> None:
+    engine = _test_engine()
+    now = utc_now()
+    with Session(engine) as db:
+        task = ScheduledTask(
+            id="scheduled-once",
+            tenant_id="tenant-demo",
+            agent_id="agent-1",
+            created_by_user_id="user-1",
+            title="执行一次退款",
+            prompt="退款订单 ORDER-1",
+            schedule_type="once",
+            schedule_json={"run_at": now.isoformat()},
+            timezone="UTC",
+            status="active",
+        )
+        db.add(task)
+        db.commit()
+
+        _finish_task_schedule(
+            db,
+            task,
+            scheduled_for=now,
+            status="needs_input",
+            manual=False,
+        )
+        db.commit()
+
+        assert task.status == "paused"
+        assert task.last_status == "needs_input"
+        assert task.next_run_at is None
 
 
 def test_external_tool_names_cannot_shadow_later_builtin_capabilities() -> None:
@@ -628,7 +918,7 @@ def test_external_idempotency_key_is_stable_per_task_not_entire_session(
     assert first_key != later_key
 
 
-def test_general_skill_harness_tool_reads_full_package_without_host_execution(
+def test_general_skill_harness_tool_reads_full_package_when_requested(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -669,10 +959,10 @@ def test_general_skill_harness_tool_reads_full_package_without_host_execution(
             active_step_id=None,
             agent_id=None,
         )
-        read_result = invoker._load_general_skill(
+        read_result = invoker._invoke_general_skill(
             skill.id,
             descriptor.metadata,
-            {"query": "inspect"},
+            {"query": "inspect", "operation": "read"},
         )
 
     assert read_result["success"] is True
@@ -680,7 +970,132 @@ def test_general_skill_harness_tool_reads_full_package_without_host_execution(
         item["path"] for item in read_result["data"]["package"]["files"]
     ] == ["SKILL.md", "scripts/run.sh"]
     assert read_result["data"]["operation"] == "read"
-    assert "不会执行" in read_result["data"]["notice"]
+    assert "operation=execute" in read_result["data"]["notice"]
+
+
+def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    captured: dict[str, object] = {}
+    trace_events: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(
+        _runner,
+        skill_snapshot,
+        query,
+        model_config,
+        user_id,
+        max_attempts=10,
+        event_sink=None,
+        conversation_context=None,
+        memory_context=None,
+        workspace_root=None,
+        is_cancelled=None,
+    ) -> GeneralSkillRunResponse:
+        captured.update(
+            {
+                "skill": skill_snapshot,
+                "query": query,
+                "model_config": model_config,
+                "user_id": user_id,
+                "max_attempts": max_attempts,
+                "workspace_root": workspace_root,
+                "is_cancelled": is_cancelled,
+            }
+        )
+        if event_sink:
+            event_sink(
+                {
+                    "phase": "plan_created",
+                    "message": "已生成 Python runner",
+                    "runtime": "python",
+                    "code": "print('ok')",
+                }
+            )
+        return GeneralSkillRunResponse(
+            skill_slug=skill_snapshot.slug,
+            operation="execute",
+            execution_trace=[{"phase": "code_finished"}],
+            generated_code="print('ok')",
+            stdout='{"success": true, "temperature": 30}',
+            structured_result={"success": True, "temperature": 30},
+            reply="北京当前 30 度。",
+        )
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.GeneralSkillRunner.run",
+        fake_run,
+    )
+    skill = GeneralSkill(
+        id="general-weather",
+        tenant_id="tenant-demo",
+        slug="weather",
+        name="Weather",
+        skill_markdown="# Weather",
+        skill_files_json=[
+            {"path": "SKILL.md", "content": "# Weather"},
+            {"path": "scripts/weather.py", "content": "print('ok')"},
+        ],
+        status="published",
+        runtime_config_json={"runtime": "python", "max_attempts": 2},
+    )
+    descriptor = CapabilityDescriptor(
+        capability_id=skill.id,
+        name="general_skill.weather",
+        kind="general_skill",
+        metadata={
+            "slug": skill.slug,
+            "content_digest": general_skill_snapshot_digest(skill),
+        },
+    )
+    engine = _test_engine()
+
+    def cancelled() -> bool:
+        return False
+
+    with Session(engine) as db:
+        db.add(skill)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(user_id="user-1"),
+            task_frame_id="task-weather",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[descriptor]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+            is_cancelled=cancelled,
+            trace_sink=lambda event_type, payload: trace_events.append(
+                (event_type, payload)
+            ),
+        )
+        result = invoker._invoke_general_skill(
+            skill.id,
+            descriptor.metadata,
+            {"query": "北京天气如何"},
+        )
+
+    assert result["success"] is True
+    assert result["data"]["operation"] == "execute"
+    assert result["data"]["structured_result"]["temperature"] == 30
+    assert captured["query"] == "北京天气如何"
+    assert captured["user_id"] == "user-1"
+    assert captured["max_attempts"] == 2
+    assert captured["workspace_root"] == invoker.workspace_root
+    assert captured["is_cancelled"] is cancelled
+    assert captured["skill"] is not skill
+    assert captured["skill"].package_digest
+    assert [event_type for event_type, _ in trace_events] == [
+        "general_skill_trace",
+        "general_skill_run_finished",
+    ]
+    assert trace_events[0][1]["phase"] == "plan_created"
+    assert trace_events[0][1]["skill_slug"] == "weather"
+    assert trace_events[1][1]["success"] is True
 
 
 def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
@@ -720,6 +1135,7 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
 
     monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
     invoked: list[tuple[str, dict[str, object]]] = []
+    trace_events: list[tuple[str, dict[str, object]]] = []
 
     def invoke_tool(name: str, arguments: dict[str, object]) -> dict[str, object]:
         invoked.append((name, arguments))
@@ -749,6 +1165,9 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
         _model_config(),
         invoke_tool,
         max_actions=3,
+        trace_sink=lambda event_type, payload: trace_events.append(
+            (event_type, payload)
+        ),
     )
 
     assert result.status == "completed"
@@ -756,6 +1175,17 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
     assert result.reply_fragment == "已完成查询。"
     assert result.citations == [{"source": "logistics"}]
     assert invoked == [("allowed.tool", {"query": "ORDER-1"})]
+    completed = next(
+        payload
+        for event_type, payload in trace_events
+        if event_type == "harness_tool_completed"
+    )
+    assert completed["result"] == {
+        "tool_name": "allowed.tool",
+        "success": True,
+        "data": {"status": "in_transit"},
+        "error": None,
+    }
 
     assert set(payloads[0]) == {
         "task_requirement",
@@ -1105,6 +1535,215 @@ def test_turn_action_budget_defers_unstarted_frames_as_queued() -> None:
         assert rows[1].status == "queued"
         assert rows[1].result_json["status"] == "action_budget"
         assert rows[1].error_json["code"] == "TURN_ACTION_BUDGET_DEFERRED"
+
+
+def test_dependent_followup_stays_queued_then_releases_with_parent_result() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        session = _chat_session()
+        db.add(session)
+        db.commit()
+        store = TaskFrameStore(db)
+        rows = store.persist_plan(
+            session,
+            "turn-refund-then-purchase",
+            TurnPlan(
+                decision="continue_active",
+                user_intent="退款完成后购买 A3",
+                task_frames=[
+                    PlannedTaskFrame(
+                        task_id="task-refund",
+                        kind="sop",
+                        decision="continue_active",
+                        target_skill_id="refund",
+                        requirements=["完成退款"],
+                    ),
+                    PlannedTaskFrame(
+                        task_id="task-purchase-a3",
+                        kind="sop",
+                        decision="start_new_task",
+                        target_skill_id="purchase",
+                        requirements=["购买一个 A3"],
+                        slot_hints={"product_id": "A3", "quantity": 1},
+                        depends_on_task_ids=["task-refund"],
+                    ),
+                ],
+            ),
+        )
+        refund, purchase = rows
+
+        store.finish_frame(
+            refund,
+            status="awaiting_user",
+            step_id="confirm",
+            slots={"order_id": "ORDER-1"},
+            result={
+                "task_frame_id": refund.task_id,
+                "status": "awaiting_user",
+                "task_summary": "等待用户确认退款",
+            },
+        )
+        store.defer_for_dependencies(purchase)
+        store.project_session(session)
+        db.commit()
+
+        assert purchase.status == "queued"
+        assert purchase.error_json == {"code": "DEPENDENCY_WAITING"}
+        assert store.ready_dependency_frames(session) == []
+        assert any(
+            item["task_id"] == "task-purchase-a3"
+            and item["status"] == "pending"
+            for item in session.pending_tasks_json
+        )
+
+        store.finish_frame(
+            refund,
+            status="completed",
+            step_id=None,
+            slots={"order_id": "ORDER-1"},
+            result={
+                "task_frame_id": refund.task_id,
+                "status": "completed",
+                "task_summary": "订单 ORDER-1 退款完成",
+                "slot_updates": {"refund_id": "REFUND-1"},
+                "capability_results": [
+                    {
+                        "tool_name": "refund.submit",
+                        "success": True,
+                        "data": {"refund_id": "REFUND-1"},
+                    }
+                ],
+            },
+        )
+        db.commit()
+
+        released = store.ready_dependency_frames(session)
+
+        assert [row.task_id for row in released] == ["task-purchase-a3"]
+        assert store.dependencies_satisfied(purchase, [purchase]) is True
+        assert store.dependency_results(purchase) == [
+            {
+                "task_frame_id": "task-refund",
+                "status": "completed",
+                "task_summary": "订单 ORDER-1 退款完成",
+                "slot_updates": {"refund_id": "REFUND-1"},
+                "capability_results": [
+                    {
+                        "tool_name": "refund.submit",
+                        "success": True,
+                        "data": {"refund_id": "REFUND-1"},
+                    }
+                ],
+                "artifacts": [],
+            }
+        ]
+
+        source_message = Message(
+            id="turn-refund-then-purchase",
+            tenant_id=session.tenant_id,
+            session_id=session.id,
+            role="user",
+            content="退完帮我买一个 A3",
+        )
+        db.add(source_message)
+        db.commit()
+        restored = planned_frame_from_record(purchase)
+        requirement = TaskRequestCompiler().compile(
+            restored,
+            session,
+            None,
+            CapabilityManifest(),
+            prior_task_results=store.dependency_results(purchase),
+            source_user_message=source_message.content,
+        )
+
+        assert requirement.source_user_message == "退完帮我买一个 A3"
+        assert requirement.prior_task_results[0]["task_frame_id"] == (
+            "task-refund"
+        )
+
+
+def test_ready_dependency_frames_repairs_legacy_dependency_block() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        session = _chat_session()
+        parent = HarnessTaskFrameRecord(
+            tenant_id=session.tenant_id,
+            session_id=session.id,
+            source_turn_id="turn-old",
+            task_id="task-refund",
+            kind="sop",
+            status="completed",
+            result_json={"status": "completed"},
+        )
+        child = HarnessTaskFrameRecord(
+            tenant_id=session.tenant_id,
+            session_id=session.id,
+            source_turn_id="turn-old",
+            task_id="task-purchase-a3",
+            kind="sop",
+            status="blocked",
+            depends_on_json=[parent.task_id],
+            error_json={"code": "DEPENDENCY_BLOCKED"},
+        )
+        db.add_all([session, parent, child])
+        db.commit()
+
+        released = TaskFrameStore(db).ready_dependency_frames(session)
+        db.commit()
+
+        assert [row.task_id for row in released] == [child.task_id]
+        assert child.status == "queued"
+        assert child.error_json == {}
+        assert child.result_json == {}
+
+
+def test_replanning_existing_followup_preserves_its_dependency() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        session = _chat_session()
+        parent = HarnessTaskFrameRecord(
+            tenant_id=session.tenant_id,
+            session_id=session.id,
+            source_turn_id="turn-original",
+            task_id="task-refund",
+            kind="sop",
+            status="awaiting_user",
+        )
+        child = HarnessTaskFrameRecord(
+            tenant_id=session.tenant_id,
+            session_id=session.id,
+            source_turn_id="turn-original",
+            task_id="task-purchase-a3",
+            kind="sop",
+            status="queued",
+            skill_id="purchase",
+            depends_on_json=[parent.task_id],
+        )
+        db.add_all([session, parent, child])
+        db.commit()
+
+        records = TaskFrameStore(db).persist_plan(
+            session,
+            "turn-replanned",
+            TurnPlan(
+                decision="switch_to_pending",
+                selected_task_id=child.task_id,
+                task_frames=[
+                    PlannedTaskFrame(
+                        task_id=child.task_id,
+                        kind="sop",
+                        decision="switch_to_pending",
+                        target_skill_id="purchase",
+                        requirements=["购买一个 A3"],
+                    )
+                ],
+            ),
+        )
+
+        assert [row.task_id for row in records] == [child.task_id]
+        assert child.depends_on_json == [parent.task_id]
+        assert TaskFrameStore(db).dependencies_satisfied(child, records) is False
 
 
 def test_cancellation_closes_every_frame_and_running_run_from_source_turn() -> None:

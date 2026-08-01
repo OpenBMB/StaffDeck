@@ -12,7 +12,7 @@ import {
 import type { ChangeEvent, DragEvent, HTMLAttributes, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Ban, CircleCheck, Copy, Eye, EyeOff, Users } from 'lucide-react';
+import { Ban, ChevronRight, CircleCheck, Copy, Eye, EyeOff, FilePlus2, FolderPlus, Users } from 'lucide-react';
 import { ContextMenu } from 'radix-ui';
 
 import { api, streamPost, TENANT_ID } from '../api/client';
@@ -205,6 +205,10 @@ type GeneralSkillFile = {
   size?: number;
   mime_type?: string;
 };
+
+type SkillFileTreeNode =
+  | { kind: 'folder'; name: string; path: string; children: SkillFileTreeNode[] }
+  | { kind: 'file'; name: string; path: string; file: GeneralSkillFile };
 
 type DroppedSkillFile = {
   file: File;
@@ -1042,6 +1046,202 @@ function normalizeSkillFilePath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/').trim();
 }
 
+function isValidSkillFilePath(path: string): boolean {
+  const parts = path.split('/');
+  return Boolean(path) && parts.every((part) => Boolean(part) && part !== '.' && part !== '..');
+}
+
+function skillFolderPaths(files: GeneralSkillFile[], explicitDirectories: string[]): string[] {
+  const paths = new Set<string>();
+  [...explicitDirectories, ...files.map((file) => file.path)]
+    .forEach((rawPath) => {
+      const parts = normalizeSkillFilePath(rawPath).split('/').filter(Boolean);
+      const folderPartCount = explicitDirectories.includes(rawPath) ? parts.length : Math.max(0, parts.length - 1);
+      for (let index = 1; index <= folderPartCount; index += 1) {
+        paths.add(parts.slice(0, index).join('/'));
+      }
+    });
+  return Array.from(paths).sort((left, right) => left.localeCompare(right, 'zh-CN'));
+}
+
+function buildSkillFileTree(files: GeneralSkillFile[], explicitDirectories: string[]): SkillFileTreeNode[] {
+  const root: SkillFileTreeNode[] = [];
+  const folders = new Map<string, Extract<SkillFileTreeNode, { kind: 'folder' }>>();
+
+  const ensureFolder = (path: string) => {
+    const normalized = normalizeSkillFilePath(path);
+    const existing = folders.get(normalized);
+    if (existing) return existing;
+    const parts = normalized.split('/');
+    const name = parts.pop() || normalized;
+    const parentPath = parts.join('/');
+    const node: Extract<SkillFileTreeNode, { kind: 'folder' }> = {
+      kind: 'folder',
+      name,
+      path: normalized,
+      children: [],
+    };
+    (parentPath ? ensureFolder(parentPath).children : root).push(node);
+    folders.set(normalized, node);
+    return node;
+  };
+
+  skillFolderPaths(files, explicitDirectories).forEach(ensureFolder);
+  files.forEach((file) => {
+    const normalized = normalizeSkillFilePath(file.path);
+    const parts = normalized.split('/');
+    const name = parts.pop() || normalized;
+    const parentPath = parts.join('/');
+    const node: SkillFileTreeNode = { kind: 'file', name, path: normalized, file };
+    (parentPath ? ensureFolder(parentPath).children : root).push(node);
+  });
+
+  const sortNodes = (nodes: SkillFileTreeNode[]) => {
+    nodes.sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === 'folder' ? -1 : 1;
+      return left.name.localeCompare(right.name, 'zh-CN');
+    });
+    nodes.forEach((node) => {
+      if (node.kind === 'folder') sortNodes(node.children);
+    });
+  };
+  sortNodes(root);
+  return root;
+}
+
+function mimeTypeFromSkillFilePath(path: string): string {
+  const extension = path.split('.').pop()?.toLowerCase();
+  if (extension === 'md' || extension === 'markdown') return 'text/markdown';
+  if (extension === 'json') return 'application/json';
+  if (extension === 'py') return 'text/x-python';
+  return 'text/plain';
+}
+
+function SkillFileTreeEntry({
+  node,
+  depth,
+  expandedFolders,
+  selectedFilePath,
+  selectedFolderPath,
+  onToggleFolder,
+  onSelectFile,
+  onCreateEntry,
+  onRenameFile,
+  onRenameFolder,
+  onDeleteFile,
+  onDeleteFolder,
+}: {
+  node: SkillFileTreeNode;
+  depth: number;
+  expandedFolders: Set<string>;
+  selectedFilePath: string;
+  selectedFolderPath: string | null;
+  onToggleFolder: (path: string) => void;
+  onSelectFile: (path: string) => void;
+  onCreateEntry: (mode: 'file' | 'folder', parentPath: string) => void;
+  onRenameFile: (file: GeneralSkillFile) => void;
+  onRenameFolder: (path: string) => void;
+  onDeleteFile: (file: GeneralSkillFile) => void;
+  onDeleteFolder: (path: string) => void;
+}) {
+  const paddingLeft = 8 + depth * 14;
+  if (node.kind === 'folder') {
+    const expanded = expandedFolders.has(node.path);
+    return (
+      <div role="treeitem" aria-expanded={expanded}>
+        <ContextMenu.Root>
+          <ContextMenu.Trigger asChild>
+            <button
+              type="button"
+              className={skillFileNodeClass(node.path === selectedFolderPath)}
+              style={{ paddingLeft }}
+              onClick={() => onToggleFolder(node.path)}
+              title={node.path}
+            >
+              <ChevronRight className={cn('size-[13px] shrink-0 transition-transform', expanded && 'rotate-90')} />
+              <IconFolder className="size-[14px] shrink-0" />
+              <span className="min-w-0 truncate">{node.name}</span>
+            </button>
+          </ContextMenu.Trigger>
+          <ContextMenu.Portal>
+            <ContextMenu.Content className={MENU_CONTENT_CLASS}>
+              <ContextMenu.Item className={cn(MENU_ITEM_CLASS, 'flex items-center whitespace-nowrap')} onSelect={() => onCreateEntry('file', node.path)}>
+                <FilePlus2 />
+                新建文件
+              </ContextMenu.Item>
+              <ContextMenu.Item className={cn(MENU_ITEM_CLASS, 'flex items-center whitespace-nowrap')} onSelect={() => onCreateEntry('folder', node.path)}>
+                <FolderPlus />
+                新建文件夹
+              </ContextMenu.Item>
+              <ContextMenu.Item className={cn(MENU_ITEM_CLASS, 'flex items-center whitespace-nowrap')} onSelect={() => onRenameFolder(node.path)}>
+                <EditOutlined />
+                重命名
+              </ContextMenu.Item>
+              <ContextMenu.Item className={cn(MENU_ITEM_DANGER_CLASS, 'flex items-center whitespace-nowrap')} onSelect={() => onDeleteFolder(node.path)}>
+                <DeleteOutlined />
+                删除
+              </ContextMenu.Item>
+            </ContextMenu.Content>
+          </ContextMenu.Portal>
+        </ContextMenu.Root>
+        {expanded && (
+          <div role="group">
+            {node.children.map((child) => (
+              <SkillFileTreeEntry
+                key={`${child.kind}:${child.path}`}
+                node={child}
+                depth={depth + 1}
+                expandedFolders={expandedFolders}
+                selectedFilePath={selectedFilePath}
+                selectedFolderPath={selectedFolderPath}
+                onToggleFolder={onToggleFolder}
+                onSelectFile={onSelectFile}
+                onCreateEntry={onCreateEntry}
+                onRenameFile={onRenameFile}
+                onRenameFolder={onRenameFolder}
+                onDeleteFile={onDeleteFile}
+                onDeleteFolder={onDeleteFolder}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div role="treeitem">
+      <ContextMenu.Root>
+        <ContextMenu.Trigger asChild>
+          <button
+            type="button"
+            className={skillFileNodeClass(node.path === selectedFilePath && !selectedFolderPath)}
+            style={{ paddingLeft: paddingLeft + 27 }}
+            onClick={() => onSelectFile(node.path)}
+            onContextMenu={() => onSelectFile(node.path)}
+            title={node.path}
+          >
+            <IconProfileFile className="size-[14px] shrink-0" />
+            <span className="min-w-0 truncate">{node.name}</span>
+          </button>
+        </ContextMenu.Trigger>
+        <ContextMenu.Portal>
+          <ContextMenu.Content className={MENU_CONTENT_CLASS}>
+            <ContextMenu.Item className={cn(MENU_ITEM_CLASS, 'flex items-center whitespace-nowrap')} onSelect={() => onRenameFile(node.file)}>
+              <EditOutlined />
+              重命名
+            </ContextMenu.Item>
+            <ContextMenu.Item className={cn(MENU_ITEM_DANGER_CLASS, 'flex items-center whitespace-nowrap')} onSelect={() => onDeleteFile(node.file)}>
+              <DeleteOutlined />
+              删除
+            </ContextMenu.Item>
+          </ContextMenu.Content>
+        </ContextMenu.Portal>
+      </ContextMenu.Root>
+    </div>
+  );
+}
+
 function packagePathFromRaw(value: string): string {
   const normalized = value.replace(/\\/g, '/').replace(/^\/+/, '');
   const parts = normalized.split('/').filter(Boolean);
@@ -1205,6 +1405,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const [skillFiles, setSkillFiles] = useState<GeneralSkillFile[]>([
     { path: 'SKILL.md', content: EMPTY_SKILL_MARKDOWN, size: EMPTY_SKILL_MARKDOWN.length, mime_type: 'text/markdown' },
   ]);
+  const [skillDirectories, setSkillDirectories] = useState<string[]>([]);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [selectedSlug, setSelectedSlug] = useState<string>();
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -1236,13 +1439,18 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [deleteSkillTarget, setDeleteSkillTarget] = useState<GeneralSkillRead | null>(null);
   const [deleteFileTarget, setDeleteFileTarget] = useState<GeneralSkillFile | null>(null);
+  const [deleteFolderTarget, setDeleteFolderTarget] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<GeneralSkillFile | null>(null);
+  const [renameFolderTarget, setRenameFolderTarget] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [createEntryMode, setCreateEntryMode] = useState<'file' | 'folder' | null>(null);
+  const [createEntryValue, setCreateEntryValue] = useState('');
   const [importPrepareOpen, setImportPrepareOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const clawhubAbortRef = useRef<AbortController | null>(null);
   const importPrepareActionRef = useRef<null | (() => void | Promise<void>)>(null);
+  const knownFolderPathsRef = useRef<Set<string>>(new Set());
 
   const selectedSkill = useMemo(
     () => rows.find((row) => row.slug === selectedSlug),
@@ -1252,6 +1460,14 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const selectedFile = useMemo(
     () => skillFiles.find((file) => file.path === selectedFilePath) || skillFiles[0],
     [skillFiles, selectedFilePath],
+  );
+  const folderPaths = useMemo(
+    () => skillFolderPaths(skillFiles, skillDirectories),
+    [skillFiles.map((file) => file.path).join('\n'), skillDirectories.join('\n')],
+  );
+  const skillFileTree = useMemo(
+    () => buildSkillFileTree(skillFiles, skillDirectories),
+    [skillFiles, skillDirectories],
   );
   const selectedFileLanguage = useMemo(() => languageFromFilePath(selectedFile?.path), [selectedFile?.path]);
   const selectedFileCanPreview = selectedFileLanguage === 'markdown';
@@ -1345,6 +1561,25 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   }, [skillFiles, selectedFilePath]);
 
   useEffect(() => {
+    const currentFolderPaths = new Set(folderPaths);
+    const previousFolderPaths = knownFolderPathsRef.current;
+    setExpandedFolders((current) => {
+      const next = new Set(Array.from(current).filter((path) => currentFolderPaths.has(path)));
+      folderPaths.forEach((path) => {
+        if (!previousFolderPaths.has(path)) next.add(path);
+      });
+      return next;
+    });
+    knownFolderPathsRef.current = currentFolderPaths;
+  }, [folderPaths.join('\n')]);
+
+  useEffect(() => {
+    if (selectedFolderPath && !folderPaths.includes(selectedFolderPath)) {
+      setSelectedFolderPath(null);
+    }
+  }, [folderPaths.join('\n'), selectedFolderPath]);
+
+  useEffect(() => {
     setEditorScroll({ top: 0, left: 0 });
   }, [selectedFilePath]);
 
@@ -1369,6 +1604,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       || normalizedSkillFiles(skillFiles) !== normalizedSkillFiles(
         original.skill_files?.length ? original.skill_files : [{ path: 'SKILL.md', content: original.skill_markdown }],
       )
+      || [...skillDirectories].sort().join('\n') !== [...(original.skill_directories || [])].sort().join('\n')
     );
   }
 
@@ -1393,6 +1629,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         capability_scope: capabilityScope,
         markdown,
         files: skillFiles.length ? skillFiles : [{ path: 'SKILL.md', content: markdown }],
+        directories: skillDirectories,
         status: 'published',
         original_slug: editingSlug || undefined,
       });
@@ -1406,7 +1643,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       setSkillHomepage(row.homepage || '');
       setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
       setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
+      setSkillDirectories(row.skill_directories || []);
       setSelectedFilePath((row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md' }])[0].path);
+      setSelectedFolderPath(null);
       setRows((current) => {
         const withoutSaved = current.filter((item) => item.id !== row.id && item.slug !== row.slug);
         return [row, ...withoutSaved];
@@ -1430,7 +1669,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSkillHomepage('');
     setCapabilityScope('general');
     setSkillFiles([{ path: 'SKILL.md', content: EMPTY_SKILL_MARKDOWN, size: EMPTY_SKILL_MARKDOWN.length, mime_type: 'text/markdown' }]);
+    setSkillDirectories([]);
     setSelectedFilePath('SKILL.md');
+    setSelectedFolderPath(null);
     setEditingSlug(null);
     setSelectedSlug(undefined);
     setQuery('');
@@ -1448,7 +1689,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSkillHomepage(row.homepage || '');
     setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
     setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
+    setSkillDirectories(row.skill_directories || []);
     setSelectedFilePath((row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md' }])[0].path);
+    setSelectedFolderPath(null);
     setSelectedSlug(row.slug);
     setEditingSlug(row.slug);
     setRunResult(null);
@@ -1467,7 +1710,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
       setMarkdown(row.skill_markdown);
       setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
+      setSkillDirectories(row.skill_directories || []);
       setSelectedFilePath((row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md' }])[0].path);
+      setSelectedFolderPath(null);
     }
   }
 
@@ -1733,21 +1978,77 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     }
   }
 
-  function addSkillFile() {
-    const base = 'notes.md';
-    let candidate = base;
-    let index = 2;
-    while (skillFiles.some((file) => file.path === candidate)) {
-      candidate = `notes-${index}.md`;
-      index += 1;
-    }
-    setSkillFiles((current) => [...current, { path: candidate, content: '', size: 0, mime_type: 'text/markdown' }]);
-    setSelectedFilePath(candidate);
+  function parentDirectory(path: string): string {
+    const parts = normalizeSkillFilePath(path).split('/');
+    parts.pop();
+    return parts.join('/');
   }
 
-  function deleteSelectedFile() {
-    if (!selectedFile) return;
-    deleteSkillFile(selectedFile);
+  function nextAvailableEntryPath(parentPath: string, mode: 'file' | 'folder'): string {
+    const baseName = mode === 'file' ? 'notes.md' : '新建文件夹';
+    let candidateName = baseName;
+    let index = 2;
+    const occupied = new Set([...skillFiles.map((file) => file.path), ...folderPaths]);
+    let candidate = parentPath ? `${parentPath}/${candidateName}` : candidateName;
+    while (occupied.has(candidate)) {
+      candidateName = mode === 'file' ? `notes-${index}.md` : `新建文件夹-${index}`;
+      candidate = parentPath ? `${parentPath}/${candidateName}` : candidateName;
+      index += 1;
+    }
+    return candidate;
+  }
+
+  function openCreateEntry(mode: 'file' | 'folder', parentPath?: string) {
+    const resolvedParent = parentPath ?? selectedFolderPath ?? parentDirectory(selectedFilePath);
+    setCreateEntryMode(mode);
+    setCreateEntryValue(nextAvailableEntryPath(resolvedParent, mode));
+  }
+
+  function pathHasFileAncestor(path: string, ignoredFilePath?: string): boolean {
+    const parts = path.split('/');
+    return parts.slice(0, -1).some((_, index) => {
+      const parent = parts.slice(0, index + 1).join('/');
+      return parent !== ignoredFilePath && skillFiles.some((file) => file.path === parent);
+    });
+  }
+
+  function runCreateEntry() {
+    const mode = createEntryMode;
+    if (!mode) return;
+    const normalized = normalizeSkillFilePath(createEntryValue);
+    if (!isValidSkillFilePath(normalized)) {
+      notify.error(mode === 'file' ? '文件名不能为空或包含无效路径' : '文件夹名称不能为空或包含无效路径');
+      return;
+    }
+    if (pathHasFileAncestor(normalized)) {
+      notify.error('上级路径中存在同名文件');
+      return;
+    }
+    if (skillFiles.some((file) => file.path === normalized) || folderPaths.includes(normalized)) {
+      notify.error(mode === 'file' ? '已存在同名文件或文件夹' : '已存在同名文件夹或文件');
+      return;
+    }
+    if (mode === 'folder') {
+      setSkillDirectories((current) => [...current, normalized]);
+      setSelectedFolderPath(normalized);
+      setExpandedFolders((current) => new Set(current).add(normalized));
+    } else {
+      setSkillFiles((current) => [
+        ...current,
+        { path: normalized, content: '', size: 0, mime_type: mimeTypeFromSkillFilePath(normalized) },
+      ]);
+      setSelectedFilePath(normalized);
+      setSelectedFolderPath(null);
+    }
+    setCreateEntryMode(null);
+  }
+
+  function deleteSelectedEntry() {
+    if (selectedFolderPath) {
+      deleteSkillFolder(selectedFolderPath);
+      return;
+    }
+    if (selectedFile) deleteSkillFile(selectedFile);
   }
 
   function deleteSkillFile(target: GeneralSkillFile) {
@@ -1765,9 +2066,40 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setDeleteFileTarget(null);
   }
 
+  function deleteSkillFolder(path: string) {
+    const prefix = `${path}/`;
+    if (skillFiles.some((file) => file.path.startsWith(prefix) && file.path.split('/').pop()?.toLowerCase() === 'skill.md')) {
+      notify.warning('包含 SKILL.md 的文件夹不能删除');
+      return;
+    }
+    setDeleteFolderTarget(path);
+  }
+
+  function runDeleteFolder() {
+    const target = deleteFolderTarget;
+    if (!target) return;
+    const prefix = `${target}/`;
+    setSkillFiles((current) => current.filter((file) => !file.path.startsWith(prefix)));
+    setSkillDirectories((current) => current.filter((path) => path !== target && !path.startsWith(prefix)));
+    setExpandedFolders((current) => new Set(Array.from(current).filter((path) => path !== target && !path.startsWith(prefix))));
+    setSelectedFolderPath(null);
+    setDeleteFolderTarget(null);
+  }
+
   function renameSkillFile(target: GeneralSkillFile) {
+    if (target.path.split('/').pop()?.toLowerCase() === 'skill.md') {
+      notify.warning('SKILL.md 是技能入口，不能重命名');
+      return;
+    }
     setRenameTarget(target);
+    setRenameFolderTarget(null);
     setRenameValue(target.path);
+  }
+
+  function renameSkillFolder(path: string) {
+    setRenameTarget(null);
+    setRenameFolderTarget(path);
+    setRenameValue(path);
   }
 
   function runRenameFile() {
@@ -1777,16 +2109,20 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       const nextPath = renameValue;
       {
         const normalized = normalizeSkillFilePath(nextPath);
-        if (!normalized) {
-          notify.error('文件名不能为空');
+        if (!isValidSkillFilePath(normalized)) {
+          notify.error('文件名不能为空或包含无效路径');
           return;
         }
         if (normalized === target.path) {
           setRenameTarget(null);
           return;
         }
-        if (skillFiles.some((file) => file.path === normalized)) {
-          notify.error('已存在同名文件');
+        if (skillFiles.some((file) => file.path === normalized) || folderPaths.includes(normalized)) {
+          notify.error('已存在同名文件或文件夹');
+          return;
+        }
+        if (pathHasFileAncestor(normalized, target.path)) {
+          notify.error('上级路径中存在同名文件');
           return;
         }
         setSkillFiles((current) => current.map((file) => (
@@ -1800,6 +2136,45 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         setRenameTarget(null);
       }
     }
+  }
+
+  function runRenameFolder() {
+    const target = renameFolderTarget;
+    if (!target) return;
+    const normalized = normalizeSkillFilePath(renameValue);
+    if (!isValidSkillFilePath(normalized)) {
+      notify.error('文件夹名称不能为空或包含无效路径');
+      return;
+    }
+    if (normalized === target) {
+      setRenameFolderTarget(null);
+      return;
+    }
+    if (normalized.startsWith(`${target}/`)) {
+      notify.error('文件夹不能移动到自身内部');
+      return;
+    }
+    if (
+      skillFiles.some((file) => file.path === normalized)
+      || folderPaths.some((path) => path === normalized && path !== target)
+      || pathHasFileAncestor(normalized)
+    ) {
+      notify.error('目标位置已存在同名文件或文件夹');
+      return;
+    }
+    const prefix = `${target}/`;
+    const replacePrefix = (path: string) => (
+      path === target ? normalized : path.startsWith(prefix) ? `${normalized}/${path.slice(prefix.length)}` : path
+    );
+    setSkillFiles((current) => current.map((file) => ({ ...file, path: replacePrefix(file.path) })));
+    setSkillDirectories((current) => Array.from(new Set([
+      ...current.map(replacePrefix),
+      normalized,
+    ])));
+    setExpandedFolders((current) => new Set(Array.from(current).map(replacePrefix)));
+    if (selectedFilePath.startsWith(prefix)) setSelectedFilePath(replacePrefix(selectedFilePath));
+    setSelectedFolderPath(normalized);
+    setRenameFolderTarget(null);
   }
 
   async function runSkill() {
@@ -1916,7 +2291,9 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     const nextFile = { path: 'SKILL.md', content: text, size: target.size, mime_type: target.type || 'text/markdown' };
     startImportedDraft();
     setSkillFiles([nextFile]);
+    setSkillDirectories([]);
     setSelectedFilePath('SKILL.md');
+    setSelectedFolderPath(null);
     setMarkdown(text);
     setMarkdownPreviewOpen(false);
     applyMetadata(text, { setSkillName, setSkillSlug, setSkillDescription, setSkillHomepage });
@@ -1947,15 +2324,18 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     nextFiles.sort((a, b) => a.path.localeCompare(b.path));
     startImportedDraft();
     setSkillFiles(nextFiles);
+    setSkillDirectories([]);
     setMarkdownPreviewOpen(false);
     const skillFile = nextFiles.find((item) => item.path.split('/').pop()?.toLowerCase() === 'skill.md');
     if (skillFile) {
       setMarkdown(skillFile.content);
       setSelectedFilePath(skillFile.path);
+      setSelectedFolderPath(null);
       applyMetadata(skillFile.content, { setSkillName, setSkillSlug, setSkillDescription, setSkillHomepage });
       notify.success(`已读取 ${nextFiles.length} 个文件${failedCount ? `，跳过 ${failedCount} 个无法读取文件` : ''}`);
     } else {
       setSelectedFilePath(nextFiles[0]?.path || 'SKILL.md');
+      setSelectedFolderPath(null);
       notify.warning('文件夹中没有找到 SKILL.md');
     }
   }
@@ -2130,6 +2510,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
                   value={capabilityScope}
                   onChange={setCapabilityScope}
                   disabled={!canManageCurrentScope}
+                  resourceType="skill"
                 />
               </div>
             </div>
@@ -2226,46 +2607,61 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
               <aside className={SKILL_FILE_TREE_CLASS}>
                 <div className={SKILL_FILE_TREE_HEADER_CLASS}>
                   <IconFolder className="size-[14px] shrink-0 text-[#757f9c]" />
-                  <span>文件</span>
+                  <span>文件系统</span>
                 </div>
-                <div className={SKILL_FILE_TREE_LIST_CLASS}>
-                  {skillFiles.map((file) => (
-                    <ContextMenu.Root key={file.path}>
-                      <ContextMenu.Trigger asChild>
-                        <button
-                          type="button"
-                          className={skillFileNodeClass(file.path === selectedFile?.path)}
-                          onClick={() => setSelectedFilePath(file.path)}
-                          onContextMenu={() => setSelectedFilePath(file.path)}
-                          title={file.path}
-                        >
-                          <IconProfileFile className="size-[14px] shrink-0" />
-                          <span className="min-w-0 truncate">{file.path}</span>
-                        </button>
-                      </ContextMenu.Trigger>
-                      <ContextMenu.Portal>
-                        <ContextMenu.Content className={MENU_CONTENT_CLASS}>
-                          <ContextMenu.Item className={MENU_ITEM_CLASS} onSelect={() => renameSkillFile(file)}>
-                            <EditOutlined />
-                            重命名
-                          </ContextMenu.Item>
-                          <ContextMenu.Item className={MENU_ITEM_DANGER_CLASS} onSelect={() => deleteSkillFile(file)}>
-                            <DeleteOutlined />
-                            删除
-                          </ContextMenu.Item>
-                        </ContextMenu.Content>
-                      </ContextMenu.Portal>
-                    </ContextMenu.Root>
+                <div className={SKILL_FILE_TREE_LIST_CLASS} role="tree" aria-label="技能文件系统">
+                  {skillFileTree.map((node) => (
+                    <SkillFileTreeEntry
+                      key={`${node.kind}:${node.path}`}
+                      node={node}
+                      depth={0}
+                      expandedFolders={expandedFolders}
+                      selectedFilePath={selectedFilePath}
+                      selectedFolderPath={selectedFolderPath}
+                      onToggleFolder={(path) => {
+                        setSelectedFolderPath(path);
+                        setExpandedFolders((current) => {
+                          const next = new Set(current);
+                          if (next.has(path)) next.delete(path);
+                          else next.add(path);
+                          return next;
+                        });
+                      }}
+                      onSelectFile={(path) => {
+                        setSelectedFilePath(path);
+                        setSelectedFolderPath(null);
+                      }}
+                      onCreateEntry={openCreateEntry}
+                      onRenameFile={renameSkillFile}
+                      onRenameFolder={renameSkillFolder}
+                      onDeleteFile={deleteSkillFile}
+                      onDeleteFolder={deleteSkillFolder}
+                    />
                   ))}
                 </div>
                 <div className={SKILL_FILE_TREE_ACTIONS_CLASS}>
-                  <UIButton variant="outline" onClick={addSkillFile} className={RETURN_BUTTON_CLASS}>
-                    <IconAdd className="size-[14px]" />
-                    新建文件
-                  </UIButton>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <UIButton variant="outline" className={RETURN_BUTTON_CLASS}>
+                        <IconAdd className="size-[14px]" />
+                        新建
+                        <IconChevronDown className="size-[12px]" />
+                      </UIButton>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className={MENU_CONTENT_CLASS}>
+                      <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => openCreateEntry('file')}>
+                        <FilePlus2 />
+                        新建文件
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => openCreateEntry('folder')}>
+                        <FolderPlus />
+                        新建文件夹
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <UIButton
                     variant="outline"
-                    onClick={deleteSelectedFile}
+                    onClick={deleteSelectedEntry}
                     className={DELETE_BUTTON_CLASS}
                   >
                     <IconTrash className="size-[14px]" />
@@ -2510,6 +2906,52 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         onConfirm={runDeleteFile}
       />
 
+      <ConfirmDialog
+        open={Boolean(deleteFolderTarget)}
+        onOpenChange={(open) => !open && setDeleteFolderTarget(null)}
+        title={deleteFolderTarget ? `删除文件夹「${deleteFolderTarget}」？` : ''}
+        description="文件夹内的所有文件和子文件夹都会一并删除。"
+        confirmText="删除"
+        onConfirm={runDeleteFolder}
+      />
+
+      <Dialog open={Boolean(createEntryMode)} onOpenChange={(open) => { if (!open) setCreateEntryMode(null); }}>
+        <DialogContent aria-describedby={undefined} className="flex w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-[16px] p-0 sm:max-w-[420px]">
+          <DialogTitle className="border-b border-border px-[24px] py-[16px] text-[16px] font-semibold text-foreground">
+            {createEntryMode === 'folder' ? '新建文件夹' : '新建文件'}
+          </DialogTitle>
+          <div className="px-[24px] py-[16px]">
+            <Input
+              autoFocus
+              value={createEntryValue}
+              placeholder={createEntryMode === 'folder' ? '例如 references' : '例如 references/guide.md'}
+              onChange={(event) => setCreateEntryValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  runCreateEntry();
+                }
+              }}
+            />
+          </div>
+          <div className="flex items-center justify-end gap-[8px] bg-background px-[24px] py-[12px]">
+            <UIButton
+              variant="outline"
+              onClick={() => setCreateEntryMode(null)}
+              className="h-[32px] w-[80px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:border-[#e3e7f1] hover:bg-[#f6f6f6] hover:text-[#18181a]"
+            >
+              取消
+            </UIButton>
+            <UIButton
+              onClick={runCreateEntry}
+              className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030]"
+            >
+              新建
+            </UIButton>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={importPrepareOpen}
         onOpenChange={(open) => { if (!open) { setImportPrepareOpen(false); importPrepareActionRef.current = null; } }}
@@ -2546,10 +2988,18 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(renameTarget)} onOpenChange={(open) => { if (!open) setRenameTarget(null); }}>
+      <Dialog
+        open={Boolean(renameTarget || renameFolderTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenameTarget(null);
+            setRenameFolderTarget(null);
+          }
+        }}
+      >
         <DialogContent aria-describedby={undefined} className="flex w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-[16px] p-0 sm:max-w-[420px]">
           <DialogTitle className="border-b border-border px-[24px] py-[16px] text-[16px] font-semibold text-foreground">
-            重命名文件
+            {renameFolderTarget ? '重命名文件夹' : '重命名文件'}
           </DialogTitle>
           <div className="px-[24px] py-[16px]">
             <Input
@@ -2559,7 +3009,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
                   event.preventDefault();
-                  runRenameFile();
+                  if (renameFolderTarget) runRenameFolder();
+                  else runRenameFile();
                 }
               }}
             />
@@ -2567,13 +3018,16 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
           <div className="flex items-center justify-end gap-[8px] bg-background px-[24px] py-[12px]">
             <UIButton
               variant="outline"
-              onClick={() => setRenameTarget(null)}
+              onClick={() => {
+                setRenameTarget(null);
+                setRenameFolderTarget(null);
+              }}
               className="h-[32px] w-[80px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:border-[#e3e7f1] hover:bg-[#f6f6f6] hover:text-[#18181a]"
             >
               取消
             </UIButton>
             <UIButton
-              onClick={runRenameFile}
+              onClick={renameFolderTarget ? runRenameFolder : runRenameFile}
               className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030]"
             >
               重命名

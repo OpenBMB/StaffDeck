@@ -70,6 +70,7 @@ import {
   extractPastedComposerFiles,
   generalSkillTraceDetail,
   generalSkillTraceOutput,
+  harnessEventTraceLine,
   hasAssistantCarrierForTurn,
   hasAssistantMessageForTurn,
   hasRenderableStreamingText,
@@ -1916,6 +1917,16 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     }
     if (item.event === 'step_result') {
       upsertVisibleTraceLine(stepResultTraceLine(item.data));
+      return;
+    }
+    if (
+      item.event === 'task_frame_started'
+      || item.event === 'task_frame_finished'
+      || item.event === 'harness_action_created'
+      || item.event === 'harness_tool_completed'
+    ) {
+      const line = harnessEventTraceLine(item.event, item.data);
+      if (line) upsertVisibleTraceLine(line);
       return;
     }
     if (item.event === 'skill_state') {

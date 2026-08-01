@@ -102,14 +102,23 @@ class CapabilityManifestBuilder:
                     description=row.description or row.name,
                     input_schema={
                         "type": "object",
-                        "properties": {"query": {"type": "string"}},
+                        "properties": {
+                            "query": {"type": "string"},
+                            "operation": {
+                                "type": "string",
+                                "enum": ["execute", "read"],
+                                "default": "execute",
+                            },
+                        },
                         "required": ["query"],
                     },
                     metadata={
                         "slug": row.slug,
                         "content_digest": general_skill_snapshot_digest(row),
                         "package_digest": package_from_row(row).digest,
-                        "script_execution": "instructions_only",
+                        "script_execution": "general_skill_runner",
+                        "permissions": dict(row.permissions_json or {}),
+                        "runtime_config": dict(row.runtime_config_json or {}),
                     },
                 )
             )
@@ -178,6 +187,7 @@ class CapabilityManifestBuilder:
         allowed_knowledge_ids: list[str] = []
         allowed_knowledge_version_ids: list[str] = []
         knowledge_version_by_base_id: dict[str, str] = {}
+        knowledge_scope_by_base_id: dict[str, str] = {}
         knowledge_scopes: list[str] = []
         valid_knowledge_ids: set[str] = set()
         for kb_id, version in visible_knowledge.items():
@@ -203,6 +213,7 @@ class CapabilityManifestBuilder:
             allowed_knowledge_ids.append(kb_id)
             allowed_knowledge_version_ids.append(version.id)
             knowledge_version_by_base_id[kb_id] = version.id
+            knowledge_scope_by_base_id[kb_id] = scope
             knowledge_scopes.append(scope)
         if allowed_knowledge_ids:
             available.append(
@@ -238,6 +249,7 @@ class CapabilityManifestBuilder:
                             allowed_knowledge_version_ids
                         ),
                         "knowledge_version_by_base_id": knowledge_version_by_base_id,
+                        "knowledge_scope_by_base_id": knowledge_scope_by_base_id,
                     },
                 )
             )

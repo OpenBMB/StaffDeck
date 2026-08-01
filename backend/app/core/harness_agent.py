@@ -197,6 +197,10 @@ class HarnessTaskAgent:
                         "tool_name": tool_name,
                         "success": bool(result.get("success")),
                         "error": result.get("error"),
+                        "result": _trace_capability_result(
+                            tool_name,
+                            result,
+                        ),
                     },
                 )
 
@@ -290,3 +294,28 @@ def _bounded_capability_result(
         "preview": serialized[:max_chars],
         "error": result.get("error"),
     }
+
+
+def _trace_capability_result(
+    tool_name: str,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    trace_result = dict(result)
+    data = trace_result.get("data")
+    if tool_name.startswith("general_skill.") and isinstance(data, dict):
+        trace_result["data"] = {
+            key: data.get(key)
+            for key in (
+                "kind",
+                "slug",
+                "operation",
+                "reply",
+                "structured_result",
+            )
+            if data.get(key) not in (None, "", [], {})
+        }
+    return _bounded_capability_result(
+        tool_name,
+        trace_result,
+        max_chars=4_000,
+    )

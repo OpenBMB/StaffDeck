@@ -43,6 +43,7 @@ from app.db.models import (
     HarnessRunRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
+    Message,
     Skill,
 )
 from app.knowledge.citations import compact_knowledge_citation_labels
@@ -227,7 +228,15 @@ class HarnessV2Engine:
 
         pre_turn_state = _session_state(session)
         records = self.store.persist_plan(session, user_message.id, plan)
+        known_record_ids = {row.task_id for row in records}
+        records.extend(
+            self.store.ready_dependency_frames(
+                session,
+                exclude_task_ids=known_record_ids,
+            )
+        )
         records = _dependency_order(records)
+        known_record_ids = {row.task_id for row in records}
         self.db.commit()
         self.db.refresh(session)
 
@@ -260,27 +269,31 @@ class HarnessV2Engine:
                 break
             self._raise_if_cancelled(request, session)
             if not self.store.dependencies_satisfied(row, records):
-                blocked = TaskExecutionResult(
+                self.store.defer_for_dependencies(row)
+                waiting = TaskExecutionResult(
                     task_frame_id=row.task_id,
                     status="blocked",
-                    reply_fragment="该任务依赖的前置任务尚未完成。",
-                    task_summary="TaskFrame 因依赖未满足而阻塞。",
-                    error={"code": "DEPENDENCY_BLOCKED"},
+                    reply_fragment="前置任务完成后将自动继续该任务。",
+                    task_summary="TaskFrame 正在等待前置任务完成。",
+                    error={"code": "DEPENDENCY_WAITING"},
                 )
-                self.store.finish_frame(
-                    row,
-                    status="blocked",
-                    step_id=row.step_id,
-                    slots=dict(row.slots_json or {}),
-                    result=blocked.model_dump(mode="json"),
+                self.events.record(
+                    request.tenant_id,
+                    session.id,
+                    "task_frame_dependency_waiting",
+                    {
+                        "task_frame_id": row.task_id,
+                        "depends_on_task_ids": list(row.depends_on_json or []),
+                        "execution_engine": "harness_v2",
+                    },
                 )
-                execution_results.append(blocked)
+                execution_results.append(waiting)
                 execution_payloads.append(
                     _response_task_payload(
                         row,
-                        blocked,
+                        waiting,
                         None,
-                        StepAgentResult(reply=blocked.reply_fragment),
+                        StepAgentResult(reply=waiting.reply_fragment),
                     )
                 )
                 continue
@@ -322,11 +335,7 @@ class HarnessV2Engine:
                 active_skill,
                 model_config,
                 memory_context,
-                [
-                    result
-                    for result in execution_results
-                    if result.task_frame_id in set(row.depends_on_json or [])
-                ],
+                self.store.dependency_results(row),
                 remaining_turn_actions,
             )
             remaining_turn_actions = max(
@@ -343,6 +352,28 @@ class HarnessV2Engine:
                     step_result,
                 )
             )
+            if row.status == "completed":
+                released = self.store.ready_dependency_frames(
+                    session,
+                    exclude_task_ids=known_record_ids,
+                )
+                if released:
+                    records.extend(released)
+                    known_record_ids.update(
+                        item.task_id for item in released
+                    )
+                    self.events.record(
+                        request.tenant_id,
+                        session.id,
+                        "task_frame_dependencies_released",
+                        {
+                            "completed_task_frame_id": row.task_id,
+                            "released_task_frame_ids": [
+                                item.task_id for item in released
+                            ],
+                            "execution_engine": "harness_v2",
+                        },
+                    )
 
         self._restore_visible_active_frame(
             session,
@@ -470,7 +501,7 @@ class HarnessV2Engine:
         active_skill: Skill | None,
         model_config: Any,
         memory_context: list[dict[str, object]],
-        prior_frame_results: list[TaskExecutionResult],
+        prior_frame_results: list[dict[str, Any]],
         max_actions: int,
     ) -> tuple[TaskExecutionResult, StepAgentResult]:
         self.store.mark_running(row)
@@ -516,10 +547,11 @@ class HarnessV2Engine:
                 manifest,
                 memory_context,
                 [
-                    *[_prior_result(item) for item in prior_frame_results],
+                    *prior_frame_results,
                     *[_prior_result(item) for item in results],
                 ],
                 attachment_descriptors,
+                source_user_message=_source_user_message(self.db, row),
             )
             self.store.save_requirement(
                 row,
@@ -536,6 +568,24 @@ class HarnessV2Engine:
             )
             self.active_run_id = run.id
             self.db.commit()
+
+            def trace(event_type: str, payload: dict[str, Any]) -> None:
+                self.events.record(
+                    request.tenant_id,
+                    session.id,
+                    event_type,
+                    {
+                        **payload,
+                        "task_frame_id": row.task_id,
+                        "harness_run_id": run.id,
+                        "execution_engine": "harness_v2",
+                    },
+                )
+                # Harness runs execute outside the response generator. Commit
+                # each trace checkpoint so the stream relay can expose the
+                # running TaskFrame instead of revealing it only at the end.
+                self.db.commit()
+
             invoker = HarnessCapabilityInvoker(
                 self.db,
                 tenant_id=request.tenant_id,
@@ -551,20 +601,8 @@ class HarnessV2Engine:
                 ensure_execution_lease=lambda: self._renew_execution_leases(
                     row
                 ),
+                trace_sink=trace,
             )
-
-            def trace(event_type: str, payload: dict[str, Any]) -> None:
-                self.events.record(
-                    request.tenant_id,
-                    session.id,
-                    event_type,
-                    {
-                        **payload,
-                        "task_frame_id": row.task_id,
-                        "harness_run_id": run.id,
-                        "execution_engine": "harness_v2",
-                    },
-                )
 
             result = self.task_agent.run(
                 requirement,
@@ -1316,6 +1354,13 @@ def _prior_result(result: TaskExecutionResult) -> dict[str, Any]:
         "capability_results": result.capability_results,
         "artifacts": result.artifacts,
     }
+
+
+def _source_user_message(db: Any, row: HarnessTaskFrameRecord) -> str:
+    message = db.get(Message, row.source_turn_id)
+    if message is None or message.role != "user":
+        return ""
+    return str(message.content or "").strip()
 
 
 def _dependency_order(

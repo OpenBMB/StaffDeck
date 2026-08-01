@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,14 @@ from app.db.models import (
     new_id,
     utc_now,
 )
-from app.capabilities.local_general_skill import package_from_row
+from app.capabilities.local_general_skill import (
+    package_from_row,
+    runtime_snapshot_from_package,
+)
+from app.general_skills.runner import (
+    GeneralSkillExecutionCancelled,
+    GeneralSkillRunner,
+)
 from app.harness import (
     HarnessExecutor,
     HarnessToolCall,
@@ -60,6 +68,7 @@ class HarnessCapabilityInvoker:
         run_id: str | None = None,
         is_cancelled: Any | None = None,
         ensure_execution_lease: Any | None = None,
+        trace_sink: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.db = db
         self.tenant_id = tenant_id
@@ -75,6 +84,7 @@ class HarnessCapabilityInvoker:
         self.agent_id = agent_id
         self.is_cancelled = is_cancelled
         self.ensure_execution_lease = ensure_execution_lease
+        self.trace_sink = trace_sink
         self.run_id = str(run_id or new_id("hrun"))
         self.workspace_root = _workspace_root(
             tenant_id, session.id, task_frame_id
@@ -147,7 +157,7 @@ class HarnessCapabilityInvoker:
             if descriptor.kind == "file":
                 result = self._invoke_file(name, arguments, call_id=call_id)
             elif descriptor.kind == "general_skill":
-                result = self._load_general_skill(
+                result = self._invoke_general_skill(
                     descriptor.capability_id,
                     descriptor.metadata,
                     arguments,
@@ -350,7 +360,7 @@ class HarnessCapabilityInvoker:
             "duration_ms": result.duration_ms,
         }
 
-    def _load_general_skill(
+    def _invoke_general_skill(
         self,
         capability_id: str,
         metadata: dict[str, Any],
@@ -375,6 +385,102 @@ class HarnessCapabilityInvoker:
         query = str(arguments.get("query") or "").strip()
         if not query:
             return _failure("INVALID_ARGUMENTS", "通用技能 query 不能为空。")
+        operation = str(arguments.get("operation") or "execute").strip().lower()
+        if operation not in {"read", "execute"}:
+            return _failure(
+                "INVALID_ARGUMENTS",
+                "通用技能 operation 只能是 read 或 execute。",
+            )
+        if operation == "read":
+            return self._read_general_skill_package(skill, metadata, query)
+
+        package = package_from_row(skill)
+        snapshot = runtime_snapshot_from_package(skill, package)
+        try:
+            response = GeneralSkillRunner().run(
+                snapshot,
+                query,
+                self.model_config,
+                self.session.user_id,
+                max_attempts=_general_skill_max_attempts(skill),
+                event_sink=lambda item: self._emit_trace(
+                    "general_skill_trace",
+                    {
+                        "skill_slug": skill.slug,
+                        "skill_name": skill.name,
+                        "operation": "execute",
+                        **item,
+                    },
+                ),
+                workspace_root=self.workspace_root,
+                is_cancelled=self.is_cancelled,
+            )
+        except GeneralSkillExecutionCancelled as exc:
+            self._emit_trace(
+                "general_skill_run_finished",
+                {
+                    "skill_slug": skill.slug,
+                    "operation": "execute",
+                    "success": False,
+                    "status": "cancelled",
+                },
+            )
+            raise HarnessExecutionCancelled(str(exc)) from exc
+
+        structured = (
+            dict(response.structured_result)
+            if isinstance(response.structured_result, dict)
+            else {}
+        )
+        declared_success = structured.get("success")
+        succeeded = True if declared_success is None else bool(declared_success)
+        data = {
+            "kind": "general_skill",
+            "slug": response.skill_slug,
+            "operation": response.operation,
+            "query": query,
+            "reply": response.reply,
+            "structured_result": structured,
+            "stdout": response.stdout,
+            "stderr": response.stderr,
+            "generated_code": response.generated_code,
+            "execution_trace": response.execution_trace,
+        }
+        self._emit_trace(
+            "general_skill_run_finished",
+            {
+                "skill_slug": response.skill_slug,
+                "operation": response.operation,
+                "success": succeeded,
+                "structured_result": structured,
+                "stdout_preview": response.stdout[:600],
+                "stderr_preview": response.stderr[:600],
+            },
+        )
+        if succeeded:
+            return {"success": True, "data": data}
+        return {
+            "success": False,
+            "data": data,
+            "error": {
+                "code": str(
+                    structured.get("error") or "GENERAL_SKILL_EXECUTION_FAILED"
+                ),
+                "message": str(
+                    structured.get("message")
+                    or response.reply
+                    or "通用技能执行失败。"
+                ),
+                "retryable": bool(structured.get("retryable")),
+            },
+        }
+
+    def _read_general_skill_package(
+        self,
+        skill: GeneralSkill,
+        metadata: dict[str, Any],
+        query: str,
+    ) -> dict[str, Any]:
         return {
             "success": True,
             "data": {
@@ -384,12 +490,19 @@ class HarnessCapabilityInvoker:
                 "query": query,
                 "package": _skill_package_preview(skill),
                 "notice": (
-                    "技能包说明已加载到当前隔离 Harness transcript。"
-                    "本版本不会执行技能包中的任意 Bash/Python；请通过清单内"
-                    "已注册的 typed file/tool 能力完成技能步骤。"
+                    "技能包说明已加载到当前隔离 Harness transcript；"
+                    "如需运行技能，请使用 operation=execute。"
                 ),
             },
         }
+
+    def _emit_trace(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if callable(self.trace_sink):
+            self.trace_sink(event_type, payload)
 
     def _search_knowledge(
         self, metadata: dict[str, Any], arguments: dict[str, Any]
@@ -489,6 +602,19 @@ def _workspace_root(
         session_id=session_id,
         task_frame_id=task_frame_id,
     )
+
+
+def _general_skill_max_attempts(skill: GeneralSkill) -> int:
+    runtime_config = (
+        skill.runtime_config_json
+        if isinstance(skill.runtime_config_json, dict)
+        else {}
+    )
+    try:
+        configured = int(runtime_config.get("max_attempts") or 3)
+    except (TypeError, ValueError):
+        configured = 3
+    return max(1, min(configured, 10))
 
 
 def _intersect_knowledge_metadata(

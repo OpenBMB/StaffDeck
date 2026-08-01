@@ -44,6 +44,7 @@ MAX_OUTPUT_CHARS = 20000
 GENERAL_SKILL_MAX_TOKENS = 8192
 GENERAL_SKILL_MAX_ATTEMPTS = 10
 TraceSink = Callable[[dict[str, Any]], None]
+CancellationCheck = Callable[[], bool]
 GENERAL_SKILL_SELECTION_OUTPUT = {
     "use_general_skill": "boolean",
     "selected_slug": "string?",
@@ -73,6 +74,10 @@ GENERAL_SKILL_REVIEW_OUTPUT = {
     "repair_hint": "string?",
 }
 GENERAL_SKILL_REPLY_OUTPUT = {"reply": "string"}
+
+
+class GeneralSkillExecutionCancelled(RuntimeError):
+    pass
 
 
 class GeneralSkillSelector:
@@ -211,9 +216,17 @@ class GeneralSkillRunner:
         event_sink: TraceSink | None = None,
         conversation_context: dict[str, object] | None = None,
         memory_context: list[dict[str, object]] | None = None,
+        workspace_root: Path | None = None,
+        is_cancelled: CancellationCheck | None = None,
     ) -> GeneralSkillRunResponse:
         trace: list[dict[str, Any]] = []
         max_attempts = max(1, min(max_attempts, GENERAL_SKILL_MAX_ATTEMPTS))
+        # GeneralSkillRunner instances may be reused by legacy call sites. Set
+        # the per-run Harness controls on every invocation so the historical
+        # _execute_plan call signature remains compatible with test doubles.
+        self._active_workspace_root = workspace_root
+        self._active_is_cancelled = is_cancelled
+        _raise_if_cancelled(is_cancelled)
         _emit(trace, {"phase": "skill_loaded", "message": f"已加载通用技能 {skill.name}", "slug": skill.slug}, event_sink)
         try:
             plan, planning_attempts = self._generate_plan_with_reflection(
@@ -226,6 +239,7 @@ class GeneralSkillRunner:
                 conversation_context,
                 memory_context,
             )
+            _raise_if_cancelled(is_cancelled)
         except LLMError as exc:
             _emit(trace, {"phase": "plan_failed", "message": "模型生成 runner 失败", "error": str(exc)}, event_sink)
             return GeneralSkillRunResponse(
@@ -243,6 +257,7 @@ class GeneralSkillRunner:
         stderr = ""
         structured_result: dict[str, Any] = {}
         for attempt in range(1, max_attempts + 1):
+            _raise_if_cancelled(is_cancelled)
             _emit(
                 trace,
                 {"phase": "attempt_started", "message": f"开始第 {attempt} 次运行", "attempt": attempt},
@@ -258,6 +273,7 @@ class GeneralSkillRunner:
                 attempt,
             )
             _normalize_failure_diagnostics(structured_result)
+            _raise_if_cancelled(is_cancelled)
             review = self._review_execution_result(
                 skill,
                 query,
@@ -272,6 +288,7 @@ class GeneralSkillRunner:
                 conversation_context,
                 memory_context,
             )
+            _raise_if_cancelled(is_cancelled)
             attempts.append(
                 {
                     "attempt": attempt,
@@ -339,6 +356,7 @@ class GeneralSkillRunner:
                     conversation_context,
                     memory_context,
                 )
+                _raise_if_cancelled(is_cancelled)
             except LLMError as exc:
                 _emit(
                     trace,
@@ -348,6 +366,7 @@ class GeneralSkillRunner:
                 break
 
         try:
+            _raise_if_cancelled(is_cancelled)
             reply = self._generate_reply(
                 skill,
                 query,
@@ -360,6 +379,7 @@ class GeneralSkillRunner:
                 conversation_context,
                 memory_context,
             )
+            _raise_if_cancelled(is_cancelled)
         except LLMError as exc:
             _emit(trace, {"phase": "reply_failed", "message": "模型生成最终回复失败", "error": str(exc)}, event_sink)
             reply = _fallback_reply(structured_result)
@@ -402,7 +422,7 @@ class GeneralSkillRunner:
                     "skill_workspace": "<runtime absolute path to the restored skill folder>",
                     "skill_files": [file["path"] for file in _skill_files(skill)],
                 },
-                "timeout_seconds": RUN_TIMEOUT_SECONDS,
+                "timeout_seconds": _run_timeout_seconds(skill),
             },
         }
         payload = stage_payload(
@@ -562,7 +582,7 @@ class GeneralSkillRunner:
                     "skill_workspace": "<runtime absolute path to the restored skill folder>",
                     "skill_files": [file["path"] for file in _skill_files(skill)],
                 },
-                "timeout_seconds": RUN_TIMEOUT_SECONDS,
+                "timeout_seconds": _run_timeout_seconds(skill),
             },
             "previous_attempts": attempts[-3:],
         }
@@ -609,8 +629,24 @@ class GeneralSkillRunner:
         trace: list[dict[str, Any]],
         event_sink: TraceSink | None = None,
         attempt: int = 1,
+        workspace_root: Path | None = None,
+        is_cancelled: CancellationCheck | None = None,
     ) -> tuple[str, str, dict[str, Any]]:
-        run_dir = Path(mkdtemp(prefix="ultrarag_general_skill_"))
+        workspace_root = workspace_root or getattr(
+            self, "_active_workspace_root", None
+        )
+        is_cancelled = is_cancelled or getattr(
+            self, "_active_is_cancelled", None
+        )
+        _raise_if_cancelled(is_cancelled)
+        if workspace_root is not None:
+            workspace_root.mkdir(parents=True, exist_ok=True)
+        run_dir = Path(
+            mkdtemp(
+                prefix="general_skill_",
+                dir=str(workspace_root) if workspace_root is not None else None,
+            )
+        )
         skill_dir = run_dir / "skill"
         _materialize_skill_package(skill, skill_dir)
         runtime = _plan_runtime(plan)
@@ -695,7 +731,14 @@ class GeneralSkillRunner:
             process.stdin.close()
 
         try:
-            stdout, stderr, timed_out = _stream_process_output(process, trace, event_sink, attempt)
+            stdout, stderr, timed_out = _stream_process_output(
+                process,
+                trace,
+                event_sink,
+                attempt,
+                _run_timeout_seconds(skill),
+                is_cancelled,
+            )
         finally:
             if process.poll() is None:
                 process.kill()
@@ -946,6 +989,13 @@ def _skill_package_payload(skill: GeneralSkill, preview_limit: int = 12000) -> d
 
 def _materialize_skill_package(skill: GeneralSkill, target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
+    metadata = getattr(skill, "metadata_json", None)
+    directory_values = metadata.get("skill_directories", []) if isinstance(metadata, Mapping) else []
+    if isinstance(directory_values, Sequence) and not isinstance(directory_values, (str, bytes)):
+        for value in directory_values:
+            relative_path = _safe_package_path(str(value or ""))
+            if relative_path:
+                (target_dir / relative_path).mkdir(parents=True, exist_ok=True)
     for file in _skill_files(skill):
         relative_path = _safe_package_path(str(file["path"]))
         output_path = target_dir / relative_path
@@ -974,11 +1024,35 @@ def _parse_stdout_json(stdout: str) -> dict[str, Any]:
         return {"success": True, "text": stripped}
 
 
+def _run_timeout_seconds(skill: GeneralSkill) -> float:
+    runtime_config = getattr(skill, "runtime_config_json", None)
+    config = runtime_config if isinstance(runtime_config, Mapping) else {}
+    try:
+        timeout = float(config.get("timeout_seconds") or RUN_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        timeout = float(RUN_TIMEOUT_SECONDS)
+    return max(1.0, min(timeout, 120.0))
+
+
+def _raise_if_cancelled(
+    is_cancelled: CancellationCheck | None,
+    *,
+    process: subprocess.Popen[bytes] | None = None,
+) -> None:
+    if not callable(is_cancelled) or not is_cancelled():
+        return
+    if process is not None and process.poll() is None:
+        process.kill()
+    raise GeneralSkillExecutionCancelled("General skill execution was cancelled.")
+
+
 def _stream_process_output_selectors(
     process: subprocess.Popen[bytes],
     trace: list[dict[str, Any]],
     event_sink: TraceSink | None,
     attempt: int,
+    timeout_seconds: float = RUN_TIMEOUT_SECONDS,
+    is_cancelled: CancellationCheck | None = None,
 ) -> tuple[str, str, bool]:
     selector = selectors.DefaultSelector()
     stdout_parts: list[str] = []
@@ -992,10 +1066,11 @@ def _stream_process_output_selectors(
         os.set_blocking(stream.fileno(), False)
         selector.register(stream, selectors.EVENT_READ, data=name)
 
-    deadline = time.monotonic() + RUN_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout_seconds
     timed_out = False
     try:
         while selector.get_map():
+            _raise_if_cancelled(is_cancelled, process=process)
             if time.monotonic() > deadline:
                 timed_out = True
                 process.kill()
@@ -1038,13 +1113,41 @@ def _use_thread_reader() -> bool:
     return sys.platform == "win32"
 
 
-def _stream_process_output(process, trace, event_sink, attempt):
+def _stream_process_output(
+    process,
+    trace,
+    event_sink,
+    attempt,
+    timeout_seconds=RUN_TIMEOUT_SECONDS,
+    is_cancelled=None,
+):
     if _use_thread_reader():
-        return _stream_process_output_threaded(process, trace, event_sink, attempt)
-    return _stream_process_output_selectors(process, trace, event_sink, attempt)
+        return _stream_process_output_threaded(
+            process,
+            trace,
+            event_sink,
+            attempt,
+            timeout_seconds,
+            is_cancelled,
+        )
+    return _stream_process_output_selectors(
+        process,
+        trace,
+        event_sink,
+        attempt,
+        timeout_seconds,
+        is_cancelled,
+    )
 
 
-def _stream_process_output_threaded(process, trace, event_sink, attempt):
+def _stream_process_output_threaded(
+    process,
+    trace,
+    event_sink,
+    attempt,
+    timeout_seconds=RUN_TIMEOUT_SECONDS,
+    is_cancelled=None,
+):
     q: "queue.Queue[tuple[str, bytes]]" = queue.Queue()
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
@@ -1066,10 +1169,11 @@ def _stream_process_output_threaded(process, trace, event_sink, attempt):
         threads.append(t)
 
     open_streams = sum(1 for s, _ in stream_map if s is not None)
-    deadline = time.monotonic() + RUN_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout_seconds
     timed_out = False
     eof_count = 0
     while eof_count < open_streams:
+        _raise_if_cancelled(is_cancelled, process=process)
         if time.monotonic() > deadline:
             timed_out = True
             process.kill()

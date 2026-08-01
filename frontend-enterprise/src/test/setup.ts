@@ -1,4 +1,8 @@
-if (typeof window !== 'undefined' && !window.localStorage) {
+const hasUsableLocalStorage = typeof window !== 'undefined'
+  && typeof window.localStorage?.getItem === 'function'
+  && typeof window.localStorage?.setItem === 'function';
+
+if (typeof window !== 'undefined' && !hasUsableLocalStorage) {
   const values = new Map<string, string>();
   const storage: Storage = {
     get length() {

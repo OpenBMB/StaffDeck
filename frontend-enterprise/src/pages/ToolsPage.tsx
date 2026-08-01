@@ -1625,6 +1625,7 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
             <CapabilityScopeControl
               value={values.capability_scope}
               onChange={(value) => setField('capability_scope', value)}
+              resourceType="tool"
             />
 
             <Field label="连接方式" hint={transportOption?.hint}>
@@ -1901,6 +1902,7 @@ function ToolFormFields({
       <CapabilityScopeControl
         value={normalizeCapabilityScope(values.capability_scope)}
         onChange={(value) => setField('capability_scope', value)}
+        resourceType="tool"
       />
 
       <div className="flex items-center justify-between rounded-[12px] border border-[#eceef1] bg-[#fafbfc] px-[14px] py-[12px]">

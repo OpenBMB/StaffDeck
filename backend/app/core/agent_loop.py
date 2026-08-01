@@ -28,7 +28,6 @@ from app.capabilities.local_general_skill import (
     runtime_snapshot_from_package,
 )
 from app.channels.service_outbox import stage_channel_delivery
-from app.config import get_settings
 from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled, is_chat_turn_cancelled
 from app.core.conversation_context import build_conversation_context
@@ -2235,34 +2234,10 @@ class AgentLoop:
             )
 
     def _uses_harness_v2(self, request: ChatTurnRequest) -> bool:
-        agent_id = str(request.agent_id or "").strip()
-        if not agent_id and request.session_id:
-            get_row = getattr(self.db, "get", None)
-            if not callable(get_row):
-                return False
-            session = get_row(ChatSession, request.session_id)
-            agent_id = str(getattr(session, "agent_id", "") or "").strip()
-        if not agent_id:
-            return False
-        get_row = getattr(self.db, "get", None)
-        if not callable(get_row):
-            return False
-        agent = get_row(AgentProfile, agent_id)
-        if (
-            agent is None
-            or agent.tenant_id != request.tenant_id
-            or agent.status != "active"
-        ):
-            return False
-        metadata = agent.metadata_json if isinstance(agent.metadata_json, dict) else {}
-        configured = str(
-            metadata.get("execution_engine")
-            or metadata.get("agent_loop_engine")
-            or ""
-        ).strip()
-        if configured:
-            return configured == "harness_v2"
-        return bool(get_settings().harness_v2_default_enabled)
+        # Harness v2 is the sole production turn lifecycle. Keep the method as
+        # a compatibility seam for callers and tests while removing rollout
+        # flags that could silently send interactive chat back to AgentLoop v1.
+        return True
 
     def _handle_turn_stream_v2(
         self, request: ChatTurnRequest

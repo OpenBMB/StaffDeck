@@ -21,6 +21,10 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
+    HarnessInvocationRecord,
+    HarnessRunRecord,
+    HarnessTaskFrameRecord,
+    HarnessTurnRecord,
     ScheduledTask,
     ScheduledTaskRun,
     User,
@@ -47,6 +51,10 @@ DEFAULT_TASK_TIME = "09:00"
 LEASE_SECONDS = 15 * 60
 WORKER_SLEEP_SECONDS = 5
 SCHEDULE_TYPES = {"once", "daily", "weekly", "monthly"}
+
+
+class ScheduledTaskAgentUnavailable(RuntimeError):
+    pass
 
 
 class _LLMScheduledTaskDraft(BaseModel):
@@ -430,10 +438,12 @@ def _execute_prepared_scheduled_task(
     try:
         if not run.session_id:
             raise RuntimeError("自动任务缺少独立会话")
+        _ensure_scheduled_execution_agent(db, task)
         request = ChatTurnRequest(
             tenant_id=task.tenant_id,
             session_id=run.session_id,
             agent_id=task.agent_id,
+            client_turn_id=run.id,
             user_id=task.created_by_user_id,
             message=automatic_task_message(task),
             channel="scheduled_task",
@@ -447,16 +457,13 @@ def _execute_prepared_scheduled_task(
                 result = ChatTurnResponse.model_validate(item["data"])
         if result is None:
             raise RuntimeError("自动任务执行未返回完整结果")
-        run.status = "succeeded"
+        outcome = _scheduled_harness_outcome(db, run, result)
+        run.status = str(outcome["status"])
         run.result_summary = result.reply[:500]
-        run.trace_json = {
-            "router_decision": result.router_decision.model_dump(mode="json")
-            if result.router_decision
-            else None,
-            "session_state": result.session_state.model_dump(mode="json"),
-        }
+        run.error = str(outcome.get("error") or "") or None
+        run.trace_json = dict(outcome["trace"])
         run.finished_at = utc_now()
-        _finish_task_schedule(db, task, run.scheduled_for, "succeeded", manual)
+        _finish_task_schedule(db, task, run.scheduled_for, run.status, manual)
     except Exception as exc:
         run.status = "failed"
         run.error = str(exc)
@@ -470,6 +477,9 @@ def _execute_prepared_scheduled_task(
                 {"event": "error", "data": {"message": str(exc), "sessionId": run.session_id}},
             )
         _finish_task_schedule(db, task, run.scheduled_for, "failed", manual)
+        if isinstance(exc, ScheduledTaskAgentUnavailable):
+            task.status = "paused"
+            task.next_run_at = None
     finally:
         task.lease_owner = None
         task.lease_until = None
@@ -480,6 +490,208 @@ def _execute_prepared_scheduled_task(
         db.commit()
         db.refresh(run)
     return run
+
+
+def _ensure_scheduled_execution_agent(db: Session, task: ScheduledTask) -> AgentProfile:
+    agent = db.get(AgentProfile, task.agent_id)
+    if (
+        agent is None
+        or agent.tenant_id != task.tenant_id
+        or agent.is_overall
+        or agent.status != "active"
+    ):
+        raise ScheduledTaskAgentUnavailable(
+            "自动任务绑定的员工已不可用；请重新选择启用中的员工后再运行。"
+        )
+    return agent
+
+
+def _scheduled_harness_outcome(
+    db: Session,
+    run: ScheduledTaskRun,
+    result: ChatTurnResponse,
+) -> dict[str, Any]:
+    """Resolve one scheduled run from durable Harness state, never reply text."""
+
+    receipt = db.exec(
+        select(HarnessTurnRecord).where(
+            HarnessTurnRecord.tenant_id == run.tenant_id,
+            HarnessTurnRecord.session_id == run.session_id,
+            HarnessTurnRecord.client_turn_id == run.id,
+        )
+    ).first()
+    if receipt is None or not receipt.user_message_id:
+        raise RuntimeError("自动任务未进入 Harness v2，已拒绝按旧链路判定成功。")
+
+    frames = db.exec(
+        select(HarnessTaskFrameRecord)
+        .where(
+            HarnessTaskFrameRecord.tenant_id == run.tenant_id,
+            HarnessTaskFrameRecord.session_id == run.session_id,
+            HarnessTaskFrameRecord.source_turn_id == receipt.user_message_id,
+        )
+        .order_by(HarnessTaskFrameRecord.sequence, HarnessTaskFrameRecord.created_at)
+    ).all()
+    if not frames:
+        raise RuntimeError("Harness v2 未生成 TaskFrame，自动任务不能判定为成功。")
+
+    harness_runs = db.exec(
+        select(HarnessRunRecord).where(
+            HarnessRunRecord.tenant_id == run.tenant_id,
+            HarnessRunRecord.session_id == run.session_id,
+            HarnessRunRecord.source_turn_id == receipt.user_message_id,
+        )
+    ).all()
+    run_ids = {item.id for item in harness_runs}
+    invocations = (
+        db.exec(
+            select(HarnessInvocationRecord).where(
+                HarnessInvocationRecord.tenant_id == run.tenant_id,
+                HarnessInvocationRecord.session_id == run.session_id,
+                HarnessInvocationRecord.run_id.in_(run_ids),
+            )
+        ).all()
+        if run_ids
+        else []
+    )
+
+    frame_payloads = [_scheduled_frame_payload(frame) for frame in frames]
+    effective_statuses = [str(item["effective_status"]) for item in frame_payloads]
+    if all(status == "completed" for status in effective_statuses):
+        status = "succeeded"
+        error = None
+    elif "awaiting_user" in effective_statuses:
+        status = "needs_input"
+        error = "自动任务需要补充输入后才能继续。"
+    elif any(
+        item in {"failed", "cancelled", "handoff"}
+        for item in effective_statuses
+    ):
+        status = "failed"
+        error = "一个或多个 TaskFrame 执行失败。"
+    else:
+        status = "incomplete"
+        error = "TaskFrame 尚未全部完成，请查看执行记录后继续或重试。"
+
+    authorized_specific = _scheduled_sop_specific_capabilities(harness_runs)
+    authorized_names = {
+        str(item.get("name") or "")
+        for item in authorized_specific
+        if str(item.get("name") or "").strip()
+    }
+    specific_knowledge = {
+        str(item.get("capability_id") or ""): str(item.get("name") or "")
+        for item in authorized_specific
+        if item.get("kind") == "knowledge"
+        and str(item.get("capability_id") or "").strip()
+    }
+    invoked_specific: set[str] = set()
+    for invocation in invocations:
+        if invocation.tool_name in authorized_names:
+            invoked_specific.add(invocation.tool_name)
+        if invocation.tool_name != "knowledge_search" or not specific_knowledge:
+            continue
+        arguments = (
+            invocation.arguments_json
+            if isinstance(invocation.arguments_json, dict)
+            else {}
+        )
+        raw_requested_ids = arguments.get("knowledge_base_ids")
+        requested_values = (
+            raw_requested_ids if isinstance(raw_requested_ids, list) else []
+        )
+        requested_ids = {
+            str(item)
+            for item in requested_values
+            if str(item).strip()
+        }
+        included_ids = requested_ids or set(specific_knowledge)
+        invoked_specific.update(
+            name
+            for knowledge_id, name in specific_knowledge.items()
+            if knowledge_id in included_ids
+        )
+    sop_skill_ids = sorted(
+        {
+            str(frame.skill_id)
+            for frame in frames
+            if frame.kind == "sop" and frame.skill_id
+        }
+    )
+    trace = {
+        "execution_engine": "harness_v2",
+        "harness_turn_id": receipt.id,
+        "source_turn_id": receipt.user_message_id,
+        "router_decision": (
+            result.router_decision.model_dump(mode="json")
+            if result.router_decision
+            else None
+        ),
+        "session_state": result.session_state.model_dump(mode="json"),
+        "task_frames": frame_payloads,
+        "harness_run_ids": [item.id for item in harness_runs],
+        "sop_scope": {
+            "includes_sop": bool(sop_skill_ids),
+            "skill_ids": sop_skill_ids,
+            "sop_specific_authorized": authorized_specific,
+            "sop_specific_invoked": sorted(invoked_specific),
+        },
+    }
+    return {"status": status, "error": error, "trace": trace}
+
+
+def _scheduled_frame_payload(frame: HarnessTaskFrameRecord) -> dict[str, Any]:
+    result = frame.result_json if isinstance(frame.result_json, dict) else {}
+    result_status = str(result.get("status") or "").strip()
+    effective_status = result_status or frame.status
+    return {
+        "task_frame_id": frame.task_id,
+        "kind": frame.kind,
+        "skill_id": frame.skill_id,
+        "step_id": frame.step_id,
+        "status": frame.status,
+        "effective_status": effective_status,
+        "depends_on_task_ids": list(frame.depends_on_json or []),
+        "error": dict(frame.error_json or {}),
+    }
+
+
+def _scheduled_sop_specific_capabilities(
+    runs: list[HarnessRunRecord],
+) -> list[dict[str, str]]:
+    capabilities: dict[tuple[str, str, str], dict[str, str]] = {}
+    for harness_run in runs:
+        snapshot = (
+            harness_run.capability_snapshot_json
+            if isinstance(harness_run.capability_snapshot_json, dict)
+            else {}
+        )
+        for raw in snapshot.get("available") or []:
+            if not isinstance(raw, dict):
+                continue
+            if raw.get("capability_scope") == "sop_specific":
+                item = {
+                    "capability_id": str(raw.get("capability_id") or ""),
+                    "name": str(raw.get("name") or ""),
+                    "kind": str(raw.get("kind") or ""),
+                }
+                capabilities[(item["capability_id"], item["name"], item["kind"])] = item
+            if raw.get("kind") != "knowledge":
+                continue
+            metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+            scope_by_base = metadata.get("knowledge_scope_by_base_id")
+            if not isinstance(scope_by_base, dict):
+                continue
+            for base_id, scope in scope_by_base.items():
+                if scope != "sop_specific":
+                    continue
+                item = {
+                    "capability_id": str(base_id),
+                    "name": f"knowledge_search:{base_id}",
+                    "kind": "knowledge",
+                }
+                capabilities[(item["capability_id"], item["name"], item["kind"])] = item
+    return [capabilities[key] for key in sorted(capabilities)]
 
 
 def _record_scheduled_task_stream_event(
@@ -648,7 +860,9 @@ def _finish_task_schedule(db: Session, task: ScheduledTask, scheduled_for: datet
         else:
             task.next_run_at = next_run
             if task.schedule_type == "once" and next_run is None:
-                task.status = "completed"
+                # A one-shot run that still needs input or has deferred frames
+                # must remain retryable instead of disappearing as completed.
+                task.status = "completed" if status == "succeeded" else "paused"
     db.add(task)
 
 

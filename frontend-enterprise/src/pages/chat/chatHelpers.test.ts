@@ -7,6 +7,7 @@ import type { ChatMessage } from '@/types';
 import {
   STREAM_TERMINAL_EVENTS,
   canRateMessage,
+  harnessEventTraceLine,
   harnessWorkspaceArtifacts,
   knowledgeCitations,
   messageAttachments,
@@ -162,5 +163,57 @@ describe('chat history consumer contract', () => {
       'stream_end',
       'stream_interrupted',
     ]);
+  });
+
+  it('turns the Harness lifecycle into mergeable execution-record lines', () => {
+    const started = harnessEventTraceLine('task_frame_started', {
+      task_frame_id: 'task-weather',
+      kind: 'conversation',
+    });
+    const action = harnessEventTraceLine('harness_action_created', {
+      task_frame_id: 'task-weather',
+      iteration: 1,
+      action: 'tool',
+      tool_name: 'general_skill.weather',
+    });
+    const completed = harnessEventTraceLine('harness_tool_completed', {
+      task_frame_id: 'task-weather',
+      iteration: 1,
+      tool_name: 'general_skill.weather',
+      success: true,
+      result: {
+        success: true,
+        data: { structured_result: { temperature: 29 } },
+      },
+    });
+    const finished = harnessEventTraceLine('task_frame_finished', {
+      task_frame_id: 'task-weather',
+      status: 'completed',
+      action_count: 2,
+    });
+
+    expect(started).toMatchObject({
+      id: 'harness_frame_task-weather',
+      text: '开始执行任务',
+      state: 'running',
+    });
+    expect(action).toMatchObject({
+      id: 'harness_action_task-weather_1',
+      text: '调用能力 general_skill.weather',
+      state: 'running',
+    });
+    expect(completed).toMatchObject({
+      id: 'harness_action_task-weather_1',
+      text: '能力调用完成 general_skill.weather',
+      state: 'completed',
+      outputLanguage: 'json',
+      outputTitle: '查看能力结果',
+    });
+    expect(completed?.output).toContain('"temperature": 29');
+    expect(finished).toMatchObject({
+      id: 'harness_frame_task-weather',
+      text: '任务执行完成',
+      state: 'completed',
+    });
   });
 });

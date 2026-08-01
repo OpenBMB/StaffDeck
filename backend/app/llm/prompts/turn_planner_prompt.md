@@ -24,6 +24,8 @@
 - requirements 是简短、可执行、可验证的目标列表，不是能力名称或实施方案。
 - 仅 Router/Planner 可改变 SOP 或 TaskFrame 顺序；后续 Harness 不得重新路由。
 - `slot_hints` 只允许稳定结构化字段，禁止 `message_content`，禁止复制整段原文。
+- 所有容器字段都不得输出 `null`：空 `slot_hints` 使用 `{}`，空 `task_frames`、
+  `task_updates`、`requirements` 和 `depends_on_task_ids` 使用 `[]`。
 - 有 active SOP 且当前消息明显是在回答上一轮问题时，优先 continue_active。
 - `clarify` 只用于用户明确想办理 SOP、但多个 SOP 无法区分；缺 slot 不属于 clarify。
 - `answer_only` 对应 conversation frame，不表示跳过 Harness。

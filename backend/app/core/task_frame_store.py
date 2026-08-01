@@ -17,6 +17,10 @@ from app.session.session_schema import PlannedTaskFrame, TurnPlan
 
 
 TERMINAL_FRAME_STATUSES = {"completed", "cancelled", "failed"}
+DEPENDENCY_WAITING_ERROR_CODES = {
+    "DEPENDENCY_BLOCKED",  # compatibility with the first Harness v2 scheduler
+    "DEPENDENCY_WAITING",
+}
 HARNESS_CONTEXT_KEY = "harness_v2"
 FRAME_LEASE_SECONDS = 900
 MAX_TASK_FRAMES_PER_TURN = 8
@@ -104,12 +108,14 @@ class TaskFrameStore:
                 else dict(row.slots_json or {})
             )
             row.slots_json = {**base_slots, **dict(frame.slot_hints)}
-            row.depends_on_json = [
+            planned_dependencies = [
                 dependency_id
                 for dependency_id in frame.depends_on_task_ids
                 if dependency_id in bounded_task_ids
                 and dependency_id != task_id
             ]
+            if created or planned_dependencies:
+                row.depends_on_json = planned_dependencies
             row.error_json = {}
             row.updated_at = utc_now()
             row.state_version = max(1, int(row.state_version or 0) + 1)
@@ -523,11 +529,154 @@ class TaskFrameStore:
         row: HarnessTaskFrameRecord,
         records: list[HarnessTaskFrameRecord],
     ) -> bool:
+        dependency_ids = {
+            str(task_id)
+            for task_id in row.depends_on_json or []
+            if str(task_id).strip()
+        }
+        if not dependency_ids:
+            return True
         status_by_id = {item.task_id: item.status for item in records}
+        missing_ids = dependency_ids - set(status_by_id)
+        if missing_ids:
+            persisted = self.db.exec(
+                select(HarnessTaskFrameRecord).where(
+                    HarnessTaskFrameRecord.session_id == row.session_id,
+                    HarnessTaskFrameRecord.task_id.in_(missing_ids),
+                )
+            ).all()
+            status_by_id.update(
+                {item.task_id: item.status for item in persisted}
+            )
         return all(
             status_by_id.get(task_id) == "completed"
-            for task_id in row.depends_on_json or []
+            for task_id in dependency_ids
         )
+
+    def defer_for_dependencies(
+        self,
+        row: HarnessTaskFrameRecord,
+    ) -> None:
+        """Keep a dependent frame queued until every prerequisite completes."""
+
+        row.status = "queued"
+        row.result_json = {
+            "task_frame_id": row.task_id,
+            "status": "blocked",
+            "reply_fragment": "前置任务完成后将自动继续该任务。",
+            "task_summary": "TaskFrame 正在等待前置任务完成。",
+            "action_count": 0,
+            "error": {"code": "DEPENDENCY_WAITING"},
+        }
+        row.error_json = {"code": "DEPENDENCY_WAITING"}
+        row.lease_owner = None
+        row.lease_expires_at = None
+        row.updated_at = utc_now()
+        row.state_version += 1
+        self.db.add(row)
+
+    def ready_dependency_frames(
+        self,
+        session: ChatSession,
+        *,
+        exclude_task_ids: set[str] | None = None,
+    ) -> list[HarnessTaskFrameRecord]:
+        """Return durable follow-up frames whose prerequisites are complete.
+
+        Old ``blocked/DEPENDENCY_BLOCKED`` rows are repaired here so sessions
+        created before dependency waiting became resumable are not stranded.
+        """
+
+        excluded = set(exclude_task_ids or set())
+        all_rows = self.db.exec(
+            select(HarnessTaskFrameRecord).where(
+                HarnessTaskFrameRecord.tenant_id == session.tenant_id,
+                HarnessTaskFrameRecord.session_id == session.id,
+            )
+        ).all()
+        status_by_id = {item.task_id: item.status for item in all_rows}
+        candidates: list[HarnessTaskFrameRecord] = []
+        for item in all_rows:
+            dependency_ids = [
+                str(task_id)
+                for task_id in item.depends_on_json or []
+                if str(task_id).strip()
+            ]
+            if (
+                item.task_id in excluded
+                or not dependency_ids
+                or item.status not in {"queued", "blocked"}
+            ):
+                continue
+            if item.status == "blocked" and str(
+                (item.error_json or {}).get("code") or ""
+            ) not in DEPENDENCY_WAITING_ERROR_CODES:
+                continue
+            if not all(
+                status_by_id.get(task_id) == "completed"
+                for task_id in dependency_ids
+            ):
+                continue
+            if item.status == "blocked":
+                item.status = "queued"
+                item.result_json = {}
+                item.error_json = {}
+                item.updated_at = utc_now()
+                item.state_version += 1
+                self.db.add(item)
+            candidates.append(item)
+        self.db.flush()
+        return sorted(
+            candidates,
+            key=lambda item: (
+                item.created_at,
+                item.sequence,
+                item.task_id,
+            ),
+        )
+
+    def dependency_results(
+        self,
+        row: HarnessTaskFrameRecord,
+    ) -> list[dict[str, Any]]:
+        """Project completed prerequisite results into the child TaskRequirement."""
+
+        dependency_ids = [
+            str(task_id)
+            for task_id in row.depends_on_json or []
+            if str(task_id).strip()
+        ]
+        if not dependency_ids:
+            return []
+        dependencies = self.db.exec(
+            select(HarnessTaskFrameRecord).where(
+                HarnessTaskFrameRecord.session_id == row.session_id,
+                HarnessTaskFrameRecord.task_id.in_(set(dependency_ids)),
+                HarnessTaskFrameRecord.status == "completed",
+            )
+        ).all()
+        by_id = {item.task_id: item for item in dependencies}
+        projected: list[dict[str, Any]] = []
+        for task_id in dependency_ids:
+            dependency = by_id.get(task_id)
+            if dependency is None:
+                continue
+            result = (
+                dependency.result_json
+                if isinstance(dependency.result_json, dict)
+                else {}
+            )
+            projected.append(
+                {
+                    "task_frame_id": task_id,
+                    "status": dependency.status,
+                    "task_summary": result.get("task_summary"),
+                    "slot_updates": result.get("slot_updates") or {},
+                    "capability_results": result.get("capability_results") or [],
+                    "artifacts": result.get("artifacts") or [],
+                }
+            )
+        return projected
 
     def project_session(self, session: ChatSession) -> None:
         rows = self.db.exec(

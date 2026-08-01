@@ -285,6 +285,7 @@ def test_stream_emits_context_status_only_when_compaction_runs(compacted_now: bo
     )
 
     loop.db = db
+    loop._uses_harness_v2 = lambda _request: False
     loop.events = FakeEvents()
     loop.memory = SimpleNamespace(context_memories=lambda *_args, **_kwargs: [])
     loop.runtime = SimpleNamespace(apply_decision=lambda *_args, **_kwargs: None)
@@ -361,6 +362,7 @@ def test_stream_disconnect_does_not_persist_stop_event_without_cancel_flag() -> 
     )
 
     loop.db = db
+    loop._uses_harness_v2 = lambda _request: False
     loop.events = FakeEvents()
     loop.memory = SimpleNamespace(context_memories=lambda *_args, **_kwargs: [])
     loop.runtime = SimpleNamespace(apply_decision=lambda *_args, **_kwargs: None)
