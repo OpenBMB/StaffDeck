@@ -116,6 +116,14 @@ class LLMClient:
         self.api_key = api_key
         self.model = model_config.model
         self.temperature = model_config.temperature
+        # Reasoning models on some gateways reject the `temperature` parameter
+        # entirely. Omit it for the Anthropic Messages protocol so those models
+        # (e.g. Claude Opus 4.8) accept the request; other protocols keep it.
+        self.request_temperature = (
+            None
+            if protocol is ModelApiProtocol.ANTHROPIC_MESSAGES
+            else self.temperature
+        )
         self.max_output_tokens = model_config.max_output_tokens
         legacy_extra_body = getattr(model_config, "legacy_extra_body", {})
         protocol_options = getattr(model_config, "protocol_options", {})
@@ -160,7 +168,7 @@ class LLMClient:
             request: dict[str, Any] = {
                 "model": self.model,
                 "messages": request_messages,
-                "temperature": self.temperature,
+                "temperature": self.request_temperature,
                 "max_tokens": max_output_tokens,
             }
             if cancellation is not None:
@@ -290,7 +298,7 @@ class LLMClient:
                     stream_request = {
                         "model": self.model,
                         "messages": request_messages,
-                        "temperature": self.temperature,
+                        "temperature": self.request_temperature,
                         "max_tokens": current_max_tokens,
                         **_thinking_request_kwargs(
                             getattr(self, "thinking_mode", ""),
