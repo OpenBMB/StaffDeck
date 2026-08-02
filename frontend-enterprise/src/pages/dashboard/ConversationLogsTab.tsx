@@ -48,17 +48,16 @@ import type {
   TraceLineRead,
   TurnTraceRead,
 } from '../../types';
+import {
+  buildConversationUserOptions,
+  matchesConversationLogFilter,
+  type ConversationLogFilter,
+  type ConversationLogRow,
+} from './conversationLogFilters';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const FEEDBACK_PAGE_SIZE = 10;
 const ALL_CONVERSATION_USERS = '__all_conversation_users__';
-
-type LogFilter = 'all' | 'up' | 'down' | 'unrated' | 'ability' | 'tool' | 'knowledge' | 'sop';
-
-type ConversationLogRow = EnterpriseChatSessionRead & {
-  downFeedback?: FeedbackSessionRead;
-  upFeedback?: FeedbackSessionRead;
-};
 
 type ConversationDetail = {
   session: Record<string, unknown>;
@@ -68,7 +67,7 @@ type ConversationDetail = {
   traces: TurnTraceRead[];
 };
 
-const FILTER_TABS: UnderlineTabItem<LogFilter>[] = [
+const FILTER_TABS: UnderlineTabItem<ConversationLogFilter>[] = [
   { label: '全部', value: 'all' },
   { label: '好评', value: 'up' },
   { label: '差评', value: 'down' },
@@ -94,7 +93,7 @@ export default function ConversationLogsTab() {
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [summary, setSummary] = useState<FeedbackSummaryRead | null>(null);
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
-  const [filter, setFilter] = useState<LogFilter>('all');
+  const [filter, setFilter] = useState<ConversationLogFilter>('all');
   const [conversationUserId, setConversationUserId] = useState(ALL_CONVERSATION_USERS);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -168,43 +167,29 @@ export default function ConversationLogsTab() {
 
   const agentLabel = (row: ConversationLogRow): string => agentLabelFromId(row.agent_id);
 
-  const conversationUserOptions = useMemo(() => {
-    const options = new Map<string, { userId: string; label: string; count: number }>();
-    sessions.forEach((session) => {
-      const userId = String(session.user_id || '').trim();
-      if (!userId) return;
-      const current = options.get(userId);
-      options.set(userId, {
-        userId,
-        label: conversationUserLabel(session),
-        count: (current?.count || 0) + 1,
-      });
-    });
-    return Array.from(options.values()).sort((left, right) =>
-      left.label.localeCompare(right.label, 'zh-CN'),
-    );
-  }, [sessions]);
+  const logFilterRows = useMemo(
+    () => rows.filter((row) => matchesConversationLogFilter(row, filter)),
+    [filter, rows],
+  );
+
+  const conversationUserOptions = useMemo(
+    () => buildConversationUserOptions(logFilterRows),
+    [logFilterRows],
+  );
 
   const filteredRows = useMemo(
-    () =>
-      rows.filter((row) => {
-        if (
-          conversationUserId !== ALL_CONVERSATION_USERS &&
-          row.user_id !== conversationUserId
-        ) {
-          return false;
-        }
-        if (filter === 'up') return Boolean(row.upFeedback);
-        if (filter === 'down') return Boolean(row.downFeedback);
-        if (filter === 'unrated') return !row.upFeedback && !row.downFeedback;
-        if (filter === 'ability') return row.downFeedback?.primary_bucket === 'model_issue';
-        if (filter === 'tool') return row.downFeedback?.primary_bucket === 'tool_or_system_issue';
-        if (filter === 'sop') return row.downFeedback?.primary_bucket === 'skill_issue';
-        if (filter === 'knowledge') return row.downFeedback?.primary_bucket === 'unknown';
-        return true;
-      }),
-    [conversationUserId, filter, rows],
+    () => logFilterRows.filter((row) => (
+      conversationUserId === ALL_CONVERSATION_USERS || row.user_id === conversationUserId
+    )),
+    [conversationUserId, logFilterRows],
   );
+
+  useEffect(() => {
+    if (loading || conversationUserId === ALL_CONVERSATION_USERS) return;
+    if (!conversationUserOptions.some((option) => option.userId === conversationUserId)) {
+      setConversationUserId(ALL_CONVERSATION_USERS);
+    }
+  }, [conversationUserId, conversationUserOptions, loading]);
 
   const pagination = useClientPagination(
     filteredRows,
@@ -448,7 +433,7 @@ export default function ConversationLogsTab() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={ALL_CONVERSATION_USERS}>
-                  全部用户（{conversationUserOptions.length}）
+                  全部用户（{logFilterRows.length}）
                 </SelectItem>
                 {conversationUserOptions.map((option) => (
                   <SelectItem key={option.userId} value={option.userId}>
@@ -760,15 +745,6 @@ function displayUser(session: Record<string, unknown>): string {
       session.username ||
       '未知用户',
   );
-}
-
-function conversationUserLabel(session: EnterpriseChatSessionRead): string {
-  const displayName = String(session.session_display_name || '').trim();
-  const username = String(session.session_username || '').trim();
-  if (displayName && username && displayName !== username) {
-    return `${displayName} · ${username.startsWith('@') ? username : `@${username}`}`;
-  }
-  return displayName || username || '未知用户';
 }
 
 function timingText(
