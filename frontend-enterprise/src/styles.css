@@ -2023,12 +2023,20 @@ body.skill-distill-fixed .content {
 }
 
 .feedback-message-bubble {
-  max-width: min(680px, 88%);
+  max-width: min(960px, 94%);
   padding: 12px 14px;
   color: var(--foreground);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
+}
+
+.feedback-message-row.assistant .feedback-message-bubble {
+  width: min(960px, 94%);
+}
+
+.feedback-message-row.user .feedback-message-bubble {
+  max-width: min(760px, 78%);
 }
 
 .feedback-message-row.user .feedback-message-bubble {
@@ -2048,7 +2056,6 @@ body.skill-distill-fixed .content {
 
 .feedback-message-content {
   margin-bottom: 0 !important;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.7;
 }
@@ -2072,8 +2079,14 @@ body.skill-distill-fixed .content {
   font-weight: 800;
 }
 
-.feedback-trace-header span:last-child {
+.feedback-trace-overall-timing {
   margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.feedback-trace-status {
   color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 650;
@@ -2113,11 +2126,33 @@ body.skill-distill-fixed .content {
   gap: 3px;
 }
 
+.feedback-trace-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .feedback-trace-text {
+  min-width: 0;
   font-size: 13px;
   font-weight: 750;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.feedback-trace-timing {
+  flex: none;
+  padding: 2px 7px;
+  color: #5f687c;
+  background: color-mix(in srgb, var(--surface) 74%, var(--accent-soft));
+  border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1.35;
+  white-space: nowrap;
 }
 
 .feedback-trace-detail {
@@ -2156,7 +2191,7 @@ body.skill-distill-fixed .content {
 }
 
 .feedback-message-bubble.trace-only {
-  width: min(680px, 88%);
+  width: min(960px, 94%);
 }
 
 .chat-panel {

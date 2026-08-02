@@ -1,10 +1,17 @@
 import pytest
 from fastapi import HTTPException
+from types import SimpleNamespace
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
+from app.api.feedback import (
+    get_feedback_session_detail,
+    get_feedback_summary,
+    list_feedback_sessions,
+    reanalyze_feedback,
+)
 from app.api.sessions import get_session_detail, list_sessions, reset_session
-from app.db.models import AgentProfile, ChatSession, Tenant, User
+from app.db.models import AgentProfile, ChatSession, Message, MessageFeedback, Tenant, User
 
 
 def _test_session() -> Session:
@@ -199,3 +206,125 @@ def test_augment_fields_channel_and_identity() -> None:
         detail = get_session_detail("session_channel", "tenant_demo", current_user=users["admin"], db=db)
         assert detail["session"]["channel"] == "wechat"
         assert detail["session"]["session_display_name"] == "微信用户 ab12cd34"
+
+
+def test_feedback_scope_matches_agent_session_visibility(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _test_session() as db:
+        users = _seed(db)
+        db.add_all(
+            [
+                Message(
+                    id="msg_member_assistant",
+                    tenant_id="tenant_demo",
+                    session_id="session_member",
+                    role="assistant",
+                    content="member answer",
+                ),
+                Message(
+                    id="msg_channel_assistant",
+                    tenant_id="tenant_demo",
+                    session_id="session_channel",
+                    role="assistant",
+                    content="channel answer",
+                ),
+                Message(
+                    id="msg_overall_assistant",
+                    tenant_id="tenant_demo",
+                    session_id="session_overall",
+                    role="assistant",
+                    content="overall answer",
+                ),
+                MessageFeedback(
+                    id="feedback_member",
+                    tenant_id="tenant_demo",
+                    session_id="session_member",
+                    message_id="msg_member_assistant",
+                    user_id=users["member"].id,
+                    rating="down",
+                ),
+                MessageFeedback(
+                    id="feedback_channel",
+                    tenant_id="tenant_demo",
+                    session_id="session_channel",
+                    message_id="msg_channel_assistant",
+                    user_id=users["wechat_user"].id,
+                    rating="down",
+                ),
+                MessageFeedback(
+                    id="feedback_overall",
+                    tenant_id="tenant_demo",
+                    session_id="session_overall",
+                    message_id="msg_overall_assistant",
+                    user_id=users["member"].id,
+                    rating="down",
+                ),
+            ]
+        )
+        db.commit()
+
+        creator_rows = list_feedback_sessions(
+            "tenant_demo",
+            "down",
+            agent_id="agent_emp",
+            limit=200,
+            current_user=users["owner"],
+            db=db,
+        )
+        assert {row["session_id"] for row in creator_rows} == {
+            "session_member",
+            "session_channel",
+        }
+
+        member_rows = list_feedback_sessions(
+            "tenant_demo",
+            "down",
+            agent_id="agent_emp",
+            limit=200,
+            current_user=users["member"],
+            db=db,
+        )
+        assert [row["session_id"] for row in member_rows] == ["session_member"]
+        assert get_feedback_session_detail(
+            "session_channel",
+            "tenant_demo",
+            current_user=users["owner"],
+            db=db,
+        )["session"]["id"] == "session_channel"
+
+        with pytest.raises(HTTPException) as member_error:
+            get_feedback_session_detail(
+                "session_channel",
+                "tenant_demo",
+                current_user=users["member"],
+                db=db,
+            )
+        assert member_error.value.status_code == 404
+        with pytest.raises(HTTPException) as overall_error:
+            get_feedback_session_detail(
+                "session_overall",
+                "tenant_demo",
+                current_user=users["owner"],
+                db=db,
+            )
+        assert overall_error.value.status_code == 404
+        with pytest.raises(HTTPException) as tenant_error:
+            get_feedback_summary(
+                "tenant_other",
+                agent_id="agent_emp",
+                current_user=users["owner"],
+                db=db,
+            )
+        assert tenant_error.value.status_code == 403
+
+        monkeypatch.setattr(
+            "app.api.feedback.enqueue_feedback_analysis",
+            lambda *_args, **_kwargs: SimpleNamespace(id="job_feedback"),
+        )
+        result = reanalyze_feedback(
+            "feedback_channel",
+            "tenant_demo",
+            current_user=users["owner"],
+            db=db,
+        )
+        assert result["analysis_status"] == "pending"
+        assert result["job_id"] == "job_feedback"

@@ -647,12 +647,14 @@ export type EnterpriseChatSessionRead = {
 export type EnterpriseSessionDetailRead = {
   session: EnterpriseChatSessionRead;
   messages: FeedbackMessageRead[];
+  feedback: Array<Record<string, unknown>>;
   events: Array<{
     id: string;
     event_type: string;
     payload: Record<string, unknown>;
     created_at: string;
   }>;
+  traces: TurnTraceRead[];
 };
 
 export type AgentWorkRecordEventRead = {
@@ -687,6 +689,8 @@ export type TraceLineRead = {
   outputTitle?: string | null;
   state: 'running' | 'completed' | 'failed';
   collapsible?: boolean | null;
+  duration_ms?: number | null;
+  model_duration_ms?: number | null;
 };
 
 export type TurnTraceRead = {
@@ -695,6 +699,9 @@ export type TurnTraceRead = {
   started_at: string;
   completed_at?: string | null;
   lines: TraceLineRead[];
+  duration_ms?: number | null;
+  model_duration_ms?: number | null;
+  model_call_count?: number | null;
 };
 
 export type TraceSummary = {
