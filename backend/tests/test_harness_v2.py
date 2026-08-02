@@ -889,6 +889,14 @@ def test_external_tool_names_cannot_shadow_later_builtin_capabilities() -> None:
         _available_invocation_name("read_file", "tool-collision", available)
         == "external_tool.tool-collision.2"
     )
+    assert (
+        _available_invocation_name("capability_search", "tool-search", available)
+        == "external_tool.tool-search"
+    )
+    assert (
+        _available_invocation_name("exec_command", "tool-command", available)
+        == "external_tool.tool-command"
+    )
 
 
 def test_external_failure_claim_is_released_only_when_request_was_not_sent() -> None:
@@ -901,6 +909,52 @@ def test_external_failure_claim_is_released_only_when_request_was_not_sent() -> 
     assert not _failure_was_not_sent(
         {"success": False, "error": {"code": "HTTP_ERROR"}}
     )
+
+
+def test_invoker_requires_run_local_activation_before_hidden_capability_call(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant-demo",
+            None,
+            None,
+            None,
+        )
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-discovery",
+            model_config=_model_config(),
+            manifest=manifest,
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+            initially_activated_names={
+                "capability_search",
+                "capability_describe",
+            },
+        )
+
+        blocked = invoker.invoke("list_directory", {"path": "."})
+        described = invoker.invoke(
+            "capability_describe",
+            {"capabilities": ["list_directory"]},
+        )
+        executed = invoker.invoke("list_directory", {"path": "."})
+
+    assert blocked["success"] is False
+    assert blocked["error"]["code"] == "CAPABILITY_NOT_ACTIVATED"
+    assert described["success"] is True
+    assert described["data"]["snapshot_revision"] == manifest.snapshot_revision
+    assert [
+        item["name"] for item in described["data"]["activated_capabilities"]
+    ] == ["list_directory"]
+    assert executed["success"] is True
 
 
 def test_external_idempotency_key_is_stable_per_task_not_entire_session(
@@ -1379,6 +1433,118 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
     assert "不得为了“更精准”而在零检索、零工具结果时提前结束" in system_prompts[0]
     assert "首次调用某个" in system_prompts[0]
     assert "不得跳过 read 直接 execute" in system_prompts[0]
+
+
+def test_harness_agent_activates_described_capability_for_current_revision(
+    monkeypatch,
+) -> None:
+    actions = iter(
+        [
+            {
+                "action": "tool",
+                "tool_name": "capability_describe",
+                "arguments": {"capabilities": ["orders.lookup"]},
+            },
+            {
+                "action": "tool",
+                "tool_name": "orders.lookup",
+                "arguments": {"order_id": "ORDER-1"},
+            },
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "订单已查询。",
+                "task_summary": "查询完成。",
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt, _payload):
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    invoked: list[str] = []
+
+    def invoke_tool(name: str, _arguments: dict[str, object]) -> dict[str, object]:
+        invoked.append(name)
+        if name == "capability_describe":
+            return {
+                "success": True,
+                "data": {
+                    "snapshot_revision": "revision-1",
+                    "activated_capabilities": [
+                        {
+                            "capability_id": "tool-orders",
+                            "name": "orders.lookup",
+                            "kind": "tool",
+                            "description": "查询订单",
+                            "input_schema": {"type": "object"},
+                        }
+                    ],
+                },
+            }
+        return {"success": True, "data": {"status": "paid"}}
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-discovery",
+            kind="conversation",
+            goal="查询订单",
+            capability_manifest=CapabilityManifest(
+                available=[
+                    CapabilityDescriptor(
+                        capability_id="builtin.discovery.describe",
+                        name="capability_describe",
+                        kind="internal",
+                    )
+                ],
+                snapshot_revision="revision-1",
+            ),
+        ),
+        _model_config(),
+        invoke_tool,
+        max_actions=3,
+    )
+
+    assert result.status == "completed"
+    assert invoked == ["capability_describe", "orders.lookup"]
+    assert [item["tool_name"] for item in result.capability_results] == [
+        "orders.lookup"
+    ]
+
+
+def test_harness_agent_rejects_describe_result_from_another_snapshot() -> None:
+    requirement = TaskRequirement(
+        task_frame_id="task-discovery",
+        kind="conversation",
+        goal="查询订单",
+        capability_manifest=CapabilityManifest(snapshot_revision="revision-current"),
+    )
+
+    activated = harness_agent_module._activate_described_capabilities(
+        requirement,
+        "capability_describe",
+        {
+            "success": True,
+            "data": {
+                "snapshot_revision": "revision-stale",
+                "activated_capabilities": [
+                    {
+                        "capability_id": "tool-orders",
+                        "name": "orders.lookup",
+                        "kind": "tool",
+                    }
+                ],
+            },
+        },
+    )
+
+    assert activated == set()
+    assert requirement.capability_manifest.available == []
 
 
 def test_harness_agent_keeps_knowledge_results_and_citations_linked(

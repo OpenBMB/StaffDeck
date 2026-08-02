@@ -8,7 +8,13 @@ source_user_message 是创建或最近更新该 TaskFrame 的用户原话，只�
 能力规则。原话或 prior_task_results 已提供的字段不得重复追问。
 
 能力规则：
-- 只能调用 capability_manifest.available 中列出的能力。
+- `capability_manifest.available` 是当前已经展开、可以直接调用的能力；
+  `capability_manifest.catalog` 是受字符预算约束的紧凑能力目录，只含名称、类型和描述，
+  目录中的能力尚不能直接调用。
+- 如果 catalog 中已有合适能力，先调用 `capability_describe` 加载完整 input schema 并
+  激活它；如果 catalog 被截断、没有合适候选或描述不足以判断，调用真正的 Harness 工具
+  `capability_search` 搜索完整冻结目录，再用 `capability_describe` 激活选中的能力。
+- 只能直接调用 available 中列出的能力，或本轮经 `capability_describe` 成功激活的能力。
 - unavailable_references 仅用于解释当前 SOP 引用为何不可用，禁止尝试调用。
 - GeneralSkill、知识库、HTTP/MCP Tool 和文件工具都视为同级 Harness tool。
 - GeneralSkill 采用“先读取、再决策”的两阶段协议。首次调用某个
@@ -22,8 +28,13 @@ source_user_message 是创建或最近更新该 TaskFrame 的用户原话，只�
   技能包确实提供了需要运行的脚本、固定命令或 API 执行逻辑，且运行它是完成当前任务
   所必需时，才可再次调用同一 GeneralSkill 并传 `operation=execute`。
 - 不得跳过 read 直接 execute；不得因为技能“匹配用户意图”就推断“需要执行代码”。
+- `exec_command` 是隔离 TaskFrame workspace 内的高杠杆命令工具。适合一次完成目录检查、
+  固定脚本运行、构建或测试等组合操作；Skill 负责提供工作流程，exec_command 负责执行。
+  有更窄、更安全的 typed Tool（知识检索、业务 API、read_file/write_file/edit_file）时优先
+  使用对应 Tool，不得用命令绕过能力授权、网络限制或 workspace 边界。
 - 选择能力是动作决策，不得重新判断、切换或创建 SOP/TaskFrame。
-- 每轮至多调用一个 tool；拿到 tool_result 后再决定下一步。
+- 当前模型协议统一采用串行工具循环：每轮至多调用一个 tool；拿到 tool_result 后再决定
+  下一步。不要输出并行 tool_calls 数组。
 - 不要声称执行了未实际调用的 Tool。
 - 用户附加需求与 SOP step 目标必须作为一个复合任务完整处理。
 - attachments 中 `materialized=true` 的附件已经由服务端写入当前 TaskFrame 的

@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 
 from app.core.capability_manifest import CapabilityManifestBuilder
+from app.core.capability_discovery import project_capability_manifest
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.harness_agent import (
     HarnessExecutionCancelled,
@@ -540,11 +541,15 @@ class HarnessV2Engine:
                 active_skill,
                 frame.target_step_id,
             )
+            # Keep the complete frozen manifest server-side for authorization,
+            # while compiling the TaskRequirement only from the safe model
+            # projection. capability_describe can activate schemas later.
+            model_manifest = project_capability_manifest(manifest)
             requirement = self.compiler.compile(
                 frame,
                 session,
                 active_skill,
-                manifest,
+                model_manifest,
                 memory_context,
                 [
                     *prior_frame_results,
@@ -597,6 +602,9 @@ class HarnessV2Engine:
                 active_step_id=frame.target_step_id,
                 agent_id=session.agent_id,
                 run_id=run.id,
+                initially_activated_names=(
+                    requirement.capability_manifest.allowed_names()
+                ),
                 is_cancelled=lambda: self._is_cancelled(request, session),
                 ensure_execution_lease=lambda: self._renew_execution_leases(
                     row

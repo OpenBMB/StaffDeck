@@ -8,10 +8,19 @@ from app.db.models import ChatSession, Skill
 from app.session.session_schema import PlannedTaskFrame
 
 
+CapabilityKind = Literal[
+    "general_skill",
+    "knowledge",
+    "tool",
+    "file",
+    "internal",
+]
+
+
 class CapabilityDescriptor(BaseModel):
     capability_id: str
     name: str
-    kind: Literal["general_skill", "knowledge", "tool", "file"]
+    kind: CapabilityKind
     capability_scope: Literal["general", "sop_specific"] = "general"
     description: str = ""
     input_schema: dict[str, Any] = Field(default_factory=dict)
@@ -20,8 +29,20 @@ class CapabilityDescriptor(BaseModel):
     unavailable_reason: str | None = None
 
 
+class CapabilityCatalogEntry(BaseModel):
+    capability_id: str
+    name: str
+    kind: CapabilityKind
+    capability_scope: Literal["general", "sop_specific"] = "general"
+    description: str = ""
+
+
 class CapabilityManifest(BaseModel):
     available: list[CapabilityDescriptor] = Field(default_factory=list)
+    catalog: list[CapabilityCatalogEntry] = Field(default_factory=list)
+    catalog_total: int = 0
+    catalog_truncated: bool = False
+    catalog_budget_chars: int = 8_000
     unavailable_references: list[CapabilityDescriptor] = Field(default_factory=list)
     snapshot_revision: str = ""
 

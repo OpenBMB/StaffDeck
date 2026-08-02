@@ -15,6 +15,12 @@ from app.core.capability_manifest import (
     general_skill_snapshot_digest,
     tool_snapshot_digest,
 )
+from app.core.capability_discovery import (
+    CAPABILITY_SEARCH_MAX_RESULTS,
+    catalog_entry,
+    model_descriptor,
+    search_capability_descriptors,
+)
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_agent import HarnessExecutionCancelled
 from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
@@ -42,6 +48,7 @@ from app.harness import (
     HarnessToolCall,
     HarnessToolContext,
     build_file_tool_registry,
+    register_command_tools,
 )
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
@@ -66,6 +73,7 @@ class HarnessCapabilityInvoker:
         active_step_id: str | None,
         agent_id: str | None,
         run_id: str | None = None,
+        initially_activated_names: set[str] | None = None,
         is_cancelled: Any | None = None,
         ensure_execution_lease: Any | None = None,
         trace_sink: Callable[[str, dict[str, Any]], None] | None = None,
@@ -91,6 +99,7 @@ class HarnessCapabilityInvoker:
         )
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         self._file_registry = build_file_tool_registry()
+        register_command_tools(self._file_registry)
         self._file_executor = HarnessExecutor(self._file_registry)
         self._file_context = HarnessToolContext(
             run_id=self.run_id,
@@ -103,6 +112,18 @@ class HarnessCapabilityInvoker:
             for item in manifest.available
             if item.available
         }
+        # ``None`` preserves compatibility for trusted direct callers.  The
+        # Harness v2 engine always supplies the projected model allowlist so a
+        # guessed hidden name cannot bypass progressive disclosure.
+        self._activated_names = (
+            set(self._descriptors)
+            if initially_activated_names is None
+            else {
+                name
+                for name in initially_activated_names
+                if name in self._descriptors
+            }
+        )
         # GeneralSkill is a two-stage capability in Harness v2.  The task agent
         # must inspect the frozen package before it can decide whether the
         # instructions are sufficient or executable code is actually needed.
@@ -117,6 +138,11 @@ class HarnessCapabilityInvoker:
             return _failure(
                 "TOOL_NOT_AVAILABLE",
                 "该能力不在当前 TaskFrame 的冻结清单中。",
+            )
+        if name not in self._activated_names:
+            return _failure(
+                "CAPABILITY_NOT_ACTIVATED",
+                "该能力尚未在当前 AgentLoop 中展开；请先调用 capability_describe。",
             )
         current_descriptor = self._currently_authorized_descriptor(descriptor)
         if current_descriptor is None:
@@ -158,7 +184,9 @@ class HarnessCapabilityInvoker:
             raise
         try:
             self._raise_if_cancelled()
-            if descriptor.kind == "file":
+            if descriptor.kind == "internal":
+                result = self._invoke_internal(name, arguments)
+            elif descriptor.kind == "file":
                 result = self._invoke_file(name, arguments, call_id=call_id)
             elif descriptor.kind == "general_skill":
                 result = self._invoke_general_skill(
@@ -362,6 +390,128 @@ class HarnessCapabilityInvoker:
                 "details": dict(result.error.details) if result.error else {},
             },
             "duration_ms": result.duration_ms,
+        }
+
+    def _invoke_internal(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if name == "capability_search":
+            return self._search_capabilities(arguments)
+        if name == "capability_describe":
+            return self._describe_capabilities(arguments)
+        return _failure(
+            "UNSUPPORTED_INTERNAL_CAPABILITY",
+            "不支持的 Harness 内部能力。",
+        )
+
+    def _search_capabilities(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return _failure("INVALID_ARGUMENTS", "capability_search query 不能为空。")
+        raw_kinds = arguments.get("kinds")
+        allowed_kinds = {"general_skill", "tool", "knowledge", "file"}
+        kinds: set[str] | None = None
+        if raw_kinds is not None:
+            if not isinstance(raw_kinds, list) or any(
+                not isinstance(item, str) or item not in allowed_kinds
+                for item in raw_kinds
+            ):
+                return _failure(
+                    "INVALID_ARGUMENTS",
+                    "capability_search kinds 包含不支持的能力类型。",
+                )
+            kinds = set(raw_kinds)
+        raw_limit = arguments.get("limit", 8)
+        if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
+            return _failure(
+                "INVALID_ARGUMENTS",
+                "capability_search limit 必须是整数。",
+            )
+        limit = max(1, min(raw_limit, CAPABILITY_SEARCH_MAX_RESULTS))
+        matches = search_capability_descriptors(
+            self._descriptors.values(),
+            query,
+            kinds=kinds,
+            limit=limit,
+        )
+        payload = {
+            "snapshot_revision": self.manifest.snapshot_revision,
+            "query": query,
+            "matches": [
+                catalog_entry(item).model_dump(mode="json") for item in matches
+            ],
+            "match_count": len(matches),
+            "notice": (
+                "搜索结果仍未激活；选择后调用 capability_describe 加载完整 schema。"
+            ),
+        }
+        self._emit_trace(
+            "capability_search_completed",
+            {
+                "query": query,
+                "kinds": sorted(kinds) if kinds else [],
+                "match_count": len(matches),
+                "matches": [item.name for item in matches],
+            },
+        )
+        return {"success": True, "data": payload}
+
+    def _describe_capabilities(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        raw_refs = arguments.get("capabilities")
+        if not isinstance(raw_refs, list) or not raw_refs or len(raw_refs) > 8:
+            return _failure(
+                "INVALID_ARGUMENTS",
+                "capability_describe capabilities 必须包含 1 到 8 个能力名称或 ID。",
+            )
+        refs = [str(item or "").strip() for item in raw_refs]
+        if any(not item for item in refs) or len(set(refs)) != len(refs):
+            return _failure(
+                "INVALID_ARGUMENTS",
+                "capability_describe capabilities 不能包含空值或重复项。",
+            )
+        by_ref = {
+            ref: descriptor
+            for descriptor in self._descriptors.values()
+            for ref in (descriptor.capability_id, descriptor.name)
+        }
+        activated: list[dict[str, Any]] = []
+        not_found: list[str] = []
+        revoked: list[str] = []
+        for ref in refs:
+            descriptor = by_ref.get(ref)
+            if descriptor is None or descriptor.kind == "internal":
+                not_found.append(ref)
+                continue
+            if self._currently_authorized_descriptor(descriptor) is None:
+                revoked.append(ref)
+                continue
+            activated.append(model_descriptor(descriptor).model_dump(mode="json"))
+            self._activated_names.add(descriptor.name)
+        self._emit_trace(
+            "capability_described",
+            {
+                "requested": refs,
+                "activated": [item["name"] for item in activated],
+                "not_found": not_found,
+                "revoked": revoked,
+            },
+        )
+        if not activated:
+            return _failure(
+                "CAPABILITY_NOT_AVAILABLE",
+                "请求的能力不存在或已不可用。",
+            )
+        return {
+            "success": True,
+            "data": {
+                "snapshot_revision": self.manifest.snapshot_revision,
+                "activated_capabilities": activated,
+                "not_found": not_found,
+                "revoked": revoked,
+                "notice": "以上能力已在当前 TaskFrame AgentLoop 中激活。",
+            },
         }
 
     def _invoke_general_skill(
@@ -736,6 +886,8 @@ def _failure_was_not_sent(result: dict[str, Any]) -> bool:
         "TOOL_NOT_AVAILABLE",
         "CAPABILITY_AUTHORIZATION_REVOKED",
         "CAPABILITY_SNAPSHOT_CHANGED",
+        "CAPABILITY_NOT_ACTIVATED",
+        "CAPABILITY_NOT_AVAILABLE",
         "INVALID_ARGUMENTS",
     }
 

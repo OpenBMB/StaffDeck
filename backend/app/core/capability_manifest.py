@@ -27,7 +27,15 @@ from app.db.models import (
     Skill,
     Tool,
 )
-from app.harness import build_file_tool_registry
+from app.harness import build_file_tool_registry, register_command_tools
+
+
+RESERVED_HARNESS_CAPABILITY_NAMES = {
+    "capability_search",
+    "capability_describe",
+    "exec_command",
+    "knowledge_search",
+}
 
 
 class CapabilityAuthorizationError(RuntimeError):
@@ -53,17 +61,29 @@ class CapabilityManifestBuilder:
         available: list[CapabilityDescriptor] = []
         unavailable: list[CapabilityDescriptor] = []
 
-        for spec in build_file_tool_registry().specs():
+        available.extend(_internal_capability_descriptors())
+
+        builtin_registry = build_file_tool_registry()
+        register_command_tools(builtin_registry)
+        for spec in builtin_registry.specs():
+            is_command = spec.name == "exec_command"
             available.append(
                 CapabilityDescriptor(
-                    capability_id=f"builtin.fs.{spec.name}",
+                    capability_id=(
+                        f"builtin.command.{spec.name}"
+                        if is_command
+                        else f"builtin.fs.{spec.name}"
+                    ),
                     name=spec.name,
                     kind="file",
                     description=spec.description,
                     input_schema=dict(spec.input_schema),
                     metadata={
-                        "provider": "builtin.fs",
+                        "provider": (
+                            "builtin.command" if is_command else "builtin.fs"
+                        ),
                         "side_effect": spec.side_effect,
+                        **({"sandbox": "bubblewrap"} if is_command else {}),
                     },
                 )
             )
@@ -127,6 +147,7 @@ class CapabilityManifestBuilder:
                         "script_execution": "explicit_after_read",
                         "permissions": dict(row.permissions_json or {}),
                         "runtime_config": dict(row.runtime_config_json or {}),
+                        "sop_explicitly_allowed": explicitly_allowed,
                     },
                 )
             )
@@ -185,6 +206,7 @@ class CapabilityManifestBuilder:
                         "method": row.method,
                         "source_tool_name": row.name,
                         "content_digest": tool_snapshot_digest(self.db, row),
+                        "sop_explicitly_allowed": explicitly_allowed,
                     },
                 )
             )
@@ -323,6 +345,70 @@ class CapabilityManifestBuilder:
                     )
                 )
         return unavailable
+
+
+def _internal_capability_descriptors() -> list[CapabilityDescriptor]:
+    return [
+        CapabilityDescriptor(
+            capability_id="builtin.discovery.search",
+            name="capability_search",
+            kind="internal",
+            description=(
+                "Search the complete frozen capability catalog for skills and tools "
+                "relevant to the current TaskRequirement. Use this when the compact "
+                "catalog is truncated or no visible candidate is clearly suitable."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "minLength": 1},
+                    "kinds": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["general_skill", "tool", "knowledge", "file"],
+                        },
+                        "uniqueItems": True,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 8,
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            metadata={"provider": "harness", "side_effect": "read"},
+        ),
+        CapabilityDescriptor(
+            capability_id="builtin.discovery.describe",
+            name="capability_describe",
+            kind="internal",
+            description=(
+                "Load the full input schema for one or more authorized capabilities "
+                "from the compact catalog or capability_search results. Described "
+                "capabilities become callable in this TaskFrame AgentLoop."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "capabilities": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "uniqueItems": True,
+                        "description": "Capability IDs or invocation names to activate.",
+                    }
+                },
+                "required": ["capabilities"],
+                "additionalProperties": False,
+            },
+            metadata={"provider": "harness", "side_effect": "read"},
+        ),
+    ]
 
 
 def tool_snapshot_digest(db: Session, tool: Tool) -> str:
@@ -469,9 +555,17 @@ def _snapshot_revision(
     available: list[CapabilityDescriptor],
     unavailable: list[CapabilityDescriptor],
 ) -> str:
+    def stable_key(item: CapabilityDescriptor) -> tuple[str, str, str]:
+        return (item.kind, item.name, item.capability_id)
     payload = {
-        "available": [item.model_dump(mode="json") for item in available],
-        "unavailable": [item.model_dump(mode="json") for item in unavailable],
+        "available": [
+            item.model_dump(mode="json")
+            for item in sorted(available, key=stable_key)
+        ],
+        "unavailable": [
+            item.model_dump(mode="json")
+            for item in sorted(unavailable, key=stable_key)
+        ],
     }
     return "sha256:" + hashlib.sha256(
         json.dumps(
@@ -487,7 +581,7 @@ def _available_invocation_name(
 ) -> str:
     # Knowledge is appended after external tools, so reserve its stable builtin
     # name up front as well as every descriptor already emitted.
-    used = {item.name for item in available} | {"knowledge_search"}
+    used = {item.name for item in available} | RESERVED_HARNESS_CAPABILITY_NAMES
     if preferred not in used:
         return preferred
     base = f"external_tool.{capability_id}"

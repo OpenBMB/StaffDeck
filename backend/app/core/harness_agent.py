@@ -11,7 +11,11 @@ from app.core.harness_attachments import (
     ValidatedTaskImagePayload,
     isolated_attachment_context,
 )
-from app.core.task_request_compiler import TaskExecutionResult, TaskRequirement
+from app.core.task_request_compiler import (
+    CapabilityDescriptor,
+    TaskExecutionResult,
+    TaskRequirement,
+)
 from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
 from app.observability.spans import llm_operation
@@ -182,9 +186,16 @@ class HarnessTaskAgent:
                     },
                 ]
             )
-            capability_results.append(
-                _bounded_capability_result(tool_name, result)
+            if tool_name not in {"capability_search", "capability_describe"}:
+                capability_results.append(
+                    _bounded_capability_result(tool_name, result)
+                )
+            activated_names = _activate_described_capabilities(
+                requirement,
+                tool_name,
+                result,
             )
+            allowed_names.update(activated_names)
             _extend_dict_list(citations, result.get("citations"))
             _extend_dict_list(artifacts, result.get("artifacts"))
             if tool_name == "knowledge_search" and isinstance(result.get("data"), dict):
@@ -203,7 +214,6 @@ class HarnessTaskAgent:
                         ),
                     },
                 )
-
         return TaskExecutionResult(
             task_frame_id=requirement.task_frame_id,
             status="action_budget",
@@ -216,6 +226,44 @@ class HarnessTaskAgent:
             action_count=max_actions,
             error={"code": "ACTION_BUDGET_EXHAUSTED"},
         )
+
+
+def _activate_described_capabilities(
+    requirement: TaskRequirement,
+    tool_name: str,
+    result: dict[str, Any],
+) -> set[str]:
+    if tool_name != "capability_describe" or result.get("success") is not True:
+        return set()
+    data = result.get("data")
+    if (
+        not isinstance(data, dict)
+        or str(data.get("snapshot_revision") or "")
+        != requirement.capability_manifest.snapshot_revision
+    ):
+        return set()
+    raw_descriptors = (
+        data.get("activated_capabilities")
+    )
+    if not isinstance(raw_descriptors, list):
+        return set()
+    existing = {
+        item.name: item for item in requirement.capability_manifest.available
+    }
+    activated: set[str] = set()
+    for raw in raw_descriptors:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            descriptor = CapabilityDescriptor.model_validate(raw)
+        except ValidationError:
+            continue
+        if not descriptor.available or descriptor.kind == "internal":
+            continue
+        existing[descriptor.name] = descriptor
+        activated.add(descriptor.name)
+    requirement.capability_manifest.available = list(existing.values())
+    return activated
 
 
 def _finish_result(
