@@ -359,7 +359,6 @@ def _bubblewrap_argv(
         "--new-session",
         "--unshare-all",
         "--unshare-net",
-        "--disable-userns",
         "--cap-drop",
         "ALL",
         "--clearenv",
