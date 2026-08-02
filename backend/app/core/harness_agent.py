@@ -196,10 +196,17 @@ class HarnessTaskAgent:
                 result,
             )
             allowed_names.update(activated_names)
-            _extend_dict_list(citations, result.get("citations"))
             _extend_dict_list(artifacts, result.get("artifacts"))
-            if tool_name == "knowledge_search" and isinstance(result.get("data"), dict):
-                evidence_results.append(dict(result["data"]))
+            if (
+                tool_name == "knowledge_search"
+                and bool(result.get("success"))
+                and isinstance(result.get("data"), dict)
+            ):
+                citations.clear()
+                _extend_dict_list(citations, result.get("citations"))
+                evidence_results[:] = [dict(result["data"])]
+            else:
+                _extend_dict_list(citations, result.get("citations"))
             if trace_sink:
                 trace_sink(
                     "harness_tool_completed",

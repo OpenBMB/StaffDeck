@@ -1638,6 +1638,94 @@ def test_harness_agent_keeps_knowledge_results_and_citations_linked(
     assert second.citations[0]["label"] == "[1]"
 
 
+def test_harness_agent_keeps_only_latest_successful_knowledge_search(
+    monkeypatch,
+) -> None:
+    actions = iter(
+        [
+            {
+                "action": "tool",
+                "tool_name": "knowledge_search",
+                "arguments": {"query": "旧制度"},
+            },
+            {
+                "action": "tool",
+                "tool_name": "knowledge_search",
+                "arguments": {"query": "最新制度"},
+            },
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "已查询最新制度。[1]",
+                "task_summary": "使用最新一次检索结果答复。",
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, _payload: dict[str, object]
+        ) -> dict[str, object]:
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+
+    def invoke_tool(_name: str, arguments: dict[str, object]) -> dict[str, object]:
+        query = str(arguments["query"])
+        slug = "latest" if query == "最新制度" else "old"
+        return {
+            "success": True,
+            "data": {
+                "query": {"query": query},
+                "evidence_pack": [
+                    {
+                        "chunk_id": f"chunk-{slug}",
+                        "source_path": f"{slug}.pdf",
+                        "content": f"{query}内容",
+                    }
+                ],
+            },
+            "citations": [
+                {
+                    "id": "kref_1",
+                    "label": "[1]",
+                    "kind": "evidence",
+                    "chunk_id": f"chunk-{slug}",
+                    "source_path": f"{slug}.pdf",
+                    "title": query,
+                    "excerpt": f"{query}内容",
+                }
+            ],
+        }
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-latest-policy",
+            kind="conversation",
+            goal="查询最新制度",
+            capability_manifest=CapabilityManifest(
+                available=[
+                    CapabilityDescriptor(
+                        capability_id="knowledge.search",
+                        name="knowledge_search",
+                        kind="knowledge",
+                    )
+                ]
+            ),
+        ),
+        _model_config(),
+        invoke_tool,
+        max_actions=3,
+    )
+
+    assert result.evidence_results[0]["query"] == {"query": "最新制度"}
+    assert result.citations[0]["source_path"] == "latest.pdf"
+    assert all(item["source_path"] != "old.pdf" for item in result.citations)
+
+
 def test_harness_agent_projects_only_validated_current_turn_images(
     tmp_path,
     monkeypatch,

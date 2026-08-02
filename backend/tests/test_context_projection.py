@@ -7,6 +7,7 @@ from app.core.context_projection import (
     compact_step_result,
     compact_step_skill_context,
 )
+from app.knowledge.citations import knowledge_citations_from_results
 
 
 def test_compact_knowledge_context_keeps_evidence_without_duplicate_payloads() -> None:
@@ -19,6 +20,20 @@ def test_compact_knowledge_context_keeps_evidence_without_duplicate_payloads() -
                 "title": "退款规则",
                 "summary": "文档摘要" * 500,
                 "outline": ["不应进入控制模型输入"] * 100,
+            }
+        ],
+        "selected_concepts": [
+            {
+                "concept_id": "concept_wrong_source",
+                "title": "不应混入的路由概念",
+                "content": "不应进入回答证据",
+            }
+        ],
+        "okf_citations": [
+            {
+                "concept_id": "okf_wrong_source",
+                "title": "不应混入的 OKF 引用",
+                "label": "不应进入回答证据",
             }
         ],
         "chunks": [{"id": "chunk_1", "content": "重复切片" * 2_000}],
@@ -41,13 +56,12 @@ def test_compact_knowledge_context_keeps_evidence_without_duplicate_payloads() -
     assert "expanded_sections" not in compacted[0]
     assert "selected_documents" not in compacted[0]
     knowledge = compacted[0]["retrieved_knowledge"]
+    assert len(knowledge) == 1
     assert knowledge[0]["label"] == "检索到的知识 1"
-    assert knowledge[1]["label"] == "检索到的知识 2"
     assert "chunk_id" not in knowledge[0]
     assert len(knowledge[0]["content"]) <= 803
     assert "excerpt" not in knowledge[0]
-    assert "outline" not in knowledge[1]
-    assert len(knowledge[1]["summary"]) <= 603
+    assert "不应进入回答证据" not in str(knowledge)
     assert result["chunks"][0]["content"].startswith("重复切片")
 
 
@@ -102,6 +116,40 @@ def test_compact_knowledge_context_does_not_split_email_at_limit() -> None:
     projected = compacted[0]["retrieved_knowledge"][0]["content"]
     assert "ops@example.test" in projected
     assert "ops@example..." not in projected
+
+
+def test_compact_knowledge_context_and_citations_share_normalized_source() -> None:
+    result = {
+        "selected_concepts": [
+            {
+                "concept_id": "sources/demo",
+                "title": "统一来源",
+                "content": "统一处理后的知识内容。",
+                "source_refs": [{"source_path": "demo.md"}],
+            }
+        ]
+    }
+
+    compacted = compact_knowledge_context([result])
+    citations = knowledge_citations_from_results([result])
+
+    assert compacted[0]["retrieved_knowledge"][0]["source"] == "demo.md"
+    assert citations[0]["source_path"] == "demo.md"
+
+
+def test_document_route_metadata_without_evidence_is_not_answer_context() -> None:
+    result = {
+        "selected_documents": [
+            {
+                "id": "doc_route_only",
+                "filename": "route-only.pdf",
+                "summary": "仅用于路由、没有读取正文的文档摘要。",
+            }
+        ]
+    }
+
+    assert compact_knowledge_context([result]) == []
+    assert knowledge_citations_from_results([result]) == []
 
 
 def test_compact_conversation_context_keeps_recent_history_within_control_budget() -> None:
