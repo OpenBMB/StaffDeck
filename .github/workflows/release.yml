@@ -21,8 +21,10 @@ jobs:
         include:
           - os: macos-15        # Apple Silicon (arm64)
             script: bash packaging/build_macos.sh
+            macos_arch: arm64
           - os: macos-15-intel  # Intel (x86_64) — 无本地机器，靠 CI 出包
             script: bash packaging/build_macos.sh
+            macos_arch: x86_64
           - os: ubuntu-latest
             script: bash packaging/build_linux.sh
           - os: windows-latest
@@ -118,6 +120,7 @@ jobs:
       - name: Build
         env:
           VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+          STAFFDECK_MACOS_ARCH: ${{ matrix.macos_arch }}
         run: ${{ matrix.script }}
 
       - name: Windows general-skill smoke (python runtime)
