@@ -43,9 +43,28 @@ Visit the [StaffDeck official website](https://staffdeck.openbmb.cn/) or downloa
 | Windows | x64 | [Download installer `.exe`](https://github.com/OpenBMB/StaffDeck/releases/latest/download/StaffDeck-windows-x64-setup.exe) |
 | Linux | x86_64 (Debian/Ubuntu) | [Download `.deb`](https://github.com/OpenBMB/StaffDeck/releases/latest/download/StaffDeck-linux-x86_64.deb) |
 
+Linux packages listen on `127.0.0.1` by default. Use `staffdeck setup` from a
+terminal to choose the listening mode and port, including on a headless host:
+
+```bash
+staffdeck setup
+staffdeck setup --mode local --port 5173
+staffdeck setup --mode lan --port 5173
+staffdeck setup --mode public --port 5173 --public-url https://staff.example.com
+```
+
+`local` listens only on the machine; `lan` and `public` listen on `0.0.0.0`.
+`--port` sets the listening port. In interactive terminals, `public` tries to
+infer a public URL first; if it cannot, or when running headless, pass
+`--public-url` explicitly. For public deployments, use an HTTPS reverse proxy
+and set the same public URL as `OIDC_REDIRECT_URI` when SSO is enabled. The
+setup is saved per user and applied on the next launch.
+
 ## Agent-Friendly Quick Deploy
 
-Paste the prompt below into Cursor, Claude Code, or Codex:
+Paste the prompt below into Cursor, Claude Code, or Codex. For code-based
+deployments, you can also override the launch at runtime with
+`ULTRARAG_HOST`, `ULTRARAG_PORT`, and `STAFFDECK_PUBLIC_URL`:
 
 ```text
 Read https://raw.githubusercontent.com/OpenBMB/StaffDeck/main/README.md.
