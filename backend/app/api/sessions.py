@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from app.api.chat import _build_turn_traces, message_read, session_read
+from app.core.harness_session_cleanup import stage_harness_session_execution_reset
 from app.db import get_session
 from app.db.models import (
     AgentEvent,
@@ -137,12 +138,19 @@ def reset_session(
 ) -> dict:
     _ensure_request_tenant(tenant_id, current_user)
     row = _get_visible_chat_session(db, tenant_id, session_id, current_user)
+    stage_harness_session_execution_reset(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+    )
     row.active_skill_id = None
     row.active_step_id = None
     row.slots_json = {}
     row.skill_stack_json = []
     row.pending_tasks_json = []
     row.resume_after_answer_json = None
+    row.awaiting_input_json = None
+    row.context_state_json = {}
     row.summary = None
     row.last_agent_question = None
     row.status = "active"

@@ -1,8 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
-from types import SimpleNamespace
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.feedback import (
     get_feedback_session_detail,
@@ -11,7 +12,20 @@ from app.api.feedback import (
     reanalyze_feedback,
 )
 from app.api.sessions import get_session_detail, list_sessions, reset_session
-from app.db.models import AgentProfile, ChatSession, Message, MessageFeedback, Tenant, User
+from app.core.task_frame_store import TaskFrameStore
+from app.db.models import (
+    AgentProfile,
+    ChatSession,
+    HarnessRunRecord,
+    HarnessSessionLeaseRecord,
+    HarnessTaskFrameRecord,
+    HarnessTurnRecord,
+    Message,
+    MessageFeedback,
+    Tenant,
+    User,
+    utc_now,
+)
 
 
 def _test_session() -> Session:
@@ -184,6 +198,74 @@ def test_reset_allowed_for_agent_creator_and_admin_only() -> None:
         # admin 也可重置
         admin_payload = reset_session("session_member", "tenant_demo", current_user=users["admin"], db=db)
         assert admin_payload["id"] == "session_member"
+
+
+def test_reset_clears_harness_execution_state_and_preserves_turn_receipt() -> None:
+    with _test_session() as db:
+        users = _seed(db)
+        row = db.get(ChatSession, "session_channel")
+        assert row is not None
+        row.context_state_json = {"harness_v2": {"active_task_frame_id": "task_old"}}
+        row.awaiting_input_json = {"task_id": "task_old"}
+        frame = HarnessTaskFrameRecord(
+            tenant_id=row.tenant_id,
+            session_id=row.id,
+            source_turn_id="turn_old",
+            task_id="task_old",
+            status="queued",
+        )
+        db.add(frame)
+        db.flush()
+        db.add(
+            HarnessRunRecord(
+                tenant_id=row.tenant_id,
+                session_id=row.id,
+                task_frame_record_id=frame.id,
+                task_id=frame.task_id,
+                source_turn_id=frame.source_turn_id,
+                status="running",
+            )
+        )
+        db.add(
+            HarnessSessionLeaseRecord(
+                tenant_id=row.tenant_id,
+                session_id=row.id,
+                lease_owner="worker_old",
+                lease_expires_at=utc_now(),
+            )
+        )
+        db.add(
+            HarnessTurnRecord(
+                tenant_id=row.tenant_id,
+                session_id=row.id,
+                client_turn_id="turn_old",
+                request_digest="digest",
+                lease_owner="turn_worker_old",
+                lease_expires_at=utc_now(),
+            )
+        )
+        db.commit()
+
+        reset_session(
+            "session_channel",
+            "tenant_demo",
+            current_user=users["owner"],
+            db=db,
+        )
+
+        db.refresh(row)
+        assert row.context_state_json == {}
+        assert row.awaiting_input_json is None
+        assert TaskFrameStore(db).planner_state(row) == []
+        assert db.exec(select(HarnessRunRecord)).all() == []
+        assert db.exec(select(HarnessSessionLeaseRecord)).all() == []
+        receipt = db.exec(
+            select(HarnessTurnRecord).where(
+                HarnessTurnRecord.session_id == row.id,
+                HarnessTurnRecord.client_turn_id == "turn_old",
+            )
+        ).one()
+        assert receipt.status == "cancelled"
 
 
 def test_augment_fields_channel_and_identity() -> None:
