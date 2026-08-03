@@ -325,6 +325,22 @@ def test_workspace_and_file_quotas_are_enforced_before_write(tmp_path: Path) -> 
     assert not (context.workspace_root / "b.txt").exists()
 
 
+def test_deleted_files_do_not_consume_workspace_quota(tmp_path: Path) -> None:
+    limits = HarnessLimits(
+        max_read_bytes=64,
+        max_file_bytes=8,
+        max_workspace_bytes=8,
+        max_entries=10,
+        max_result_bytes=1024,
+    )
+    executor, context = _harness(tmp_path, limits=limits)
+    _execute(executor, context, "write_file", {"path": "a.txt", "content": "12345678"})
+    _execute(executor, context, "delete_file", {"path": "a.txt"})
+    _execute(executor, context, "write_file", {"path": "b.txt", "content": "abcdefgh"})
+    assert (context.workspace_root / ".harness-trash").exists()
+    assert (context.workspace_root / "b.txt").read_text() == "abcdefgh"
+
+
 def test_read_chunks_on_utf8_boundaries_and_rejects_binary(tmp_path: Path) -> None:
     limits = HarnessLimits(
         max_read_bytes=8,

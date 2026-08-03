@@ -79,7 +79,7 @@ def _seed_artifact(
                         "type": "workspace_file",
                         "task_frame_id": task_frame_id,
                         "path": artifact_path,
-                        "size": 12,
+                        "size": 13,
                     }
                 ]
             },
@@ -132,6 +132,35 @@ def test_downloads_only_a_published_file_from_the_exact_frame(
         )
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["etag"].startswith('"sha256:')
+
+
+def test_download_rejects_a_file_changed_after_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        user = _seed_artifact(db)
+        workspace = harness_task_workspace_path(
+            tenant_id="tenant_demo",
+            session_id="session_demo",
+            task_frame_id="task_demo",
+        )
+        file_path = workspace / "reports" / "result.txt"
+        file_path.parent.mkdir(parents=True)
+        file_path.write_text("changed body", encoding="utf-8")
+
+        with pytest.raises(HTTPException) as changed:
+            download_harness_artifact(
+                "session_demo",
+                "task_demo",
+                tenant_id="tenant_demo",
+                path="reports/result.txt",
+                current_user=user,
+                db=db,
+            )
+        assert changed.value.status_code == 409
 
 
 def test_download_requires_session_owner_frame_scope_and_published_path(

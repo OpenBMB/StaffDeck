@@ -1936,6 +1936,14 @@ def download_harness_artifact(
             path,
         )
         digest = opened.sha256()
+        expected_digest = str(artifact.get("sha256") or "").strip().lower()
+        expected_size = artifact.get("size")
+        if (
+            (expected_digest and expected_digest != digest.lower())
+            or (isinstance(expected_size, int) and expected_size != opened.size)
+        ):
+            opened.close()
+            raise HTTPException(status_code=409, detail="Artifact has changed")
     except (HarnessArtifactAccessError, OSError):
         if opened is not None:
             opened.close()
