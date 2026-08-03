@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 import logging
 import os
+import ipaddress
 import socket
 import sys
 import tempfile
@@ -15,6 +17,7 @@ from pathlib import Path
 APP_NAME = "StaffDeck"
 APP_ID = "ai.staffdeck.desktop"
 APP_VERSION = "0.1.0"
+NETWORK_MODES = {"local", "lan", "public"}
 DEFAULT_PORT_RANGE_START = 5173
 DEFAULT_PORT_RANGE_END = 5199
 _MACOS_DELEGATE_REF = None
@@ -28,7 +31,124 @@ def build_server_config() -> dict:
         "app": "single_port_app:app",
         "host": host,
         "port": find_available_port(host),
+        "public_url": os.environ.get("STAFFDECK_PUBLIC_URL", "").strip(),
     }
+
+
+def _network_config_path() -> Path:
+    return Path(user_data_dir()) / "network.json"
+
+
+def user_data_dir() -> Path:
+    from app import paths
+
+    return paths.user_data_dir()
+
+
+def _load_network_config() -> dict[str, str]:
+    try:
+        payload = json.loads(_network_config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_network_config(mode: str, host: str, port: int, public_url: str = "") -> Path:
+    if mode not in NETWORK_MODES:
+        raise ValueError(f"网络模式必须是 local、lan 或 public，当前为 {mode!r}")
+    if mode == "local":
+        host = "127.0.0.1"
+    elif mode in {"lan", "public"}:
+        host = "0.0.0.0"
+    if mode == "public" and not public_url:
+        raise ValueError("公网模式需要提供 --public-url，例如 https://staff.example.com")
+    path = _network_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"mode": mode, "host": host, "port": port, "public_url": public_url}, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _infer_public_url(port: int) -> str:
+    candidates: list[str] = []
+    try:
+        candidates.append(socket.gethostbyname(socket.gethostname()))
+    except OSError:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            candidates.append(sock.getsockname()[0])
+    except OSError:
+        pass
+    for host in candidates:
+        if not host:
+            continue
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            continue
+        if ip.is_loopback or ip.is_unspecified:
+            continue
+        return f"http://{host}:{port}"
+    return ""
+
+
+def _apply_network_config(argv: list[str]) -> list[str]:
+    """Apply persisted/CLI network settings before importing the ASGI app."""
+    saved = _load_network_config()
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--mode", choices=sorted(NETWORK_MODES))
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--public-url")
+    args, remaining = parser.parse_known_args(argv)
+    mode = args.mode or str(saved.get("mode") or "local")
+    host = args.host or os.environ.get("ULTRARAG_HOST") or str(
+        saved.get("host") or ("127.0.0.1" if mode == "local" else "0.0.0.0")
+    )
+    port = args.port or int(os.environ.get("ULTRARAG_PORT") or saved.get("port") or 5173)
+    public_url = args.public_url or os.environ.get("STAFFDECK_PUBLIC_URL") or str(
+        saved.get("public_url") or ""
+    )
+    if mode == "local":
+        host = "127.0.0.1"
+    elif args.mode and mode in {"lan", "public"} and not args.host:
+        host = "0.0.0.0"
+    os.environ["ULTRARAG_HOST"] = host
+    os.environ["ULTRARAG_PORT"] = str(port)
+    if public_url:
+        os.environ["STAFFDECK_PUBLIC_URL"] = public_url
+    return remaining
+
+
+def _setup_network(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="staffdeck setup", description="配置 StaffDeck 网络访问方式")
+    parser.add_argument("--mode", choices=sorted(NETWORK_MODES), help="local、lan 或 public")
+    parser.add_argument("--port", type=int, default=5173)
+    parser.add_argument("--public-url", default="")
+    args = parser.parse_args(argv)
+    mode = args.mode
+    if not mode:
+        if not sys.stdin.isatty():
+            raise SystemExit("无头环境请使用 staffdeck setup --mode local|lan|public")
+        print("选择网络模式：1) 本机  2) 局域网  3) 公网")
+        mode = {"1": "local", "2": "lan", "3": "public"}.get(input("请选择 [1]: ").strip() or "1")
+        if not mode:
+            raise SystemExit("无效的网络模式")
+    public_url = args.public_url.strip()
+    if mode == "public" and not public_url:
+        public_url = _infer_public_url(args.port)
+        if not public_url and not sys.stdin.isatty():
+            raise SystemExit("公网模式必须提供 --public-url")
+        if not public_url:
+            public_url = input("请输入公网 URL（例如 https://staff.example.com）：").strip()
+    path = _save_network_config(mode, "", args.port, public_url)
+    print(f"已保存网络模式：{mode}，配置文件：{path}")
+    return 0
 
 
 def _redirect_logs_when_frozen() -> None:
@@ -49,11 +169,12 @@ def apply_runtime_env(cfg: dict | None = None) -> None:
         assert "app.config" not in sys.modules, "apply_runtime_env 必须在 import app.* 之前调用"
 
     cfg = cfg or build_server_config()
-    origin = f"http://{cfg['host']}:{cfg['port']}"
-    os.environ.setdefault("TOOL_BASE_URL", origin)
+    local_origin = f"http://{('127.0.0.1' if cfg['host'] == '0.0.0.0' else cfg['host'])}:{cfg['port']}"
+    origin = cfg.get("public_url") or local_origin
+    os.environ.setdefault("TOOL_BASE_URL", local_origin)
     existing_cors = os.environ.get("CORS_ORIGINS", "")
-    if origin not in existing_cors:
-        os.environ["CORS_ORIGINS"] = ",".join(filter(None, [existing_cors, origin]))
+    origins = [item for item in (existing_cors, local_origin, origin) if item]
+    os.environ["CORS_ORIGINS"] = ",".join(dict.fromkeys(",".join(origins).split(",")))
 
     # frozen 态把 .env 指向用户数据目录（不存在则 pydantic 不加载），避免误加载启动 cwd 的陌生 .env
     if getattr(sys, "frozen", False):
@@ -569,6 +690,10 @@ def _run_windows_taskbar_app(cfg: dict, url: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args and raw_args[0] == "setup":
+        return _setup_network(raw_args[1:])
+    _apply_network_config(raw_args)
     _redirect_logs_when_frozen()
 
     host = os.environ.get("ULTRARAG_HOST", "127.0.0.1")
@@ -590,7 +715,7 @@ def main(argv: list[str] | None = None) -> int:
     # 时序：先选定端口并设 env，再 import uvicorn / 触发 app.* import。
     cfg = build_server_config()
     apply_runtime_env(cfg)
-    url = f"http://{cfg['host']}:{cfg['port']}"
+    url = cfg.get("public_url") or f"http://{cfg['host']}:{cfg['port']}"
     preload_server_app(cfg)
 
     if _use_macos_dock_app():

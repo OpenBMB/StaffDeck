@@ -1,4 +1,5 @@
 import desktop_launcher
+import pytest
 
 
 def test_frozen_safe_main_calls_freeze_support_before_main(monkeypatch) -> None:
@@ -26,6 +27,69 @@ def test_build_server_config_defaults(monkeypatch) -> None:
     assert cfg["host"] == "127.0.0.1"
     assert cfg["port"] == 5173
     assert cfg["app"] == "single_port_app:app"
+
+
+def test_setup_network_saves_local_mode(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(desktop_launcher, "user_data_dir", lambda: tmp_path)
+
+    assert desktop_launcher._setup_network(["--mode", "local", "--port", "5180"]) == 0
+    assert (tmp_path / "network.json").read_text(encoding="utf-8") == (
+        '{\n  "mode": "local",\n  "host": "127.0.0.1",\n  "port": 5180,\n  "public_url": ""\n}\n'
+    )
+
+
+def test_apply_network_config_uses_persisted_lan_mode(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(desktop_launcher, "user_data_dir", lambda: tmp_path)
+    desktop_launcher._save_network_config("lan", "", 5190)
+    monkeypatch.delenv("ULTRARAG_HOST", raising=False)
+    monkeypatch.delenv("ULTRARAG_PORT", raising=False)
+
+    desktop_launcher._apply_network_config([])
+
+    assert desktop_launcher.os.environ["ULTRARAG_HOST"] == "0.0.0.0"
+    assert desktop_launcher.os.environ["ULTRARAG_PORT"] == "5190"
+
+
+def test_apply_network_config_preserves_environment_overrides(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(desktop_launcher, "user_data_dir", lambda: tmp_path)
+    desktop_launcher._save_network_config("lan", "", 5190)
+    monkeypatch.setenv("ULTRARAG_HOST", "0.0.0.0")
+    monkeypatch.setenv("ULTRARAG_PORT", "6200")
+
+    desktop_launcher._apply_network_config([])
+
+    assert desktop_launcher.os.environ["ULTRARAG_HOST"] == "0.0.0.0"
+    assert desktop_launcher.os.environ["ULTRARAG_PORT"] == "6200"
+
+
+def test_public_mode_uses_inferred_public_url(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(desktop_launcher, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(desktop_launcher, "_infer_public_url", lambda port: f"http://203.0.113.9:{port}")
+
+    assert desktop_launcher._setup_network(["--mode", "public", "--port", "5173"]) == 0
+    assert (tmp_path / "network.json").read_text(encoding="utf-8") == (
+        '{\n  "mode": "public",\n  "host": "0.0.0.0",\n  "port": 5173,\n  "public_url": "http://203.0.113.9:5173"\n}\n'
+    )
+
+
+def test_public_mode_requires_public_url_when_inference_fails(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(desktop_launcher, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(desktop_launcher, "_infer_public_url", lambda _port: "")
+    monkeypatch.setattr(desktop_launcher.sys.stdin, "isatty", lambda: False)
+
+    with pytest.raises(SystemExit, match="公网模式必须提供 --public-url"):
+        desktop_launcher._setup_network(["--mode", "public", "--port", "5173"])
+
+
+def test_public_url_does_not_redirect_backend_tool_calls(monkeypatch) -> None:
+    monkeypatch.delenv("TOOL_BASE_URL", raising=False)
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    desktop_launcher.apply_runtime_env(
+        {"host": "0.0.0.0", "port": 5173, "public_url": "https://staff.example.com"}
+    )
+
+    assert desktop_launcher.os.environ["TOOL_BASE_URL"] == "http://127.0.0.1:5173"
+    assert "https://staff.example.com" in desktop_launcher.os.environ["CORS_ORIGINS"]
 
 
 def test_build_server_config_env_override(monkeypatch) -> None:
