@@ -264,6 +264,7 @@ def _resolve_upload_knowledge_base(
         name=name,
         description=f"由文档 {request.filename} 创建",
         status="active",
+        capability_scope=request.capability_scope,
         metadata_json={
             **(creator_metadata or user_creator_metadata(current_user, request.metadata or {})),
             "created_from_document_upload": True,

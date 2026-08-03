@@ -3,9 +3,20 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
-from app.api.chat import message_read, session_read
+from app.api.chat import _build_turn_traces, message_read, session_read
 from app.db import get_session
-from app.db.models import AgentEvent, AgentProfile, ChatSession, Message, User, utc_now
+from app.db.models import (
+    AgentEvent,
+    AgentProfile,
+    ChatSession,
+    Message,
+    MessageFeedback,
+    Skill,
+    User,
+    utc_now,
+)
+from app.feedback import feedback_analysis_read
+from app.observability.session_timings import enrich_turn_traces_with_timings
 from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
@@ -54,9 +65,40 @@ def get_session_detail(
         .where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == session_id)
         .order_by(AgentEvent.created_at)
     ).all()
+    feedback_rows = db.exec(
+        select(MessageFeedback)
+        .where(
+            MessageFeedback.tenant_id == tenant_id,
+            MessageFeedback.session_id == session_id,
+        )
+        .order_by(MessageFeedback.updated_at.desc())
+    ).all()
+    feedback_by_message = {item.message_id: item for item in feedback_rows}
+    skills = db.exec(select(Skill).where(Skill.tenant_id == tenant_id)).all()
+    skill_names = {skill.skill_id: skill.name for skill in skills}
+    traces = enrich_turn_traces_with_timings(
+        _build_turn_traces(messages, events, skill_names),
+        events,
+    )
     return {
         "session": _session_payloads(db, [row])[0],
-        "messages": [message_read(message).model_dump() for message in messages],
+        "messages": [
+            _message_payload(message, feedback_by_message.get(message.id), db)
+            for message in messages
+        ],
+        "feedback": [
+            {
+                "id": item.id,
+                "message_id": item.message_id,
+                "user_id": item.user_id,
+                "rating": item.rating,
+                "analysis": feedback_analysis_read(item),
+                "created_at": item.created_at.isoformat(),
+                "updated_at": item.updated_at.isoformat(),
+            }
+            for item in feedback_rows
+        ],
+        "traces": traces,
         "events": [
             {
                 "id": event.id,
@@ -67,6 +109,23 @@ def get_session_detail(
             for event in events
         ],
     }
+
+
+def _message_payload(
+    message: Message,
+    feedback: MessageFeedback | None,
+    db: Session,
+) -> dict:
+    payload = message_read(
+        message,
+        feedback.rating if feedback else None,
+        db=db,
+    ).model_dump()
+    if feedback:
+        payload["feedback_id"] = feedback.id
+        payload["feedback_updated_at"] = feedback.updated_at.isoformat()
+        payload["feedback_analysis"] = feedback_analysis_read(feedback)
+    return payload
 
 
 @router.post("/{session_id}/reset")

@@ -1764,6 +1764,178 @@ def test_message_read_uses_metadata_turn_id_when_event_mapping_is_missing() -> N
     assert message_read(row).turn_id == "msg_user"
 
 
+def test_turn_trace_restores_harness_task_and_general_skill_execution() -> None:
+    started_at = datetime(2026, 8, 1, 9, 0, 0)
+    messages = [
+        Message(
+            id="msg_user",
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            role="user",
+            content="北京天气如何",
+            created_at=started_at,
+        ),
+        Message(
+            id="msg_assistant",
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            role="assistant",
+            content="北京多云，29 度。",
+            created_at=started_at + timedelta(seconds=9),
+        ),
+    ]
+    base_payload = {
+        "turn_id": "msg_user",
+        "user_message_id": "msg_user",
+        "task_frame_id": "task-weather",
+        "harness_run_id": "run-weather",
+        "execution_engine": "harness_v2",
+    }
+    events = [
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            event_type="user_message_received",
+            payload_json={"message_id": "msg_user", "message": "北京天气如何"},
+            created_at=started_at,
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            event_type="task_frame_started",
+            payload_json={**base_payload, "kind": "conversation"},
+            created_at=started_at + timedelta(seconds=1),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            event_type="harness_action_created",
+            payload_json={
+                **base_payload,
+                "iteration": 1,
+                "action": "tool",
+                "tool_name": "general_skill.weather",
+            },
+            created_at=started_at + timedelta(seconds=2),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            event_type="general_skill_trace",
+            payload_json={
+                **base_payload,
+                "phase": "plan_created",
+                "message": "已生成 Bash runner",
+                "runtime": "bash",
+                "code": "python3 scripts/weather.py",
+            },
+            created_at=started_at + timedelta(seconds=3),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            event_type="general_skill_trace",
+            payload_json={
+                **base_payload,
+                "phase": "code_finished",
+                "message": "Bash runner 执行完成",
+                "runtime": "bash",
+                "return_code": 0,
+                "structured_result": {"temperature": 29},
+            },
+            created_at=started_at + timedelta(seconds=4),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            event_type="general_skill_run_finished",
+            payload_json={
+                **base_payload,
+                "skill_slug": "weather",
+                "operation": "execute",
+                "success": True,
+            },
+            created_at=started_at + timedelta(seconds=5),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            event_type="harness_tool_completed",
+            payload_json={
+                **base_payload,
+                "iteration": 1,
+                "tool_name": "general_skill.weather",
+                "success": True,
+                "error": None,
+                "result": {
+                    "tool_name": "general_skill.weather",
+                    "success": True,
+                    "data": {"structured_result": {"temperature": 29}},
+                },
+            },
+            created_at=started_at + timedelta(seconds=6),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            event_type="harness_action_created",
+            payload_json={
+                **base_payload,
+                "iteration": 2,
+                "action": "finish",
+            },
+            created_at=started_at + timedelta(seconds=7),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            event_type="task_frame_finished",
+            payload_json={
+                **base_payload,
+                "status": "completed",
+                "action_count": 2,
+            },
+            created_at=started_at + timedelta(seconds=8),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_harness_trace",
+            event_type="assistant_message_created",
+            payload_json={
+                "turn_id": "msg_user",
+                "user_message_id": "msg_user",
+                "message_id": "msg_assistant",
+                "reply": "北京多云，29 度。",
+            },
+            created_at=started_at + timedelta(seconds=9),
+        ),
+    ]
+
+    traces = _build_turn_traces(messages, events, {})
+
+    assert len(traces) == 1
+    lines = traces[0]["lines"]
+    assert any(
+        line["id"] == "harness_frame_task-weather"
+        and line["text"] == "任务执行完成"
+        and line["state"] == "completed"
+        for line in lines
+    )
+    tool_line = next(
+        line
+        for line in lines
+        if line["id"] == "harness_action_task-weather_1"
+    )
+    assert tool_line["text"] == "能力调用完成 general_skill.weather"
+    assert '"temperature": 29' in tool_line["output"]
+    plan_line = next(line for line in lines if line.get("code"))
+    assert plan_line["language"] == "bash"
+    assert plan_line["code"] == "python3 scripts/weather.py"
+    assert any(line["text"] == "Bash runner 执行完成" for line in lines)
+    assert any(line["text"] == "通用技能运行完成" for line in lines)
+    assert any(line["text"] == "整理任务结果" for line in lines)
+
+
 def _test_db() -> Session:
     engine = create_engine(
         "sqlite://",

@@ -6,6 +6,7 @@ import {
 import {
   CHAT_TRACE_RECOVERY_WINDOW_MS,
   createdScheduledTaskForMessage,
+  harnessWorkspaceArtifacts,
   isScheduledTaskPrompt,
   knowledgeCitations,
   messageAttachments,
@@ -119,6 +120,9 @@ export default function MessageList({ chat }: { chat: UseChatSession }) {
             && visibleContent === '已停止生成',
           );
           const attachments = messageAttachments(item);
+          const harnessArtifacts = item.role === 'assistant'
+            ? harnessWorkspaceArtifacts(item)
+            : [];
           const statusOnly = stoppedStatusOnly;
           const showInlineTrace = Boolean(summaryForRender && !stoppedStatusOnly);
 
@@ -131,6 +135,7 @@ export default function MessageList({ chat }: { chat: UseChatSession }) {
             && !persistedCreatedTask
             && citations.length === 0
             && attachments.length === 0
+            && harnessArtifacts.length === 0
           ) {
             return null;
           }
@@ -147,6 +152,7 @@ export default function MessageList({ chat }: { chat: UseChatSession }) {
             createdTask: createdScheduledTasks[item.id] || persistedCreatedTask,
             scheduledTaskPrompt,
             attachments,
+            harnessArtifacts,
             statusOnly,
           };
 

@@ -23,6 +23,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError, TENANT_ID } from '../api/client';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
+import {
+  CapabilityScopeBadge,
+  CapabilityScopeControl,
+  normalizeCapabilityScope,
+} from '@/components/CapabilityScopeControl';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
@@ -78,6 +83,7 @@ import { useClientPagination } from '../hooks/useClientPagination';
 import { renderMarkdownBlocks } from './chat/chatHelpers';
 import { getDateLocale } from '@/i18n';
 import type {
+  CapabilityScope,
   KnowledgeBaseRead,
   KnowledgeBucketRead,
   KnowledgeChunkRead,
@@ -177,7 +183,12 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
   const [importLoading, setImportLoading] = useState(false);
   const [editingKnowledgeBase, setEditingKnowledgeBase] = useState<KnowledgeBaseRead | null>(null);
   const [deleteKbTarget, setDeleteKbTarget] = useState<KnowledgeBaseRead | null>(null);
-  const [knowledgeBaseDraft, setKnowledgeBaseDraft] = useState({ name: '', description: '', status: 'active' });
+  const [knowledgeBaseDraft, setKnowledgeBaseDraft] = useState({
+    name: '',
+    description: '',
+    status: 'active',
+    capability_scope: 'general' as CapabilityScope,
+  });
   const [versionKnowledgeBase, setVersionKnowledgeBase] = useState<KnowledgeBaseRead | null>(null);
   const [knowledgeBaseVersions, setKnowledgeBaseVersions] = useState<KnowledgeBaseVersionRead[]>([]);
   const [editingDocument, setEditingDocument] = useState<KnowledgeDocumentRead | null>(null);
@@ -713,6 +724,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       name: row.name,
       description: row.description || '',
       status: row.status === 'archived' ? 'archived' : 'active',
+      capability_scope: normalizeCapabilityScope(row.capability_scope),
     });
   }
 
@@ -725,6 +737,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
         name: knowledgeBaseDraft.name,
         description: knowledgeBaseDraft.description,
         status: knowledgeBaseDraft.status,
+        capability_scope: knowledgeBaseDraft.capability_scope,
       });
       setKnowledgeBases((current) => current.map((item) => (item.id === next.id ? next : item)));
       setEditingKnowledgeBase(null);
@@ -978,6 +991,12 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       render: (row) => statusTag(row.status),
     },
     {
+      key: 'capability_scope',
+      title: '能力范围',
+      width: 105,
+      render: (row) => <CapabilityScopeBadge value={row.capability_scope} />,
+    },
+    {
       key: 'creator',
       title: '创建者',
       width: 120,
@@ -1032,6 +1051,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       </div>
       <div className="mt-[10px] flex flex-wrap items-center gap-[6px]">
         {statusTag(item.status)}
+        <CapabilityScopeBadge value={item.capability_scope} />
         {item.version ? <KTag>v{item.version}</KTag> : null}
         <KTag>{item.document_count} 文档</KTag>
         <KTag>{item.bucket_count} 目录</KTag>
@@ -1458,6 +1478,11 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
               <SelectItem value="archived">下线</SelectItem>
             </SelectContent>
           </UISelect>
+          <CapabilityScopeControl
+            value={knowledgeBaseDraft.capability_scope}
+            onChange={(value) => setKnowledgeBaseDraft((prev) => ({ ...prev, capability_scope: value }))}
+            resourceType="knowledge_base"
+          />
         </div>
       </KDialog>
       <KDialog
@@ -1604,6 +1629,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
 export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
   const navigate = useNavigate();
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
+  const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('general');
   const [jobs, setJobs] = useState<Record<string, KnowledgeIngestJobRead>>({});
   const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
   const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
@@ -1740,6 +1766,7 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
         filename: file.name,
         title: file.name.replace(/\.[^.]+$/, ''),
         content_base64: contentBase64,
+        capability_scope: capabilityScope,
       });
       setJobs((prev) => ({ ...prev, [job.id]: job }));
       await refreshKnowledgeBases();
@@ -1843,10 +1870,16 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
                 <small>
                   {item.document_count} 文档 / {item.bucket_count} 目录 / {item.chunk_count} 引用
                 </small>
+                <CapabilityScopeBadge value={item.capability_scope} />
               </div>
             ))}
           </div>
         )}
+        <CapabilityScopeControl
+          value={capabilityScope}
+          onChange={setCapabilityScope}
+          resourceType="knowledge_base"
+        />
         <FileDropzone
           multiple
           accept=".doc,.docx,.txt,.md,.markdown,.html,.htm,.pdf"

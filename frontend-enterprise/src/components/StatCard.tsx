@@ -44,7 +44,7 @@ export function StatCard({ value, label, tone = 'default', valueClassName, class
         className,
       )}
     >
-      <div className="flex min-w-0 items-end gap-[6px]">
+      <div className="flex min-w-0 items-baseline gap-[6px]">
         <span className={cn('shrink-0 text-[26px] font-semibold leading-none', VALUE_CLASS[tone], valueClassName)}>
           {value}
         </span>

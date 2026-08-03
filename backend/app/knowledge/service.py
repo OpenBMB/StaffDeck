@@ -14,6 +14,7 @@ from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from app.capability_scope import normalize_capability_scope
 from app import paths
 from app.db import engine
 from app.db.models import (
@@ -1231,6 +1232,7 @@ class KnowledgeService:
             input_schema=payload.get("input_schema") if isinstance(payload.get("input_schema"), dict) else {},
             output_schema=payload.get("output_schema") if isinstance(payload.get("output_schema"), dict) else {},
             allowed_skills_json=payload.get("allowed_skills") if isinstance(payload.get("allowed_skills"), list) else [],
+            capability_scope=normalize_capability_scope(payload.get("capability_scope")),
             enabled=True,
         )
         self.db.add(row)

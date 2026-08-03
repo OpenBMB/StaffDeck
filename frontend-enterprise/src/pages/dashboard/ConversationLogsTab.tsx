@@ -14,10 +14,22 @@ import { DetailField } from '@/components/DetailField';
 import { Paginator } from '@/components/Paginator';
 import { StatCard } from '@/components/StatCard';
 import { Button as UIButton } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogTitle, UnderlineTabs, type UnderlineTabItem } from '@/components/ui';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  Select as UISelect,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  UnderlineTabs,
+  type UnderlineTabItem,
+} from '@/components/ui';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
-import { formatDateTime } from '@/lib/enterprise-ui';
+import { SELECT_TRIGGER_CLASS, formatDateTime } from '@/lib/enterprise-ui';
+import { MarkdownMessage } from '../chat/chatHelpers';
 
 import { api, TENANT_ID } from '../../api/client';
 import IconCalendar from '../../assets/icons/profile-calendar.svg?react';
@@ -31,22 +43,21 @@ import type {
   EnterpriseSessionDetailRead,
   FeedbackAnalysisRead,
   FeedbackMessageRead,
-  FeedbackSessionDetailRead,
   FeedbackSessionRead,
   FeedbackSummaryRead,
   TraceLineRead,
   TurnTraceRead,
 } from '../../types';
+import {
+  buildConversationUserOptions,
+  matchesConversationLogFilter,
+  type ConversationLogFilter,
+  type ConversationLogRow,
+} from './conversationLogFilters';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const FEEDBACK_PAGE_SIZE = 10;
-
-type LogFilter = 'all' | 'up' | 'down' | 'unrated' | 'ability' | 'tool' | 'knowledge' | 'sop';
-
-type ConversationLogRow = EnterpriseChatSessionRead & {
-  downFeedback?: FeedbackSessionRead;
-  upFeedback?: FeedbackSessionRead;
-};
+const ALL_CONVERSATION_USERS = '__all_conversation_users__';
 
 type ConversationDetail = {
   session: Record<string, unknown>;
@@ -56,7 +67,7 @@ type ConversationDetail = {
   traces: TurnTraceRead[];
 };
 
-const FILTER_TABS: UnderlineTabItem<LogFilter>[] = [
+const FILTER_TABS: UnderlineTabItem<ConversationLogFilter>[] = [
   { label: '全部', value: 'all' },
   { label: '好评', value: 'up' },
   { label: '差评', value: 'down' },
@@ -82,7 +93,8 @@ export default function ConversationLogsTab() {
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [summary, setSummary] = useState<FeedbackSummaryRead | null>(null);
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
-  const [filter, setFilter] = useState<LogFilter>('all');
+  const [filter, setFilter] = useState<ConversationLogFilter>('all');
+  const [conversationUserId, setConversationUserId] = useState(ALL_CONVERSATION_USERS);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [reanalyzingId, setReanalyzingId] = useState<string | null>(null);
@@ -129,6 +141,10 @@ export default function ConversationLogsTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
 
+  useEffect(() => {
+    setConversationUserId(ALL_CONVERSATION_USERS);
+  }, [agentId]);
+
   const rows = useMemo<ConversationLogRow[]>(() => {
     const downBySession = new Map(downRows.map((item) => [item.session_id, item]));
     const upBySession = new Map(upRows.map((item) => [item.session_id, item]));
@@ -151,48 +167,48 @@ export default function ConversationLogsTab() {
 
   const agentLabel = (row: ConversationLogRow): string => agentLabelFromId(row.agent_id);
 
-  const filteredRows = useMemo(
-    () =>
-      rows.filter((row) => {
-        if (filter === 'up') return Boolean(row.upFeedback);
-        if (filter === 'down') return Boolean(row.downFeedback);
-        if (filter === 'unrated') return !row.upFeedback && !row.downFeedback;
-        if (filter === 'ability') return row.downFeedback?.primary_bucket === 'model_issue';
-        if (filter === 'tool') return row.downFeedback?.primary_bucket === 'tool_or_system_issue';
-        if (filter === 'sop') return row.downFeedback?.primary_bucket === 'skill_issue';
-        if (filter === 'knowledge') return row.downFeedback?.primary_bucket === 'unknown';
-        return true;
-      }),
+  const logFilterRows = useMemo(
+    () => rows.filter((row) => matchesConversationLogFilter(row, filter)),
     [filter, rows],
   );
 
-  const pagination = useClientPagination(filteredRows, FEEDBACK_PAGE_SIZE, filter);
+  const conversationUserOptions = useMemo(
+    () => buildConversationUserOptions(logFilterRows),
+    [logFilterRows],
+  );
+
+  const filteredRows = useMemo(
+    () => logFilterRows.filter((row) => (
+      conversationUserId === ALL_CONVERSATION_USERS || row.user_id === conversationUserId
+    )),
+    [conversationUserId, logFilterRows],
+  );
+
+  useEffect(() => {
+    if (loading || conversationUserId === ALL_CONVERSATION_USERS) return;
+    if (!conversationUserOptions.some((option) => option.userId === conversationUserId)) {
+      setConversationUserId(ALL_CONVERSATION_USERS);
+    }
+  }, [conversationUserId, conversationUserOptions, loading]);
+
+  const pagination = useClientPagination(
+    filteredRows,
+    FEEDBACK_PAGE_SIZE,
+    `${filter}:${conversationUserId}`,
+  );
 
   const openDetail = async (row: ConversationLogRow) => {
     setDetailLoading(true);
     try {
-      const [sessionDetail, traces] = await Promise.all([
-        api.get<EnterpriseSessionDetailRead>(`/api/enterprise/sessions/${row.id}?tenant_id=${TENANT_ID}`),
-        api
-          .get<TurnTraceRead[]>(`/api/chat/sessions/${row.id}/trace?tenant_id=${TENANT_ID}`)
-          .catch(() => [] as TurnTraceRead[]),
-      ]);
-      let feedbackDetail: FeedbackSessionDetailRead | null = null;
-      if (row.downFeedback || row.upFeedback) {
-        try {
-          feedbackDetail = await api.get<FeedbackSessionDetailRead>(
-            `/api/enterprise/feedback/sessions/${row.id}?tenant_id=${TENANT_ID}`,
-          );
-        } catch {
-          feedbackDetail = null;
-        }
-      }
+      const sessionDetail = await api.get<EnterpriseSessionDetailRead>(
+        `/api/enterprise/sessions/${row.id}?tenant_id=${TENANT_ID}`,
+      );
       setDetail({
-        session: feedbackDetail?.session || sessionDetail.session,
-        messages: feedbackDetail?.messages || sessionDetail.messages,
-        feedback: feedbackDetail?.feedback || [],
+        session: sessionDetail.session,
+        messages: sessionDetail.messages,
+        feedback: sessionDetail.feedback || [],
         events: sessionDetail.events || [],
-        traces,
+        traces: sessionDetail.traces || [],
       });
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载对话详情失败');
@@ -391,14 +407,42 @@ export default function ConversationLogsTab() {
           </div>
         )}
 
-        <div className="overflow-x-auto">
-          <UnderlineTabs
-            aria-label="对话日志筛选"
-            variant="line"
-            value={filter}
-            onChange={setFilter}
-            items={FILTER_TABS}
-          />
+        <div className="flex flex-col gap-[12px] min-[1100px]:flex-row min-[1100px]:items-center min-[1100px]:justify-between">
+          <div className="min-w-0 overflow-x-auto">
+            <UnderlineTabs
+              aria-label="对话日志筛选"
+              variant="line"
+              value={filter}
+              onChange={setFilter}
+              items={FILTER_TABS}
+            />
+          </div>
+          <label className="flex h-[34px] w-[280px] shrink-0 items-center overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white transition-colors focus-within:border-[#18181a] max-[1099px]:w-full">
+            <span className="flex h-full w-[72px] shrink-0 items-center justify-center border-r-[0.5px] border-[#e3e7f1] bg-[#f6f6f6] text-[12px] text-[#858b9c]">
+              对话用户
+            </span>
+            <UISelect value={conversationUserId} onValueChange={setConversationUserId}>
+              <SelectTrigger
+                aria-label="筛选对话用户"
+                className={cn(
+                  SELECT_TRIGGER_CLASS,
+                  'h-full min-w-0 flex-1 rounded-none border-0 px-[12px] shadow-none focus-visible:border-0',
+                )}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_CONVERSATION_USERS}>
+                  全部用户（{logFilterRows.length}）
+                </SelectItem>
+                {conversationUserOptions.map((option) => (
+                  <SelectItem key={option.userId} value={option.userId}>
+                    {option.label}（{option.count}）
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </UISelect>
+          </label>
         </div>
 
         <div className="grid gap-[10px] md:hidden">
@@ -459,7 +503,7 @@ function FeedbackDetailDialog({
     <Dialog open={Boolean(detail)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         aria-describedby={undefined}
-        className="flex max-h-[calc(100dvh-4rem)] w-[calc(100%-2rem)] flex-col gap-[16px] overflow-hidden rounded-[14px] px-[20px] py-[16px] sm:max-w-[900px]"
+        className="flex max-h-[calc(100dvh-3rem)] w-[calc(100%-2rem)] flex-col gap-[16px] overflow-hidden rounded-[14px] px-[20px] py-[16px] sm:max-w-[1180px]"
       >
         <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
           <Clock className="size-[14px] shrink-0" />
@@ -507,6 +551,7 @@ function FeedbackDetailDialog({
                   key={item.id}
                   item={item}
                   trace={trace}
+                  userLabel={displayUser(detail.session)}
                   onReanalyze={onReanalyze}
                   reanalyzing={Boolean(item.feedback_id && item.feedback_id === reanalyzingId)}
                 />
@@ -531,11 +576,13 @@ function FeedbackDetailDialog({
 function FeedbackMessage({
   item,
   trace,
+  userLabel,
   onReanalyze,
   reanalyzing,
 }: {
   item: FeedbackMessageRead;
   trace?: TurnTraceRead;
+  userLabel: string;
   onReanalyze: (feedbackId: string) => void;
   reanalyzing: boolean;
 }) {
@@ -546,7 +593,7 @@ function FeedbackMessage({
     <div className={`feedback-message-row ${isUser ? 'user' : 'assistant'}`}>
       <div className="feedback-message-bubble">
         <div className="feedback-message-meta">
-          <span>{isUser ? '用户' : isAssistant ? '员工' : item.role}</span>
+          <span>{isUser ? userLabel : isAssistant ? '员工' : item.role}</span>
           <span>{formatDateTime(item.created_at)}</span>
           {item.feedback_rating === 'down' && <StatusBadge tone="red">差评</StatusBadge>}
           {item.feedback_rating === 'up' && <StatusBadge tone="green">好评</StatusBadge>}
@@ -560,7 +607,9 @@ function FeedbackMessage({
             ))}
         </div>
         {trace && <FeedbackTraceBlock trace={trace} />}
-        <p className="feedback-message-content">{item.content}</p>
+        <div className="feedback-message-content">
+          <MarkdownMessage content={item.content} />
+        </div>
         {item.feedback_analysis && item.feedback_rating === 'down' && (
           <div className="feedback-analysis-box">
             <div>
@@ -633,14 +682,24 @@ function FeedbackTraceBlock({ trace }: { trace: TurnTraceRead }) {
       <div className="feedback-trace-header">
         <Workflow className="size-[14px]" />
         <span>执行记录</span>
-        <span>{trace.completed_at ? '已完成' : '执行中'}</span>
+        <span className="feedback-trace-overall-timing">
+          {timingText(trace.duration_ms, trace.model_duration_ms, trace.model_call_count)}
+        </span>
+        <span className="feedback-trace-status">{trace.completed_at ? '已完成' : '执行中'}</span>
       </div>
       <div className="feedback-trace-lines">
         {lines.map((line) => (
           <div key={line.id} className={`feedback-trace-line ${line.kind} ${line.state}`}>
             <span className="feedback-trace-icon">{traceLineIcon(line.kind)}</span>
             <span className="feedback-trace-content">
-              <span className="feedback-trace-text">{line.text}</span>
+              <span className="feedback-trace-title-row">
+                <span className="feedback-trace-text">{line.text}</span>
+                {(typeof line.duration_ms === 'number' || typeof line.model_duration_ms === 'number') && (
+                  <span className="feedback-trace-timing">
+                    {timingText(line.duration_ms, line.model_duration_ms)}
+                  </span>
+                )}
+              </span>
               {line.detail && <span className="feedback-trace-detail">{line.detail}</span>}
               {line.code && (
                 <details className="feedback-trace-code">
@@ -679,7 +738,32 @@ function traceLineIcon(kind: TraceLineRead['kind']) {
 }
 
 function displayUser(session: Record<string, unknown>): string {
-  return String(session.display_name || session.username || session.user_id || '-');
+  return String(
+    session.session_display_name ||
+      session.display_name ||
+      session.session_username ||
+      session.username ||
+      '未知用户',
+  );
+}
+
+function timingText(
+  durationMs?: number | null,
+  modelDurationMs?: number | null,
+  modelCallCount?: number | null,
+): string {
+  const parts: string[] = [];
+  if (typeof durationMs === 'number') parts.push(`总 ${formatDuration(durationMs)}`);
+  if (typeof modelDurationMs === 'number') parts.push(`模型 ${formatDuration(modelDurationMs)}`);
+  if (typeof modelCallCount === 'number') parts.push(`${modelCallCount} 次调用`);
+  return parts.join(' · ');
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1) return '<1ms';
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+  if (durationMs < 10_000) return `${(durationMs / 1000).toFixed(2)}s`;
+  return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
 function ChannelBadge({ channel }: { channel?: string | null }) {

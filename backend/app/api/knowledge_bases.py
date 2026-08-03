@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from app.capability_scope import normalize_capability_scope
 from app.db import get_session
 from app.agents.branching import (
     ensure_agent_private_knowledge_branch,
@@ -170,6 +171,7 @@ def create_knowledge_base(
         tenant_id=request.tenant_id,
         name=name,
         description=request.description,
+        capability_scope=request.capability_scope,
         metadata_json=creator_metadata,
         status="active",
     )
@@ -248,7 +250,24 @@ def update_knowledge_base(
             branch = sync_knowledge_branch_from_overall(
                 db, request.tenant_id, agent.id, knowledge_base_id
             )
-        version = ensure_knowledge_base_version(db, row, branch.head_version)
+        version_fields_changed = any(
+            value is not None
+            for value in (
+                request.name,
+                request.description,
+                request.capability_scope,
+                request.metadata,
+            )
+        )
+        if version_fields_changed:
+            version = knowledge_version_for_upload(
+                db,
+                request.tenant_id,
+                knowledge_base_id,
+                agent.id,
+            )
+        else:
+            version = ensure_knowledge_base_version(db, row, branch.head_version)
         if request.name is not None:
             name = request.name.strip()
             if not name:
@@ -256,6 +275,8 @@ def update_knowledge_base(
             version.name = name
         if request.description is not None:
             version.description = request.description
+        if request.capability_scope is not None:
+            version.capability_scope = request.capability_scope
         if request.metadata is not None:
             version.metadata_json = metadata_preserving_creator(
                 version.metadata_json,
@@ -278,6 +299,7 @@ def update_knowledge_base(
         if (
             request.name is not None
             or request.description is not None
+            or request.capability_scope is not None
             or request.metadata is not None
         ):
             branch.sync_state = "diverged"
@@ -319,6 +341,9 @@ def update_knowledge_base(
     if request.description is not None:
         row.description = request.description
         version.description = request.description
+    if request.capability_scope is not None:
+        row.capability_scope = request.capability_scope
+        version.capability_scope = request.capability_scope
     if request.status is not None:
         row.status = request.status
         version.status = request.status
@@ -400,6 +425,7 @@ def list_knowledge_base_versions(
             "name": version.name,
             "description": version.description,
             "status": version.status,
+            "capability_scope": normalize_capability_scope(version.capability_scope),
             "is_head": bool(branch and branch.head_version == version.version),
             "is_base": bool(branch and branch.base_version == version.version),
             "updated_at": version.updated_at.isoformat(),
@@ -717,6 +743,9 @@ def knowledge_base_read(
         name=version_row.name if version_row else row.name,
         description=version_row.description if version_row else row.description,
         status=effective_status,
+        capability_scope=normalize_capability_scope(
+            version_row.capability_scope if version_row else row.capability_scope
+        ),
         version=version_row.version if version_row else None,
         branch_sync_state=(branch_meta or {}).get("sync_state"),
         branch_base_version=(branch_meta or {}).get("base_version"),

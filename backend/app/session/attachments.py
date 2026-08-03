@@ -132,6 +132,112 @@ def request_has_image_attachments(attachments: Iterable[ChatAttachmentRead | dic
     return any(bool(item and _attachment_is_supported_image(item)) for item in normalized)
 
 
+def validate_chat_turn_attachments(
+    attachments: list[ChatAttachmentRead],
+    *,
+    max_attachments: int,
+    max_attachment_bytes: int,
+) -> list[ChatAttachmentRead]:
+    """Validate and normalize the client round-trip from ``/attachments``.
+
+    The upload response is currently stateless, so every field returning on a
+    turn must be treated as untrusted user input.
+    """
+
+    if len(attachments) > max_attachments:
+        raise ValueError(f"最多携带 {max_attachments} 个附件")
+    normalized: list[ChatAttachmentRead] = []
+    for attachment in attachments:
+        filename = _safe_filename(attachment.filename)[:255]
+        content_type = str(attachment.content_type or "").strip()[:128]
+        size = int(attachment.size)
+        if size < 0 or size > max_attachment_bytes:
+            raise ValueError(f"{filename} 超过附件大小限制")
+        text = _trim_text(
+            str(attachment.text or ""),
+            MAX_EXTRACTED_TEXT_CHARS,
+        ) or None
+        if text and len(text.encode("utf-8")) > max_attachment_bytes:
+            raise ValueError(f"{filename} 的文本内容超过附件大小限制")
+        preview = _trim_text(
+            str(attachment.preview or ""),
+            MAX_PREVIEW_CHARS,
+        ) or None
+        data_url = _validated_image_data_url(
+            attachment,
+            filename=filename,
+            content_type=content_type,
+            size=size,
+        )
+        normalized.append(
+            attachment.model_copy(
+                update={
+                    "filename": filename,
+                    "content_type": content_type,
+                    "size": size,
+                    "text": text,
+                    "preview": preview,
+                    "data_url": data_url,
+                    "python_summary": _round_trip_summary(
+                        filename,
+                        content_type,
+                        size,
+                        text,
+                    ),
+                    "error": str(attachment.error or "")[:2_000] or None,
+                }
+            )
+        )
+    return normalized
+
+
+def _validated_image_data_url(
+    attachment: ChatAttachmentRead,
+    *,
+    filename: str,
+    content_type: str,
+    size: int,
+) -> str | None:
+    raw = str(attachment.data_url or "").strip()
+    if not raw:
+        return None
+    if attachment.kind != "image" or not _is_supported_image_file(
+        filename.lower(),
+        content_type,
+    ):
+        raise ValueError(f"{filename} 不是受支持的图片附件")
+    prefix = f"data:{content_type};base64,"
+    if not raw.startswith(prefix):
+        raise ValueError(f"{filename} 的图片 data URL 无效")
+    encoded = raw.removeprefix(prefix)
+    if len(encoded) > ((IMAGE_DATA_URL_LIMIT_BYTES + 2) // 3) * 4:
+        raise ValueError(f"{filename} 的图片 data URL 超限")
+    try:
+        decoded = base64.b64decode(
+            encoded,
+            validate=True,
+        )
+    except Exception as exc:
+        raise ValueError(f"{filename} 的图片 data URL 无效") from exc
+    if len(decoded) > IMAGE_DATA_URL_LIMIT_BYTES or len(decoded) != size:
+        raise ValueError(f"{filename} 的图片 data URL 大小不一致或超限")
+    return raw
+
+
+def _round_trip_summary(
+    filename: str,
+    content_type: str,
+    size: int,
+    text: str | None,
+) -> str:
+    return _python_file_summary_from_size(
+        filename,
+        content_type,
+        size,
+        text or "",
+    )
+
+
 def _text_attachment(filename: str, content_type: str, data: bytes) -> ChatAttachmentRead:
     text = _decode_text(data)
     trimmed = _trim_text(text, MAX_EXTRACTED_TEXT_CHARS)
@@ -194,7 +300,21 @@ def _image_attachment(filename: str, content_type: str, data: bytes) -> ChatAtta
 
 
 def _python_file_summary(filename: str, content_type: str, data: bytes, text: str) -> str:
-    parts = [f"文件 {filename}，{len(data)} bytes，MIME {content_type}。"]
+    return _python_file_summary_from_size(
+        filename,
+        content_type,
+        len(data),
+        text,
+    )
+
+
+def _python_file_summary_from_size(
+    filename: str,
+    content_type: str,
+    size: int,
+    text: str,
+) -> str:
+    parts = [f"文件 {filename}，{size} bytes，MIME {content_type}。"]
     if text:
         lines = text.splitlines()
         words = re.findall(r"\S+", text)

@@ -139,8 +139,10 @@ class ToolExecutor:
         if not tool.mcp_server_id:
             raise MCPClientError("MCP 工具未关联 Server。")
         server = self.db.get(MCPServer, tool.mcp_server_id)
-        if server is None:
+        if server is None or server.tenant_id != tool.tenant_id:
             raise MCPClientError("MCP 工具关联的 Server 不存在或已删除。")
+        if not server.enabled:
+            raise MCPClientError("MCP 工具关联的 Server 当前已停用。")
         return self._server_client_config(server), tool_name
 
     def _server_client_config(self, server: MCPServer) -> dict[str, Any]:

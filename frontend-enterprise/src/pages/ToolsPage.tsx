@@ -8,6 +8,11 @@ import { pinyin } from 'pinyin-pro';
 import { api, TENANT_ID } from '../api/client';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
+import {
+  CapabilityScopeBadge,
+  CapabilityScopeControl,
+  normalizeCapabilityScope,
+} from '@/components/CapabilityScopeControl';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { Paginator } from '@/components/Paginator';
@@ -63,6 +68,7 @@ import { useClientPagination } from '../hooks/useClientPagination';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import type {
   AgentProfileRead,
+  CapabilityScope,
   ToolRead,
   MCPServerRead,
   MCPServerConnection,
@@ -89,6 +95,7 @@ const TOOL_FORM_INITIAL_VALUES = {
   mcp_config: '{}',
   input_schema: '{}',
   output_schema: '{}',
+  capability_scope: 'general' as CapabilityScope,
 };
 
 type ToolFormValues = typeof TOOL_FORM_INITIAL_VALUES & {
@@ -498,6 +505,12 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       ),
     },
     {
+      key: 'capability_scope',
+      title: '能力范围',
+      width: 105,
+      render: (row) => <CapabilityScopeBadge value={row.capability_scope} />,
+    },
+    {
       key: 'creator',
       title: '创建者',
       width: 120,
@@ -557,6 +570,12 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       title: '连接方式',
       width: 140,
       render: (row) => <StatusBadge tone="gray">{transportLabel(row.connection.transport)}</StatusBadge>,
+    },
+    {
+      key: 'capability_scope',
+      title: '能力范围',
+      width: 105,
+      render: (row) => <CapabilityScopeBadge value={row.capability_scope} />,
     },
     {
       key: 'endpoint',
@@ -627,6 +646,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       <div className="mt-[8px] flex flex-wrap items-center gap-[6px]">
         <StatusBadge tone="gray">{row.bucket || '未分桶'}</StatusBadge>
         <StatusBadge tone={row.tool_type === 'mcp' ? 'blue' : 'gray'}>{row.tool_type === 'mcp' ? 'MCP' : 'HTTP'}</StatusBadge>
+        <CapabilityScopeBadge value={row.capability_scope} />
         <StatusBadge tone={row.enabled ? 'green' : 'gray'}>{row.enabled ? '已启用' : '已停用'}</StatusBadge>
       </div>
       <p className="mt-[8px] line-clamp-1 wrap-break-word text-[12px] text-[#858b9c]">
@@ -723,6 +743,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
                   </div>
                   <div className="mt-[8px] flex flex-wrap items-center gap-[6px]">
                     <StatusBadge tone="gray">{transportLabel(row.connection.transport)}</StatusBadge>
+                    <CapabilityScopeBadge value={row.capability_scope} />
                     <StatusBadge tone={row.enabled ? 'green' : 'gray'}>{row.enabled ? '已启用' : '已停用'}</StatusBadge>
                     <StatusBadge tone="gray">{serverToolCount(row)} 个工具</StatusBadge>
                   </div>
@@ -1223,6 +1244,7 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
                   </p>
                   <div className="flex flex-wrap items-center gap-[6px]">
                     <StatusBadge tone={tool.tool_type === 'mcp' ? 'blue' : 'gray'}>{toolTypeLabel(tool)}</StatusBadge>
+                    <CapabilityScopeBadge value={tool.capability_scope} />
                     <StatusBadge tone={tool.enabled ? 'green' : 'gray'}>{tool.enabled ? '已启用' : '已停用'}</StatusBadge>
                     <StatusBadge tone="gray">{tool.method}</StatusBadge>
                   </div>
@@ -1286,6 +1308,7 @@ type McpFormValues = {
   args: string;
   env: string;
   cwd: string;
+  capability_scope: CapabilityScope;
   enabled: boolean;
 };
 
@@ -1301,6 +1324,7 @@ const MCP_FORM_INITIAL_VALUES: McpFormValues = {
   args: '',
   env: '{}',
   cwd: '',
+  capability_scope: 'general',
   enabled: true,
 };
 
@@ -1389,6 +1413,7 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
         description: values.description,
         bucket: values.bucket || 'MCP 工具',
         connection,
+        capability_scope: values.capability_scope,
         enabled: values.enabled,
       },
     };
@@ -1596,6 +1621,12 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
                 onChange={(event) => setField('bucket', event.target.value)}
               />
             </Field>
+
+            <CapabilityScopeControl
+              value={values.capability_scope}
+              onChange={(value) => setField('capability_scope', value)}
+              resourceType="tool"
+            />
 
             <Field label="连接方式" hint={transportOption?.hint}>
               <UISelect
@@ -1868,6 +1899,12 @@ function ToolFormFields({
         />
       </Field>
 
+      <CapabilityScopeControl
+        value={normalizeCapabilityScope(values.capability_scope)}
+        onChange={(value) => setField('capability_scope', value)}
+        resourceType="tool"
+      />
+
       <div className="flex items-center justify-between rounded-[12px] border border-[#eceef1] bg-[#fafbfc] px-[14px] py-[12px]">
         <div className="flex flex-col gap-[2px]">
           <span className={FIELD_LABEL_CLASS}>启用工具</span>
@@ -2082,6 +2119,7 @@ function toolToFormValues(row: ToolRead): ToolFormValues {
     input_schema: JSON.stringify(row.input_schema || {}, null, 2),
     output_schema: JSON.stringify(row.output_schema || {}, null, 2),
     allowed_skills: (row.allowed_skills || []).join(','),
+    capability_scope: normalizeCapabilityScope(row.capability_scope),
   };
 }
 
@@ -2102,6 +2140,7 @@ function buildToolPayload(values: ToolFormValues) {
       input_schema: parseJson(values.input_schema, {}),
       output_schema: parseJson(values.output_schema, {}),
       allowed_skills: String(values.allowed_skills || '').split(',').map((item) => item.trim()).filter(Boolean),
+      capability_scope: normalizeCapabilityScope(values.capability_scope),
       enabled: values.enabled,
     };
   } catch {
@@ -2157,6 +2196,7 @@ function serverToFormValues(row: MCPServerRead): McpFormValues {
     args: (connection.args || []).join('\n'),
     env: JSON.stringify(connection.env || {}, null, 2),
     cwd: connection.cwd || '',
+    capability_scope: normalizeCapabilityScope(row.capability_scope),
     enabled: row.enabled,
   };
 }

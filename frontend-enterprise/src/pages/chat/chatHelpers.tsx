@@ -9,6 +9,7 @@ import type {
   ChatMessage,
   ChatSession,
   ChatSessionEventRead,
+  HarnessWorkspaceArtifact,
   KnowledgeCitation,
   ScheduledTaskDraftRead,
   ScheduledTaskRead,
@@ -1330,6 +1331,99 @@ function tracePayloadLanguage(value: string): string {
   }
 }
 
+
+export function harnessEventTraceLine(
+  eventName: string,
+  data: Record<string, unknown>,
+): TraceLine | null {
+  const frameId = typeof data.task_frame_id === 'string' && data.task_frame_id.trim()
+    ? data.task_frame_id.trim()
+    : 'current';
+  const iteration = typeof data.iteration === 'number' || typeof data.iteration === 'string'
+    ? String(data.iteration)
+    : '';
+  const toolName = typeof data.tool_name === 'string' ? data.tool_name.trim() : '';
+
+  if (eventName === 'task_frame_started') {
+    const kind = typeof data.kind === 'string' ? data.kind : 'conversation';
+    const stepId = typeof data.step_id === 'string' ? data.step_id.trim() : '';
+    return {
+      id: `harness_frame_${frameId}`,
+      kind: kind === 'sop' ? 'skill' : 'decision',
+      text: '开始执行任务',
+      detail: [kind === 'sop' ? 'SOP TaskFrame' : '对话 TaskFrame', stepId ? `步骤 ${stepId}` : '']
+        .filter(Boolean)
+        .join(' · '),
+      state: 'running',
+      icon: kind === 'sop' ? 'advance' : 'execute',
+    };
+  }
+  if (eventName === 'task_frame_finished') {
+    const status = typeof data.status === 'string' ? data.status : 'completed';
+    const failed = ['failed', 'blocked', 'cancelled'].includes(status);
+    const actionCount = typeof data.action_count === 'number' ? data.action_count : undefined;
+    return {
+      id: `harness_frame_${frameId}`,
+      kind: 'decision',
+      text: failed ? '任务执行失败' : '任务执行完成',
+      detail: [`状态 ${status}`, actionCount === undefined ? '' : `执行 ${actionCount} 个动作`]
+        .filter(Boolean)
+        .join(' · '),
+      state: failed ? 'failed' : 'completed',
+      icon: failed ? 'loading' : 'execute',
+    };
+  }
+  if (eventName === 'harness_action_created') {
+    const action = typeof data.action === 'string' ? data.action : '';
+    if (action === 'tool') {
+      return {
+        id: `harness_action_${frameId}_${iteration || 'current'}`,
+        kind: 'tool',
+        text: toolName ? `调用能力 ${toolName}` : '调用能力',
+        detail: iteration ? `第 ${iteration} 个动作` : undefined,
+        state: 'running',
+        icon: 'tool',
+      };
+    }
+    if (action === 'finish') {
+      return {
+        id: `harness_finish_${frameId}_${iteration || 'current'}`,
+        kind: 'decision',
+        text: '整理任务结果',
+        detail: iteration ? `第 ${iteration} 个动作` : undefined,
+        state: 'completed',
+        icon: 'advance',
+      };
+    }
+    return null;
+  }
+  if (eventName === 'harness_tool_completed') {
+    const success = data.success === true;
+    const error = isPlainRecord(data.error) ? data.error : {};
+    const detail = [
+      typeof error.code === 'string' ? error.code : '',
+      typeof error.message === 'string' ? error.message : '',
+    ].filter(Boolean).join(' · ') || undefined;
+    const output = formatTracePayload(data.result);
+    return {
+      id: `harness_action_${frameId}_${iteration || 'current'}`,
+      kind: 'tool',
+      text: toolName
+        ? `${success ? '能力调用完成' : '能力调用失败'} ${toolName}`
+        : success ? '能力调用完成' : '能力调用失败',
+      detail,
+      output: output || undefined,
+      outputLanguage: output ? tracePayloadLanguage(output) : undefined,
+      outputTitle: output ? '查看能力结果' : undefined,
+      collapsible: Boolean(output),
+      state: success ? 'completed' : 'failed',
+      icon: 'tool',
+    };
+  }
+  return null;
+}
+
+
 export function generalSkillTraceDetail(data: Record<string, unknown>, phase: string): string | undefined {
   const review = isPlainRecord(data.review) ? data.review : undefined;
   if (phase.startsWith('reflection_')) {
@@ -1787,6 +1881,44 @@ export function messageAttachments(messageItem: ChatMessage): ChatAttachmentRead
   const attachments = messageItem.metadata?.attachments;
   if (!Array.isArray(attachments)) return [];
   return attachments.filter(isChatAttachment);
+}
+
+export function harnessWorkspaceArtifacts(
+  messageItem: ChatMessage,
+): HarnessWorkspaceArtifact[] {
+  const artifacts = messageItem.metadata?.harness_artifacts;
+  if (!Array.isArray(artifacts)) return [];
+  const seen = new Set<string>();
+  const result: HarnessWorkspaceArtifact[] = [];
+  artifacts.forEach((value) => {
+    if (!value || typeof value !== 'object') return;
+    const artifact = value as Partial<HarnessWorkspaceArtifact>;
+    if (
+      artifact.type !== 'workspace_file'
+      || typeof artifact.task_frame_id !== 'string'
+      || !artifact.task_frame_id.trim()
+      || typeof artifact.path !== 'string'
+      || !artifact.path.trim()
+    ) {
+      return;
+    }
+    const identity = `${artifact.task_frame_id}\u001f${artifact.path}`;
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    result.push({
+      type: 'workspace_file',
+      task_frame_id: artifact.task_frame_id,
+      path: artifact.path,
+      ...(typeof artifact.sha256 === 'string' ? { sha256: artifact.sha256 } : {}),
+      ...(typeof artifact.size === 'number' && Number.isFinite(artifact.size)
+        ? { size: artifact.size }
+        : {}),
+      ...(typeof artifact.operation === 'string'
+        ? { operation: artifact.operation }
+        : {}),
+    });
+  });
+  return result;
 }
 
 function isChatAttachment(value: unknown): value is ChatAttachmentRead {

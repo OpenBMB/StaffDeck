@@ -38,6 +38,7 @@ import IconSearch from '../assets/icons/search.svg?react';
 import IconTrash from '../assets/icons/trash.svg?react';
 import type { EnterpriseAuthUser } from '../auth';
 import { useClientPagination } from '../hooks/useClientPagination';
+import { StatusBadge } from './scheduled-tasks/StatusBadge';
 
 type EmployeeAccount = {
   id: string;
@@ -63,6 +64,14 @@ type AccountCreateDraft = {
 };
 
 const ACCOUNT_PAGE_SIZE = 10;
+
+export function AccountRoleBadge({ role }: { role: EmployeeAccount['role'] }) {
+  return (
+    <StatusBadge tone={role === 'admin' ? 'blue' : 'gray'}>
+      {role === 'admin' ? '管理员' : '普通成员'}
+    </StatusBadge>
+  );
+}
 
 export default function AccountsPage({
   currentUser,
@@ -242,7 +251,7 @@ export default function AccountsPage({
       key: 'role',
       title: '角色',
       width: 120,
-      render: (row) => <span>{row.role === 'admin' ? '管理员' : '普通成员'}</span>,
+      render: (row) => <AccountRoleBadge role={row.role} />,
     },
     { key: 'created', title: '创建时间', width: 180, render: (row) => formatDateTime(row.created_at) },
     { key: 'updated', title: '最近更新', width: 180, render: (row) => formatDateTime(row.updated_at) },
@@ -265,6 +274,9 @@ export default function AccountsPage({
           <span className="min-w-0">
             <strong className="block truncate text-[14px] font-semibold text-[#18181a]">{row.username}</strong>
             <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">{row.display_name || row.username}</span>
+            <span className="mt-[6px] block">
+              <AccountRoleBadge role={row.role} />
+            </span>
           </span>
         </span>
         {renderActions(row)}

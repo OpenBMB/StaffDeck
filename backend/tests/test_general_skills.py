@@ -570,6 +570,46 @@ def test_import_general_skill_folder_reads_skill_md_metadata() -> None:
         assert row.skill_markdown.startswith("---\nname: 中国城市天气")
 
 
+def test_import_general_skill_persists_empty_directories_across_updates() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+
+        created = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="目录技能",
+                slug="directory-skill",
+                files=[{"path": "SKILL.md", "content": "# 目录技能\n"}],
+                directories=["references", "references/drafts", "empty"],
+            ),
+            db,
+            _admin_user(),
+        )
+
+        assert created.skill_directories == ["references", "references/drafts", "empty"]
+        stored = db.get(GeneralSkill, created.id)
+        assert stored is not None
+        assert stored.metadata_json["skill_directories"] == [
+            "references",
+            "references/drafts",
+            "empty",
+        ]
+
+        updated = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="目录技能",
+                slug="directory-skill",
+                original_slug="directory-skill",
+                files=[{"path": "SKILL.md", "content": "# 更新后的目录技能\n"}],
+            ),
+            db,
+            _admin_user(),
+        )
+
+        assert updated.skill_directories == created.skill_directories
+
+
 def test_import_clawhub_skill_reads_zip_package_without_overwriting(monkeypatch) -> None:
     package = BytesIO()
     with ZipFile(package, "w") as archive:
@@ -1045,6 +1085,7 @@ def test_non_overall_agent_delete_hides_general_skill_only_in_branch() -> None:
 def test_chat_turn_uses_general_skill_after_scene_router_skips_unmatched_scene(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(AgentLoop, "_uses_harness_v2", lambda _self, _request: False)
     calls: list[str] = []
 
     def fake_init(self, model_config):  # noqa: ANN001
@@ -1148,6 +1189,7 @@ def test_chat_turn_uses_general_skill_after_scene_router_skips_unmatched_scene(
 
 
 def test_general_skill_response_keeps_active_scene_context(monkeypatch) -> None:
+    monkeypatch.setattr(AgentLoop, "_uses_harness_v2", lambda _self, _request: False)
     calls: list[str] = []
 
     def fake_init(self, model_config):  # noqa: ANN001
@@ -2071,6 +2113,7 @@ def test_scene_layer_prompt_contract_mentions_general_skill_tools() -> None:
 def test_chat_turn_treats_unmatched_scene_as_chat_when_general_skill_not_selected(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(AgentLoop, "_uses_harness_v2", lambda _self, _request: False)
     calls: list[str] = []
 
     def fake_init(self, model_config):  # noqa: ANN001

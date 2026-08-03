@@ -37,6 +37,22 @@ def test_compact_knowledge_citation_labels_supports_historical_filtered_metadata
     assert [item["label"] for item in citations] == ["[1]", "[2]"]
 
 
+def test_compact_knowledge_citation_labels_adds_deterministic_fallback() -> None:
+    content, citations = compact_knowledge_citation_labels(
+        "制度规定七天内可以申请退款。",
+        [
+            {"id": "kref_1", "label": "[1]", "title": "退款政策"},
+            {"id": "kref_4", "label": "[4]", "title": "退款流程"},
+        ],
+    )
+
+    assert content == "制度规定七天内可以申请退款。\n\n参考来源：[1] [2]"
+    assert [(item["label"], item["title"]) for item in citations] == [
+        ("[1]", "退款政策"),
+        ("[2]", "退款流程"),
+    ]
+
+
 def test_restore_truncated_email_from_unique_cited_evidence() -> None:
     reply = "请将材料发送至 ops@example... [1]"
     citations = [
@@ -64,18 +80,19 @@ def test_restore_truncated_email_keeps_ambiguous_prefix_unchanged() -> None:
     assert restore_truncated_atomic_references(reply, citations) == reply
 
 
-def test_knowledge_citations_prefer_wiki_concepts_over_evidence_pack() -> None:
+def test_knowledge_citations_use_evidence_pack_as_canonical_source() -> None:
     citations = knowledge_citations_from_results(
         [
             {
                 "selected_concepts": [
                     {
-                        "concept_id": "sources/vue3-coding-standards",
+                        "concept_id": f"sources/vue3-coding-standards-{index}",
                         "type": "Source Document",
-                        "title": "前端编码规范",
+                        "title": f"前端编码规范 {index}",
                         "description": "Vue 3、Vite、TypeScript、组件编写和命名规范。",
                         "source_refs": [{"source_path": "vue3-coding-standards.md"}],
                     }
+                    for index in range(4)
                 ],
                 "evidence_pack": [
                     {
@@ -92,9 +109,206 @@ def test_knowledge_citations_prefer_wiki_concepts_over_evidence_pack() -> None:
         ]
     )
 
+    assert len(citations) == 1
+    assert citations[0]["kind"] == "evidence"
+    assert citations[0]["title"] == "知识引用测试说明 / 引用规则"
+    assert citations[0]["source_path"] == "citation-demo.md"
+
+
+def test_knowledge_citations_fall_back_to_wiki_concepts_without_evidence() -> None:
+    citations = knowledge_citations_from_results(
+        [
+            {
+                "selected_concepts": [
+                    {
+                        "concept_id": "sources/vue3-coding-standards",
+                        "type": "Source Document",
+                        "title": "前端编码规范",
+                        "description": "Vue 3、Vite、TypeScript、组件编写和命名规范。",
+                        "source_refs": [{"source_path": "vue3-coding-standards.md"}],
+                    }
+                ]
+            }
+        ]
+    )
+
     assert citations[0]["kind"] == "concept"
     assert citations[0]["title"] == "前端编码规范"
     assert citations[0]["source_path"] == "vue3-coding-standards.md"
+
+
+def test_empty_evidence_does_not_block_concept_fallback() -> None:
+    citations = knowledge_citations_from_results(
+        [
+            {
+                "evidence_pack": [{}],
+                "selected_concepts": [
+                    {
+                        "concept_id": "sources/refund-policy",
+                        "title": "退款政策",
+                        "content": "七天内可申请退款。",
+                        "source_refs": [{"source_path": "refund-policy.md"}],
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert len(citations) == 1
+    assert citations[0]["kind"] == "concept"
+    assert citations[0]["source_path"] == "refund-policy.md"
+
+
+def test_knowledge_citations_support_chunks_only_results() -> None:
+    citations = knowledge_citations_from_results(
+        [
+            {
+                "chunks": [
+                    {
+                        "id": "chunk_historical",
+                        "source_ref": "historical-guide.md",
+                        "content": "历史知识结果中的有效证据。",
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert len(citations) == 1
+    assert citations[0]["kind"] == "evidence"
+    assert citations[0]["source_path"] == "historical-guide.md"
+    assert citations[0]["content"] == "历史知识结果中的有效证据。"
+
+
+def test_knowledge_citations_fall_back_to_okf_without_evidence_or_concepts() -> None:
+    citations = knowledge_citations_from_results(
+        [
+            {
+                "okf_citations": [
+                    {
+                        "concept_id": "sources/refund-policy",
+                        "title": "退款政策",
+                        "target": "refund-policy.md",
+                        "label": "七天内可申请退款",
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert citations[0]["kind"] == "okf"
+    assert citations[0]["title"] == "退款政策"
+    assert citations[0]["source_path"] == "refund-policy.md"
+
+
+def test_knowledge_citations_apply_source_fallback_per_result() -> None:
+    citations = knowledge_citations_from_results(
+        [
+            {
+                "evidence_pack": [
+                    {
+                        "chunk_id": "chunk_policy",
+                        "source_path": "policy.pdf",
+                        "section_path": "报销制度",
+                        "content": "制度证据",
+                    }
+                ]
+            },
+            {
+                "okf_citations": [
+                    {
+                        "concept_id": "sources/login-guide",
+                        "title": "登录指南",
+                        "target": "login.md",
+                        "label": "登录步骤",
+                    }
+                ]
+            },
+        ],
+        max_results=None,
+    )
+
+    assert [(item["kind"], item["source_path"]) for item in citations] == [
+        ("evidence", "policy.pdf"),
+        ("okf", "login.md"),
+    ]
+
+
+def test_knowledge_citations_default_to_latest_result_like_answer_context() -> None:
+    citations = knowledge_citations_from_results(
+        [
+            {
+                "evidence_pack": [
+                    {
+                        "chunk_id": "old_chunk",
+                        "source_path": "old-policy.pdf",
+                        "content": "旧检索结果",
+                    }
+                ]
+            },
+            {
+                "evidence_pack": [
+                    {
+                        "chunk_id": "latest_chunk",
+                        "source_path": "latest-policy.pdf",
+                        "content": "最新检索结果",
+                    }
+                ]
+            },
+        ]
+    )
+
+    assert len(citations) == 1
+    assert citations[0]["source_path"] == "latest-policy.pdf"
+
+
+def test_knowledge_citations_keep_distinct_chunks_in_the_same_section() -> None:
+    citations = knowledge_citations_from_results(
+        [
+            {
+                "evidence_pack": [
+                    {
+                        "chunk_id": "chunk_1",
+                        "section_path": "报销制度",
+                        "content": "内容一",
+                    },
+                    {
+                        "chunk_id": "chunk_2",
+                        "section_path": "报销制度",
+                        "content": "内容二",
+                    },
+                ]
+            }
+        ]
+    )
+
+    assert [item["chunk_id"] for item in citations] == ["chunk_1", "chunk_2"]
+
+
+def test_knowledge_citations_keep_distinct_okf_targets_for_one_concept() -> None:
+    citations = knowledge_citations_from_results(
+        [
+            {
+                "okf_citations": [
+                    {
+                        "concept_id": "sources/refund",
+                        "target": "refund-a.md",
+                        "label": "退款条件 A",
+                    },
+                    {
+                        "concept_id": "sources/refund",
+                        "target": "refund-b.md",
+                        "label": "退款条件 B",
+                    },
+                ]
+            }
+        ]
+    )
+
+    assert [item["source_path"] for item in citations] == [
+        "refund-a.md",
+        "refund-b.md",
+    ]
 
 
 def test_knowledge_citations_use_concept_content_instead_of_summary() -> None:

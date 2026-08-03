@@ -383,7 +383,7 @@ export default function ModelsPage({
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
-      <AppHeader onLogout={onLogout} userName={currentUser?.username} title="模型" />
+      <AppHeader className="items-center" onLogout={onLogout} userName={currentUser?.username} title="模型" />
 
       <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
         <UIButton
@@ -409,7 +409,7 @@ export default function ModelsPage({
         <div className="flex flex-wrap items-stretch gap-[20px]" aria-label="模型统计">
           <StatCard label="模型" value={rows.length} />
           <StatCard label="已启用" value={enabledCount} tone="green" />
-          <StatCard label="默认模型" value={defaultRow?.name || '-'} valueClassName="text-[18px]" />
+          <StatCard label="默认模型" value={defaultRow?.name || '-'} valueClassName="text-[18px] leading-[26px]" />
           <StatCard label="API 协议" value={providerCount} />
         </div>
 

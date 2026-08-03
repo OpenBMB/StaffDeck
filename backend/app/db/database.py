@@ -61,6 +61,13 @@ _CHANNEL_SCOPE_REBUILD_MIGRATION_ID = "20260719_channel_scope_rebuild"
 _CHANNEL_BINDINGS_MULTI_MIGRATION_ID = "20260721_channel_bindings_multi"
 _CHANNEL_ACCOUNT_KEY_MIGRATION_ID = "20260723_channel_account_key_v1"
 _FEISHU_CHANNEL_SCHEMA_MIGRATION_ID = "20260724_feishu_channel_schema_v1"
+_CAPABILITY_SCOPE_TABLES = (
+    "general_skills",
+    "tools",
+    "mcp_servers",
+    "knowledge_bases",
+    "knowledge_base_versions",
+)
 
 
 def init_db() -> None:
@@ -102,6 +109,8 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_feishu_channel_schema(conn, tables)
         _migrate_channel_inbound_run_schema(conn, tables)
         _migrate_channel_bind_code_constraints(conn, tables)
+        _migrate_capability_scope_schema(conn, inspector, tables)
+        _migrate_harness_v2_schema(conn, inspector, tables)
 
         if "users" in tables:
             user_columns = {column["name"] for column in inspector.get_columns("users")}
@@ -213,6 +222,19 @@ def _migrate_sqlite_skill_schema() -> None:
                     conn.execute(text("UPDATE tools SET allowed_skills_json = '[]'"))
             if "mcp_server_id" not in tool_columns:
                 conn.execute(text("ALTER TABLE tools ADD COLUMN mcp_server_id VARCHAR"))
+            if "capability_scope_inherited" not in tool_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE tools ADD COLUMN capability_scope_inherited "
+                        "BOOLEAN NOT NULL DEFAULT 1"
+                    )
+                )
+            conn.execute(
+                text(
+                    "UPDATE tools SET capability_scope_inherited = 1 "
+                    "WHERE capability_scope_inherited IS NULL"
+                )
+            )
 
         if "ui_configs" in tables:
             ui_columns = {column["name"] for column in inspector.get_columns("ui_configs")}
@@ -1597,6 +1619,190 @@ def _normalize_skill_identifier(value: object, legacy_id_prefix: str) -> str:
     return value
 
 
+def _migrate_capability_scope_schema(conn, inspector, tables: set[str]) -> None:
+    for table_name in _CAPABILITY_SCOPE_TABLES:
+        if table_name not in tables:
+            continue
+        columns = {column["name"] for column in inspector.get_columns(table_name)}
+        if "capability_scope" not in columns:
+            conn.execute(
+                text(
+                    f"ALTER TABLE {table_name} ADD COLUMN capability_scope "
+                    "VARCHAR NOT NULL DEFAULT 'general'"
+                )
+            )
+        conn.execute(
+            text(
+                f"UPDATE {table_name} SET capability_scope = 'general' "
+                "WHERE capability_scope IS NULL "
+                "OR capability_scope NOT IN ('general', 'sop_specific')"
+            )
+        )
+        conn.execute(
+            text(
+                f"CREATE INDEX IF NOT EXISTS ix_{table_name}_capability_scope "
+                f"ON {table_name}(capability_scope)"
+            )
+        )
+
+
+def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
+    """Repair Harness v2 tables created by an older application version."""
+
+    if "harness_task_frames" in tables:
+        task_frame_columns = {
+            column["name"] for column in inspector.get_columns("harness_task_frames")
+        }
+        task_frame_column_sql = {
+            "decision": (
+                "ALTER TABLE harness_task_frames ADD COLUMN decision "
+                "VARCHAR NOT NULL DEFAULT 'answer_only'"
+            ),
+            "attempt_no": (
+                "ALTER TABLE harness_task_frames ADD COLUMN attempt_no "
+                "INTEGER NOT NULL DEFAULT 0"
+            ),
+            "lease_owner": (
+                "ALTER TABLE harness_task_frames ADD COLUMN lease_owner VARCHAR"
+            ),
+            "lease_expires_at": (
+                "ALTER TABLE harness_task_frames ADD COLUMN lease_expires_at DATETIME"
+            ),
+        }
+        for column_name, ddl in task_frame_column_sql.items():
+            if column_name not in task_frame_columns:
+                conn.execute(text(ddl))
+        conn.execute(
+            text(
+                "UPDATE harness_task_frames SET decision = 'answer_only' "
+                "WHERE decision IS NULL OR decision = ''"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE harness_task_frames SET attempt_no = 0 "
+                "WHERE attempt_no IS NULL"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_harness_task_frames_decision "
+                "ON harness_task_frames(decision)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_harness_task_frames_lease_owner "
+                "ON harness_task_frames(lease_owner)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_harness_task_frames_lease_expires_at "
+                "ON harness_task_frames(lease_expires_at)"
+            )
+        )
+
+    if "harness_runs" in tables:
+        run_columns = {
+            column["name"] for column in inspector.get_columns("harness_runs")
+        }
+        run_column_sql = {
+            "attempt_no": (
+                "ALTER TABLE harness_runs ADD COLUMN attempt_no "
+                "INTEGER NOT NULL DEFAULT 1"
+            ),
+            "lease_owner": "ALTER TABLE harness_runs ADD COLUMN lease_owner VARCHAR",
+            "lease_expires_at": (
+                "ALTER TABLE harness_runs ADD COLUMN lease_expires_at DATETIME"
+            ),
+        }
+        for column_name, ddl in run_column_sql.items():
+            if column_name not in run_columns:
+                conn.execute(text(ddl))
+        conn.execute(
+            text(
+                "UPDATE harness_runs SET attempt_no = 1 "
+                "WHERE attempt_no IS NULL"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_harness_runs_lease_owner "
+                "ON harness_runs(lease_owner)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_harness_runs_lease_expires_at "
+                "ON harness_runs(lease_expires_at)"
+            )
+        )
+
+    if "harness_invocations" not in tables:
+        return
+
+    invocation_columns = {
+        column["name"] for column in inspector.get_columns("harness_invocations")
+    }
+    invocation_column_sql = {
+        "logical_action_key": (
+            "ALTER TABLE harness_invocations ADD COLUMN logical_action_key VARCHAR"
+        ),
+        "replayed_from_invocation_id": (
+            "ALTER TABLE harness_invocations "
+            "ADD COLUMN replayed_from_invocation_id VARCHAR"
+        ),
+        "response_cache_json": (
+            "ALTER TABLE harness_invocations ADD COLUMN response_cache_json "
+            "JSON NOT NULL DEFAULT '{}'"
+        ),
+    }
+    for column_name, ddl in invocation_column_sql.items():
+        if column_name not in invocation_columns:
+            conn.execute(text(ddl))
+    conn.execute(
+        text(
+            "UPDATE harness_invocations SET response_cache_json = '{}' "
+            "WHERE response_cache_json IS NULL"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS "
+            "ix_harness_invocations_replayed_from_invocation_id "
+            "ON harness_invocations(replayed_from_invocation_id)"
+        )
+    )
+
+    logical_action_index = next(
+        (
+            index
+            for index in inspector.get_indexes("harness_invocations")
+            if index["name"] == "ix_harness_invocations_logical_action_key"
+        ),
+        None,
+    )
+    if logical_action_index and (
+        not logical_action_index.get("unique")
+        or logical_action_index.get("column_names") != ["logical_action_key"]
+    ):
+        conn.execute(
+            text(
+                "DROP INDEX IF EXISTS "
+                "ix_harness_invocations_logical_action_key"
+            )
+        )
+    conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "ix_harness_invocations_logical_action_key "
+            "ON harness_invocations(logical_action_key) "
+            "WHERE logical_action_key IS NOT NULL"
+        )
+    )
+
+
 def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
     tenant_ids = _tenant_ids(conn, tables)
     if "knowledge_bases" in tables:
@@ -1611,10 +1817,12 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                     text(
                         """
                         INSERT INTO knowledge_bases (
-                            id, tenant_id, name, description, status, metadata_json, created_at, updated_at
+                            id, tenant_id, name, description, status, capability_scope,
+                            metadata_json, created_at, updated_at
                         )
                         VALUES (
-                            :id, :tenant_id, :name, :description, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                            :id, :tenant_id, :name, :description, 'active', 'general',
+                            '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
                         """
                     ),
@@ -1665,11 +1873,12 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                         """
                         INSERT INTO knowledge_base_versions (
                             id, tenant_id, knowledge_base_id, version, name, description,
-                            status, metadata_json, created_at, updated_at
+                            status, capability_scope, metadata_json, created_at, updated_at
                         )
                         VALUES (
                             :id, :tenant_id, :knowledge_base_id, '1.0.0', :name, :description,
-                            :status, :metadata_json, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                            :status, :capability_scope, :metadata_json,
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
                         """
                     ),
@@ -1680,6 +1889,11 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                         "name": row["name"],
                         "description": row.get("description"),
                         "status": row.get("status") or "active",
+                        "capability_scope": (
+                            row.get("capability_scope")
+                            if row.get("capability_scope") in {"general", "sop_specific"}
+                            else "general"
+                        ),
                         "metadata_json": row.get("metadata_json") or "{}",
                     },
                 )
@@ -1791,11 +2005,12 @@ def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
                     text(
                         """
                         INSERT INTO knowledge_bases (
-                            id, tenant_id, name, description, status, metadata_json, created_at, updated_at
+                            id, tenant_id, name, description, status, capability_scope,
+                            metadata_json, created_at, updated_at
                         )
                         VALUES (
-                            :id, :tenant_id, :name, :description, :status, :metadata_json,
-                            :created_at, CURRENT_TIMESTAMP
+                            :id, :tenant_id, :name, :description, :status, :capability_scope,
+                            :metadata_json, :created_at, CURRENT_TIMESTAMP
                         )
                         """
                     ),
@@ -1805,6 +2020,11 @@ def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
                         "name": target_name,
                         "description": f"由文档 {document.get('filename') or document['id']} 创建",
                         "status": "active",
+                        "capability_scope": (
+                            source.get("capability_scope")
+                            if source.get("capability_scope") in {"general", "sop_specific"}
+                            else "general"
+                        ),
                         "metadata_json": json.dumps(metadata, ensure_ascii=False),
                         "created_at": document.get("created_at") or source.get("created_at"),
                     },
@@ -1820,11 +2040,12 @@ def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
                         """
                         INSERT INTO knowledge_base_versions (
                             id, tenant_id, knowledge_base_id, version, name, description,
-                            status, metadata_json, created_at, updated_at
+                            status, capability_scope, metadata_json, created_at, updated_at
                         )
                         VALUES (
                             :id, :tenant_id, :knowledge_base_id, '1.0.0', :name, :description,
-                            'active', :metadata_json, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                            'active', :capability_scope, :metadata_json,
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
                         """
                     ),
@@ -1834,6 +2055,11 @@ def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
                         "knowledge_base_id": target_id,
                         "name": target_name,
                         "description": f"由文档 {document.get('filename') or document['id']} 创建",
+                        "capability_scope": (
+                            source.get("capability_scope")
+                            if source.get("capability_scope") in {"general", "sop_specific"}
+                            else "general"
+                        ),
                         "metadata_json": json.dumps(metadata, ensure_ascii=False),
                     },
                 )

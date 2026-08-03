@@ -5,9 +5,10 @@ from sqlmodel import Session, select
 
 from app.api.chat import message_read, session_read
 from app.db import get_session
-from app.db.models import ChatSession, Message, MessageFeedback, User, utc_now
+from app.db.models import AgentProfile, ChatSession, Message, MessageFeedback, User, utc_now
 from app.feedback import FEEDBACK_BUCKET_LABELS, enqueue_feedback_analysis, feedback_analysis_read, feedback_summary
 from app.security.auth import get_current_user
+from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
 
 router = APIRouter(prefix="/api/enterprise/feedback", tags=["enterprise:feedback"])
@@ -74,8 +75,6 @@ def list_feedback_sessions(
     for session_id, rows in grouped.items():
         chat_session = db.get(ChatSession, session_id)
         if not chat_session or chat_session.tenant_id != tenant_id:
-            continue
-        if chat_session.user_id != current_user.id:
             continue
         if agent_id and chat_session.agent_id != agent_id:
             continue
@@ -215,17 +214,45 @@ def _owned_session_ids(
     current_user: User,
     agent_id: str | None = None,
 ) -> list[str]:
-    conditions = [ChatSession.tenant_id == tenant_id, ChatSession.user_id == current_user.id]
+    conditions = [ChatSession.tenant_id == tenant_id]
     if agent_id:
         conditions.append(ChatSession.agent_id == agent_id)
+    if not _can_view_all_agent_feedback(db, tenant_id, agent_id, current_user):
+        conditions.append(ChatSession.user_id == current_user.id)
     return list(db.exec(select(ChatSession.id).where(*conditions)).all())
 
 
 def _get_owned_chat_session(db: Session, tenant_id: str, current_user: User, session_id: str) -> ChatSession:
     row = db.get(ChatSession, session_id)
-    if not row or row.tenant_id != tenant_id or row.user_id != current_user.id:
+    if not row or row.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Session not found")
-    return row
+    if row.user_id == current_user.id or is_admin_user(current_user):
+        return row
+    agent = db.get(AgentProfile, row.agent_id) if row.agent_id else None
+    if (
+        agent
+        and agent.tenant_id == tenant_id
+        and not agent.is_overall
+        and agent_owned_by_user(agent, current_user)
+    ):
+        return row
+    raise HTTPException(status_code=404, detail="Session not found")
+
+
+def _can_view_all_agent_feedback(
+    db: Session,
+    tenant_id: str,
+    agent_id: str | None,
+    current_user: User,
+) -> bool:
+    if is_admin_user(current_user):
+        return bool(agent_id)
+    if not agent_id:
+        return False
+    agent = db.get(AgentProfile, agent_id)
+    if not agent or agent.tenant_id != tenant_id or agent.is_overall:
+        return False
+    return agent_owned_by_user(agent, current_user)
 
 
 def _ensure_request_tenant(tenant_id: str, current_user: User) -> None:

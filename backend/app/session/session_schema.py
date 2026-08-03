@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.tools.tool_schema import ToolCall, ToolResult
 
@@ -17,6 +17,17 @@ RouterDecisionValue = Literal[
     "answer_only",
     "handoff_human",
     "clarify",
+]
+TaskFrameKind = Literal["sop", "conversation"]
+TaskFrameRunStatus = Literal[
+    "queued",
+    "running",
+    "awaiting_user",
+    "blocked",
+    "completed",
+    "handoff",
+    "failed",
+    "cancelled",
 ]
 MessageFeedbackValue = Literal["up", "down"]
 
@@ -34,6 +45,30 @@ class TaskFrame(BaseModel):
     resume_policy: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+
+class PlannedTaskFrame(BaseModel):
+    task_id: Optional[str] = None
+    kind: TaskFrameKind = "conversation"
+    status: TaskFrameRunStatus = "queued"
+    decision: RouterDecisionValue = "answer_only"
+    target_skill_id: Optional[str] = None
+    target_step_id: Optional[str] = None
+    user_intent: Optional[str] = None
+    requirements: list[str] = Field(default_factory=list)
+    slot_hints: dict[str, Any] = Field(default_factory=dict)
+    depends_on_task_ids: list[str] = Field(default_factory=list)
+    source_message: Optional[str] = None
+
+    @field_validator("slot_hints", mode="before")
+    @classmethod
+    def _default_null_slot_hints(cls, value: Any) -> Any:
+        return {} if value is None else value
+
+    @field_validator("requirements", "depends_on_task_ids", mode="before")
+    @classmethod
+    def _default_null_lists(cls, value: Any) -> Any:
+        return [] if value is None else value
 
 
 class PendingTask(BaseModel):
@@ -59,6 +94,33 @@ class TaskUpdate(BaseModel):
     source_message: Optional[str] = None
     slot_hints: dict[str, Any] = Field(default_factory=dict)
     remove: bool = False
+
+    @field_validator("slot_hints", mode="before")
+    @classmethod
+    def _default_null_slot_hints(cls, value: Any) -> Any:
+        return {} if value is None else value
+
+
+class TurnPlan(BaseModel):
+    """The only scene/SOP intent decision produced for a user turn.
+
+    Capability selection deliberately does not belong in this contract. Each
+    planned frame is compiled into a Harness task after the plan is persisted.
+    """
+
+    decision: RouterDecisionValue = "answer_only"
+    selected_task_id: Optional[str] = None
+    confidence: float = 0.0
+    user_intent: Optional[str] = None
+    reason: Optional[str] = None
+    clarification_question: Optional[str] = None
+    task_frames: list[PlannedTaskFrame] = Field(default_factory=list)
+    task_updates: list[TaskUpdate] = Field(default_factory=list)
+
+    @field_validator("task_frames", "task_updates", mode="before")
+    @classmethod
+    def _default_null_lists(cls, value: Any) -> Any:
+        return [] if value is None else value
 
 
 class AwaitingInput(BaseModel):

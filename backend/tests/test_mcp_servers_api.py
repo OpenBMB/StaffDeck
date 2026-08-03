@@ -136,6 +136,45 @@ def test_sync_mcp_tools_imports_tools_and_executes() -> None:
         assert result.data == {"text": "hi", "length": 2}
 
 
+def test_disabled_mcp_server_blocks_imported_tool_execution() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        server = MCPServer(
+            id="server_disabled",
+            tenant_id="tenant_demo",
+            name="disabled",
+            transport="builtin",
+            enabled=False,
+        )
+        db.add(server)
+        db.add(
+            Tool(
+                id="tool_disabled_server",
+                tenant_id="tenant_demo",
+                name="disabled.echo",
+                tool_type="mcp",
+                method="POST",
+                url="mcp://disabled/echo",
+                mcp_server_id=server.id,
+                config_json={"tool": "echo"},
+                enabled=True,
+            )
+        )
+        db.commit()
+
+        result = ToolExecutor(db).execute(
+            tenant_id="tenant_demo",
+            tool_call=ToolCall(
+                name="disabled.echo",
+                arguments={"text": "must-not-run"},
+            ),
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.code == "MCP_ERROR"
+
+
 def test_sync_mcp_tools_preserves_execution_policy() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))

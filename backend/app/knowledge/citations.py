@@ -40,7 +40,11 @@ def compact_knowledge_citation_labels(
             ordered_labels.append(label)
 
     if not ordered_labels:
-        return content, []
+        ordered_labels = list(citations_by_label)
+        if not ordered_labels:
+            return content, []
+        source_labels = " ".join(f"[{label}]" for label in ordered_labels)
+        content = f"{content.rstrip()}\n\n参考来源：{source_labels}"
 
     label_mapping = {old_label: index for index, old_label in enumerate(ordered_labels, start=1)}
 
@@ -100,102 +104,169 @@ def _display_title(value: str) -> str:
     return _compact(value, 72)
 
 
-def knowledge_citations_from_results(
-    knowledge_results: list[dict[str, Any]],
-    limit: int = 4,
+def knowledge_source_candidates(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return one normalized source stream for both answer context and citations."""
+    tiers = (
+        ("evidence", result.get("evidence_pack")),
+        ("evidence", result.get("chunks")),
+        ("concept", result.get("selected_concepts")),
+        ("okf", result.get("okf_citations")),
+    )
+    for kind, raw_items in tiers:
+        if not isinstance(raw_items, list):
+            continue
+        items = [item for item in raw_items if isinstance(item, dict)]
+        candidates = _normalize_source_items(kind, items)
+        if candidates:
+            return candidates
+    return []
+
+
+def _normalize_source_items(
+    kind: str,
+    items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    citations: list[dict[str, Any]] = []
-    seen_identities: set[str] = set()
+    groups: list[list[dict[str, Any]]] = []
+    group_indexes: dict[str, int] = {}
+    for index, item in enumerate(items):
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        group_id = str(
+            item.get("related_group_id") or metadata.get("related_group_id") or ""
+        ).strip()
+        key = f"related:{group_id}" if kind == "evidence" and group_id else f"single:{index}"
+        if key not in group_indexes:
+            group_indexes[key] = len(groups)
+            groups.append([])
+        groups[group_indexes[key]].append(item)
 
-    def add(kind: str, identity: str, payload: dict[str, Any]) -> None:
-        if len(citations) >= limit:
-            return
-        normalized = _normalize_identity(identity)
-        title_identity = _normalize_identity(str(payload.get("title") or ""))
-        if not normalized or normalized in seen_identities or (title_identity and title_identity in seen_identities):
-            return
-        seen_identities.add(normalized)
-        if title_identity:
-            seen_identities.add(title_identity)
-        citations.append(
-            {
-                "id": f"kref_{len(citations) + 1}",
-                "label": f"[{len(citations) + 1}]",
-                "kind": kind,
-                **payload,
-            }
+    candidates: list[dict[str, Any]] = []
+    for group in groups:
+        item = group[0]
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        source_refs = item.get("source_refs") if isinstance(item.get("source_refs"), list) else []
+        source_ref = source_refs[0] if source_refs and isinstance(source_refs[0], dict) else {}
+        content = "\n\n".join(
+            str(
+                part.get("content")
+                or part.get("excerpt")
+                or part.get("content_excerpt")
+                or part.get("content_md")
+                or ""
+            ).strip()
+            for part in group
+            if str(
+                part.get("content")
+                or part.get("excerpt")
+                or part.get("content_excerpt")
+                or part.get("content_md")
+                or ""
+            ).strip()
         )
-
-    for result in knowledge_results:
-        for concept in result.get("selected_concepts") or []:
-            if not isinstance(concept, dict):
-                continue
-            concept_id = str(concept.get("concept_id") or concept.get("id") or "").strip()
-            title = _display_title(str(concept.get("title") or concept_id or "Wiki 概念"))
-            description = str(concept.get("description") or "").strip()
-            content = str(concept.get("content") or concept.get("content_excerpt") or "").strip()
-            excerpt = content or description
-            source_refs = concept.get("source_refs") if isinstance(concept.get("source_refs"), list) else []
-            source_path = ""
-            if source_refs and isinstance(source_refs[0], dict):
-                source_path = str(source_refs[0].get("source_path") or source_refs[0].get("document_id") or "")
-            add(
-                "concept",
-                concept_id or title,
-                {
-                    "title": title,
-                    "source_path": source_path,
-                    "content": excerpt[:CITATION_EXCERPT_CHAR_LIMIT],
-                    "excerpt": excerpt[:CITATION_EXCERPT_CHAR_LIMIT],
-                    "summary": description[:CITATION_SUMMARY_CHAR_LIMIT],
-                    "concept_id": concept_id,
-                    "concept_type": concept.get("type"),
-                },
+        summary = str(
+            item.get("description") or item.get("summary") or item.get("label") or ""
+        ).strip()
+        if not content:
+            content = summary
+        section_path = str(
+            item.get("section_path") or metadata.get("section_path") or ""
+        ).strip()
+        source_path = str(
+            item.get("source_path")
+            or item.get("source_ref")
+            or item.get("target")
+            or item.get("path")
+            or item.get("uri")
+            or metadata.get("source_path")
+            or source_ref.get("source_path")
+            or source_ref.get("document_id")
+            or ""
+        ).strip()
+        source_id = str(
+            item.get("chunk_id") or item.get("concept_id") or item.get("id") or ""
+        ).strip()
+        title = _display_title(
+            str(item.get("title") or item.get("name") or "").strip()
+            or section_path
+            or source_path
+            or source_id
+            or "知识来源"
+        )
+        group_id = str(
+            item.get("related_group_id") or metadata.get("related_group_id") or ""
+        ).strip()
+        if kind == "evidence":
+            raw_identity = (
+                f"related:{group_id}"
+                if group_id
+                else source_id or section_path or source_path or content[:120]
             )
-
-        for item in result.get("evidence_pack") or []:
-            if not isinstance(item, dict):
-                continue
-            excerpt = str(item.get("content") or item.get("excerpt") or "").strip()
-            summary = str(item.get("summary") or "").strip()
-            section_path = str(item.get("section_path") or "").strip()
-            source_path = str(item.get("source_path") or "").strip()
-            chunk_id = str(item.get("chunk_id") or "").strip()
-            title = _display_title(section_path or source_path or summary or "知识片段")
-            identity = _semantic_identity(section_path or summary or f"{source_path}:{excerpt[:120]}" or chunk_id)
-            add(
-                "evidence",
-                identity,
+        elif kind == "okf":
+            raw_identity = f"{source_id}:{source_path or content[:120]}"
+        else:
+            raw_identity = source_id or source_path or content[:120]
+        identity = _semantic_identity(raw_identity)
+        if not identity or not content:
+            continue
+        candidate = {
+            "_identity": identity,
+            "kind": kind,
+            "title": title,
+            "source_path": source_path,
+            "content": content[:CITATION_EXCERPT_CHAR_LIMIT],
+            "excerpt": content[:CITATION_EXCERPT_CHAR_LIMIT],
+            "summary": summary[:CITATION_SUMMARY_CHAR_LIMIT],
+        }
+        if kind == "evidence":
+            candidate.update(
                 {
-                    "title": title,
-                    "source_path": source_path,
                     "section_path": section_path,
-                    "content": excerpt[:CITATION_EXCERPT_CHAR_LIMIT],
-                    "excerpt": excerpt[:CITATION_EXCERPT_CHAR_LIMIT],
-                    "summary": summary[:CITATION_SUMMARY_CHAR_LIMIT],
                     "confidence_reason": str(item.get("confidence_reason") or ""),
                     "document_id": item.get("document_id"),
                     "bucket_id": item.get("bucket_id"),
-                    "chunk_id": chunk_id,
-                },
+                    "chunk_id": str(item.get("chunk_id") or item.get("id") or "").strip(),
+                    "related_group_id": group_id or None,
+                    "related_chunk_ids": [
+                        str(part.get("chunk_id") or part.get("id") or "").strip()
+                        for part in group
+                        if str(part.get("chunk_id") or part.get("id") or "").strip()
+                    ],
+                }
             )
+        else:
+            candidate["concept_id"] = str(item.get("concept_id") or item.get("id") or "")
+            if kind == "concept":
+                candidate["concept_type"] = item.get("type")
+        candidates.append(candidate)
+    return candidates
 
-        if not citations:
-            for item in result.get("okf_citations") or []:
-                if not isinstance(item, dict):
-                    continue
-                concept_id = str(item.get("concept_id") or "").strip()
-                target = str(item.get("target") or "").strip()
-                label = str(item.get("label") or "").strip()
-                title = _display_title(str(item.get("title") or concept_id or "OKF 引用"))
-                add(
-                    "okf",
-                    f"{concept_id}:{target or label}",
-                    {
-                        "title": title,
-                        "source_path": target,
-                        "excerpt": label,
-                        "concept_id": concept_id,
-                    },
-                )
+
+def knowledge_citations_from_results(
+    knowledge_results: list[dict[str, Any]],
+    limit: int = 4,
+    *,
+    max_results: int | None = 1,
+) -> list[dict[str, Any]]:
+    if limit <= 0 or max_results == 0:
+        return []
+    citations: list[dict[str, Any]] = []
+    seen_identities: set[str] = set()
+    results = [item for item in knowledge_results if isinstance(item, dict)]
+    if max_results is not None:
+        results = results[-max(1, max_results) :]
+    for result in results:
+        for candidate in knowledge_source_candidates(result):
+            identity = _normalize_identity(str(candidate.get("_identity") or ""))
+            if not identity or identity in seen_identities:
+                continue
+            seen_identities.add(identity)
+            payload = {key: value for key, value in candidate.items() if key != "_identity"}
+            citations.append(
+                {
+                    "id": f"kref_{len(citations) + 1}",
+                    "label": f"[{len(citations) + 1}]",
+                    **payload,
+                }
+            )
+            if len(citations) >= limit:
+                return citations
     return citations

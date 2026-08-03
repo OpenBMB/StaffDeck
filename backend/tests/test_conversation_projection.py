@@ -82,3 +82,27 @@ def test_assistant_metadata_uses_injected_citation_deduper() -> None:
     assert metadata["knowledge_citations"] == [
         {"title": "injected", "label": "[1]"}
     ]
+
+
+def test_assistant_metadata_uses_latest_knowledge_result_window() -> None:
+    metadata = LegacyConversationProjection.assistant_message_metadata(
+        StepAgentResult(
+            knowledge_results=[
+                {
+                    "query": {"query": "旧问题"},
+                    "chunks": [
+                        {"id": "old", "content": "旧答案", "source_ref": "old.md"}
+                    ],
+                },
+                {
+                    "query": {"query": "新问题"},
+                    "chunks": [
+                        {"id": "new", "content": "新答案", "source_ref": "new.md"}
+                    ],
+                },
+            ]
+        )
+    )
+
+    assert metadata["knowledge_query"] == {"query": "新问题"}
+    assert metadata["knowledge_citations"][0]["source_path"] == "new.md"

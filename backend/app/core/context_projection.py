@@ -3,15 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.conversation_context import build_conversation_context
-from app.knowledge.citations import EMAIL_PATTERN
+from app.knowledge.citations import EMAIL_PATTERN, knowledge_source_candidates
 from app.llm.stage_protocol import TURN_STAGE_MESSAGES_KEY
 
 CONTROL_CONTEXT_TOKEN_BUDGET = 32_000
 KNOWLEDGE_HISTORY_LIMIT = 1
-KNOWLEDGE_EVIDENCE_LIMIT = 48
 KNOWLEDGE_RELATED_CONTENT_LIMIT = 4_800
-KNOWLEDGE_CONCEPT_LIMIT = 8
-KNOWLEDGE_DOCUMENT_LIMIT = 5
 RETRIEVED_KNOWLEDGE_LIMIT = 4
 
 
@@ -23,7 +20,8 @@ def compact_knowledge_context(
     if not isinstance(items, list):
         return []
     selected = [item for item in items if isinstance(item, dict)][-max(1, max_items) :]
-    return [_compact_knowledge_result(item) for item in selected]
+    compacted = [_compact_knowledge_result(item) for item in selected]
+    return [item for item in compacted if item]
 
 
 def compact_step_result(payload: dict[str, Any]) -> dict[str, Any]:
@@ -277,38 +275,25 @@ def _compact_knowledge_result(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _compact_retrieved_knowledge(item: dict[str, Any]) -> list[dict[str, Any]]:
-    candidates = _compact_evidence_candidates(item)
-    for value in _dict_items(item.get("selected_concepts"), KNOWLEDGE_CONCEPT_LIMIT):
-        candidates.append(
-            {
-                "title": _short_text(value.get("title") or value.get("name"), 180),
-                "source": _short_text(value.get("source_path") or value.get("concept_id"), 300),
-                "summary": _short_text(value.get("summary"), 300),
-                "content": _short_text(value.get("content") or value.get("content_md"), 600),
-            }
+    candidates = []
+    for value in knowledge_source_candidates(item):
+        related_chunks = value.get("related_chunk_ids")
+        grouped = bool(value.get("related_group_id")) or (
+            isinstance(related_chunks, list) and len(related_chunks) > 1
         )
-    for value in _dict_items(item.get("selected_documents"), KNOWLEDGE_DOCUMENT_LIMIT):
-        candidates.append(
-            {
-                "title": _short_text(value.get("title") or value.get("filename"), 180),
-                "source": _short_text(value.get("filename"), 180),
-                "summary": _short_text(value.get("summary"), 600),
-            }
-        )
-    for value in _dict_items(item.get("selected_buckets"), KNOWLEDGE_DOCUMENT_LIMIT):
         candidates.append(
             {
                 "title": _short_text(value.get("title"), 180),
-                "summary": _short_text(value.get("summary"), 600),
-            }
-        )
-    for value in _dict_items(item.get("okf_citations"), KNOWLEDGE_EVIDENCE_LIMIT):
-        candidates.append(
-            {
-                "title": _short_text(value.get("title") or value.get("label"), 180),
                 "source": _short_text(
-                    value.get("source_path") or value.get("path") or value.get("uri"),
+                    value.get("section_path")
+                    or value.get("source_path")
+                    or value.get("concept_id"),
                     300,
+                ),
+                "summary": _short_text(value.get("summary"), 300),
+                "content": _short_text(
+                    value.get("content") or value.get("excerpt"),
+                    KNOWLEDGE_RELATED_CONTENT_LIMIT if grouped else 800,
                 ),
             }
         )
@@ -332,56 +317,6 @@ def _compact_retrieved_knowledge(item: dict[str, Any]) -> list[dict[str, Any]]:
     return compacted
 
 
-def _compact_evidence_candidates(item: dict[str, Any]) -> list[dict[str, Any]]:
-    evidence = _dict_items(item.get("evidence_pack"), KNOWLEDGE_EVIDENCE_LIMIT)
-    if not evidence:
-        evidence = _dict_items(item.get("chunks"), KNOWLEDGE_EVIDENCE_LIMIT)
-    ordered_groups: list[list[dict[str, Any]]] = []
-    group_index: dict[str, int] = {}
-    for index, value in enumerate(evidence):
-        metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
-        group_id = str(
-            value.get("related_group_id") or metadata.get("related_group_id") or ""
-        ).strip()
-        key = f"related:{group_id}" if group_id else f"single:{index}"
-        if key not in group_index:
-            group_index[key] = len(ordered_groups)
-            ordered_groups.append([])
-        ordered_groups[group_index[key]].append(value)
-
-    candidates: list[dict[str, Any]] = []
-    for group in ordered_groups:
-        value = group[0]
-        content = "\n\n".join(
-            str(part.get("content") or part.get("excerpt") or "").strip()
-            for part in group
-            if str(part.get("content") or part.get("excerpt") or "").strip()
-        )
-        candidates.append(
-            {
-                "title": _short_text(value.get("title") or value.get("label"), 180),
-                "source": _short_text(
-                    value.get("section_path")
-                    or value.get("source_path")
-                    or value.get("source_ref"),
-                    300,
-                ),
-                "summary": _short_text(value.get("summary"), 300),
-                "content": _short_text(
-                    content,
-                    KNOWLEDGE_RELATED_CONTENT_LIMIT if len(group) > 1 else 800,
-                ),
-            }
-        )
-    return candidates
-
-
-def _dict_items(value: object, limit: int) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)][:limit]
-
-
 def _skill_nodes(content: dict[str, Any]) -> list[dict[str, Any]]:
     value = content.get("nodes")
     if not isinstance(value, list):
@@ -403,6 +338,7 @@ def _project_node(node: dict[str, Any]) -> dict[str, Any]:
                 "expected_user_info",
                 "allowed_actions",
                 "knowledge_scope",
+                "capability_refs",
                 "retry_policy",
             )
         }
@@ -421,6 +357,7 @@ def _project_step_agent_node(node: dict[str, Any]) -> dict[str, Any]:
             "expected_user_info": node.get("expected_user_info"),
             "allowed_actions": node.get("allowed_actions"),
             "knowledge_scope": node.get("knowledge_scope"),
+            "capability_refs": node.get("capability_refs"),
         }
     )
 

@@ -51,17 +51,17 @@ class LegacyConversationProjection:
         )
         if not citations:
             return {}
-        first_query = next(
+        latest_query = next(
             (
                 item.get("query")
-                for item in knowledge_results
+                for item in reversed(knowledge_results)
                 if isinstance(item.get("query"), dict)
             ),
             None,
         )
         return {
             "knowledge_citations": citations,
-            "knowledge_query": first_query or {},
+            "knowledge_query": latest_query or {},
         }
 
     @staticmethod

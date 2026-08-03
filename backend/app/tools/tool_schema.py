@@ -4,6 +4,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.capability_scope import CapabilityScope
+
 
 class ToolExecutionPolicy(BaseModel):
     timeout_seconds: float = Field(ge=1, le=300)
@@ -25,11 +27,12 @@ class ToolCreateRequest(BaseModel):
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
     allowed_skills: list[str] = Field(default_factory=list)
+    capability_scope: CapabilityScope = "general"
     enabled: bool = True
 
 
 class ToolUpdateRequest(ToolCreateRequest):
-    pass
+    capability_scope: Optional[CapabilityScope] = None
 
 
 class ToolRead(BaseModel):
@@ -50,6 +53,7 @@ class ToolRead(BaseModel):
     output_schema: dict[str, Any]
     allowed_skills: list[str]
     mcp_server_id: Optional[str] = None
+    capability_scope: CapabilityScope
     enabled: bool
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
@@ -136,11 +140,12 @@ class MCPServerCreateRequest(BaseModel):
     description: Optional[str] = None
     bucket: str = "MCP 工具"
     connection: MCPServerConnection = Field(default_factory=MCPServerConnection)
+    capability_scope: CapabilityScope = "general"
     enabled: bool = True
 
 
 class MCPServerUpdateRequest(MCPServerCreateRequest):
-    pass
+    capability_scope: Optional[CapabilityScope] = None
 
 
 class MCPDiscoveredTool(BaseModel):
@@ -152,6 +157,7 @@ class MCPDiscoveredTool(BaseModel):
     imported: bool = False
     tool_id: Optional[str] = None
     enabled: Optional[bool] = None
+    capability_scope: Optional[CapabilityScope] = None
 
 
 class MCPServerRead(BaseModel):
@@ -162,6 +168,7 @@ class MCPServerRead(BaseModel):
     description: Optional[str] = None
     bucket: str
     connection: MCPServerConnection
+    capability_scope: CapabilityScope
     enabled: bool
     last_synced_at: Optional[str] = None
     tool_count: int = 0
@@ -185,6 +192,7 @@ class MCPSyncRequest(BaseModel):
     tenant_id: str
     # 需要导入/更新的工具名；为空表示导入全部发现到的工具
     tool_names: Optional[list[str]] = None
+    capability_scope_overrides: dict[str, CapabilityScope] = Field(default_factory=dict)
 
 
 class MCPSyncResponse(BaseModel):

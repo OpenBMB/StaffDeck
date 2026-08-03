@@ -27,7 +27,6 @@ import { getClientTimeZone } from '@/lib/timezone';
 import {
   agentResourceCount,
   employeeDisplayName,
-  employeeDisplayNameWithCreator,
   employeeProfile,
   visibleChatEmployees,
 } from '@/employee';
@@ -70,6 +69,7 @@ import {
   extractPastedComposerFiles,
   generalSkillTraceDetail,
   generalSkillTraceOutput,
+  harnessEventTraceLine,
   hasAssistantCarrierForTurn,
   hasAssistantMessageForTurn,
   hasRenderableStreamingText,
@@ -131,6 +131,7 @@ import {
   writeQueuedChatTurns,
   type PreparedChatTurn,
 } from './chatQueueStorage';
+import { buildSessionFilterOptions } from './sessionFilterOptions';
 
 const CHAT_BASE_PATH = '/workspace/chat';
 const STREAM_TEXT_EVENTS = new Set(['stream_replace', 'stream_delta', 'token']);
@@ -538,21 +539,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       { label: 'SOP', value: 0 },
     ];
   const sessionFilterOptions = useMemo(() => {
-    const counts = new Map<string, number>();
-    sessions.forEach((session) => {
-      if (!session.agent_id) return;
-      counts.set(session.agent_id, (counts.get(session.agent_id) || 0) + 1);
-    });
-    const rows = availableAgents
-      .sort((a, b) => employeeDisplayName(a).localeCompare(employeeDisplayName(b), 'zh-Hans-CN'));
-    return [
-      { value: 'all', label: `全部会话 · ${sessions.length}` },
-      ...rows.map((agent) => ({
-        value: agent.id,
-        label: `${employeeDisplayNameWithCreator(agent)} · ${counts.get(agent.id) || 0}`,
-      })),
-    ];
-  }, [availableAgents, sessions]);
+    return buildSessionFilterOptions(availableAgents, sessions, activeDraftAgentId);
+  }, [activeDraftAgentId, availableAgents, sessions]);
   const visibleSidebarSessions = useMemo(() => (
     sessionAgentFilter === 'all'
       ? sessions
@@ -1038,10 +1026,17 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   ), [activeRunningTraceId, currentStream.turnId, currentTraceRunning]);
 
   useEffect(() => {
+    if (!agentsLoaded || sessionsLoading || !sessionsInitializedRef.current) return;
     if (!sessionFilterOptions.some((item) => item.value === sessionAgentFilter)) {
       persistChatSessionAgentFilter('all');
     }
-  }, [persistChatSessionAgentFilter, sessionAgentFilter, sessionFilterOptions]);
+  }, [
+    agentsLoaded,
+    persistChatSessionAgentFilter,
+    sessionAgentFilter,
+    sessionFilterOptions,
+    sessionsLoading,
+  ]);
   const currentScheduledDraft = activeConversationId ? scheduledDrafts[activeConversationId] : undefined;
   const hasVisibleMessageScheduledDraft = displayedMessages.some((item) => (
     item.role === 'assistant'
@@ -1916,6 +1911,16 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     }
     if (item.event === 'step_result') {
       upsertVisibleTraceLine(stepResultTraceLine(item.data));
+      return;
+    }
+    if (
+      item.event === 'task_frame_started'
+      || item.event === 'task_frame_finished'
+      || item.event === 'harness_action_created'
+      || item.event === 'harness_tool_completed'
+    ) {
+      const line = harnessEventTraceLine(item.event, item.data);
+      if (line) upsertVisibleTraceLine(line);
       return;
     }
     if (item.event === 'skill_state') {
