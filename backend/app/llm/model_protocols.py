@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from enum import StrEnum
 from typing import Any
-import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import HTTPException
@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 class ModelApiProtocol(StrEnum):
     OPENAI_CHAT_COMPLETIONS = "openai_chat_completions"
+    OPENAI_RESPONSES = "openai_responses"
     ANTHROPIC_MESSAGES = "anthropic_messages"
     GEMINI_GENERATE_CONTENT = "gemini_generate_content"
 
@@ -53,6 +54,22 @@ def normalize_chat_protocol_options(value: Any) -> dict[str, Any]:
     if "clear_thinking" in thinking and not isinstance(thinking["clear_thinking"], bool):
         raise HTTPException(status_code=422, detail="MODEL_PROTOCOL_OPTIONS_INVALID")
     return {"thinking": dict(thinking)}
+
+
+def normalize_responses_protocol_options(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or set(value) - {"store", "json_mode"}:
+        raise HTTPException(status_code=422, detail="MODEL_PROTOCOL_OPTIONS_INVALID")
+    if "store" in value and not isinstance(value["store"], bool):
+        raise HTTPException(status_code=422, detail="MODEL_PROTOCOL_OPTIONS_INVALID")
+    if value.get("json_mode") not in {None, "native", "prompt"}:
+        raise HTTPException(status_code=422, detail="MODEL_PROTOCOL_OPTIONS_INVALID")
+    return {
+        key: value[key]
+        for key in ("store", "json_mode")
+        if key in value
+    }
 
 
 def current_protocol_options(protocol_options: Any, protocol: ModelApiProtocol) -> dict[str, Any]:

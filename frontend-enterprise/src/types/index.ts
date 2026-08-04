@@ -311,7 +311,7 @@ export type ModelConfigRead = {
   tenant_id: string;
   name: string;
   provider: string;
-  api_protocol: 'openai_chat_completions' | 'anthropic_messages' | 'gemini_generate_content';
+  api_protocol: 'openai_chat_completions' | 'openai_responses' | 'anthropic_messages' | 'gemini_generate_content';
   base_url?: string;
   api_key_masked: string;
   model: string;

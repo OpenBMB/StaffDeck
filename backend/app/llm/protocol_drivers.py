@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from dataclasses import dataclass
 import base64
 import binascii
 import json
 import re
-from types import SimpleNamespace
+from collections.abc import Iterator
+from dataclasses import dataclass
 from threading import Event
+from types import SimpleNamespace
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
-
 
 _DATA_URL = re.compile(r"^data:(image/(?:jpeg|png|gif|webp));base64,(.+)$", re.DOTALL)
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -66,6 +65,70 @@ class ChatCompletionsDriver:
                 for chunk in stream:
                     _raise_if_cancelled(request)
                     yield chunk
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+
+        return iterate()
+
+
+@dataclass(frozen=True)
+class OpenAIResponsesDriver:
+    client: Any
+    request_kind: str = "responses"
+
+    def complete(self, request: dict[str, Any]) -> Any:
+        _raise_if_cancelled(request)
+        try:
+            response = self.client.responses.create(
+                **_responses_request(request),
+                stream=False,
+            )
+        except Exception as exc:
+            raise _protocol_call_error(exc) from exc
+        return _responses_completion(response)
+
+    def stream(self, request: dict[str, Any]) -> Iterator[Any]:
+        _raise_if_cancelled(request)
+        try:
+            stream = self.client.responses.create(**_responses_request(request), stream=True)
+        except Exception as exc:
+            raise _protocol_call_error(exc) from exc
+
+        def iterate() -> Iterator[Any]:
+            response_id = None
+            try:
+                for event in stream:
+                    _raise_if_cancelled(request)
+                    event_type = str(getattr(event, "type", ""))
+                    if event_type == "response.created":
+                        response_id = getattr(getattr(event, "response", None), "id", None)
+                        continue
+                    if event_type == "response.output_text.delta":
+                        yield _stream_chunk(
+                            response_id,
+                            text=str(getattr(event, "delta", "") or ""),
+                        )
+                        continue
+                    if event_type == "response.completed":
+                        response = getattr(event, "response", None)
+                        response_id = getattr(response, "id", None) or response_id
+                        completion = _responses_completion(response)
+                        yield _stream_chunk(
+                            response_id,
+                            finish_reason=getattr(completion.choices[0], "finish_reason", None)
+                            if completion.choices
+                            else "completed",
+                            usage=getattr(completion, "usage", None),
+                        )
+                        continue
+                    if event_type == "response.failed":
+                        raise ProtocolCallError("MODEL_UPSTREAM_ERROR")
+            except ProtocolCallError:
+                raise
+            except Exception as exc:
+                raise _protocol_call_error(exc) from exc
             finally:
                 close = getattr(stream, "close", None)
                 if callable(close):
@@ -211,6 +274,115 @@ def _gemini_headers(api_key: str) -> dict[str, str]:
         "x-goog-api-key": api_key,
         "accept": "text/event-stream, application/json",
     }
+
+
+def _responses_request(request: dict[str, Any]) -> dict[str, Any]:
+    input_items: list[dict[str, Any]] = []
+    instructions: list[str] = []
+    for message in request.get("messages") or []:
+        role = str(message.get("role") or "")
+        if role == "system":
+            text = _content_text(message.get("content"))
+            if text:
+                instructions.append(text)
+            continue
+        if role not in {"user", "assistant", "developer"}:
+            continue
+        content = _responses_content(message.get("content"), role)
+        if content:
+            input_items.append({"role": role, "content": content})
+
+    payload: dict[str, Any] = {
+        "model": request["model"],
+        "input": input_items,
+        "temperature": request["temperature"],
+        "max_output_tokens": request["max_tokens"],
+    }
+    if instructions:
+        payload["instructions"] = "\n\n".join(instructions)
+    response_format = request.get("response_format")
+    if response_format and response_format.get("type") == "json_object":
+        payload["text"] = {"format": {"type": "json_object"}}
+    protocol_options = request.get("protocol_options")
+    if isinstance(protocol_options, dict) and "store" in protocol_options:
+        payload["store"] = protocol_options["store"]
+    if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > _MAX_REQUEST_BYTES:
+        raise ValueError("MODEL_REQUEST_TOO_LARGE")
+    return payload
+
+
+def _responses_content(value: Any, role: str) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        return [_responses_text_part(value, role)] if value else []
+    if not isinstance(value, list):
+        return []
+    parts: list[dict[str, Any]] = []
+    image_count = 0
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            text = str(item.get("text") or "")
+            if text:
+                parts.append(_responses_text_part(text, role))
+            continue
+        if item.get("type") != "image_url" or role != "user":
+            continue
+        image = item.get("image_url")
+        url = str(image.get("url") or "") if isinstance(image, dict) else ""
+        if not url:
+            continue
+        image_count += 1
+        if image_count > _MAX_IMAGE_COUNT:
+            raise ValueError("MODEL_TOO_MANY_IMAGES")
+        parts.append({"type": "input_image", "image_url": url})
+    return parts
+
+
+def _responses_text_part(text: str, role: str) -> dict[str, Any]:
+    return {"type": "output_text" if role == "assistant" else "input_text", "text": text}
+
+
+def _responses_completion(response: Any) -> Any:
+    text = str(getattr(response, "output_text", "") or "")
+    if not text:
+        text = _responses_output_text(response)
+    status = getattr(response, "status", None)
+    choices = [
+        SimpleNamespace(
+            message=SimpleNamespace(content=text),
+            finish_reason=status,
+        )
+    ] if text or status else []
+    return SimpleNamespace(
+        id=getattr(response, "id", None),
+        usage=_responses_usage(getattr(response, "usage", None)),
+        choices=choices,
+    )
+
+
+def _responses_output_text(response: Any) -> str:
+    parts: list[str] = []
+    for item in getattr(response, "output", None) or []:
+        for content in getattr(item, "content", None) or []:
+            if getattr(content, "type", None) == "output_text":
+                text = getattr(content, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+    return "".join(parts)
+
+
+def _responses_usage(value: Any) -> Any:
+    if value is None:
+        return None
+    input_tokens = getattr(value, "input_tokens", None)
+    output_tokens = getattr(value, "output_tokens", None)
+    return SimpleNamespace(
+        prompt_tokens=input_tokens,
+        completion_tokens=output_tokens,
+        total_tokens=getattr(value, "total_tokens", None),
+        prompt_tokens_details=getattr(value, "input_tokens_details", None),
+    )
 
 
 def _gemini_endpoint(

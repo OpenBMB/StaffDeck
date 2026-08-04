@@ -5,11 +5,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import HTTPException
 from sqlalchemy import text
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.model_configs import (
     _verification_probe_tokens,
     create_model_config,
+    import_local_codex_model_config,
     set_default_model_config,
     update_model_config,
 )
@@ -80,6 +81,99 @@ def test_gemini_model_config_can_be_created(tmp_path) -> None:
         assert created.enabled is False
         assert created.is_default is False
         assert created.protocol_options == {}
+
+
+def test_codex_config_import_creates_unverified_responses_model(tmp_path, monkeypatch) -> None:
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        """model_provider = \"local\"
+model = \"gpt-test\"
+disable_response_storage = true
+
+[model_providers.local]
+name = \"Local relay\"
+base_url = \"http://127.0.0.1:15721/v1\"
+wire_api = \"responses\"
+experimental_bearer_token = \"relay-token\"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    with _db(tmp_path) as db:
+        imported = import_local_codex_model_config(
+            tenant_id="tenant_a",
+            db=db,
+            current_user=_admin(),
+        )
+
+        row = db.get(ModelConfig, imported.id)
+        assert row is not None
+        assert imported.name == "Codex Local relay"
+        assert imported.api_protocol == "openai_responses"
+        assert imported.protocol_options == {"store": False, "json_mode": "prompt"}
+        assert imported.enabled is False
+        assert imported.is_default is False
+        assert imported.trust_status == "unverified"
+        assert row.api_key_encrypted != "relay-token"
+
+
+def test_codex_config_import_updates_matching_name_without_duplicate(tmp_path, monkeypatch) -> None:
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        """model_provider = "local"
+model = "gpt-new"
+disable_response_storage = true
+
+[model_providers.local]
+name = "Local relay"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+experimental_bearer_token = "new-token"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    with _db(tmp_path) as db:
+        db.add(
+            ModelConfig(
+                id="model_existing",
+                tenant_id="tenant_a",
+                name="Codex Local relay",
+                api_key_encrypted=encrypt_secret("old-token"),
+                model="gpt-old",
+                trust_status="verified",
+                verified_fingerprint="old-fingerprint",
+                enabled=True,
+                is_default=True,
+            )
+        )
+        db.commit()
+
+        imported = import_local_codex_model_config(
+            tenant_id="tenant_a",
+            db=db,
+            current_user=_admin(),
+        )
+
+        rows = db.exec(
+            select(ModelConfig).where(
+                ModelConfig.tenant_id == "tenant_a",
+                ModelConfig.name == "Codex Local relay",
+            )
+        ).all()
+        assert len(rows) == 1
+        assert imported.id == "model_existing"
+        assert imported.model == "gpt-new"
+        assert imported.api_protocol == "openai_responses"
+        assert imported.enabled is False
+        assert imported.is_default is False
+        assert imported.trust_status == "unverified"
+        assert imported.config_revision == 2
+        assert imported.security_revision == 2
 
 
 def test_gemini_verification_reserves_tokens_for_visible_output() -> None:
