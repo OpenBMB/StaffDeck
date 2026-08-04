@@ -51,7 +51,7 @@ hiddenimports = (
 # macOS：Dock/菜单栏壳需要 pyobjc（AppKit + PyObjCTools）
 if sys.platform == "darwin":
     hiddenimports = hiddenimports + collect_submodules("objc") + [
-        "AppKit", "Foundation", "PyObjCTools", "PyObjCTools.AppHelper",
+        "AppKit", "Foundation", "WebKit", "PyObjCTools", "PyObjCTools.AppHelper",
     ]
 
 a = Analysis(
@@ -94,6 +94,7 @@ if sys.platform == "darwin":
                 },
             ],
             "NSHighResolutionCapable": True,
+            "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
             # 显式声明为常规 GUI app：进 Dock、可激活（非后台/非 agent）
             "LSBackgroundOnly": False,
             "LSUIElement": False,

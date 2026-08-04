@@ -131,12 +131,16 @@ else
   echo "无法安装打包依赖：venv 既无 pip 也无 uv" >&2
   exit 1
 fi
-# macOS Dock 壳依赖 pyobjc（幂等，已装则跳过）
-if ! .venv/bin/python -c "import AppKit" >/dev/null 2>&1; then
+# macOS Dock 壳和内嵌 UI 依赖 pyobjc（幂等，已装则跳过）
+if ! .venv/bin/python -c "import AppKit, WebKit" >/dev/null 2>&1; then
   if .venv/bin/python -m pip --version >/dev/null 2>&1; then
-    .venv/bin/python -m pip install "pyobjc-framework-Cocoa>=10.0"
+    .venv/bin/python -m pip install \
+      "pyobjc-framework-Cocoa>=10.0" \
+      "pyobjc-framework-WebKit>=10.0"
   elif command -v uv >/dev/null 2>&1; then
-    VIRTUAL_ENV="$(pwd)/.venv" uv pip install "pyobjc-framework-Cocoa>=10.0"
+    VIRTUAL_ENV="$(pwd)/.venv" uv pip install \
+      "pyobjc-framework-Cocoa>=10.0" \
+      "pyobjc-framework-WebKit>=10.0"
   fi
 fi
 
