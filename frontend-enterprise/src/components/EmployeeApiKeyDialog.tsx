@@ -158,7 +158,7 @@ export default function EmployeeApiKeyDialog({
   async function copyKey() {
     if (!revealed?.api_key) return;
     try {
-      await navigator.clipboard.writeText(revealed.api_key);
+      await copyTextToClipboard(revealed.api_key);
       setCopied(true);
       notify.success('密钥已复制');
     } catch {
@@ -302,6 +302,37 @@ export default function EmployeeApiKeyDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+export async function copyTextToClipboard(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // HTTP deployments and restrictive browser policies can reject the
+      // modern Clipboard API. Continue with the synchronous compatibility path.
+    }
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.readOnly = true;
+  textarea.setAttribute('aria-hidden', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.inset = '0 auto auto -9999px';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  try {
+    if (!document.execCommand('copy')) {
+      throw new Error('Copy command was rejected');
+    }
+  } finally {
+    textarea.remove();
+  }
 }
 
 function formatDate(value?: string | null): string {
