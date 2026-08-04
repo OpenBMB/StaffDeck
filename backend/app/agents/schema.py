@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -118,3 +119,28 @@ class AgentModelsUpdateRequest(BaseModel):
 class AgentSkillRollbackRequest(BaseModel):
     tenant_id: str
     version: str
+
+
+class AgentAPICredentialCreateRequest(BaseModel):
+    tenant_id: str
+    name: str = Field(min_length=1, max_length=120)
+    access: Literal["runtime", "full_access"] = "runtime"
+    expires_at: datetime | None = None
+
+
+class AgentAPICredentialRead(BaseModel):
+    id: str
+    agent_id: str
+    name: str
+    access: Literal["runtime", "full_access"]
+    key_prefix: str
+    scopes: list[str] = Field(default_factory=list)
+    status: str
+    expires_at: datetime | None = None
+    last_used_at: datetime | None = None
+    created_at: datetime
+    revoked_at: datetime | None = None
+
+
+class AgentAPICredentialCreated(AgentAPICredentialRead):
+    api_key: str

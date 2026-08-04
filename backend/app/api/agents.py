@@ -10,6 +10,9 @@ from sqlmodel import Session, select
 
 from app.agents.schema import (
     AgentModelsUpdateRequest,
+    AgentAPICredentialCreateRequest,
+    AgentAPICredentialCreated,
+    AgentAPICredentialRead,
     AgentProfileCreateRequest,
     AgentProfileRead,
     AgentProfileUpdateRequest,
@@ -40,6 +43,8 @@ from app.agents.branching import (
 )
 from app.db import get_session
 from app.db.models import (
+    APIClient,
+    APICredential,
     AgentModelBinding,
     AgentKnowledgeBranch,
     AgentProfile,
@@ -60,6 +65,12 @@ from app.db.models import (
     utc_now,
     User,
 )
+from app.public_api.auth import generate_api_key
+from app.public_api.credential_profiles import (
+    AGENT_KEY_ALLOWED_SCOPES,
+    agent_access_for_scopes,
+    scopes_for_agent_access,
+)
 from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
 from app.security.permissions import is_admin_user as _is_admin_user
@@ -71,6 +82,8 @@ IMPORT_LOCK_RETRY_DELAY_SECONDS = 0.5
 enterprise_router = APIRouter(prefix="/api/enterprise/agents", tags=["enterprise:agents"])
 chat_router = APIRouter(prefix="/api/chat/agents", tags=["chat:agents"])
 scope_router = APIRouter(prefix="/api/enterprise/agent-scope", tags=["enterprise:agent-scope"])
+
+STAFFDECK_AGENT_API_CLIENT_NAME = "StaffDeck 员工 API 密钥"
 
 
 @scope_router.get("", response_model=AgentScopeRead)
@@ -173,6 +186,116 @@ def get_agent(
     row = _get_agent(db, tenant_id, agent_id)
     _ensure_can_access_agent(row, current_user)
     return agent_read(row, _bindings_by_agent(db, tenant_id).get(row.id, []))
+
+
+@enterprise_router.get(
+    "/{agent_id}/api-credentials",
+    response_model=list[AgentAPICredentialRead],
+)
+def list_agent_api_credentials(
+    agent_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> list[AgentAPICredentialRead]:
+    agent = _get_agent(db, tenant_id, agent_id)
+    _ensure_can_manage_agent(agent, current_user)
+    rows = db.exec(
+        select(APICredential)
+        .where(
+            APICredential.tenant_id == tenant_id,
+            APICredential.agent_id == agent_id,
+        )
+        .order_by(APICredential.created_at.desc())
+    ).all()
+    return [_agent_api_credential_read(row) for row in rows]
+
+
+@enterprise_router.post(
+    "/{agent_id}/api-credentials",
+    response_model=AgentAPICredentialCreated,
+)
+def create_agent_api_credential(
+    agent_id: str,
+    request: AgentAPICredentialCreateRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> AgentAPICredentialCreated:
+    agent = _get_agent(db, request.tenant_id, agent_id)
+    _ensure_can_manage_agent(agent, current_user)
+    if agent.is_overall:
+        raise HTTPException(status_code=400, detail="Open gallery cannot own an employee API key")
+    client = _ensure_staffdeck_agent_api_client(db, request.tenant_id, current_user)
+    token, prefix, digest = generate_api_key()
+    row = APICredential(
+        tenant_id=request.tenant_id,
+        client_id=client.id,
+        agent_id=agent_id,
+        name=request.name.strip(),
+        key_prefix=prefix,
+        key_digest=digest,
+        scopes_json=scopes_for_agent_access(request.access),
+        expires_at=request.expires_at,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return AgentAPICredentialCreated(
+        **_agent_api_credential_read(row).model_dump(),
+        api_key=token,
+    )
+
+
+@enterprise_router.post(
+    "/{agent_id}/api-credentials/{credential_id}/rotate",
+    response_model=AgentAPICredentialCreated,
+)
+def rotate_agent_api_credential(
+    agent_id: str,
+    credential_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> AgentAPICredentialCreated:
+    agent = _get_agent(db, tenant_id, agent_id)
+    _ensure_can_manage_agent(agent, current_user)
+    row = _get_agent_api_credential(db, tenant_id, agent_id, credential_id)
+    token, prefix, digest = generate_api_key()
+    row.key_prefix = prefix
+    row.key_digest = digest
+    row.status = "active"
+    row.revoked_at = None
+    row.updated_at = utc_now()
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return AgentAPICredentialCreated(
+        **_agent_api_credential_read(row).model_dump(),
+        api_key=token,
+    )
+
+
+@enterprise_router.post(
+    "/{agent_id}/api-credentials/{credential_id}/revoke",
+    response_model=AgentAPICredentialRead,
+)
+def revoke_agent_api_credential(
+    agent_id: str,
+    credential_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> AgentAPICredentialRead:
+    agent = _get_agent(db, tenant_id, agent_id)
+    _ensure_can_manage_agent(agent, current_user)
+    row = _get_agent_api_credential(db, tenant_id, agent_id, credential_id)
+    row.status = "revoked"
+    row.revoked_at = utc_now()
+    row.updated_at = utc_now()
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _agent_api_credential_read(row)
 
 
 @enterprise_router.get("/{agent_id}/work-record", response_model=AgentWorkRecordRead)
@@ -830,6 +953,67 @@ def _is_database_locked_error(exc: OperationalError) -> bool:
 def _ensure_request_tenant(tenant_id: str, user: User) -> None:
     if user.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
+
+
+def _ensure_staffdeck_agent_api_client(
+    db: Session,
+    tenant_id: str,
+    current_user: User,
+) -> APIClient:
+    row = db.exec(
+        select(APIClient).where(
+            APIClient.tenant_id == tenant_id,
+            APIClient.name == STAFFDECK_AGENT_API_CLIENT_NAME,
+        )
+    ).first()
+    required_scopes = sorted({"credentials:write", *AGENT_KEY_ALLOWED_SCOPES})
+    if row:
+        if row.status != "active" or not set(required_scopes).issubset(row.scopes_json or []):
+            row.status = "active"
+            row.scopes_json = sorted(set(row.scopes_json or []) | set(required_scopes))
+            row.updated_at = utc_now()
+            db.add(row)
+            db.flush()
+        return row
+    row = APIClient(
+        tenant_id=tenant_id,
+        name=STAFFDECK_AGENT_API_CLIENT_NAME,
+        description="由数字员工设置页管理的员工级 API 密钥。",
+        scopes_json=required_scopes,
+        created_by_user_id=current_user.id,
+        metadata_json={"managed_by": "agent_settings"},
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _get_agent_api_credential(
+    db: Session,
+    tenant_id: str,
+    agent_id: str,
+    credential_id: str,
+) -> APICredential:
+    row = db.get(APICredential, credential_id)
+    if not row or row.tenant_id != tenant_id or row.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Employee API credential not found")
+    return row
+
+
+def _agent_api_credential_read(row: APICredential) -> AgentAPICredentialRead:
+    return AgentAPICredentialRead(
+        id=row.id,
+        agent_id=str(row.agent_id or ""),
+        name=row.name,
+        access=agent_access_for_scopes(list(row.scopes_json or [])),
+        key_prefix=f"{row.key_prefix}…",
+        scopes=list(row.scopes_json or []),
+        status=row.status,
+        expires_at=row.expires_at,
+        last_used_at=row.last_used_at,
+        created_at=row.created_at,
+        revoked_at=row.revoked_at,
+    )
 
 
 def _agent_visible_to_user(row: AgentProfile, user: User) -> bool:

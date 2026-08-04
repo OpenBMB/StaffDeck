@@ -54,6 +54,208 @@ class UserAvatar(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class APIClient(SQLModel, table=True):
+    """Server-to-server identity for the versioned public API."""
+
+    __tablename__ = "api_clients"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_api_client_tenant_name"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("apiclient"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    description: Optional[str] = None
+    scopes_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="active", index=True)
+    created_by_user_id: Optional[str] = Field(default=None, index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class APICredential(SQLModel, table=True):
+    """Hashed tenant or agent credential. Plaintext is returned exactly once."""
+
+    __tablename__ = "api_credentials"
+    __table_args__ = (
+        UniqueConstraint("key_prefix", name="uq_api_credential_prefix"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("apicred"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    client_id: str = Field(index=True)
+    agent_id: Optional[str] = Field(default=None, index=True)
+    name: str
+    key_prefix: str = Field(index=True)
+    key_digest: str
+    scopes_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="active", index=True)
+    expires_at: Optional[datetime] = Field(default=None, index=True)
+    last_used_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    revoked_at: Optional[datetime] = None
+
+
+class APIIdempotencyRecord(SQLModel, table=True):
+    __tablename__ = "api_idempotency_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "credential_id", "method", "path", "idempotency_key",
+            name="uq_api_idempotency_request",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("apiidem"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    credential_id: str = Field(index=True)
+    method: str
+    path: str
+    idempotency_key: str = Field(index=True)
+    request_hash: str
+    status_code: int = 200
+    response_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    resource_id: Optional[str] = Field(default=None, index=True)
+    expires_at: datetime = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class APIJob(SQLModel, table=True):
+    __tablename__ = "api_jobs"
+
+    id: str = Field(default_factory=lambda: new_id("apijob"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    credential_id: str = Field(index=True)
+    agent_id: Optional[str] = Field(default=None, index=True)
+    kind: str = Field(index=True)
+    status: str = Field(default="queued", index=True)
+    stage: str = Field(default="queued", index=True)
+    progress: float = 0.0
+    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    cancel_requested: bool = False
+    retryable: bool = False
+    session_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class APIJobEvent(SQLModel, table=True):
+    __tablename__ = "api_job_events"
+    __table_args__ = (
+        UniqueConstraint("job_id", "sequence", name="uq_api_job_event_sequence"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("apievent"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    job_id: str = Field(index=True)
+    sequence: int = Field(index=True)
+    event_type: str = Field(index=True)
+    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    public: bool = True
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class WebhookEndpoint(SQLModel, table=True):
+    __tablename__ = "webhook_endpoints"
+
+    id: str = Field(default_factory=lambda: new_id("webhook"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    client_id: str = Field(index=True)
+    name: str
+    url: str
+    secret_encrypted: str
+    events_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class WebhookDelivery(SQLModel, table=True):
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (
+        UniqueConstraint("endpoint_id", "event_id", name="uq_webhook_delivery_event"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("whdelivery"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    endpoint_id: str = Field(index=True)
+    event_id: str = Field(index=True)
+    event_type: str = Field(index=True)
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    status: str = Field(default="queued", index=True)
+    attempt_count: int = 0
+    next_attempt_at: Optional[datetime] = Field(default=None, index=True)
+    last_status_code: Optional[int] = None
+    last_error: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    delivered_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ExternalSessionBinding(SQLModel, table=True):
+    __tablename__ = "external_session_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "credential_id", "external_session_id",
+            name="uq_external_session_credential_id",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("extsession"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    credential_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    external_session_id: str = Field(index=True)
+    external_user_id: Optional[str] = Field(default=None, index=True)
+    session_id: str = Field(index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class APISOPDraft(SQLModel, table=True):
+    __tablename__ = "api_sop_drafts"
+
+    id: str = Field(default_factory=lambda: new_id("sopdraft"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    skill_id: str = Field(index=True)
+    base_version: Optional[str] = Field(default=None, index=True)
+    draft_version: str = Field(index=True)
+    content_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+    status: str = Field(default="draft", index=True)
+    source: str = Field(default="structured", index=True)
+    warnings_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    validation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    etag: str = Field(index=True)
+    created_by_credential_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    published_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class APIAuditLog(SQLModel, table=True):
+    __tablename__ = "api_audit_logs"
+
+    id: str = Field(default_factory=lambda: new_id("apiaudit"), primary_key=True)
+    tenant_id: Optional[str] = Field(default=None, index=True)
+    credential_id: Optional[str] = Field(default=None, index=True)
+    request_id: str = Field(index=True)
+    method: str
+    path: str
+    resource_type: Optional[str] = Field(default=None, index=True)
+    resource_id: Optional[str] = Field(default=None, index=True)
+    status_code: int = Field(index=True)
+    duration_ms: float
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class Skill(SQLModel, table=True):
     __tablename__ = "skills"
     __table_args__ = (UniqueConstraint("tenant_id", "skill_id", name="uq_skill_tenant_skill_id"),)
