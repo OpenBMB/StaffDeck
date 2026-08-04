@@ -4,13 +4,12 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.db.models import ChatSession, ExternalSessionBinding, utc_now
+from app.db.models import AgentProfile, ChatSession, ExternalSessionBinding, utc_now
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.idempotency import replay_idempotent_response, store_idempotent_response
 from app.public_api.schemas import PublicSessionCreate, PublicSessionUpdate
 from app.public_api.utils import etag_for
-from app.security.permissions import agent_owned_by_user, is_admin_user
 
 
 router = APIRouter(prefix="/agents/{agent_id}/sessions", tags=["sessions"])
@@ -37,13 +36,8 @@ def _session_payload(row: ChatSession, binding: ExternalSessionBinding | None = 
 
 def ensure_public_agent(db: Session, principal: PublicPrincipal, agent_id: str) -> None:
     enforce_agent_access(principal, agent_id)
-    if is_admin_user(principal.actor_user):
-        from app.db.models import AgentProfile
-
-        row = db.get(AgentProfile, agent_id)
-        if row and row.tenant_id == principal.tenant_id and row.status != "archived":
-            return
-    elif agent_owned_by_user(db, principal.tenant_id, agent_id, principal.actor_user.id):
+    row = db.get(AgentProfile, agent_id)
+    if row and row.tenant_id == principal.tenant_id and row.status != "archived":
         return
     raise PublicAPIError(404, "AGENT_NOT_FOUND", "Agent not found.")
 

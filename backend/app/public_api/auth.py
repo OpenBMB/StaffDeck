@@ -12,10 +12,10 @@ from sqlmodel import Session, select
 
 from app.config import get_settings
 from app.db import get_session
-from app.db.models import APIClient, APICredential, User, utc_now
+from app.db.models import APIClient, APICredential, AgentProfile, User, utc_now
 from app.public_api.errors import PublicAPIError
 from app.security.auth import _decode_token
-from app.security.permissions import is_admin_user
+from app.security.permissions import agent_owned_by_user, is_admin_user
 
 
 PUBLIC_KEY_PREFIX = "sd_live_"
@@ -30,6 +30,7 @@ class PublicPrincipal:
     client_id: str | None = None
     credential_id: str | None = None
     agent_id: str | None = None
+    allowed_agent_ids: frozenset[str] | None = None
     bootstrap_user: bool = False
 
     def can(self, required: str) -> bool:
@@ -88,6 +89,7 @@ def _api_key_principal(token: str, db: Session) -> PublicPrincipal:
         or scope in client_scopes
         or f"{scope.split(':', 1)[0]}:*" in client_scopes
     }
+    allowed_agent_ids = _visible_agent_ids(db, client.tenant_id, actor)
     return PublicPrincipal(
         tenant_id=client.tenant_id,
         actor_user=actor,
@@ -95,7 +97,30 @@ def _api_key_principal(token: str, db: Session) -> PublicPrincipal:
         client_id=client.id,
         credential_id=credential.id,
         agent_id=credential.agent_id,
+        allowed_agent_ids=allowed_agent_ids,
     )
+
+
+def _visible_agent_ids(db: Session, tenant_id: str, actor: User) -> frozenset[str]:
+    """Resolve account visibility on every API-key request.
+
+    Account master keys therefore follow later ownership, gallery-publishing,
+    hiding, and role changes without issuing a new credential.
+    """
+    rows = db.exec(select(AgentProfile).where(AgentProfile.tenant_id == tenant_id)).all()
+    visible: set[str] = set()
+    for row in rows:
+        metadata = row.metadata_json or {}
+        if metadata.get("hidden_from_staffdeck") is True:
+            continue
+        if (
+            is_admin_user(actor)
+            or row.is_overall
+            or agent_owned_by_user(row, actor)
+            or metadata.get("published_to_gallery") is True
+        ):
+            visible.add(row.id)
+    return frozenset(visible)
 
 
 def _bootstrap_principal(token: str, db: Session) -> PublicPrincipal:
@@ -170,6 +195,8 @@ def require_scopes(*required_scopes: str) -> Callable[[PublicPrincipal], PublicP
 def enforce_agent_access(principal: PublicPrincipal, agent_id: str, *, write: bool = False) -> None:
     if principal.agent_id and principal.agent_id != agent_id:
         raise PublicAPIError(403, "AGENT_SCOPE_MISMATCH", "This key is bound to another agent.")
+    if principal.allowed_agent_ids is not None and agent_id not in principal.allowed_agent_ids:
+        raise PublicAPIError(404, "AGENT_NOT_FOUND", "Agent not found.")
     if write and principal.agent_id:
         raise PublicAPIError(
             403,

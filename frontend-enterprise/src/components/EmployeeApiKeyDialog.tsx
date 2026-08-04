@@ -14,22 +14,23 @@ import {
   KeyRound,
   LoaderCircle,
   RefreshCw,
-  ShieldCheck,
   TerminalSquare,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import { api, TENANT_ID } from '../api/client';
 import { employeeDisplayName } from '../employee';
+import { copyTextToClipboard } from '../lib/clipboard';
 import type { AgentProfileRead } from '../types';
 
-type KeyAccess = 'runtime' | 'full_access';
+type KeyAccess = 'runtime';
+type CredentialAccess = KeyAccess | 'full_access';
 
 type AgentApiCredential = {
   id: string;
   agent_id: string;
   name: string;
-  access: KeyAccess;
+  access: CredentialAccess;
   key_prefix: string;
   scopes: string[];
   status: string;
@@ -47,14 +48,13 @@ const ACCESS_META: Record<KeyAccess, { label: string; summary: string; detail: s
   runtime: {
     label: '运行密钥',
     summary: '用于外部系统发起对话和任务',
-    detail: '可创建会话、运行任务、读取 Trace 与产物；不能读取员工的全部配置资源。',
-  },
-  full_access: {
-    label: '员工全量密钥',
-    summary: '读取这个员工的全部开放内容',
-    detail: '包含运行权限，并可读取 SOP、知识、技能、工具和定时任务；不能跨员工，也不能读取供应商密钥。',
+    detail: '可创建会话、运行任务、读取 Trace 与产物；账号全量密钥请到“账号管理”中创建。',
   },
 };
+
+function accessLabel(access: CredentialAccess): string {
+  return access === 'full_access' ? '旧版员工全量密钥' : ACCESS_META.runtime.label;
+}
 
 export default function EmployeeApiKeyDialog({
   agent,
@@ -188,30 +188,24 @@ export default function EmployeeApiKeyDialog({
         </DialogHeader>
 
         <div className="min-h-0 flex-1 space-y-[18px] overflow-y-auto px-[26px] py-[22px]">
-          <section className="grid gap-[12px] md:grid-cols-2" aria-label="创建密钥">
+          <section className="grid gap-[12px]" aria-label="创建密钥">
             {(Object.keys(ACCESS_META) as KeyAccess[]).map((access) => {
-              const full = access === 'full_access';
               const meta = ACCESS_META[access];
-              const Icon = full ? ShieldCheck : TerminalSquare;
+              const Icon = TerminalSquare;
               return (
                 <article
                   key={access}
-                  className={full
-                    ? 'relative overflow-hidden rounded-[16px] border border-[#cfe7dc] bg-[#eef8f3] p-[18px]'
-                    : 'rounded-[16px] border border-[#e2e6ee] bg-white p-[18px]'}
+                  className="rounded-[16px] border border-[#e2e6ee] bg-white p-[18px]"
                 >
-                  {full && <span className="absolute right-[14px] top-[14px] rounded-full bg-[#d8efe4] px-[8px] py-[3px] text-[10px] font-semibold text-[#207451]">大密钥</span>}
-                  <Icon className={full ? 'size-[20px] text-[#207451]' : 'size-[20px] text-[#5d6880]'} />
+                  <Icon className="size-[20px] text-[#5d6880]" />
                   <h3 className="mt-[13px] text-[14px] font-semibold text-[#18181a]">{meta.label}</h3>
                   <p className="mt-[4px] text-[12px] font-medium text-[#464c5e]">{meta.summary}</p>
-                  <p className="mt-[8px] min-h-[52px] text-[11px] leading-[17px] text-[#7b8498]">{meta.detail}</p>
+                  <p className="mt-[8px] text-[11px] leading-[17px] text-[#7b8498]">{meta.detail}</p>
                   <Button
                     type="button"
                     disabled={Boolean(creating || actingId)}
                     onClick={() => void createCredential(access)}
-                    className={full
-                      ? 'mt-[14px] h-[32px] w-full rounded-[10px] bg-[#207451] text-[12px] text-white hover:bg-[#185d40]'
-                      : 'mt-[14px] h-[32px] w-full rounded-[10px] bg-[#18181a] text-[12px] text-white hover:bg-[#303033]'}
+                    className="mt-[14px] h-[32px] w-full rounded-[10px] bg-[#18181a] text-[12px] text-white hover:bg-[#303033]"
                   >
                     {creating === access && <LoaderCircle className="size-[14px] animate-spin" />}
                     创建{meta.label}
@@ -226,7 +220,7 @@ export default function EmployeeApiKeyDialog({
               <div className="flex items-start justify-between gap-[14px]">
                 <div>
                   <strong className="text-[13px] text-[#6b4d12]">请现在复制，关闭后无法再次查看</strong>
-                  <p className="mt-[4px] text-[11px] text-[#96732f]">{ACCESS_META[revealed.access].label} · {revealed.name}</p>
+                  <p className="mt-[4px] text-[11px] text-[#96732f]">{accessLabel(revealed.access)} · {revealed.name}</p>
                 </div>
                 <span className="rounded-full bg-[#f7e8bc] px-[8px] py-[3px] text-[10px] text-[#7b5c19]">仅显示一次</span>
               </div>
@@ -260,11 +254,8 @@ export default function EmployeeApiKeyDialog({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-[7px]">
                       <strong className="truncate text-[12px] text-[#252932]">{row.name}</strong>
-                      <span className={row.access === 'full_access'
-                        ? 'rounded-full bg-[#e5f4ec] px-[7px] py-[2px] text-[9px] font-medium text-[#207451]'
-                        : 'rounded-full bg-[#edf1f8] px-[7px] py-[2px] text-[9px] font-medium text-[#56627a]'}
-                      >
-                        {ACCESS_META[row.access].label}
+                      <span className="rounded-full bg-[#edf1f8] px-[7px] py-[2px] text-[9px] font-medium text-[#56627a]">
+                        {accessLabel(row.access)}
                       </span>
                       <span className={row.status === 'active'
                         ? 'rounded-full bg-[#e8f7ec] px-[7px] py-[2px] text-[9px] text-[#218546]'
@@ -302,37 +293,6 @@ export default function EmployeeApiKeyDialog({
       </DialogContent>
     </Dialog>
   );
-}
-
-export async function copyTextToClipboard(value: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(value);
-      return;
-    } catch {
-      // HTTP deployments and restrictive browser policies can reject the
-      // modern Clipboard API. Continue with the synchronous compatibility path.
-    }
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.value = value;
-  textarea.readOnly = true;
-  textarea.setAttribute('aria-hidden', 'true');
-  textarea.style.position = 'fixed';
-  textarea.style.inset = '0 auto auto -9999px';
-  textarea.style.opacity = '0';
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  textarea.setSelectionRange(0, textarea.value.length);
-  try {
-    if (!document.execCommand('copy')) {
-      throw new Error('Copy command was rejected');
-    }
-  } finally {
-    textarea.remove();
-  }
 }
 
 function formatDate(value?: string | null): string {

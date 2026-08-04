@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { User } from 'lucide-react';
+import { KeyRound, User } from 'lucide-react';
 
 import AppHeader from '@/components/AppHeader';
+import AccountApiKeyDialog from '@/components/AccountApiKeyDialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { Paginator } from '@/components/Paginator';
@@ -96,6 +97,7 @@ export default function AccountsPage({
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<EmployeeAccount | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [apiKeyTarget, setApiKeyTarget] = useState<EmployeeAccount | null>(null);
 
   async function load() {
     setLoading(true);
@@ -210,6 +212,10 @@ export default function AccountsPage({
           <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => openEdit(row)}>
             <IconEdit />
             编辑
+          </DropdownMenuItem>
+          <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => setApiKeyTarget(row)}>
+            <KeyRound />
+            API 全量密钥
           </DropdownMenuItem>
           <DropdownMenuSeparator className="my-[2px] bg-[#eef0f4]" />
           <DropdownMenuItem
@@ -416,6 +422,12 @@ export default function AccountsPage({
         title={deleteTarget ? `删除账号「${deleteTarget.username}」？` : ''}
         description="删除后该账号无法登录，但其创建的数字员工仍然保留。"
         onConfirm={() => void confirmDelete()}
+      />
+
+      <AccountApiKeyDialog
+        account={apiKeyTarget}
+        open={Boolean(apiKeyTarget)}
+        onClose={() => setApiKeyTarget(null)}
       />
     </div>
   );

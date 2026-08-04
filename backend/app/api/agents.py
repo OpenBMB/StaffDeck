@@ -978,7 +978,7 @@ def _ensure_staffdeck_agent_api_client(
     row = APIClient(
         tenant_id=tenant_id,
         name=STAFFDECK_AGENT_API_CLIENT_NAME,
-        description="由数字员工设置页管理的员工级 API 密钥。",
+        description="由数字员工设置页管理的单员工运行密钥。",
         scopes_json=required_scopes,
         created_by_user_id=current_user.id,
         metadata_json={"managed_by": "agent_settings"},

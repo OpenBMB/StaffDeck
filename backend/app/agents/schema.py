@@ -124,7 +124,7 @@ class AgentSkillRollbackRequest(BaseModel):
 class AgentAPICredentialCreateRequest(BaseModel):
     tenant_id: str
     name: str = Field(min_length=1, max_length=120)
-    access: Literal["runtime", "full_access"] = "runtime"
+    access: Literal["runtime"] = "runtime"
     expires_at: datetime | None = None
 
 

@@ -25,8 +25,18 @@ from app.api.agents import (
     revoke_agent_api_credential,
     rotate_agent_api_credential,
 )
+from app.api.auth import (
+    AccountAPICredentialCreateRequest,
+    create_account_api_credential,
+    list_account_api_credentials,
+    revoke_account_api_credential,
+    rotate_account_api_credential,
+)
 from app.agents.schema import AgentAPICredentialCreateRequest
-from app.public_api.credential_profiles import AGENT_FULL_ACCESS_SCOPES
+from app.public_api.credential_profiles import (
+    AGENT_RUNTIME_SCOPES,
+    USER_FULL_ACCESS_SCOPES,
+)
 from app.public_api.app import create_public_api_app
 from app.public_api.json_patch import JSONPatchError, apply_json_patch
 from app.public_api.runs import execute_run
@@ -427,7 +437,7 @@ def test_run_handler_relays_live_public_trace_and_returns_citations(monkeypatch)
     assert "system_prompt" not in plan_event.data_json
 
 
-def test_employee_settings_can_manage_runtime_and_full_access_keys(monkeypatch) -> None:
+def test_employee_settings_manage_runtime_keys(monkeypatch) -> None:
     _client_value, engine, _token = _client(monkeypatch)
     with Session(engine) as db:
         admin = db.get(User, "user_api_admin")
@@ -435,15 +445,16 @@ def test_employee_settings_can_manage_runtime_and_full_access_keys(monkeypatch) 
             "agent_api",
             AgentAPICredentialCreateRequest(
                 tenant_id="tenant_api",
-                name="财务助手大密钥",
-                access="full_access",
+                name="财务助手运行密钥",
+                access="runtime",
             ),
             db,
             admin,
         )
         assert created.api_key.startswith("sd_live_")
-        assert set(created.scopes) == set(AGENT_FULL_ACCESS_SCOPES)
-        assert "knowledge:read" in created.scopes
+        assert set(created.scopes) == set(AGENT_RUNTIME_SCOPES)
+        assert "runs:create" in created.scopes
+        assert "knowledge:read" not in created.scopes
         assert "knowledge:write" not in created.scopes
 
         stored = db.get(APICredential, created.id)
@@ -451,7 +462,7 @@ def test_employee_settings_can_manage_runtime_and_full_access_keys(monkeypatch) 
         assert stored.key_digest != created.api_key
 
         listed = list_agent_api_credentials("agent_api", "tenant_api", db, admin)
-        assert listed[0].access == "full_access"
+        assert listed[0].access == "runtime"
         assert not hasattr(listed[0], "api_key")
 
         rotated = rotate_agent_api_credential(
@@ -466,7 +477,158 @@ def test_employee_settings_can_manage_runtime_and_full_access_keys(monkeypatch) 
         assert revoked.status == "revoked"
 
 
-def test_full_access_employee_key_stays_inside_bound_agent(monkeypatch) -> None:
+def test_account_master_key_follows_user_visible_agents(monkeypatch) -> None:
+    client, engine, _admin_token = _client(monkeypatch)
+    with Session(engine) as db:
+        admin = db.get(User, "user_api_admin")
+        member = User(
+            id="user_api_member",
+            tenant_id="tenant_api",
+            username="api_member",
+            role="member",
+            password_hash="x",
+        )
+        db.add(member)
+        db.add_all(
+            [
+                AgentProfile(
+                    id="agent_member_owned",
+                    tenant_id="tenant_api",
+                    name="Member Employee",
+                    status="active",
+                    is_overall=False,
+                    metadata_json={"owner_user_id": member.id},
+                ),
+                AgentProfile(
+                    id="agent_published",
+                    tenant_id="tenant_api",
+                    name="Published Employee",
+                    status="active",
+                    is_overall=False,
+                    metadata_json={
+                        "owner_user_id": admin.id,
+                        "published_to_gallery": True,
+                    },
+                ),
+                AgentProfile(
+                    id="agent_private",
+                    tenant_id="tenant_api",
+                    name="Private Employee",
+                    status="active",
+                    is_overall=False,
+                    metadata_json={"owner_user_id": admin.id},
+                ),
+                AgentProfile(
+                    id="agent_overall",
+                    tenant_id="tenant_api",
+                    name="Overall Employee",
+                    status="active",
+                    is_overall=True,
+                    metadata_json={"owner_user_id": admin.id},
+                ),
+            ]
+        )
+        db.commit()
+
+        created = create_account_api_credential(
+            member.id,
+            AccountAPICredentialCreateRequest(
+                tenant_id="tenant_api",
+                name="成员账号全量密钥",
+            ),
+            admin,
+            db,
+        )
+        assert created.api_key.startswith("sd_live_")
+        assert set(created.scopes) == set(USER_FULL_ACCESS_SCOPES)
+        assert "knowledge:read" in created.scopes
+        assert "knowledge:write" not in created.scopes
+        stored = db.get(APICredential, created.id)
+        assert stored is not None and stored.agent_id is None
+
+    auth = {"Authorization": f"Bearer {created.api_key}"}
+    listed_agents = client.get("/agents", headers=auth)
+    assert listed_agents.status_code == 200, listed_agents.text
+    agent_ids = {row["id"] for row in listed_agents.json()["data"]}
+    assert {"agent_member_owned", "agent_published", "agent_overall"} <= agent_ids
+    assert "agent_private" not in agent_ids
+    assert "agent_api" not in agent_ids
+
+    for agent_id in ("agent_member_owned", "agent_published", "agent_overall"):
+        response = client.get(f"/agents/{agent_id}/capabilities", headers=auth)
+        assert response.status_code == 200, response.text
+    private_response = client.get("/agents/agent_private/capabilities", headers=auth)
+    assert private_response.status_code == 404
+    assert private_response.json()["code"] == "AGENT_NOT_FOUND"
+
+    # Visibility is evaluated on every request, not frozen into the key.
+    with Session(engine) as db:
+        private = db.get(AgentProfile, "agent_private")
+        private.metadata_json = {
+            **dict(private.metadata_json or {}),
+            "published_to_gallery": True,
+        }
+        db.add(private)
+        db.commit()
+    refreshed_agents = client.get("/agents", headers=auth)
+    assert "agent_private" in {row["id"] for row in refreshed_agents.json()["data"]}
+
+    with Session(engine) as db:
+        admin = db.get(User, "user_api_admin")
+        rows = list_account_api_credentials(
+            "user_api_member", "tenant_api", admin, db
+        )
+        assert rows[0].access == "user_full_access"
+        assert not hasattr(rows[0], "api_key")
+        rotated = rotate_account_api_credential(
+            "user_api_member", created.id, "tenant_api", admin, db
+        )
+        assert rotated.api_key != created.api_key
+        revoked = revoke_account_api_credential(
+            "user_api_member", created.id, "tenant_api", admin, db
+        )
+        assert revoked.status == "revoked"
+
+
+def test_admin_account_master_key_sees_all_visible_tenant_agents(monkeypatch) -> None:
+    client, engine, _admin_token = _client(monkeypatch)
+    with Session(engine) as db:
+        admin = db.get(User, "user_api_admin")
+        db.add(
+            AgentProfile(
+                id="agent_hidden",
+                tenant_id="tenant_api",
+                name="Hidden Employee",
+                status="active",
+                is_overall=False,
+                metadata_json={
+                    "owner_user_id": admin.id,
+                    "hidden_from_staffdeck": True,
+                },
+            )
+        )
+        db.commit()
+        created = create_account_api_credential(
+            admin.id,
+            AccountAPICredentialCreateRequest(
+                tenant_id="tenant_api",
+                name="管理员账号全量密钥",
+            ),
+            admin,
+            db,
+        )
+
+    response = client.get(
+        "/agents",
+        headers={"Authorization": f"Bearer {created.api_key}"},
+    )
+    assert response.status_code == 200, response.text
+    agent_ids = {row["id"] for row in response.json()["data"]}
+    assert {"agent_api", "agent_other"} <= agent_ids
+    assert "agent_hidden" not in agent_ids
+
+
+def test_public_api_rejects_new_full_access_employee_keys(monkeypatch) -> None:
     client, _engine, admin_token = _client(monkeypatch)
     api_client = client.post(
         "/api-clients",
@@ -479,14 +641,8 @@ def test_full_access_employee_key_stays_inside_bound_agent(monkeypatch) -> None:
         json={
             "name": "employee master key",
             "agent_id": "agent_api",
-            "scopes": sorted(AGENT_FULL_ACCESS_SCOPES),
+            "scopes": sorted(USER_FULL_ACCESS_SCOPES),
         },
     )
-    assert credential.status_code == 201, credential.text
-    auth = {"Authorization": f"Bearer {credential.json()['api_key']}"}
-
-    own = client.get("/agents/agent_api/capabilities", headers=auth)
-    other = client.get("/agents/agent_other/capabilities", headers=auth)
-    assert own.status_code == 200, own.text
-    assert other.status_code == 403
-    assert other.json()["code"] == "AGENT_SCOPE_MISMATCH"
+    assert credential.status_code == 400
+    assert credential.json()["code"] == "AGENT_SCOPE_INVALID"
