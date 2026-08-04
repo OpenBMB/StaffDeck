@@ -388,8 +388,13 @@ def _anthropic_request(request: dict[str, Any]) -> dict[str, Any]:
         "model": request["model"],
         "messages": converted,
         "max_tokens": request["max_tokens"],
-        "temperature": request["temperature"],
     }
+    # LLM Center's Claude 5 deployments reject the legacy sampling field.
+    # Keep temperature for older Anthropic-compatible deployments.
+    temperature = request.get("temperature")
+    model = str(request.get("model") or "")
+    if temperature is not None and not re.match(r"^claude-(?:sonnet|opus)-5(?:$|[-:])", model):
+        payload["temperature"] = temperature
     system = "\n\n".join(part for part in system_parts if part)
     if system:
         payload["system"] = system

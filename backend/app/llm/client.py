@@ -99,7 +99,17 @@ class LLMClient:
                 "max_retries": 0,
             }
             if self.base_url:
-                kwargs["base_url"] = self.base_url
+                # Anthropic's SDK always appends /v1/messages. If an operator
+                # already configured a /v1 API root, remove only that suffix
+                # for the SDK transport so the effective URL remains exactly
+                # the configured API root plus /messages.
+                sdk_base_url = self.base_url.rstrip("/")
+                sdk_path = urlsplit(sdk_base_url).path.rstrip("/")
+                if sdk_path.endswith("/v1/messages"):
+                    sdk_base_url = sdk_base_url[: -len("/v1/messages")].rstrip("/")
+                elif sdk_path.endswith("/v1"):
+                    sdk_base_url = sdk_base_url[:-3].rstrip("/")
+                kwargs["base_url"] = sdk_base_url
             self.client = Anthropic(**kwargs)
             self.driver = AnthropicMessagesDriver(self.client)
         elif protocol is ModelApiProtocol.GEMINI_GENERATE_CONTENT:

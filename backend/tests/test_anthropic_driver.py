@@ -90,6 +90,23 @@ def test_anthropic_driver_maps_system_roles_images_and_usage() -> None:
     ]
 
 
+def test_anthropic_driver_omits_temperature_for_claude_five() -> None:
+    response = SimpleNamespace(id="msg_5", content=[], stop_reason="end_turn", usage=None)
+    messages = _Messages(response=response)
+    driver = AnthropicMessagesDriver(SimpleNamespace(messages=messages))
+
+    driver.complete(
+        {
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0.2,
+            "max_tokens": 32,
+        }
+    )
+
+    assert "temperature" not in messages.calls[0]
+
+
 def test_anthropic_driver_maps_stream_events_to_chat_chunks() -> None:
     events = _ClosableEvents([
         SimpleNamespace(
@@ -202,6 +219,58 @@ def test_llm_client_builds_anthropic_sdk(monkeypatch) -> None:
     assert isinstance(client.driver, AnthropicMessagesDriver)
     assert captured["base_url"] == "https://api.anthropic.test"
     assert captured["max_retries"] == 0
+
+
+def test_llm_client_adapts_anthropic_v1_api_root_for_sdk(monkeypatch) -> None:
+    captured = {}
+
+    def fake_anthropic(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return SimpleNamespace(messages=_Messages())
+
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "secret")
+    monkeypatch.setattr("app.llm.client.Anthropic", fake_anthropic)
+    config = SimpleNamespace(
+        api_protocol="anthropic_messages",
+        purpose="verification",
+        api_key_encrypted="encrypted",
+        base_url="https://llm-center.modelbest.cn/llm/v1/",
+        model="claude-opus-5",
+        temperature=0.2,
+        max_output_tokens=128,
+        protocol_options={},
+        legacy_extra_body={},
+    )
+
+    LLMClient(config)
+
+    assert captured["base_url"] == "https://llm-center.modelbest.cn/llm"
+
+
+def test_llm_client_adapts_anthropic_full_messages_endpoint(monkeypatch) -> None:
+    captured = {}
+
+    def fake_anthropic(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return SimpleNamespace(messages=_Messages())
+
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "secret")
+    monkeypatch.setattr("app.llm.client.Anthropic", fake_anthropic)
+    config = SimpleNamespace(
+        api_protocol="anthropic_messages",
+        purpose="verification",
+        api_key_encrypted="encrypted",
+        base_url="https://llm-center.modelbest.cn/llm/v1/messages",
+        model="claude-opus-5",
+        temperature=0.2,
+        max_output_tokens=128,
+        protocol_options={},
+        legacy_extra_body={},
+    )
+
+    LLMClient(config)
+
+    assert captured["base_url"] == "https://llm-center.modelbest.cn/llm"
 
 
 def test_locked_anthropic_sdk_uses_messages_wire_contract() -> None:
