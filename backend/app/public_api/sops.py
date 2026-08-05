@@ -419,6 +419,7 @@ def replace_sop_draft(
     principal: PublicPrincipal = Depends(require_scopes("sops:write")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_agent_access(principal, agent_id, write=True)
     row = _owned_draft(db, principal, agent_id, sop_id, draft_id)
     _require_etag(row, if_match)
     try:
@@ -454,6 +455,7 @@ def patch_sop_draft(
     principal: PublicPrincipal = Depends(require_scopes("sops:write")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_agent_access(principal, agent_id, write=True)
     row = _owned_draft(db, principal, agent_id, sop_id, draft_id)
     _require_etag(row, if_match)
     try:
@@ -481,9 +483,10 @@ def validate_sop_route(
     sop_id: str,
     agent_id: str,
     draft_id: str,
-    principal: PublicPrincipal = Depends(require_scopes("sops:read")),
+    principal: PublicPrincipal = Depends(require_scopes("sops:write")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_agent_access(principal, agent_id, write=True)
     row = _owned_draft(db, principal, agent_id, sop_id, draft_id)
     return validate_draft(db, row)
 

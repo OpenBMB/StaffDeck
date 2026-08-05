@@ -157,6 +157,8 @@ def test_problem_details_and_openapi_contract(monkeypatch) -> None:
         "/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/entries",
         "/agents/{agent_id}/tools",
         "/agents/{agent_id}/scheduled-tasks",
+        "/gallery/agents",
+        "/gallery/agents/{agent_id}:add",
     }
     assert expected.issubset(schema["paths"])
 
@@ -531,18 +533,17 @@ def test_account_master_key_follows_user_visible_agents(monkeypatch) -> None:
         db.commit()
 
         created = create_account_api_credential(
-            member.id,
             AccountAPICredentialCreateRequest(
-                tenant_id="tenant_api",
                 name="成员账号全量密钥",
             ),
-            admin,
+            member,
             db,
         )
         assert created.api_key.startswith("sd_live_")
         assert set(created.scopes) == set(USER_FULL_ACCESS_SCOPES)
         assert "knowledge:read" in created.scopes
-        assert "knowledge:write" not in created.scopes
+        assert "knowledge:write" in created.scopes
+        assert "gallery:use" in created.scopes
         stored = db.get(APICredential, created.id)
         assert stored is not None and stored.agent_id is None
 
@@ -561,6 +562,46 @@ def test_account_master_key_follows_user_visible_agents(monkeypatch) -> None:
     assert private_response.status_code == 404
     assert private_response.json()["code"] == "AGENT_NOT_FOUND"
 
+    gallery = client.get("/gallery/agents", headers=auth)
+    assert gallery.status_code == 200, gallery.text
+    gallery_rows = gallery.json()["data"]
+    assert [row["id"] for row in gallery_rows] == ["agent_published"]
+    assert gallery_rows[0]["added"] is False
+
+    added = client.post(
+        "/gallery/agents/agent_published:add",
+        headers={**auth, "Idempotency-Key": "add-published-1"},
+    )
+    replayed = client.post(
+        "/gallery/agents/agent_published:add",
+        headers={**auth, "Idempotency-Key": "add-published-1"},
+    )
+    assert added.status_code == replayed.status_code == 200
+    assert added.json()["id"] == replayed.json()["id"] == "agent_published"
+    assert added.json()["added"] is True
+    assert client.get("/gallery/agents", headers=auth).json()["data"][0]["added"] is True
+    assert client.post(
+        "/gallery/agents/agent_private:add",
+        headers={**auth, "Idempotency-Key": "add-private-1"},
+    ).status_code == 404
+
+    created_agent = client.post(
+        "/agents",
+        headers={**auth, "Idempotency-Key": "create-member-agent-1"},
+        json={"name": "Member API Employee", "source_mode": "blank"},
+    )
+    assert created_agent.status_code == 201, created_agent.text
+    assert created_agent.json()["metadata"]["owner_user_id"] == "user_api_member"
+    published = client.get("/agents/agent_published", headers=auth)
+    assert published.status_code == 200
+    forbidden = client.patch(
+        "/agents/agent_published",
+        headers={**auth, "If-Match": published.headers["etag"]},
+        json={"description": "不应允许修改"},
+    )
+    assert forbidden.status_code == 403
+    assert forbidden.json()["code"] == "AGENT_MANAGE_FORBIDDEN"
+
     # Visibility is evaluated on every request, not frozen into the key.
     with Session(engine) as db:
         private = db.get(AgentProfile, "agent_private")
@@ -574,18 +615,16 @@ def test_account_master_key_follows_user_visible_agents(monkeypatch) -> None:
     assert "agent_private" in {row["id"] for row in refreshed_agents.json()["data"]}
 
     with Session(engine) as db:
-        admin = db.get(User, "user_api_admin")
-        rows = list_account_api_credentials(
-            "user_api_member", "tenant_api", admin, db
-        )
+        member = db.get(User, "user_api_member")
+        rows = list_account_api_credentials(member, db)
         assert rows[0].access == "user_full_access"
         assert not hasattr(rows[0], "api_key")
         rotated = rotate_account_api_credential(
-            "user_api_member", created.id, "tenant_api", admin, db
+            created.id, member, db
         )
         assert rotated.api_key != created.api_key
         revoked = revoke_account_api_credential(
-            "user_api_member", created.id, "tenant_api", admin, db
+            created.id, member, db
         )
         assert revoked.status == "revoked"
 
@@ -609,9 +648,7 @@ def test_admin_account_master_key_sees_all_visible_tenant_agents(monkeypatch) ->
         )
         db.commit()
         created = create_account_api_credential(
-            admin.id,
             AccountAPICredentialCreateRequest(
-                tenant_id="tenant_api",
                 name="管理员账号全量密钥",
             ),
             admin,

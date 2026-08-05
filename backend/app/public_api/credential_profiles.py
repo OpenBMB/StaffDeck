@@ -33,11 +33,28 @@ AGENT_FULL_ACCESS_SCOPES = frozenset(
     }
 )
 
-# An account master key is not bound to an agent. Its actor is the target user,
-# so every request re-evaluates the digital employees visible to that account.
-# It deliberately has no configuration-write, publish, credential-management,
-# provider-secret, audit-log, or tenant-usage scopes.
-USER_FULL_ACCESS_SCOPES = AGENT_FULL_ACCESS_SCOPES
+# An account master key represents the signed-in user in the public API. It is
+# not bound to one employee, and every request re-evaluates both view and manage
+# permissions. It covers the employee lifecycle while deliberately excluding
+# tenant credentials, provider secrets, webhooks, audit logs, and tenant usage.
+USER_FULL_ACCESS_SCOPES = frozenset(
+    {
+        *AGENT_FULL_ACCESS_SCOPES,
+        "agents:write",
+        "gallery:read",
+        "gallery:use",
+        "sops:write",
+        "sops:publish",
+        "knowledge:write",
+        "knowledge:publish",
+        "skills:write",
+        "skills:test",
+        "tools:write",
+        "tools:test",
+        "scheduled_tasks:write",
+        "scheduled_tasks:run",
+    }
+)
 
 AGENT_KEY_ALLOWED_SCOPES = AGENT_RUNTIME_SCOPES
 

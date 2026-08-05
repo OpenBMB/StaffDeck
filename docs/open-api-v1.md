@@ -22,26 +22,25 @@ Content-Type: application/json
 
 请求体不传 `tenant_id`。服务端从凭证推导租户、API Client、scope 和员工边界。
 
-### 账号管理页创建全量密钥
+### 右上角用户菜单创建账号全量密钥
 
-在“账号管理”列表中打开目标账号右侧的“…”菜单，选择“API 全量密钥”。这里创建的密钥绑定账号，而不是绑定单个数字员工。
+登录 StaffDeck 后，在整个界面右上角打开当前用户菜单，选择“API 全量密钥”。每个用户只能为自己创建、轮换和禁用账号密钥；管理员也不能从账号管理列表代其他用户生成密钥。这里创建的密钥绑定当前登录账号，而不是绑定单个数字员工。
 
 | 类型 | 使用场景 | 权限边界 |
 | --- | --- | --- |
-| 账号全量密钥（大密钥） | 将某个 StaffDeck 账号可使用的数字员工整体接入外部系统 | 可列出并运行该账号当前可访问的全部员工，并读取这些员工的 SOP、知识、技能、工具、定时任务、会话、Trace、产物和运行结果 |
+| 账号全量密钥（大密钥） | 将当前 StaffDeck 账号的能力整体接入外部系统 | 可浏览和选择广场员工、创建员工、运行当前账号可访问的员工，并按账号本人权限管理自有员工的 SOP、知识、技能、工具和定时任务 |
 
 权限不是创建时固化的员工 ID 列表，而是在每次请求时根据账号重新计算：
 
-- 管理员账号可访问租户内全部未隐藏员工；
-- 普通成员可访问自己创建的员工、总员工和已发布到广场的员工；
+- 管理员账号可访问并管理租户内全部未隐藏员工；
+- 普通成员可访问自己创建的员工、总员工和已发布到广场的员工，但只能修改自己创建的员工；
 - 账号角色、员工归属、发布或隐藏状态变化后，下一次 API 请求立即按新权限执行。
 
 账号全量密钥仍然不是租户配置密钥：
 
-- 不能新增、修改或发布员工配置；
-- 不能超出该账号本身的员工访问范围，也不能跨租户；
+- 不能超出该账号本人在界面中的管理范围，也不能跨租户；
 - 不能读取模型供应商密钥、工具明文凭证或原始模型 COT；
-- 不能获取租户级审计或租户级用量。
+- 不能创建其他账号的密钥，也不能获取租户级审计或租户级用量。
 
 ### 员工设置页创建运行密钥
 
@@ -185,6 +184,32 @@ GET       /agents/{agent_id}/capabilities
 ```
 
 模型接口只接受和返回已有 `model_config_id`，不会暴露供应商 API Key。
+
+### 开放广场员工
+
+```text
+GET  /gallery/agents
+GET  /gallery/agents/{agent_id}
+POST /gallery/agents/{agent_id}:add
+```
+
+`GET /gallery/agents` 只返回已发布、启用且不是总员工的广场员工，每条记录包含 `added`，表示当前账号是否已经选择使用。选择员工时建议携带幂等键：
+
+```bash
+curl -X POST "$BASE/gallery/agents/$AGENT_ID:add" \
+  -H "Authorization: Bearer $STAFFDECK_API_KEY" \
+  -H "Idempotency-Key: gallery-add-$AGENT_ID"
+```
+
+`:add` 将广场员工加入当前账号的可用员工列表，不复制资源。如果需要在“我的数字员工”中新建一份可独立修改的副本，使用已有的创建接口：
+
+```bash
+curl -X POST "$BASE/agents" \
+  -H "Authorization: Bearer $STAFFDECK_API_KEY" \
+  -H "Idempotency-Key: copy-gallery-$AGENT_ID" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"我的员工副本\",\"source_mode\":\"copy\",\"copy_from_agent_id\":\"$AGENT_ID\"}"
+```
 
 ### SOP
 

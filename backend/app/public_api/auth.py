@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 from app.config import get_settings
 from app.db import get_session
 from app.db.models import APIClient, APICredential, AgentProfile, User, utc_now
+from app.public_api.credential_profiles import USER_FULL_ACCESS_SCOPES
 from app.public_api.errors import PublicAPIError
 from app.security.auth import _decode_token
 from app.security.permissions import agent_owned_by_user, is_admin_user
@@ -31,6 +32,7 @@ class PublicPrincipal:
     credential_id: str | None = None
     agent_id: str | None = None
     allowed_agent_ids: frozenset[str] | None = None
+    manageable_agent_ids: frozenset[str] | None = None
     bootstrap_user: bool = False
 
     def can(self, required: str) -> bool:
@@ -82,6 +84,14 @@ def _api_key_principal(token: str, db: Session) -> PublicPrincipal:
     db.commit()
     client_scopes = set(client.scopes_json or [])
     credential_scopes = set(credential.scopes_json or [])
+    if (
+        (client.metadata_json or {}).get("credential_mode") == "user_full_access"
+        and credential.agent_id is None
+    ):
+        # Profile credentials gain newly introduced account capabilities
+        # without forcing every user to rotate an existing key.
+        client_scopes.update(USER_FULL_ACCESS_SCOPES)
+        credential_scopes.update(USER_FULL_ACCESS_SCOPES)
     effective = {
         scope
         for scope in credential_scopes
@@ -89,7 +99,9 @@ def _api_key_principal(token: str, db: Session) -> PublicPrincipal:
         or scope in client_scopes
         or f"{scope.split(':', 1)[0]}:*" in client_scopes
     }
-    allowed_agent_ids = _visible_agent_ids(db, client.tenant_id, actor)
+    allowed_agent_ids, manageable_agent_ids = _agent_access_sets(
+        db, client.tenant_id, actor
+    )
     return PublicPrincipal(
         tenant_id=client.tenant_id,
         actor_user=actor,
@@ -98,10 +110,15 @@ def _api_key_principal(token: str, db: Session) -> PublicPrincipal:
         credential_id=credential.id,
         agent_id=credential.agent_id,
         allowed_agent_ids=allowed_agent_ids,
+        manageable_agent_ids=manageable_agent_ids,
     )
 
 
-def _visible_agent_ids(db: Session, tenant_id: str, actor: User) -> frozenset[str]:
+def _agent_access_sets(
+    db: Session,
+    tenant_id: str,
+    actor: User,
+) -> tuple[frozenset[str], frozenset[str]]:
     """Resolve account visibility on every API-key request.
 
     Account master keys therefore follow later ownership, gallery-publishing,
@@ -109,6 +126,7 @@ def _visible_agent_ids(db: Session, tenant_id: str, actor: User) -> frozenset[st
     """
     rows = db.exec(select(AgentProfile).where(AgentProfile.tenant_id == tenant_id)).all()
     visible: set[str] = set()
+    manageable: set[str] = set()
     for row in rows:
         metadata = row.metadata_json or {}
         if metadata.get("hidden_from_staffdeck") is True:
@@ -120,7 +138,9 @@ def _visible_agent_ids(db: Session, tenant_id: str, actor: User) -> frozenset[st
             or metadata.get("published_to_gallery") is True
         ):
             visible.add(row.id)
-    return frozenset(visible)
+        if is_admin_user(actor) or agent_owned_by_user(row, actor):
+            manageable.add(row.id)
+    return frozenset(visible), frozenset(manageable)
 
 
 def _bootstrap_principal(token: str, db: Session) -> PublicPrincipal:
@@ -202,4 +222,14 @@ def enforce_agent_access(principal: PublicPrincipal, agent_id: str, *, write: bo
             403,
             "AGENT_KEY_READ_ONLY_CONFIG",
             "Agent keys cannot modify agent configuration.",
+        )
+    if (
+        write
+        and principal.manageable_agent_ids is not None
+        and agent_id not in principal.manageable_agent_ids
+    ):
+        raise PublicAPIError(
+            403,
+            "AGENT_MANAGE_FORBIDDEN",
+            "This account cannot modify the selected agent.",
         )

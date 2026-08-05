@@ -405,7 +405,7 @@ def test_general_skill(
     principal: PublicPrincipal = Depends(require_scopes("skills:test")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id)
+    enforce_agent_access(principal, agent_id, write=True)
     request = GeneralSkillRunRequest(
         tenant_id=principal.tenant_id,
         agent_id=agent_id,
@@ -460,7 +460,7 @@ def test_tool(
     principal: PublicPrincipal = Depends(require_scopes("tools:test")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id)
+    enforce_agent_access(principal, agent_id, write=True)
     request = ToolTestRequest(tenant_id=principal.tenant_id, **body)
     return _dump(internal_tools.test_tool(tool_id, request, agent_id, db, principal.actor_user))
 
@@ -536,7 +536,7 @@ def discover_mcp_server(
     principal: PublicPrincipal = Depends(require_scopes("tools:test")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id)
+    enforce_agent_access(principal, agent_id, write=True)
     request = MCPDiscoverRequest(tenant_id=principal.tenant_id)
     return _dump(internal_tools.discover_mcp_tools(server_id, request, db, principal.actor_user))
 
@@ -598,7 +598,7 @@ def run_scheduled_task(
     principal: PublicPrincipal = Depends(require_scopes("scheduled_tasks:run")),
     db: Session = Depends(get_session),
 ) -> dict:
-    enforce_agent_access(principal, agent_id)
+    enforce_agent_access(principal, agent_id, write=True)
     return _dump(internal_scheduled_tasks.run_enterprise_scheduled_task_now(task_id, principal.tenant_id, principal.actor_user, db))
 
 

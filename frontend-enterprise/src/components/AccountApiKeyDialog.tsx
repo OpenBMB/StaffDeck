@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
-import { api, TENANT_ID } from '../api/client';
+import { api } from '../api/client';
 import { copyTextToClipboard } from '../lib/clipboard';
 
 export type AccountApiKeySubject = {
@@ -70,7 +70,7 @@ export default function AccountApiKeyDialog({
     setLoading(true);
     try {
       const rows = await api.get<AccountApiCredential[]>(
-        `/api/auth/users/${encodeURIComponent(account.id)}/api-credentials?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+        '/api/auth/me/api-credentials',
       );
       setCredentials(rows);
     } catch (error) {
@@ -92,9 +92,8 @@ export default function AccountApiKeyDialog({
     setCreating(true);
     try {
       const created = await api.post<AccountApiCredentialCreated>(
-        `/api/auth/users/${encodeURIComponent(account.id)}/api-credentials`,
+        '/api/auth/me/api-credentials',
         {
-          tenant_id: TENANT_ID,
           name: `${displayName} 账号全量密钥`,
         },
       );
@@ -114,7 +113,7 @@ export default function AccountApiKeyDialog({
     setActingId(row.id);
     try {
       const rotated = await api.post<AccountApiCredentialCreated>(
-        `/api/auth/users/${encodeURIComponent(account.id)}/api-credentials/${encodeURIComponent(row.id)}/rotate?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+        `/api/auth/me/api-credentials/${encodeURIComponent(row.id)}/rotate`,
         {},
       );
       setRevealed(rotated);
@@ -133,7 +132,7 @@ export default function AccountApiKeyDialog({
     setActingId(row.id);
     try {
       await api.post(
-        `/api/auth/users/${encodeURIComponent(account.id)}/api-credentials/${encodeURIComponent(row.id)}/revoke?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+        `/api/auth/me/api-credentials/${encodeURIComponent(row.id)}/revoke`,
         {},
       );
       if (revealed?.id === row.id) setRevealed(null);
@@ -172,7 +171,7 @@ export default function AccountApiKeyDialog({
             <div>
               <DialogTitle className="text-[16px] font-semibold text-[#18181a]">账号 API 密钥 · {displayName}</DialogTitle>
               <DialogDescription id="account-api-key-description" className="mt-[5px] text-[12px] text-[#757f9c]">
-                密钥绑定账号而不是单个员工；明文只显示一次，请创建后立即保存。
+                这是您自己的账号密钥；明文只显示一次，请创建后立即保存。
               </DialogDescription>
             </div>
           </div>
@@ -183,12 +182,12 @@ export default function AccountApiKeyDialog({
             <span className="absolute right-[14px] top-[14px] rounded-full bg-[#d8efe4] px-[8px] py-[3px] text-[10px] font-semibold text-[#207451]">账号级</span>
             <ShieldCheck className="size-[20px] text-[#207451]" />
             <h3 className="mt-[13px] text-[14px] font-semibold text-[#18181a]">账号全量密钥</h3>
-            <p className="mt-[4px] text-[12px] font-medium text-[#464c5e]">访问该账号当前可访问的全部数字员工</p>
+            <p className="mt-[4px] text-[12px] font-medium text-[#464c5e]">以当前账号身份访问和管理数字员工</p>
             <div className="mt-[10px] grid gap-[7px] text-[11px] leading-[17px] text-[#647064] sm:grid-cols-2">
-              <span className="flex gap-[6px]"><UsersRound className="mt-[1px] size-[14px] shrink-0" />管理员可访问租户内全部可见员工；普通成员可访问自有员工、总员工和已发布员工。</span>
-              <span className="flex gap-[6px]"><RefreshCw className="mt-[1px] size-[14px] shrink-0" />账号角色、员工归属或发布状态变化后，权限会在下一次调用时自动更新。</span>
+              <span className="flex gap-[6px]"><UsersRound className="mt-[1px] size-[14px] shrink-0" />可浏览广场、选择加入员工，并运行当前账号可访问的全部数字员工。</span>
+              <span className="flex gap-[6px]"><RefreshCw className="mt-[1px] size-[14px] shrink-0" />可创建和管理本人有权管理的员工；权限随账号角色、员工归属和发布状态自动更新。</span>
             </div>
-            <p className="mt-[10px] text-[10px] leading-[16px] text-[#7f897f]">可运行员工并读取其 SOP、知识、技能、工具、定时任务、Trace 与产物；不能修改配置、读取供应商密钥或跨租户访问。</p>
+            <p className="mt-[10px] text-[10px] leading-[16px] text-[#7f897f]">可按本人界面权限管理员工、SOP、知识、技能、工具和定时任务；不能越过账号权限、跨租户访问、读取供应商密钥或管理其他账号密钥。</p>
             <Button
               type="button"
               disabled={creating || Boolean(actingId)}
@@ -267,7 +266,7 @@ export default function AccountApiKeyDialog({
               )) : (
                 <div className="flex h-[92px] flex-col items-center justify-center text-[#9098a9]">
                   <KeyRound className="size-[18px]" />
-                  <span className="mt-[7px] text-[11px]">还没有为这个账号创建 API 密钥</span>
+                  <span className="mt-[7px] text-[11px]">您还没有创建账号 API 密钥</span>
                 </div>
               )}
             </div>

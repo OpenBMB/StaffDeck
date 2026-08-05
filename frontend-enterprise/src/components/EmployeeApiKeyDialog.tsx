@@ -48,7 +48,7 @@ const ACCESS_META: Record<KeyAccess, { label: string; summary: string; detail: s
   runtime: {
     label: '运行密钥',
     summary: '用于外部系统发起对话和任务',
-    detail: '可创建会话、运行任务、读取 Trace 与产物；账号全量密钥请到“账号管理”中创建。',
+    detail: '可创建会话、运行任务、读取 Trace 与产物；账号全量密钥请到右上角用户菜单中创建。',
   },
 };
 

@@ -68,7 +68,6 @@ class LoginResponse(BaseModel):
 
 
 class AccountAPICredentialCreateRequest(BaseModel):
-    tenant_id: str
     name: str = Field(min_length=1, max_length=120)
     expires_at: datetime | None = None
 
@@ -257,48 +256,42 @@ def list_users(
 
 
 @router.get(
-    "/users/{user_id}/api-credentials",
+    "/me/api-credentials",
     response_model=list[AccountAPICredentialRead],
 )
 def list_account_api_credentials(
-    user_id: str,
-    tenant_id: str = Query(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> list[AccountAPICredentialRead]:
-    _require_admin(current_user, tenant_id)
-    user = _get_managed_user(db, tenant_id, user_id)
-    client = _find_account_api_client(db, tenant_id, user.id)
+    client = _ensure_account_api_client(db, current_user.tenant_id, current_user)
     if not client:
         return []
     rows = db.exec(
         select(APICredential)
         .where(
-            APICredential.tenant_id == tenant_id,
+            APICredential.tenant_id == current_user.tenant_id,
             APICredential.client_id == client.id,
             APICredential.agent_id.is_(None),
         )
         .order_by(APICredential.created_at.desc())
     ).all()
-    return [_account_api_credential_read(row, user.id) for row in rows]
+    db.commit()
+    return [_account_api_credential_read(row, current_user.id) for row in rows]
 
 
 @router.post(
-    "/users/{user_id}/api-credentials",
+    "/me/api-credentials",
     response_model=AccountAPICredentialCreated,
 )
 def create_account_api_credential(
-    user_id: str,
     request: AccountAPICredentialCreateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> AccountAPICredentialCreated:
-    _require_admin(current_user, request.tenant_id)
-    user = _get_managed_user(db, request.tenant_id, user_id)
-    client = _ensure_account_api_client(db, request.tenant_id, user)
+    client = _ensure_account_api_client(db, current_user.tenant_id, current_user)
     token, prefix, digest = generate_api_key()
     row = APICredential(
-        tenant_id=request.tenant_id,
+        tenant_id=current_user.tenant_id,
         client_id=client.id,
         agent_id=None,
         name=request.name.strip(),
@@ -311,25 +304,23 @@ def create_account_api_credential(
     db.commit()
     db.refresh(row)
     return AccountAPICredentialCreated(
-        **_account_api_credential_read(row, user.id).model_dump(),
+        **_account_api_credential_read(row, current_user.id).model_dump(),
         api_key=token,
     )
 
 
 @router.post(
-    "/users/{user_id}/api-credentials/{credential_id}/rotate",
+    "/me/api-credentials/{credential_id}/rotate",
     response_model=AccountAPICredentialCreated,
 )
 def rotate_account_api_credential(
-    user_id: str,
     credential_id: str,
-    tenant_id: str = Query(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> AccountAPICredentialCreated:
-    _require_admin(current_user, tenant_id)
-    user = _get_managed_user(db, tenant_id, user_id)
-    row = _get_account_api_credential(db, tenant_id, user.id, credential_id)
+    row = _get_account_api_credential(
+        db, current_user.tenant_id, current_user.id, credential_id
+    )
     token, prefix, digest = generate_api_key()
     row.key_prefix = prefix
     row.key_digest = digest
@@ -340,32 +331,30 @@ def rotate_account_api_credential(
     db.commit()
     db.refresh(row)
     return AccountAPICredentialCreated(
-        **_account_api_credential_read(row, user.id).model_dump(),
+        **_account_api_credential_read(row, current_user.id).model_dump(),
         api_key=token,
     )
 
 
 @router.post(
-    "/users/{user_id}/api-credentials/{credential_id}/revoke",
+    "/me/api-credentials/{credential_id}/revoke",
     response_model=AccountAPICredentialRead,
 )
 def revoke_account_api_credential(
-    user_id: str,
     credential_id: str,
-    tenant_id: str = Query(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> AccountAPICredentialRead:
-    _require_admin(current_user, tenant_id)
-    user = _get_managed_user(db, tenant_id, user_id)
-    row = _get_account_api_credential(db, tenant_id, user.id, credential_id)
+    row = _get_account_api_credential(
+        db, current_user.tenant_id, current_user.id, credential_id
+    )
     row.status = "revoked"
     row.revoked_at = utc_now()
     row.updated_at = utc_now()
     db.add(row)
     db.commit()
     db.refresh(row)
-    return _account_api_credential_read(row, user.id)
+    return _account_api_credential_read(row, current_user.id)
 
 
 @router.put("/users/{user_id}", response_model=UserRead)
@@ -458,13 +447,6 @@ def _require_admin(user: User, tenant_id: str) -> None:
         raise HTTPException(status_code=403, detail="Cannot manage accounts for another tenant")
 
 
-def _get_managed_user(db: Session, tenant_id: str, user_id: str) -> User:
-    user = db.get(User, user_id)
-    if not user or user.tenant_id != tenant_id:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return user
-
-
 def _account_api_client_name(user_id: str) -> str:
     return f"{ACCOUNT_API_CLIENT_PREFIX}:{user_id}"
 
@@ -497,6 +479,17 @@ def _ensure_account_api_client(db: Session, tenant_id: str, user: User) -> APICl
         }
         row.updated_at = utc_now()
         db.add(row)
+        credentials = db.exec(
+            select(APICredential).where(
+                APICredential.tenant_id == tenant_id,
+                APICredential.client_id == row.id,
+                APICredential.agent_id.is_(None),
+            )
+        ).all()
+        for credential in credentials:
+            credential.scopes_json = required_scopes
+            credential.updated_at = utc_now()
+            db.add(credential)
         db.flush()
         return row
     row = APIClient(
