@@ -21,6 +21,9 @@ from app.harness import (
     HarnessArtifactAccessError,
     normalize_harness_artifact_path,
     open_harness_artifact,
+    publish_changed_harness_artifacts,
+    publish_harness_artifacts,
+    snapshot_harness_workspace,
 )
 
 
@@ -114,6 +117,17 @@ def test_downloads_only_a_published_file_from_the_exact_frame(
         file_path = workspace / "reports" / "result.txt"
         file_path.parent.mkdir(parents=True)
         file_path.write_text("artifact body", encoding="utf-8")
+        published = publish_harness_artifacts(
+            workspace,
+            "task_demo",
+            [{"path": "reports/result.txt"}],
+            operation="general_skill",
+        )
+        assistant = db.get(Message, "msg_assistant")
+        assert assistant is not None
+        assistant.metadata_json = {"harness_artifacts": published}
+        db.add(assistant)
+        db.commit()
 
         response = download_harness_artifact(
             "session_demo",
@@ -131,7 +145,97 @@ def test_downloads_only_a_published_file_from_the_exact_frame(
             'attachment; filename="result.txt"'
         )
         assert response.headers["x-content-type-options"] == "nosniff"
-        assert response.headers["etag"].startswith('"sha256:')
+        assert response.headers["etag"] == f'"sha256:{published[0]["sha256"]}"'
+
+
+def test_publisher_builds_relative_hashed_metadata(tmp_path: Path) -> None:
+    workspace = tmp_path / "task"
+    artifact = workspace / "outputs" / "report.csv"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    published = publish_harness_artifacts(
+        workspace.resolve(),
+        "task_demo",
+        [{"path": "outputs/report.csv"}],
+        operation="general_skill",
+    )
+
+    assert published == [
+        {
+            "type": "workspace_file",
+            "task_frame_id": "task_demo",
+            "path": "outputs/report.csv",
+            "sha256": "492d5ea496056f1a6a6592241032fab764c321596317930b4fa0e1e8bc3b7470",
+            "size": 8,
+            "operation": "general_skill",
+        }
+    ]
+
+
+def test_command_artifact_discovery_publishes_only_created_or_modified_files(
+    tmp_path: Path,
+) -> None:
+    workspace = (tmp_path / "task").resolve()
+    workspace.mkdir()
+    unchanged = workspace / "input.txt"
+    changed = workspace / "changed.txt"
+    unchanged.write_text("input", encoding="utf-8")
+    changed.write_text("before", encoding="utf-8")
+    before = snapshot_harness_workspace(workspace)
+
+    changed.write_text("after command", encoding="utf-8")
+    (workspace / "heart.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    published = publish_changed_harness_artifacts(
+        workspace,
+        "task_demo",
+        before,
+    )
+
+    assert [item["path"] for item in published] == ["changed.txt", "heart.png"]
+    assert {item["operation"] for item in published} == {"exec_command"}
+
+
+def test_command_artifact_discovery_rejects_oversized_workspaces(
+    tmp_path: Path,
+) -> None:
+    workspace = (tmp_path / "task").resolve()
+    workspace.mkdir()
+    (workspace / "one.txt").write_text("1", encoding="utf-8")
+    (workspace / "two.txt").write_text("2", encoding="utf-8")
+
+    with pytest.raises(HarnessArtifactAccessError, match="entry limit"):
+        snapshot_harness_workspace(workspace, max_entries=1)
+
+
+def test_windows_artifact_open_does_not_require_posix_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = (tmp_path / "task").resolve()
+    workspace.mkdir()
+    (workspace / "result.txt").write_text("ok", encoding="utf-8")
+    monkeypatch.setattr("app.harness.artifacts.sys.platform", "win32")
+
+    opened = open_harness_artifact(workspace, "result.txt")
+    try:
+        assert opened.sha256() == "2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df"
+    finally:
+        opened.close()
+
+
+def test_publisher_rejects_hard_linked_files(tmp_path: Path) -> None:
+    workspace = (tmp_path / "task").resolve()
+    workspace.mkdir()
+    source = tmp_path / "source.txt"
+    source.write_text("private", encoding="utf-8")
+    try:
+        (workspace / "report.txt").hardlink_to(source)
+    except OSError:
+        pytest.skip("hard links are unavailable on this filesystem")
+
+    with pytest.raises(HarnessArtifactAccessError, match="hard links"):
+        publish_harness_artifacts(workspace, "task_demo", ["report.txt"])
 
 
 def test_download_rejects_a_file_changed_after_publication(

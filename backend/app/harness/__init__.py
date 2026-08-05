@@ -1,8 +1,19 @@
 from app.harness.artifacts import (
     HarnessArtifactAccessError,
+    HarnessWorkspaceSnapshot,
     OpenedHarnessArtifact,
     normalize_harness_artifact_path,
     open_harness_artifact,
+    publish_changed_harness_artifacts,
+    publish_harness_artifacts,
+    snapshot_harness_workspace,
+)
+from app.harness.command import (
+    ExecCommandArguments,
+    build_command_tool_registry,
+    exec_command,
+    register_command_tools,
+    run_sandboxed_process,
 )
 from app.harness.contracts import (
     HarnessLimits,
@@ -12,19 +23,15 @@ from app.harness.contracts import (
     HarnessToolResult,
     HarnessToolSpec,
 )
-from app.harness.command import (
-    ExecCommandArguments,
-    build_command_tool_registry,
-    exec_command,
-    register_command_tools,
-)
 from app.harness.errors import HarnessExecutionError
 from app.harness.executor import HarnessExecutor
 from app.harness.filesystem import build_file_tool_registry, register_file_tools
 from app.harness.registry import HarnessRegistry
 
 __all__ = [
+    "ExecCommandArguments",
     "HarnessArtifactAccessError",
+    "HarnessWorkspaceSnapshot",
     "HarnessExecutionError",
     "HarnessExecutor",
     "HarnessLimits",
@@ -34,13 +41,16 @@ __all__ = [
     "HarnessToolError",
     "HarnessToolResult",
     "HarnessToolSpec",
-    "ExecCommandArguments",
     "OpenedHarnessArtifact",
-    "build_file_tool_registry",
     "build_command_tool_registry",
+    "build_file_tool_registry",
     "exec_command",
     "normalize_harness_artifact_path",
     "open_harness_artifact",
-    "register_file_tools",
+    "publish_changed_harness_artifacts",
+    "publish_harness_artifacts",
     "register_command_tools",
+    "register_file_tools",
+    "run_sandboxed_process",
+    "snapshot_harness_workspace",
 ]

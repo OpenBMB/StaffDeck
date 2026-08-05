@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.harness import (
+    HarnessExecutionError,
     HarnessExecutor,
     HarnessLimits,
     HarnessToolCall,
@@ -34,6 +38,14 @@ def test_exec_command_fails_closed_without_bubblewrap(
 ) -> None:
     monkeypatch.setattr(command_module.sys, "platform", "linux")
     monkeypatch.setattr(command_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(command_module, "available_backend", lambda: None)
+    monkeypatch.setattr(
+        command_module,
+        "require_backend",
+        lambda: (_ for _ in ()).throw(
+            HarnessExecutionError("SANDBOX_UNAVAILABLE", "no sandbox")
+        ),
+    )
 
     result = _execute(tmp_path, {"command": "pwd"})
 
@@ -76,6 +88,8 @@ def test_exec_command_builds_fixed_isolated_argv_and_structured_result(
         "_bubblewrap_executable",
         lambda: "/usr/bin/bwrap",
     )
+    monkeypatch.setattr(command_module, "available_backend", lambda: "bubblewrap")
+    monkeypatch.setattr(command_module, "available_backend", lambda: None)
 
     def fake_run(
         argv,
@@ -125,7 +139,9 @@ def test_exec_command_builds_fixed_isolated_argv_and_structured_result(
     argv = captured["argv"]
     assert isinstance(argv, list)
     assert argv[0] == "/usr/bin/bwrap"
-    assert "--unshare-net" in argv
+    assert "--unshare-net" not in argv
+    assert "--unshare-all" not in argv
+    assert "--unshare-user" in argv
     assert "--clearenv" in argv
     assert _option_values(argv, "--remount-ro") == ["/"]
     assert _option_values(argv, "--bind") == [str(workspace), "/workspace"]
@@ -138,6 +154,53 @@ def test_exec_command_builds_fixed_isolated_argv_and_structured_result(
         "-c",
         "printf done",
     ]
+
+
+def test_exec_command_allows_newline_separated_statements_inside_sandbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(command_module, "available_backend", lambda: "bubblewrap")
+    monkeypatch.setattr(
+        command_module,
+        "_bubblewrap_executable",
+        lambda: "/usr/bin/bwrap",
+    )
+
+    def fake_run(argv, **_kwargs):
+        captured["argv"] = list(argv)
+        return command_module._BoundedProcessResult(
+            returncode=0,
+            stdout=b"one\ntwo\n",
+            stderr=b"",
+            stdout_bytes=8,
+            stderr_bytes=0,
+            timed_out=False,
+            output_truncated=False,
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr(command_module, "_run_bounded_process", fake_run)
+    script = "printf 'one\\n'\nprintf 'two\\n'"
+
+    result = _execute(tmp_path, {"command": script})
+
+    assert result.success is True
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert argv[-1] == script
+
+
+def test_exec_command_validates_every_line_of_multiline_script(tmp_path: Path) -> None:
+    result = _execute(
+        tmp_path,
+        {"command": "printf safe\ncat /etc/passwd"},
+    )
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.code == "COMMAND_DENIED"
 
 
 def test_exec_command_rejects_workspace_symlinks_before_start(
@@ -165,6 +228,197 @@ def test_exec_command_rejects_workspace_symlinks_before_start(
     assert result.error.code == "SYMLINK_NOT_ALLOWED"
 
 
+def test_bubblewrap_network_policy_is_exact(tmp_path: Path) -> None:
+    workspace = tmp_path.resolve()
+    common = {
+        "sandbox_executable": "/usr/bin/bwrap",
+        "workspace": workspace,
+        "command": "true",
+    }
+
+    assert "--unshare-net" not in command_module._bubblewrap_argv(
+        **common, network_mode="all"
+    )
+    assert "--unshare-net" in command_module._bubblewrap_argv(
+        **common, network_mode="deny"
+    )
+    with pytest.raises(HarnessExecutionError) as unsupported:
+        command_module._bubblewrap_argv(**common, network_mode="allowlist")
+    assert unsupported.value.error.code == "SANDBOX_POLICY_UNSUPPORTED"
+
+
+def test_srt_all_network_requires_reviewed_runtime_patch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(command_module, "_srt_supports_allow_all", lambda: False)
+
+    with pytest.raises(HarnessExecutionError) as unsupported:
+        command_module._write_srt_settings(tmp_path, network_mode="all")
+
+    assert unsupported.value.error.code == "SANDBOX_POLICY_UNSUPPORTED"
+
+
+def test_srt_network_settings_preserve_exact_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(command_module, "_srt_supports_allow_all", lambda: True)
+
+    all_path = command_module._write_srt_settings(tmp_path, network_mode="all")
+    allow_path = command_module._write_srt_settings(
+        tmp_path, network_mode="allowlist", allowed_domains=("api.example.com",)
+    )
+    deny_path = command_module._write_srt_settings(tmp_path, network_mode="deny")
+    try:
+        assert json.loads(all_path.read_text())["network"] == {
+            "allowedDomains": [],
+            "deniedDomains": [],
+            "strictAllowlist": True,
+            "allowAllDomains": True,
+        }
+        assert json.loads(allow_path.read_text())["network"]["allowedDomains"] == [
+            "api.example.com"
+        ]
+        assert json.loads(deny_path.read_text())["network"]["deniedDomains"] == ["*"]
+    finally:
+        all_path.unlink()
+        allow_path.unlink()
+        deny_path.unlink()
+
+
+def test_srt_protects_frozen_default_database_without_blocking_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_root = (tmp_path / "data").resolve()
+    workspace = data_root / "harness_workspaces" / "task"
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(data_root))
+    monkeypatch.setattr("app.paths.is_frozen", lambda: True)
+    monkeypatch.setattr(command_module, "_srt_supports_allow_all", lambda: True)
+    monkeypatch.setattr(
+        command_module,
+        "get_settings",
+        lambda: SimpleNamespace(database_url="sqlite:///./skill_agent_loop.db"),
+    )
+
+    settings_path = command_module._write_srt_settings(
+        workspace, network_mode="all"
+    )
+    try:
+        filesystem = json.loads(settings_path.read_text())["filesystem"]
+        deny_read = filesystem["denyRead"]
+    finally:
+        settings_path.unlink()
+
+    database = str(data_root / "skill_agent_loop.db")
+    assert database in deny_read
+    assert database + "-wal" in deny_read
+    assert str(data_root) in deny_read
+    assert str(data_root / "logs") in deny_read
+    assert str(data_root / "network.json") in deny_read
+    assert str(data_root / "connector-locks") in deny_read
+    assert filesystem["allowRead"] == [str(workspace)]
+
+
+def test_srt_process_uses_private_short_temporary_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = (tmp_path / "workspace").resolve()
+    workspace.mkdir()
+    settings_path = tmp_path / "srt-settings.json"
+    settings_path.write_text("{}", encoding="utf-8")
+    captured: dict[str, object] = {}
+    settings_kwargs: dict[str, object] = {}
+    monkeypatch.setattr(command_module, "available_backend", lambda: "srt")
+    monkeypatch.setattr(command_module, "ensure_backend_usable", lambda _backend: None)
+    def fake_settings(*_args, **kwargs):
+        settings_kwargs.update(kwargs)
+        return settings_path
+
+    monkeypatch.setattr(command_module, "_write_srt_settings", fake_settings)
+    monkeypatch.setattr(command_module, "_srt_argv", lambda **_kwargs: ["srt"])
+
+    def fake_run(argv, **kwargs):
+        captured.update(argv=list(argv), **kwargs)
+        return command_module._BoundedProcessResult(
+            returncode=0,
+            stdout=b"ok",
+            stderr=b"",
+            stdout_bytes=2,
+            stderr_bytes=0,
+            timed_out=False,
+            output_truncated=False,
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr(command_module, "_run_bounded_process", fake_run)
+
+    command_module.run_sandboxed_process(
+        workspace=workspace,
+        argv=[sys.executable, "-c", "print('ok')"],
+        env={"TMPDIR": "/host/tmp"},
+    )
+
+    process_env = captured["env"]
+    assert isinstance(process_env, dict)
+    sandbox_temp = Path(process_env["TMPDIR"])
+    assert sandbox_temp.name.startswith("sd-")
+    assert sandbox_temp.parent == Path(tempfile.gettempdir())
+    assert settings_kwargs["sandbox_temp"] == sandbox_temp
+    assert not sandbox_temp.exists()
+
+
+def test_sandboxed_process_maps_structured_paths_and_cwd_for_bubblewrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = (tmp_path / "task").resolve()
+    skill_dir = workspace / "run" / "skill"
+    skill_dir.mkdir(parents=True)
+    runner = workspace / "run" / "runner.py"
+    runner.write_text("print('ok')", encoding="utf-8")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(command_module, "available_backend", lambda: "bubblewrap")
+    monkeypatch.setattr(command_module, "_bubblewrap_executable", lambda: "/usr/bin/bwrap")
+
+    def fake_run(argv, *, cwd, timeout_seconds, output_limit, stdin_bytes, env):
+        captured.update(argv=list(argv), cwd=cwd, stdin=stdin_bytes, env=env)
+        return command_module._BoundedProcessResult(
+            returncode=0,
+            stdout=b"{}",
+            stderr=b"",
+            stdout_bytes=2,
+            stderr_bytes=0,
+            timed_out=False,
+            output_truncated=False,
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr(command_module, "_run_bounded_process", fake_run)
+    command_module.run_sandboxed_process(
+        workspace=workspace,
+        argv=[sys.executable, str(runner)],
+        cwd=skill_dir,
+        stdin_json={"skill_workspace": str(skill_dir), "query": str(workspace)},
+        stdin_path_keys=("skill_workspace",),
+        env={"SKILL_WORKSPACE": str(skill_dir), "QUERY": f"inspect {workspace}-old"},
+        env_path_keys=("SKILL_WORKSPACE",),
+    )
+
+    sandbox_argv = captured["argv"]
+    assert isinstance(sandbox_argv, list)
+    assert _option_values(sandbox_argv, "--chdir") == ["/workspace/run/skill"]
+    assert "/workspace/run/runner.py" in sandbox_argv[-1]
+    assert json.loads(captured["stdin"]) == {
+        "skill_workspace": "/workspace/run/skill",
+        "query": str(workspace),
+    }
+    assert captured["env"] == {
+        "SKILL_WORKSPACE": "/workspace/run/skill",
+        "QUERY": f"inspect {workspace}-old",
+    }
+    assert captured["cwd"] == skill_dir
+
+
 def test_bounded_subprocess_caps_output_and_terminates_timeout(tmp_path: Path) -> None:
     output = command_module._run_bounded_process(
         [sys.executable, "-c", "import sys; sys.stdout.write('x' * 4096)"],
@@ -189,6 +443,22 @@ def test_bounded_subprocess_caps_output_and_terminates_timeout(tmp_path: Path) -
     assert timeout.duration_ms < 1500
 
 
+def test_bounded_subprocess_terminates_when_cancelled(tmp_path: Path) -> None:
+    started = command_module.time.monotonic()
+
+    with pytest.raises(HarnessExecutionError) as cancelled:
+        command_module._run_bounded_process(
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            cwd=tmp_path,
+            timeout_seconds=5,
+            output_limit=128,
+            is_cancelled=lambda: command_module.time.monotonic() - started > 0.05,
+        )
+
+    assert cancelled.value.error.code == "SANDBOX_EXECUTION_CANCELLED"
+    assert command_module.time.monotonic() - started < 1.5
+
+
 def test_exec_command_output_is_capped_by_harness_result_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -199,6 +469,7 @@ def test_exec_command_output_is_capped_by_harness_result_limit(
         "_bubblewrap_executable",
         lambda: "/usr/bin/bwrap",
     )
+    monkeypatch.setattr(command_module, "available_backend", lambda: "bubblewrap")
 
     def fake_run(
         _argv,

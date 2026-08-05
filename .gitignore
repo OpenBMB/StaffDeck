@@ -32,6 +32,7 @@ packaging/out/
 packaging/build/
 packaging/runtime/
 packaging/runtime_dl/
+packaging/sandbox_runtime/
 packaging/_win_reqs.txt
 *.tsbuildinfo
 *.egg-info/
@@ -39,6 +40,7 @@ sop_agent_loop.db
 skill_agent_loop.db
 backend/sop_agent_loop.db*
 backend/skill_agent_loop.db*
+backend/connector-locks/
 *.sqlite
 *.sqlite3
 *.db-shm

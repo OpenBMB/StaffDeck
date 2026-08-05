@@ -28,7 +28,7 @@ from app.db.models import (
     Tool,
 )
 from app.harness import build_file_tool_registry, register_command_tools
-
+from app.harness.sandbox import available_backend
 
 RESERVED_HARNESS_CAPABILITY_NAMES = {
     "capability_search",
@@ -83,7 +83,11 @@ class CapabilityManifestBuilder:
                             "builtin.command" if is_command else "builtin.fs"
                         ),
                         "side_effect": spec.side_effect,
-                        **({"sandbox": "bubblewrap"} if is_command else {}),
+                        **(
+                            {"sandbox": available_backend() or "unavailable"}
+                            if is_command
+                            else {}
+                        ),
                     },
                 )
             )
