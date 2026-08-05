@@ -527,6 +527,18 @@ export default function OpenPlatformPage({
           employeeStats={employeeStats}
           onBack={() => navigate('/enterprise/platform')}
           onRefresh={() => void loadPlatformData()}
+          onCreate={selectedKind === 'general-skills' ? () => {
+            const overall = agents.find((item) => item.is_overall);
+            if (!overall) {
+              notify.error('暂时无法找到开放广场');
+              return;
+            }
+            window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, overall.id);
+            window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', {
+              detail: { agentId: overall.id },
+            }));
+            navigate('/enterprise/general-skills/new?scope=gallery');
+          } : undefined}
           onOpenItem={(item) => setDetailItem({ kind: selectedKind, item })}
           onLogout={onLogout}
           userName={currentUser?.username}

@@ -1,27 +1,38 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shlex
 import shutil
-import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, BinaryIO, Sequence
+from typing import Any, BinaryIO
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.config import get_settings
+from app.db.database_path import sqlite_database_path
 from app.harness.contracts import HarnessToolContext
 from app.harness.errors import HarnessExecutionError
+from app.harness.execution_context import SANDBOX_WORKSPACE, SandboxExecutionContext
 from app.harness.registry import HarnessRegistry
+from app.harness.sandbox import (
+    available_backend,
+    ensure_backend_usable,
+    require_backend,
+    resolve_srt,
+)
+from app.security.managed_subprocess import ManagedProcess, ManagedProcessError
 
 _BASH_PATH = "/bin/bash"
-_SANDBOX_WORKSPACE = "/workspace"
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _MAX_TIMEOUT_SECONDS = 120.0
 _DEFAULT_OUTPUT_BYTES = 32 * 1024
@@ -37,8 +48,11 @@ _READ_ONLY_SYSTEM_PATHS = (
     # The service runs as root in some deployments, so exposing all of /etc or
     # /opt would make host credentials readable from inside the sandbox.
     "/etc/alternatives",
+    "/etc/hosts",
     "/etc/ld.so.cache",
     "/etc/localtime",
+    "/etc/nsswitch.conf",
+    "/etc/resolv.conf",
     "/etc/ssl/certs",
 )
 _SANDBOX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -180,7 +194,7 @@ def exec_command(
     context: HarnessToolContext,
     arguments: BaseModel,
 ) -> dict[str, Any]:
-    """Execute one bounded command in a fail-closed Bubblewrap sandbox.
+    """Execute one bounded command in a fail-closed OS process sandbox.
 
     The model supplies only the Bash program. Every process argument that
     creates the sandbox is trusted and passed separately to ``subprocess``.
@@ -189,24 +203,69 @@ def exec_command(
 
     args = _as_exec_arguments(arguments)
     command = args.command.strip()
+    if sys.platform == "win32":
+        raise HarnessExecutionError(
+            "SANDBOX_UNSUPPORTED",
+            "Windows 当前不支持 Bash exec_command；请使用 Python 通用技能或 PowerShell 适配器。",
+        )
     _validate_command(command)
     workspace = _prepare_workspace(context)
-    sandbox_executable = _bubblewrap_executable()
+    backend = available_backend()
+    # Keep the existing Bubblewrap seam patchable for unit tests and Linux
+    # deployments where the executable is provisioned outside PATH lookup.
+    if backend is None:
+        try:
+            _bubblewrap_executable()
+        except HarnessExecutionError:
+            pass
+        else:
+            backend = "bubblewrap"
+    if backend is None:
+        backend = require_backend()
+    else:
+        ensure_backend_usable(backend)
     output_limit = min(
         args.max_output_bytes,
         max(1, context.limits.max_result_bytes // 4),
     )
-    argv = _bubblewrap_argv(
-        sandbox_executable=sandbox_executable,
-        workspace=workspace,
-        command=command,
-    )
-    process = _run_bounded_process(
-        argv,
-        cwd=workspace,
-        timeout_seconds=args.timeout_seconds,
-        output_limit=output_limit,
-    )
+    settings_path: Path | None = None
+    sandbox_temp: tempfile.TemporaryDirectory[str] | None = None
+    sandbox_temp_path: Path | None = None
+    try:
+        if backend == "srt":
+            sandbox_temp = _create_srt_temp_directory()
+            sandbox_temp_path = Path(sandbox_temp.name)
+            settings_path = _write_srt_settings(
+                workspace,
+                network_mode=context.sandbox_network_mode,
+                allowed_domains=context.sandbox_allowed_domains,
+                sandbox_temp=sandbox_temp_path,
+            )
+            argv = _srt_argv(settings_path=settings_path, command=command)
+        else:
+            argv = _bubblewrap_argv(
+                sandbox_executable=_bubblewrap_executable()
+                if backend == "bubblewrap"
+                else _seatbelt_executable(),
+                workspace=workspace,
+                command=command,
+                backend=backend,
+                env=None,
+                network_mode=context.sandbox_network_mode,
+            )
+        process_kwargs: dict[str, Any] = {
+            "cwd": workspace,
+            "timeout_seconds": args.timeout_seconds,
+            "output_limit": output_limit,
+        }
+        if sandbox_temp_path is not None:
+            process_kwargs["env"] = {"TMPDIR": str(sandbox_temp_path)}
+        process = _run_bounded_process(argv, **process_kwargs)
+    finally:
+        if settings_path is not None:
+            settings_path.unlink(missing_ok=True)
+        if sandbox_temp is not None:
+            sandbox_temp.cleanup()
     status = (
         "timed_out"
         if process.timed_out
@@ -229,7 +288,7 @@ def exec_command(
         "timeout_seconds": args.timeout_seconds,
         "duration_ms": process.duration_ms,
         "cwd": ".",
-        "sandbox": "bubblewrap",
+        "sandbox": backend,
         "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
     }
 
@@ -240,15 +299,127 @@ def register_command_tools(registry: HarnessRegistry) -> HarnessRegistry:
     registry.register(
         name="exec_command",
         description=(
-            "Run a bounded Bash command inside this TaskFrame workspace. "
-            "The Bubblewrap sandbox has no network, exposes system directories "
-            "read-only, and mounts only this workspace as writable."
+            "Run a bounded Bash script, including multiple newline-separated "
+            "statements, inside this TaskFrame workspace. "
+            "The selected OS sandbox makes only this workspace writable and applies "
+            "the tenant's configured network policy."
         ),
         argument_model=ExecCommandArguments,
         handler=exec_command,
         side_effect="write",
     )
     return registry
+
+
+def run_sandboxed_process(
+    *,
+    workspace: Path,
+    argv: Sequence[str],
+    stdin_bytes: bytes = b"",
+    stdin_json: dict[str, Any] | None = None,
+    stdin_path_keys: tuple[str, ...] = (),
+    cwd: Path | None = None,
+    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+    output_limit: int = _DEFAULT_OUTPUT_BYTES,
+    network_mode: str = "all",
+    allowed_domains: tuple[str, ...] = (),
+    env: dict[str, str] | None = None,
+    env_path_keys: tuple[str, ...] = (),
+    is_cancelled: Callable[[], bool] | None = None,
+) -> _BoundedProcessResult:
+    """Run a fixed argv through the same OS sandbox as ``exec_command``."""
+    if not argv or any("\x00" in str(item) for item in argv):
+        raise HarnessExecutionError(
+            "INVALID_ARGUMENTS", "Sandbox argv cannot be empty or contain NUL bytes."
+        )
+    workspace = _prepare_workspace(
+        HarnessToolContext(run_id="sandbox-process", workspace_root=workspace)
+    )
+    if stdin_json is not None and stdin_bytes:
+        raise HarnessExecutionError("INVALID_ARGUMENTS", "Use stdin_json or stdin_bytes, not both.")
+    # ``argv`` is assembled by the trusted runner, not supplied by the model.
+    # Runtime interpreters and materialized scripts are intentionally absolute
+    # paths; shell command validation belongs to ``exec_command`` only.
+    backend = available_backend()
+    if backend is None:
+        try:
+            _bubblewrap_executable()
+        except HarnessExecutionError:
+            pass
+        else:
+            backend = "bubblewrap"
+    if backend is None:
+        backend = require_backend()
+    else:
+        ensure_backend_usable(backend)
+    execution = SandboxExecutionContext.create(workspace, backend)
+    process_argv = execution.map_argv([str(item) for item in argv])
+    process_env = execution.map_env(env, path_keys=env_path_keys)
+    host_cwd = execution.host_cwd(cwd)
+    if stdin_json is not None:
+        mapped_payload = execution.map_payload(stdin_json, path_keys=stdin_path_keys)
+        stdin_bytes = json.dumps(mapped_payload, ensure_ascii=False).encode("utf-8")
+    command = (
+        subprocess.list2cmdline(process_argv)
+        if sys.platform == "win32"
+        else shlex.join(process_argv)
+    )
+    settings_path: Path | None = None
+    sandbox_temp: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        if backend == "srt":
+            sandbox_temp = _create_srt_temp_directory()
+            sandbox_temp_path = Path(sandbox_temp.name)
+            process_env["TMPDIR"] = str(sandbox_temp_path)
+            settings_path = _write_srt_settings(
+                workspace,
+                network_mode=network_mode,
+                allowed_domains=allowed_domains,
+                sandbox_temp=sandbox_temp_path,
+            )
+            sandbox_argv = _srt_argv(settings_path=settings_path, command=command)
+        else:
+            runtime_roots: list[Path] = []
+            for item in argv:
+                candidate = Path(str(item))
+                if candidate.is_absolute() and candidate.exists():
+                    # Expose only the runtime installation containing a fixed
+                    # interpreter; the generated runner itself lives inside
+                    # the workspace and needs no extra mount.
+                    if candidate.name in {"python", "python3", "python.exe", "node", "node.exe"}:
+                        resolved_candidate = candidate.resolve()
+                        runtime_roots.extend(
+                            (candidate.parent.parent, resolved_candidate.parent.parent)
+                        )
+            sandbox_argv = _bubblewrap_argv(
+                sandbox_executable=(
+                    _bubblewrap_executable()
+                    if backend == "bubblewrap"
+                    else _seatbelt_executable()
+                ),
+                workspace=workspace,
+                command=command,
+                backend=backend,
+                env=process_env,
+                extra_readonly_paths=runtime_roots,
+                network_mode=network_mode,
+                sandbox_cwd=execution.sandbox_cwd(cwd),
+            )
+        process_kwargs: dict[str, Any] = {
+            "cwd": host_cwd,
+            "timeout_seconds": timeout_seconds,
+            "output_limit": output_limit,
+            "stdin_bytes": stdin_bytes,
+            "env": process_env,
+        }
+        if is_cancelled is not None:
+            process_kwargs["is_cancelled"] = is_cancelled
+        return _run_bounded_process(sandbox_argv, **process_kwargs)
+    finally:
+        if settings_path is not None:
+            settings_path.unlink(missing_ok=True)
+        if sandbox_temp is not None:
+            sandbox_temp.cleanup()
 
 
 def build_command_tool_registry() -> HarnessRegistry:
@@ -347,27 +518,220 @@ def _bubblewrap_executable() -> str:
     return str(path.resolve(strict=True))
 
 
+def _seatbelt_executable() -> str:
+    if sys.platform != "darwin":
+        raise HarnessExecutionError("SANDBOX_UNAVAILABLE", "Seatbelt is only available on macOS.")
+    executable = shutil.which("sandbox-exec")
+    if not executable or not Path(executable).is_file():
+        raise HarnessExecutionError("SANDBOX_UNAVAILABLE", "macOS sandbox-exec is unavailable.")
+    return str(Path(executable).resolve(strict=True))
+
+
+def _write_srt_settings(
+    workspace: Path,
+    *,
+    network_mode: str = "all",
+    allowed_domains: tuple[str, ...] = (),
+    sandbox_temp: Path | None = None,
+) -> Path:
+    if network_mode not in {"all", "allowlist", "deny"}:
+        raise HarnessExecutionError("SANDBOX_POLICY_INVALID", "Unknown sandbox network policy.")
+    if network_mode == "deny":
+        domains: list[str] = []
+    elif network_mode == "allowlist":
+        domains = [item.strip() for item in allowed_domains if item.strip()]
+    else:
+        if not _srt_supports_allow_all():
+            raise HarnessExecutionError(
+                "SANDBOX_POLICY_UNSUPPORTED",
+                "The installed SRT runtime cannot enforce unrestricted networking; "
+                "repair the bundled runtime.",
+            )
+        domains = []
+    network = {
+        "allowedDomains": domains,
+        "deniedDomains": ["*"] if network_mode == "deny" else [],
+        "strictAllowlist": True,
+        **({"allowAllDomains": True} if network_mode == "all" else {}),
+    }
+    protected_paths = ["~/.ssh", "~/.aws", "~/.config"]
+    # Protect the service's local persistence and data directory even when a
+    # generated skill guesses an absolute host path. Missing paths are safe
+    # for SRT to ignore, while existing SQLite sidecars are explicitly covered.
+    database_bases = [
+        Path.cwd() / "skill_agent_loop.db",
+        Path(__file__).resolve().parents[2] / "skill_agent_loop.db",
+    ]
+    configured_path = sqlite_database_path(get_settings().database_url)
+    if configured_path is not None:
+        database_bases.append(configured_path)
+    for base in database_bases:
+        for suffix in ("", "-wal", "-shm", "-journal", ".bak"):
+            protected_paths.append(str(base) + suffix)
+    from app import paths
+
+    data_root = paths.user_data_dir().resolve()
+    # SRT read rules deliberately let allowRead override denyRead. Deny the
+    # complete data tree so sibling TaskFrames and service state stay hidden,
+    # then carve the current workspace back out below.
+    protected_paths.append(str(data_root))
+    protected_paths.extend(
+        str(path)
+        for path in (
+            data_root / "logs",
+            data_root / "network.json",
+            data_root / "connector-locks",
+        )
+    )
+    allow_read = [str(workspace.resolve())]
+    allow_write = ["."]
+    if sandbox_temp is not None:
+        resolved_temp = str(sandbox_temp.resolve(strict=True))
+        allow_read.append(resolved_temp)
+        allow_write.append(resolved_temp)
+    settings = json.dumps(
+        {
+            "filesystem": {
+                "denyRead": protected_paths,
+                "allowRead": allow_read,
+                "allowWrite": allow_write,
+                "denyWrite": [],
+            },
+            "network": network,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", prefix="staffdeck-srt-", suffix=".json", delete=False
+    ) as handle:
+        handle.write(settings)
+        handle.flush()
+    return Path(handle.name)
+
+
+def _create_srt_temp_directory() -> tempfile.TemporaryDirectory[str]:
+    try:
+        # Keep the prefix short because SRT appends Unix-domain socket names;
+        # Linux limits the complete socket path to roughly 108 bytes.
+        return tempfile.TemporaryDirectory(prefix="sd-", ignore_cleanup_errors=True)
+    except OSError as exc:
+        raise HarnessExecutionError(
+            "SANDBOX_TEMP_UNAVAILABLE",
+            "SRT 无法创建临时运行目录，请检查主机临时目录权限和可用空间。",
+            details={"exception_type": type(exc).__name__},
+        ) from exc
+
+
+def _srt_supports_allow_all() -> bool:
+    resolved = resolve_srt()
+    if resolved is None:
+        return False
+    marker = "staffdeck-allow-all-domains-patch-v1"
+    manager_path = resolved[1].parent / "sandbox" / "sandbox-manager.js"
+    config_path = resolved[1].parent / "sandbox" / "sandbox-config.js"
+    try:
+        return marker in manager_path.read_text(
+            encoding="utf-8"
+        ) and marker in config_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+def _srt_argv(*, settings_path: Path, command: str) -> list[str]:
+    resolved = resolve_srt()
+    if resolved is None:
+        raise HarnessExecutionError("SANDBOX_UNAVAILABLE", "SRT executable is unavailable.")
+    node, cli = resolved
+    if sys.platform == "win32":
+        shell = os.environ.get("ComSpec") or "cmd.exe"
+        shell_args = [shell, "/d", "/s", "/c", command]
+    else:
+        shell_args = [_BASH_PATH, "--noprofile", "--norc", "-c", command]
+    return [
+        str(node),
+        str(cli),
+        "--settings",
+        str(settings_path),
+        *shell_args,
+    ]
+
+
 def _bubblewrap_argv(
     *,
     sandbox_executable: str,
     workspace: Path,
     command: str,
+    backend: str = "bubblewrap",
+    env: dict[str, str] | None = None,
+    extra_readonly_paths: Sequence[Path] = (),
+    network_mode: str = "deny",
+    sandbox_cwd: str = SANDBOX_WORKSPACE,
 ) -> list[str]:
+    if network_mode not in {"all", "allowlist", "deny"}:
+        raise HarnessExecutionError("SANDBOX_POLICY_INVALID", "Unknown sandbox network policy.")
+    if backend == "seatbelt":
+        if network_mode == "allowlist":
+            raise HarnessExecutionError(
+                "SANDBOX_POLICY_UNSUPPORTED",
+                "macOS Seatbelt does not support domain allowlists; "
+                "SRT is required for this policy.",
+            )
+        # Deny by default, keep the task workspace writable, and permit only
+        # read access to the system runtime needed by basic shell commands.
+        profile = (
+            "(version 1) (deny default) "
+            "(allow process*) (allow sysctl-read) "
+            f'(allow file-read* (subpath "/usr")) '
+            f'(allow file-read* (subpath "/bin")) '
+            f'(allow file-read* (subpath "/private/etc")) '
+            f'(allow file-read* (subpath "{workspace}")) '
+            f'(allow file-write* (subpath "{workspace}")) '
+            + ("(deny network*)" if network_mode == "deny" else "(allow network*)")
+        )
+        for raw_path in dict.fromkeys(str(path.resolve()) for path in extra_readonly_paths):
+            path = Path(raw_path)
+            if path.is_dir() and path != workspace and not path.is_relative_to(workspace):
+                profile += f' (allow file-read* (subpath "{raw_path}"))'
+        return [
+            _seatbelt_executable(),
+            "-p",
+            profile,
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            command,
+        ]
     argv = [
         sandbox_executable,
         "--die-with-parent",
         "--new-session",
-        "--unshare-all",
-        "--unshare-net",
+        "--unshare-user",
+        "--unshare-ipc",
+        "--unshare-pid",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
         "--cap-drop",
         "ALL",
         "--clearenv",
     ]
+    if network_mode == "allowlist":
+        raise HarnessExecutionError(
+            "SANDBOX_POLICY_UNSUPPORTED",
+            "Bubblewrap cannot enforce domain allowlists; SRT is required for this policy.",
+        )
+    if network_mode == "deny":
+        argv.append("--unshare-net")
     for raw_path in _READ_ONLY_SYSTEM_PATHS:
         path = Path(raw_path)
         if path.is_symlink():
             argv.extend(("--symlink", os.readlink(path), raw_path))
         elif path.exists():
+            argv.extend(("--ro-bind", raw_path, raw_path))
+    for raw_path in dict.fromkeys(str(path.resolve()) for path in extra_readonly_paths):
+        path = Path(raw_path)
+        if path.is_dir() and path != workspace and not path.is_relative_to(workspace):
             argv.extend(("--ro-bind", raw_path, raw_path))
     argv.extend(
         (
@@ -376,25 +740,25 @@ def _bubblewrap_argv(
             "--dev",
             "/dev",
             "--dir",
-            _SANDBOX_WORKSPACE,
+            SANDBOX_WORKSPACE,
             "--bind",
             str(workspace),
-            _SANDBOX_WORKSPACE,
+            SANDBOX_WORKSPACE,
             # Bubblewrap's root is otherwise an anonymous tmpfs. Remount only
             # that mount read-only; the nested workspace bind remains writable.
             "--remount-ro",
             "/",
             "--chdir",
-            _SANDBOX_WORKSPACE,
+            sandbox_cwd,
             "--setenv",
             "HOME",
-            _SANDBOX_WORKSPACE,
+            SANDBOX_WORKSPACE,
             "--setenv",
             "PWD",
-            _SANDBOX_WORKSPACE,
+            sandbox_cwd,
             "--setenv",
             "TMPDIR",
-            _SANDBOX_WORKSPACE,
+            SANDBOX_WORKSPACE,
             "--setenv",
             "PATH",
             _SANDBOX_PATH,
@@ -404,14 +768,20 @@ def _bubblewrap_argv(
             "--setenv",
             "LC_ALL",
             "C.UTF-8",
-            "--",
-            _BASH_PATH,
-            "--noprofile",
-            "--norc",
-            "-c",
-            command,
         )
     )
+    allowed_env = {
+        key: value
+        for key, value in (env or {}).items()
+        if key in {
+            "ARGUMENTS", "QUERY", "SKILL_WORKSPACE", "ARTIFACT_DIR", "SKILL_SLUG", "SKILL_NAME",
+            "USER_ID", "SKILL_FILES_JSON", "SSL_CERT_FILE", "PIP_CERT",
+        }
+    }
+    for key, value in allowed_env.items():
+        if len(value) <= 16 * 1024:
+            argv.extend(("--setenv", key, value))
+    argv.extend(("--", _BASH_PATH, "--noprofile", "--norc", "-c", command))
     return argv
 
 
@@ -421,28 +791,49 @@ def _run_bounded_process(
     cwd: Path,
     timeout_seconds: float,
     output_limit: int,
+    stdin_bytes: bytes = b"",
+    env: dict[str, str] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> _BoundedProcessResult:
     started = time.monotonic()
-    process = subprocess.Popen(
-        list(argv),
-        cwd=str(cwd),
-        env={
-            "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-        },
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        close_fds=True,
-        start_new_session=True,
-    )
+    try:
+        managed_process = ManagedProcess.start(
+            argv,
+            cwd=str(cwd),
+            env={
+                "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+                **{
+                    key: value
+                    for key, value in (env or {}).items()
+                    if key in {
+                        "PATH", "HOME", "PWD", "TMPDIR", "LANG", "LC_ALL",
+                        "ARGUMENTS", "QUERY", "SKILL_WORKSPACE", "ARTIFACT_DIR", "SKILL_SLUG",
+                        "SKILL_NAME", "USER_ID", "SKILL_FILES_JSON", "SSL_CERT_FILE", "PIP_CERT",
+                    }
+                },
+            },
+            stdin=subprocess.PIPE if stdin_bytes else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+        )
+    except ManagedProcessError as exc:
+        raise HarnessExecutionError("COMMAND_START_FAILED", str(exc)) from exc
+    process = managed_process.process
     if process.stdout is None or process.stderr is None:
-        _terminate_process_group(process)
+        managed_process.close()
         raise HarnessExecutionError(
             "COMMAND_START_FAILED",
             "Sandbox process did not expose bounded output streams.",
         )
+    if stdin_bytes and process.stdin is not None:
+        try:
+            process.stdin.write(stdin_bytes)
+            process.stdin.close()
+        except OSError:
+            process.stdin.close()
 
     budget = _CaptureBudget(limit=max(1, output_limit))
     stdout_capture = _StreamCapture()
@@ -464,21 +855,33 @@ def _run_bounded_process(
 
     timed_out = False
     try:
-        process.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _terminate_process_group(process)
-        try:
-            process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired as exc:
-            process.kill()
-            raise HarnessExecutionError(
-                "COMMAND_TERMINATION_FAILED",
-                "Timed-out sandbox process could not be terminated.",
-            ) from exc
+        deadline = time.monotonic() + timeout_seconds
+        while process.poll() is None:
+            if callable(is_cancelled) and is_cancelled():
+                managed_process.close()
+                raise HarnessExecutionError(
+                    "SANDBOX_EXECUTION_CANCELLED",
+                    "Sandbox execution was cancelled.",
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                managed_process.close()
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired as exc:
+                    process.kill()
+                    raise HarnessExecutionError(
+                        "COMMAND_TERMINATION_FAILED",
+                        "Timed-out sandbox process could not be terminated.",
+                    ) from exc
+                break
+            try:
+                process.wait(timeout=min(0.05, remaining))
+            except subprocess.TimeoutExpired:
+                continue
     finally:
-        if process.poll() is not None:
-            _terminate_process_group(process)
+        managed_process.close()
         for thread in threads:
             thread.join(timeout=2.0)
         for stream, thread in zip((process.stdout, process.stderr), threads, strict=True):
@@ -514,21 +917,13 @@ def _drain_stream(
         return
 
 
-def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        if process.poll() is None:
-            process.kill()
-
-
 def _validate_command(command: str) -> None:
     if not command or not command.strip():
         raise _command_denied("Command cannot be empty.")
     if "\x00" in command:
         raise _command_denied("Command cannot contain a null byte.")
-    if "\n" in command or "\r" in command:
-        raise _command_denied("Multiline shell programs are not allowed.")
+    if "\r" in command:
+        raise _command_denied("Carriage returns are not allowed in shell programs.")
     if "$" in command or "`" in command:
         raise _command_denied("Shell expansion and command substitution are not allowed.")
     if "<(" in command or ">(" in command:

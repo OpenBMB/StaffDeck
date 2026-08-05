@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import importlib
+import ipaddress
 import json
 import logging
 import os
@@ -11,10 +13,14 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from urllib.parse import urlsplit
+
+from app.version import app_version
 
 APP_NAME = "StaffDeck"
 APP_ID = "ai.staffdeck.desktop"
-APP_VERSION = "0.1.0"
+APP_VERSION = app_version()
+NETWORK_MODES = {"local", "lan", "public"}
 DEFAULT_PORT_RANGE_START = 5173
 DEFAULT_PORT_RANGE_END = 5199
 _MACOS_DELEGATE_REF = None
@@ -28,7 +34,124 @@ def build_server_config() -> dict:
         "app": "single_port_app:app",
         "host": host,
         "port": find_available_port(host),
+        "public_url": os.environ.get("STAFFDECK_PUBLIC_URL", "").strip(),
     }
+
+
+def _network_config_path() -> Path:
+    return Path(user_data_dir()) / "network.json"
+
+
+def user_data_dir() -> Path:
+    from app import paths
+
+    return paths.user_data_dir()
+
+
+def _load_network_config() -> dict[str, str]:
+    try:
+        payload = json.loads(_network_config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_network_config(mode: str, host: str, port: int, public_url: str = "") -> Path:
+    if mode not in NETWORK_MODES:
+        raise ValueError(f"网络模式必须是 local、lan 或 public，当前为 {mode!r}")
+    if mode == "local":
+        host = "127.0.0.1"
+    elif mode in {"lan", "public"}:
+        host = "0.0.0.0"
+    if mode == "public" and not public_url:
+        raise ValueError("公网模式需要提供 --public-url，例如 https://staff.example.com")
+    path = _network_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"mode": mode, "host": host, "port": port, "public_url": public_url}, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _infer_public_url(port: int) -> str:
+    candidates: list[str] = []
+    try:
+        candidates.append(socket.gethostbyname(socket.gethostname()))
+    except OSError:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            candidates.append(sock.getsockname()[0])
+    except OSError:
+        pass
+    for host in candidates:
+        if not host:
+            continue
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            continue
+        if ip.is_loopback or ip.is_unspecified:
+            continue
+        return f"http://{host}:{port}"
+    return ""
+
+
+def _apply_network_config(argv: list[str]) -> list[str]:
+    """Apply persisted/CLI network settings before importing the ASGI app."""
+    saved = _load_network_config()
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--mode", choices=sorted(NETWORK_MODES))
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--public-url")
+    args, remaining = parser.parse_known_args(argv)
+    mode = args.mode or str(saved.get("mode") or "local")
+    host = args.host or os.environ.get("ULTRARAG_HOST") or str(
+        saved.get("host") or ("127.0.0.1" if mode == "local" else "0.0.0.0")
+    )
+    port = args.port or int(os.environ.get("ULTRARAG_PORT") or saved.get("port") or 5173)
+    public_url = args.public_url or os.environ.get("STAFFDECK_PUBLIC_URL") or str(
+        saved.get("public_url") or ""
+    )
+    if mode == "local":
+        host = "127.0.0.1"
+    elif args.mode and mode in {"lan", "public"} and not args.host:
+        host = "0.0.0.0"
+    os.environ["ULTRARAG_HOST"] = host
+    os.environ["ULTRARAG_PORT"] = str(port)
+    if public_url:
+        os.environ["STAFFDECK_PUBLIC_URL"] = public_url
+    return remaining
+
+
+def _setup_network(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="staffdeck setup", description="配置 StaffDeck 网络访问方式")
+    parser.add_argument("--mode", choices=sorted(NETWORK_MODES), help="local、lan 或 public")
+    parser.add_argument("--port", type=int, default=5173)
+    parser.add_argument("--public-url", default="")
+    args = parser.parse_args(argv)
+    mode = args.mode
+    if not mode:
+        if not sys.stdin.isatty():
+            raise SystemExit("无头环境请使用 staffdeck setup --mode local|lan|public")
+        print("选择网络模式：1) 本机  2) 局域网  3) 公网")
+        mode = {"1": "local", "2": "lan", "3": "public"}.get(input("请选择 [1]: ").strip() or "1")
+        if not mode:
+            raise SystemExit("无效的网络模式")
+    public_url = args.public_url.strip()
+    if mode == "public" and not public_url:
+        public_url = _infer_public_url(args.port)
+        if not public_url and not sys.stdin.isatty():
+            raise SystemExit("公网模式必须提供 --public-url")
+        if not public_url:
+            public_url = input("请输入公网 URL（例如 https://staff.example.com）：").strip()
+    path = _save_network_config(mode, "", args.port, public_url)
+    print(f"已保存网络模式：{mode}，配置文件：{path}")
+    return 0
 
 
 def _redirect_logs_when_frozen() -> None:
@@ -49,11 +172,12 @@ def apply_runtime_env(cfg: dict | None = None) -> None:
         assert "app.config" not in sys.modules, "apply_runtime_env 必须在 import app.* 之前调用"
 
     cfg = cfg or build_server_config()
-    origin = f"http://{cfg['host']}:{cfg['port']}"
-    os.environ.setdefault("TOOL_BASE_URL", origin)
+    local_origin = f"http://{('127.0.0.1' if cfg['host'] == '0.0.0.0' else cfg['host'])}:{cfg['port']}"
+    origin = cfg.get("public_url") or local_origin
+    os.environ.setdefault("TOOL_BASE_URL", local_origin)
     existing_cors = os.environ.get("CORS_ORIGINS", "")
-    if origin not in existing_cors:
-        os.environ["CORS_ORIGINS"] = ",".join(filter(None, [existing_cors, origin]))
+    origins = [item for item in (existing_cors, local_origin, origin) if item]
+    os.environ["CORS_ORIGINS"] = ",".join(dict.fromkeys(",".join(origins).split(",")))
 
     # frozen 态把 .env 指向用户数据目录（不存在则 pydantic 不加载），避免误加载启动 cwd 的陌生 .env
     if getattr(sys, "frozen", False):
@@ -186,9 +310,26 @@ def _open_browser_when_ready(url: str) -> None:
 
 
 def _open_browser(target: str) -> None:
-    """打开浏览器页面。点 Dock 图标每次都开一个新标签——最稳定、跨浏览器一致、
-    不依赖 macOS 自动化授权（adhoc 签名下自动化授权弹窗不可靠）。"""
+    """Open StaffDeck in the system browser on platforms without an embedded window."""
     webbrowser.open(target)
+
+
+def _is_external_web_url(target: str, local_url: str) -> bool:
+    """Return whether a web URL should leave the embedded StaffDeck window."""
+    target_parts = urlsplit(target)
+    local_parts = urlsplit(local_url)
+    if target_parts.scheme not in {"http", "https"} or not target_parts.hostname:
+        return False
+    try:
+        target_port = target_parts.port or (443 if target_parts.scheme == "https" else 80)
+        local_port = local_parts.port or (443 if local_parts.scheme == "https" else 80)
+    except ValueError:
+        return False
+    return (target_parts.scheme, target_parts.hostname, target_port) != (
+        local_parts.scheme,
+        local_parts.hostname,
+        local_port,
+    )
 
 
 def _four_char_code(value: str) -> int:
@@ -199,8 +340,9 @@ def _four_char_code(value: str) -> int:
 
 
 def _use_macos_dock_app() -> bool:
-    # 仅 macOS 打包态用 Cocoa 壳（进 Dock + 点图标开页面）。
-    # 开发态 / 其它平台保持简单主线程 uvicorn。
+    if _env_flag("STAFFDECK_HEADLESS"):
+        return False
+    # 仅 macOS 打包态用 Cocoa 壳和内嵌 WebView。
     return sys.platform == "darwin" and getattr(sys, "frozen", False)
 
 
@@ -252,9 +394,41 @@ def preload_server_app(cfg: dict) -> None:
     cfg["app"] = getattr(module, attribute_name)
 
 
+def _create_macos_webview_window(AppKit, Foundation, WebKit, target: str):
+    """Create the native macOS window used by both arm64 and x86_64 bundles."""
+    style = (
+        AppKit.NSWindowStyleMaskTitled
+        | AppKit.NSWindowStyleMaskClosable
+        | AppKit.NSWindowStyleMaskMiniaturizable
+        | AppKit.NSWindowStyleMaskResizable
+    )
+    window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        AppKit.NSMakeRect(0, 0, 1280, 800),
+        style,
+        AppKit.NSBackingStoreBuffered,
+        False,
+    )
+    window.setTitle_(APP_NAME)
+    window.setMinSize_(AppKit.NSMakeSize(900, 600))
+    window.setReleasedWhenClosed_(False)
+    window.center()
+
+    webview = WebKit.WKWebView.alloc().initWithFrame_(window.contentView().bounds())
+    webview.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+    page_url = Foundation.NSURL.URLWithString_(target)
+    if page_url is None:
+        raise RuntimeError(f"Invalid StaffDeck window URL: {target!r}")
+    webview.loadRequest_(Foundation.NSURLRequest.requestWithURL_(page_url))
+    window.setContentView_(webview)
+    window.makeKeyAndOrderFront_(None)
+    return window, webview
+
+
 def _run_macos_dock_app(cfg: dict, url: str) -> int:
-    """macOS：NSApplication 主循环。进 Dock/菜单栏，点入口重新打开浏览器。"""
+    """Run the local service behind a native WKWebView window on macOS."""
     import AppKit
+    import Foundation
+    import WebKit
     from PyObjCTools import AppHelper
 
     global _MACOS_DELEGATE_REF
@@ -268,25 +442,44 @@ def _run_macos_dock_app(cfg: dict, url: str) -> int:
             image.setSize_((point_size, point_size))
         return image
 
+    class WebViewNavigationDelegate(AppKit.NSObject):
+        def webView_decidePolicyForNavigationAction_decisionHandler_(  # noqa: N802
+            self,
+            _webview,
+            navigation_action,
+            decision_handler,
+        ):
+            request_url = navigation_action.request().URL()
+            target = str(request_url.absoluteString()) if request_url is not None else ""
+            if _is_external_web_url(target, url):
+                _open_browser(target)
+                decision_handler(WebKit.WKNavigationActionPolicyCancel)
+                return
+            decision_handler(WebKit.WKNavigationActionPolicyAllow)
+
     class AppDelegate(AppKit.NSObject):
         def applicationDidFinishLaunching_(self, _notification):  # noqa: N802
             self.dock_visible = True
             self.server_started = False
+            self.main_window = None
+            self.main_webview = None
             self._install_url_scheme_handler()
             self._install_status_menu()
             self._start_server()
-            print(f"{APP_NAME} 启动中，就绪后将打开：{url}/chat/")
+            print(f"{APP_NAME} 启动中，就绪后将显示应用窗口：{url}/chat/")
 
         def handleGetURLEvent_withReplyEvent_(self, event, _reply_event):  # noqa: N802
             direct_object = event.descriptorForKeyword_(_four_char_code("----"))
             deep_link = direct_object.stringValue() if direct_object is not None else ""
             print(f"收到 {APP_NAME} URL Scheme 唤起：{deep_link or '<empty>'}")
-            threading.Thread(target=_open_browser_when_ready, args=(url,), daemon=True).start()
+            self._show_window_when_ready()
 
         def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _flag):  # noqa: N802
-            # 点 Dock 图标（app 已在运行）→ 打开浏览器页面（新标签）
-            _open_browser(url + "/chat/")
+            self.showMainWindow_(url + "/chat/")
             return True
+
+        def applicationShouldTerminateAfterLastWindowClosed_(self, _app):
+            return False
 
         def applicationShouldTerminate_(self, _app):  # noqa: N802
             return AppKit.NSTerminateNow
@@ -297,7 +490,21 @@ def _run_macos_dock_app(cfg: dict, url: str) -> int:
             return self.dock_context_menu
 
         def openStaffDeck_(self, _sender):  # noqa: N802
-            _open_browser(url + "/chat/")
+            self.showMainWindow_(url + "/chat/")
+
+        def showMainWindow_(self, target):
+            if self.main_window is None:
+                self.main_window, self.main_webview = _create_macos_webview_window(
+                    AppKit,
+                    Foundation,
+                    WebKit,
+                    str(target),
+                )
+                self.webview_navigation_delegate = WebViewNavigationDelegate.alloc().init()
+                self.main_webview.setNavigationDelegate_(self.webview_navigation_delegate)
+            else:
+                self.main_window.makeKeyAndOrderFront_(None)
+            AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
         def restartStaffDeck_(self, _sender):  # noqa: N802
             os.execv(sys.executable, [sys.executable] + sys.argv[1:])
@@ -333,7 +540,17 @@ def _run_macos_dock_app(cfg: dict, url: str) -> int:
             # uvicorn 在后台线程跑（主线程要留给 Cocoa 事件循环）。这里必须等
             # NSApplication 完成注册后再启动，避免 LaunchServices 初始化竞态导致 abort。
             threading.Thread(target=_serve, args=(cfg,), daemon=True).start()
-            threading.Thread(target=_open_browser_when_ready, args=(url,), daemon=True).start()
+            self._show_window_when_ready()
+
+        def _show_window_when_ready(self) -> None:
+            def wait_and_show() -> None:
+                for _ in range(120):
+                    if _health_ok(url):
+                        AppHelper.callAfter(self.showMainWindow_, url + "/chat/")
+                        return
+                    time.sleep(0.5)
+
+            threading.Thread(target=wait_and_show, daemon=True).start()
 
         def _install_url_scheme_handler(self) -> None:
             manager = AppKit.NSAppleEventManager.sharedAppleEventManager()
@@ -569,6 +786,10 @@ def _run_windows_taskbar_app(cfg: dict, url: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args and raw_args[0] == "setup":
+        return _setup_network(raw_args[1:])
+    _apply_network_config(raw_args)
     _redirect_logs_when_frozen()
 
     host = os.environ.get("ULTRARAG_HOST", "127.0.0.1")
@@ -590,7 +811,7 @@ def main(argv: list[str] | None = None) -> int:
     # 时序：先选定端口并设 env，再 import uvicorn / 触发 app.* import。
     cfg = build_server_config()
     apply_runtime_env(cfg)
-    url = f"http://{cfg['host']}:{cfg['port']}"
+    url = cfg.get("public_url") or f"http://{cfg['host']}:{cfg['port']}"
     preload_server_app(cfg)
 
     if _use_macos_dock_app():

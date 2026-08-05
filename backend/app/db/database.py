@@ -1,31 +1,19 @@
-from collections.abc import Callable, Generator
-from contextlib import contextmanager
 import hashlib
 import json
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import unquote
 
 from sqlalchemy import Engine, inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
+from app.db.database_path import normalize_database_url
 
 
 def _normalize_database_url(url: str) -> str:
-    if not url.startswith("sqlite:///") or url.startswith("sqlite:////") or url == "sqlite:///:memory:":
-        return url
-
-    raw_path = unquote(url.removeprefix("sqlite:///"))
-    if not raw_path or raw_path == ":memory:":
-        return url
-
-    path = Path(raw_path)
-    if path.is_absolute():
-        return url
-
-    from app import paths
-    base_dir = paths.user_data_dir() if paths.is_frozen() else Path(__file__).resolve().parents[2]
-    return f"sqlite:///{(base_dir / path).resolve()}"
+    """Backward-compatible import seam for callers and migration tests."""
+    return normalize_database_url(url)
 
 
 settings = get_settings()
@@ -244,7 +232,24 @@ def _migrate_sqlite_skill_schema() -> None:
                 )
             if "agent_loop_max_actions" not in ui_columns:
                 conn.execute(
-                    text("ALTER TABLE ui_configs ADD COLUMN agent_loop_max_actions INTEGER NOT NULL DEFAULT 32")
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN agent_loop_max_actions "
+                        "INTEGER NOT NULL DEFAULT 32"
+                    )
+                )
+            if "sandbox_network_mode" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN sandbox_network_mode "
+                        "VARCHAR(32) NOT NULL DEFAULT 'all'"
+                    )
+                )
+            if "sandbox_allowed_domains" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN sandbox_allowed_domains "
+                        "JSON NOT NULL DEFAULT '[]'"
+                    )
                 )
 
         if "skill_feedback" in tables:

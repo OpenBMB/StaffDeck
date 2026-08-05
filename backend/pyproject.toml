@@ -14,6 +14,7 @@ dependencies = [
   "lark-channel-sdk==1.2.0",
   "httpx>=0.27.0",
   "openai>=1.40.0",
+  "packaging>=24.0",
   "beautifulsoup4>=4.12.3",
   "pydantic>=2.7.0",
   "pydantic-settings>=2.3.0",
@@ -38,7 +39,9 @@ dev = [
 ]
 packaging = [
   "pyinstaller>=6.6.0",
-  "certifi>=2024.2.2"
+  "certifi>=2024.2.2",
+  "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+  "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'"
 ]
 
 [build-system]

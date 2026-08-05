@@ -20,10 +20,13 @@ class Settings(BaseSettings):
     general_skill_runtime_python: str = ""
     general_skill_runtime_venv: str = ""
     general_skill_runtime_packages: str = "requests,httpx"
+    # Keep runtime dependency installation enabled so published skills can
+    # provision their declared baseline libraries on first use. Deployments
+    # can still disable it explicitly for locked-down environments.
     general_skill_runtime_auto_install: bool = True
     general_skill_pip_index_url: str = ""
     general_skill_pip_timeout_seconds: int = 180
-    general_skill_network_install: bool = False
+    general_skill_network_install: bool = True
     channel_secret: str = ""
     staffdeck_role: str = "all"
     wechat_ilink_base_url: str = "https://ilinkai.weixin.qq.com"

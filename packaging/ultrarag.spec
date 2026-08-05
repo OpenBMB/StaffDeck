@@ -1,6 +1,7 @@
 # packaging/ultrarag.spec
 # 运行：cd backend && pyinstaller ../packaging/ultrarag.spec --noconfirm
 import os
+import re
 import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
@@ -14,7 +15,16 @@ ICO = ASSETS / "staffdeck.ico"
 assert DIST.exists(), "先构建前端：npm --prefix frontend-enterprise run build"
 
 RAW_VERSION = os.environ.get("VERSION", "0.1.0").strip() or "0.1.0"
-BUNDLE_VERSION = RAW_VERSION[1:] if RAW_VERSION.startswith("v") else RAW_VERSION
+if not re.fullmatch(
+    r"[vV]?\d+(?:\.\d+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+    RAW_VERSION,
+):
+    raise ValueError(f"VERSION must be a valid StaffDeck version, got: {RAW_VERSION!r}")
+BUNDLE_VERSION = RAW_VERSION[1:] if RAW_VERSION[:1].lower() == "v" else RAW_VERSION
+VERSION_FILE = REPO / "packaging" / "build" / "staffdeck-version.txt"
+VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+VERSION_FILE.write_text(BUNDLE_VERSION + "\n", encoding="utf-8")
 
 # 平台图标：macOS 用 .icns，Windows 用 .ico，Linux(EXE) 不用
 _exe_icon = None
@@ -23,6 +33,7 @@ if sys.platform == "win32" and ICO.exists():
 
 datas = [
     (str(DIST), "frontend-enterprise/dist"),
+    (str(VERSION_FILE), "."),
     (str(ASSETS / "staffdeck.png"), "packaging/assets"),
     (str(BACKEND / "app" / "llm" / "prompts"), "app/llm/prompts"),
     (str(BACKEND / "app" / "db" / "seed_fixtures"), "app/db/seed_fixtures"),
@@ -51,7 +62,7 @@ hiddenimports = (
 # macOS：Dock/菜单栏壳需要 pyobjc（AppKit + PyObjCTools）
 if sys.platform == "darwin":
     hiddenimports = hiddenimports + collect_submodules("objc") + [
-        "AppKit", "Foundation", "PyObjCTools", "PyObjCTools.AppHelper",
+        "AppKit", "Foundation", "WebKit", "PyObjCTools", "PyObjCTools.AppHelper",
     ]
 
 a = Analysis(
@@ -69,11 +80,13 @@ pyz = PYZ(a.pure)
 # console=False：作为 GUI app 常驻 Dock（console=True 会加 LSBackgroundOnly 变纯后台不进 Dock）。
 # 日志由 launcher 重定向到用户数据目录，启动问题可查文件。
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="staffdeck",
-          console=False, disable_windowed_traceback=False, icon=_exe_icon)
+          # Linux users need to run `staffdeck setup` from a headless terminal;
+          # macOS/Windows retain their desktop-shell behavior.
+          console=sys.platform == "linux", disable_windowed_traceback=False, icon=_exe_icon)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="staffdeck")
 
 # macOS：额外产出标准 .app bundle（PyInstaller 正确处理 Contents/Frameworks 布局）。
-# 附带 python runtime 由 build 脚本在打包后拷进 .app/Contents/MacOS/runtime。
+# 附带 Python 与 SRT runtime 由 build 脚本在打包后拷进 .app/Contents/Resources。
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
@@ -94,6 +107,7 @@ if sys.platform == "darwin":
                 },
             ],
             "NSHighResolutionCapable": True,
+            "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
             # 显式声明为常规 GUI app：进 Dock、可激活（非后台/非 agent）
             "LSBackgroundOnly": False,
             "LSUIElement": False,

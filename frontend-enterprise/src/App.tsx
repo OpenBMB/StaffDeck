@@ -23,6 +23,7 @@ import QuickStartGuide, {
   QUICK_START_COMPLETED_EVENT,
   QUICK_START_SEEN_KEY,
 } from "./components/QuickStartGuide";
+import UpdateReminder from "./components/UpdateReminder";
 import StaffdeckIcon from "./components/StaffdeckIcon";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { EnterpriseRoute } from "./enums/routes";
@@ -51,7 +52,9 @@ import GeneralSkillsPage, {
 import KnowledgeManagePage, { KnowledgeAddPage } from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import ModelsPage from "./pages/ModelsPage";
+import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
+import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
 import {
   ScheduledTaskEditPage,
@@ -119,9 +122,11 @@ const EMPTY_AGENT_FORM: AgentCreateFormState = {
 function Shell({
   auth,
   onLogout,
+  guidesCompleted,
 }: {
   auth: EnterpriseAuthSession;
   onLogout: () => void;
+  guidesCompleted: boolean;
 }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -140,10 +145,6 @@ function Shell({
     useState<AgentCreateFormState>(EMPTY_AGENT_FORM);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [modelConfigsLoaded, setModelConfigsLoaded] = useState(false);
-  const [guidesCompleted, setGuidesCompleted] = useState(() => Boolean(
-    window.localStorage.getItem(ONBOARDING_SEEN_KEY)
-    && window.localStorage.getItem(QUICK_START_SEEN_KEY),
-  ));
   const isMobile = useIsMobile();
   const isAdmin = isEnterpriseAdmin(auth.user);
   const accountRoleLabel = isAdmin ? "管理员" : "";
@@ -214,12 +215,6 @@ function Shell({
     window.addEventListener(MODEL_CONFIGS_UPDATED_EVENT, onModelConfigsUpdated);
     return () => window.removeEventListener(MODEL_CONFIGS_UPDATED_EVENT, onModelConfigsUpdated);
   }, [loadModelConfigs]);
-
-  useEffect(() => {
-    const onQuickStartCompleted = () => setGuidesCompleted(true);
-    window.addEventListener(QUICK_START_COMPLETED_EVENT, onQuickStartCompleted);
-    return () => window.removeEventListener(QUICK_START_COMPLETED_EVENT, onQuickStartCompleted);
-  }, []);
 
   // Auto-collapse the sidebar on small screens; restore the saved preference on desktop.
   useEffect(() => {
@@ -703,6 +698,16 @@ function Shell({
                 }
               />
               <Route
+                path="/enterprise/runtime-settings"
+                element={
+                  isAdmin ? (
+                    <RuntimeSettingsPage />
+                  ) : (
+                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                  )
+                }
+              />
+              <Route
                 path="/enterprise/tools"
                 element={
                   <ToolsPage currentUser={auth.user} onLogout={onLogout} />
@@ -746,7 +751,7 @@ function Shell({
               />
               <Route
                 path="/enterprise/persona"
-                element={<Navigate to="/enterprise/dashboard" replace />}
+                element={<PersonaPage />}
               />
               <Route
                 path="*"
@@ -900,9 +905,11 @@ function Shell({
 function AuthedApp({
   auth,
   onLogout,
+  guidesCompleted,
 }: {
   auth: EnterpriseAuthSession;
   onLogout: () => void;
+  guidesCompleted: boolean;
 }) {
   const location = useLocation();
   if (location.pathname === "/") {
@@ -947,7 +954,7 @@ function AuthedApp({
       </Routes>
     );
   }
-  return <Shell auth={auth} onLogout={onLogout} />;
+  return <Shell auth={auth} onLogout={onLogout} guidesCompleted={guidesCompleted} />;
 }
 
 export default function App() {
@@ -958,6 +965,16 @@ export default function App() {
     getEnterpriseAuthSession(),
   );
   const [authChecked, setAuthChecked] = useState(() => !auth?.token);
+  const [guidesCompleted, setGuidesCompleted] = useState(() => Boolean(
+    window.localStorage.getItem(ONBOARDING_SEEN_KEY)
+    && window.localStorage.getItem(QUICK_START_SEEN_KEY),
+  ));
+
+  useEffect(() => {
+    const onQuickStartCompleted = () => setGuidesCompleted(true);
+    window.addEventListener(QUICK_START_COMPLETED_EVENT, onQuickStartCompleted);
+    return () => window.removeEventListener(QUICK_START_COMPLETED_EVENT, onQuickStartCompleted);
+  }, []);
 
   useEffect(() => {
     if (!auth?.token) {
@@ -1001,7 +1018,11 @@ export default function App() {
             path="/*"
             element={
               auth && !authChecked ? null : auth ? (
-                <AuthedApp auth={auth} onLogout={logout} />
+                <AuthedApp
+                  auth={auth}
+                  onLogout={logout}
+                  guidesCompleted={guidesCompleted}
+                />
               ) : (
                 <LoginPage onLogin={setAuth} />
               )
@@ -1010,6 +1031,7 @@ export default function App() {
         </Routes>
         {auth && authChecked ? <OnboardingGuide /> : null}
         {auth && authChecked ? <QuickStartGuide isAdmin={isEnterpriseAdmin(auth.user)} /> : null}
+        {auth && authChecked ? <UpdateReminder enabled={guidesCompleted} /> : null}
       </BrowserRouter>
       <Toaster richColors closeButton position="top-center" />
     </TooltipProvider>

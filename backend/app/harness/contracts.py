@@ -47,6 +47,8 @@ class HarnessToolContext:
     task_frame_id: str | None = None
     tenant_id: str | None = None
     limits: HarnessLimits = field(default_factory=HarnessLimits)
+    sandbox_network_mode: Literal["all", "allowlist", "deny"] = "all"
+    sandbox_allowed_domains: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, str) or not self.run_id.strip():

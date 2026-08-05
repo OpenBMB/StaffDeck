@@ -10,6 +10,7 @@ const RETURN_BUTTON_CLASS =
   'h-8 gap-1 rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-5 text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]';
 
 import IconArrowRight from '../../assets/icons/arrow-right.svg?react';
+import IconAdd from '../../assets/icons/add.svg?react';
 import IconRefresh from '../../assets/icons/refresh.svg?react';
 import IconSearch from '../../assets/icons/search.svg?react';
 import plazaKnowledgeIcon from '../../assets/icons/plaza-knowledge.svg';
@@ -59,6 +60,7 @@ export type PlatformKindDetailViewProps = {
   employeeStats: (agent: AgentProfileRead) => PlatformStat[];
   onBack: () => void;
   onRefresh: () => void;
+  onCreate?: () => void;
   onOpenItem: (item: PlatformDetailItem) => void;
   onLogout?: () => void;
   userName?: string;
@@ -97,6 +99,7 @@ export default function PlatformKindDetailView({
   employeeStats,
   onBack,
   onRefresh,
+  onCreate,
   onOpenItem,
   onLogout,
   userName,
@@ -128,6 +131,12 @@ export default function PlatformKindDetailView({
           <IconArrowRight className="size-3.5 rotate-180" />
           返回开放广场
         </UIButton>
+        {onCreate && (
+          <UIButton onClick={onCreate} className="h-8 gap-1 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]">
+            <IconAdd className="size-3.5" />
+            创建开放 Skill
+          </UIButton>
+        )}
         <UIButton
           variant="outline"
           onClick={onRefresh}

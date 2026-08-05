@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import Column, Index, Integer, JSON, UniqueConstraint
+from sqlalchemy import JSON, Column, Index, Integer, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -581,6 +581,8 @@ class UIConfig(SQLModel, table=True):
     show_tool_trace: bool = True
     reflection_max_rounds: int = 1
     agent_loop_max_actions: int = 32
+    sandbox_network_mode: str = Field(default="all")
+    sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

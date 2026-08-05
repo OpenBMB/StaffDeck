@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import timedelta
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -67,6 +67,7 @@ from app.db.models import (
     utc_now,
 )
 from app.general_skills.schema import GeneralSkillRunResponse
+from app.harness.errors import HarnessExecutionError
 from app.scheduled_tasks.service import (
     _finish_task_schedule,
     _scheduled_harness_outcome,
@@ -1387,6 +1388,177 @@ def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
     assert trace_events[1][1]["phase"] == "plan_created"
     assert trace_events[1][1]["skill_slug"] == "weather"
     assert trace_events[2][1]["success"] is True
+
+
+def test_general_skill_harness_tool_preserves_structured_sandbox_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+
+    def fail_run(*_args, **_kwargs):
+        raise HarnessExecutionError(
+            "SANDBOX_POLICY_UNSUPPORTED",
+            "当前沙盒不支持域名白名单。",
+        )
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.GeneralSkillRunner.run",
+        fail_run,
+    )
+    skill = GeneralSkill(
+        id="general-sandbox-failure",
+        tenant_id="tenant-demo",
+        slug="sandbox-failure",
+        name="Sandbox Failure",
+        skill_markdown="# Sandbox Failure",
+        status="published",
+    )
+    descriptor = CapabilityDescriptor(
+        capability_id=skill.id,
+        name="general_skill.sandbox-failure",
+        kind="general_skill",
+        metadata={
+            "slug": skill.slug,
+            "content_digest": general_skill_snapshot_digest(skill),
+        },
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(skill)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(user_id="user-1"),
+            task_frame_id="task-sandbox-failure",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[descriptor]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        assert invoker._invoke_general_skill(
+            skill.id,
+            descriptor.metadata,
+            {"query": "run", "operation": "read"},
+        )["success"] is True
+        result = invoker._invoke_general_skill(
+            skill.id,
+            descriptor.metadata,
+            {"query": "run", "operation": "execute"},
+        )
+
+    assert result["success"] is False
+    assert result["error"] == {
+        "code": "SANDBOX_POLICY_UNSUPPORTED",
+        "message": "当前沙盒不支持域名白名单。",
+        "retryable": False,
+        "infrastructure_failure": True,
+    }
+
+
+def test_general_skill_harness_tool_publishes_valid_artifact_among_failures(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+
+    def fake_run(
+        _runner,
+        skill_snapshot,
+        _query,
+        _model_config,
+        _user_id,
+        *,
+        workspace_root,
+        **_kwargs,
+    ):
+        artifact_dir = workspace_root / "general_skill_mixed" / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "valid.txt").write_text("valid", encoding="utf-8")
+        source = workspace_root / "hardlink-source.txt"
+        source.write_text("private", encoding="utf-8")
+        try:
+            (artifact_dir / "hardlink.txt").hardlink_to(source)
+        except OSError:
+            pytest.skip("hard links are unavailable on this filesystem")
+        return GeneralSkillRunResponse(
+            skill_slug=skill_snapshot.slug,
+            operation="execute",
+            structured_result={
+                "success": True,
+                "artifacts": [
+                    {"path": "general_skill_mixed/artifacts/valid.txt"},
+                    {"path": "general_skill_mixed/artifacts/missing.txt"},
+                    {"path": "general_skill_mixed/artifacts/hardlink.txt"},
+                ],
+                "artifact_errors": [
+                    {
+                        "path": "/workspace/invalid.txt",
+                        "code": "artifact_declaration_invalid",
+                        "message": "invalid declaration",
+                    }
+                ],
+            },
+            reply="done",
+        )
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.GeneralSkillRunner.run",
+        fake_run,
+    )
+    skill = GeneralSkill(
+        id="general-mixed-artifacts",
+        tenant_id="tenant-demo",
+        slug="mixed-artifacts",
+        name="Mixed Artifacts",
+        skill_markdown="# Mixed Artifacts",
+        status="published",
+    )
+    descriptor = CapabilityDescriptor(
+        capability_id=skill.id,
+        name="general_skill.mixed-artifacts",
+        kind="general_skill",
+        metadata={
+            "slug": skill.slug,
+            "content_digest": general_skill_snapshot_digest(skill),
+        },
+    )
+    with Session(_test_engine()) as db:
+        db.add(skill)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(user_id="user-1"),
+            task_frame_id="task-mixed-artifacts",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[descriptor]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        assert invoker._invoke_general_skill(
+            skill.id,
+            descriptor.metadata,
+            {"query": "run", "operation": "read"},
+        )["success"] is True
+        result = invoker._invoke_general_skill(
+            skill.id,
+            descriptor.metadata,
+            {"query": "run", "operation": "execute"},
+        )
+
+    assert result["success"] is True
+    assert [item["path"] for item in result["artifacts"]] == [
+        "general_skill_mixed/artifacts/valid.txt"
+    ]
+    assert [item["code"] for item in result["data"]["artifact_errors"]] == [
+        "artifact_declaration_invalid",
+        "artifact_publish_failed",
+        "artifact_publish_failed",
+    ]
 
 
 def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import queue
 import threading
 import traceback
@@ -34,12 +35,12 @@ from app.core.conversation_context import build_conversation_context
 from app.core.harness_agent import HarnessExecutionCancelled
 from app.core.harness_session_lock import HarnessSessionBusy
 from app.core.harness_turn_store import HarnessTurnConflict
-from app.core.human_handoff_service import HumanHandoffService
 from app.core.harness_v2_engine import (
     HarnessV2Engine,
     _with_recoverable_first_session,
     get_or_create_harness_session,
 )
+from app.core.human_handoff_service import HumanHandoffService
 from app.core.legacy_conversation_projection import LegacyConversationProjection
 from app.core.legacy_general_skill_action import LegacyGeneralSkillAction
 from app.core.legacy_graph_rules import LegacyGraphRules
@@ -92,6 +93,8 @@ from app.db.models import (
 )
 from app.general_skills import GeneralSkillReader, GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import GeneralSkillRunResponse, GeneralSkillSelection
+from app.harness.errors import HarnessExecutionError
+from app.harness.sandbox import parse_network_policy
 from app.knowledge import KnowledgeService
 from app.knowledge.citations import (
     compact_knowledge_citation_labels,
@@ -124,6 +127,7 @@ STREAM_CHUNK_INTERVAL_SECONDS = 0.045
 DEFAULT_REFLECTION_MAX_ROUNDS = 1
 REFLECTION_MAX_ROUNDS_LIMIT = 5
 MAX_TOOL_ACTIONS_PER_TURN = 32
+MAX_TOOL_ACTIONS_PER_TURN_LIMIT = 100
 GRAPH_PENDING_STEPS_SLOT = "_graph_pending_steps"
 GENERAL_SKILL_TOOL_PREFIX = "general_skill."
 CANCELLED_ASSISTANT_REPLY = "已停止生成"
@@ -706,27 +710,73 @@ class AgentLoop:
         memory_context: list[dict[str, object]] | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> GeneralSkillRunResponse:
-        if operation == "read":
-            response = self.general_skill_reader.read(
+        try:
+            if operation == "read":
+                response = self.general_skill_reader.read(
+                    skill,
+                    query,
+                    model_config,
+                    conversation_context=conversation_context,
+                    memory_context=memory_context,
+                )
+                if event_sink:
+                    for item in response.execution_trace:
+                        event_sink(item)
+                return response
+            ui_config = self.db.get(UIConfig, skill.tenant_id)
+            sandbox_mode = parse_network_policy(
+                getattr(ui_config, "sandbox_network_mode", None) if ui_config else None
+            )
+            sandbox_domains = tuple(
+                str(item).strip()
+                for item in (getattr(ui_config, "sandbox_allowed_domains", []) if ui_config else [])
+                if str(item).strip()
+            )
+            run_kwargs = {
+                "event_sink": event_sink,
+                "conversation_context": conversation_context,
+                "memory_context": memory_context,
+                "sandbox_network_mode": sandbox_mode,
+                "sandbox_allowed_domains": sandbox_domains,
+            }
+            if "sandbox_network_mode" not in inspect.signature(self.general_skill_runner.run).parameters:
+                run_kwargs.pop("sandbox_network_mode")
+                run_kwargs.pop("sandbox_allowed_domains")
+            return self.general_skill_runner.run(
                 skill,
                 query,
                 model_config,
-                conversation_context=conversation_context,
-                memory_context=memory_context,
+                user_id,
+                **run_kwargs,
+            )
+        except HarnessExecutionError as exc:
+            # Sandbox startup/policy failures are infrastructure failures, not
+            # generated-code failures. Do not ask the reflection loop to retry
+            # the same code; return a structured, non-retryable tool result so
+            # the response model can explain the setup issue to the user.
+            code = str(exc.error.code or "SANDBOX_EXECUTION_FAILED")
+            message = str(exc.error.message or exc)
+            response = GeneralSkillRunResponse(
+                skill_slug=skill.slug,
+                operation=operation,
+                execution_trace=[
+                    {"phase": "sandbox_failed", "message": message, "error": code}
+                ],
+                generated_code="",
+                stdout="",
+                stderr=message,
+                structured_result={
+                    "success": False,
+                    "error": code,
+                    "message": message,
+                    "retryable": False,
+                    "infrastructure_failure": True,
+                },
+                reply="当前安全运行环境不可用，暂时无法执行该技能。",
             )
             if event_sink:
-                for item in response.execution_trace:
-                    event_sink(item)
+                event_sink(response.execution_trace[0])
             return response
-        return self.general_skill_runner.run(
-            skill,
-            query,
-            model_config,
-            user_id,
-            event_sink=event_sink,
-            conversation_context=conversation_context,
-            memory_context=memory_context,
-        )
 
     @staticmethod
     def _merge_capability_knowledge(
@@ -5268,7 +5318,7 @@ class AgentLoop:
             return MAX_TOOL_ACTIONS_PER_TURN
         row = self.db.get(UIConfig, tenant_id)
         value = row.agent_loop_max_actions if row else MAX_TOOL_ACTIONS_PER_TURN
-        return max(1, min(int(value), 100))
+        return max(1, min(int(value), MAX_TOOL_ACTIONS_PER_TURN_LIMIT))
 
     def _list_published_skills(self, tenant_id: str, agent_id: str | None = None) -> list[Skill]:
         return visible_published_skills(self.db, tenant_id, agent_id)

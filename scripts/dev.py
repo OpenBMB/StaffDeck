@@ -18,7 +18,6 @@ from pathlib import Path
 
 from process_utils import pid_alive
 
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
 RUN_DIR = ROOT_DIR / ".dev"
 LOG_DIR = RUN_DIR / "logs"
@@ -207,6 +206,29 @@ def _build_frontend() -> None:
     )
 
 
+def _ensure_sandbox_runtime() -> None:
+    runtime = ROOT_DIR / "packaging" / "sandbox_runtime"
+    cli = runtime / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
+    node = runtime / "bin" / ("node.exe" if sys.platform == "win32" else "node")
+    manager = cli.parent / "sandbox" / "sandbox-manager.js"
+    marker = "staffdeck-allow-all-domains-patch-v1"
+    try:
+        if node.is_file() and cli.is_file() and marker in manager.read_text(encoding="utf-8"):
+            return
+    except OSError:
+        pass
+    print("Preparing the reviewed StaffDeck sandbox runtime...")
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT_DIR / "packaging" / "fetch_sandbox_runtime.py"),
+            str(runtime),
+        ],
+        cwd=ROOT_DIR,
+        check=True,
+    )
+
+
 def _url_ready(url: str) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=2) as response:
@@ -270,6 +292,7 @@ def command_up(detach_flag: bool) -> int:
     os.environ.setdefault("AUTO_RESTART", "1" if detach else "0")
     supervisor = _load_supervisor()
     supervisor.validate_prerequisites()
+    _ensure_sandbox_runtime()
     stop_services(verbose=False)
     force_ports = _env_flag("FORCE_PORTS")
     if supervisor.SINGLE_PORT and not force_ports:

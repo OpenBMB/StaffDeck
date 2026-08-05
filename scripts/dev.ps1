@@ -15,11 +15,17 @@ $candidates = @(
   [pscustomobject]@{ File = "python"; Prefix = @() }
 )
 
+# Native commands below write to stderr on benign paths: `py -3.11` when that
+# runtime is absent, and vite build warnings relayed by dev.py. Under
+# $ErrorActionPreference = "Stop" those surface as a terminating
+# NativeCommandError, so rely on exit codes for the rest of the script.
+$ErrorActionPreference = "Continue"
+
 $python = $null
 foreach ($candidate in $candidates) {
   if (-not $candidate.File) { continue }
   if (-not (Get-Command $candidate.File -ErrorAction SilentlyContinue)) { continue }
-  & $candidate.File @($candidate.Prefix) -c "import sys; assert sys.version_info >= (3, 11)" 2>$null
+  & $candidate.File @($candidate.Prefix) -c "import sys; assert sys.version_info >= (3, 11)" 2>&1 | Out-Null
   if ($LASTEXITCODE -eq 0) {
     $python = $candidate
     break

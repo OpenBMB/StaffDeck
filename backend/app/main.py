@@ -6,6 +6,7 @@ from sqlmodel import Session
 
 from app.api import (
     agents,
+    app_updates,
     auth,
     channels,
     chat,
@@ -34,12 +35,13 @@ from app.public_api import create_public_api_app
 from app.public_api.jobs import cleanup_public_api_records, recover_public_jobs
 from app.public_api.webhooks import enqueue_due_webhook_deliveries
 from app.public_api.maintenance import start_public_api_maintenance, stop_public_api_maintenance
+from app.version import app_version
 
 settings = get_settings()
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version=app_version(),
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
@@ -81,6 +83,7 @@ def health() -> dict[str, str]:
     return {"status": "ok", "app": "StaffDeck"}
 
 
+app.include_router(app_updates.router)
 app.include_router(chat.router)
 app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)

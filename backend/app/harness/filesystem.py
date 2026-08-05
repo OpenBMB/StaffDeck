@@ -283,7 +283,8 @@ class _Workspace:
             directory_names[:] = [
                 name
                 for name in directory_names
-                if not (base / name).is_symlink()
+                if name != _TRASH_DIRECTORY
+                and not (base / name).is_symlink()
             ]
             for name in file_names:
                 path = base / name

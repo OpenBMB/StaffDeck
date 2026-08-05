@@ -318,6 +318,7 @@ def test_verification_runs_bounded_text_stream_and_json_probes(tmp_path, monkeyp
                 name="Chat",
                 api_key_encrypted=encrypt_secret("secret"),
                 model="model-a",
+                max_output_tokens=64,
                 trust_status="unverified",
                 enabled=False,
             )
@@ -333,7 +334,7 @@ def test_verification_runs_bounded_text_stream_and_json_probes(tmp_path, monkeyp
             ("text",),
             ("init", 32, 25.0),
             ("stream",),
-            ("init", 128, 35.0),
+            ("init", 64, 35.0),
             ("json",),
         ]
 

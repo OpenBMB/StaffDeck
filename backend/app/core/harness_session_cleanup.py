@@ -14,6 +14,7 @@ from app.db.models import (
     HarnessSessionLeaseRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
+    utc_now,
 )
 
 
@@ -24,6 +25,74 @@ class HarnessSessionRecordCleanup:
     invocation_count: int
     run_count: int
     task_frame_count: int
+
+
+def stage_harness_session_execution_reset(
+    db: Session,
+    *,
+    tenant_id: str,
+    session_id: str,
+) -> None:
+    """Cancel durable Harness execution state while preserving turn receipts."""
+    invocations = db.exec(
+        select(HarnessInvocationRecord).where(
+            HarnessInvocationRecord.tenant_id == tenant_id,
+            HarnessInvocationRecord.session_id == session_id,
+            HarnessInvocationRecord.status == "started",
+        )
+    ).all()
+    runs = db.exec(
+        select(HarnessRunRecord).where(
+            HarnessRunRecord.tenant_id == tenant_id,
+            HarnessRunRecord.session_id == session_id,
+            HarnessRunRecord.status == "running",
+        )
+    ).all()
+    task_frames = db.exec(
+        select(HarnessTaskFrameRecord).where(
+            HarnessTaskFrameRecord.tenant_id == tenant_id,
+            HarnessTaskFrameRecord.session_id == session_id,
+            HarnessTaskFrameRecord.status.notin_(
+                {"completed", "cancelled", "failed"}
+            ),
+        )
+    ).all()
+    turns = db.exec(
+        select(HarnessTurnRecord).where(
+            HarnessTurnRecord.tenant_id == tenant_id,
+            HarnessTurnRecord.session_id == session_id,
+            HarnessTurnRecord.status == "started",
+        )
+    ).all()
+    leases = db.exec(
+        select(HarnessSessionLeaseRecord).where(
+            HarnessSessionLeaseRecord.tenant_id == tenant_id,
+            HarnessSessionLeaseRecord.session_id == session_id,
+        )
+    ).all()
+
+    now = utc_now()
+    for turn in turns:
+        turn.status = "cancelled"
+        turn.error_json = {
+            "code": "SESSION_RESET",
+            "message": "会话已重置，原 Harness turn 已取消。",
+        }
+        turn.finished_at = now
+        turn.updated_at = now
+        db.add(turn)
+    for invocation in invocations:
+        db.delete(invocation)
+    db.flush()
+    for run in runs:
+        db.delete(run)
+    db.flush()
+    for task_frame in task_frames:
+        db.delete(task_frame)
+    db.flush()
+    for lease in leases:
+        db.delete(lease)
+    db.flush()
 
 
 def stage_harness_session_record_deletion(

@@ -300,7 +300,7 @@ def test_model_config(
                 max_output_tokens=_verification_probe_tokens(
                     config.api_protocol,
                     capability_id,
-                    max_tokens,
+                    min(max_tokens, config.max_output_tokens),
                 ),
             )
             probe_client = LLMClient(probe_config)

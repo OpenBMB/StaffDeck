@@ -3,10 +3,59 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 VERSION="${VERSION:-0.1.0}"
-ARCH="$(uname -m)"
+HOST_ARCH="$(uname -m)"
+TARGET_ARCH="${STAFFDECK_MACOS_ARCH:-$HOST_ARCH}"
 MAC_SIGN_ID="${MAC_SIGN_ID:-}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 NOTARY_KEYCHAIN="${NOTARY_KEYCHAIN:-}"
+
+normalize_arch() {
+  case "$1" in
+    arm64|aarch64) echo "arm64" ;;
+    x86_64|amd64|x64) echo "x86_64" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+HOST_ARCH="$(normalize_arch "$HOST_ARCH")"
+ARCH="$(normalize_arch "$TARGET_ARCH")"
+case "$ARCH" in
+  arm64|x86_64) ;;
+  *)
+    echo "不支持的 macOS 架构: $ARCH（仅支持 arm64 和 x86_64）" >&2
+    exit 1
+    ;;
+esac
+if [ "$ARCH" != "$HOST_ARCH" ]; then
+  echo "目标架构 $ARCH 与 runner 架构 $HOST_ARCH 不一致；请在原生 runner 上构建" >&2
+  exit 1
+fi
+
+verify_bundle_arch() {
+  local app="$1"
+  local checked=0
+  local item
+  local item_arches
+  while IFS= read -r -d '' item; do
+    if ! file -b "$item" | grep -q "Mach-O"; then
+      continue
+    fi
+    item_arches="$(lipo -archs "$item")"
+    case " $item_arches " in
+      *" $ARCH "*) ;;
+      *)
+        echo "架构校验失败: $item 仅包含 [$item_arches]，期望 $ARCH" >&2
+        return 1
+        ;;
+    esac
+    checked=$((checked + 1))
+  done < <(find "$app" -type f -print0)
+  if [ "$checked" -eq 0 ]; then
+    echo "架构校验失败: $app 中未找到 Mach-O 文件" >&2
+    return 1
+  fi
+  echo "✓ 架构校验通过: $checked 个 Mach-O 文件均支持 $ARCH"
+}
 
 sign_code() {
   local target="$1"
@@ -62,6 +111,11 @@ if [ ! -x ".venv/bin/python" ]; then
   python3 -m venv .venv
   .venv/bin/python -m ensurepip --upgrade 2>/dev/null || true
 fi
+PYTHON_ARCH="$(normalize_arch "$(.venv/bin/python -c 'import platform; print(platform.machine())')")"
+if [ "$PYTHON_ARCH" != "$ARCH" ]; then
+  echo "backend/.venv 架构为 $PYTHON_ARCH，但本次目标为 $ARCH；请删除该 venv 后重试" >&2
+  exit 1
+fi
 # 每次打包都重新对齐 pyproject 约束。仅在 pyinstaller 缺失时安装会让旧
 # .venv 绕过 cryptography/OpenSSL 兼容修复，产出不可重现的发布包。
 DEPS="$(.venv/bin/python -c "import tomllib,pathlib; print(' '.join(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']))")"
@@ -77,12 +131,16 @@ else
   echo "无法安装打包依赖：venv 既无 pip 也无 uv" >&2
   exit 1
 fi
-# macOS Dock 壳依赖 pyobjc（幂等，已装则跳过）
-if ! .venv/bin/python -c "import AppKit" >/dev/null 2>&1; then
+# macOS Dock 壳和内嵌 UI 依赖 pyobjc（幂等，已装则跳过）
+if ! .venv/bin/python -c "import AppKit, WebKit" >/dev/null 2>&1; then
   if .venv/bin/python -m pip --version >/dev/null 2>&1; then
-    .venv/bin/python -m pip install "pyobjc-framework-Cocoa>=10.0"
+    .venv/bin/python -m pip install \
+      "pyobjc-framework-Cocoa>=10.0" \
+      "pyobjc-framework-WebKit>=10.0"
   elif command -v uv >/dev/null 2>&1; then
-    VIRTUAL_ENV="$(pwd)/.venv" uv pip install "pyobjc-framework-Cocoa>=10.0"
+    VIRTUAL_ENV="$(pwd)/.venv" uv pip install \
+      "pyobjc-framework-Cocoa>=10.0" \
+      "pyobjc-framework-WebKit>=10.0"
   fi
 fi
 
@@ -102,7 +160,14 @@ python3 packaging/fetch_runtime_python.py packaging/runtime_dl --expect-arch "$A
 rm -rf "$APP/Contents/Resources/runtime" "$APP/Contents/MacOS/runtime"
 cp -R packaging/runtime_dl/python "$APP/Contents/Resources/runtime"
 
+echo "==> [4b/5] 附带 SRT + Node 运行时"
+rm -rf packaging/sandbox_runtime "$APP/Contents/Resources/sandbox"
+python3 packaging/fetch_sandbox_runtime.py packaging/sandbox_runtime
+cp -R packaging/sandbox_runtime "$APP/Contents/Resources/sandbox"
+python3 packaging/smoke_sandbox_bundle.py "$APP/Contents/Resources/sandbox"
+
 echo "==> [5/5] 签名 + 打 dmg"
+verify_bundle_arch "$APP"
 sign_app_bundle "$APP"
 
 if codesign --verify --deep --strict "$APP" 2>/dev/null; then
@@ -110,6 +175,7 @@ if codesign --verify --deep --strict "$APP" 2>/dev/null; then
 else
   echo "警告：密封校验未过，双击可能无法打开"
 fi
+backend/.venv/bin/python packaging/smoke_sandbox_runtime.py "$APP/Contents/Resources/sandbox"
 
 # 在当前 runner 的原生架构上真正启动 PyInstaller App。Intel CI 会在这里
 # 捕获 cryptography/OpenSSL ABI 错配，而不是到用户机器上才发现。
