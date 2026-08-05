@@ -2179,5 +2179,16 @@
   "文件下载失败": "File download failed",
   "已下载文件：{1}": "Downloaded file: {1}",
   "Harness 文件": "Harness file",
-  "Harness 文件 · {1}": "Harness file · {1}"
+  "Harness 文件 · {1}": "Harness file · {1}",
+  "已删除模型": "Model deleted",
+  "模型连接测试超时，请检查本地模型服务地址和网络后重试": "The model connection test timed out. Check the local model service URL and network, then try again.",
+  "保存中": "Saving",
+  "删除模型「{1}」？": "Delete model \"{1}\"?",
+  "这是当前默认模型。删除后需要重新设置默认模型，相关数字员工中的模型绑定也会一并移除。": "This is the current default model. After deletion, you must set a new default model, and related digital employee model bindings will also be removed.",
+  "删除后，相关数字员工中的模型绑定也会一并移除，操作不可撤销。": "Related digital employee model bindings will also be removed. This action cannot be undone.",
+  "SOP 流程图全屏查看": "SOP flowchart fullscreen view",
+  "退出全屏": "Exit fullscreen",
+  "全屏查看流程图": "View flowchart fullscreen",
+  "全屏查看": "Fullscreen",
+  "{1} 个节点 · {2} 条连线 · 按 Esc 退出": "{1} nodes · {2} connections · Press Esc to exit"
 }

@@ -29,6 +29,8 @@ const artifact: HarnessWorkspaceArtifact = {
   type: 'workspace_file',
   task_frame_id: 'task/frame',
   path: 'reports/quarterly summary.txt',
+  display_name: 'Q2 财务报告.txt',
+  description: '最终交付版',
   size: 2048,
 };
 
@@ -58,9 +60,9 @@ describe('Harness artifact downloads', () => {
       />,
     );
 
-    expect(screen.getByText('quarterly summary.txt')).toBeTruthy();
-    expect(screen.getByText(/2\.0 KB$/)).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: /quarterly summary\.txt$/ }));
+    expect(screen.getByText('Q2 财务报告.txt')).toBeTruthy();
+    expect(screen.getByText(/最终交付版 · 2\.0 KB$/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /Q2 财务报告\.txt$/ }));
 
     await waitFor(() => {
       expect(mocks.blob).toHaveBeenCalledWith(
@@ -72,7 +74,7 @@ describe('Harness artifact downloads', () => {
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
     expect(window.URL.revokeObjectURL).toHaveBeenCalledWith('blob:artifact');
     expect(mocks.notifySuccess).toHaveBeenCalledWith(
-      expect.stringContaining('quarterly summary.txt'),
+      expect.stringContaining('Q2 财务报告.txt'),
     );
   });
 
@@ -87,7 +89,7 @@ describe('Harness artifact downloads', () => {
 
     const button = screen.getByRole(
       'button',
-      { name: /quarterly summary\.txt$/ },
+      { name: /Q2 财务报告\.txt$/ },
     ) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(mocks.blob).not.toHaveBeenCalled();
@@ -104,7 +106,7 @@ describe('Harness artifact downloads', () => {
       />,
     );
 
-    await user.click(screen.getByRole('button', { name: /quarterly summary\.txt$/ }));
+    await user.click(screen.getByRole('button', { name: /Q2 财务报告\.txt$/ }));
 
     await waitFor(() => {
       expect(mocks.notifyError).toHaveBeenCalledWith('Artifact not found');

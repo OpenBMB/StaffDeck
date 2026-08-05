@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 class ModelApiProtocol(StrEnum):
     OPENAI_CHAT_COMPLETIONS = "openai_chat_completions"
+    OPENAI_RESPONSES = "openai_responses"
     ANTHROPIC_MESSAGES = "anthropic_messages"
     GEMINI_GENERATE_CONTENT = "gemini_generate_content"
 

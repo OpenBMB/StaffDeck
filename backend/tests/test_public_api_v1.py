@@ -150,6 +150,7 @@ def test_problem_details_and_openapi_contract(monkeypatch) -> None:
     schema = client.get("/openapi.json").json()
     expected = {
         "/agents/{agent_id}/runs",
+        "/agents/{agent_id}/runs:stream",
         "/runs/{run_id}/events",
         "/agents/{agent_id}/sops:generate",
         "/agents/{agent_id}/sops/{sop_id}",
@@ -202,6 +203,73 @@ def test_api_key_scope_agent_boundary_and_idempotent_run(monkeypatch) -> None:
         "/agents/agent_other",
         headers={"Authorization": f"Bearer {employee_key}"},
     ).status_code == 403
+
+
+def test_streaming_run_endpoint_emits_reply_deltas(monkeypatch) -> None:
+    client, engine, admin_token = _client(monkeypatch)
+    tenant_key = _tenant_key(client, admin_token, ["agents:read", "runs:create", "runs:read"])
+
+    class FakeStreamingLoop:
+        def __init__(self, db):
+            self.db = db
+
+        def handle_turn_stream(self, request):
+            session = self.db.get(ChatSession, request.session_id)
+            self.db.add(
+                AgentEvent(
+                    tenant_id=request.tenant_id,
+                    session_id=request.session_id,
+                    event_type="stream_delta",
+                    payload_json={"content": "流式答复", "turn_id": request.client_turn_id},
+                )
+            )
+            self.db.add(
+                AgentEvent(
+                    tenant_id=request.tenant_id,
+                    session_id=request.session_id,
+                    event_type="stream_end",
+                    payload_json={"turn_id": request.client_turn_id},
+                )
+            )
+            self.db.add(
+                Message(
+                    tenant_id=request.tenant_id,
+                    session_id=request.session_id,
+                    role="assistant",
+                    content="流式答复",
+                    metadata_json={"client_turn_id": request.client_turn_id},
+                )
+            )
+            self.db.commit()
+            response = ChatTurnResponse(
+                reply="流式答复",
+                session_id=request.session_id,
+                session_state=public_session(session),
+            )
+            yield {"event": "complete", "data": response.model_dump(mode="json")}
+
+    monkeypatch.setattr("app.public_api.jobs.engine", engine)
+    monkeypatch.setattr("app.public_api.runs.engine", engine)
+    monkeypatch.setattr("app.public_api.runs.AgentLoop", FakeStreamingLoop)
+    monkeypatch.setattr(
+        "app.public_api.jobs.enqueue_async_job",
+        lambda _name, func, job_id: func(job_id),
+    )
+    response = client.post(
+        "/agents/agent_api/runs:stream",
+        headers={
+            "Authorization": f"Bearer {tenant_key}",
+            "Idempotency-Key": "stream-run-1",
+            "Accept": "text/event-stream",
+        },
+        json={"input": "请流式回答", "session_mode": "stateless"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-run-id"].startswith("apijob_")
+    assert "event: run.output.delta" in response.text
+    assert '"content": "流式答复"' in response.text
+    assert "event: run.output.completed" in response.text
 
 
 def test_sop_changes_remain_isolated_until_publish(monkeypatch) -> None:
@@ -425,6 +493,27 @@ def test_run_handler_relays_live_public_trace_and_returns_citations(monkeypatch)
                 session_state=public_session(session),
             )
 
+        def handle_turn_stream(self, request):
+            response = self.handle_turn(request)
+            self.db.add(
+                AgentEvent(
+                    tenant_id=request.tenant_id,
+                    session_id=request.session_id,
+                    event_type="stream_delta",
+                    payload_json={"content": "制度答复 [1]", "turn_id": request.client_turn_id},
+                )
+            )
+            self.db.add(
+                AgentEvent(
+                    tenant_id=request.tenant_id,
+                    session_id=request.session_id,
+                    event_type="stream_end",
+                    payload_json={"turn_id": request.client_turn_id},
+                )
+            )
+            self.db.commit()
+            yield {"event": "complete", "data": response.model_dump(mode="json")}
+
     monkeypatch.setattr("app.public_api.runs.engine", engine)
     monkeypatch.setattr("app.public_api.runs.AgentLoop", FakeLoop)
     with Session(engine) as db:
@@ -437,6 +526,8 @@ def test_run_handler_relays_live_public_trace_and_returns_citations(monkeypatch)
     plan_event = next(event for event in public_events if event.event_type == "run.plan")
     assert plan_event.data_json["decision"] == "answer_only"
     assert "system_prompt" not in plan_event.data_json
+    output_event = next(event for event in public_events if event.event_type == "run.output.delta")
+    assert output_event.data_json["content"] == "制度答复 [1]"
 
 
 def test_employee_settings_manage_runtime_keys(monkeypatch) -> None:

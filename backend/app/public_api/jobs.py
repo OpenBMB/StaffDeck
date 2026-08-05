@@ -326,7 +326,15 @@ def stream_job_events(
                 yield ": keepalive\n\n"
             sleep(0.15)
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 def recover_public_jobs() -> None:

@@ -244,7 +244,7 @@ def _migrate_sqlite_skill_schema() -> None:
                 )
             if "agent_loop_max_actions" not in ui_columns:
                 conn.execute(
-                    text("ALTER TABLE ui_configs ADD COLUMN agent_loop_max_actions INTEGER NOT NULL DEFAULT 6")
+                    text("ALTER TABLE ui_configs ADD COLUMN agent_loop_max_actions INTEGER NOT NULL DEFAULT 32")
                 )
 
         if "skill_feedback" in tables:

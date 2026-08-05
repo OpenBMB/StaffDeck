@@ -33,7 +33,12 @@ from app.db.models import (
     Tenant,
     User,
 )
-from app.general_skills.runner import GeneralSkillReader, GeneralSkillRunner, GeneralSkillSelector
+from app.general_skills.runner import (
+    GeneralSkillReader,
+    GeneralSkillRunner,
+    GeneralSkillSelector,
+    _normalize_declared_artifacts,
+)
 from app.general_skills.schema import (
     GeneralSkillClawHubImportRequest,
     GeneralSkillImportRequest,
@@ -53,6 +58,35 @@ WEATHER_SKILL_MD = """# 中国城市天气查询工具
 
 python weather.py -json -today <地区名称>
 """
+
+
+def test_runner_accepts_only_explicit_output_manifest_files(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / "general_skill_test"
+    output_dir = run_dir / "outputs"
+    output_dir.mkdir(parents=True)
+    (output_dir / "final.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (output_dir / "cache.tmp").write_text("internal", encoding="utf-8")
+
+    artifacts, errors = _normalize_declared_artifacts(
+        [
+            {"path": "final.csv", "display_name": "结果.csv"},
+            {"path": "../outside.txt"},
+        ],
+        output_dir=output_dir,
+        workspace_root=workspace,
+        run_dir=run_dir,
+    )
+
+    assert artifacts == [
+        {
+            "path": "general_skill_test/outputs/final.csv",
+            "display_name": "结果.csv",
+            "description": None,
+        }
+    ]
+    assert errors == [{"path": "../outside.txt", "reason": "invalid_relative_path"}]
+    assert all(item["path"] != "cache.tmp" for item in artifacts)
 
 
 def _system_and_stage_instructions(system_prompt: object, payload: object) -> str:

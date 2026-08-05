@@ -1,0 +1,4 @@
+interface:
+  display_name: "StaffDeck API 鉴权与员工选择"
+  short_description: "安全配置开放 API 密钥并选择当前账号可访问的数字员工"
+  default_prompt: "Use $staffdeck-api-auth to authenticate and select an accessible StaffDeck agent."

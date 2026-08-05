@@ -10,13 +10,14 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.api.model_configs import (
     _verification_probe_tokens,
     create_model_config,
+    delete_model_config,
     set_default_model_config,
     update_model_config,
 )
 from app.api.model_configs import (
     test_model_config as run_model_config_test,
 )
-from app.db.models import ModelConfig, Tenant, User
+from app.db.models import AgentModelBinding, ModelConfig, Tenant, User
 from app.llm.schemas import ModelConfigCreateRequest, ModelConfigUpdateRequest
 from app.security.encryption import encrypt_secret
 
@@ -80,6 +81,62 @@ def test_gemini_model_config_can_be_created(tmp_path) -> None:
         assert created.enabled is False
         assert created.is_default is False
         assert created.protocol_options == {}
+
+
+def test_openai_responses_model_config_can_be_created(tmp_path) -> None:
+    with _db(tmp_path) as db:
+        created = create_model_config(
+            ModelConfigCreateRequest(
+                tenant_id="tenant_a",
+                name="Responses",
+                api_protocol="openai_responses",
+                base_url="https://api.openai.com/v1",
+                api_key="secret",
+                model="gpt-5",
+            ),
+            db=db,
+            current_user=_admin(),
+        )
+
+        assert created.api_protocol == "openai_responses"
+        assert created.protocol_options == {}
+        assert created.enabled is False
+
+
+def test_model_config_delete_removes_agent_bindings(tmp_path) -> None:
+    with _db(tmp_path) as db:
+        db.add(
+            ModelConfig(
+                id="model_a",
+                tenant_id="tenant_a",
+                name="Chat",
+                api_key_encrypted=encrypt_secret("secret"),
+                model="model-a",
+                enabled=True,
+                is_default=True,
+            )
+        )
+        db.add(
+            AgentModelBinding(
+                id="binding_a",
+                tenant_id="tenant_a",
+                agent_id="agent_a",
+                role="default",
+                model_config_id="model_a",
+            )
+        )
+        db.commit()
+
+        result = delete_model_config(
+            "model_a",
+            tenant_id="tenant_a",
+            db=db,
+            current_user=_admin(),
+        )
+
+        assert result == {"status": "deleted"}
+        assert db.get(ModelConfig, "model_a") is None
+        assert db.get(AgentModelBinding, "binding_a") is None
 
 
 def test_gemini_verification_reserves_tokens_for_visible_output() -> None:

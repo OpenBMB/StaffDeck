@@ -79,6 +79,48 @@ def test_write_read_edit_and_info_are_hash_guarded_and_atomic(tmp_path: Path) ->
     assert info["sha256"] == edited["sha256"]
 
 
+def test_artifacts_are_published_explicitly_with_safe_metadata(tmp_path: Path) -> None:
+    executor, context = _harness(tmp_path)
+    _execute(
+        executor,
+        context,
+        "write_file",
+        {"path": "work/intermediate.txt", "content": "internal", "create_parents": True},
+    )
+    final = _execute(
+        executor,
+        context,
+        "write_file",
+        {"path": "reports/result.txt", "content": "ready", "create_parents": True},
+    )
+
+    published = _execute(
+        executor,
+        context,
+        "publish_artifact",
+        {
+            "path": "reports/result.txt",
+            "display_name": "最终报告\n.txt",
+            "description": "给用户下载的结果",
+        },
+    )
+
+    assert published == {
+        "path": "reports/result.txt",
+        "display_name": "最终报告.txt",
+        "description": "给用户下载的结果",
+        "size": 5,
+        "sha256": final["sha256"],
+        "content_type": "text/plain",
+    }
+    assert _execute_failure(
+        executor,
+        context,
+        "publish_artifact",
+        {"path": "reports/missing.txt"},
+    ) == "NOT_FOUND"
+
+
 @pytest.mark.parametrize(
     ("path", "expected_code"),
     [

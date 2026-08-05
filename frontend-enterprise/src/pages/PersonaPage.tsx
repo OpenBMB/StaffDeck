@@ -36,7 +36,7 @@ const DEFAULT_UI_CONFIG: UiConfigForm = {
   show_skill_trace: true,
   show_tool_trace: true,
   reflection_max_rounds: '1',
-  agent_loop_max_actions: '6',
+  agent_loop_max_actions: '32',
 };
 
 function formatDateOnly(value: string): string {
@@ -260,7 +260,7 @@ export default function PersonaPage() {
             <Input
               type="number"
               min={1}
-              max={20}
+              max={100}
               step={1}
               value={uiForm.agent_loop_max_actions}
               onChange={(event) => updateUiConfig({ agent_loop_max_actions: event.target.value })}

@@ -33,7 +33,7 @@ export default function HarnessArtifactDownloads({
 
   async function downloadArtifact(artifact: HarnessWorkspaceArtifact) {
     const identity = `${artifact.task_frame_id}\u001f${artifact.path}`;
-    const filename = artifactFilename(artifact.path);
+    const filename = artifactFilename(artifact.display_name || artifact.path);
     setDownloading(identity);
     try {
       const query = new URLSearchParams({
@@ -69,7 +69,7 @@ export default function HarnessArtifactDownloads({
       <div className={CHAT_ARTIFACT_LIST_CLASS}>
         {artifacts.map((artifact) => {
           const identity = `${artifact.task_frame_id}\u001f${artifact.path}`;
-          const filename = artifactFilename(artifact.path);
+          const filename = artifactFilename(artifact.display_name || artifact.path);
           const isDownloading = downloading === identity;
           return (
             <button
@@ -108,7 +108,10 @@ function artifactFilename(path: string): string {
 
 function artifactMeta(artifact: HarnessWorkspaceArtifact): string {
   const size = formatArtifactSize(artifact.size);
-  return size ? `Harness 文件 · ${size}` : 'Harness 文件';
+  const description = artifact.description?.trim();
+  if (description && size) return `${description} · ${size}`;
+  if (description) return description;
+  return size ? `生成文件 · ${size}` : '生成文件';
 }
 
 function formatArtifactSize(size: number | null | undefined): string {

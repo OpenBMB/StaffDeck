@@ -172,6 +172,27 @@ def test_web_session_is_not_staged() -> None:
         assert db.exec(select(ChannelDelivery)).all() == []
 
 
+def test_public_api_session_returns_through_api_without_channel_delivery() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        api_session = ChatSession(
+            id="session_public_api",
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="public_api",
+        )
+        message = _assistant_message("session_public_api", "msg_public_api")
+        db.add(api_session)
+        db.add(message)
+        db.commit()
+
+        stage_channel_delivery(db, api_session, message)
+        db.commit()
+
+        assert db.exec(select(ChannelDelivery)).all() == []
+
+
 def test_channel_session_stages_delivery_in_same_transaction() -> None:
     engine = _test_engine()
     with Session(engine) as db:

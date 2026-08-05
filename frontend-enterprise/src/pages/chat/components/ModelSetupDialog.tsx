@@ -31,7 +31,7 @@ type ModelSetupDialogProps = {
 
 type ModelSetupForm = {
   name: string;
-  apiProtocol: 'openai_chat_completions' | 'anthropic_messages' | 'gemini_generate_content';
+  apiProtocol: 'openai_chat_completions' | 'openai_responses' | 'anthropic_messages' | 'gemini_generate_content';
   baseUrl: string;
   model: string;
   apiKey: string;
@@ -181,6 +181,9 @@ export default function ModelSetupDialog({
                   {availableProtocols.includes('openai_chat_completions') && (
                     <SelectItem value="openai_chat_completions">OpenAI Chat Completions</SelectItem>
                   )}
+                  {availableProtocols.includes('openai_responses') && (
+                    <SelectItem value="openai_responses">OpenAI Responses API</SelectItem>
+                  )}
                   {availableProtocols.includes('anthropic_messages') && (
                     <SelectItem value="anthropic_messages">Anthropic Messages</SelectItem>
                   )}
@@ -193,7 +196,7 @@ export default function ModelSetupDialog({
             <LabeledField label="Base URL">
               <Input
                 value={form.baseUrl}
-                placeholder={form.apiProtocol === 'openai_chat_completions'
+                placeholder={form.apiProtocol === 'openai_chat_completions' || form.apiProtocol === 'openai_responses'
                   ? '例如 https://llm-center.modelbest.cn/llm/v1'
                   : '例如 https://llm-center.modelbest.cn/llm'}
                 onChange={(event) => updateForm('baseUrl', event.target.value)}

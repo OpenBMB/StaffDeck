@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import mimetypes
 import os
 import stat
 import tempfile
@@ -73,6 +74,12 @@ class GrepArguments(_FileArguments):
 
 class FileInfoArguments(_FileArguments):
     path: str = Field(min_length=1)
+
+
+class PublishArtifactArguments(_FileArguments):
+    path: str = Field(min_length=1)
+    display_name: str | None = Field(default=None, max_length=180)
+    description: str | None = Field(default=None, max_length=500)
 
 
 class MakeDirectoryArguments(_FileArguments):
@@ -677,6 +684,33 @@ def file_info(
     }
 
 
+def publish_artifact(
+    context: HarnessToolContext,
+    arguments: BaseModel,
+) -> dict[str, Any]:
+    """Explicitly expose one verified final workspace file to the user."""
+
+    args = _as(arguments, PublishArtifactArguments)
+    workspace = _Workspace(context)
+    path = workspace.resolve(args.path)
+    metadata = workspace.require_file(path)
+    workspace.ensure_file_size(metadata.st_size)
+    display_name = _safe_artifact_text(args.display_name, 180) or path.name
+    description = _safe_artifact_text(args.description, 500)
+    return {
+        "path": workspace.relative(path),
+        "display_name": display_name,
+        "description": description,
+        "size": metadata.st_size,
+        "sha256": _sha256(path),
+        "content_type": (
+            mimetypes.guess_type(display_name)[0]
+            or mimetypes.guess_type(path.name)[0]
+            or "application/octet-stream"
+        ),
+    }
+
+
 def make_directory(
     context: HarnessToolContext,
     arguments: BaseModel,
@@ -861,6 +895,17 @@ def register_file_tools(registry: HarnessRegistry) -> HarnessRegistry:
         argument_model=FileInfoArguments,
         handler=file_info,
         side_effect="read",
+    )
+    registry.register(
+        name="publish_artifact",
+        description=(
+            "Explicitly publish one verified final workspace file for user download. "
+            "Use only for final deliverables, never for inputs, caches, logs, temporary "
+            "files, runner code, or build intermediates."
+        ),
+        argument_model=PublishArtifactArguments,
+        handler=publish_artifact,
+        side_effect="write",
     )
     registry.register(
         name="mkdir",
@@ -1135,6 +1180,17 @@ def _different_paths(source: Path, destination: Path) -> None:
         )
 
 
+def _safe_artifact_text(value: str | None, max_length: int) -> str | None:
+    if value is None:
+        return None
+    cleaned = "".join(
+        character
+        for character in str(value).strip()
+        if ord(character) >= 32 and ord(character) != 127
+    )
+    return cleaned[:max_length] or None
+
+
 def _io_error(message: str, exc: OSError) -> HarnessExecutionError:
     if isinstance(exc, PermissionError):
         code = "PERMISSION_DENIED"
@@ -1162,6 +1218,7 @@ __all__ = [
     "ListDirectoryArguments",
     "MakeDirectoryArguments",
     "MoveFileArguments",
+    "PublishArtifactArguments",
     "ReadFileArguments",
     "WriteFileArguments",
     "build_file_tool_registry",
@@ -1174,6 +1231,7 @@ __all__ = [
     "list_directory",
     "make_directory",
     "move_file",
+    "publish_artifact",
     "read_file",
     "register_file_tools",
     "write_file",

@@ -1,0 +1,4 @@
+interface:
+  display_name: "管理 StaffDeck 能力资源"
+  short_description: "通过开放 API 管理知识、技能、工具、MCP 和定时任务"
+  default_prompt: "Use $staffdeck-api-manage-resources to manage StaffDeck agent capabilities."

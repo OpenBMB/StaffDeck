@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import mkdtemp
 from typing import Any
 
@@ -43,6 +43,8 @@ RUN_TIMEOUT_SECONDS = 12
 MAX_OUTPUT_CHARS = 20000
 GENERAL_SKILL_MAX_TOKENS = 8192
 GENERAL_SKILL_MAX_ATTEMPTS = 10
+MAX_DECLARED_ARTIFACTS = 20
+MAX_DECLARED_ARTIFACT_BYTES = 10 * 1024 * 1024
 TraceSink = Callable[[dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
 GENERAL_SKILL_SELECTION_OUTPUT = {
@@ -390,6 +392,11 @@ class GeneralSkillRunner:
             stdout=stdout,
             stderr=stderr,
             structured_result=structured_result,
+            artifacts=(
+                list(structured_result.get("artifacts") or [])
+                if isinstance(structured_result.get("artifacts"), list)
+                else []
+            ),
             reply=reply,
         )
 
@@ -420,6 +427,7 @@ class GeneralSkillRunner:
                     "skill_slug": skill.slug,
                     "skill_name": skill.name,
                     "skill_workspace": "<runtime absolute path to the restored skill folder>",
+                    "output_dir": "<runtime absolute path for final downloadable files>",
                     "skill_files": [file["path"] for file in _skill_files(skill)],
                 },
                 "timeout_seconds": _run_timeout_seconds(skill),
@@ -580,6 +588,7 @@ class GeneralSkillRunner:
                     "skill_slug": skill.slug,
                     "skill_name": skill.name,
                     "skill_workspace": "<runtime absolute path to the restored skill folder>",
+                    "output_dir": "<runtime absolute path for final downloadable files>",
                     "skill_files": [file["path"] for file in _skill_files(skill)],
                 },
                 "timeout_seconds": _run_timeout_seconds(skill),
@@ -649,6 +658,8 @@ class GeneralSkillRunner:
         )
         skill_dir = run_dir / "skill"
         _materialize_skill_package(skill, skill_dir)
+        output_dir = run_dir / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=False)
         runtime = _plan_runtime(plan)
         runner_path = run_dir / ("runner.sh" if runtime == "bash" else "runner.py")
         runner_path.write_text(plan.code, encoding="utf-8")
@@ -658,6 +669,7 @@ class GeneralSkillRunner:
             "skill_name": skill.name,
             "user_id": user_id,
             "skill_workspace": str(skill_dir),
+            "output_dir": str(output_dir),
             "skill_files": [file["path"] for file in _skill_files(skill)],
         }
         _emit(
@@ -698,6 +710,7 @@ class GeneralSkillRunner:
                 "ARGUMENTS": query,
                 "QUERY": query,
                 "SKILL_WORKSPACE": str(skill_dir),
+                "OUTPUT_DIR": str(output_dir),
                 "SKILL_SLUG": skill.slug,
                 "SKILL_NAME": skill.name,
                 "USER_ID": user_id,
@@ -767,6 +780,15 @@ class GeneralSkillRunner:
         stdout = _truncate(stdout)
         stderr = _truncate(stderr)
         structured = _parse_stdout_json(stdout)
+        declared_artifacts, artifact_errors = _normalize_declared_artifacts(
+            structured.get("artifacts"),
+            output_dir=output_dir,
+            workspace_root=workspace_root,
+            run_dir=run_dir,
+        )
+        structured["artifacts"] = declared_artifacts
+        if artifact_errors:
+            structured["artifact_errors"] = artifact_errors
         if return_code != 0:
             structured.setdefault("success", False)
             structured.setdefault("error", f"runner exited with code {return_code}")
@@ -1009,6 +1031,104 @@ def _safe_package_path(path: str) -> str:
     if not parts or any(part == ".." for part in parts):
         return ""
     return "/".join(parts)
+
+
+def _normalize_declared_artifacts(
+    raw_artifacts: Any,
+    *,
+    output_dir: Path,
+    workspace_root: Path | None,
+    run_dir: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Validate an explicit runner manifest without discovering workspace files."""
+
+    if raw_artifacts in (None, []):
+        return [], []
+    if not isinstance(raw_artifacts, list):
+        return [], [{"path": "", "reason": "artifacts_must_be_a_list"}]
+    if output_dir.is_symlink():
+        return [], [{"path": "", "reason": "output_directory_is_symlink"}]
+    try:
+        output_root = output_dir.resolve(strict=True)
+    except OSError:
+        return [], [{"path": "", "reason": "output_directory_missing"}]
+
+    artifacts: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for index, raw_item in enumerate(raw_artifacts[:MAX_DECLARED_ARTIFACTS]):
+        item = {"path": raw_item} if isinstance(raw_item, str) else raw_item
+        if not isinstance(item, Mapping):
+            errors.append({"path": "", "reason": f"invalid_item_{index}"})
+            continue
+        raw_path = str(item.get("path") or "").strip()
+        windows_path = PureWindowsPath(raw_path)
+        relative_path = PurePosixPath(raw_path.replace("\\", "/"))
+        if (
+            not raw_path
+            or windows_path.drive
+            or relative_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+        ):
+            errors.append({"path": raw_path, "reason": "invalid_relative_path"})
+            continue
+        candidate = output_dir.joinpath(*relative_path.parts)
+        cursor = output_dir
+        symlinked = False
+        for part in relative_path.parts:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                symlinked = True
+                break
+        if symlinked:
+            errors.append({"path": raw_path, "reason": "symlink_not_allowed"})
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(output_root)
+            metadata = resolved.stat()
+        except (FileNotFoundError, OSError, ValueError):
+            errors.append({"path": raw_path, "reason": "file_not_available"})
+            continue
+        if not resolved.is_file():
+            errors.append({"path": raw_path, "reason": "not_a_regular_file"})
+            continue
+        if metadata.st_size > MAX_DECLARED_ARTIFACT_BYTES:
+            errors.append({"path": raw_path, "reason": "file_too_large"})
+            continue
+        relative_to = workspace_root.resolve() if workspace_root is not None else run_dir.resolve()
+        try:
+            workspace_path = resolved.relative_to(relative_to).as_posix()
+        except ValueError:
+            errors.append({"path": raw_path, "reason": "outside_workspace"})
+            continue
+        display_name = _safe_artifact_text(item.get("display_name"), 180) or resolved.name
+        description = _safe_artifact_text(item.get("description"), 500)
+        artifacts.append(
+            {
+                "path": workspace_path,
+                "display_name": display_name,
+                "description": description,
+            }
+        )
+    if len(raw_artifacts) > MAX_DECLARED_ARTIFACTS:
+        errors.append(
+            {
+                "path": "",
+                "reason": f"artifact_limit_exceeded_{MAX_DECLARED_ARTIFACTS}",
+            }
+        )
+    return artifacts, errors
+
+
+def _safe_artifact_text(value: Any, max_length: int) -> str | None:
+    if value is None:
+        return None
+    cleaned = "".join(
+        character
+        for character in str(value).strip()
+        if ord(character) >= 32 and ord(character) != 127
+    )
+    return cleaned[:max_length] or None
 
 
 def _parse_stdout_json(stdout: str) -> dict[str, Any]:

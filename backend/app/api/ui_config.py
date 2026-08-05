@@ -36,7 +36,7 @@ class UIConfigUpdateRequest(BaseModel):
     show_skill_trace: bool = True
     show_tool_trace: bool = True
     reflection_max_rounds: int = Field(default=1, ge=0, le=5)
-    agent_loop_max_actions: int = Field(default=6, ge=1, le=20)
+    agent_loop_max_actions: int = Field(default=32, ge=1, le=100)
 
 
 def ui_config_read(row: UIConfig) -> UIConfigRead:

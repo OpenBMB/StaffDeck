@@ -94,6 +94,7 @@ class GeneralSkillRunResponse(BaseModel):
     stdout: str = ""
     stderr: str = ""
     structured_result: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
     reply: str
 
 

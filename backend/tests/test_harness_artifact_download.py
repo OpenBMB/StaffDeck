@@ -79,6 +79,7 @@ def _seed_artifact(
                         "type": "workspace_file",
                         "task_frame_id": task_frame_id,
                         "path": artifact_path,
+                        "display_name": "最终结果.txt",
                         "size": 12,
                     }
                 ]
@@ -128,8 +129,11 @@ def test_downloads_only_a_published_file_from_the_exact_frame(
         assert response.headers["content-length"] == "13"
         assert response.headers["content-type"].startswith("text/plain")
         assert response.headers["content-disposition"].startswith(
-            'attachment; filename="result.txt"'
+            'attachment; filename="txt"; filename*=UTF-8'
         )
+        assert "%E6%9C%80%E7%BB%88%E7%BB%93%E6%9E%9C.txt" in response.headers[
+            "content-disposition"
+        ]
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["etag"].startswith('"sha256:')
 

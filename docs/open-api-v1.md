@@ -98,6 +98,25 @@ curl -X POST "$BASE/agents/$AGENT_ID/sessions" \
 
 ### 2. 发起 Run
 
+对话型调用优先使用同请求 SSE 接口。它会先创建持久化 Run，再在当前 HTTP 响应中持续返回意图、TaskFrame、能力调用和回复增量；响应头 `X-Run-ID` 可用于取消、续传或查询最终结构化结果：
+
+```bash
+curl -N -X POST "$BASE/agents/$AGENT_ID/runs:stream" \
+  -H "Authorization: Bearer $STAFFDECK_API_KEY" \
+  -H "Idempotency-Key: crm-run-10001" \
+  -H "Accept: text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"input\": \"查询差旅费报销标准\",
+    \"session_id\": \"$SESSION_ID\",
+    \"session_mode\": \"stateful\"
+  }"
+```
+
+回复文本通过 `run.output.delta` 增量返回；如最终内容被引用修复，则会收到 `run.output.replace`，完成时收到 `run.output.completed`。SSE 的每个 `data` 都是 JSON。
+
+需要提交后立即返回、由调用方稍后消费事件时，使用异步 Job 接口：
+
 ```bash
 curl -X POST "$BASE/agents/$AGENT_ID/runs" \
   -H "Authorization: Bearer $STAFFDECK_API_KEY" \
@@ -160,6 +179,8 @@ curl -N "$BASE/runs/$RUN_ID/events" \
 ```
 
 断线后携带 `Last-Event-ID` 续传。公开 Trace 包含意图、TaskFrame、能力选择、工具结果、引用和回复阶段，不包含模型原始 COT。
+
+`POST .../runs:stream` 适合一次 HTTP 连接直接消费回复；`POST .../runs` + `GET .../events` 适合任务队列、断线续传和异步消费者。两种方式使用同一个持久化 Run/Harness v2 内核。
 
 ### 5. 下载 Harness 产物
 

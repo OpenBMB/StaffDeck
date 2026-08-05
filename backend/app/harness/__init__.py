@@ -20,7 +20,12 @@ from app.harness.command import (
 )
 from app.harness.errors import HarnessExecutionError
 from app.harness.executor import HarnessExecutor
-from app.harness.filesystem import build_file_tool_registry, register_file_tools
+from app.harness.filesystem import (
+    PublishArtifactArguments,
+    build_file_tool_registry,
+    publish_artifact,
+    register_file_tools,
+)
 from app.harness.registry import HarnessRegistry
 
 __all__ = [
@@ -36,11 +41,13 @@ __all__ = [
     "HarnessToolSpec",
     "ExecCommandArguments",
     "OpenedHarnessArtifact",
+    "PublishArtifactArguments",
     "build_file_tool_registry",
     "build_command_tool_registry",
     "exec_command",
     "normalize_harness_artifact_path",
     "open_harness_artifact",
+    "publish_artifact",
     "register_file_tools",
     "register_command_tools",
 ]

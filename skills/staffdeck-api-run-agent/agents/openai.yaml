@@ -1,0 +1,4 @@
+interface:
+  display_name: "运行 StaffDeck 数字员工"
+  short_description: "创建会话和 Run，跟踪事件并读取回复、引用与产物"
+  default_prompt: "Use $staffdeck-api-run-agent to run a StaffDeck agent and collect its result."

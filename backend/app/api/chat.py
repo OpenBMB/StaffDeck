@@ -1941,7 +1941,9 @@ def download_harness_artifact(
             opened.close()
         raise HTTPException(status_code=404, detail="Artifact not found") from None
 
-    filename = _safe_artifact_download_name(opened.filename)
+    filename = _safe_artifact_download_name(
+        str(artifact.get("display_name") or opened.filename)
+    )
     fallback_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
     fallback_filename = (fallback_filename or "artifact")[:120]
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"

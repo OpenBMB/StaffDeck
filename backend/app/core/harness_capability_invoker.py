@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -44,10 +45,12 @@ from app.general_skills.runner import (
     GeneralSkillRunner,
 )
 from app.harness import (
+    HarnessArtifactAccessError,
     HarnessExecutor,
     HarnessToolCall,
     HarnessToolContext,
     build_file_tool_registry,
+    open_harness_artifact,
     register_command_tools,
 )
 from app.knowledge.citations import knowledge_citations_from_results
@@ -354,12 +357,8 @@ class HarnessCapabilityInvoker:
         if result.success:
             data = dict(result.data or {})
             artifacts: list[dict[str, Any]] = []
-            if name in {"write_file", "edit_file", "copy_file", "move_file"}:
-                artifact_path = str(
-                    data.get("path")
-                    or data.get("destination_path")
-                    or ""
-                ).strip()
+            if name == "publish_artifact":
+                artifact_path = str(data.get("path") or "").strip()
                 if artifact_path:
                     artifacts.append(
                         {
@@ -368,9 +367,19 @@ class HarnessCapabilityInvoker:
                             "path": artifact_path,
                             "sha256": data.get("sha256"),
                             "size": data.get("size"),
-                            "operation": name,
+                            "display_name": data.get("display_name"),
+                            "description": data.get("description"),
+                            "content_type": data.get("content_type"),
+                            "operation": "publish_artifact",
+                            "source": "harness",
                         }
                     )
+            elif name in {"write_file", "edit_file", "copy_file", "move_file"}:
+                data["published"] = False
+                data["publication_hint"] = (
+                    "文件已写入隔离工作区；如需提供给用户下载，请在校验完成后"
+                    "显式调用 publish_artifact。"
+                )
             return {
                 "success": True,
                 "data": data,
@@ -624,6 +633,12 @@ class HarnessCapabilityInvoker:
             "generated_code": response.generated_code,
             "execution_trace": response.execution_trace,
         }
+        artifacts, artifact_warnings = self._general_skill_artifacts(
+            response.artifacts,
+            skill_slug=skill.slug,
+        )
+        if artifact_warnings:
+            data["artifact_warnings"] = artifact_warnings
         self._emit_trace(
             "general_skill_run_finished",
             {
@@ -636,7 +651,7 @@ class HarnessCapabilityInvoker:
             },
         )
         if succeeded:
-            return {"success": True, "data": data}
+            return {"success": True, "data": data, "artifacts": artifacts}
         return {
             "success": False,
             "data": data,
@@ -652,6 +667,68 @@ class HarnessCapabilityInvoker:
                 "retryable": bool(structured.get("retryable")),
             },
         }
+
+    def _general_skill_artifacts(
+        self,
+        declared: list[dict[str, Any]],
+        *,
+        skill_slug: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        artifacts: list[dict[str, Any]] = []
+        warnings: list[dict[str, str]] = []
+        for item in declared[:20]:
+            path = str(item.get("path") or "").strip()
+            if not path:
+                warnings.append({"path": "", "reason": "missing_path"})
+                continue
+            opened = None
+            try:
+                opened = open_harness_artifact(self.workspace_root, path)
+                digest = opened.sha256()
+                display_name = _safe_artifact_label(
+                    item.get("display_name"),
+                    fallback=opened.filename,
+                    max_length=180,
+                )
+                description = _safe_artifact_label(
+                    item.get("description"),
+                    fallback="",
+                    max_length=500,
+                )
+                artifacts.append(
+                    {
+                        "type": "workspace_file",
+                        "task_frame_id": self.task_frame_id,
+                        "path": path,
+                        "sha256": digest,
+                        "size": opened.size,
+                        "display_name": display_name,
+                        "description": description or None,
+                        "content_type": (
+                            mimetypes.guess_type(display_name)[0]
+                            or mimetypes.guess_type(opened.filename)[0]
+                            or "application/octet-stream"
+                        ),
+                        "operation": "general_skill.execute",
+                        "source": f"general_skill.{skill_slug}",
+                    }
+                )
+            except (HarnessArtifactAccessError, OSError) as exc:
+                warnings.append(
+                    {
+                        "path": path,
+                        "reason": type(exc).__name__,
+                    }
+                )
+            finally:
+                if opened is not None:
+                    opened.close()
+        if warnings:
+            self._emit_trace(
+                "general_skill_artifact_rejected",
+                {"skill_slug": skill_slug, "warnings": warnings},
+            )
+        return artifacts, warnings
 
     def _read_general_skill_package(
         self,
@@ -838,6 +915,20 @@ def _failure(code: str, message: str) -> dict[str, Any]:
             "retryable": False,
         },
     }
+
+
+def _safe_artifact_label(
+    value: Any,
+    *,
+    fallback: str,
+    max_length: int,
+) -> str:
+    cleaned = "".join(
+        character
+        for character in str(value or fallback).strip()
+        if ord(character) >= 32 and ord(character) != 127
+    )
+    return cleaned[:max_length] or fallback[:max_length]
 
 
 def _skill_package_preview(

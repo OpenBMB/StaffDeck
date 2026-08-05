@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import mimetypes
+import re
 from typing import Any
 import threading
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
@@ -43,6 +46,11 @@ from app.session.session_schema import ChatAttachmentRead, ChatTurnRequest, Chat
 router = APIRouter(tags=["runs"])
 
 _TRACE_EVENT_MAP = {
+    "stream_status": "run.status",
+    "stream_delta": "run.output.delta",
+    "stream_replace": "run.output.replace",
+    "stream_end": "run.output.completed",
+    "stream_cancelled": "run.cancelled",
     "turn_plan_created": "run.plan",
     "router_decision_created": "run.intent",
     "task_frame_started": "run.task_frame.started",
@@ -180,7 +188,14 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
     def execute_harness() -> None:
         try:
             with Session(engine) as worker_db:
-                worker_result["response"] = AgentLoop(worker_db).handle_turn(request)
+                for item in AgentLoop(worker_db).handle_turn_stream(request):
+                    if item.get("event") != "complete":
+                        continue
+                    data = item.get("data")
+                    if isinstance(data, dict):
+                        worker_result["response"] = ChatTurnResponse.model_validate(data)
+                if "response" not in worker_result:
+                    raise RuntimeError("Harness stream ended without a complete response")
         except Exception as exc:  # noqa: BLE001 - re-raised at persistent job boundary.
             worker_result["error"] = exc
         finally:
@@ -338,6 +353,49 @@ def create_run_route(
     return payload
 
 
+@router.post("/agents/{agent_id}/runs:stream", status_code=200)
+def create_run_stream_route(
+    agent_id: str,
+    body: AgentRunCreate,
+    request: Request,
+    principal: PublicPrincipal = Depends(require_scopes("runs:create")),
+    db: Session = Depends(get_session),
+) -> StreamingResponse:
+    """Create a durable run and stream its public events in the same request."""
+    enforce_agent_access(principal, agent_id)
+    ensure_public_agent(db, principal, agent_id)
+    if body.session_id:
+        owned_public_session(db, principal, agent_id, body.session_id)
+    request_payload = body.model_dump(mode="json")
+    replay = replay_idempotent_response(db, principal, request, request_payload)
+    if replay:
+        run_id = str(replay[1].get("id") or "")
+        job = _owned_run(db, principal, run_id)
+    else:
+        job = create_job(
+            db,
+            principal,
+            kind="run",
+            request_payload=request_payload,
+            agent_id=agent_id,
+        )
+        payload = job_read(job).model_dump(mode="json")
+        store_idempotent_response(
+            db,
+            principal,
+            request,
+            request_payload,
+            payload,
+            status_code=202,
+            resource_id=job.id,
+        )
+    stream = stream_job_events(job.id, request, 0, None, principal, db)
+    stream.headers["X-Run-ID"] = job.id
+    stream.headers["Cache-Control"] = "no-cache, no-transform"
+    stream.headers["X-Accel-Buffering"] = "no"
+    return stream
+
+
 def _owned_run(db: Session, principal: PublicPrincipal, run_id: str) -> APIJob:
     row = db.get(APIJob, run_id)
     if not row or row.kind != "run" or row.tenant_id != principal.tenant_id:
@@ -448,9 +506,37 @@ def download_run_artifact(
         )
     except (HarnessArtifactAccessError, OSError) as exc:
         raise PublicAPIError(404, "ARTIFACT_NOT_FOUND", "Artifact not found.") from exc
+    filename = _safe_artifact_download_name(
+        str(artifact.get("display_name") or opened.filename)
+    )
+    fallback_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
+    fallback_filename = (fallback_filename or "artifact")[:120]
+    media_type = (
+        str(artifact.get("content_type") or "").strip()
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )
     return StreamingResponse(
         opened.iter_bytes(),
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{opened.filename}"'},
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": (
+                f'attachment; filename="{fallback_filename}"; '
+                f"filename*=UTF-8''{quote(filename, safe='')}"
+            ),
+            "Content-Length": str(opened.size),
+            "X-Content-Type-Options": "nosniff",
+        },
         background=BackgroundTask(opened.close),
     )
+
+
+def _safe_artifact_download_name(filename: str) -> str:
+    cleaned = "".join(
+        character
+        for character in str(filename).strip()
+        if ord(character) >= 32 and ord(character) != 127
+    )
+    cleaned = cleaned.replace("/", "_").replace("\\", "_")
+    return cleaned[:180] or "artifact"
