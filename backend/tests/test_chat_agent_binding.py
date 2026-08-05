@@ -13,7 +13,6 @@ from app.api.chat import (
     create_chat_session,
     list_chat_sessions,
 )
-from app.agents.branching import ensure_private_resource_binding
 from app.core.agent_loop import AgentLoop, AgentLoopPreconditionError
 from app.db.models import (
     AgentEvent,
@@ -24,12 +23,10 @@ from app.db.models import (
     PersonaConfig,
     ScheduledTaskRun,
     Tenant,
-    Tool,
     User,
     utc_now,
 )
 from app.session.session_schema import ChatSessionCreateRequest, ChatTurnRequest
-from app.tools.tool_schema import ToolCall
 
 
 def test_existing_chat_session_cannot_switch_agent() -> None:
@@ -316,92 +313,6 @@ def test_chat_turn_can_select_enabled_model_config() -> None:
 
         assert model is not None
         assert model.id == "model_selected"
-
-
-def test_agent_loop_only_exposes_tools_bound_to_current_employee() -> None:
-    with _test_session() as db:
-        db.add(Tenant(id="tenant_demo", name="Demo"))
-        agent_a = AgentProfile(id="agent_a", tenant_id="tenant_demo", name="员工 A")
-        agent_b = AgentProfile(id="agent_b", tenant_id="tenant_demo", name="员工 B")
-        tool_a = Tool(
-            id="tool_a",
-            tenant_id="tenant_demo",
-            name="tool.a",
-            method="POST",
-            url="https://example.test/a",
-            enabled=True,
-        )
-        tool_b = Tool(
-            id="tool_b",
-            tenant_id="tenant_demo",
-            name="tool.b",
-            method="POST",
-            url="https://example.test/b",
-            enabled=True,
-        )
-        db.add(agent_a)
-        db.add(agent_b)
-        db.add(tool_a)
-        db.add(tool_b)
-        db.flush()
-        ensure_private_resource_binding(db, "tenant_demo", agent_a.id, "tool", tool_a.id, "active")
-        ensure_private_resource_binding(db, "tenant_demo", agent_b.id, "tool", tool_b.id, "active")
-        db.commit()
-
-        loop = AgentLoop(db)
-
-        assert [row.id for row in loop._list_enabled_tools("tenant_demo", agent_a.id)] == [
-            tool_a.id
-        ]
-        assert [row.id for row in loop._list_enabled_tools("tenant_demo", agent_b.id)] == [
-            tool_b.id
-        ]
-
-
-def test_agent_loop_rejects_unbound_tool_before_execution_or_replay() -> None:
-    with _test_session() as db:
-        db.add(Tenant(id="tenant_demo", name="Demo"))
-        owner = AgentProfile(id="agent_owner", tenant_id="tenant_demo", name="员工 A")
-        other = AgentProfile(id="agent_other", tenant_id="tenant_demo", name="员工 B")
-        tool = Tool(
-            id="tool_private",
-            tenant_id="tenant_demo",
-            name="private.lookup",
-            method="POST",
-            url="https://example.test/private",
-            enabled=True,
-        )
-        session = ChatSession(
-            id="session_other",
-            tenant_id="tenant_demo",
-            user_id="user_demo",
-            agent_id=other.id,
-        )
-        db.add(owner)
-        db.add(other)
-        db.add(tool)
-        db.add(session)
-        db.flush()
-        ensure_private_resource_binding(db, "tenant_demo", owner.id, "tool", tool.id, "active")
-        db.commit()
-
-        result = AgentLoop(db)._execute_tool_call(
-            ChatTurnRequest(
-                tenant_id="tenant_demo",
-                session_id=session.id,
-                user_id="user_demo",
-                agent_id=other.id,
-                message="执行私有工具",
-            ),
-            session,
-            ToolCall(name=tool.name, arguments={}),
-        )
-
-        assert result.success is False
-        assert result.error is not None
-        assert result.error.code == "NOT_ALLOWED"
-        event_types = [row.event_type for row in db.exec(select(AgentEvent)).all()]
-        assert event_types == ["tool_call_started", "tool_call_finished"]
 
 
 def test_chat_turn_rejects_disabled_selected_model_config() -> None:

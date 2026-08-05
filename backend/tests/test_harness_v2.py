@@ -103,29 +103,38 @@ def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
     assert request.session_id is None
 
 
-def test_every_turn_always_selects_harness_v2() -> None:
+def test_agent_loop_has_no_legacy_runtime_switch(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_run(self, request):  # noqa: ANN001
+        calls.append((request.channel, request.interaction_mode))
+        return request.message
+
+    monkeypatch.setattr(HarnessV2Engine, "run", fake_run)
+    monkeypatch.setattr(HarnessV2Engine, "close", lambda self: None)
     engine = _test_engine()
     with Session(engine) as db:
         loop = AgentLoop(db)
 
-        assert loop._uses_harness_v2(
+        assert not hasattr(loop, "_uses_harness_v2")
+        assert loop.handle_turn(
             ChatTurnRequest(
                 tenant_id="tenant-demo",
-                agent_id="legacy-or-missing-agent",
                 message="普通对话",
                 channel="web",
                 interaction_mode="normal",
             )
-        ) is True
-        assert loop._uses_harness_v2(
+        ) == "普通对话"
+        assert loop.handle_turn(
             ChatTurnRequest(
                 tenant_id="tenant-demo",
-                agent_id="legacy-or-missing-agent",
                 message="执行自动任务",
                 channel="scheduled_task",
                 interaction_mode="scheduled_task",
             )
-        ) is True
+        ) == "执行自动任务"
+
+    assert calls == [("web", "normal"), ("scheduled_task", "scheduled_task")]
 
 
 def test_first_harness_turn_recovers_from_a_concurrent_session_insert(

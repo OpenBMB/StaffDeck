@@ -10,8 +10,8 @@ from app.tools.tool_schema import ToolResult
 ExecutionFinalizeState = Literal["handoff", "completed", "continued"]
 
 
-class LegacyTurnFinalizer:
-    """Preserves the legacy post-reply terminal decision and event ordering."""
+class TurnFinalizer:
+    """Applies the Harness v2 post-reply terminal decision and event ordering."""
 
     @staticmethod
     def finalize(

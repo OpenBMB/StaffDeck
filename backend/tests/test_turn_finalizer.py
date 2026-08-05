@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.core.legacy_turn_finalizer import LegacyTurnFinalizer
+from app.core.turn_finalizer import TurnFinalizer
 from app.session.session_schema import RouterDecision, StepAgentResult
 
 
@@ -9,7 +9,7 @@ def test_handoff_is_terminal_and_does_not_complete_skill() -> None:
     calls: list[str] = []
     session = SimpleNamespace(id="session-1", active_step_id="handoff", active_skill_id="skill-1")
 
-    result = LegacyTurnFinalizer.finalize(
+    result = TurnFinalizer.finalize(
         "tenant-1",
         session,
         None,
@@ -32,7 +32,7 @@ def test_ignored_handoff_preserves_completion_decision_and_event_payload() -> No
     events: list[tuple[str, dict[str, object]]] = []
     calls: list[str] = []
     session = SimpleNamespace(id="session-1", active_step_id="step-1", active_skill_id="skill-1")
-    result = LegacyTurnFinalizer.finalize(
+    result = TurnFinalizer.finalize(
         "tenant-1",
         session,
         None,
