@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 import os
-import selectors
+import queue
 import subprocess
+import threading
 import time
 from collections.abc import Mapping
 from contextlib import suppress
-from typing import Any
+from pathlib import Path
+from typing import Any, TextIO
 
 import httpx
 
+from app.security.managed_subprocess import ManagedProcess, ManagedProcessError
 from app.tools.mcp_builtin import (
     BuiltinMCPError,
     builtin_mcp_tool_definitions,
@@ -180,10 +183,103 @@ class _MCPSession:
 # stdio transport
 # --------------------------------------------------------------------------- #
 
+class _PipeReader:
+    """Read a text pipe without relying on select(), which rejects pipes on Windows."""
+
+    def __init__(self, stream: TextIO, max_line_size: int = 4 * 1024 * 1024) -> None:
+        self._stream = stream
+        self._max_line_size = max_line_size
+        self._events: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=128)
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="mcp-stdio-reader", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            while not self._stopped.is_set():
+                line = self._stream.readline(self._max_line_size + 1)
+                if not line:
+                    break
+                if len(line) > self._max_line_size:
+                    self._put(
+                        (
+                            "error",
+                            MCPClientError(
+                                f"MCP stdio 单条响应超过 {self._max_line_size} 字符限制。"
+                            ),
+                        )
+                    )
+                    return
+                self._put(("line", line))
+        except (OSError, ValueError) as exc:
+            if not self._stopped.is_set():
+                self._put(("error", exc))
+        finally:
+            self._put(("eof", None))
+
+    def _put(self, event: tuple[str, object]) -> None:
+        while not self._stopped.is_set():
+            try:
+                self._events.put(event, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
+    def next_event(self, timeout: float) -> tuple[str, object]:
+        try:
+            return self._events.get(timeout=max(timeout, 0))
+        except queue.Empty as exc:
+            raise TimeoutError from exc
+
+    def close(self) -> None:
+        self._stopped.set()
+        with suppress(OSError, ValueError):
+            self._stream.close()
+        self._thread.join(timeout=0.2)
+
+
+class _StderrCollector:
+    def __init__(self, stream: TextIO, limit: int = 1000) -> None:
+        self._stream = stream
+        self._limit = limit
+        self._parts: list[str] = []
+        self._length = 0
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._run, name="mcp-stderr-reader", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            while chunk := self._stream.readline(256):
+                with self._lock:
+                    if self._length < self._limit:
+                        kept = chunk[: self._limit - self._length]
+                        self._parts.append(kept)
+                        self._length += len(kept)
+        except (OSError, ValueError):
+            return
+
+    def text(self) -> str:
+        with self._lock:
+            value = "".join(self._parts).strip()
+        return f" stderr: {value}" if value else ""
+
+    def wait(self, timeout: float = 0.1) -> None:
+        self._thread.join(timeout)
+
+    def close(self) -> None:
+        with suppress(OSError, ValueError):
+            self._stream.close()
+        self._thread.join(timeout=0.2)
+
+
 class _StdioSession(_MCPSession):
     def __init__(self, config: dict[str, Any], timeout_seconds: float) -> None:
         super().__init__(config, timeout_seconds)
         self._proc: subprocess.Popen[str] | None = None
+        self._managed_process: ManagedProcess | None = None
+        self._stdout_reader: _PipeReader | None = None
+        self._stderr_collector: _StderrCollector | None = None
         self._next_id = 0
 
     def __enter__(self) -> "_StdioSession":
@@ -193,40 +289,92 @@ class _StdioSession(_MCPSession):
         if isinstance(raw_env, Mapping):
             env.update({str(key): str(value) for key, value in raw_env.items()})
         cwd = str(self.config["cwd"]) if self.config.get("cwd") else None
-        self._proc = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+        _validate_stdio_launch(command, cwd)
+        try:
+            self._managed_process = ManagedProcess.start(
+                command,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                bufsize=1,
+            )
+            self._proc = self._managed_process.process
+        except FileNotFoundError as exc:
+            if cwd and not os.path.isdir(cwd):
+                raise MCPClientError(f"MCP stdio 工作目录不存在：{cwd}") from exc
+            raise MCPClientError(
+                f"无法启动 MCP stdio：找不到命令 {command[0]!r}，请确认它已安装并在 PATH 中。"
+            ) from exc
+        except PermissionError as exc:
+            raise MCPClientError(f"无法启动 MCP stdio：没有权限执行 {command[0]!r}。") from exc
+        except ManagedProcessError as exc:
+            raise MCPClientError(f"MCP stdio 受控进程启动失败：{exc}") from exc
+        except OSError as exc:
+            raise MCPClientError(f"无法启动 MCP stdio 命令 {command[0]!r}：{exc}") from exc
+        if self._proc.stdout is None or self._proc.stderr is None:
+            self._managed_process.close()
+            self._managed_process = None
+            self._proc = None
+            raise MCPClientError("MCP stdio 进程管道创建失败。")
+        self._stdout_reader = _PipeReader(self._proc.stdout)
+        self._stderr_collector = _StderrCollector(self._proc.stderr)
         return self
 
     def __exit__(self, *exc: Any) -> None:
-        if self._proc is not None:
-            _close_process(self._proc)
-            self._proc = None
+        if self._managed_process is not None:
+            self._managed_process.close()
+            self._managed_process = None
+        self._proc = None
+        if self._stdout_reader is not None:
+            self._stdout_reader.close()
+        if self._stderr_collector is not None:
+            self._stderr_collector.close()
+        self._stdout_reader = None
+        self._stderr_collector = None
 
     def _request(self, method: str, params: dict[str, Any]) -> Any:
         proc = self._require_proc()
         self._next_id += 1
         request_id = self._next_id
-        _send_json(proc, {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        response = _read_response(proc, expected_id=request_id, timeout_seconds=self.timeout_seconds)
+        timeout = max(self.timeout_seconds, 0.1)
+        deadline = time.monotonic() + timeout
+        _send_json(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+            timeout_seconds=timeout,
+        )
+        response = _read_response(
+            proc,
+            self._require_stdout_reader(),
+            expected_id=request_id,
+            timeout_seconds=max(deadline - time.monotonic(), 0),
+            stderr=self._stderr_collector,
+        )
         _raise_json_rpc_error(response)
         return response.get("result")
 
     def _notify(self, method: str, params: dict[str, Any]) -> None:
         proc = self._require_proc()
-        _send_json(proc, {"jsonrpc": "2.0", "method": method, "params": params})
+        _send_json(
+            proc,
+            {"jsonrpc": "2.0", "method": method, "params": params},
+            timeout_seconds=max(self.timeout_seconds, 0.1),
+        )
 
     def _require_proc(self) -> subprocess.Popen[str]:
         if self._proc is None:
             raise MCPClientError("MCP stdio 会话未启动。")
         return self._proc
+
+    def _require_stdout_reader(self) -> _PipeReader:
+        if self._stdout_reader is None:
+            raise MCPClientError("MCP stdio stdout 不可用。")
+        return self._stdout_reader
 
 
 def _stdio_command(config: dict[str, Any]) -> list[str]:
@@ -241,6 +389,25 @@ def _stdio_command(config: dict[str, Any]) -> list[str]:
     if not isinstance(args, list):
         raise MCPClientError("stdio MCP 连接的 args 必须是数组。")
     return [*parts, *[str(arg) for arg in args]]
+
+
+def _validate_stdio_launch(command: list[str], cwd: str | None) -> None:
+    workdir = Path(cwd).expanduser() if cwd else Path.cwd()
+    if cwd and not workdir.is_dir():
+        raise MCPClientError(f"MCP stdio 工作目录不存在：{workdir}")
+
+    executable = Path(command[0]).name.lower()
+    if executable not in {"node", "node.exe", "bun", "bun.exe", "deno", "deno.exe"}:
+        return
+    entrypoint = next((arg for arg in command[1:] if not arg.startswith("-")), "")
+    if not entrypoint or Path(entrypoint).suffix.lower() not in {".js", ".cjs", ".mjs", ".ts"}:
+        return
+    entrypoint_path = Path(entrypoint).expanduser()
+    resolved = entrypoint_path if entrypoint_path.is_absolute() else workdir / entrypoint_path
+    if not resolved.is_file():
+        raise MCPClientError(
+            f"MCP stdio 入口文件不存在：{resolved}。请检查 Args，或将 cwd 设置为入口文件所在目录。"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -474,43 +641,71 @@ def _initialize_params() -> dict[str, Any]:
     }
 
 
-def _send_json(proc: subprocess.Popen[str], payload: dict[str, Any]) -> None:
+def _send_json(
+    proc: subprocess.Popen[str],
+    payload: dict[str, Any],
+    timeout_seconds: float | None = None,
+) -> None:
     if proc.stdin is None:
         raise MCPClientError("MCP stdio stdin 不可用。")
-    proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    proc.stdin.flush()
+    outcome: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+
+    def write() -> None:
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+            outcome.put(None)
+        except (BrokenPipeError, OSError, UnicodeError, ValueError) as exc:
+            outcome.put(exc)
+
+    writer = threading.Thread(target=write, name="mcp-stdin-writer", daemon=True)
+    writer.start()
+    try:
+        error = outcome.get(timeout=timeout_seconds)
+    except queue.Empty as exc:
+        raise MCPClientError("向 MCP stdio server 发送请求超时。") from exc
+    if error is not None:
+        exit_code = proc.poll()
+        suffix = f"（退出码 {exit_code}）" if exit_code is not None else ""
+        raise MCPClientError(f"无法向 MCP stdio server 发送请求{suffix}：{error}") from error
 
 
 def _read_response(
     proc: subprocess.Popen[str],
+    reader: _PipeReader,
     expected_id: int,
     timeout_seconds: float,
+    stderr: _StderrCollector | None = None,
 ) -> dict[str, Any]:
-    if proc.stdout is None:
-        raise MCPClientError("MCP stdio stdout 不可用。")
-    selector = selectors.DefaultSelector()
-    selector.register(proc.stdout, selectors.EVENT_READ)
-    deadline = time.monotonic() + max(timeout_seconds, 0.1)
-    try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise MCPClientError(f"MCP stdio 等待响应超时：id={expected_id}")
-            events = selector.select(remaining)
-            if not events:
-                raise MCPClientError(f"MCP stdio 等待响应超时：id={expected_id}")
-            line = proc.stdout.readline()
-            if not line:
-                stderr = _read_stderr(proc)
-                raise MCPClientError(f"MCP stdio server 提前退出。{stderr}".strip())
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if payload.get("id") == expected_id:
-                return payload
-    finally:
-        selector.close()
+    deadline = time.monotonic() + max(timeout_seconds, 0)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MCPClientError(f"MCP stdio 等待响应超时：id={expected_id}{_stderr_text(stderr)}")
+        try:
+            event, value = reader.next_event(remaining)
+        except TimeoutError as exc:
+            raise MCPClientError(
+                f"MCP stdio 等待响应超时：id={expected_id}{_stderr_text(stderr)}"
+            ) from exc
+        if event == "error":
+            raise MCPClientError(f"读取 MCP stdio 响应失败：{value}{_stderr_text(stderr)}")
+        if event == "eof":
+            with suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=0.1)
+            if stderr is not None:
+                stderr.wait()
+            exit_code = proc.poll()
+            suffix = f"（退出码 {exit_code}）" if exit_code is not None else "（stdout 已关闭）"
+            raise MCPClientError(f"MCP stdio server 在返回响应前退出{suffix}。{_stderr_text(stderr)}".strip())
+        line = str(value)
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("id") == expected_id:
+            return payload
 
 
 def _raise_json_rpc_error(payload: dict[str, Any]) -> None:
@@ -566,21 +761,5 @@ def _content_text(content: Any) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def _close_process(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is not None:
-        return
-    proc.terminate()
-    with suppress(subprocess.TimeoutExpired):
-        proc.wait(timeout=1)
-        return
-    proc.kill()
-    with suppress(Exception):
-        proc.wait(timeout=1)
-
-
-def _read_stderr(proc: subprocess.Popen[str]) -> str:
-    if proc.stderr is None:
-        return ""
-    with suppress(Exception):
-        return proc.stderr.read()[:1000]
-    return ""
+def _stderr_text(collector: _StderrCollector | None) -> str:
+    return collector.text() if collector is not None else ""
