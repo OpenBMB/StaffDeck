@@ -208,11 +208,122 @@ def test_windows_taskbar_app_disabled_in_headless_mode(monkeypatch) -> None:
     assert desktop_launcher._use_windows_taskbar_app() is False
 
 
+def test_macos_dock_app_disabled_in_headless_mode(monkeypatch) -> None:
+    monkeypatch.setattr(desktop_launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setenv("STAFFDECK_HEADLESS", "1")
+    assert desktop_launcher._use_macos_dock_app() is False
+
+
 def test_windows_restore_command_detection() -> None:
     assert desktop_launcher._is_windows_restore_command(0x0112, 0xF120) is True
     assert desktop_launcher._is_windows_restore_command(0x0112, 0xF122) is True
     assert desktop_launcher._is_windows_restore_command(0x0112, 0xF020) is False
     assert desktop_launcher._is_windows_restore_command(0x0002, 0xF120) is False
+
+
+def test_macos_window_embeds_local_ui() -> None:
+    events: dict[str, object] = {}
+
+    class FakeContentView:
+        def bounds(self):
+            return (0, 0, 1280, 800)
+
+    class FakeWindow:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithContentRect_styleMask_backing_defer_(self, frame, style, backing, defer):
+            events["window_init"] = (frame, style, backing, defer)
+            return self
+
+        def setTitle_(self, title):
+            events["title"] = title
+
+        def setMinSize_(self, size):
+            events["min_size"] = size
+
+        def setReleasedWhenClosed_(self, released):
+            events["released_when_closed"] = released
+
+        def center(self):
+            events["centered"] = True
+
+        def contentView(self):
+            return FakeContentView()
+
+        def setContentView_(self, view):
+            events["content_view"] = view
+
+        def makeKeyAndOrderFront_(self, sender):
+            events["ordered_front"] = sender
+
+    class FakeWebView:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithFrame_(self, frame):
+            events["webview_frame"] = frame
+            return self
+
+        def setAutoresizingMask_(self, mask):
+            events["autoresizing_mask"] = mask
+
+        def loadRequest_(self, request):
+            events["request"] = request
+
+    class FakeURL:
+        @staticmethod
+        def URLWithString_(target):
+            return f"url:{target}"
+
+    class FakeRequest:
+        @staticmethod
+        def requestWithURL_(url):
+            return f"request:{url}"
+
+    class FakeAppKit:
+        NSWindow = FakeWindow
+        NSWindowStyleMaskTitled = 1
+        NSWindowStyleMaskClosable = 2
+        NSWindowStyleMaskMiniaturizable = 4
+        NSWindowStyleMaskResizable = 8
+        NSBackingStoreBuffered = 2
+        NSViewWidthSizable = 2
+        NSViewHeightSizable = 16
+
+        @staticmethod
+        def NSMakeRect(x, y, width, height):
+            return (x, y, width, height)
+
+        @staticmethod
+        def NSMakeSize(width, height):
+            return (width, height)
+
+    class FakeFoundation:
+        NSURL = FakeURL
+        NSURLRequest = FakeRequest
+
+    class FakeWebKit:
+        WKWebView = FakeWebView
+
+    window, webview = desktop_launcher._create_macos_webview_window(
+        FakeAppKit,
+        FakeFoundation,
+        FakeWebKit,
+        "http://127.0.0.1:5173/chat/",
+    )
+
+    assert isinstance(window, FakeWindow)
+    assert isinstance(webview, FakeWebView)
+    assert webview is events["content_view"]
+    assert events["request"] == "request:url:http://127.0.0.1:5173/chat/"
+    assert events["title"] == "StaffDeck"
+    assert events["min_size"] == (900, 600)
+    assert events["released_when_closed"] is False
+    assert events["centered"] is True
 
 
 def test_frozen_server_disables_api_access_logging(monkeypatch) -> None:

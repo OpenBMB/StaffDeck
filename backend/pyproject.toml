@@ -38,7 +38,9 @@ dev = [
 ]
 packaging = [
   "pyinstaller>=6.6.0",
-  "certifi>=2024.2.2"
+  "certifi>=2024.2.2",
+  "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+  "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'"
 ]
 
 [build-system]

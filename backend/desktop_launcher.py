@@ -307,8 +307,7 @@ def _open_browser_when_ready(url: str) -> None:
 
 
 def _open_browser(target: str) -> None:
-    """打开浏览器页面。点 Dock 图标每次都开一个新标签——最稳定、跨浏览器一致、
-    不依赖 macOS 自动化授权（adhoc 签名下自动化授权弹窗不可靠）。"""
+    """Open StaffDeck in the system browser on platforms without an embedded window."""
     webbrowser.open(target)
 
 
@@ -320,8 +319,9 @@ def _four_char_code(value: str) -> int:
 
 
 def _use_macos_dock_app() -> bool:
-    # 仅 macOS 打包态用 Cocoa 壳（进 Dock + 点图标开页面）。
-    # 开发态 / 其它平台保持简单主线程 uvicorn。
+    if _env_flag("STAFFDECK_HEADLESS"):
+        return False
+    # 仅 macOS 打包态用 Cocoa 壳和内嵌 WebView。
     return sys.platform == "darwin" and getattr(sys, "frozen", False)
 
 
@@ -373,9 +373,41 @@ def preload_server_app(cfg: dict) -> None:
     cfg["app"] = getattr(module, attribute_name)
 
 
+def _create_macos_webview_window(AppKit, Foundation, WebKit, target: str):
+    """Create the native macOS window used by both arm64 and x86_64 bundles."""
+    style = (
+        AppKit.NSWindowStyleMaskTitled
+        | AppKit.NSWindowStyleMaskClosable
+        | AppKit.NSWindowStyleMaskMiniaturizable
+        | AppKit.NSWindowStyleMaskResizable
+    )
+    window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        AppKit.NSMakeRect(0, 0, 1280, 800),
+        style,
+        AppKit.NSBackingStoreBuffered,
+        False,
+    )
+    window.setTitle_(APP_NAME)
+    window.setMinSize_(AppKit.NSMakeSize(900, 600))
+    window.setReleasedWhenClosed_(False)
+    window.center()
+
+    webview = WebKit.WKWebView.alloc().initWithFrame_(window.contentView().bounds())
+    webview.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+    page_url = Foundation.NSURL.URLWithString_(target)
+    if page_url is None:
+        raise RuntimeError(f"Invalid StaffDeck window URL: {target!r}")
+    webview.loadRequest_(Foundation.NSURLRequest.requestWithURL_(page_url))
+    window.setContentView_(webview)
+    window.makeKeyAndOrderFront_(None)
+    return window, webview
+
+
 def _run_macos_dock_app(cfg: dict, url: str) -> int:
-    """macOS：NSApplication 主循环。进 Dock/菜单栏，点入口重新打开浏览器。"""
+    """Run the local service behind a native WKWebView window on macOS."""
     import AppKit
+    import Foundation
+    import WebKit
     from PyObjCTools import AppHelper
 
     global _MACOS_DELEGATE_REF
@@ -393,21 +425,25 @@ def _run_macos_dock_app(cfg: dict, url: str) -> int:
         def applicationDidFinishLaunching_(self, _notification):  # noqa: N802
             self.dock_visible = True
             self.server_started = False
+            self.main_window = None
+            self.main_webview = None
             self._install_url_scheme_handler()
             self._install_status_menu()
             self._start_server()
-            print(f"{APP_NAME} 启动中，就绪后将打开：{url}/chat/")
+            print(f"{APP_NAME} 启动中，就绪后将显示应用窗口：{url}/chat/")
 
         def handleGetURLEvent_withReplyEvent_(self, event, _reply_event):  # noqa: N802
             direct_object = event.descriptorForKeyword_(_four_char_code("----"))
             deep_link = direct_object.stringValue() if direct_object is not None else ""
             print(f"收到 {APP_NAME} URL Scheme 唤起：{deep_link or '<empty>'}")
-            threading.Thread(target=_open_browser_when_ready, args=(url,), daemon=True).start()
+            self._show_window_when_ready()
 
         def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _flag):  # noqa: N802
-            # 点 Dock 图标（app 已在运行）→ 打开浏览器页面（新标签）
-            _open_browser(url + "/chat/")
+            self.showMainWindow_(url + "/chat/")
             return True
+
+        def applicationShouldTerminateAfterLastWindowClosed_(self, _app):
+            return False
 
         def applicationShouldTerminate_(self, _app):  # noqa: N802
             return AppKit.NSTerminateNow
@@ -418,7 +454,19 @@ def _run_macos_dock_app(cfg: dict, url: str) -> int:
             return self.dock_context_menu
 
         def openStaffDeck_(self, _sender):  # noqa: N802
-            _open_browser(url + "/chat/")
+            self.showMainWindow_(url + "/chat/")
+
+        def showMainWindow_(self, target):
+            if self.main_window is None:
+                self.main_window, self.main_webview = _create_macos_webview_window(
+                    AppKit,
+                    Foundation,
+                    WebKit,
+                    str(target),
+                )
+            else:
+                self.main_window.makeKeyAndOrderFront_(None)
+            AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
         def restartStaffDeck_(self, _sender):  # noqa: N802
             os.execv(sys.executable, [sys.executable] + sys.argv[1:])
@@ -454,7 +502,17 @@ def _run_macos_dock_app(cfg: dict, url: str) -> int:
             # uvicorn 在后台线程跑（主线程要留给 Cocoa 事件循环）。这里必须等
             # NSApplication 完成注册后再启动，避免 LaunchServices 初始化竞态导致 abort。
             threading.Thread(target=_serve, args=(cfg,), daemon=True).start()
-            threading.Thread(target=_open_browser_when_ready, args=(url,), daemon=True).start()
+            self._show_window_when_ready()
+
+        def _show_window_when_ready(self) -> None:
+            def wait_and_show() -> None:
+                for _ in range(120):
+                    if _health_ok(url):
+                        AppHelper.callAfter(self.showMainWindow_, url + "/chat/")
+                        return
+                    time.sleep(0.5)
+
+            threading.Thread(target=wait_and_show, daemon=True).start()
 
         def _install_url_scheme_handler(self) -> None:
             manager = AppKit.NSAppleEventManager.sharedAppleEventManager()
