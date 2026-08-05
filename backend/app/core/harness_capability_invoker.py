@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -9,11 +10,9 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
-from app.core.capability_manifest import (
-    CapabilityAuthorizationError,
-    CapabilityManifestBuilder,
-    general_skill_snapshot_digest,
-    tool_snapshot_digest,
+from app.capabilities.local_general_skill import (
+    package_from_row,
+    runtime_snapshot_from_package,
 )
 from app.core.capability_discovery import (
     CAPABILITY_SEARCH_MAX_RESULTS,
@@ -21,8 +20,14 @@ from app.core.capability_discovery import (
     model_descriptor,
     search_capability_descriptors,
 )
-from app.core.harness_session_cleanup import harness_task_workspace_path
+from app.core.capability_manifest import (
+    CapabilityAuthorizationError,
+    CapabilityManifestBuilder,
+    general_skill_snapshot_digest,
+    tool_snapshot_digest,
+)
 from app.core.harness_agent import HarnessExecutionCancelled
+from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
 from app.core.tool_replay_policy import ToolReplayPolicy
 from app.db.models import (
@@ -32,12 +37,9 @@ from app.db.models import (
     ModelConfig,
     Skill,
     Tool,
+    UIConfig,
     new_id,
     utc_now,
-)
-from app.capabilities.local_general_skill import (
-    package_from_row,
-    runtime_snapshot_from_package,
 )
 from app.general_skills.runner import (
     GeneralSkillExecutionCancelled,
@@ -50,6 +52,14 @@ from app.harness import (
     build_file_tool_registry,
     register_command_tools,
 )
+from app.harness.artifacts import (
+    HarnessArtifactAccessError,
+    publish_changed_harness_artifacts,
+    publish_harness_artifacts,
+    snapshot_harness_workspace,
+)
+from app.harness.errors import HarnessExecutionError
+from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import KnowledgeService
@@ -98,6 +108,15 @@ class HarnessCapabilityInvoker:
             tenant_id, session.id, task_frame_id
         )
         self.workspace_root.mkdir(parents=True, exist_ok=True)
+        ui_config = self.db.get(UIConfig, tenant_id)
+        sandbox_mode = parse_network_policy(
+            getattr(ui_config, "sandbox_network_mode", None) if ui_config else None
+        )
+        sandbox_domains = tuple(
+            str(item).strip()
+            for item in (getattr(ui_config, "sandbox_allowed_domains", []) if ui_config else [])
+            if str(item).strip()
+        )
         self._file_registry = build_file_tool_registry()
         register_command_tools(self._file_registry)
         self._file_executor = HarnessExecutor(self._file_registry)
@@ -106,7 +125,11 @@ class HarnessCapabilityInvoker:
             task_frame_id=task_frame_id,
             tenant_id=tenant_id,
             workspace_root=self.workspace_root,
+            sandbox_network_mode=sandbox_mode,
+            sandbox_allowed_domains=sandbox_domains,
         )
+        self._sandbox_network_mode = sandbox_mode
+        self._sandbox_allowed_domains = sandbox_domains
         self._descriptors = {
             item.name: item
             for item in manifest.available
@@ -343,6 +366,12 @@ class HarnessCapabilityInvoker:
         *,
         call_id: str,
     ) -> dict[str, Any]:
+        before = None
+        if name == "exec_command":
+            before = snapshot_harness_workspace(
+                self.workspace_root,
+                max_entries=self._file_context.limits.max_entries,
+            )
         result = self._file_executor.execute(
             self._file_context,
             HarnessToolCall(
@@ -361,16 +390,25 @@ class HarnessCapabilityInvoker:
                     or ""
                 ).strip()
                 if artifact_path:
-                    artifacts.append(
-                        {
-                            "type": "workspace_file",
-                            "task_frame_id": self.task_frame_id,
-                            "path": artifact_path,
-                            "sha256": data.get("sha256"),
-                            "size": data.get("size"),
-                            "operation": name,
-                        }
+                    artifacts.extend(
+                        publish_harness_artifacts(
+                            self.workspace_root,
+                            self.task_frame_id,
+                            [{"path": artifact_path}],
+                            operation=name,
+                        )
                     )
+            elif name == "exec_command" and before is not None:
+                artifacts.extend(
+                    publish_changed_harness_artifacts(
+                        self.workspace_root,
+                        self.task_frame_id,
+                        before,
+                        operation=name,
+                        max_entries=self._file_context.limits.max_entries,
+                        max_file_bytes=self._file_context.limits.max_file_bytes,
+                    )
+                )
             return {
                 "success": True,
                 "data": data,
@@ -575,13 +613,9 @@ class HarnessCapabilityInvoker:
         package = package_from_row(skill)
         snapshot = runtime_snapshot_from_package(skill, package)
         try:
-            response = GeneralSkillRunner().run(
-                snapshot,
-                query,
-                self.model_config,
-                self.session.user_id,
-                max_attempts=_general_skill_max_attempts(skill),
-                event_sink=lambda item: self._emit_trace(
+            run_kwargs = {
+                "max_attempts": _general_skill_max_attempts(skill),
+                "event_sink": lambda item: self._emit_trace(
                     "general_skill_trace",
                     {
                         "skill_slug": skill.slug,
@@ -590,8 +624,46 @@ class HarnessCapabilityInvoker:
                         **item,
                     },
                 ),
+            }
+            run_kwargs.update(
                 workspace_root=self.workspace_root,
                 is_cancelled=self.is_cancelled,
+                sandbox_network_mode=self._sandbox_network_mode,
+                sandbox_allowed_domains=self._sandbox_allowed_domains,
+            )
+            runner = GeneralSkillRunner()
+            supported = inspect.signature(runner.run).parameters
+            if "sandbox_network_mode" not in supported:
+                if self._sandbox_network_mode != "all":
+                    raise HarnessExecutionError(
+                        "SANDBOX_POLICY_UNSUPPORTED",
+                        "通用技能执行器不支持当前租户的沙盒网络策略，已拒绝执行。",
+                    )
+                # Legacy runners cannot weaken an unrestricted policy. Keep
+                # this compatibility path only for the explicit `all` mode.
+                run_kwargs.pop("sandbox_network_mode", None)
+                run_kwargs.pop("sandbox_allowed_domains", None)
+            response = runner.run(
+                snapshot, query, self.model_config, self.session.user_id, **run_kwargs
+            )
+        except HarnessExecutionError as exc:
+            code = str(exc.error.code or "SANDBOX_EXECUTION_FAILED")
+            message = str(exc.error.message or exc)
+            self._emit_trace(
+                "general_skill_run_finished",
+                {
+                    "skill_slug": skill.slug,
+                    "operation": "execute",
+                    "success": False,
+                    "error": code,
+                    "message": message,
+                },
+            )
+            return _failure(
+                code,
+                message,
+                retryable=False,
+                infrastructure_failure=True,
             )
         except GeneralSkillExecutionCancelled as exc:
             self._emit_trace(
@@ -612,6 +684,35 @@ class HarnessCapabilityInvoker:
         )
         declared_success = structured.get("success")
         succeeded = True if declared_success is None else bool(declared_success)
+        artifacts: list[dict[str, object]] = []
+        artifact_errors: list[dict[str, str]] = [
+            {
+                "path": str(item.get("path") or ""),
+                "code": str(item.get("code") or "artifact_declaration_invalid"),
+                "message": str(item.get("message") or "产物声明无效。"),
+            }
+            for item in (structured.get("artifact_errors") or [])[:20]
+            if isinstance(item, dict)
+        ]
+        for declaration in (structured.get("artifacts") or [])[:20]:
+            try:
+                artifacts.extend(
+                    publish_harness_artifacts(
+                        self.workspace_root,
+                        self.task_frame_id,
+                        [declaration],
+                        operation="general_skill",
+                    )
+                )
+            except HarnessArtifactAccessError as exc:
+                raw_path = declaration.get("path") if isinstance(declaration, dict) else declaration
+                artifact_errors.append(
+                    {
+                        "path": str(raw_path or ""),
+                        "code": "artifact_publish_failed",
+                        "message": str(exc),
+                    }
+                )
         data = {
             "kind": "general_skill",
             "slug": response.skill_slug,
@@ -623,6 +724,7 @@ class HarnessCapabilityInvoker:
             "stderr": response.stderr,
             "generated_code": response.generated_code,
             "execution_trace": response.execution_trace,
+            "artifact_errors": artifact_errors,
         }
         self._emit_trace(
             "general_skill_run_finished",
@@ -636,10 +738,11 @@ class HarnessCapabilityInvoker:
             },
         )
         if succeeded:
-            return {"success": True, "data": data}
+            return {"success": True, "data": data, "artifacts": artifacts}
         return {
             "success": False,
             "data": data,
+            "artifacts": artifacts,
             "error": {
                 "code": str(
                     structured.get("error") or "GENERAL_SKILL_EXECUTION_FAILED"
@@ -829,14 +932,16 @@ def _intersect_knowledge_metadata(
     }
 
 
-def _failure(code: str, message: str) -> dict[str, Any]:
+def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
+    error = {
+        "code": code,
+        "message": message,
+        "retryable": False,
+    }
+    error.update(details)
     return {
         "success": False,
-        "error": {
-            "code": code,
-            "message": message,
-            "retryable": False,
-        },
+        "error": error,
     }
 
 

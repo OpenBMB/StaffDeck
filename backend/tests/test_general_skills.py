@@ -1,13 +1,18 @@
 import base64
-
-from fastapi import HTTPException
+import os
+import subprocess
+import sys
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine, select
 from zipfile import ZipFile
 
+import pytest
+from fastapi import HTTPException
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine, select
+
+from app.agents.branching import ensure_open_gallery_binding
 from app.api.general_skills import (
     archive_general_skill,
     delete_general_skill,
@@ -20,7 +25,6 @@ from app.api.general_skills import (
     publish_general_skill_to_gallery,
     run_general_skill,
 )
-from app.agents.branching import ensure_open_gallery_binding
 from app.core import AgentLoop
 from app.core.reflection_agent import ReflectionDecision
 from app.db.models import (
@@ -43,17 +47,79 @@ from app.general_skills.schema import (
     GeneralSkillRunResponse,
     GeneralSkillSelection,
 )
+from app.harness.errors import HarnessExecutionError
 from app.llm import LLMClient, LLMError
 from app.security.auth import hash_password
 from app.security.encryption import encrypt_secret
 from app.session.session_schema import ChatTurnRequest, RouterDecision, StepAgentResult
 from app.tools.tool_schema import ToolCall
 
-
 WEATHER_SKILL_MD = """# 中国城市天气查询工具
 
 python weather.py -json -today <地区名称>
 """
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _reviewed_srt_runtime(tmp_path_factory):
+    if os.environ.get("STAFFDECK_SRT_RUNTIME", "").strip():
+        yield
+        return
+    repo_root = Path(__file__).resolve().parents[2]
+    runtime = repo_root / "packaging" / "sandbox_runtime"
+    node = runtime / "bin" / ("node.exe" if sys.platform == "win32" else "node")
+    cli = runtime / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js"
+    if not node.is_file() or not cli.is_file():
+        runtime = tmp_path_factory.mktemp("reviewed-srt")
+        subprocess.run(
+            [
+                sys.executable,
+                str(repo_root / "packaging" / "fetch_sandbox_runtime.py"),
+                str(runtime),
+            ],
+            check=True,
+        )
+    os.environ["STAFFDECK_SRT_RUNTIME"] = str(runtime)
+    try:
+        yield
+    finally:
+        os.environ.pop("STAFFDECK_SRT_RUNTIME", None)
+
+
+def test_agent_loop_preserves_structured_sandbox_failure() -> None:
+    class FailingRunner:
+        def run(self, *_args, **_kwargs):
+            raise HarnessExecutionError(
+                "SANDBOX_POLICY_UNSUPPORTED",
+                "当前沙盒不支持域名白名单。",
+            )
+
+    loop = object.__new__(AgentLoop)
+    loop.db = SimpleNamespace(get=lambda *_args: None)
+    loop.general_skill_runner = FailingRunner()
+    loop.general_skill_reader = SimpleNamespace()
+    skill = GeneralSkill(
+        tenant_id="tenant_demo",
+        slug="sandbox-test",
+        name="Sandbox Test",
+        skill_markdown="# Sandbox Test",
+        status="published",
+    )
+
+    response = loop._run_general_skill_operation(
+        skill,
+        "run",
+        SimpleNamespace(),
+        "user_demo",
+    )
+
+    assert response.structured_result == {
+        "success": False,
+        "error": "SANDBOX_POLICY_UNSUPPORTED",
+        "message": "当前沙盒不支持域名白名单。",
+        "retryable": False,
+        "infrastructure_failure": True,
+    }
 
 
 def _system_and_stage_instructions(system_prompt: object, payload: object) -> str:
@@ -2578,6 +2644,14 @@ def test_general_skill_runner_stops_on_non_retryable_failure(monkeypatch) -> Non
         if "代码修复器" in prompt_text:
             calls.append("repair")
             raise AssertionError("non-retryable failure should not call repair")
+        if "通用技能运行结果审查器" in prompt_text:
+            calls.append("review")
+            return {
+                "result_sufficient": False,
+                "needs_retry": True,
+                "terminal": False,
+                "reason": "模型错误地建议重试",
+            }
         if "通用技能结果回复器" in prompt_text:
             calls.append("reply")
             assert payload["structured_result"]["retryable"] is False
@@ -2608,7 +2682,7 @@ def test_general_skill_runner_stops_on_non_retryable_failure(monkeypatch) -> Non
     response = GeneralSkillRunner().run(skill, "北京今天天气怎么样", model_config, max_attempts=10)
 
     assert response.reply == "当前天气源不可用，建议稍后再试。"
-    assert calls == ["runner", "reply"]
+    assert calls == ["runner", "review", "reply"]
     assert any(item["phase"] == "reflection_stopped" for item in response.execution_trace)
 
 

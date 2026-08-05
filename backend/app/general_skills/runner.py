@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import queue
@@ -27,6 +28,9 @@ from app.general_skills.schema import (
     GeneralSkillRunResponse,
     GeneralSkillSelection,
 )
+from app.harness.artifacts import HarnessArtifactAccessError, normalize_harness_artifact_path
+from app.harness.command import run_sandboxed_process
+from app.harness.errors import HarnessExecutionError
 from app.llm import LLMClient, LLMError
 from app.llm.model_config_resolver import snapshot_model_config
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
@@ -218,14 +222,11 @@ class GeneralSkillRunner:
         memory_context: list[dict[str, object]] | None = None,
         workspace_root: Path | None = None,
         is_cancelled: CancellationCheck | None = None,
+        sandbox_network_mode: str = "all",
+        sandbox_allowed_domains: tuple[str, ...] = (),
     ) -> GeneralSkillRunResponse:
         trace: list[dict[str, Any]] = []
         max_attempts = max(1, min(max_attempts, GENERAL_SKILL_MAX_ATTEMPTS))
-        # GeneralSkillRunner instances may be reused by legacy call sites. Set
-        # the per-run Harness controls on every invocation so the historical
-        # _execute_plan call signature remains compatible with test doubles.
-        self._active_workspace_root = workspace_root
-        self._active_is_cancelled = is_cancelled
         _raise_if_cancelled(is_cancelled)
         _emit(trace, {"phase": "skill_loaded", "message": f"已加载通用技能 {skill.name}", "slug": skill.slug}, event_sink)
         try:
@@ -263,14 +264,18 @@ class GeneralSkillRunner:
                 {"phase": "attempt_started", "message": f"开始第 {attempt} 次运行", "attempt": attempt},
                 event_sink,
             )
+            supported = inspect.signature(self._execute_plan).parameters
+            optional_controls = {
+                "workspace_root": workspace_root,
+                "is_cancelled": is_cancelled,
+                "sandbox_network_mode": sandbox_network_mode,
+                "sandbox_allowed_domains": sandbox_allowed_domains,
+            }
+            execute_kwargs = {
+                key: value for key, value in optional_controls.items() if key in supported
+            }
             stdout, stderr, structured_result = self._execute_plan(
-                skill,
-                query,
-                plan,
-                user_id,
-                trace,
-                event_sink,
-                attempt,
+                skill, query, plan, user_id, trace, event_sink, attempt, **execute_kwargs
             )
             _normalize_failure_diagnostics(structured_result)
             _raise_if_cancelled(is_cancelled)
@@ -288,6 +293,12 @@ class GeneralSkillRunner:
                 conversation_context,
                 memory_context,
             )
+            if (
+                structured_result.get("retryable") is False
+                or structured_result.get("infrastructure_failure") is True
+            ):
+                review["needs_retry"] = False
+                review["terminal"] = True
             _raise_if_cancelled(is_cancelled)
             attempts.append(
                 {
@@ -631,13 +642,11 @@ class GeneralSkillRunner:
         attempt: int = 1,
         workspace_root: Path | None = None,
         is_cancelled: CancellationCheck | None = None,
+        sandbox_network_mode: str | None = None,
+        sandbox_allowed_domains: tuple[str, ...] | None = None,
     ) -> tuple[str, str, dict[str, Any]]:
-        workspace_root = workspace_root or getattr(
-            self, "_active_workspace_root", None
-        )
-        is_cancelled = is_cancelled or getattr(
-            self, "_active_is_cancelled", None
-        )
+        sandbox_network_mode = sandbox_network_mode or "all"
+        sandbox_allowed_domains = sandbox_allowed_domains or ()
         _raise_if_cancelled(is_cancelled)
         if workspace_root is not None:
             workspace_root.mkdir(parents=True, exist_ok=True)
@@ -649,6 +658,8 @@ class GeneralSkillRunner:
         )
         skill_dir = run_dir / "skill"
         _materialize_skill_package(skill, skill_dir)
+        artifact_dir = run_dir / "artifacts"
+        artifact_dir.mkdir()
         runtime = _plan_runtime(plan)
         runner_path = run_dir / ("runner.sh" if runtime == "bash" else "runner.py")
         runner_path.write_text(plan.code, encoding="utf-8")
@@ -658,6 +669,7 @@ class GeneralSkillRunner:
             "skill_name": skill.name,
             "user_id": user_id,
             "skill_workspace": str(skill_dir),
+            "artifact_dir": str(artifact_dir),
             "skill_files": [file["path"] for file in _skill_files(skill)],
         }
         _emit(
@@ -673,7 +685,7 @@ class GeneralSkillRunner:
         )
         try:
             runtime_python = ensure_runtime_python()
-            env = runtime_environment(os.environ.copy())
+            env = runtime_environment(os.environ.copy(), python_path=runtime_python)
         except GeneralSkillRuntimeError as exc:
             structured = {
                 "success": False,
@@ -698,6 +710,7 @@ class GeneralSkillRunner:
                 "ARGUMENTS": query,
                 "QUERY": query,
                 "SKILL_WORKSPACE": str(skill_dir),
+                "ARTIFACT_DIR": str(artifact_dir),
                 "SKILL_SLUG": skill.slug,
                 "SKILL_NAME": skill.name,
                 "USER_ID": user_id,
@@ -717,32 +730,43 @@ class GeneralSkillRunner:
             return "", structured["message"], structured
         command = ["/bin/bash", str(runner_path)] if runtime == "bash" else [str(runtime_python), str(runner_path)]
         cwd = str(skill_dir if runtime == "bash" else run_dir)
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=cwd,
-            env=env,
-            text=False,
-        )
-        if process.stdin:
-            process.stdin.write(json.dumps(stdin_payload, ensure_ascii=False).encode("utf-8"))
-            process.stdin.close()
-
+        if is_cancelled and is_cancelled():
+            raise GeneralSkillExecutionCancelled("General skill execution cancelled.")
         try:
-            stdout, stderr, timed_out = _stream_process_output(
-                process,
-                trace,
-                event_sink,
-                attempt,
-                _run_timeout_seconds(skill),
-                is_cancelled,
+            result = run_sandboxed_process(
+                # The runner and materialized package share one workspace.
+                workspace=run_dir,
+                argv=command,
+                stdin_json=stdin_payload,
+                stdin_path_keys=("skill_workspace", "artifact_dir"),
+                cwd=Path(cwd),
+                timeout_seconds=_run_timeout_seconds(skill),
+                output_limit=MAX_OUTPUT_CHARS * 4,
+                env=env,
+                env_path_keys=("SKILL_WORKSPACE", "ARTIFACT_DIR"),
+                network_mode=sandbox_network_mode,
+                allowed_domains=sandbox_allowed_domains,
+                is_cancelled=is_cancelled,
             )
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait()
+        except HarnessExecutionError as exc:
+            if exc.error.code == "SANDBOX_EXECUTION_CANCELLED":
+                raise GeneralSkillExecutionCancelled(str(exc)) from exc
+            raise
+        stdout = result.stdout.decode("utf-8", errors="replace")
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        timed_out = result.timed_out
+        if stdout:
+            _emit(
+                trace,
+                {"phase": "stdout_chunk", "message": "收到运行输出", "attempt": attempt, "text": stdout},
+                event_sink,
+            )
+        if stderr:
+            _emit(
+                trace,
+                {"phase": "stderr_chunk", "message": "收到错误输出", "attempt": attempt, "text": stderr},
+                event_sink,
+            )
 
         if timed_out:
             stdout = _truncate(stdout)
@@ -763,10 +787,15 @@ class GeneralSkillRunner:
             )
             return stdout, stderr, structured
 
-        return_code = process.wait()
+        return_code = result.returncode
         stdout = _truncate(stdout)
         stderr = _truncate(stderr)
         structured = _parse_stdout_json(stdout)
+        _normalize_declared_artifacts(
+            structured,
+            artifact_root=artifact_dir,
+            workspace_root=workspace_root,
+        )
         if return_code != 0:
             structured.setdefault("success", False)
             structured.setdefault("error", f"runner exited with code {return_code}")
@@ -1024,6 +1053,46 @@ def _parse_stdout_json(stdout: str) -> dict[str, Any]:
         return {"success": True, "text": stripped}
 
 
+def _normalize_declared_artifacts(
+    structured: dict[str, Any],
+    *,
+    artifact_root: Path,
+    workspace_root: Path | None,
+) -> None:
+    declarations = structured.get("artifacts")
+    if declarations is None:
+        return
+    declaration_errors: list[dict[str, str]] = []
+    if not isinstance(declarations, list) or workspace_root is None:
+        structured["artifacts"] = []
+        structured["artifact_errors"] = [
+            {
+                "path": "",
+                "code": "artifact_declaration_invalid",
+                "message": "artifacts 必须是当前运行目录下的相对路径列表。",
+            }
+        ]
+        return
+    normalized: list[dict[str, str]] = []
+    for declaration in declarations[:20]:
+        raw_path = declaration.get("path") if isinstance(declaration, Mapping) else declaration
+        try:
+            relative = normalize_harness_artifact_path(str(raw_path or ""))
+            task_relative = (artifact_root / relative).relative_to(workspace_root).as_posix()
+            normalized.append({"path": task_relative})
+        except (HarnessArtifactAccessError, ValueError):
+            declaration_errors.append(
+                {
+                    "path": str(raw_path or ""),
+                    "code": "artifact_declaration_invalid",
+                    "message": "产物路径必须位于当前运行目录，且只能使用相对路径。",
+                }
+            )
+    structured["artifacts"] = normalized
+    if declaration_errors:
+        structured["artifact_errors"] = declaration_errors
+
+
 def _run_timeout_seconds(skill: GeneralSkill) -> float:
     runtime_config = getattr(skill, "runtime_config_json", None)
     config = runtime_config if isinstance(runtime_config, Mapping) else {}
@@ -1148,7 +1217,7 @@ def _stream_process_output_threaded(
     timeout_seconds=RUN_TIMEOUT_SECONDS,
     is_cancelled=None,
 ):
-    q: "queue.Queue[tuple[str, bytes]]" = queue.Queue()
+    q: queue.Queue[tuple[str, bytes]] = queue.Queue()
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
 

@@ -3,17 +3,24 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import venv
+from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
+from typing import BinaryIO, Iterator
+
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.version import InvalidVersion, Version
 
 from app.config import get_settings
-
 
 IMPORT_NAMES = {
     "beautifulsoup4": "bs4",
     "python-docx": "docx",
     "python-dateutil": "dateutil",
 }
+_RUNTIME_PREPARE_LOCK = threading.RLock()
 
 
 class GeneralSkillRuntimeError(RuntimeError):
@@ -21,17 +28,26 @@ class GeneralSkillRuntimeError(RuntimeError):
 
 
 def ensure_runtime_python() -> Path:
-    settings = get_settings()
-    python_path = _resolve_runtime_python(settings.general_skill_runtime_python, settings.general_skill_runtime_venv)
-    if not python_path.exists():
-        _create_runtime_venv(python_path)
-    if settings.general_skill_runtime_auto_install and settings.general_skill_network_install:
-        _ensure_packages(python_path, settings.general_skill_runtime_package_list)
-    return python_path
+    with _RUNTIME_PREPARE_LOCK:
+        settings = get_settings()
+        python_path = _resolve_runtime_python(
+            settings.general_skill_runtime_python,
+            settings.general_skill_runtime_venv,
+        )
+        with _runtime_prepare_file_lock(python_path):
+            if not python_path.exists():
+                _create_runtime_venv(python_path)
+            if settings.general_skill_runtime_auto_install and settings.general_skill_network_install:
+                _ensure_packages(python_path, settings.general_skill_runtime_package_list)
+        return python_path
 
 
-def runtime_environment(base_env: dict[str, str] | None = None) -> dict[str, str]:
-    python_path = ensure_runtime_python()
+def runtime_environment(
+    base_env: dict[str, str] | None = None,
+    *,
+    python_path: Path | None = None,
+) -> dict[str, str]:
+    python_path = python_path or ensure_runtime_python()
     env = dict(base_env or os.environ)
     bin_dir = python_path.parent
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
@@ -89,7 +105,13 @@ def _create_runtime_venv(python_path: Path) -> None:
 
 def _ensure_packages(python_path: Path, packages: list[str]) -> None:
     settings = get_settings()
-    missing = [package for package in packages if not _can_import(python_path, _import_name(package))]
+    requirements = [_parse_requirement(package) for package in packages]
+    missing = [
+        str(requirement)
+        for requirement in requirements
+        if not _requirement_satisfied(python_path, requirement)
+        or not _can_import(python_path, _import_name(requirement.name))
+    ]
     if not missing:
         return
     args = [str(python_path), "-m", "pip", "install", *missing]
@@ -100,7 +122,7 @@ def _ensure_packages(python_path: Path, packages: list[str]) -> None:
         import certifi
         env["SSL_CERT_FILE"] = certifi.where()
         env["PIP_CERT"] = certifi.where()
-    except Exception:
+    except (ImportError, OSError):
         pass
     result = subprocess.run(
         args,
@@ -122,7 +144,12 @@ def _ensure_packages(python_path: Path, packages: list[str]) -> None:
 
 def _can_import(python_path: Path, import_name: str) -> bool:
     result = subprocess.run(
-        [str(python_path), "-c", f"import {import_name}"],
+        [
+            str(python_path),
+            "-c",
+            "import importlib,sys; importlib.import_module(sys.argv[1])",
+            import_name,
+        ],
         text=True,
         capture_output=True,
         timeout=20,
@@ -131,6 +158,83 @@ def _can_import(python_path: Path, import_name: str) -> bool:
     return result.returncode == 0
 
 
+def _requirement_satisfied(python_path: Path, requirement: Requirement) -> bool:
+    if requirement.marker is not None and not requirement.marker.evaluate():
+        return True
+    result = subprocess.run(
+        [
+            str(python_path),
+            "-c",
+            "import importlib.metadata,sys; print(importlib.metadata.version(sys.argv[1]))",
+            requirement.name,
+        ],
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    try:
+        version = Version(result.stdout.strip())
+    except InvalidVersion:
+        return False
+    return not requirement.specifier or version in requirement.specifier
+
+
+def _parse_requirement(value: str) -> Requirement:
+    try:
+        requirement = Requirement(value)
+    except InvalidRequirement as exc:
+        raise GeneralSkillRuntimeError(f"通用技能依赖声明无效：{value}") from exc
+    if requirement.url:
+        raise GeneralSkillRuntimeError("通用技能自动依赖仅支持包索引中的版本约束。")
+    return requirement
+
+
 def _import_name(package: str) -> str:
     normalized = package.strip()
-    return IMPORT_NAMES.get(normalized, normalized.split("==", 1)[0].split(">=", 1)[0].split("<", 1)[0].replace("-", "_"))
+    return IMPORT_NAMES.get(normalized, normalized.replace("-", "_"))
+
+
+@contextmanager
+def _runtime_prepare_file_lock(python_path: Path) -> Iterator[None]:
+    from app import paths
+
+    digest = sha256(str(python_path.resolve()).encode("utf-8")).hexdigest()[:16]
+    lock_path = paths.user_data_dir() / f"runtime-prepare-{digest}.lock"
+    handle = lock_path.open("a+b")
+    try:
+        _lock_file(handle)
+        yield
+    finally:
+        _unlock_file(handle)
+        handle.close()
+
+
+def _lock_file(handle: BinaryIO) -> None:
+    if sys.platform == "win32":
+        import msvcrt
+
+        handle.seek(0)
+        if handle.read(1) == b"":
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(handle: BinaryIO) -> None:
+    if sys.platform == "win32":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
