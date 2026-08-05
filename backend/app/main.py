@@ -6,6 +6,7 @@ from sqlmodel import Session
 
 from app.api import (
     agents,
+    app_updates,
     auth,
     channels,
     chat,
@@ -30,12 +31,13 @@ from app.config import get_settings
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
 from app.scheduled_tasks.worker import start_background_worker, stop_background_worker
+from app.version import app_version
 
 settings = get_settings()
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version=app_version(),
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
@@ -71,6 +73,7 @@ def health() -> dict[str, str]:
     return {"status": "ok", "app": "StaffDeck"}
 
 
+app.include_router(app_updates.router)
 app.include_router(chat.router)
 app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)

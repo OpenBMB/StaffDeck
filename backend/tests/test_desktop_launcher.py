@@ -1,5 +1,6 @@
-import desktop_launcher
 import pytest
+
+import desktop_launcher
 
 
 def test_frozen_safe_main_calls_freeze_support_before_main(monkeypatch) -> None:
@@ -11,6 +12,21 @@ def test_frozen_safe_main_calls_freeze_support_before_main(monkeypatch) -> None:
 
     assert desktop_launcher.run_frozen_safe_main() == 7
     assert calls == ["freeze", "main"]
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("http://127.0.0.1:5173/workspace", False),
+        ("http://127.0.0.1:5174/workspace", True),
+        ("https://github.com/OpenBMB/StaffDeck/releases", True),
+        ("http://127.0.0.1:invalid/workspace", False),
+        ("staffdeck://open", False),
+        ("not-a-url", False),
+    ],
+)
+def test_external_web_url_detection(target: str, expected: bool) -> None:
+    assert desktop_launcher._is_external_web_url(target, "http://127.0.0.1:5173") is expected
 
 
 def _clear_port_env(monkeypatch) -> None:

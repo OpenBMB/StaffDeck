@@ -2118,5 +2118,9 @@
   "文件下载失败": "File download failed",
   "已下载文件：{1}": "Downloaded file: {1}",
   "Harness 文件": "Harness file",
-  "Harness 文件 · {1}": "Harness file · {1}"
+  "Harness 文件 · {1}": "Harness file · {1}",
+  "StaffDeck 有新版本": "A new StaffDeck version is available",
+  "v{1} 已发布，你正在使用 v{2}": "v{1} is available. You're using v{2}",
+  "查看更新": "View update",
+  "关闭更新提醒": "Dismiss update reminder"
 }

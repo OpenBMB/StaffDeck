@@ -25,3 +25,10 @@ def test_macos_bundle_keeps_webkit_packaging_support() -> None:
     assert '"WebKit"' in spec
     assert "pyobjc-framework-WebKit" in build_script
     assert "pyobjc-framework-WebKit" in pyproject
+
+
+def test_pyinstaller_bundle_contains_the_build_version_resource() -> None:
+    spec_path = Path(__file__).resolve().parents[2] / "packaging" / "ultrarag.spec"
+    content = spec_path.read_text(encoding="utf-8")
+    assert 'staffdeck-version.txt' in content
+    assert '(str(VERSION_FILE), ".")' in content

@@ -1,6 +1,7 @@
 # packaging/ultrarag.spec
 # 运行：cd backend && pyinstaller ../packaging/ultrarag.spec --noconfirm
 import os
+import re
 import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
@@ -14,7 +15,16 @@ ICO = ASSETS / "staffdeck.ico"
 assert DIST.exists(), "先构建前端：npm --prefix frontend-enterprise run build"
 
 RAW_VERSION = os.environ.get("VERSION", "0.1.0").strip() or "0.1.0"
-BUNDLE_VERSION = RAW_VERSION[1:] if RAW_VERSION.startswith("v") else RAW_VERSION
+if not re.fullmatch(
+    r"[vV]?\d+(?:\.\d+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+    RAW_VERSION,
+):
+    raise ValueError(f"VERSION must be a valid StaffDeck version, got: {RAW_VERSION!r}")
+BUNDLE_VERSION = RAW_VERSION[1:] if RAW_VERSION[:1].lower() == "v" else RAW_VERSION
+VERSION_FILE = REPO / "packaging" / "build" / "staffdeck-version.txt"
+VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+VERSION_FILE.write_text(BUNDLE_VERSION + "\n", encoding="utf-8")
 
 # 平台图标：macOS 用 .icns，Windows 用 .ico，Linux(EXE) 不用
 _exe_icon = None
@@ -23,6 +33,7 @@ if sys.platform == "win32" and ICO.exists():
 
 datas = [
     (str(DIST), "frontend-enterprise/dist"),
+    (str(VERSION_FILE), "."),
     (str(ASSETS / "staffdeck.png"), "packaging/assets"),
     (str(BACKEND / "app" / "llm" / "prompts"), "app/llm/prompts"),
     (str(BACKEND / "app" / "db" / "seed_fixtures"), "app/db/seed_fixtures"),

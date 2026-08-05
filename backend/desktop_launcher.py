@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import ipaddress
 import json
 import logging
 import os
-import ipaddress
 import socket
 import sys
 import tempfile
@@ -13,10 +13,13 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from urllib.parse import urlsplit
+
+from app.version import app_version
 
 APP_NAME = "StaffDeck"
 APP_ID = "ai.staffdeck.desktop"
-APP_VERSION = "0.1.0"
+APP_VERSION = app_version()
 NETWORK_MODES = {"local", "lan", "public"}
 DEFAULT_PORT_RANGE_START = 5173
 DEFAULT_PORT_RANGE_END = 5199
@@ -311,6 +314,24 @@ def _open_browser(target: str) -> None:
     webbrowser.open(target)
 
 
+def _is_external_web_url(target: str, local_url: str) -> bool:
+    """Return whether a web URL should leave the embedded StaffDeck window."""
+    target_parts = urlsplit(target)
+    local_parts = urlsplit(local_url)
+    if target_parts.scheme not in {"http", "https"} or not target_parts.hostname:
+        return False
+    try:
+        target_port = target_parts.port or (443 if target_parts.scheme == "https" else 80)
+        local_port = local_parts.port or (443 if local_parts.scheme == "https" else 80)
+    except ValueError:
+        return False
+    return (target_parts.scheme, target_parts.hostname, target_port) != (
+        local_parts.scheme,
+        local_parts.hostname,
+        local_port,
+    )
+
+
 def _four_char_code(value: str) -> int:
     result = 0
     for byte in value.encode("macroman"):
@@ -421,6 +442,21 @@ def _run_macos_dock_app(cfg: dict, url: str) -> int:
             image.setSize_((point_size, point_size))
         return image
 
+    class WebViewNavigationDelegate(AppKit.NSObject):
+        def webView_decidePolicyForNavigationAction_decisionHandler_(  # noqa: N802
+            self,
+            _webview,
+            navigation_action,
+            decision_handler,
+        ):
+            request_url = navigation_action.request().URL()
+            target = str(request_url.absoluteString()) if request_url is not None else ""
+            if _is_external_web_url(target, url):
+                _open_browser(target)
+                decision_handler(WebKit.WKNavigationActionPolicyCancel)
+                return
+            decision_handler(WebKit.WKNavigationActionPolicyAllow)
+
     class AppDelegate(AppKit.NSObject):
         def applicationDidFinishLaunching_(self, _notification):  # noqa: N802
             self.dock_visible = True
@@ -464,6 +500,8 @@ def _run_macos_dock_app(cfg: dict, url: str) -> int:
                     WebKit,
                     str(target),
                 )
+                self.webview_navigation_delegate = WebViewNavigationDelegate.alloc().init()
+                self.main_webview.setNavigationDelegate_(self.webview_navigation_delegate)
             else:
                 self.main_window.makeKeyAndOrderFront_(None)
             AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
