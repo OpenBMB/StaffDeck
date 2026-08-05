@@ -1263,7 +1263,10 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
                     className="flex min-h-[78px] flex-col gap-[8px] rounded-[12px] border border-[#eceef1] bg-white px-[14px] py-[13px]"
                   >
                     <span className="text-[12px] font-semibold text-[#858b9c]">{item.label}</span>
-                    <strong className="text-[14px] leading-[1.35] wrap-break-word text-[#18181a]">
+                    <strong
+                      className="min-w-0 truncate text-[14px] leading-[1.35] text-[#18181a]"
+                      title={String(item.value)}
+                    >
                       {item.value}
                     </strong>
                   </div>
@@ -1378,7 +1381,7 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
       notify.error('Headers 或 Env 不是合法 JSON');
       return null;
     }
-    const args = parseArgs(values.args);
+    const args = parseMcpArgs(values.args);
     if (isStdio) {
       return {
         transport: values.transport,
@@ -1697,10 +1700,14 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
                     onChange={(event) => setField('env', event.target.value)}
                   />
                 </Field>
-                <Field label="工作目录（cwd）" htmlFor="mcp-cwd">
+                <Field
+                  label="工作目录（cwd）"
+                  htmlFor="mcp-cwd"
+                  hint="Args 中的相对路径以此目录为基准，建议填写绝对路径。"
+                >
                   <Input
                     id="mcp-cwd"
-                    placeholder="/path/to/workdir"
+                    placeholder={'C:\\mcp\\server 或 /opt/mcp/server'}
                     value={values.cwd}
                     onChange={(event) => setField('cwd', event.target.value)}
                   />
@@ -2201,10 +2208,11 @@ function serverToFormValues(row: MCPServerRead): McpFormValues {
   };
 }
 
-function parseArgs(value: string): string[] {
-  const text = String(value || '');
-  const parts = text.includes('\n') ? text.split('\n') : text.split(/\s+/);
-  return parts.map((item) => item.trim()).filter(Boolean);
+export function parseMcpArgs(value: string): string[] {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function transportLabel(transport: MCPTransport | string): string {
