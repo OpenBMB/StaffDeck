@@ -275,6 +275,7 @@ def test_model_config(
             probe_config = replace(
                 config,
                 timeout_seconds=min(probe_timeout, remaining),
+                max_output_tokens=min(max_tokens, config.max_output_tokens),
             )
             probe_client = LLMClient(probe_config)
             if capability_id == "text":
