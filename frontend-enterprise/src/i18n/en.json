@@ -115,6 +115,7 @@
   "禁用 API 密钥失败": "Failed to disable API key",
   "密钥已复制": "Key copied",
   "复制失败，请手动选择密钥文本": "Copy failed. Select the key text manually.",
+  "自动复制受浏览器限制，密钥已选中，请按 Command/Ctrl+C": "Automatic copy is restricted by the browser. The key is selected; press Command/Ctrl+C.",
   "密钥始终绑定当前员工。明文只展示一次，平台不会保存可再次查看的副本。": "The key is always bound to this employee. Plaintext is shown once and cannot be viewed again.",
   "创建密钥": "Create key",
   "大密钥": "Full-access key",

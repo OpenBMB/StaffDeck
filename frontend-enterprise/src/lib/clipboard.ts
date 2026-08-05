@@ -12,18 +12,35 @@ function copyWithSelection(text: string): boolean {
   textarea.value = text;
   textarea.setAttribute('readonly', '');
   textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
+  textarea.style.left = '0';
   textarea.style.top = '0';
-  textarea.style.opacity = '0';
+  textarea.style.width = '1px';
+  textarea.style.height = '1px';
+  textarea.style.padding = '0';
+  textarea.style.border = '0';
+  textarea.style.opacity = '0.01';
   textarea.style.pointerEvents = 'none';
   document.body.appendChild(textarea);
+
+  // Some restricted HTTP browsers return true from execCommand without
+  // emitting a real copy operation. Supplying the payload through the copy
+  // event improves compatibility and prevents a false-success result.
+  let copyEventSeen = false;
+  const handleCopy = (event: ClipboardEvent) => {
+    copyEventSeen = true;
+    if (!event.clipboardData) return;
+    event.clipboardData.setData('text/plain', text);
+    event.preventDefault();
+  };
+  document.addEventListener('copy', handleCopy, true);
 
   try {
     textarea.focus();
     textarea.select();
     textarea.setSelectionRange(0, textarea.value.length);
-    return document.execCommand('copy');
+    return document.execCommand('copy') && copyEventSeen;
   } finally {
+    document.removeEventListener('copy', handleCopy, true);
     textarea.remove();
     if (selection) {
       selection.removeAllRanges();

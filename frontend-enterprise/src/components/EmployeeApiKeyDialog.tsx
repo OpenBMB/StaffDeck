@@ -16,7 +16,7 @@ import {
   RefreshCw,
   TerminalSquare,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { api, TENANT_ID } from '../api/client';
 import { employeeDisplayName } from '../employee';
@@ -71,6 +71,7 @@ export default function EmployeeApiKeyDialog({
   const [actingId, setActingId] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<AgentApiCredentialCreated | null>(null);
   const [copied, setCopied] = useState(false);
+  const revealedKeyRef = useRef<HTMLInputElement | null>(null);
   const displayName = useMemo(() => (agent ? employeeDisplayName(agent) : '数字员工'), [agent]);
 
   async function load() {
@@ -162,7 +163,10 @@ export default function EmployeeApiKeyDialog({
       setCopied(true);
       notify.success('密钥已复制');
     } catch {
-      notify.error('复制失败，请手动选择密钥文本');
+      revealedKeyRef.current?.focus();
+      revealedKeyRef.current?.select();
+      setCopied(false);
+      notify.error('自动复制受浏览器限制，密钥已选中，请按 Command/Ctrl+C');
     }
   }
 
@@ -225,7 +229,13 @@ export default function EmployeeApiKeyDialog({
                 <span className="rounded-full bg-[#f7e8bc] px-[8px] py-[3px] text-[10px] text-[#7b5c19]">仅显示一次</span>
               </div>
               <div className="mt-[12px] flex items-center gap-[8px] rounded-[12px] bg-[#1d2027] p-[8px] pl-[12px]">
-                <code className="min-w-0 flex-1 select-all overflow-x-auto whitespace-nowrap text-[12px] text-[#e7ebf3]">{revealed.api_key}</code>
+                <input
+                  ref={revealedKeyRef}
+                  readOnly
+                  value={revealed.api_key}
+                  onFocus={(event) => event.currentTarget.select()}
+                  className="min-w-0 flex-1 bg-transparent font-mono text-[12px] text-[#e7ebf3] outline-none"
+                />
                 <Button type="button" onClick={() => void copyKey()} className="h-[30px] shrink-0 rounded-[8px] bg-white px-[10px] text-[11px] text-[#18181a] hover:bg-[#edf0f5]">
                   {copied ? <Check className="size-[13px]" /> : <Copy className="size-[13px]" />}
                   {copied ? '已复制' : '复制'}
