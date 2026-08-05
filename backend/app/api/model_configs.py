@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.db.models import ModelConfig, User, utc_now
+from app.db.models import AgentModelBinding, ModelConfig, User, utc_now
 from app.llm import LLMClient, LLMError
 from app.llm.model_config_resolver import resolve_model_config_for_verification
 from app.llm.model_protocols import (
@@ -215,6 +215,28 @@ def update_model_config(
     return model_config_read(row)
 
 
+@router.delete("/{config_id}")
+def delete_model_config(
+    config_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, str]:
+    ensure_tenant_admin(tenant_id, current_user)
+    row = _get_model_config(db, tenant_id, config_id)
+    bindings = db.exec(
+        select(AgentModelBinding).where(
+            AgentModelBinding.tenant_id == tenant_id,
+            AgentModelBinding.model_config_id == config_id,
+        )
+    ).all()
+    for binding in bindings:
+        db.delete(binding)
+    db.delete(row)
+    db.commit()
+    return {"status": "deleted"}
+
+
 @router.post(
     "/{config_id}/set-default",
     response_model=ModelConfigRead,
@@ -275,7 +297,11 @@ def test_model_config(
             probe_config = replace(
                 config,
                 timeout_seconds=min(probe_timeout, remaining),
-                max_output_tokens=min(max_tokens, config.max_output_tokens),
+                max_output_tokens=_verification_probe_tokens(
+                    config.api_protocol,
+                    capability_id,
+                    min(max_tokens, config.max_output_tokens),
+                ),
             )
             probe_client = LLMClient(probe_config)
             if capability_id == "text":
@@ -471,6 +497,7 @@ def _request_protocol_options(
     if protocol_options is not None and extra_body and protocol_options != extra_body:
         raise HTTPException(status_code=422, detail="MODEL_PROTOCOL_OPTIONS_CONFLICT")
     if protocol in {
+        ModelApiProtocol.OPENAI_RESPONSES,
         ModelApiProtocol.ANTHROPIC_MESSAGES,
         ModelApiProtocol.GEMINI_GENERATE_CONTENT,
     }:

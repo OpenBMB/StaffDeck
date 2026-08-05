@@ -376,6 +376,11 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
   const blocks: ReactNode[] = [];
   let index = 0;
   let blockIndex = 0;
+  let continuedOrderedListStart: number | null = null;
+
+  const resetOrderedListSequence = () => {
+    continuedOrderedListStart = null;
+  };
 
   while (index < lines.length) {
     const line = lines[index];
@@ -387,6 +392,7 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
     }
 
     if (trimmed.startsWith('```')) {
+      resetOrderedListSequence();
       const language = trimmed.slice(3).trim();
       const codeLines: string[] = [];
       index += 1;
@@ -403,6 +409,7 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
     }
 
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      resetOrderedListSequence();
       blocks.push(<hr key={key} />);
       index += 1;
       blockIndex += 1;
@@ -411,6 +418,7 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
 
     const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
+      resetOrderedListSequence();
       const level = Math.min(heading[1].length, 4) as 1 | 2 | 3 | 4;
       const Tag = `h${level}` as keyof JSX.IntrinsicElements;
       blocks.push(<Tag key={key}>{renderInlineMarkdown(heading[2], key)}</Tag>);
@@ -420,6 +428,7 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
     }
 
     if (/^>\s?/.test(trimmed)) {
+      resetOrderedListSequence();
       const quoteLines: string[] = [];
       while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
         quoteLines.push(lines[index].trim().replace(/^>\s?/, ''));
@@ -431,6 +440,7 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
     }
 
     if (isMarkdownTableStart(lines, index)) {
+      resetOrderedListSequence();
       const table = renderMarkdownTable(lines, index, key);
       blocks.push(table.node);
       index = table.nextIndex;
@@ -456,22 +466,30 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
     }
 
     if (/^\d+[.)]\s+/.test(trimmed)) {
-      const items: string[] = [];
+      const items: Array<{ marker: number; content: string }> = [];
       while (index < lines.length && /^\d+[.)]\s+/.test(lines[index].trim())) {
-        items.push(lines[index].trim().replace(/^\d+[.)]\s+/, ''));
+        const item = lines[index].trim().match(/^(\d+)[.)]\s+(.+)$/);
+        if (!item) break;
+        items.push({ marker: Number(item[1]), content: item[2] });
         index += 1;
       }
+      const explicitStart = items[0]?.marker || 1;
+      const listStart: number = explicitStart === 1 && continuedOrderedListStart !== null
+        ? continuedOrderedListStart
+        : explicitStart;
       blocks.push(
-        <ol key={key}>
+        <ol key={key} start={listStart === 1 ? undefined : listStart}>
           {items.map((item, itemIndex) => (
-            <li key={`${key}-${itemIndex}`}>{renderInlineMarkdown(item, `${key}-${itemIndex}`)}</li>
+            <li key={`${key}-${itemIndex}`}>{renderInlineMarkdown(item.content, `${key}-${itemIndex}`)}</li>
           ))}
         </ol>,
       );
+      continuedOrderedListStart = listStart + items.length;
       blockIndex += 1;
       continue;
     }
 
+    resetOrderedListSequence();
     const paragraphLines: string[] = [];
     while (
       index < lines.length &&
@@ -1913,8 +1931,20 @@ export function harnessWorkspaceArtifacts(
       ...(typeof artifact.size === 'number' && Number.isFinite(artifact.size)
         ? { size: artifact.size }
         : {}),
+      ...(typeof artifact.display_name === 'string'
+        ? { display_name: artifact.display_name }
+        : {}),
+      ...(typeof artifact.description === 'string'
+        ? { description: artifact.description }
+        : {}),
+      ...(typeof artifact.content_type === 'string'
+        ? { content_type: artifact.content_type }
+        : {}),
       ...(typeof artifact.operation === 'string'
         ? { operation: artifact.operation }
+        : {}),
+      ...(typeof artifact.source === 'string'
+        ? { source: artifact.source }
         : {}),
     });
   });

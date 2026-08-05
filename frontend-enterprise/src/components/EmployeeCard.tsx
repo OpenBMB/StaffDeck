@@ -15,6 +15,7 @@ import IconMore from '../assets/icons/more.svg?react';
 import IconPause from '../assets/icons/pause.svg?react';
 import IconPlay from '../assets/icons/play.svg?react';
 import IconTrash from '../assets/icons/trash.svg?react';
+import { KeyRound } from 'lucide-react';
 import { isGalleryEmployee } from '../auth';
 import { employeeDisplayNameWithCreator, employeeProfile, resourceCount } from '../employee';
 import type { AgentProfileRead } from '../types';
@@ -42,6 +43,7 @@ export type EmployeeCardProps = {
   onAvatar: () => void;
   onEdit: () => void;
   onChat: () => void;
+  onApiKeys?: () => void;
 };
 
 export default function EmployeeCard({
@@ -57,6 +59,7 @@ export default function EmployeeCard({
   onAvatar,
   onEdit,
   onChat,
+  onApiKeys,
 }: EmployeeCardProps) {
   const profile = employeeProfile(employee);
   const sopCount = resourceCount(employee.resources, 'skill');
@@ -222,6 +225,17 @@ export default function EmployeeCard({
               <IconImage className="size-[16px]" />
               设置头像
             </DropdownMenuItem>
+            {onApiKeys && (
+              <DropdownMenuItem
+                className={MENU_ITEM_CLASS}
+                disabled={!canManage || busy}
+                onClick={(event) => event.stopPropagation()}
+                onSelect={() => onApiKeys()}
+              >
+                <KeyRound className="size-[16px]" />
+                API 密钥
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator className="my-[2px] bg-[#eef0f4]" />
             <DropdownMenuItem
               variant="destructive"

@@ -25,6 +25,7 @@ ALWAYS_EXPANDED_CAPABILITIES = {
     "read_file",
     "write_file",
     "edit_file",
+    "publish_artifact",
     "knowledge_search",
 }
 

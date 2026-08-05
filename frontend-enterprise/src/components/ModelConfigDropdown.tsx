@@ -15,6 +15,7 @@ type ModelConfigDropdownProps = {
   onChange: (modelId: string) => void;
   disabled?: boolean;
   buttonClassName?: string;
+  menuClassName?: string;
   align?: 'start' | 'center' | 'end';
   placeholder?: string;
 };
@@ -25,6 +26,7 @@ export function ModelConfigDropdown({
   onChange,
   disabled = false,
   buttonClassName,
+  menuClassName,
   align = 'end',
   placeholder = '默认模型',
 }: ModelConfigDropdownProps) {
@@ -44,7 +46,7 @@ export function ModelConfigDropdown({
           <IconChevronDown className="size-[12px] shrink-0" />
         </UIButton>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align={align} className={MENU_CONTENT_CLASS}>
+      <DropdownMenuContent align={align} className={cn(MENU_CONTENT_CLASS, menuClassName)}>
         {models.length === 0 ? (
           <DropdownMenuItem disabled className={MENU_ITEM_CLASS}>
             暂无可用模型

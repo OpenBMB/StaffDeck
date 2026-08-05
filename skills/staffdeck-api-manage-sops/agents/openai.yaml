@@ -1,0 +1,4 @@
+interface:
+  display_name: "管理 StaffDeck SOP"
+  short_description: "通过开放 API 创建、改写、校验、发布和回滚 SOP"
+  default_prompt: "Use $staffdeck-api-manage-sops to safely update and publish a StaffDeck SOP."

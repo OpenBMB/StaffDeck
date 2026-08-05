@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import mimetypes
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -46,17 +47,13 @@ from app.general_skills.runner import (
     GeneralSkillRunner,
 )
 from app.harness import (
+    HarnessArtifactAccessError,
     HarnessExecutor,
     HarnessToolCall,
     HarnessToolContext,
     build_file_tool_registry,
+    open_harness_artifact,
     register_command_tools,
-)
-from app.harness.artifacts import (
-    HarnessArtifactAccessError,
-    publish_changed_harness_artifacts,
-    publish_harness_artifacts,
-    snapshot_harness_workspace,
 )
 from app.harness.errors import HarnessExecutionError
 from app.harness.sandbox import parse_network_policy
@@ -366,12 +363,6 @@ class HarnessCapabilityInvoker:
         *,
         call_id: str,
     ) -> dict[str, Any]:
-        before = None
-        if name == "exec_command":
-            before = snapshot_harness_workspace(
-                self.workspace_root,
-                max_entries=self._file_context.limits.max_entries,
-            )
         result = self._file_executor.execute(
             self._file_context,
             HarnessToolCall(
@@ -383,31 +374,28 @@ class HarnessCapabilityInvoker:
         if result.success:
             data = dict(result.data or {})
             artifacts: list[dict[str, Any]] = []
-            if name in {"write_file", "edit_file", "copy_file", "move_file"}:
-                artifact_path = str(
-                    data.get("path")
-                    or data.get("destination_path")
-                    or ""
-                ).strip()
+            if name == "publish_artifact":
+                artifact_path = str(data.get("path") or "").strip()
                 if artifact_path:
-                    artifacts.extend(
-                        publish_harness_artifacts(
-                            self.workspace_root,
-                            self.task_frame_id,
-                            [{"path": artifact_path}],
-                            operation=name,
-                        )
+                    artifacts.append(
+                        {
+                            "type": "workspace_file",
+                            "task_frame_id": self.task_frame_id,
+                            "path": artifact_path,
+                            "sha256": data.get("sha256"),
+                            "size": data.get("size"),
+                            "display_name": data.get("display_name"),
+                            "description": data.get("description"),
+                            "content_type": data.get("content_type"),
+                            "operation": "publish_artifact",
+                            "source": "harness",
+                        }
                     )
-            elif name == "exec_command" and before is not None:
-                artifacts.extend(
-                    publish_changed_harness_artifacts(
-                        self.workspace_root,
-                        self.task_frame_id,
-                        before,
-                        operation=name,
-                        max_entries=self._file_context.limits.max_entries,
-                        max_file_bytes=self._file_context.limits.max_file_bytes,
-                    )
+            elif name in {"write_file", "edit_file", "copy_file", "move_file"}:
+                data["published"] = False
+                data["publication_hint"] = (
+                    "文件已写入隔离工作区；如需提供给用户下载，请在校验完成后"
+                    "显式调用 publish_artifact。"
                 )
             return {
                 "success": True,
@@ -684,7 +672,6 @@ class HarnessCapabilityInvoker:
         )
         declared_success = structured.get("success")
         succeeded = True if declared_success is None else bool(declared_success)
-        artifacts: list[dict[str, object]] = []
         artifact_errors: list[dict[str, str]] = [
             {
                 "path": str(item.get("path") or ""),
@@ -694,25 +681,16 @@ class HarnessCapabilityInvoker:
             for item in (structured.get("artifact_errors") or [])[:20]
             if isinstance(item, dict)
         ]
-        for declaration in (structured.get("artifacts") or [])[:20]:
-            try:
-                artifacts.extend(
-                    publish_harness_artifacts(
-                        self.workspace_root,
-                        self.task_frame_id,
-                        [declaration],
-                        operation="general_skill",
-                    )
-                )
-            except HarnessArtifactAccessError as exc:
-                raw_path = declaration.get("path") if isinstance(declaration, dict) else declaration
-                artifact_errors.append(
-                    {
-                        "path": str(raw_path or ""),
-                        "code": "artifact_publish_failed",
-                        "message": str(exc),
-                    }
-                )
+        artifacts, publish_errors = self._general_skill_artifacts(
+            response.artifacts
+            or [
+                item
+                for item in (structured.get("artifacts") or [])[:20]
+                if isinstance(item, dict)
+            ],
+            skill_slug=skill.slug,
+        )
+        artifact_errors.extend(publish_errors)
         data = {
             "kind": "general_skill",
             "slug": response.skill_slug,
@@ -755,6 +733,75 @@ class HarnessCapabilityInvoker:
                 "retryable": bool(structured.get("retryable")),
             },
         }
+
+    def _general_skill_artifacts(
+        self,
+        declared: list[dict[str, Any]],
+        *,
+        skill_slug: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        artifacts: list[dict[str, Any]] = []
+        warnings: list[dict[str, str]] = []
+        for item in declared[:20]:
+            path = str(item.get("path") or "").strip()
+            if not path:
+                warnings.append(
+                    {
+                        "path": "",
+                        "code": "artifact_publish_failed",
+                        "message": "Artifact path cannot be empty.",
+                    }
+                )
+                continue
+            opened = None
+            try:
+                opened = open_harness_artifact(self.workspace_root, path)
+                digest = opened.sha256()
+                display_name = _safe_artifact_label(
+                    item.get("display_name"),
+                    fallback=opened.filename,
+                    max_length=180,
+                )
+                description = _safe_artifact_label(
+                    item.get("description"),
+                    fallback="",
+                    max_length=500,
+                )
+                artifacts.append(
+                    {
+                        "type": "workspace_file",
+                        "task_frame_id": self.task_frame_id,
+                        "path": path,
+                        "sha256": digest,
+                        "size": opened.size,
+                        "display_name": display_name,
+                        "description": description or None,
+                        "content_type": (
+                            mimetypes.guess_type(display_name)[0]
+                            or mimetypes.guess_type(opened.filename)[0]
+                            or "application/octet-stream"
+                        ),
+                        "operation": "general_skill.execute",
+                        "source": f"general_skill.{skill_slug}",
+                    }
+                )
+            except (HarnessArtifactAccessError, OSError) as exc:
+                warnings.append(
+                    {
+                        "path": path,
+                        "code": "artifact_publish_failed",
+                        "message": str(exc),
+                    }
+                )
+            finally:
+                if opened is not None:
+                    opened.close()
+        if warnings:
+            self._emit_trace(
+                "general_skill_artifact_rejected",
+                {"skill_slug": skill_slug, "warnings": warnings},
+            )
+        return artifacts, warnings
 
     def _read_general_skill_package(
         self,
@@ -943,6 +990,20 @@ def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
         "success": False,
         "error": error,
     }
+
+
+def _safe_artifact_label(
+    value: Any,
+    *,
+    fallback: str,
+    max_length: int,
+) -> str:
+    cleaned = "".join(
+        character
+        for character in str(value or fallback).strip()
+        if ord(character) >= 32 and ord(character) != 127
+    )
+    return cleaned[:max_length] or fallback[:max_length]
 
 
 def _skill_package_preview(

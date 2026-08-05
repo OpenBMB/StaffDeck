@@ -6,6 +6,7 @@ import type { ChatMessage } from '@/types';
 
 import {
   STREAM_TERMINAL_EVENTS,
+  MarkdownMessage,
   canRateMessage,
   harnessEventTraceLine,
   harnessWorkspaceArtifacts,
@@ -27,6 +28,46 @@ function message(patch: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 describe('chat history consumer contract', () => {
+  it('continues top-level process numbering across blank lines and bullet details', () => {
+    const rendered = renderToStaticMarkup(
+      createElement(MarkdownMessage, {
+        content: [
+          '## 用印审批流程指引',
+          '',
+          '1. **申请入口**：登录审批系统',
+          '',
+          '1. **填写表单**：填写以下字段',
+          '',
+          '- 我方主体名称',
+          '- 申请日期',
+          '',
+          '1. **审批流程**：提交申请',
+          '',
+          '- 直属上级审批',
+          '',
+          '1. **用印办理**：前往办公室盖章',
+        ].join('\n'),
+      }),
+    );
+
+    expect(rendered.match(/<ol(?: start="\d+")?>/g)).toEqual([
+      '<ol>',
+      '<ol start="2">',
+      '<ol start="3">',
+      '<ol start="4">',
+    ]);
+  });
+
+  it('restarts an ordered list after regular paragraph content', () => {
+    const rendered = renderToStaticMarkup(
+      createElement(MarkdownMessage, {
+        content: ['1. 第一组', '', '这是新的正文段落。', '', '1. 第二组'].join('\n'),
+      }),
+    );
+
+    expect(rendered.match(/<ol(?: start="\d+")?>/g)).toEqual(['<ol>', '<ol>']);
+  });
+
   it('renders bare HTTP links without changing existing Markdown links or inline code', () => {
     const rendered = renderToStaticMarkup(
       createElement(
@@ -122,6 +163,10 @@ describe('chat history consumer contract', () => {
             task_frame_id: 'task-1',
             path: 'reports/result.txt',
             size: 12,
+            display_name: '季度报告.txt',
+            description: '最终版',
+            content_type: 'text/plain',
+            source: 'harness',
           },
           {
             type: 'workspace_file',
@@ -141,6 +186,10 @@ describe('chat history consumer contract', () => {
         task_frame_id: 'task-1',
         path: 'reports/result.txt',
         size: 12,
+        display_name: '季度报告.txt',
+        description: '最终版',
+        content_type: 'text/plain',
+        source: 'harness',
       },
     ]);
   });

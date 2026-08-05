@@ -14,6 +14,7 @@ import { type EnterpriseAuthUser } from '../auth';
 import AppHeader from '../components/AppHeader';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
+import EmployeeApiKeyDialog from '../components/EmployeeApiKeyDialog';
 import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
 import {
@@ -43,6 +44,7 @@ export default function AgentsPage({
   const [loading, setLoading] = useState(false);
   const [avatarAgent, setAvatarAgent] = useState<AgentProfileRead | null>(null);
   const [profileAgent, setProfileAgent] = useState<AgentProfileRead | null>(null);
+  const [apiKeyAgent, setApiKeyAgent] = useState<AgentProfileRead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentProfileRead | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [selectingAgentId, setSelectingAgentId] = useState<string | null>(null);
@@ -298,6 +300,7 @@ export default function AgentsPage({
             onAvatar={() => setAvatarAgent(employee)}
             onEdit={() => setProfileAgent(employee)}
             onChat={() => startEmployeeChat(employee)}
+            onApiKeys={() => setApiKeyAgent(employee)}
           />
         ))}
         {!filteredEmployees.length && (
@@ -316,6 +319,11 @@ export default function AgentsPage({
         currentUser={currentUser}
         onClose={() => setProfileAgent(null)}
         onSaved={updateAgentInList}
+      />
+      <EmployeeApiKeyDialog
+        agent={apiKeyAgent}
+        open={Boolean(apiKeyAgent)}
+        onClose={() => setApiKeyAgent(null)}
       />
       <ConfirmDialog
         open={Boolean(deleteTarget)}

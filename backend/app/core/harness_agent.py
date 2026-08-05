@@ -63,7 +63,7 @@ class HarnessTaskAgent:
         is_cancelled: CancellationCheck | None = None,
         image_payloads: list[ValidatedTaskImagePayload] | None = None,
     ) -> TaskExecutionResult:
-        max_actions = max(1, min(int(max_actions), 20))
+        max_actions = max(1, min(int(max_actions), 100))
         transcript: list[dict[str, Any]] = []
         citations: list[dict[str, Any]] = []
         evidence_results: list[dict[str, Any]] = []

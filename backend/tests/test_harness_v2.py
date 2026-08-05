@@ -958,6 +958,57 @@ def test_invoker_requires_run_local_activation_before_hidden_capability_call(
     assert executed["success"] is True
 
 
+def test_file_mutation_is_private_until_publish_artifact_succeeds(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant-demo", None, None, None
+        )
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-artifact",
+            model_config=_model_config(),
+            manifest=manifest,
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+
+        written = invoker.invoke(
+            "write_file",
+            {"path": "reports/result.txt", "content": "ready", "create_parents": True},
+        )
+        published = invoker.invoke(
+            "publish_artifact",
+            {"path": "reports/result.txt", "display_name": "结果.txt"},
+        )
+
+    assert written["success"] is True
+    assert written["artifacts"] == []
+    assert written["data"]["published"] is False
+    assert published["success"] is True
+    assert published["artifacts"] == [
+        {
+            "type": "workspace_file",
+            "task_frame_id": "task-artifact",
+            "path": "reports/result.txt",
+            "sha256": published["data"]["sha256"],
+            "size": 5,
+            "display_name": "结果.txt",
+            "description": None,
+            "content_type": "text/plain",
+            "operation": "publish_artifact",
+            "source": "harness",
+        }
+    ]
+
+
 def test_external_idempotency_key_is_stable_per_task_not_entire_session(
     tmp_path,
     monkeypatch,
@@ -1214,6 +1265,9 @@ def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
         workspace_root=None,
         is_cancelled=None,
     ) -> GeneralSkillRunResponse:
+        artifact_path = workspace_root / "general_skill_fake" / "outputs" / "weather.txt"
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text("30 C", encoding="utf-8")
         captured.update(
             {
                 "skill": skill_snapshot,
@@ -1241,6 +1295,13 @@ def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
             generated_code="print('ok')",
             stdout='{"success": true, "temperature": 30}',
             structured_result={"success": True, "temperature": 30},
+            artifacts=[
+                {
+                    "path": "general_skill_fake/outputs/weather.txt",
+                    "display_name": "北京天气.txt",
+                    "description": "天气查询结果",
+                }
+            ],
             reply="北京当前 30 度。",
         )
 
@@ -1308,6 +1369,9 @@ def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
     assert result["success"] is True
     assert result["data"]["operation"] == "execute"
     assert result["data"]["structured_result"]["temperature"] == 30
+    assert result["artifacts"][0]["display_name"] == "北京天气.txt"
+    assert result["artifacts"][0]["path"] == "general_skill_fake/outputs/weather.txt"
+    assert result["artifacts"][0]["size"] == 4
     assert captured["query"] == "北京天气如何"
     assert captured["user_id"] == "user-1"
     assert captured["max_attempts"] == 2

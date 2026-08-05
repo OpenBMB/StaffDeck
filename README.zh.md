@@ -258,6 +258,10 @@ curl.exe http://127.0.0.1:5173/api/health
 - 渠道凭证（bot token / secret)Fernet 加密落库，任何接口不回传明文；
 - 绑定管理权限：管理员或绑定创建者；员工挂载动作本身即"对该渠道全部用户开放该员工",请按需授权。
 
+## 开放 API
+
+外部业务系统可以通过员工级 API Key 调用数字员工、持续会话、Harness v2 Run、SOP、知识、技能、工具和定时任务。完整的鉴权边界、接口清单、SSE、Webhook 与调用示例见 [数字员工开放 API v1](docs/open-api-v1.md)。
+
 ## 项目结构
 
 ```text

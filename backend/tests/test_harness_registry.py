@@ -26,6 +26,7 @@ def test_file_tool_registry_exposes_exact_model_tool_names() -> None:
         "glob",
         "grep",
         "file_info",
+        "publish_artifact",
         "mkdir",
         "delete_file",
         "move_file",

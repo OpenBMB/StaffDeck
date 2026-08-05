@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import base64
 import logging
+from datetime import datetime
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.db.models import User, UserAvatar, utc_now
+from app.db.models import APIClient, APICredential, User, UserAvatar, utc_now
+from app.public_api.auth import generate_api_key
+from app.public_api.credential_profiles import USER_FULL_ACCESS_SCOPES
 from app.security.auth import create_access_token, get_current_user, hash_password, verify_password
 from app.security.permissions import MEMBER_ROLE, is_admin_user
 from app.security.tenant import ensure_tenant
@@ -62,6 +65,32 @@ class AvatarRead(BaseModel):
 class LoginResponse(BaseModel):
     token: str
     user: UserRead
+
+
+class AccountAPICredentialCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    expires_at: datetime | None = None
+
+
+class AccountAPICredentialRead(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    access: Literal["user_full_access"] = "user_full_access"
+    key_prefix: str
+    scopes: list[str] = Field(default_factory=list)
+    status: str
+    expires_at: datetime | None = None
+    last_used_at: datetime | None = None
+    created_at: datetime
+    revoked_at: datetime | None = None
+
+
+class AccountAPICredentialCreated(AccountAPICredentialRead):
+    api_key: str
+
+
+ACCOUNT_API_CLIENT_PREFIX = "StaffDeck 账号全量 API"
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -226,6 +255,108 @@ def list_users(
     return [_user_read(row) for row in rows]
 
 
+@router.get(
+    "/me/api-credentials",
+    response_model=list[AccountAPICredentialRead],
+)
+def list_account_api_credentials(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[AccountAPICredentialRead]:
+    client = _ensure_account_api_client(db, current_user.tenant_id, current_user)
+    if not client:
+        return []
+    rows = db.exec(
+        select(APICredential)
+        .where(
+            APICredential.tenant_id == current_user.tenant_id,
+            APICredential.client_id == client.id,
+            APICredential.agent_id.is_(None),
+        )
+        .order_by(APICredential.created_at.desc())
+    ).all()
+    db.commit()
+    return [_account_api_credential_read(row, current_user.id) for row in rows]
+
+
+@router.post(
+    "/me/api-credentials",
+    response_model=AccountAPICredentialCreated,
+)
+def create_account_api_credential(
+    request: AccountAPICredentialCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AccountAPICredentialCreated:
+    client = _ensure_account_api_client(db, current_user.tenant_id, current_user)
+    token, prefix, digest = generate_api_key()
+    row = APICredential(
+        tenant_id=current_user.tenant_id,
+        client_id=client.id,
+        agent_id=None,
+        name=request.name.strip(),
+        key_prefix=prefix,
+        key_digest=digest,
+        scopes_json=sorted(USER_FULL_ACCESS_SCOPES),
+        expires_at=request.expires_at,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return AccountAPICredentialCreated(
+        **_account_api_credential_read(row, current_user.id).model_dump(),
+        api_key=token,
+    )
+
+
+@router.post(
+    "/me/api-credentials/{credential_id}/rotate",
+    response_model=AccountAPICredentialCreated,
+)
+def rotate_account_api_credential(
+    credential_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AccountAPICredentialCreated:
+    row = _get_account_api_credential(
+        db, current_user.tenant_id, current_user.id, credential_id
+    )
+    token, prefix, digest = generate_api_key()
+    row.key_prefix = prefix
+    row.key_digest = digest
+    row.status = "active"
+    row.revoked_at = None
+    row.updated_at = utc_now()
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return AccountAPICredentialCreated(
+        **_account_api_credential_read(row, current_user.id).model_dump(),
+        api_key=token,
+    )
+
+
+@router.post(
+    "/me/api-credentials/{credential_id}/revoke",
+    response_model=AccountAPICredentialRead,
+)
+def revoke_account_api_credential(
+    credential_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AccountAPICredentialRead:
+    row = _get_account_api_credential(
+        db, current_user.tenant_id, current_user.id, credential_id
+    )
+    row.status = "revoked"
+    row.revoked_at = utc_now()
+    row.updated_at = utc_now()
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _account_api_credential_read(row, current_user.id)
+
+
 @router.put("/users/{user_id}", response_model=UserRead)
 def update_user(
     user_id: str,
@@ -314,3 +445,103 @@ def _require_admin(user: User, tenant_id: str) -> None:
         raise HTTPException(status_code=403, detail="Only administrator can manage accounts")
     if user.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Cannot manage accounts for another tenant")
+
+
+def _account_api_client_name(user_id: str) -> str:
+    return f"{ACCOUNT_API_CLIENT_PREFIX}:{user_id}"
+
+
+def _find_account_api_client(
+    db: Session,
+    tenant_id: str,
+    user_id: str,
+) -> APIClient | None:
+    return db.exec(
+        select(APIClient).where(
+            APIClient.tenant_id == tenant_id,
+            APIClient.name == _account_api_client_name(user_id),
+        )
+    ).first()
+
+
+def _ensure_account_api_client(db: Session, tenant_id: str, user: User) -> APIClient:
+    row = _find_account_api_client(db, tenant_id, user.id)
+    required_scopes = sorted(USER_FULL_ACCESS_SCOPES)
+    if row:
+        row.created_by_user_id = user.id
+        row.status = "active"
+        row.scopes_json = required_scopes
+        row.metadata_json = {
+            **dict(row.metadata_json or {}),
+            "managed_by": "account_settings",
+            "credential_mode": "user_full_access",
+            "subject_user_id": user.id,
+        }
+        row.updated_at = utc_now()
+        db.add(row)
+        credentials = db.exec(
+            select(APICredential).where(
+                APICredential.tenant_id == tenant_id,
+                APICredential.client_id == row.id,
+                APICredential.agent_id.is_(None),
+            )
+        ).all()
+        for credential in credentials:
+            credential.scopes_json = required_scopes
+            credential.updated_at = utc_now()
+            db.add(credential)
+        db.flush()
+        return row
+    row = APIClient(
+        tenant_id=tenant_id,
+        name=_account_api_client_name(user.id),
+        description=f"账号 {user.username} 的全量 API 密钥，权限随账号可见员工动态变化。",
+        scopes_json=required_scopes,
+        status="active",
+        created_by_user_id=user.id,
+        metadata_json={
+            "managed_by": "account_settings",
+            "credential_mode": "user_full_access",
+            "subject_user_id": user.id,
+        },
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _get_account_api_credential(
+    db: Session,
+    tenant_id: str,
+    user_id: str,
+    credential_id: str,
+) -> APICredential:
+    client = _find_account_api_client(db, tenant_id, user_id)
+    row = db.get(APICredential, credential_id)
+    if (
+        not client
+        or not row
+        or row.tenant_id != tenant_id
+        or row.client_id != client.id
+        or row.agent_id is not None
+    ):
+        raise HTTPException(status_code=404, detail="Account API credential not found")
+    return row
+
+
+def _account_api_credential_read(
+    row: APICredential,
+    user_id: str,
+) -> AccountAPICredentialRead:
+    return AccountAPICredentialRead(
+        id=row.id,
+        user_id=user_id,
+        name=row.name,
+        key_prefix=f"{row.key_prefix}…",
+        scopes=list(row.scopes_json or []),
+        status=row.status,
+        expires_at=row.expires_at,
+        last_used_at=row.last_used_at,
+        created_at=row.created_at,
+        revoked_at=row.revoked_at,
+    )

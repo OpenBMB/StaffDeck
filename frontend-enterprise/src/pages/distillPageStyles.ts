@@ -26,6 +26,8 @@ export const CARD_OUTLINE_BUTTON_CLASS = RETURN_BUTTON_CLASS;
 export const CHAT_CARD_CLASS = DISTILL_CARD_CLASS;
 export const CHAT_CARD_BODY_CLASS = DISTILL_CARD_BODY_CLASS;
 export const CHAT_CARD_DRAGGING_CLASS = 'ring-1 ring-[#18181a]/15';
+export const CHAT_CARD_FULLSCREEN_CLASS =
+  'fixed top-[77px] bottom-[19px] left-[19px] z-[96] h-auto! w-[min(380px,36vw)] gap-[12px] rounded-none! border-r border-[#e1e6ee] p-[14px]! shadow-none! sm:top-[83px] sm:bottom-[25px] sm:left-[25px]';
 export const SOURCE_CARD_CLASS = DISTILL_CARD_CLASS;
 
 // Chat panel
@@ -221,11 +223,13 @@ export const SOURCE_COLLAPSIBLE_TOGGLE_CLASS =
 export const SOURCE_ACTION_EDITOR_CLASS = 'grid w-[min(820px,100%)] gap-[6px]';
 export const SOURCE_ACTION_LIST_CLASS = 'flex max-h-[84px] flex-wrap gap-[6px] overflow-auto';
 export const SOURCE_ACTION_LIST_EDITABLE_CLASS = 'min-w-0 flex-1 items-center';
-export const SOURCE_ACTION_TOKEN_CLASS = 'inline-flex max-w-[min(100%,320px)] items-center gap-[4px] my-[2px] mr-[4px]';
+export const SOURCE_ACTION_TOKEN_CLASS = 'group/token relative my-[2px] mr-[4px] inline-flex max-w-[min(100%,320px)] items-center';
 export const SOURCE_ACTION_EDIT_BUTTON_CLASS =
-  'inline-flex min-w-0 cursor-text border-0 bg-transparent p-0 text-inherit focus-visible:rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#18181a]';
+  'inline-flex min-w-0 cursor-text items-center border-0 bg-transparent p-0 text-inherit focus-visible:rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#18181a]';
 export const SOURCE_ACTION_REMOVE_CLASS =
-  'grid size-[16px] scale-[0.86] place-items-center rounded-full border-0 bg-transparent p-0 text-[#858b9c] opacity-0 transition-[opacity,transform,color,background] duration-140 group/token:pointer-events-auto group/token:scale-100 group/token:opacity-100 hover:bg-[#f2f3f5] hover:text-[#18181a]';
+  'absolute top-1/2 right-[5px] grid size-[14px] -translate-y-1/2 place-items-center rounded-full border-0 bg-transparent p-0 leading-none text-[#9399a8] opacity-0 transition-[color,background,opacity] duration-140 group-hover/token:opacity-100 group-focus-within/token:opacity-100 hover:bg-black/[0.055] hover:text-[#d20b0b] focus-visible:opacity-100 focus-visible:text-[#d20b0b] focus-visible:outline-none [&_svg]:block [&_svg]:size-[9px]';
+export const SOURCE_ACTION_EMPTY_CLASS =
+  'flex min-h-[42px] w-full min-w-0 items-center justify-between gap-[10px] rounded-[10px] border border-dashed border-[#dfe4eb] bg-[#fafbfc] px-[11px] py-[7px] text-[11px] leading-[1.45] text-[#858b9c]';
 export const SOURCE_ACTION_ADD_CLASS = PILL_OUTLINE_BUTTON_SM_CLASS;
 export const SOURCE_ACTION_PICKER_CLASS = 'inline-flex min-w-[min(280px,100%)] max-w-full';
 export const SOURCE_ACTION_SELECT_CLASS =
@@ -235,14 +239,14 @@ export const SOURCE_EDIT_HINT_CLASS =
 
 export const SOURCE_SELECT_CLASS = 'min-w-[168px]';
 export const CONDITION_EDITOR_CLASS =
-  'grid min-w-0 w-full max-w-full grid-cols-1 items-start gap-x-[10px] gap-y-[8px] min-[1500px]:grid-cols-[minmax(160px,220px)_minmax(0,1fr)]';
+  'grid min-w-0 w-full max-w-full grid-cols-1 items-start gap-x-[10px] gap-y-[8px]';
 export const CONDITION_READABLE_CLASS =
   'col-span-full text-[12px] leading-[1.55] text-[#858b9c]';
 export const CONDITION_PRESET_CLASS = 'min-w-[168px]';
 export const CONDITION_INPUT_CLASS = 'w-full! min-w-0';
 
 export const RETRY_POLICY_EDITOR_CLASS =
-  'grid min-w-0 w-full max-w-full grid-cols-1 items-start gap-x-[10px] gap-y-[8px] min-[1500px]:grid-cols-[120px_minmax(180px,240px)_minmax(0,1fr)]';
+  'grid min-w-0 w-full max-w-full grid-cols-1 items-start gap-x-[10px] gap-y-[8px]';
 export const RETRY_POLICY_FIELD_CLASS = 'grid min-w-0 gap-[4px] [&>span]:text-[11px] [&>span]:font-semibold [&>span]:leading-[1.3] [&>span]:text-[#858b9c]';
 
 export const FLOW_RULE_EDITOR_CLASS = 'grid w-[min(1120px,100%)] gap-[10px]';
@@ -250,27 +254,41 @@ export const FLOW_RULE_HEAD_CLASS =
   'flex flex-wrap items-center justify-between gap-2 text-[12px] font-semibold text-[#858b9c]';
 export const FLOW_RULE_LIST_CLASS = 'grid gap-[10px]';
 export const FLOW_RULE_ITEM_CLASS =
-  'grid min-w-0 max-w-full gap-x-[12px] gap-y-[10px] rounded-[12px] border border-[#eceef1] bg-[#fafafa] p-[12px] [grid-template-areas:"target"_"label"_"priority"_"condition"_"delete"] [grid-template-columns:minmax(0,1fr)] min-[1500px]:[grid-template-areas:"target_label_priority_delete"_"condition_condition_condition_condition"] min-[1500px]:[grid-template-columns:minmax(220px,1.05fr)_minmax(220px,1fr)_112px_32px]';
+  'grid min-w-0 max-w-full gap-x-[10px] gap-y-[10px] rounded-[14px] border border-[#e5e8ee] bg-[#fbfcfd] p-[12px] shadow-[0_4px_14px_rgba(24,31,45,0.035)] [grid-template-areas:"target_delete"_"label_label"_"priority_priority"_"condition_condition"] [grid-template-columns:minmax(0,1fr)_32px]';
 export const FLOW_RULE_FIELD_CLASS = 'grid min-w-0 gap-[4px] [&>span]:text-[11px] [&>span]:font-semibold [&>span]:leading-[1.3] [&>span]:text-[#858b9c]';
 export const FLOW_RULE_FIELD_TARGET_CLASS = '[grid-area:target]';
 export const FLOW_RULE_FIELD_LABEL_CLASS = '[grid-area:label]';
 export const FLOW_RULE_FIELD_CONDITION_CLASS = '[grid-area:condition] [&_em]:text-[11px] [&_em]:not-italic [&_em]:leading-[1.45] [&_em]:text-[#858b9c]';
 export const FLOW_RULE_FIELD_PRIORITY_CLASS = '[grid-area:priority]';
 export const FLOW_RULE_CONDITION_CONTROLS_CLASS =
-  'grid min-w-0 max-w-full grid-cols-1 items-start gap-[8px] min-[1500px]:grid-cols-[minmax(180px,240px)_minmax(0,1fr)]';
+  'grid min-w-0 max-w-full grid-cols-1 items-start gap-[8px]';
 export const FLOW_RULE_TARGET_CLASS = 'w-full min-w-0';
 export const FLOW_RULE_LABEL_INPUT_CLASS = 'w-full min-w-0';
 export const FLOW_RULE_CONDITION_INPUT_CLASS = 'w-full min-w-0 resize-none';
 export const FLOW_RULE_PRIORITY_CLASS = 'w-full min-w-0';
-export const FLOW_RULE_DELETE_CLASS = '[grid-area:delete] mt-[19px]';
+export const FLOW_RULE_DELETE_CLASS = '[grid-area:delete] mt-[19px] self-start';
 export const FLOW_RULE_EMPTY_CLASS =
   'rounded-[12px] border border-dashed border-[#eceef1] bg-[#fafafa] p-[10px_12px] text-[12px] text-[#858b9c]';
 
 export const NODE_DELETE_CONFIRM_CLASS = 'grid gap-[8px] [&_p]:m-0 [&_ul]:m-0 [&_ul]:pl-[18px]';
 
 // Flow diagram
+export const FLOW_VIEWER_CLASS = 'flex min-h-0 flex-1 flex-col';
+export const FLOW_VIEWER_FULLSCREEN_CLASS =
+  'fixed inset-0 z-[80] bg-[#f7f8fa] p-[18px] sm:p-[24px] animate-in fade-in-0 duration-150';
+export const FLOW_VIEWER_FULLSCREEN_PANEL_CLASS =
+  'min-h-0 flex-1 overflow-hidden rounded-[18px] border border-[#e3e7f1] bg-white shadow-[0_24px_72px_rgba(24,31,45,0.16)]';
+export const FLOW_VIEWER_BODY_CLASS = 'flex min-h-0 flex-1 overflow-hidden';
+export const FLOW_VIEWER_TITLE_CLASS = 'flex min-w-0 items-center gap-[10px]';
+export const FLOW_VIEWER_TITLE_MARK_CLASS =
+  'grid size-[30px] shrink-0 place-items-center rounded-[9px] bg-[#edf8f5] text-[#04756f]';
+export const FLOW_VIEWER_TITLE_META_CLASS =
+  'min-w-0 truncate text-[11px] font-normal text-[#858b9c]';
 export const FLOW_ZOOM_TOOLBAR_CLASS =
-  '-mt-[2px] mb-[12px] flex min-h-[40px] items-center gap-[8px] text-[12px] text-[#858b9c]';
+  '-mt-[2px] mb-[12px] flex min-h-[40px] shrink-0 flex-wrap items-center gap-[8px] text-[12px] text-[#858b9c]';
+export const FLOW_ZOOM_TOOLBAR_FULLSCREEN_CLASS =
+  'm-0 min-h-[58px] justify-between border-b border-[#eceef1] px-[18px] py-[10px]';
+export const FLOW_ZOOM_CONTROLS_CLASS = 'flex flex-wrap items-center gap-[8px]';
 
 const FLOW_ZOOM_BUTTON_BASE =
   'inline-flex shrink-0 items-center justify-center rounded-[9px] border-[0.5px] border-[#e3e7f1] bg-white text-[12px] font-normal leading-none text-[#757f9c] shadow-none transition-colors hover:border-[#cbd3e6]! hover:bg-white! hover:text-[#18181a]! focus-visible:border-[#cbd3e6]! focus-visible:ring-0 focus-visible:outline-none aria-pressed:border-[#04756f]! aria-pressed:bg-[#f3fbf8]! aria-pressed:font-medium aria-pressed:text-[#18181a]!';
@@ -289,12 +307,29 @@ export const FLOW_ZOOM_VALUE_CLASS =
   'inline-flex h-7 min-w-[42px] items-center justify-center rounded-[9px] bg-[#fafafa] px-2 text-center font-mono text-[12px] leading-none text-[#18181a]';
 export const FLOW_CLASS =
   'block min-h-0 flex-1 overflow-auto px-[clamp(18px,3vw,40px)] py-[clamp(18px,2.8vw,34px)] pb-16';
+export const FLOW_FULLSCREEN_CLASS =
+  'relative min-w-0 overflow-hidden! bg-[#fbfcfd] bg-[linear-gradient(90deg,rgba(205,213,222,0.34)_1px,transparent_1px),linear-gradient(rgba(205,213,222,0.34)_1px,transparent_1px)] p-0! [background-size:48px_48px]';
+export const FLOW_FULLSCREEN_WITH_AI_CLASS =
+  'ml-[min(380px,36vw)]';
+export const FLOW_FULLSCREEN_PANNABLE_CLASS = 'cursor-grab select-none active:cursor-grabbing';
+export const FLOW_INSPECTOR_CLASS =
+  'flex w-[min(500px,42vw)] min-w-[380px] shrink-0 flex-col border-l border-[#e1e6ee] bg-[#f8fafb]';
+export const FLOW_INSPECTOR_HEADER_CLASS =
+  'flex shrink-0 items-start justify-between gap-[12px] border-b border-[#eceef1] px-[18px] py-[14px]';
+export const FLOW_INSPECTOR_BODY_CLASS = 'min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-[16px] py-[16px]';
+export const FLOW_INSPECTOR_EMPTY_CLASS =
+  'grid min-h-0 flex-1 place-items-center px-[28px] text-center text-[13px] leading-[1.7] text-[#858b9c]';
+export const FLOW_NODE_CONNECT_HANDLE_CLASS =
+  'absolute bottom-[-9px] left-1/2 z-[12] grid size-[18px] cursor-crosshair place-items-center rounded-full border-2 border-white bg-[#04756f] text-[10px] text-white shadow-[0_3px_10px_rgba(4,117,111,0.26)] transition-[background,box-shadow,transform] hover:bg-[#035f5a] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#04756f]';
+export const FLOW_NODE_CONNECT_HANDLE_ACTIVE_CLASS = 'bg-[#18181a] shadow-[0_0_0_4px_rgba(4,117,111,0.18)]';
+export const FLOW_CONNECTION_PREVIEW_CLASS =
+  'pointer-events-none fixed inset-0 z-[110] h-screen w-screen overflow-visible';
 export const FLOW_ZOOM_SHELL_CLASS = 'relative mx-0 min-w-full';
 export const FLOW_GRAPH_CANVAS_CLASS =
   'absolute top-0 left-0 origin-top-left rounded-[18px] bg-[radial-gradient(circle_at_40px_40px,rgba(18,128,115,0.05),transparent_240px),linear-gradient(90deg,rgba(218,211,199,0.38)_1px,transparent_1px),linear-gradient(rgba(218,211,199,0.26)_1px,transparent_1px)] [background-size:auto,72px_72px,72px_72px] box-border';
 export const FLOW_EDGES_CLASS = 'pointer-events-none absolute top-0 left-0 z-[2] overflow-visible';
 export const FLOW_EDGE_PATH_CLASS =
-  'fill-none stroke-[#bfb09a] [stroke-width:1.3] [stroke-dasharray:6_14] [vector-effect:non-scaling-stroke] [stroke-linecap:round] [stroke-linejoin:round] opacity-50';
+  'fill-none stroke-[#718683] [stroke-width:1.65] [vector-effect:non-scaling-stroke] [stroke-linecap:round] [stroke-linejoin:round] opacity-72';
 export const FLOW_EDGE_LABEL_BASE_CLASS =
   'pointer-events-none absolute z-[4] max-w-[176px] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border border-[#d7cbbb] bg-[#fffdf8]/98 px-[9px] py-[4px] text-[11px] leading-[1.35] text-ellipsis whitespace-nowrap text-[#5f574b] shadow-[0_8px_18px_rgba(38,32,23,0.1)]';
 export const FLOW_ROOT_POSITION_CLASS = 'absolute z-[6]';
@@ -303,7 +338,7 @@ export const FLOW_NODE_SHELL_CLASS =
   'grid h-full w-full max-w-none justify-items-stretch gap-[8px]';
 
 export const FLOW_NODE_CLASS =
-  'relative isolate box-border grid h-full min-h-0 w-full cursor-pointer grid-rows-[auto_auto_auto_auto_minmax(0,1fr)] gap-[7px] overflow-hidden rounded-[10px] border border-[#eceef1] bg-[#fffefd] p-[14px_15px] text-left select-text text-[#18181a] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#18181a]';
+  'relative isolate box-border grid h-full min-h-0 w-full cursor-pointer content-start auto-rows-max gap-[7px] overflow-hidden rounded-[12px] border border-[#e4e8ee] bg-[#fffefd] p-[14px_15px] text-left select-text text-[#18181a] shadow-[0_8px_22px_rgba(24,31,45,0.045)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#18181a]';
 export const FLOW_NODE_ROOT_CLASS =
   'relative z-[1] h-full min-h-0 w-full justify-self-start bg-[#f2f0eb] shadow-[0_14px_34px_rgba(37,32,24,0.08)]';
 export const FLOW_NODE_ACTIVE_CLASS = 'border-[#04756f] shadow-[0_8px_22px_rgba(4,117,111,0.08)]';
@@ -312,10 +347,10 @@ export const FLOW_NODE_CHANGED_CLASS =
 export const FLOW_NODE_DIRTY_CLASS = 'bg-[#fffdf8] shadow-[inset_3px_0_0_#d8c7a4]';
 export const FLOW_NODE_UPDATING_CLASS = 'animate-pulse';
 
-export const FLOW_NODE_BADGES_CLASS = 'flex max-h-[28px] flex-wrap gap-[6px] overflow-hidden';
+export const FLOW_NODE_BADGES_CLASS = 'flex flex-wrap gap-[6px]';
 export const FLOW_NODE_SUMMARY_CLASS =
-  'm-[2px_0_0] line-clamp-3 text-[13px] leading-[1.5] wrap-anywhere text-[#858b9c]!';
-export const FLOW_COMPACT_META_CLASS = 'grid min-h-0 content-start gap-[6px] overflow-hidden';
+  'm-[2px_0_0] whitespace-pre-wrap text-[13px] leading-[1.55] wrap-anywhere text-[#687184]!';
+export const FLOW_COMPACT_META_CLASS = 'grid min-h-0 content-start gap-[7px]';
 export const FLOW_COMPACT_ROW_CLASS =
   'grid min-w-0 grid-cols-[34px_minmax(0,1fr)] items-start gap-[8px] [&>span:first-child]:text-[12px] [&>span:first-child]:font-semibold [&>span:first-child]:leading-[24px] [&>span:first-child]:text-[#858b9c]';
 export const FLOW_ROUTE_COUNT_CLASS =
@@ -323,7 +358,7 @@ export const FLOW_ROUTE_COUNT_CLASS =
 export const FLOW_META_CLASS = 'mt-[6px] grid gap-[8px]';
 export const FLOW_META_ROW_CLASS = 'grid gap-[5px]';
 export const FLOW_META_LABEL_CLASS = 'text-[11px] font-semibold text-[#858b9c]';
-export const FLOW_CHIP_LIST_CLASS = 'flex max-h-[54px] flex-wrap gap-[6px] overflow-hidden';
+export const FLOW_CHIP_LIST_CLASS = 'flex flex-wrap gap-[6px]';
 export const FLOW_CHIP_CLASS =
   'max-w-full overflow-hidden rounded-full border border-[#eceef1] bg-[#fafafa] px-2 py-[4px] text-[11px] leading-[1.4] wrap-anywhere text-[#858b9c]';
 export const FLOW_CHIP_MUTED_CLASS = 'text-[#858b9c]';

@@ -9,6 +9,7 @@ import {
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
+import { KeyRound } from 'lucide-react';
 
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconEdit from '../assets/icons/edit.svg?react';
@@ -20,6 +21,7 @@ import {
   type EnterpriseAuthUser,
 } from '../auth';
 import LanguageSwitcher from './LanguageSwitcher';
+import AccountApiKeyDialog from './AccountApiKeyDialog';
 
 /** 只允许 http/https/data:image/blob 协议的图片地址,其余一律视为无效。 */
 function safeImageUrl(value: string): string {
@@ -81,6 +83,7 @@ export default function AppHeader({
   const [avatarBlobUrl, setAvatarBlobUrl] = useState('');
   const avatarBlobUrlRef = useRef('');
   const [avatarSaving, setAvatarSaving] = useState(false);
+  const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const displayName = user?.display_name || user?.username || '';
@@ -330,6 +333,15 @@ export default function AppHeader({
                   <div className="mx-[6px] mb-[6px] h-px bg-[#eef0f4]" />
                 </>
               )}
+              {user && (
+                <DropdownMenuItem
+                  onSelect={() => setApiKeyOpen(true)}
+                  className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
+                >
+                  <KeyRound className="size-[16px]" />
+                  API 全量密钥
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem
                 onSelect={() => onLogout?.()}
                 className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
@@ -349,6 +361,11 @@ export default function AppHeader({
         accept="image/*"
         className="hidden"
         onChange={(event) => pickAvatar(event.target.files?.[0] || null)}
+      />
+      <AccountApiKeyDialog
+        account={user ?? null}
+        open={apiKeyOpen}
+        onClose={() => setApiKeyOpen(false)}
       />
     </header>
   );

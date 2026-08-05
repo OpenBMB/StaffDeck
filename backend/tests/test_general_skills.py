@@ -38,7 +38,12 @@ from app.db.models import (
     Tenant,
     User,
 )
-from app.general_skills.runner import GeneralSkillReader, GeneralSkillRunner, GeneralSkillSelector
+from app.general_skills.runner import (
+    GeneralSkillReader,
+    GeneralSkillRunner,
+    GeneralSkillSelector,
+    _normalize_declared_artifacts,
+)
 from app.general_skills.schema import (
     GeneralSkillClawHubImportRequest,
     GeneralSkillImportRequest,
@@ -84,6 +89,38 @@ def _reviewed_srt_runtime(tmp_path_factory):
         yield
     finally:
         os.environ.pop("STAFFDECK_SRT_RUNTIME", None)
+
+
+def test_runner_accepts_only_explicit_artifact_manifest_files(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    artifact_dir = workspace / "general_skill_test" / "artifacts"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "final.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (artifact_dir / "cache.tmp").write_text("internal", encoding="utf-8")
+    structured = {
+        "success": True,
+        "artifacts": [
+            {"path": "final.csv", "display_name": "结果.csv"},
+            {"path": "../outside.txt"},
+        ],
+    }
+
+    _normalize_declared_artifacts(
+        structured,
+        artifact_root=artifact_dir,
+        workspace_root=workspace,
+    )
+
+    assert structured["artifacts"] == [
+        {
+            "path": "general_skill_test/artifacts/final.csv",
+            "display_name": "结果.csv",
+        }
+    ]
+    assert [item["path"] for item in structured["artifact_errors"]] == [
+        "../outside.txt"
+    ]
+    assert all(item["path"] != "cache.tmp" for item in structured["artifacts"])
 
 
 def test_agent_loop_preserves_structured_sandbox_failure() -> None:

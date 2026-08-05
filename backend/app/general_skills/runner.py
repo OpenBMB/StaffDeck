@@ -47,6 +47,7 @@ RUN_TIMEOUT_SECONDS = 12
 MAX_OUTPUT_CHARS = 20000
 GENERAL_SKILL_MAX_TOKENS = 8192
 GENERAL_SKILL_MAX_ATTEMPTS = 10
+MAX_DECLARED_ARTIFACTS = 20
 TraceSink = Callable[[dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
 GENERAL_SKILL_SELECTION_OUTPUT = {
@@ -401,6 +402,11 @@ class GeneralSkillRunner:
             stdout=stdout,
             stderr=stderr,
             structured_result=structured_result,
+            artifacts=(
+                list(structured_result.get("artifacts") or [])
+                if isinstance(structured_result.get("artifacts"), list)
+                else []
+            ),
             reply=reply,
         )
 
@@ -431,6 +437,7 @@ class GeneralSkillRunner:
                     "skill_slug": skill.slug,
                     "skill_name": skill.name,
                     "skill_workspace": "<runtime absolute path to the restored skill folder>",
+                    "output_dir": "<runtime absolute path for final downloadable files>",
                     "skill_files": [file["path"] for file in _skill_files(skill)],
                 },
                 "timeout_seconds": _run_timeout_seconds(skill),
@@ -591,6 +598,7 @@ class GeneralSkillRunner:
                     "skill_slug": skill.slug,
                     "skill_name": skill.name,
                     "skill_workspace": "<runtime absolute path to the restored skill folder>",
+                    "output_dir": "<runtime absolute path for final downloadable files>",
                     "skill_files": [file["path"] for file in _skill_files(skill)],
                 },
                 "timeout_seconds": _run_timeout_seconds(skill),
@@ -1040,6 +1048,17 @@ def _safe_package_path(path: str) -> str:
     return "/".join(parts)
 
 
+def _safe_artifact_text(value: Any, max_length: int) -> str | None:
+    if value is None:
+        return None
+    cleaned = "".join(
+        character
+        for character in str(value).strip()
+        if ord(character) >= 32 and ord(character) != 127
+    )
+    return cleaned[:max_length] or None
+
+
 def _parse_stdout_json(stdout: str) -> dict[str, Any]:
     stripped = stdout.strip()
     if not stripped:
@@ -1073,13 +1092,21 @@ def _normalize_declared_artifacts(
             }
         ]
         return
-    normalized: list[dict[str, str]] = []
-    for declaration in declarations[:20]:
+    normalized: list[dict[str, Any]] = []
+    for declaration in declarations[:MAX_DECLARED_ARTIFACTS]:
         raw_path = declaration.get("path") if isinstance(declaration, Mapping) else declaration
         try:
             relative = normalize_harness_artifact_path(str(raw_path or ""))
             task_relative = (artifact_root / relative).relative_to(workspace_root).as_posix()
-            normalized.append({"path": task_relative})
+            item: dict[str, Any] = {"path": task_relative}
+            if isinstance(declaration, Mapping):
+                display_name = _safe_artifact_text(declaration.get("display_name"), 180)
+                description = _safe_artifact_text(declaration.get("description"), 500)
+                if display_name:
+                    item["display_name"] = display_name
+                if description:
+                    item["description"] = description
+            normalized.append(item)
         except (HarnessArtifactAccessError, ValueError):
             declaration_errors.append(
                 {
@@ -1088,6 +1115,14 @@ def _normalize_declared_artifacts(
                     "message": "产物路径必须位于当前运行目录，且只能使用相对路径。",
                 }
             )
+    if len(declarations) > MAX_DECLARED_ARTIFACTS:
+        declaration_errors.append(
+            {
+                "path": "",
+                "code": "artifact_declaration_limit_exceeded",
+                "message": f"产物声明最多允许 {MAX_DECLARED_ARTIFACTS} 个文件。",
+            }
+        )
     structured["artifacts"] = normalized
     if declaration_errors:
         structured["artifact_errors"] = declaration_errors

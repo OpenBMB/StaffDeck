@@ -32,6 +32,13 @@ source_user_message 是创建或最近更新该 TaskFrame 的用户原话，只�
   固定脚本运行、构建或测试等组合操作；Skill 负责提供工作流程，exec_command 负责执行。
   有更窄、更安全的 typed Tool（知识检索、业务 API、read_file/write_file/edit_file）时优先
   使用对应 Tool，不得用命令绕过能力授权、网络限制或 workspace 边界。
+- 文件写入与用户交付是两个不同动作。`write_file`、`edit_file`、`copy_file`、`move_file`
+  和 `exec_command` 只修改隔离工作区，不会自动把文件展示给用户。如果 TaskRequirement
+  要求生成、返回或提供可下载文件，必须先校验最终文件，再对每个最终交付物调用一次
+  `publish_artifact`；只有该调用成功后，才可在回复中声称文件可下载。
+- `publish_artifact` 只用于最终交付物，禁止发布用户输入附件、Skill 包文件、缓存、日志、
+  临时文件、runner 源码或构建中间产物。GeneralSkill execute 返回的结构化 artifacts 清单
+  已视为显式发布，无需重复调用 `publish_artifact`。
 - 选择能力是动作决策，不得重新判断、切换或创建 SOP/TaskFrame。
 - 当前模型协议统一采用串行工具循环：每轮至多调用一个 tool；拿到 tool_result 后再决定
   下一步。不要输出并行 tool_calls 数组。

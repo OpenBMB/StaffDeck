@@ -133,6 +133,7 @@ def test_verified_runtime_requires_matching_fingerprint() -> None:
 def test_all_implemented_protocols_are_available() -> None:
     assert available_model_protocols() == [
         "openai_chat_completions",
+        "openai_responses",
         "anthropic_messages",
         "gemini_generate_content",
     ]

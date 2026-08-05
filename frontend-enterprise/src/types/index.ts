@@ -311,7 +311,7 @@ export type ModelConfigRead = {
   tenant_id: string;
   name: string;
   provider: string;
-  api_protocol: 'openai_chat_completions' | 'anthropic_messages' | 'gemini_generate_content';
+  api_protocol: 'openai_chat_completions' | 'openai_responses' | 'anthropic_messages' | 'gemini_generate_content';
   base_url?: string;
   api_key_masked: string;
   model: string;
@@ -559,7 +559,11 @@ export type HarnessWorkspaceArtifact = {
   path: string;
   sha256?: string | null;
   size?: number | null;
+  display_name?: string | null;
+  description?: string | null;
+  content_type?: string | null;
   operation?: string | null;
+  source?: string | null;
 };
 
 export type HarnessArtifact =

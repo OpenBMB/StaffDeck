@@ -23,6 +23,7 @@ from app.llm.protocol_drivers import (
     CancellationToken,
     ChatCompletionsDriver,
     GeminiGenerateContentDriver,
+    OpenAIResponsesDriver,
     ProtocolCallError,
 )
 from app.llm.stage_protocol import (
@@ -92,6 +93,13 @@ class LLMClient:
                 timeout=self.timeout_seconds,
             )
             self.driver = ChatCompletionsDriver(self.client)
+        elif protocol is ModelApiProtocol.OPENAI_RESPONSES:
+            self.client = OpenAI(
+                api_key=api_key,
+                base_url=self.base_url,
+                timeout=self.timeout_seconds,
+            )
+            self.driver = OpenAIResponsesDriver(self.client)
         elif protocol is ModelApiProtocol.ANTHROPIC_MESSAGES:
             kwargs: dict[str, Any] = {
                 "api_key": api_key,
@@ -414,18 +422,26 @@ class LLMClient:
 
     def _protocol_driver(
         self,
-    ) -> ChatCompletionsDriver | AnthropicMessagesDriver | GeminiGenerateContentDriver:
+    ) -> (
+        ChatCompletionsDriver
+        | OpenAIResponsesDriver
+        | AnthropicMessagesDriver
+        | GeminiGenerateContentDriver
+    ):
         driver = getattr(self, "driver", None)
         if driver is None:
-            if getattr(self, "api_protocol", ModelApiProtocol.OPENAI_CHAT_COMPLETIONS) is (
-                ModelApiProtocol.GEMINI_GENERATE_CONTENT
-            ):
+            protocol = getattr(
+                self, "api_protocol", ModelApiProtocol.OPENAI_CHAT_COMPLETIONS
+            )
+            if protocol is ModelApiProtocol.GEMINI_GENERATE_CONTENT:
                 driver = GeminiGenerateContentDriver(
                     self.client,
                     self.base_url,
                     getattr(self, "api_key", ""),
                     self.model,
                 )
+            elif protocol is ModelApiProtocol.OPENAI_RESPONSES:
+                driver = OpenAIResponsesDriver(self.client)
             else:
                 driver = ChatCompletionsDriver(self.client)
             self.driver = driver

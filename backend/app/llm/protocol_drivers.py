@@ -75,6 +75,66 @@ class ChatCompletionsDriver:
 
 
 @dataclass(frozen=True)
+class OpenAIResponsesDriver:
+    client: Any
+    request_kind: str = "responses"
+
+    def complete(self, request: dict[str, Any]) -> Any:
+        _raise_if_cancelled(request)
+        try:
+            response = self.client.responses.create(**_responses_request(request))
+        except ProtocolCallError:
+            raise
+        except Exception as exc:
+            raise _protocol_call_error(exc) from exc
+        return _responses_completion(response)
+
+    def stream(self, request: dict[str, Any]) -> Iterator[Any]:
+        _raise_if_cancelled(request)
+        try:
+            events = self.client.responses.create(
+                **_responses_request(request),
+                stream=True,
+            )
+        except Exception as exc:
+            raise _protocol_call_error(exc) from exc
+        response_id = None
+        try:
+            for event in events:
+                _raise_if_cancelled(request)
+                event_type = _object_value(event, "type")
+                if event_type == "response.created":
+                    response_id = _object_value(_object_value(event, "response"), "id")
+                    yield _stream_chunk(response_id)
+                    continue
+                if event_type == "response.output_text.delta":
+                    yield _stream_chunk(
+                        response_id,
+                        text=str(_object_value(event, "delta") or ""),
+                    )
+                    continue
+                if event_type in {"response.completed", "response.incomplete"}:
+                    response = _object_value(event, "response")
+                    response_id = _object_value(response, "id") or response_id
+                    yield _stream_chunk(
+                        response_id,
+                        finish_reason=_responses_finish_reason(response),
+                        usage=_responses_usage(_object_value(response, "usage")),
+                    )
+                    continue
+                if event_type in {"response.failed", "error"}:
+                    raise ProtocolCallError("MODEL_UPSTREAM_ERROR", retryable=True)
+        except ProtocolCallError:
+            raise
+        except Exception as exc:
+            raise _protocol_call_error(exc) from exc
+        finally:
+            close = getattr(events, "close", None)
+            if callable(close):
+                close()
+
+
+@dataclass(frozen=True)
 class AnthropicMessagesDriver:
     client: Any
     request_kind: str = "anthropic.messages"
@@ -202,6 +262,126 @@ class GeminiGenerateContentDriver:
             raise
         except httpx.HTTPError as exc:
             raise _protocol_call_error(exc) from exc
+
+
+def _responses_request(request: dict[str, Any]) -> dict[str, Any]:
+    input_items: list[dict[str, Any]] = []
+    image_count = 0
+    total_image_bytes = 0
+    for message in request.get("messages") or []:
+        role = str(message.get("role") or "")
+        if role not in {"system", "developer", "user", "assistant"}:
+            continue
+        content, content_image_count, content_image_bytes = _responses_content(
+            message.get("content"), role
+        )
+        if not content:
+            continue
+        image_count += content_image_count
+        total_image_bytes += content_image_bytes
+        input_items.append({"role": role, "content": content})
+    if image_count > _MAX_IMAGE_COUNT:
+        raise ValueError("MODEL_TOO_MANY_IMAGES")
+    if total_image_bytes > _MAX_TOTAL_IMAGE_BYTES:
+        raise ValueError("MODEL_REQUEST_TOO_LARGE")
+    payload: dict[str, Any] = {
+        "model": request["model"],
+        "input": input_items,
+        "temperature": request["temperature"],
+        "max_output_tokens": request["max_tokens"],
+        "store": False,
+    }
+    response_format = request.get("response_format")
+    if response_format and response_format.get("type") == "json_object":
+        payload["text"] = {"format": {"type": "json_object"}}
+    if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > _MAX_REQUEST_BYTES:
+        raise ValueError("MODEL_REQUEST_TOO_LARGE")
+    return payload
+
+
+def _responses_content(value: Any, role: str) -> tuple[Any, int, int]:
+    if isinstance(value, str):
+        return value, 0, 0
+    if not isinstance(value, list):
+        return "", 0, 0
+    parts: list[dict[str, Any]] = []
+    image_count = 0
+    total_image_bytes = 0
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            text = str(item.get("text") or "")
+            if text:
+                parts.append({"type": "input_text", "text": text})
+            continue
+        if item.get("type") != "image_url" or role != "user":
+            continue
+        image = item.get("image_url")
+        url = str(image.get("url") or "") if isinstance(image, dict) else ""
+        if not url:
+            continue
+        match = _DATA_URL.fullmatch(url)
+        if match:
+            try:
+                decoded = base64.b64decode(match.group(2), validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise ValueError("MODEL_IMAGE_DATA_URL_INVALID") from exc
+            if len(decoded) > _MAX_IMAGE_BYTES:
+                raise ValueError("MODEL_IMAGE_TOO_LARGE")
+            image_count += 1
+            total_image_bytes += len(decoded)
+        parts.append({"type": "input_image", "image_url": url})
+    return parts, image_count, total_image_bytes
+
+
+def _responses_completion(response: Any) -> Any:
+    text_parts: list[str] = []
+    for item in _object_value(response, "output") or []:
+        if _object_value(item, "type") != "message":
+            continue
+        for part in _object_value(item, "content") or []:
+            if _object_value(part, "type") == "output_text":
+                text_parts.append(str(_object_value(part, "text") or ""))
+    text = "".join(text_parts)
+    return SimpleNamespace(
+        id=_object_value(response, "id"),
+        usage=_responses_usage(_object_value(response, "usage")),
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=text),
+                finish_reason=_responses_finish_reason(response),
+            )
+        ],
+    )
+
+
+def _responses_finish_reason(response: Any) -> str | None:
+    status = _object_value(response, "status")
+    if status == "completed":
+        return "stop"
+    if status == "incomplete":
+        details = _object_value(response, "incomplete_details")
+        reason = _object_value(details, "reason")
+        return "length" if reason == "max_output_tokens" else str(reason or "incomplete")
+    return str(status) if status else None
+
+
+def _responses_usage(value: Any) -> Any:
+    if value is None:
+        return None
+    return SimpleNamespace(
+        prompt_tokens=_object_value(value, "input_tokens"),
+        completion_tokens=_object_value(value, "output_tokens"),
+        total_tokens=_object_value(value, "total_tokens"),
+        input_tokens_details=_object_value(value, "input_tokens_details"),
+    )
+
+
+def _object_value(value: Any, name: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
 
 
 def _gemini_headers(api_key: str) -> dict[str, str]:
