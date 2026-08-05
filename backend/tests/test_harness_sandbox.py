@@ -23,7 +23,7 @@ def test_resolve_srt_uses_explicit_bundle(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("STAFFDECK_SRT_RUNTIME", str(tmp_path))
     resolved = sandbox.resolve_srt()
     assert resolved == (
-        (tmp_path / "bin" / "node").resolve(),
+        (tmp_path / "bin" / sandbox._node_name()).resolve(),
         (tmp_path / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js").resolve(),
     )
 
@@ -41,13 +41,13 @@ def test_resolve_srt_prefers_source_bundle_over_global_install(
         sandbox.shutil,
         "which",
         lambda name: str(
-            global_bundle / "bin" / "node"
-            if name == "node"
+            global_bundle / "bin" / sandbox._node_name()
+            if name == sandbox._node_name()
             else global_bundle / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js"
         ),
     )
     assert sandbox.resolve_srt() == (
-        (source_bundle / "bin" / "node").resolve(),
+        (source_bundle / "bin" / sandbox._node_name()).resolve(),
         (source_bundle / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js").resolve(),
     )
 
@@ -64,8 +64,8 @@ def test_resolve_srt_ignores_global_install_without_explicit_opt_in(
         sandbox.shutil,
         "which",
         lambda name: str(
-            global_bundle / "bin" / "node"
-            if name == "node"
+            global_bundle / "bin" / sandbox._node_name()
+            if name == sandbox._node_name()
             else global_bundle / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js"
         ),
     )
@@ -85,14 +85,14 @@ def test_resolve_srt_allows_global_install_with_explicit_opt_in(
         sandbox.shutil,
         "which",
         lambda name: str(
-            global_bundle / "bin" / "node"
+            global_bundle / "bin" / sandbox._node_name()
             if name == "node"
             else global_bundle / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js"
         ),
     )
 
     assert sandbox.resolve_srt() == (
-        (global_bundle / "bin" / "node").resolve(),
+        (global_bundle / "bin" / sandbox._node_name()).resolve(),
         (global_bundle / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js").resolve(),
     )
 
@@ -123,7 +123,8 @@ def test_diagnostics_rejects_root_before_starting_srt(monkeypatch, tmp_path: Pat
     _make_bundle(tmp_path)
     monkeypatch.setenv("STAFFDECK_SRT_RUNTIME", str(tmp_path))
     monkeypatch.setattr(sandbox.sys, "platform", "linux")
-    monkeypatch.setattr(sandbox.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(sandbox.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(sandbox, "available_backend", lambda: "srt")
 
     report = sandbox.diagnostics()
 
@@ -136,7 +137,7 @@ def test_diagnostics_allows_root_for_bubblewrap_when_userns_is_available(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(sandbox.sys, "platform", "linux")
-    monkeypatch.setattr(sandbox.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(sandbox.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(sandbox, "available_backend", lambda: "bubblewrap")
     monkeypatch.setattr(sandbox, "_read_int", lambda _path: 100)
 
@@ -150,7 +151,8 @@ def test_diagnostics_rejects_disabled_user_namespaces(monkeypatch, tmp_path: Pat
     _make_bundle(tmp_path)
     monkeypatch.setenv("STAFFDECK_SRT_RUNTIME", str(tmp_path))
     monkeypatch.setattr(sandbox.sys, "platform", "linux")
-    monkeypatch.setattr(sandbox.os, "geteuid", lambda: 1001)
+    monkeypatch.setattr(sandbox.os, "geteuid", lambda: 1001, raising=False)
+    monkeypatch.setattr(sandbox, "available_backend", lambda: "srt")
     monkeypatch.setattr(sandbox, "_read_int", lambda path: 0 if "unprivileged" in path else 100)
 
     report = sandbox.diagnostics()
@@ -172,6 +174,25 @@ def test_windows_diagnostics_requires_successful_srt_initialization(
     assert report.status == "unavailable"
     assert report.code == "SANDBOX_WINDOWS_SETUP_REQUIRED"
     assert "windows-install" in (report.remediation or "")
+
+
+def test_windows_srt_probe_uses_bundle_directory(monkeypatch, tmp_path: Path) -> None:
+    _make_bundle(tmp_path)
+    node = (tmp_path / "bin" / sandbox._node_name()).resolve()
+    cli = (
+        tmp_path / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js"
+    ).resolve()
+    observed: dict[str, object] = {}
+
+    def fake_run(argv, **kwargs):
+        observed["cwd"] = kwargs["cwd"]
+        return sandbox.subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+    sandbox._windows_srt_ready.cache_clear()
+
+    assert sandbox._windows_srt_ready(node, cli) is True
+    assert observed["cwd"] == node.parent
 
 
 def test_windows_install_command_uses_bundled_node_and_cli(monkeypatch, tmp_path: Path) -> None:

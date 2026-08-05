@@ -25,6 +25,15 @@ def test_reviewed_node_archives_have_built_in_hashes() -> None:
     }
 
 
+def test_windows_machine_falls_back_to_process_bitness(monkeypatch) -> None:
+    monkeypatch.setattr(fetch.platform, "machine", lambda: "")
+    monkeypatch.setattr(fetch.platform, "system", lambda: "Windows")
+    monkeypatch.delenv("PROCESSOR_ARCHITECTURE", raising=False)
+    monkeypatch.setattr(fetch.sys, "maxsize", 2**63 - 1)
+
+    assert fetch._machine() == "amd64"
+
+
 def test_srt_lock_integrity_is_enforced(tmp_path: Path) -> None:
     lock = json.loads(fetch.PACKAGE_LOCK.read_text(encoding="utf-8"))
     (tmp_path / "package-lock.json").write_text(json.dumps(lock), encoding="utf-8")

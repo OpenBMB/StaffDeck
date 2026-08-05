@@ -15,6 +15,7 @@ import platform
 import shutil
 import socket
 import subprocess
+import sys
 import tarfile
 import tempfile
 import urllib.request
@@ -117,7 +118,7 @@ def main() -> int:
 
 def _download_node_runtime(destination: Path) -> None:
     system = platform.system().lower()
-    machine = platform.machine().lower()
+    machine = _machine()
     arch = {
         "x86_64": "x64",
         "amd64": "x64",
@@ -190,6 +191,15 @@ def _download_node_runtime(destination: Path) -> None:
                     shutil.copyfileobj(source, output)
         if system != "windows":
             target_node.chmod(target_node.stat().st_mode | 0o111)
+
+
+def _machine() -> str:
+    machine = platform.machine() or os.environ.get("PROCESSOR_ARCHITECTURE", "")
+    if machine:
+        return machine.lower()
+    if platform.system().lower() == "windows" and sys.maxsize > 2**32:
+        return "amd64"
+    return machine.lower()
 
 
 def _verify_srt_integrity(destination: Path) -> None:

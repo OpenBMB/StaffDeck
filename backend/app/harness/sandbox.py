@@ -93,8 +93,7 @@ def _windows_srt_ready(node: Path, cli: Path) -> bool:
     """Run SRT initialization once; upstream verifies user credentials and WFP."""
     try:
         with tempfile.TemporaryDirectory(prefix="staffdeck-srt-probe-") as raw_dir:
-            workdir = Path(raw_dir)
-            settings = workdir / "settings.json"
+            settings = Path(raw_dir) / "settings.json"
             settings.write_text(
                 json.dumps(
                     {
@@ -108,13 +107,14 @@ def _windows_srt_ready(node: Path, cli: Path) -> bool:
                 ),
                 encoding="utf-8",
             )
-            command = os.environ.get("ComSpec") or "cmd.exe"
             completed = subprocess.run(
                 [
                     str(node), str(cli), "--settings", str(settings),
-                    command, "/d", "/s", "/c", "exit 0",
+                    "-c", "exit 0",
                 ],
-                cwd=workdir,
+                # The sandbox account cannot enter the real user's private temp
+                # directory. The installed bundle is readable by local Users.
+                cwd=node.parent,
                 capture_output=True,
                 timeout=20,
                 check=False,

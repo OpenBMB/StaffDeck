@@ -108,10 +108,6 @@ Pop-Location
 
 $signingConfigured = Test-SigningConfigured
 if ($signingConfigured) {
-  Write-Host "Signing staffdeck.exe"
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\sign_windows.ps1 `
-    -FilePath packaging\out\staffdeck\staffdeck.exe
-  Assert-NativeCommandSucceeded "staffdeck.exe signing"
   $env:WINDOWS_SIGN_ENABLED = "1"
 } else {
   $env:WINDOWS_SIGN_ENABLED = "0"
@@ -132,6 +128,21 @@ Assert-NativeCommandSucceeded "SRT runtime preparation"
 Copy-Item -Recurse -Force packaging\sandbox_runtime packaging\out\staffdeck\sandbox
 & $PY.Command @($PY.PrefixArgs) packaging\smoke_sandbox_bundle.py packaging\out\staffdeck\sandbox
 Assert-NativeCommandSucceeded "Final SRT bundle smoke test"
+
+if ($signingConfigured) {
+  Write-Host "Signing bundled Windows executable payload"
+  $signableExtensions = @(".exe", ".dll", ".pyd", ".node")
+  $signableFiles = Get-ChildItem packaging\out\staffdeck -Recurse -File |
+    Where-Object { $signableExtensions -contains $_.Extension.ToLowerInvariant() }
+  foreach ($file in $signableFiles) {
+    & packaging\sign_windows.ps1 -FilePath $file.FullName
+    Assert-NativeCommandSucceeded "Payload signing: $($file.FullName)"
+  }
+}
+
+& packaging\out\staffdeck\runtime\python.exe -c `
+  "import ssl, sqlite3, requests, docx, openpyxl; print(sqlite3.sqlite_version)"
+Assert-NativeCommandSucceeded "Final bundled Python runtime smoke test"
 
 Write-Host "==> [5/6] Build the Inno Setup installer"
 $isccCandidates = @(

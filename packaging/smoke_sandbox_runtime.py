@@ -11,12 +11,25 @@ import os
 import sqlite3
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
+
+SMOKE_PYTHON = Path(os.environ.get("STAFFDECK_SMOKE_PYTHON", sys.executable)).resolve()
+CHECK_NAMES = (
+    "network_all",
+    "network_allowlist",
+    "network_deny",
+    "artifact",
+    "sqlite_deny_read",
+    "sqlite_hardlink_deny",
+    "sibling_workspace_deny",
+)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("runtime", type=Path)
+    parser.add_argument("--check", action="append", choices=CHECK_NAMES)
     args = parser.parse_args()
     runtime = args.runtime.resolve()
     os.environ["STAFFDECK_SRT_RUNTIME"] = str(runtime)
@@ -29,9 +42,10 @@ def main() -> int:
         data_root = root / "host-data"
         data_root.mkdir()
         database = data_root / "skill_agent_loop.db"
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             connection.execute("CREATE TABLE secret (value TEXT)")
             connection.execute("INSERT INTO secret VALUES ('must-not-leak')")
+            connection.commit()
         os.environ.pop("DATABASE_URL", None)
         os.environ["ULTRARAG_DATA_DIR"] = str(data_root)
 
@@ -45,25 +59,31 @@ def main() -> int:
         sibling_secret = data_root / "harness_workspaces" / "sibling" / "secret.txt"
         sibling_secret.parent.mkdir(parents=True)
         sibling_secret.write_text("must-not-leak", encoding="utf-8")
-        checks = {
-            "network_all": _network_all(run_sandboxed_process, workspace_root / "network-all"),
-            "network_allowlist": _network_allowlist(
+        checkers = {
+            "network_all": lambda: _network_all(
+                run_sandboxed_process, workspace_root / "network-all"
+            ),
+            "network_allowlist": lambda: _network_allowlist(
                 run_sandboxed_process, workspace_root / "network-allowlist"
             ),
-            "network_deny": _network_deny(run_sandboxed_process, workspace_root / "network-deny"),
-            "artifact": _artifact(run_sandboxed_process, workspace_root / "artifact"),
-            "sqlite_deny_read": _sqlite_deny_read(
+            "network_deny": lambda: _network_deny(
+                run_sandboxed_process, workspace_root / "network-deny"
+            ),
+            "artifact": lambda: _artifact(
+                run_sandboxed_process, workspace_root / "artifact"
+            ),
+            "sqlite_deny_read": lambda: _sqlite_deny_read(
                 run_sandboxed_process, workspace_root / "sqlite", database
             ),
-            "sqlite_hardlink_deny": _sqlite_hardlink_deny(
+            "sqlite_hardlink_deny": lambda: _sqlite_hardlink_deny(
                 run_sandboxed_process, workspace_root / "sqlite-hardlink", database
             ),
-            "sibling_workspace_deny": _sibling_workspace_deny(
-                run_sandboxed_process,
-                workspace_root / "sibling-read",
-                sibling_secret,
+            "sibling_workspace_deny": lambda: _sibling_workspace_deny(
+                run_sandboxed_process, workspace_root / "sibling-read", sibling_secret
             ),
         }
+        selected = set(args.check or CHECK_NAMES)
+        checks = {name: checkers[name]() for name in CHECK_NAMES if name in selected}
     print(json.dumps(checks, ensure_ascii=False, indent=2))
     return 0 if all(checks.values()) else 1
 
@@ -81,9 +101,9 @@ def _run(
     script.write_text(code, encoding="utf-8")
     result = run_process(
         workspace=workspace,
-        argv=[sys.executable, str(script)],
+        argv=[str(SMOKE_PYTHON), str(script)],
         cwd=workspace,
-        timeout_seconds=20,
+        timeout_seconds=60 if sys.platform == "win32" else 20,
         output_limit=20_000,
         network_mode=network_mode,
         allowed_domains=allowed_domains,
@@ -95,6 +115,8 @@ def _run(
                     "workspace": str(workspace),
                     "network_mode": network_mode,
                     "returncode": result.returncode,
+                    "timed_out": result.timed_out,
+                    "duration_ms": result.duration_ms,
                     "stdout": result.stdout.decode("utf-8", errors="replace"),
                     "stderr": result.stderr.decode("utf-8", errors="replace"),
                 },

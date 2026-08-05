@@ -38,6 +38,10 @@ SignedUninstaller=yes
 ; PyInstaller onedir 产物整体安装
 Source: "..\out\staffdeck\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
+[Dirs]
+; The dedicated SRT account must be able to launch bundled runtimes.
+Name: "{app}"; Permissions: users-readexec
+
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\staffdeck"; ValueType: string; ValueData: "URL:StaffDeck Protocol"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\staffdeck"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""

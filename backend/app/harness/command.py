@@ -554,35 +554,33 @@ def _write_srt_settings(
         "strictAllowlist": True,
         **({"allowAllDomains": True} if network_mode == "all" else {}),
     }
-    protected_paths = ["~/.ssh", "~/.aws", "~/.config"]
-    # Protect the service's local persistence and data directory even when a
-    # generated skill guesses an absolute host path. Missing paths are safe
-    # for SRT to ignore, while existing SQLite sidecars are explicitly covered.
-    database_bases = [
-        Path.cwd() / "skill_agent_loop.db",
-        Path(__file__).resolve().parents[2] / "skill_agent_loop.db",
-    ]
-    configured_path = sqlite_database_path(get_settings().database_url)
-    if configured_path is not None:
-        database_bases.append(configured_path)
-    for base in database_bases:
-        for suffix in ("", "-wal", "-shm", "-journal", ".bak"):
-            protected_paths.append(str(base) + suffix)
-    from app import paths
+    protected_paths: list[str] = []
+    if sys.platform != "win32":
+        protected_paths.extend(("~/.ssh", "~/.aws", "~/.config"))
+        # Protect the service's local persistence and data directory even when
+        # a generated skill guesses an absolute host path.
+        database_bases = [
+            Path.cwd() / "skill_agent_loop.db",
+            Path(__file__).resolve().parents[2] / "skill_agent_loop.db",
+        ]
+        configured_path = sqlite_database_path(get_settings().database_url)
+        if configured_path is not None:
+            database_bases.append(configured_path)
+        for base in database_bases:
+            for suffix in ("", "-wal", "-shm", "-journal", ".bak"):
+                protected_paths.append(str(base) + suffix)
+        from app import paths
 
-    data_root = paths.user_data_dir().resolve()
-    # SRT read rules deliberately let allowRead override denyRead. Deny the
-    # complete data tree so sibling TaskFrames and service state stay hidden,
-    # then carve the current workspace back out below.
-    protected_paths.append(str(data_root))
-    protected_paths.extend(
-        str(path)
-        for path in (
-            data_root / "logs",
-            data_root / "network.json",
-            data_root / "connector-locks",
+        data_root = paths.user_data_dir().resolve()
+        protected_paths.append(str(data_root))
+        protected_paths.extend(
+            str(path)
+            for path in (
+                data_root / "logs",
+                data_root / "network.json",
+                data_root / "connector-locks",
+            )
         )
-    )
     allow_read = [str(workspace.resolve())]
     allow_write = ["."]
     if sandbox_temp is not None:
@@ -644,8 +642,7 @@ def _srt_argv(*, settings_path: Path, command: str) -> list[str]:
         raise HarnessExecutionError("SANDBOX_UNAVAILABLE", "SRT executable is unavailable.")
     node, cli = resolved
     if sys.platform == "win32":
-        shell = os.environ.get("ComSpec") or "cmd.exe"
-        shell_args = [shell, "/d", "/s", "/c", command]
+        shell_args = ["-c", command]
     else:
         shell_args = [_BASH_PATH, "--noprofile", "--norc", "-c", command]
     return [
@@ -785,6 +782,42 @@ def _bubblewrap_argv(
     return argv
 
 
+def _managed_process_environment(env: dict[str, str] | None) -> dict[str, str]:
+    if sys.platform == "win32":
+        system_keys = {
+            "APPDATA",
+            "ComSpec",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "LOCALAPPDATA",
+            "PATH",
+            "PATHEXT",
+            "PROGRAMDATA",
+            "SystemRoot",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "WINDIR",
+        }
+        baseline = {key: os.environ[key] for key in system_keys if key in os.environ}
+    else:
+        baseline = {
+            "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+        }
+    allowed = {
+        key: value
+        for key, value in (env or {}).items()
+        if key in {
+            "PATH", "HOME", "PWD", "TMPDIR", "LANG", "LC_ALL",
+            "ARGUMENTS", "QUERY", "SKILL_WORKSPACE", "ARTIFACT_DIR", "SKILL_SLUG",
+            "SKILL_NAME", "USER_ID", "SKILL_FILES_JSON", "SSL_CERT_FILE", "PIP_CERT",
+        }
+    }
+    return {**baseline, **allowed}
+
+
 def _run_bounded_process(
     argv: Sequence[str],
     *,
@@ -800,20 +833,7 @@ def _run_bounded_process(
         managed_process = ManagedProcess.start(
             argv,
             cwd=str(cwd),
-            env={
-                "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
-                "LANG": "C.UTF-8",
-                "LC_ALL": "C.UTF-8",
-                **{
-                    key: value
-                    for key, value in (env or {}).items()
-                    if key in {
-                        "PATH", "HOME", "PWD", "TMPDIR", "LANG", "LC_ALL",
-                        "ARGUMENTS", "QUERY", "SKILL_WORKSPACE", "ARTIFACT_DIR", "SKILL_SLUG",
-                        "SKILL_NAME", "USER_ID", "SKILL_FILES_JSON", "SSL_CERT_FILE", "PIP_CERT",
-                    }
-                },
-            },
+            env=_managed_process_environment(env),
             stdin=subprocess.PIPE if stdin_bytes else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

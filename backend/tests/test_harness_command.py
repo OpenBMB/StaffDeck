@@ -285,9 +285,35 @@ def test_srt_network_settings_preserve_exact_modes(
         deny_path.unlink()
 
 
+def test_windows_srt_relies_on_dedicated_user_for_profile_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        command_module,
+        "get_settings",
+        lambda: SimpleNamespace(database_url="sqlite:///./skill_agent_loop.db"),
+    )
+
+    settings_path = command_module._write_srt_settings(
+        tmp_path / "workspace", network_mode="deny"
+    )
+    try:
+        deny_read = json.loads(settings_path.read_text())["filesystem"]["denyRead"]
+    finally:
+        settings_path.unlink()
+
+    assert "~/.ssh" not in deny_read
+    assert "~/.aws" not in deny_read
+    assert "~/.config" not in deny_read
+    assert deny_read == []
+
+
 def test_srt_protects_frozen_default_database_without_blocking_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(command_module.sys, "platform", "linux")
     data_root = (tmp_path / "data").resolve()
     workspace = data_root / "harness_workspaces" / "task"
     workspace.mkdir(parents=True)
@@ -365,6 +391,49 @@ def test_srt_process_uses_private_short_temporary_directory(
     assert sandbox_temp.parent == Path(tempfile.gettempdir())
     assert settings_kwargs["sandbox_temp"] == sandbox_temp
     assert not sandbox_temp.exists()
+
+
+def test_srt_argv_uses_direct_command_mode_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    node = tmp_path / "node.exe"
+    cli = tmp_path / "cli.js"
+    settings = tmp_path / "settings.json"
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setattr(command_module, "resolve_srt", lambda: (node, cli))
+
+    argv = command_module._srt_argv(
+        settings_path=settings,
+        command='"C:\\Program Files\\Python\\python.exe" runner.py',
+    )
+
+    assert argv == [
+        str(node),
+        str(cli),
+        "--settings",
+        str(settings),
+        "-c",
+        '"C:\\Program Files\\Python\\python.exe" runner.py',
+    ]
+
+
+def test_windows_broker_environment_keeps_system_paths_without_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\test\AppData\Local")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PATH", r"C:\Windows\System32")
+
+    result = command_module._managed_process_environment(
+        {"ARGUMENTS": "safe", "OPENAI_API_KEY": "must-not-leak"}
+    )
+
+    assert result["LOCALAPPDATA"] == r"C:\Users\test\AppData\Local"
+    assert result["SystemRoot"] == r"C:\Windows"
+    assert result["PATH"] == r"C:\Windows\System32"
+    assert result["ARGUMENTS"] == "safe"
+    assert "OPENAI_API_KEY" not in result
 
 
 def test_sandboxed_process_maps_structured_paths_and_cwd_for_bubblewrap(
