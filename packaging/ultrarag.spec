@@ -80,11 +80,13 @@ pyz = PYZ(a.pure)
 # console=False：作为 GUI app 常驻 Dock（console=True 会加 LSBackgroundOnly 变纯后台不进 Dock）。
 # 日志由 launcher 重定向到用户数据目录，启动问题可查文件。
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="staffdeck",
-          console=False, disable_windowed_traceback=False, icon=_exe_icon)
+          # Linux users need to run `staffdeck setup` from a headless terminal;
+          # macOS/Windows retain their desktop-shell behavior.
+          console=sys.platform == "linux", disable_windowed_traceback=False, icon=_exe_icon)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="staffdeck")
 
 # macOS：额外产出标准 .app bundle（PyInstaller 正确处理 Contents/Frameworks 布局）。
-# 附带 python runtime 由 build 脚本在打包后拷进 .app/Contents/MacOS/runtime。
+# 附带 Python 与 SRT runtime 由 build 脚本在打包后拷进 .app/Contents/Resources。
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,

@@ -160,6 +160,12 @@ python3 packaging/fetch_runtime_python.py packaging/runtime_dl --expect-arch "$A
 rm -rf "$APP/Contents/Resources/runtime" "$APP/Contents/MacOS/runtime"
 cp -R packaging/runtime_dl/python "$APP/Contents/Resources/runtime"
 
+echo "==> [4b/5] 附带 SRT + Node 运行时"
+rm -rf packaging/sandbox_runtime "$APP/Contents/Resources/sandbox"
+python3 packaging/fetch_sandbox_runtime.py packaging/sandbox_runtime
+cp -R packaging/sandbox_runtime "$APP/Contents/Resources/sandbox"
+python3 packaging/smoke_sandbox_bundle.py "$APP/Contents/Resources/sandbox"
+
 echo "==> [5/5] 签名 + 打 dmg"
 verify_bundle_arch "$APP"
 sign_app_bundle "$APP"
@@ -169,6 +175,7 @@ if codesign --verify --deep --strict "$APP" 2>/dev/null; then
 else
   echo "警告：密封校验未过，双击可能无法打开"
 fi
+backend/.venv/bin/python packaging/smoke_sandbox_runtime.py "$APP/Contents/Resources/sandbox"
 
 # 在当前 runner 的原生架构上真正启动 PyInstaller App。Intel CI 会在这里
 # 捕获 cryptography/OpenSSL ABI 错配，而不是到用户机器上才发现。

@@ -124,6 +124,15 @@ Assert-NativeCommandSucceeded "Python skill runtime download"
 if (Test-Path packaging\out\staffdeck\runtime) { Remove-Item -Recurse -Force packaging\out\staffdeck\runtime }
 Copy-Item -Recurse -Force packaging\runtime_dl\python packaging\out\staffdeck\runtime
 
+Write-Host "==> [4b/6] Bundle SRT + Node runtime"
+if (Test-Path packaging\sandbox_runtime) { Remove-Item -Recurse -Force packaging\sandbox_runtime }
+if (Test-Path packaging\out\staffdeck\sandbox) { Remove-Item -Recurse -Force packaging\out\staffdeck\sandbox }
+& $PY.Command @($PY.PrefixArgs) packaging\fetch_sandbox_runtime.py packaging\sandbox_runtime
+Assert-NativeCommandSucceeded "SRT runtime preparation"
+Copy-Item -Recurse -Force packaging\sandbox_runtime packaging\out\staffdeck\sandbox
+& $PY.Command @($PY.PrefixArgs) packaging\smoke_sandbox_bundle.py packaging\out\staffdeck\sandbox
+Assert-NativeCommandSucceeded "Final SRT bundle smoke test"
+
 Write-Host "==> [5/6] Build the Inno Setup installer"
 $isccCandidates = @(
   $env:ISCC,
