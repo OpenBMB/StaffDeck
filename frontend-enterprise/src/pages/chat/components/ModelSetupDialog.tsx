@@ -110,39 +110,21 @@ export default function ModelSetupDialog({
         model,
         temperature,
         max_output_tokens: maxOutputTokens,
-        is_default: false,
-        enabled: false,
+        is_default: true,
+        enabled: true,
       };
       const saved = savedModelId
-        ? await api.put<ModelConfigRead>(`/api/enterprise/model-configs/${savedModelId}`, payload)
-        : await api.post<ModelConfigRead>('/api/enterprise/model-configs', payload);
+        ? await api.put<ModelConfigRead>(
+          `/api/enterprise/model-configs/${savedModelId}?verify_before_save=true`,
+          payload,
+        )
+        : await api.post<ModelConfigRead>(
+          '/api/enterprise/model-configs?verify_before_save=true',
+          payload,
+        );
       setSavedModelId(saved.id);
-
-      const result = await api.post<{
-        success: boolean;
-        message: string;
-        output?: string;
-        activated: boolean;
-        model?: ModelConfigRead;
-      }>(
-        `/api/enterprise/model-configs/${saved.id}/test?tenant_id=${encodeURIComponent(tenantId)}&activate_if_initial=true`,
-      );
-      if (!result.success) {
-        setTestResult({ success: false, message: result.message ? t(result.message) : t('模型连接失败，请检查配置后重试。') });
-        return;
-      }
-
-      const activated = result.model?.enabled
-        ? result.model
-        : (await api.get<ModelConfigRead[]>(
-          `/api/enterprise/model-configs?tenant_id=${encodeURIComponent(tenantId)}`,
-        )).find((item) => item.enabled && item.is_default);
-      if (!activated) {
-        setTestResult({ success: false, message: t('模型测试通过，但首次激活未完成，请刷新后重试。') });
-        return;
-      }
-      setTestResult({ success: true, message: result.output || (result.message ? t(result.message) : t('模型连接成功。')) });
-      onConfigured(activated);
+      setTestResult({ success: true, message: t('模型连接成功。') });
+      onConfigured(saved);
     } catch (error) {
       setTestResult({
         success: false,

@@ -98,7 +98,7 @@ export default function ModelsPage({
   const [selected, setSelected] = useState<ModelConfigRead | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saveStage, setSaveStage] = useState<'saving' | 'testing' | 'activating' | null>(null);
+  const [saveStage, setSaveStage] = useState<'saving' | 'testing' | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelConfigRead | null>(null);
   const [deleting, setDeleting] = useState(false);
   const testingModelIdsRef = useRef(new Set<string>());
@@ -214,43 +214,27 @@ export default function ModelsPage({
       temperature,
       max_output_tokens: maxOutputTokens,
       extra_body: extraBody,
-      // Activation is completed only after the automatic verification below.
-      is_default: false,
-      enabled: false,
+      is_default: form.enabled && form.is_default,
+      enabled: form.enabled,
       api_key: form.api_key || undefined,
     };
     setSaving(true);
-    setSaveStage('saving');
+    setSaveStage(form.enabled ? 'testing' : 'saving');
     try {
-      let saved: ModelConfigRead;
+      const verifyQuery = form.enabled ? '?verify_before_save=true' : '';
       if (selected) {
-        saved = await api.put<ModelConfigRead>(`/api/enterprise/model-configs/${selected.id}`, payload);
+        await api.put<ModelConfigRead>(
+          `/api/enterprise/model-configs/${selected.id}${verifyQuery}`,
+          payload,
+        );
       } else {
-        saved = await api.post<ModelConfigRead>('/api/enterprise/model-configs', payload);
+        await api.post<ModelConfigRead>(`/api/enterprise/model-configs${verifyQuery}`, payload);
       }
-      let completed = true;
       if (form.enabled) {
-        setSaveStage('testing');
-        const verified = await test(saved);
-        if (verified) {
-          setSaveStage('activating');
-          await api.put<ModelConfigRead>(`/api/enterprise/model-configs/${saved.id}`, {
-            tenant_id: TENANT_ID,
-            enabled: true,
-            is_default: form.is_default,
-          });
-          notify.success(form.is_default ? '测试通过，已启用并设为默认模型' : '测试通过，已启用');
-        } else {
-          completed = false;
-          if (!selected) {
-            setSelected(saved);
-            setForm((current) => ({ ...current, api_key: '' }));
-          }
-        }
+        notify.success(form.is_default ? '测试通过，已启用并设为默认模型' : '测试通过，已启用');
       } else {
         notify.success('已保存');
       }
-      if (!completed) return;
       setEditorOpen(false);
       setSelected(null);
       setForm(BLANK_MODEL_FORM);
@@ -642,7 +626,7 @@ export default function ModelsPage({
               className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030]"
             >
               {saving && <LoaderCircle className="size-[14px] animate-spin" />}
-              {saveStage === 'testing' ? '测试中' : saveStage === 'activating' ? '启用中' : saving ? '保存中' : '保存'}
+              {saveStage === 'testing' ? '测试并保存中' : saving ? '保存中' : '保存'}
             </UIButton>
           </div>
         </DialogContent>
