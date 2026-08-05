@@ -52,7 +52,9 @@ import GeneralSkillsPage, {
 import KnowledgeManagePage, { KnowledgeAddPage } from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import ModelsPage from "./pages/ModelsPage";
+import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
+import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
 import {
   ScheduledTaskEditPage,
@@ -696,6 +698,16 @@ function Shell({
                 }
               />
               <Route
+                path="/enterprise/runtime-settings"
+                element={
+                  isAdmin ? (
+                    <RuntimeSettingsPage />
+                  ) : (
+                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                  )
+                }
+              />
+              <Route
                 path="/enterprise/tools"
                 element={
                   <ToolsPage currentUser={auth.user} onLogout={onLogout} />
@@ -739,7 +751,7 @@ function Shell({
               />
               <Route
                 path="/enterprise/persona"
-                element={<Navigate to="/enterprise/dashboard" replace />}
+                element={<PersonaPage />}
               />
               <Route
                 path="*"

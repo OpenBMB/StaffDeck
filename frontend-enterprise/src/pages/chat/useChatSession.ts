@@ -366,7 +366,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     show_skill_trace: true,
     show_tool_trace: true,
     reflection_max_rounds: 1,
-    agent_loop_max_actions: 6,
+    agent_loop_max_actions: 32,
+    sandbox_network_mode: 'all',
+    sandbox_allowed_domains: [],
     updated_at: '',
   });
   const chatMessagesRef = useRef<HTMLDivElement>(null);

@@ -126,7 +126,8 @@ StatusCallback = Callable[[str, dict[str, object]], None]
 STREAM_CHUNK_INTERVAL_SECONDS = 0.045
 DEFAULT_REFLECTION_MAX_ROUNDS = 1
 REFLECTION_MAX_ROUNDS_LIMIT = 5
-MAX_TOOL_ACTIONS_PER_TURN = 6
+MAX_TOOL_ACTIONS_PER_TURN = 32
+MAX_TOOL_ACTIONS_PER_TURN_LIMIT = 100
 GRAPH_PENDING_STEPS_SLOT = "_graph_pending_steps"
 GENERAL_SKILL_TOOL_PREFIX = "general_skill."
 CANCELLED_ASSISTANT_REPLY = "已停止生成"
@@ -5317,7 +5318,7 @@ class AgentLoop:
             return MAX_TOOL_ACTIONS_PER_TURN
         row = self.db.get(UIConfig, tenant_id)
         value = row.agent_loop_max_actions if row else MAX_TOOL_ACTIONS_PER_TURN
-        return max(1, min(int(value), 20))
+        return max(1, min(int(value), MAX_TOOL_ACTIONS_PER_TURN_LIMIT))
 
     def _list_published_skills(self, tenant_id: str, agent_id: str | None = None) -> list[Skill]:
         return visible_published_skills(self.db, tenant_id, agent_id)

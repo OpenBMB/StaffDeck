@@ -7,12 +7,11 @@ import {
   CardHeader,
   CardTitle,
   Input,
-  Switch,
   Textarea,
   notify,
 } from '@/components/ui';
 import { api, TENANT_ID } from '../api/client';
-import type { AgentProfileRead, PersonaRead, UIConfigRead } from '../types';
+import type { AgentProfileRead, PersonaRead } from '../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
@@ -22,22 +21,7 @@ type PersonaForm = {
   system_prompt: string;
 };
 
-type UiConfigForm = {
-  show_thinking_trace: boolean;
-  show_skill_trace: boolean;
-  show_tool_trace: boolean;
-  reflection_max_rounds: string;
-  agent_loop_max_actions: string;
-};
-
 const BLANK_PERSONA: PersonaForm = { agent_name: '', agent_description: '', system_prompt: '' };
-const DEFAULT_UI_CONFIG: UiConfigForm = {
-  show_thinking_trace: true,
-  show_skill_trace: true,
-  show_tool_trace: true,
-  reflection_max_rounds: '1',
-  agent_loop_max_actions: '6',
-};
 
 function formatDateOnly(value: string): string {
   const normalized = /(?:z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`;
@@ -50,34 +34,17 @@ function formatDateOnly(value: string): string {
 
 export default function PersonaPage() {
   const [form, setForm] = useState<PersonaForm>(BLANK_PERSONA);
-  const [uiForm, setUiForm] = useState<UiConfigForm>(DEFAULT_UI_CONFIG);
   const [loading, setLoading] = useState(false);
-  const [uiLoading, setUiLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState('');
-  const [uiUpdatedAt, setUiUpdatedAt] = useState('');
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || null;
   const isOverallPersona = !selectedAgent || selectedAgent.is_overall;
 
   const updatePersona = (patch: Partial<PersonaForm>) => setForm((prev) => ({ ...prev, ...patch }));
-  const updateUiConfig = (patch: Partial<UiConfigForm>) => setUiForm((prev) => ({ ...prev, ...patch }));
 
   useEffect(() => {
     void loadPersonaScope();
-    api
-      .get<UIConfigRead>(`/api/enterprise/ui-config?tenant_id=${TENANT_ID}`)
-      .then((row) => {
-        setUiForm({
-          show_thinking_trace: row.show_thinking_trace,
-          show_skill_trace: row.show_skill_trace,
-          show_tool_trace: row.show_tool_trace,
-          reflection_max_rounds: String(row.reflection_max_rounds),
-          agent_loop_max_actions: String(row.agent_loop_max_actions),
-        });
-        setUiUpdatedAt(row.updated_at);
-      })
-      .catch((error) => notify.error(error.message));
   }, []);
 
   useEffect(() => {
@@ -178,32 +145,6 @@ export default function PersonaPage() {
     }
   }
 
-  async function saveUiConfig() {
-    const reflectionMaxRounds = Number(uiForm.reflection_max_rounds);
-    const agentLoopMaxActions = Number(uiForm.agent_loop_max_actions);
-    if (Number.isNaN(reflectionMaxRounds) || Number.isNaN(agentLoopMaxActions)) {
-      notify.error('反思轮数与单轮最大动作数必须是数字');
-      return;
-    }
-    setUiLoading(true);
-    try {
-      const row = await api.put<UIConfigRead>('/api/enterprise/ui-config', {
-        tenant_id: TENANT_ID,
-        show_thinking_trace: uiForm.show_thinking_trace,
-        show_skill_trace: uiForm.show_skill_trace,
-        show_tool_trace: uiForm.show_tool_trace,
-        reflection_max_rounds: reflectionMaxRounds,
-        agent_loop_max_actions: agentLoopMaxActions,
-      });
-      setUiUpdatedAt(row.updated_at);
-      notify.success('展示设置已保存');
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '保存失败');
-    } finally {
-      setUiLoading(false);
-    }
-  }
-
   return (
     <>
       <div className="page-title">
@@ -238,60 +179,15 @@ export default function PersonaPage() {
           {updatedAt && <span className="text-[12px] text-muted-foreground">最后更新：{formatDateOnly(updatedAt)}</span>}
         </CardContent>
       </Card>
-      <Card className="editor-card settings-card">
-        <CardHeader>
-          <CardTitle>执行记录与展示设置</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-[16px]">
-          <SwitchRow label="展示思考状态" checked={uiForm.show_thinking_trace} onChange={(next) => updateUiConfig({ show_thinking_trace: next })} />
-          <SwitchRow label="展示执行技能" checked={uiForm.show_skill_trace} onChange={(next) => updateUiConfig({ show_skill_trace: next })} />
-          <SwitchRow label="展示工具调用" checked={uiForm.show_tool_trace} onChange={(next) => updateUiConfig({ show_tool_trace: next })} />
-          <LabeledField label="反思轮数" hint="设为 0 时关闭反思；每轮允许模型检查当前技能和工具结果，并决定是否重试其他技能或工具。">
-            <Input
-              type="number"
-              min={0}
-              max={5}
-              step={1}
-              value={uiForm.reflection_max_rounds}
-              onChange={(event) => updateUiConfig({ reflection_max_rounds: event.target.value })}
-            />
-          </LabeledField>
-          <LabeledField label="单轮最大动作数" hint="控制一次用户输入内员工可连续决策和调用工具的最大次数，用于避免无限循环。">
-            <Input
-              type="number"
-              min={1}
-              max={20}
-              step={1}
-              value={uiForm.agent_loop_max_actions}
-              onChange={(event) => updateUiConfig({ agent_loop_max_actions: event.target.value })}
-            />
-          </LabeledField>
-          <UIButton className="self-start" disabled={uiLoading} onClick={() => void saveUiConfig()}>
-            <SaveOutlined />
-            保存设置
-          </UIButton>
-          {uiUpdatedAt && <span className="text-[12px] text-muted-foreground">最后更新：{formatDateOnly(uiUpdatedAt)}</span>}
-        </CardContent>
-      </Card>
     </>
   );
 }
 
-function LabeledField({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+function LabeledField({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="flex flex-col gap-[6px]">
       <span className="text-[12px] font-medium text-[#464c5e]">{label}</span>
-      {hint && <span className="text-[11px] leading-[16px] text-muted-foreground">{hint}</span>}
       {children}
-    </label>
-  );
-}
-
-function SwitchRow({ label, checked, onChange }: { label: string; checked: boolean; onChange: (next: boolean) => void }) {
-  return (
-    <label className="flex items-center justify-between gap-[16px]">
-      <span className="text-[12px] font-medium text-[#464c5e]">{label}</span>
-      <Switch checked={checked} onCheckedChange={onChange} />
     </label>
   );
 }
