@@ -1,8 +1,9 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
-import pytest
 import httpx
+import pytest
 from fastapi import HTTPException
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -15,6 +16,8 @@ from app.api.tools import (
     _tool_config,
     delete_tool,
     list_tools,
+)
+from app.api.tools import (
     probe_tool as _probe_tool,
 )
 from app.config import get_settings
@@ -288,6 +291,14 @@ def test_invalid_agent_id_does_not_fall_back_to_open_gallery_tools() -> None:
 
 
 def test_probe_tool_success_infers_output_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.api.tools.get_settings",
+        lambda: SimpleNamespace(
+            normalized_tool_base_url="http://localhost:5173",
+            tool_timeout_seconds=30.0,
+        ),
+    )
+
     class FakeClient:
         def __init__(self, *args, **kwargs):
             pass
