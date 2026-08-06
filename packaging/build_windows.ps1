@@ -105,6 +105,8 @@ Push-Location backend
 .\.venv\Scripts\pyinstaller ..\packaging\ultrarag.spec --noconfirm --distpath ..\packaging\out --workpath ..\packaging\build
 Assert-NativeCommandSucceeded "PyInstaller build"
 Pop-Location
+& packaging\out\staffdeck\staffdeck.exe --packaging-smoke
+Assert-NativeCommandSucceeded "Packaged Lark SDK smoke test"
 
 $signingConfigured = Test-SigningConfigured
 if ($signingConfigured) {

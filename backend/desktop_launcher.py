@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import webbrowser
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -26,6 +27,11 @@ DEFAULT_PORT_RANGE_END = 5199
 _MACOS_DELEGATE_REF = None
 _MACOS_INSTANCE_LOCK_HANDLE = None
 STAFFDECK_ICON_PNG = ("packaging", "assets", "staffdeck.png")
+LARK_PACKAGING_SMOKE_IMPORTS = (
+    ("lark_channel", "EventDispatcherHandler"),
+    ("lark_channel.ws.client", "Client"),
+    ("lark_channel.ws.pb.pbbp2_pb2", "Frame"),
+)
 
 
 def build_server_config() -> dict:
@@ -163,6 +169,22 @@ def _redirect_logs_when_frozen() -> None:
         configure_runtime_logging()
     except Exception:
         pass
+
+
+def _run_packaging_smoke() -> int:
+    from feishu_connector_worker import SDK_CONTRACT_VERSION
+
+    actual_version = importlib_metadata.version("lark-channel-sdk")
+    if actual_version != SDK_CONTRACT_VERSION:
+        raise RuntimeError(
+            f"lark-channel-sdk must be exactly {SDK_CONTRACT_VERSION}, got {actual_version}"
+        )
+    for module_name, symbol_name in LARK_PACKAGING_SMOKE_IMPORTS:
+        module = importlib.import_module(module_name)
+        if not hasattr(module, symbol_name):
+            raise RuntimeError(f"{module_name} is missing required symbol {symbol_name}")
+    print(f"packaging smoke ok: lark-channel-sdk=={actual_version}")
+    return 0
 
 
 def apply_runtime_env(cfg: dict | None = None) -> None:
@@ -787,6 +809,8 @@ def _run_windows_taskbar_app(cfg: dict, url: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args == ["--packaging-smoke"]:
+        return _run_packaging_smoke()
     if raw_args and raw_args[0] == "setup":
         return _setup_network(raw_args[1:])
     _apply_network_config(raw_args)

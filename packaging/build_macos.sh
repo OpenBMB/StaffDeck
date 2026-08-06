@@ -150,6 +150,7 @@ echo "==> [3/5] PyInstaller 打包（spec 在 macOS 下同时产出 StaffDeck.ap
 cd "$REPO"
 APP="packaging/out/StaffDeck.app"
 test -d "$APP" || { echo "PyInstaller 未产出 $APP"; exit 1; }
+"$APP/Contents/MacOS/staffdeck" --packaging-smoke
 
 echo "==> [4/5] 附带 python 运行时（放 .app/Contents/Resources/runtime）"
 # 注意：runtime 必须放 Resources 而非 MacOS。放 MacOS 时 codesign 会把 runtime 里

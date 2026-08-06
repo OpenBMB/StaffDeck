@@ -4,7 +4,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 BACKEND = Path.cwd()                      # 约定在 backend/ 下执行
 REPO = BACKEND.parent
@@ -38,7 +38,7 @@ datas = [
     (str(BACKEND / "app" / "llm" / "prompts"), "app/llm/prompts"),
     (str(BACKEND / "app" / "db" / "seed_fixtures"), "app/db/seed_fixtures"),
     (str(BACKEND / "mock_servers"), "mock_servers"),
-] + collect_data_files("tzdata")
+] + collect_data_files("tzdata") + copy_metadata("lark-channel-sdk")
 
 hiddenimports = (
     collect_submodules("uvicorn")

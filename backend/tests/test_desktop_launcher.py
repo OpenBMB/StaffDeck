@@ -14,6 +14,33 @@ def test_frozen_safe_main_calls_freeze_support_before_main(monkeypatch) -> None:
     assert calls == ["freeze", "main"]
 
 
+def test_packaging_smoke_checks_lark_sdk_metadata_and_modules(monkeypatch, capsys) -> None:
+    imported: list[str] = []
+    modules = {
+        module_name: type("FakeModule", (), {symbol_name: object()})
+        for module_name, symbol_name in desktop_launcher.LARK_PACKAGING_SMOKE_IMPORTS
+    }
+    monkeypatch.setattr(desktop_launcher.importlib_metadata, "version", lambda name: "1.2.0")
+    monkeypatch.setattr(
+        desktop_launcher.importlib,
+        "import_module",
+        lambda name: imported.append(name) or modules[name],
+    )
+
+    assert desktop_launcher.main(["--packaging-smoke"]) == 0
+    assert imported == [
+        module_name for module_name, _symbol_name in desktop_launcher.LARK_PACKAGING_SMOKE_IMPORTS
+    ]
+    assert "lark-channel-sdk==1.2.0" in capsys.readouterr().out
+
+
+def test_packaging_smoke_rejects_wrong_lark_sdk_version(monkeypatch) -> None:
+    monkeypatch.setattr(desktop_launcher.importlib_metadata, "version", lambda name: "1.2.1")
+
+    with pytest.raises(RuntimeError, match="must be exactly 1.2.0, got 1.2.1"):
+        desktop_launcher.main(["--packaging-smoke"])
+
+
 @pytest.mark.parametrize(
     ("target", "expected"),
     [

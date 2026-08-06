@@ -32,3 +32,16 @@ def test_pyinstaller_bundle_contains_the_build_version_resource() -> None:
     content = spec_path.read_text(encoding="utf-8")
     assert 'staffdeck-version.txt' in content
     assert '(str(VERSION_FILE), ".")' in content
+
+
+def test_pyinstaller_bundle_contains_lark_sdk_metadata() -> None:
+    spec_path = Path(__file__).resolve().parents[2] / "packaging" / "ultrarag.spec"
+    content = spec_path.read_text(encoding="utf-8")
+    assert 'copy_metadata("lark-channel-sdk")' in content
+
+
+def test_release_builds_run_packaged_lark_sdk_smoke() -> None:
+    packaging_dir = Path(__file__).resolve().parents[2] / "packaging"
+    for script_name in ("build_macos.sh", "build_linux.sh", "build_windows.ps1"):
+        content = (packaging_dir / script_name).read_text(encoding="utf-8")
+        assert "--packaging-smoke" in content, f"{script_name} 未校验冻结产物中的 Lark SDK"
