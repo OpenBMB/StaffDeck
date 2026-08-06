@@ -8,7 +8,11 @@ Set-Location $Repo
 if (-not $env:VERSION) { $env:VERSION = "0.1.0" }
 
 function Test-SigningConfigured {
-  return [bool]($env:WINDOWS_CERT_THUMBPRINT -or $env:WINDOWS_PFX_PATH)
+  return [bool](
+    $env:WINDOWS_CERT_THUMBPRINT -or
+    $env:WINDOWS_PFX_PATH -or
+    $env:WINDOWS_SIGNER_SCRIPT
+  )
 }
 
 function Assert-NativeCommandSucceeded {
@@ -109,11 +113,15 @@ Pop-Location
 Assert-NativeCommandSucceeded "Packaged Lark SDK smoke test"
 
 $signingConfigured = Test-SigningConfigured
+$allowUnsigned = $env:WINDOWS_ALLOW_UNSIGNED -eq "1"
+if (-not $signingConfigured -and -not $allowUnsigned) {
+  throw "Windows code signing is required for a distributable package. Set WINDOWS_CERT_THUMBPRINT, WINDOWS_PFX_PATH, or WINDOWS_SIGNER_SCRIPT. For local-only testing, set WINDOWS_ALLOW_UNSIGNED=1 explicitly."
+}
 if ($signingConfigured) {
   $env:WINDOWS_SIGN_ENABLED = "1"
 } else {
   $env:WINDOWS_SIGN_ENABLED = "0"
-  Write-Warning "Code signing is not configured; Windows artifacts will be UNSIGNED."
+  Write-Warning "WINDOWS_ALLOW_UNSIGNED=1: Windows artifacts are local-only and UNSIGNED. Do not send this package to customers."
 }
 
 Write-Host "==> [4/6] Bundle the Python skill runtime"

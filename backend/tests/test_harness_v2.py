@@ -721,7 +721,7 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     )
 
 
-def test_windows_manifest_does_not_expose_bash_exec_command(monkeypatch) -> None:
+def test_windows_manifest_exposes_platform_shell_exec_command(monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     engine = _test_engine()
     with Session(engine) as db:
@@ -731,12 +731,7 @@ def test_windows_manifest_does_not_expose_bash_exec_command(monkeypatch) -> None
             "tenant-demo", None, None, None
         )
 
-    assert "exec_command" not in manifest.allowed_names()
-    unavailable = next(
-        item for item in manifest.unavailable_references if item.name == "exec_command"
-    )
-    assert unavailable.available is False
-    assert "Windows" in (unavailable.unavailable_reason or "")
+    assert "exec_command" in manifest.allowed_names()
 
 
 def test_scheduled_harness_outcome_uses_taskframes_and_records_sop_scope() -> None:

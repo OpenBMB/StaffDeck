@@ -26,36 +26,47 @@ function Get-SignTool {
 }
 
 $target = (Resolve-Path $FilePath).Path
-$signtool = Get-SignTool
 $timestampUrl = if ($env:WINDOWS_TIMESTAMP_URL) {
   $env:WINDOWS_TIMESTAMP_URL
 } else {
   "http://timestamp.digicert.com"
 }
 
-$arguments = @("sign", "/fd", "SHA256", "/tr", $timestampUrl, "/td", "SHA256")
-if ($env:WINDOWS_PFX_PATH) {
-  $pfxPath = (Resolve-Path $env:WINDOWS_PFX_PATH).Path
-  $arguments += @("/f", $pfxPath)
-  if ($env:WINDOWS_PFX_PASSWORD) {
-    $arguments += @("/p", $env:WINDOWS_PFX_PASSWORD)
+if ($env:WINDOWS_SIGNER_SCRIPT) {
+  $signerScript = (Resolve-Path $env:WINDOWS_SIGNER_SCRIPT).Path
+  if ($signerScript -eq $PSCommandPath) {
+    throw "WINDOWS_SIGNER_SCRIPT cannot point to packaging/sign_windows.ps1."
   }
-} elseif ($env:WINDOWS_CERT_THUMBPRINT) {
-  $thumbprint = $env:WINDOWS_CERT_THUMBPRINT -replace "\s", ""
-  $arguments += @("/sha1", $thumbprint)
+  & $signerScript -FilePath $target
+  if ($LASTEXITCODE -ne 0) {
+    throw "External Windows signer failed for $target with exit code $LASTEXITCODE"
+  }
 } else {
-  throw "Set WINDOWS_CERT_THUMBPRINT or WINDOWS_PFX_PATH before signing."
+  $signtool = Get-SignTool
+  $arguments = @("sign", "/fd", "SHA256", "/tr", $timestampUrl, "/td", "SHA256")
+  if ($env:WINDOWS_PFX_PATH) {
+    $pfxPath = (Resolve-Path $env:WINDOWS_PFX_PATH).Path
+    $arguments += @("/f", $pfxPath)
+    if ($env:WINDOWS_PFX_PASSWORD) {
+      $arguments += @("/p", $env:WINDOWS_PFX_PASSWORD)
+    }
+  } elseif ($env:WINDOWS_CERT_THUMBPRINT) {
+    $thumbprint = $env:WINDOWS_CERT_THUMBPRINT -replace "\s", ""
+    $arguments += @("/sha1", $thumbprint)
+  } else {
+    throw "Set WINDOWS_CERT_THUMBPRINT, WINDOWS_PFX_PATH, or WINDOWS_SIGNER_SCRIPT before signing."
+  }
+
+  $arguments += $target
+  & $signtool @arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "signtool failed for $target with exit code $LASTEXITCODE"
+  }
 }
 
-$arguments += $target
-& $signtool @arguments
-if ($LASTEXITCODE -ne 0) {
-  throw "signtool failed for $target with exit code $LASTEXITCODE"
+$signature = Get-AuthenticodeSignature -FilePath $target
+if ($signature.Status -ne "Valid") {
+  throw "Authenticode verification failed for ${target}: $($signature.StatusMessage)"
 }
 
-& $signtool verify /pa /v $target
-if ($LASTEXITCODE -ne 0) {
-  throw "Authenticode verification failed for $target"
-}
-
-Write-Host "Signed and verified: $target"
+Write-Host "Signed and verified: $target ($($signature.SignerCertificate.Subject))"

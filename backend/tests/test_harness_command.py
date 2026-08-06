@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import sys
 import tempfile
@@ -68,8 +69,12 @@ def test_exec_command_fails_closed_without_bubblewrap(
 )
 def test_exec_command_rejects_escape_and_dangerous_commands(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     command: str,
 ) -> None:
+    # These cases exercise the POSIX validator. Keep them independent from
+    # the host platform so Windows SRT readiness does not mask the assertion.
+    monkeypatch.setattr(command_module.sys, "platform", "linux")
     result = _execute(tmp_path, {"command": command})
 
     assert result.success is False
@@ -310,6 +315,38 @@ def test_windows_srt_relies_on_dedicated_user_for_profile_isolation(
     assert deny_read == []
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Write-Output ok",
+        "Set-Content -Path result.txt -Value ok\nGet-Content result.txt",
+        "Get-ChildItem .",
+        "python runner.py",
+        "Invoke-WebRequest https://example.com",
+    ],
+)
+def test_windows_validator_allows_workspace_power_shell_workflows(command: str) -> None:
+    command_module._validate_windows_command(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Get-Content ..\\outside.txt",
+        "Get-Content C:\\Windows\\win.ini",
+        "Get-Content $env:USERPROFILE\\.ssh\\id_rsa",
+        "Remove-Item result.txt",
+        "Start-Process powershell.exe",
+        "Invoke-Expression 'Get-Process'",
+    ],
+)
+def test_windows_validator_rejects_escape_and_nested_host_commands(command: str) -> None:
+    with pytest.raises(HarnessExecutionError) as denied:
+        command_module._validate_windows_command(command)
+
+    assert denied.value.error.code == "COMMAND_DENIED"
+
+
 def test_srt_protects_frozen_default_database_without_blocking_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -407,14 +444,17 @@ def test_srt_argv_uses_direct_command_mode_on_windows(
         command='"C:\\Program Files\\Python\\python.exe" runner.py',
     )
 
-    assert argv == [
+    assert argv[:5] == [
         str(node),
         str(cli),
         "--settings",
         str(settings),
         "-c",
-        '"C:\\Program Files\\Python\\python.exe" runner.py',
     ]
+    assert argv[5].startswith("powershell.exe -NoProfile -NonInteractive -EncodedCommand ")
+    decoded = base64.b64decode(argv[5].rsplit(" ", 1)[1]).decode("utf-16le")
+    assert decoded.endswith('"C:\\Program Files\\Python\\python.exe" runner.py')
+    assert "$OutputEncoding" in decoded
 
 
 def test_windows_broker_environment_keeps_system_paths_without_secrets(

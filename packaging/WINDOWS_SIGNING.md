@@ -1,8 +1,8 @@
 # Windows code signing
 
-StaffDeck uses Authenticode signing for the packaged application, the Inno Setup
-uninstaller, and the final installer. Signing is optional for local builds but
-should be enabled for public releases.
+StaffDeck uses Authenticode signing for the packaged application, the bundled
+Node/SRT executables, the Inno Setup uninstaller, and the final installer.
+Signing is required for any package distributed to another Windows machine.
 
 ## Prerequisites
 
@@ -29,10 +29,34 @@ $env:VERSION = "0.1.0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\build_windows.ps1
 ```
 
+## Cloud or CI signing
+
+When the signing key is held by a cloud service or an HSM, set
+`WINDOWS_SIGNER_SCRIPT` to a PowerShell script supplied by the CI job:
+
+```powershell
+$env:WINDOWS_SIGNER_SCRIPT = "$env:RUNNER_TEMP\sign-with-cloud.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+```
+
+The external script must accept a mandatory `-FilePath` argument, sign that
+file in place, wait for the remote signing operation to finish, and exit
+non-zero on failure. The repository wrapper independently calls
+`Get-AuthenticodeSignature` after every invocation, so a successful command
+that did not produce a valid signature still fails the build. This contract
+supports Azure Trusted Signing and other remote signing providers without
+placing a PFX or private key in the repository or runner.
+
+The signing identity must be trusted by the Windows application-control policy
+used by the target machines. A self-signed certificate only works on a managed
+fleet where its trust chain and matching WDAC/AppLocker policy are deployed by
+administrators; it is not a public-distribution substitute.
+
 Do not commit a PFX file or its password. In CI, store both as protected
 secrets. `WINDOWS_TIMESTAMP_URL` defaults to DigiCert's RFC 3161 timestamp
 service and can be overridden when required.
 
-The build fails if signing or verification fails. Without either certificate
-variable, the build continues for local testing and prints an explicit
-`UNSIGNED` warning.
+The build fails closed when no certificate or external signer is configured.
+For a local-only developer build that will not be distributed, explicitly set
+`$env:WINDOWS_ALLOW_UNSIGNED = "1"`; the output will remain marked as
+`UNSIGNED` and must not be sent to customers.
