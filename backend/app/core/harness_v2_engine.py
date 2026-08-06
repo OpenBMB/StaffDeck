@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
+from app.channels.adapters.base import is_group_conv_id
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
 from app.core.capability_manifest import CapabilityManifestBuilder
@@ -279,14 +280,19 @@ class HarnessV2Engine:
         self.owner._drop_unavailable_skill_state(
             request.tenant_id, session, skills
         )
-        memory_context = [
-            memory_read(row)
-            for row in self.owner.memory.context_memories(
-                request.tenant_id,
-                request.user_id,
-                agent_id=session.agent_id,
-            )
-        ]
+        # 群记忆红线:群聊会话不检索个人记忆(私人偏好绝不在群里被念出来)
+        memory_context = (
+            []
+            if is_group_conv_id(session.channel or "", session.external_conv_id or "")
+            else [
+                memory_read(row)
+                for row in self.owner.memory.context_memories(
+                    request.tenant_id,
+                    request.user_id,
+                    agent_id=session.agent_id,
+                )
+            ]
+        )
         if memory_context:
             self.events.record(
                 request.tenant_id,
