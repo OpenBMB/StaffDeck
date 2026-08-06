@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace
@@ -718,6 +719,24 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     assert shared_descriptor.metadata["script_execution"] == (
         "explicit_after_read"
     )
+
+
+def test_windows_manifest_does_not_expose_bash_exec_command(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant-demo", name="Demo"))
+        db.commit()
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant-demo", None, None, None
+        )
+
+    assert "exec_command" not in manifest.allowed_names()
+    unavailable = next(
+        item for item in manifest.unavailable_references if item.name == "exec_command"
+    )
+    assert unavailable.available is False
+    assert "Windows" in (unavailable.unavailable_reason or "")
 
 
 def test_scheduled_harness_outcome_uses_taskframes_and_records_sop_scope() -> None:
