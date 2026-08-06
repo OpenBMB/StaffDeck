@@ -96,6 +96,17 @@ import {
   CHAT_EDIT_PANEL_CLASS,
   CHAT_EDIT_PANEL_USER_ATTACHMENTS_CLASS,
   CHAT_EDIT_TEXTAREA_CLASS,
+  CHAT_FAILURE_BUTTON_CLASS,
+  CHAT_FAILURE_CLASS,
+  CHAT_FAILURE_COPY_CLASS,
+  CHAT_FAILURE_DETAILS_CLASS,
+  CHAT_FAILURE_ICON_CLASS,
+  CHAT_FAILURE_LABEL_CLASS,
+  CHAT_FAILURE_META_CLASS,
+  CHAT_FAILURE_RAW_CLASS,
+  CHAT_FAILURE_STAGE_CLASS,
+  CHAT_FAILURE_SUMMARY_CLASS,
+  CHAT_FAILURE_VALUE_CLASS,
   CHAT_HOVER_ACTIONS_CLASS,
   CHAT_HOVER_BUTTON_CLASS,
   CHAT_MESSAGES_CLASS,
@@ -275,7 +286,9 @@ import {
   uploadItemClass,
   type ToolStatusBadgeVariant,
 } from './distillPageStyles';
+import { buildDistillFailure, type DistillFailure } from './distillFailure';
 import { api, ApiError, streamGet, streamPost, TENANT_ID } from '../api/client';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import type {
   GeneralSkillRead,
   KnowledgeBaseRead,
@@ -297,6 +310,8 @@ type ChatItem = {
   thinking?: 'running' | 'done';
   thinkingDetails?: string[];
   thinkingOpen?: boolean;
+  failure?: DistillFailure;
+  failureOpen?: boolean;
   warnings?: string[];
   toolSuggestions?: ToolSuggestionItem[];
   actionState?: 'pending' | 'confirmed' | 'rejected';
@@ -969,7 +984,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
             return;
           }
           if (item.event === 'error') {
-            updateMessage(assistantId, String(item.data.message || '生成失败，当前草稿未变更。'), { thinking: 'done' });
+            applyDistillFailure(assistantId, item.data.message, 'distill');
             setActiveJob(null);
           }
         },
@@ -978,7 +993,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     } catch (error) {
       if (controller.signal.aborted && !manualStopRef.current) return;
       appendThinkingDetail(assistantId, '生成失败，已保留当前草稿');
-      updateMessage(assistantId, '生成失败，当前草稿未变更。', { thinking: 'done' });
+      applyDistillFailure(assistantId, error, 'distill');
       if (controller.signal.aborted) {
         notify.info('已停止生成');
       } else {
@@ -1097,7 +1112,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
             return;
           }
           if (item.event === 'error') {
-            updateMessage(assistantId, String(item.data.message || '改写失败，当前草稿未变更。'), { thinking: 'done' });
+            applyDistillFailure(assistantId, item.data.message, 'rewrite');
             setActiveJob(null);
           }
         },
@@ -1106,7 +1121,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     } catch (error) {
       if (controller.signal.aborted && !manualStopRef.current) return;
       appendThinkingDetail(assistantId, '改写失败，已保留当前草稿');
-      updateMessage(assistantId, '改写失败，当前草稿未变更。', { thinking: 'done' });
+      applyDistillFailure(assistantId, error, 'rewrite');
       if (controller.signal.aborted) {
         notify.info('已停止改写');
       } else {
@@ -1241,7 +1256,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
       return;
     }
     if (item.event === 'error') {
-      updateMessage(job.assistantId, String(item.data.message || '生成失败'), { thinking: 'done' });
+      applyDistillFailure(job.assistantId, item.data.message, job.kind);
       setActiveJob(null);
       setLoading(false);
       return;
@@ -1249,7 +1264,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     if (item.event === 'job_complete') {
       const status = String(item.data.status || '');
       if (status === 'failed') {
-        updateMessage(job.assistantId, String(item.data.error || '生成失败'), { thinking: 'done' });
+        applyDistillFailure(job.assistantId, item.data.error, job.kind);
         setActiveJob(null);
       }
     }
@@ -1771,6 +1786,43 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     );
   }
 
+  function applyDistillFailure(
+    assistantId: string,
+    error: unknown,
+    kind: ActiveDistillJob['kind'],
+  ) {
+    const failure = buildDistillFailure(error, kind);
+    updateMessage(assistantId, '当前草稿未变更，可以调整要求或模型配置后重试。', {
+      thinking: 'done',
+      failure,
+      failureOpen: false,
+    });
+  }
+
+  function toggleFailureDetails(messageId: string) {
+    setMessages((current) =>
+      current.map((item) =>
+        item.id === messageId ? { ...item, failureOpen: !item.failureOpen } : item,
+      ),
+    );
+  }
+
+  async function copyFailureDetails(failure: DistillFailure) {
+    const text = [
+      `${failure.summary} · ${failure.stage}`,
+      failure.code ? `错误码：${failure.code}` : '',
+      failure.detail,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    try {
+      await copyTextToClipboard(text);
+      notify.success('错误详情已复制');
+    } catch {
+      notify.error('复制错误详情失败');
+    }
+  }
+
   function appendOperationToMessage(id: string, operation: DistillHistoryOperation) {
     setMessages((current) =>
       current.map((item) =>
@@ -2145,6 +2197,42 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
                                 {detail}
                               </div>
                             ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {item.role === 'assistant' && item.failure && (
+                      <div className={CHAT_FAILURE_CLASS}>
+                        <button
+                          type="button"
+                          className={CHAT_FAILURE_BUTTON_CLASS}
+                          aria-expanded={Boolean(item.failureOpen)}
+                          onClick={() => toggleFailureDetails(item.id)}
+                        >
+                          <span className={CHAT_FAILURE_ICON_CLASS}>
+                            <CloseCircleOutlined />
+                          </span>
+                          <span className={CHAT_FAILURE_SUMMARY_CLASS}>{item.failure.summary}</span>
+                          <span className={CHAT_FAILURE_STAGE_CLASS}>{item.failure.stage}</span>
+                          {item.failureOpen ? <DownOutlined /> : <RightOutlined />}
+                        </button>
+                        {item.failureOpen && (
+                          <div className={CHAT_FAILURE_DETAILS_CLASS}>
+                            <div className={CHAT_FAILURE_META_CLASS}>
+                              <span className={CHAT_FAILURE_LABEL_CLASS}>阶段</span>
+                              <span className={CHAT_FAILURE_VALUE_CLASS}>{item.failure.stage}</span>
+                              <span className={CHAT_FAILURE_LABEL_CLASS}>错误码</span>
+                              <span className={CHAT_FAILURE_VALUE_CLASS}>{item.failure.code || '未提供'}</span>
+                            </div>
+                            <pre className={CHAT_FAILURE_RAW_CLASS}>{item.failure.detail}</pre>
+                            <button
+                              type="button"
+                              className={CHAT_FAILURE_COPY_CLASS}
+                              onClick={() => void copyFailureDetails(item.failure!)}
+                            >
+                              <CopyGlyph />
+                              复制错误详情
+                            </button>
                           </div>
                         )}
                       </div>
