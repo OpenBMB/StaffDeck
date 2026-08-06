@@ -3124,5 +3124,10 @@
   "展开运行结果": "Expand run result",
   "收起运行结果": "Collapse run result",
   "description: 描述这个技能做什么、什么时候使用（保存时由上方表单字段重新生成）": "description: Describe what this skill does and when to use it (regenerated from the form fields above on save)",
-  "# 技能说明": "# Skill Instructions"
+  "# 技能说明": "# Skill Instructions",
+  "已发布到技能广场": "Published to the skill gallery",
+  "发布到广场失败": "Failed to publish to gallery",
+  "切换到渲染": "Switch to rendered view",
+  "渲染": "Rendered",
+  "切换到编辑": "Switch to editor"
 }
