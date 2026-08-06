@@ -2203,5 +2203,16 @@
   "StaffDeck 有新版本": "A new StaffDeck version is available",
   "v{1} 已发布，你正在使用 v{2}": "v{1} is available. You're using v{2}",
   "查看更新": "View update",
-  "关闭更新提醒": "Dismiss update reminder"
+  "关闭更新提醒": "Dismiss update reminder",
+  "当前草稿未变更，可以调整要求或模型配置后重试。": "The current draft is unchanged. Adjust the instructions or model configuration and try again.",
+  "错误码：{1}": "Error code: {1}",
+  "错误详情已复制": "Error details copied",
+  "复制错误详情失败": "Failed to copy error details",
+  "阶段": "Stage",
+  "错误码": "Error code",
+  "未提供": "Not provided",
+  "复制错误详情": "Copy error details",
+  "SOP 草稿生成": "SOP draft generation",
+  "SOP 局部改写": "SOP partial rewrite",
+  "上游没有返回详细错误信息，请检查所选模型配置及服务日志。": "The upstream service did not return error details. Check the selected model configuration and service logs."
 }

@@ -72,6 +72,27 @@ export const CHAT_THINKING_DETAILS_CLASS =
 export const CHAT_THINKING_DETAIL_CLASS =
   'relative min-w-0 pl-[14px] wrap-anywhere before:absolute before:left-0 before:top-[0.72em] before:size-[5px] before:rounded-full before:bg-[#d1d5db] before:content-[""]';
 
+export const CHAT_FAILURE_CLASS =
+  'mb-[10px] min-w-0 overflow-hidden rounded-[10px] border border-[#f1cccc] bg-[#fffafa] text-[12px] text-[#5f2525]';
+export const CHAT_FAILURE_BUTTON_CLASS =
+  'flex w-full cursor-pointer items-center gap-[8px] border-0 bg-transparent px-[11px] py-[9px] text-left transition-colors hover:bg-[#fff4f4]';
+export const CHAT_FAILURE_ICON_CLASS =
+  'inline-flex size-[20px] shrink-0 items-center justify-center rounded-full bg-[#fbe4e4] text-[12px] text-[#c93c3c]';
+export const CHAT_FAILURE_SUMMARY_CLASS =
+  'min-w-0 flex-1 truncate text-[12px] font-semibold text-[#9d3030]';
+export const CHAT_FAILURE_STAGE_CLASS =
+  'shrink-0 rounded-full border border-[#efd3d3] bg-white px-[7px] py-[2px] text-[10px] leading-[1.4] text-[#a95a5a]';
+export const CHAT_FAILURE_DETAILS_CLASS =
+  'grid gap-[9px] border-t border-[#f2dede] bg-white/70 px-[11px] py-[10px]';
+export const CHAT_FAILURE_META_CLASS =
+  'grid grid-cols-[54px_minmax(0,1fr)] gap-x-[8px] gap-y-[5px] text-[11px] leading-[1.5]';
+export const CHAT_FAILURE_LABEL_CLASS = 'text-[#aa7777]';
+export const CHAT_FAILURE_VALUE_CLASS = 'min-w-0 wrap-anywhere text-[#623838]';
+export const CHAT_FAILURE_RAW_CLASS =
+  'max-h-[180px] overflow-auto rounded-[7px] border border-[#f1dddd] bg-[#fffdfd] px-[9px] py-[8px] font-mono text-[11px] leading-[1.55] whitespace-pre-wrap wrap-anywhere text-[#6f3c3c]';
+export const CHAT_FAILURE_COPY_CLASS =
+  'inline-flex w-fit items-center gap-[5px] whitespace-nowrap rounded-[7px] border border-[#ead5d5] bg-white px-[8px] py-[5px] text-[11px] text-[#8d5151] transition-colors hover:border-[#d9b6b6] hover:text-[#6f3030] [&_svg]:size-[13px] [&_svg]:shrink-0 [&_svg]:fill-none [&_svg]:stroke-current [&_svg]:stroke-[1.7]';
+
 export const CHAT_ATTACHMENTS_CLASS = 'mb-[8px] grid gap-[7px]';
 export const CHAT_ATTACHMENTS_USER_CLASS = 'mb-0 justify-items-end';
 export const CHAT_ATTACHMENT_CLASS =
