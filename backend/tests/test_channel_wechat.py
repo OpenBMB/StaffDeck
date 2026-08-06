@@ -1078,5 +1078,8 @@ def test_is_group_conv_id_formats() -> None:
     # 私聊不误判
     assert is_group_conv_id("wechat", "wechat_p2p_user_1") is False
     assert is_group_conv_id("wecom", "wecom_corpA_p2p_zhangsan") is False
+    # 私聊用户 ID 含 "_group_" 也不能误判为群(评审案例)
+    assert is_group_conv_id("wechat", "wechat_p2p_user_group_alice") is False
+    assert is_group_conv_id("wecom", "wecom_corpA_p2p_user_group_bob") is False
     # channel 不匹配不误判
     assert is_group_conv_id("wechat", "wecom_group_wr_1") is False

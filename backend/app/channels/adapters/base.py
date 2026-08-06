@@ -115,11 +115,14 @@ def is_group_conv_id(channel: str, external_conv_id: str) -> bool:
 
     兼容三种格式:无 scope 的 {channel}_group_x、带 scope 的 {channel}_{scope}_group_x、
     以及成员级 {channel}_{scope}_group_x#member;不看 channel 之后的 scope 内容。
+    先排除私聊:p2p 的用户 ID 可能含 "_group_"(如 user_group_alice),仅按子串判群会误判。
     """
     prefix = f"{channel}_"
     if not external_conv_id.startswith(prefix):
         return False
     rest = external_conv_id[len(prefix):]
+    if rest.startswith("p2p_") or "_p2p_" in rest:
+        return False
     return rest.startswith("group_") or "_group_" in rest
 
 
