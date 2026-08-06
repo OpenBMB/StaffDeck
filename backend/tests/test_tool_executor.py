@@ -24,6 +24,32 @@ def test_resolve_secret_header(monkeypatch):
     assert headers["Authorization"] == "Bearer token-123"
 
 
+def test_resolve_basic_auth_header(monkeypatch):
+    monkeypatch.setenv("TOOL_PASSWORD", "123456")
+    executor = object.__new__(ToolExecutor)
+
+    headers = executor._resolve_headers(
+        {},
+        {
+            "type": " basic ",
+            "basic": {"username": "admin", "password": "${secret.TOOL_PASSWORD}"},
+        },
+    )
+
+    assert headers["Authorization"] == "Basic YWRtaW46MTIzNDU2"
+
+
+def test_explicit_authorization_header_takes_precedence_over_basic_auth():
+    executor = object.__new__(ToolExecutor)
+
+    headers = executor._resolve_headers(
+        {"Authorization": "Custom value"},
+        {"type": "basic", "basic": {"username": "admin", "password": "123456"}},
+    )
+
+    assert headers["Authorization"] == "Custom value"
+
+
 def test_internal_mock_request_adds_service_token_only_for_configured_origin() -> None:
     executor = object.__new__(ToolExecutor)
     executor.settings = type(

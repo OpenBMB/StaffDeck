@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import re
 from dataclasses import dataclass
@@ -12,10 +13,10 @@ from sqlmodel import Session, select
 from app.agents.branching import visible_tool_rows
 from app.config import get_settings
 from app.db.models import MCPServer, Tool
+from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
 from app.tools.http_request import prepare_get_request
 from app.tools.mcp_client import MCPClientError, execute_mcp_tool
 from app.tools.tool_schema import ToolCall, ToolError, ToolResult
-from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
 
 
 SECRET_PATTERN = re.compile(r"\$\{secret\.([A-Z0-9_]+)\}")
@@ -171,8 +172,20 @@ class ToolExecutor:
 
     def _resolve_headers(self, headers: dict[str, Any], auth: dict[str, Any]) -> dict[str, str]:
         resolved = {key: self._resolve_secret(str(value)) for key, value in headers.items()}
-        if auth.get("type") == "bearer" and auth.get("token"):
+        auth_type = str(auth.get("type") or "").strip().lower()
+        if auth_type == "bearer" and auth.get("token"):
             resolved["Authorization"] = f"Bearer {self._resolve_secret(str(auth['token']))}"
+        elif auth_type == "basic" and "Authorization" not in resolved:
+            basic = auth.get("basic")
+            if (
+                isinstance(basic, dict)
+                and basic.get("username") is not None
+                and basic.get("password") is not None
+            ):
+                username = self._resolve_secret(str(basic["username"]))
+                password = self._resolve_secret(str(basic["password"]))
+                credentials = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
+                resolved["Authorization"] = f"Basic {credentials}"
         return resolved
 
     def _request_headers(self, url: str, headers: dict[str, str]) -> dict[str, str]:
