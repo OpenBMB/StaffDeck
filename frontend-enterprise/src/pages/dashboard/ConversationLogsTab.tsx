@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Clock,
+  Download,
   FileSearch,
   GitBranch,
+  LoaderCircle,
   RefreshCw,
   Workflow,
   Wrench,
@@ -18,6 +20,7 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
+  Checkbox,
   Select as UISelect,
   SelectContent,
   SelectItem,
@@ -98,6 +101,8 @@ export default function ConversationLogsTab() {
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [reanalyzingId, setReanalyzingId] = useState<string | null>(null);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
+  const [exportingKey, setExportingKey] = useState('');
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
@@ -197,6 +202,82 @@ export default function ConversationLogsTab() {
     `${filter}:${conversationUserId}`,
   );
 
+  useEffect(() => {
+    const visibleIds = new Set(filteredRows.map((row) => row.id));
+    setSelectedSessionIds((current) => {
+      const next = new Set([...current].filter((sessionId) => visibleIds.has(sessionId)));
+      if (next.size === current.size && [...next].every((sessionId) => current.has(sessionId))) {
+        return current;
+      }
+      return next;
+    });
+  }, [filteredRows]);
+
+  const pageSessionIds = pagination.pagedItems.map((row) => row.id);
+  const allPageRowsSelected =
+    pageSessionIds.length > 0 && pageSessionIds.every((sessionId) => selectedSessionIds.has(sessionId));
+  const somePageRowsSelected = pageSessionIds.some((sessionId) => selectedSessionIds.has(sessionId));
+  const batchRows = selectedSessionIds.size
+    ? filteredRows.filter((row) => selectedSessionIds.has(row.id))
+    : filteredRows;
+
+  const toggleSessionSelection = (sessionId: string, selected: boolean) => {
+    setSelectedSessionIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(sessionId);
+      else next.delete(sessionId);
+      return next;
+    });
+  };
+
+  const togglePageSelection = (selected: boolean) => {
+    setSelectedSessionIds((current) => {
+      const next = new Set(current);
+      pageSessionIds.forEach((sessionId) => {
+        if (selected) next.add(sessionId);
+        else next.delete(sessionId);
+      });
+      return next;
+    });
+  };
+
+  const exportSingleSession = async (row: ConversationLogRow) => {
+    setExportingKey(row.id);
+    try {
+      const blob = await api.blob(
+        `/api/enterprise/sessions/${encodeURIComponent(row.id)}/export?tenant_id=${TENANT_ID}`,
+      );
+      downloadBlob(blob, `staffdeck-conversation-log-${safeFilenamePart(row.id)}.json`);
+      notify.success('对话日志 JSON 已导出');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '导出对话日志失败');
+    } finally {
+      setExportingKey('');
+    }
+  };
+
+  const exportBatch = async () => {
+    const sessionIds = batchRows.map((row) => row.id);
+    if (sessionIds.length === 0) return;
+    if (sessionIds.length > 500) {
+      notify.error('单次最多导出 500 条对话日志，请缩小筛选范围后重试');
+      return;
+    }
+    setExportingKey('batch');
+    try {
+      const blob = await api.postBlob(
+        `/api/enterprise/sessions/export?tenant_id=${TENANT_ID}`,
+        { session_ids: sessionIds },
+      );
+      downloadBlob(blob, `staffdeck-conversation-logs-${filenameTimestamp()}.json`);
+      notify.success(`已导出 ${sessionIds.length} 条对话日志`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '批量导出对话日志失败');
+    } finally {
+      setExportingKey('');
+    }
+  };
+
   const openDetail = async (row: ConversationLogRow) => {
     setDetailLoading(true);
     try {
@@ -239,6 +320,25 @@ export default function ConversationLogsTab() {
   };
 
   const columns: DataTableColumn<ConversationLogRow>[] = [
+    {
+      key: 'selection',
+      title: (
+        <Checkbox
+          aria-label="选择当前页对话日志"
+          checked={allPageRowsSelected ? true : somePageRowsSelected ? 'indeterminate' : false}
+          onCheckedChange={(checked) => togglePageSelection(checked === true)}
+        />
+      ),
+      width: 46,
+      align: 'center',
+      render: (row) => (
+        <Checkbox
+          aria-label={`选择对话日志 ${row.title || row.id}`}
+          checked={selectedSessionIds.has(row.id)}
+          onCheckedChange={(checked) => toggleSessionSelection(row.id, checked === true)}
+        />
+      ),
+    },
     {
       key: 'title',
       title: '对话任务',
@@ -316,16 +416,31 @@ export default function ConversationLogsTab() {
     {
       key: 'actions',
       title: '操作',
-      width: 90,
+      width: 150,
       render: (row) => (
-        <UIButton
-          variant="link"
-          disabled={detailLoading}
-          onClick={() => void openDetail(row)}
-          className="h-auto p-0 text-[12px] font-normal text-[#1a71ff] hover:text-[#4a8dff] hover:no-underline disabled:text-[#c0c6d4]"
-        >
-          查看
-        </UIButton>
+        <div className="flex items-center gap-[12px]">
+          <UIButton
+            variant="link"
+            disabled={Boolean(exportingKey)}
+            onClick={() => void exportSingleSession(row)}
+            className="h-auto gap-[4px] p-0 text-[12px] font-normal text-[#1a71ff] hover:text-[#4a8dff] hover:no-underline disabled:text-[#c0c6d4]"
+          >
+            {exportingKey === row.id ? (
+              <LoaderCircle className="size-[12px] animate-spin" />
+            ) : (
+              <Download className="size-[12px]" />
+            )}
+            JSON
+          </UIButton>
+          <UIButton
+            variant="link"
+            disabled={detailLoading}
+            onClick={() => void openDetail(row)}
+            className="h-auto p-0 text-[12px] font-normal text-[#1a71ff] hover:text-[#4a8dff] hover:no-underline disabled:text-[#c0c6d4]"
+          >
+            查看
+          </UIButton>
+        </div>
       ),
     },
   ];
@@ -333,9 +448,16 @@ export default function ConversationLogsTab() {
   const renderMobileCard = (row: ConversationLogRow) => (
     <article className={MOBILE_CARD_CLASS} key={row.id}>
       <div className="flex min-w-0 items-start justify-between gap-[10px]">
-        <strong className="min-w-0 wrap-break-word text-[14px] font-semibold text-[#18181a]">
-          {row.title || row.summary || row.last_agent_question || row.id}
-        </strong>
+        <div className="flex min-w-0 items-start gap-[8px]">
+          <Checkbox
+            aria-label={`选择对话日志 ${row.title || row.id}`}
+            checked={selectedSessionIds.has(row.id)}
+            onCheckedChange={(checked) => toggleSessionSelection(row.id, checked === true)}
+          />
+          <strong className="min-w-0 wrap-break-word text-[14px] font-semibold text-[#18181a]">
+            {row.title || row.summary || row.last_agent_question || row.id}
+          </strong>
+        </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-[4px]">
           {row.downFeedback && <StatusBadge tone="red">差评</StatusBadge>}
           {row.upFeedback && <StatusBadge tone="green">好评</StatusBadge>}
@@ -357,7 +479,20 @@ export default function ConversationLogsTab() {
         <ChannelBadge channel={row.channel} />
         <span className="truncate">{row.session_display_name || row.session_username || '-'}</span>
       </div>
-      <div className="mt-[10px] flex justify-end">
+      <div className="mt-[10px] flex justify-end gap-[12px]">
+        <UIButton
+          variant="link"
+          disabled={Boolean(exportingKey)}
+          onClick={() => void exportSingleSession(row)}
+          className="h-auto gap-[4px] p-0 text-[12px] font-normal text-[#1a71ff] hover:text-[#4a8dff] hover:no-underline disabled:text-[#c0c6d4]"
+        >
+          {exportingKey === row.id ? (
+            <LoaderCircle className="size-[12px] animate-spin" />
+          ) : (
+            <Download className="size-[12px]" />
+          )}
+          JSON
+        </UIButton>
         <UIButton
           variant="link"
           disabled={detailLoading}
@@ -417,32 +552,49 @@ export default function ConversationLogsTab() {
               items={FILTER_TABS}
             />
           </div>
-          <label className="flex h-[34px] w-[280px] shrink-0 items-center overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white transition-colors focus-within:border-[#18181a] max-[1099px]:w-full">
-            <span className="flex h-full w-[72px] shrink-0 items-center justify-center border-r-[0.5px] border-[#e3e7f1] bg-[#f6f6f6] text-[12px] text-[#858b9c]">
-              对话用户
-            </span>
-            <UISelect value={conversationUserId} onValueChange={setConversationUserId}>
-              <SelectTrigger
-                aria-label="筛选对话用户"
-                className={cn(
-                  SELECT_TRIGGER_CLASS,
-                  'h-full min-w-0 flex-1 rounded-none border-0 px-[12px] shadow-none focus-visible:border-0',
-                )}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL_CONVERSATION_USERS}>
-                  全部用户（{logFilterRows.length}）
-                </SelectItem>
-                {conversationUserOptions.map((option) => (
-                  <SelectItem key={option.userId} value={option.userId}>
-                    {option.label}（{option.count}）
+          <div className="flex shrink-0 items-center gap-[8px] max-[1099px]:w-full max-[520px]:flex-col">
+            <label className="flex h-[34px] w-[280px] shrink-0 items-center overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white transition-colors focus-within:border-[#18181a] max-[1099px]:flex-1 max-[520px]:w-full">
+              <span className="flex h-full w-[72px] shrink-0 items-center justify-center border-r-[0.5px] border-[#e3e7f1] bg-[#f6f6f6] text-[12px] text-[#858b9c]">
+                对话用户
+              </span>
+              <UISelect value={conversationUserId} onValueChange={setConversationUserId}>
+                <SelectTrigger
+                  aria-label="筛选对话用户"
+                  className={cn(
+                    SELECT_TRIGGER_CLASS,
+                    'h-full min-w-0 flex-1 rounded-none border-0 px-[12px] shadow-none focus-visible:border-0',
+                  )}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_CONVERSATION_USERS}>
+                    全部用户（{logFilterRows.length}）
                   </SelectItem>
-                ))}
-              </SelectContent>
-            </UISelect>
-          </label>
+                  {conversationUserOptions.map((option) => (
+                    <SelectItem key={option.userId} value={option.userId}>
+                      {option.label}（{option.count}）
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </UISelect>
+            </label>
+            <UIButton
+              variant="outline"
+              disabled={batchRows.length === 0 || Boolean(exportingKey)}
+              onClick={() => void exportBatch()}
+              className="h-[34px] shrink-0 gap-[6px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[14px] text-[12px] font-normal text-[#464c5e] hover:border-[#cbd3e6] hover:bg-[#fafbfc] disabled:text-[#c0c6d4] max-[520px]:w-full"
+            >
+              {exportingKey === 'batch' ? (
+                <LoaderCircle className="size-[14px] animate-spin" />
+              ) : (
+                <Download className="size-[14px]" />
+              )}
+              {selectedSessionIds.size
+                ? `导出已选（${batchRows.length}）`
+                : `导出筛选结果（${batchRows.length}）`}
+            </UIButton>
+          </div>
         </div>
 
         <div className="grid gap-[10px] md:hidden">
@@ -787,4 +939,33 @@ function analysisStatusLabel(status?: string): string {
   if (status === 'failed') return '分析失败';
   if (status === 'needs_model') return '未配置模型';
   return status || '未知';
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(objectUrl);
+}
+
+function safeFilenamePart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'session';
+}
+
+function filenameTimestamp(): string {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return [
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate()),
+    '-',
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+    pad(now.getSeconds()),
+  ].join('');
 }

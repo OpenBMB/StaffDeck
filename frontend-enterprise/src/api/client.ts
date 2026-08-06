@@ -90,6 +90,21 @@ export const api = {
     }
     return response.blob();
   },
+  postBlob: async (path: string, body: unknown) => {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeader(),
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new ApiError(response.status, text, response.statusText);
+    }
+    return response.blob();
+  },
 };
 
 export async function uploadChatAttachments<T>(

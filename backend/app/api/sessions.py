@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.api.chat import _build_turn_traces, message_read, session_read
@@ -23,6 +29,12 @@ from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
 
 router = APIRouter(prefix="/api/enterprise/sessions", tags=["enterprise:sessions"])
+
+SESSION_LOG_EXPORT_SCHEMA = "staffdeck.conversation-log.v1"
+
+
+class SessionLogExportRequest(BaseModel):
+    session_ids: list[str] = Field(min_length=1, max_length=500)
 
 
 @router.get("")
@@ -47,6 +59,51 @@ def list_sessions(
     return _session_payloads(db, rows)
 
 
+@router.post("/export")
+def export_session_logs(
+    request: SessionLogExportRequest,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> Response:
+    _ensure_request_tenant(tenant_id, current_user)
+    session_ids = list(dict.fromkeys(request.session_ids))
+    rows = [
+        _get_visible_chat_session(db, tenant_id, session_id, current_user)
+        for session_id in session_ids
+    ]
+    details = _session_details_payload(db, tenant_id, rows)
+    exported_at = datetime.now(UTC)
+    return _json_download_response(
+        {
+            "schema_version": SESSION_LOG_EXPORT_SCHEMA,
+            "exported_at": exported_at,
+            "count": len(details),
+            "items": details,
+        },
+        f"staffdeck-conversation-logs-{exported_at.strftime('%Y%m%d-%H%M%S')}.json",
+    )
+
+
+@router.get("/{session_id}/export")
+def export_session_log(
+    session_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> Response:
+    _ensure_request_tenant(tenant_id, current_user)
+    row = _get_visible_chat_session(db, tenant_id, session_id, current_user)
+    return _json_download_response(
+        {
+            "schema_version": SESSION_LOG_EXPORT_SCHEMA,
+            "exported_at": datetime.now(UTC),
+            "item": _session_detail_payload(db, tenant_id, row),
+        },
+        f"staffdeck-conversation-log-{_safe_filename_part(session_id)}.json",
+    )
+
+
 @router.get("/{session_id}")
 def get_session_detail(
     session_id: str,
@@ -56,33 +113,80 @@ def get_session_detail(
 ) -> dict:
     _ensure_request_tenant(tenant_id, current_user)
     row = _get_visible_chat_session(db, tenant_id, session_id, current_user)
+    return _session_detail_payload(db, tenant_id, row)
+
+
+def _session_detail_payload(db: Session, tenant_id: str, row: ChatSession) -> dict:
+    return _session_details_payload(db, tenant_id, [row])[0]
+
+
+def _session_details_payload(
+    db: Session,
+    tenant_id: str,
+    rows: list[ChatSession],
+) -> list[dict]:
+    if not rows:
+        return []
+    session_ids = [row.id for row in rows]
     messages = db.exec(
         select(Message)
-        .where(Message.tenant_id == tenant_id, Message.session_id == session_id)
+        .where(Message.tenant_id == tenant_id, Message.session_id.in_(session_ids))
         .order_by(Message.created_at)
     ).all()
     events = db.exec(
         select(AgentEvent)
-        .where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == session_id)
+        .where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id.in_(session_ids))
         .order_by(AgentEvent.created_at)
     ).all()
     feedback_rows = db.exec(
         select(MessageFeedback)
         .where(
             MessageFeedback.tenant_id == tenant_id,
-            MessageFeedback.session_id == session_id,
+            MessageFeedback.session_id.in_(session_ids),
         )
         .order_by(MessageFeedback.updated_at.desc())
     ).all()
-    feedback_by_message = {item.message_id: item for item in feedback_rows}
     skills = db.exec(select(Skill).where(Skill.tenant_id == tenant_id)).all()
     skill_names = {skill.skill_id: skill.name for skill in skills}
+    session_payload_by_id = {str(payload["id"]): payload for payload in _session_payloads(db, rows)}
+    messages_by_session = _group_by_session_id(messages)
+    events_by_session = _group_by_session_id(events)
+    feedback_by_session = _group_by_session_id(feedback_rows)
+    return [
+        _build_session_detail_payload(
+            db,
+            session_payload_by_id[row.id],
+            messages_by_session.get(row.id, []),
+            events_by_session.get(row.id, []),
+            feedback_by_session.get(row.id, []),
+            skill_names,
+        )
+        for row in rows
+    ]
+
+
+def _group_by_session_id(rows: list) -> dict[str, list]:
+    grouped: dict[str, list] = {}
+    for row in rows:
+        grouped.setdefault(row.session_id, []).append(row)
+    return grouped
+
+
+def _build_session_detail_payload(
+    db: Session,
+    session_payload: dict,
+    messages: list[Message],
+    events: list[AgentEvent],
+    feedback_rows: list[MessageFeedback],
+    skill_names: dict[str, str],
+) -> dict:
+    feedback_by_message = {item.message_id: item for item in feedback_rows}
     traces = enrich_turn_traces_with_timings(
         _build_turn_traces(messages, events, skill_names),
         events,
     )
     return {
-        "session": _session_payloads(db, [row])[0],
+        "session": session_payload,
         "messages": [
             _message_payload(message, feedback_by_message.get(message.id), db)
             for message in messages
@@ -110,6 +214,26 @@ def get_session_detail(
             for event in events
         ],
     }
+
+
+def _json_download_response(payload: object, filename: str) -> Response:
+    content = json.dumps(
+        jsonable_encoder(payload),
+        ensure_ascii=False,
+        indent=2,
+    ).encode("utf-8")
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _safe_filename_part(value: str) -> str:
+    safe = "".join(
+        character if character.isalnum() or character in "-_" else "-" for character in value
+    )
+    return safe.strip("-") or "session"
 
 
 def _message_payload(

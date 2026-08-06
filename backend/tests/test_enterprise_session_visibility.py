@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -11,9 +12,18 @@ from app.api.feedback import (
     list_feedback_sessions,
     reanalyze_feedback,
 )
-from app.api.sessions import get_session_detail, list_sessions, reset_session
+from app.api.sessions import (
+    SESSION_LOG_EXPORT_SCHEMA,
+    SessionLogExportRequest,
+    export_session_log,
+    export_session_logs,
+    get_session_detail,
+    list_sessions,
+    reset_session,
+)
 from app.core.task_frame_store import TaskFrameStore
 from app.db.models import (
+    AgentEvent,
     AgentProfile,
     ChatSession,
     HarnessRunRecord,
@@ -40,7 +50,9 @@ def _test_session() -> Session:
 
 def _seed(db: Session) -> dict[str, User]:
     db.add(Tenant(id="tenant_demo", name="Demo"))
-    admin = User(id="admin_user", tenant_id="tenant_demo", username="admin", role="admin", password_hash="x")
+    admin = User(
+        id="admin_user", tenant_id="tenant_demo", username="admin", role="admin", password_hash="x"
+    )
     owner = User(id="owner_user", tenant_id="tenant_demo", username="owner", password_hash="x")
     member = User(id="member_user", tenant_id="tenant_demo", username="member", password_hash="x")
     wechat_user = User(
@@ -112,7 +124,9 @@ def _seed(db: Session) -> dict[str, User]:
 def test_agent_creator_sees_all_sessions_of_the_agent() -> None:
     with _test_session() as db:
         users = _seed(db)
-        rows = list_sessions("tenant_demo", agent_id="agent_emp", current_user=users["owner"], db=db)
+        rows = list_sessions(
+            "tenant_demo", agent_id="agent_emp", current_user=users["owner"], db=db
+        )
         session_ids = {row["id"] for row in rows}
         assert session_ids == {"session_owner", "session_member", "session_channel"}
 
@@ -120,14 +134,18 @@ def test_agent_creator_sees_all_sessions_of_the_agent() -> None:
 def test_admin_sees_all_sessions_with_agent_id() -> None:
     with _test_session() as db:
         users = _seed(db)
-        rows = list_sessions("tenant_demo", agent_id="agent_emp", current_user=users["admin"], db=db)
+        rows = list_sessions(
+            "tenant_demo", agent_id="agent_emp", current_user=users["admin"], db=db
+        )
         assert {row["id"] for row in rows} == {"session_owner", "session_member", "session_channel"}
 
 
 def test_member_only_sees_own_sessions() -> None:
     with _test_session() as db:
         users = _seed(db)
-        rows = list_sessions("tenant_demo", agent_id="agent_emp", current_user=users["member"], db=db)
+        rows = list_sessions(
+            "tenant_demo", agent_id="agent_emp", current_user=users["member"], db=db
+        )
         assert [row["id"] for row in rows] == ["session_member"]
 
         # 无 agent_id 时 admin 也只看自己
@@ -159,13 +177,19 @@ def test_detail_allowed_for_owner_admin_and_agent_creator() -> None:
     with _test_session() as db:
         users = _seed(db)
         # 会话属主
-        own = get_session_detail("session_member", "tenant_demo", current_user=users["member"], db=db)
+        own = get_session_detail(
+            "session_member", "tenant_demo", current_user=users["member"], db=db
+        )
         assert own["session"]["id"] == "session_member"
         # admin
-        by_admin = get_session_detail("session_member", "tenant_demo", current_user=users["admin"], db=db)
+        by_admin = get_session_detail(
+            "session_member", "tenant_demo", current_user=users["admin"], db=db
+        )
         assert by_admin["session"]["id"] == "session_member"
         # agent 创建者查看渠道会话
-        by_creator = get_session_detail("session_channel", "tenant_demo", current_user=users["owner"], db=db)
+        by_creator = get_session_detail(
+            "session_channel", "tenant_demo", current_user=users["owner"], db=db
+        )
         assert by_creator["session"]["id"] == "session_channel"
 
 
@@ -173,10 +197,100 @@ def test_detail_404_for_other_members() -> None:
     with _test_session() as db:
         users = _seed(db)
         with pytest.raises(HTTPException) as exc_info:
-            get_session_detail("session_channel", "tenant_demo", current_user=users["member"], db=db)
+            get_session_detail(
+                "session_channel", "tenant_demo", current_user=users["member"], db=db
+            )
         assert exc_info.value.status_code == 404
         with pytest.raises(HTTPException) as exc_info:
             get_session_detail("session_owner", "tenant_demo", current_user=users["member"], db=db)
+        assert exc_info.value.status_code == 404
+
+
+def test_single_session_json_export_contains_complete_log_envelope() -> None:
+    with _test_session() as db:
+        users = _seed(db)
+        db.add_all(
+            [
+                Message(
+                    id="message_user",
+                    tenant_id="tenant_demo",
+                    session_id="session_channel",
+                    role="user",
+                    content="查询报销制度",
+                ),
+                Message(
+                    id="message_assistant",
+                    tenant_id="tenant_demo",
+                    session_id="session_channel",
+                    role="assistant",
+                    content="这是制度答复",
+                ),
+                MessageFeedback(
+                    tenant_id="tenant_demo",
+                    session_id="session_channel",
+                    message_id="message_assistant",
+                    user_id=users["owner"].id,
+                    rating="up",
+                ),
+                AgentEvent(
+                    tenant_id="tenant_demo",
+                    session_id="session_channel",
+                    event_type="task.completed",
+                    payload_json={"task_id": "task_export"},
+                ),
+            ]
+        )
+        db.commit()
+        response = export_session_log(
+            "session_channel",
+            "tenant_demo",
+            current_user=users["owner"],
+            db=db,
+        )
+
+        payload = json.loads(response.body)
+        assert response.media_type == "application/json"
+        assert response.headers["content-disposition"] == (
+            'attachment; filename="staffdeck-conversation-log-session_channel.json"'
+        )
+        assert payload["schema_version"] == SESSION_LOG_EXPORT_SCHEMA
+        assert payload["item"]["session"]["id"] == "session_channel"
+        assert [message["content"] for message in payload["item"]["messages"]] == [
+            "查询报销制度",
+            "这是制度答复",
+        ]
+        assert payload["item"]["feedback"][0]["rating"] == "up"
+        assert payload["item"]["events"][0]["payload"] == {"task_id": "task_export"}
+        assert "traces" in payload["item"]
+
+
+def test_batch_json_export_preserves_order_deduplicates_and_checks_visibility() -> None:
+    with _test_session() as db:
+        users = _seed(db)
+        response = export_session_logs(
+            SessionLogExportRequest(
+                session_ids=["session_channel", "session_owner", "session_channel"]
+            ),
+            "tenant_demo",
+            current_user=users["owner"],
+            db=db,
+        )
+
+        payload = json.loads(response.body)
+        assert payload["schema_version"] == SESSION_LOG_EXPORT_SCHEMA
+        assert payload["count"] == 2
+        assert [item["session"]["id"] for item in payload["items"]] == [
+            "session_channel",
+            "session_owner",
+        ]
+
+        with pytest.raises(HTTPException) as exc_info:
+            export_session_logs(
+                SessionLogExportRequest(session_ids=["session_member", "session_channel"]),
+                "tenant_demo",
+                current_user=users["member"],
+                db=db,
+            )
         assert exc_info.value.status_code == 404
 
 
@@ -188,7 +302,9 @@ def test_reset_allowed_for_agent_creator_and_admin_only() -> None:
         assert exc_info.value.status_code == 404
 
         # agent 创建者可重置渠道会话
-        payload = reset_session("session_channel", "tenant_demo", current_user=users["owner"], db=db)
+        payload = reset_session(
+            "session_channel", "tenant_demo", current_user=users["owner"], db=db
+        )
         assert payload["id"] == "session_channel"
         assert payload["active_skill_id"] is None
         row = db.get(ChatSession, "session_channel")
@@ -196,7 +312,9 @@ def test_reset_allowed_for_agent_creator_and_admin_only() -> None:
         assert row.status == "active"
 
         # admin 也可重置
-        admin_payload = reset_session("session_member", "tenant_demo", current_user=users["admin"], db=db)
+        admin_payload = reset_session(
+            "session_member", "tenant_demo", current_user=users["admin"], db=db
+        )
         assert admin_payload["id"] == "session_member"
 
 
@@ -271,7 +389,9 @@ def test_reset_clears_harness_execution_state_and_preserves_turn_receipt() -> No
 def test_augment_fields_channel_and_identity() -> None:
     with _test_session() as db:
         users = _seed(db)
-        rows = list_sessions("tenant_demo", agent_id="agent_emp", current_user=users["owner"], db=db)
+        rows = list_sessions(
+            "tenant_demo", agent_id="agent_emp", current_user=users["owner"], db=db
+        )
         by_id = {row["id"]: row for row in rows}
 
         channel_row = by_id["session_channel"]
@@ -285,7 +405,9 @@ def test_augment_fields_channel_and_identity() -> None:
         assert web_row["session_display_name"] is None
 
         # detail 同样带 augment 字段
-        detail = get_session_detail("session_channel", "tenant_demo", current_user=users["admin"], db=db)
+        detail = get_session_detail(
+            "session_channel", "tenant_demo", current_user=users["admin"], db=db
+        )
         assert detail["session"]["channel"] == "wechat"
         assert detail["session"]["session_display_name"] == "微信用户 ab12cd34"
 
@@ -366,12 +488,15 @@ def test_feedback_scope_matches_agent_session_visibility(monkeypatch: pytest.Mon
             db=db,
         )
         assert [row["session_id"] for row in member_rows] == ["session_member"]
-        assert get_feedback_session_detail(
-            "session_channel",
-            "tenant_demo",
-            current_user=users["owner"],
-            db=db,
-        )["session"]["id"] == "session_channel"
+        assert (
+            get_feedback_session_detail(
+                "session_channel",
+                "tenant_demo",
+                current_user=users["owner"],
+                db=db,
+            )["session"]["id"]
+            == "session_channel"
+        )
 
         with pytest.raises(HTTPException) as member_error:
             get_feedback_session_detail(
