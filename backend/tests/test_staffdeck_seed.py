@@ -147,6 +147,39 @@ def test_staffdeck_seed_uses_existing_admin_id_for_seeded_agents() -> None:
         } == {"user_existing_admin"}
 
 
+def test_staffdeck_seed_preserves_custom_avatar_on_restart() -> None:
+    with _seeded_session() as db:
+        agent = db.exec(
+            select(AgentProfile).where(
+                AgentProfile.tenant_id == "tenant_demo",
+                AgentProfile.name == "IT",
+            )
+        ).one()
+        metadata = dict(agent.metadata_json)
+        metadata.update(
+            {
+                "avatar_kind": "upload",
+                "avatar_image": "data:image/png;base64,CUSTOM",
+                "avatar_preset": "quality-star",
+                "avatar_text": "I",
+                "avatar_tone": "blue",
+            }
+        )
+        agent.metadata_json = metadata
+        db.add(agent)
+        db.commit()
+
+        seed_demo_data(db)
+        db.commit()
+        db.refresh(agent)
+
+        assert agent.metadata_json["avatar_kind"] == "upload"
+        assert agent.metadata_json["avatar_image"] == "data:image/png;base64,CUSTOM"
+        assert agent.metadata_json["avatar_preset"] == "quality-star"
+        assert agent.metadata_json["avatar_text"] == "I"
+        assert agent.metadata_json["avatar_tone"] == "blue"
+
+
 def test_staffdeck_seed_does_not_overwrite_non_seed_employee_name_conflict() -> None:
     engine = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(engine)

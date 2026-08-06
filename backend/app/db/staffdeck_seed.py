@@ -44,6 +44,13 @@ SEED_SOURCE = "staffdeck_admin_gallery_seed"
 FIXTURE_PATH = Path(__file__).resolve().parent / "seed_fixtures" / "staffdeck_admin_gallery_seed.json"
 
 SELECTED_AGENT_NAMES = {"IT", "人事", "法务", "行政", "财务"}
+USER_EDITABLE_AGENT_METADATA_KEYS = {
+    "avatar_image",
+    "avatar_kind",
+    "avatar_preset",
+    "avatar_text",
+    "avatar_tone",
+}
 
 JsonDict = dict[str, Any]
 ModelT = TypeVar("ModelT", bound=SQLModel)
@@ -109,6 +116,15 @@ def _seed_agents(session: Session, rows: Iterable[JsonDict], id_maps: dict[str, 
         ).first()
         existing = _seed_update_target(existing_by_id, existing_by_name, source_id)
         metadata = _agent_metadata(row.get("metadata_json"))
+        if existing:
+            existing_metadata = existing.metadata_json or {}
+            metadata.update(
+                {
+                    key: existing_metadata[key]
+                    for key in USER_EDITABLE_AGENT_METADATA_KEYS
+                    if key in existing_metadata
+                }
+            )
         payload = {
             "tenant_id": TENANT_ID,
             "name": name,
