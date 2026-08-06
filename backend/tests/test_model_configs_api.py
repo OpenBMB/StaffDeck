@@ -3,9 +3,10 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from fastapi import HTTPException
 from sqlalchemy import text
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.model_configs import (
     _verification_probe_tokens,
@@ -18,6 +19,7 @@ from app.api.model_configs import (
     test_model_config as run_model_config_test,
 )
 from app.db.models import AgentModelBinding, ModelConfig, Tenant, User
+from app.llm import LLMError
 from app.llm.schemas import ModelConfigCreateRequest, ModelConfigUpdateRequest
 from app.security.encryption import encrypt_secret
 
@@ -60,6 +62,58 @@ def test_new_model_config_is_never_enabled_or_default(tmp_path) -> None:
         assert created.enabled is False
         assert created.is_default is False
         assert created.trust_status == "unverified"
+
+
+def test_verified_create_is_atomic_and_activates_only_after_success(tmp_path, monkeypatch) -> None:
+    _install_passing_verification_client(monkeypatch)
+    with _db(tmp_path) as db:
+        created = create_model_config(
+            ModelConfigCreateRequest(
+                tenant_id="tenant_a",
+                name="Chat",
+                api_protocol="openai_chat_completions",
+                api_key="secret",
+                model="model-a",
+                enabled=True,
+            ),
+            verify_before_save=True,
+            db=db,
+            current_user=_admin(),
+        )
+
+        assert created.trust_status == "verified"
+        assert created.enabled is True
+        assert created.is_default is True
+        assert len(db.exec(select(ModelConfig)).all()) == 1
+
+
+def test_failed_verified_create_does_not_leave_disabled_model(tmp_path, monkeypatch) -> None:
+    class FailingClient:
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def generate_text(self, _prompt, _payload):  # noqa: ANN001
+            raise LLMError("Connection error")
+
+    monkeypatch.setattr("app.api.model_configs.LLMClient", FailingClient)
+    with _db(tmp_path) as db:
+        with pytest.raises(HTTPException) as exc_info:
+            create_model_config(
+                ModelConfigCreateRequest(
+                    tenant_id="tenant_a",
+                    name="Broken",
+                    api_protocol="openai_chat_completions",
+                    api_key="secret",
+                    model="broken-model",
+                    enabled=True,
+                ),
+                verify_before_save=True,
+                db=db,
+                current_user=_admin(),
+            )
+
+        assert exc_info.value.status_code == 502
+        assert db.exec(select(ModelConfig)).all() == []
 
 
 def test_gemini_model_config_can_be_created(tmp_path) -> None:
@@ -142,12 +196,8 @@ def test_model_config_delete_removes_agent_bindings(tmp_path) -> None:
 def test_gemini_verification_reserves_tokens_for_visible_output() -> None:
     from app.llm.model_protocols import ModelApiProtocol
 
-    assert _verification_probe_tokens(
-        ModelApiProtocol.GEMINI_GENERATE_CONTENT, "stream", 32
-    ) == 128
-    assert _verification_probe_tokens(
-        ModelApiProtocol.OPENAI_CHAT_COMPLETIONS, "stream", 32
-    ) == 32
+    assert _verification_probe_tokens(ModelApiProtocol.GEMINI_GENERATE_CONTENT, "stream", 32) == 128
+    assert _verification_probe_tokens(ModelApiProtocol.OPENAI_CHAT_COMPLETIONS, "stream", 32) == 32
 
 
 def test_security_change_invalidates_and_disables_legacy_config(tmp_path) -> None:
@@ -176,6 +226,56 @@ def test_security_change_invalidates_and_disables_legacy_config(tmp_path) -> Non
         assert updated.is_default is False
         assert updated.trust_status == "unverified"
         assert updated.security_revision == 2
+
+
+def test_failed_verified_update_preserves_existing_model(tmp_path, monkeypatch) -> None:
+    class FailingClient:
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def generate_text(self, _prompt, _payload):  # noqa: ANN001
+            raise LLMError("Connection error")
+
+    monkeypatch.setattr("app.api.model_configs.LLMClient", FailingClient)
+    with _db(tmp_path) as db:
+        db.add(
+            ModelConfig(
+                id="model_a",
+                tenant_id="tenant_a",
+                name="Working",
+                api_key_encrypted=encrypt_secret("secret"),
+                model="model-a",
+                trust_status="legacy_trusted",
+                enabled=True,
+                is_default=True,
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            update_model_config(
+                "model_a",
+                ModelConfigUpdateRequest(
+                    tenant_id="tenant_a",
+                    name="Broken edit",
+                    model="broken-model",
+                    enabled=True,
+                    is_default=True,
+                ),
+                verify_before_save=True,
+                db=db,
+                current_user=_admin(),
+            )
+
+        assert exc_info.value.status_code == 502
+        db.expire_all()
+        row = db.get(ModelConfig, "model_a")
+        assert row is not None
+        assert row.name == "Working"
+        assert row.model == "model-a"
+        assert row.trust_status == "legacy_trusted"
+        assert row.enabled is True
+        assert row.is_default is True
 
 
 def test_disabling_default_clears_default_in_same_update(tmp_path) -> None:
@@ -285,9 +385,7 @@ def test_read_returns_only_current_protocol_options(tmp_path) -> None:
         },
     )
 
-    assert model_config_read(row).protocol_options == {
-        "thinking": {"type": "disabled"}
-    }
+    assert model_config_read(row).protocol_options == {"thinking": {"type": "disabled"}}
 
 
 def test_verification_runs_bounded_text_stream_and_json_probes(tmp_path, monkeypatch) -> None:

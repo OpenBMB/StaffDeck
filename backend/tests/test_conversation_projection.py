@@ -1,4 +1,4 @@
-from app.core.legacy_conversation_projection import LegacyConversationProjection
+from app.core.conversation_projection import ConversationProjection
 from app.db.models import ChatSession, Skill
 from app.session.session_schema import StepAgentResult
 
@@ -13,7 +13,7 @@ def test_dedupe_citations_preserves_first_four_and_relabels() -> None:
         {"title": "Epsilon"},
     ]
 
-    assert LegacyConversationProjection.dedupe_knowledge_citations(citations) == [
+    assert ConversationProjection.dedupe_knowledge_citations(citations) == [
         {"title": " Alpha ", "label": "[1]"},
         {"section_path": "Beta", "label": "[2]"},
         {"summary": "Gamma", "label": "[3]"},
@@ -39,7 +39,7 @@ def test_skill_state_hides_unavailable_active_and_pending_skills() -> None:
         ],
     )
 
-    assert LegacyConversationProjection.skill_state_payload(session, [visible]) == {
+    assert ConversationProjection.skill_state_payload(session, [visible]) == {
         "activeSkillId": None,
         "activeStepId": None,
         "currentSkills": [
@@ -54,18 +54,19 @@ def test_skill_state_hides_unavailable_active_and_pending_skills() -> None:
 
 
 def test_reply_citation_and_title_projection_preserves_legacy_rules() -> None:
-    assert LegacyConversationProjection.fallback_session_title("  请问 A？ ") == "请问 A"
-    assert LegacyConversationProjection.normalize_reply_citation_labels(
-        "有效[1] 无效[9]", [{}, {}]
-    ) == "有效[1] 无效[2]"
-    assert LegacyConversationProjection.strip_trailing_citation_summary(
-        "正文\n参考资料：[1] [2]"
-    ) == "正文"
+    assert ConversationProjection.fallback_session_title("  请问 A？ ") == "请问 A"
+    assert (
+        ConversationProjection.normalize_reply_citation_labels("有效[1] 无效[9]", [{}, {}])
+        == "有效[1] 无效[2]"
+    )
+    assert (
+        ConversationProjection.strip_trailing_citation_summary("正文\n参考资料：[1] [2]") == "正文"
+    )
 
 
 def test_assistant_metadata_uses_injected_citation_deduper() -> None:
     calls: list[list[dict[str, object]]] = []
-    metadata = LegacyConversationProjection.assistant_message_metadata(
+    metadata = ConversationProjection.assistant_message_metadata(
         StepAgentResult(
             knowledge_results=[
                 {
@@ -74,31 +75,26 @@ def test_assistant_metadata_uses_injected_citation_deduper() -> None:
                 }
             ]
         ),
-        citation_deduper=lambda citations: calls.append(citations)
-        or [{"title": "injected", "label": "[1]"}],
+        citation_deduper=lambda citations: (
+            calls.append(citations) or [{"title": "injected", "label": "[1]"}]
+        ),
     )
 
     assert calls
-    assert metadata["knowledge_citations"] == [
-        {"title": "injected", "label": "[1]"}
-    ]
+    assert metadata["knowledge_citations"] == [{"title": "injected", "label": "[1]"}]
 
 
 def test_assistant_metadata_uses_latest_knowledge_result_window() -> None:
-    metadata = LegacyConversationProjection.assistant_message_metadata(
+    metadata = ConversationProjection.assistant_message_metadata(
         StepAgentResult(
             knowledge_results=[
                 {
                     "query": {"query": "旧问题"},
-                    "chunks": [
-                        {"id": "old", "content": "旧答案", "source_ref": "old.md"}
-                    ],
+                    "chunks": [{"id": "old", "content": "旧答案", "source_ref": "old.md"}],
                 },
                 {
                     "query": {"query": "新问题"},
-                    "chunks": [
-                        {"id": "new", "content": "新答案", "source_ref": "new.md"}
-                    ],
+                    "chunks": [{"id": "new", "content": "新答案", "source_ref": "new.md"}],
                 },
             ]
         )

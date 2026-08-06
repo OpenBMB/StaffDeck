@@ -13,7 +13,7 @@ from app.session.attachments import (
 from app.session.session_schema import ChatTurnRequest, RouterDecision, StepAgentResult
 
 
-class LegacyConversationProjection:
+class ConversationProjection:
     @staticmethod
     def message_context_entry(row: Message) -> dict[str, Any]:
         entry: dict[str, Any] = {
@@ -39,16 +39,11 @@ class LegacyConversationProjection:
         cls,
         step_result: StepAgentResult | None,
         *,
-        citation_deduper: Callable[
-            [list[dict[str, Any]]], list[dict[str, Any]]
-        ]
-        | None = None,
+        citation_deduper: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         knowledge_results = list(step_result.knowledge_results or []) if step_result else []
         dedupe = citation_deduper or cls.dedupe_knowledge_citations
-        citations = dedupe(
-            knowledge_citations_from_results(knowledge_results)
-        )
+        citations = dedupe(knowledge_citations_from_results(knowledge_results))
         if not citations:
             return {}
         latest_query = next(
@@ -102,9 +97,7 @@ class LegacyConversationProjection:
         if request.model_config_id:
             metadata["model_config_id"] = request.model_config_id
         if request.attachments:
-            metadata["attachments"] = [
-                item.model_dump(mode="json") for item in request.attachments
-            ]
+            metadata["attachments"] = [item.model_dump(mode="json") for item in request.attachments]
         return metadata
 
     @staticmethod
@@ -148,9 +141,7 @@ class LegacyConversationProjection:
         for task in chat_session.pending_tasks_json or []:
             if not isinstance(task, dict):
                 continue
-            skill_id = str(
-                task.get("target_skill_id") or task.get("skill_id") or ""
-            ).strip()
+            skill_id = str(task.get("target_skill_id") or task.get("skill_id") or "").strip()
             if not skill_id or skill_id not in visible_skill_ids:
                 continue
             current_skills.append(

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-StaffDeck combines a Python 3.11+ FastAPI service with a React/TypeScript console. Backend application code lives in `backend/app/`; entry points such as `backend/single_port_app.py` support the desktop and single-port runtime. Backend tests are in `backend/tests/`, including contract-focused suites under `backend/tests/agent_golden/`. Frontend code is in `frontend-enterprise/src/`, with static assets in `frontend-enterprise/public/` and colocated `*.test.ts` or `*.test.tsx` files. Agent protocol fixtures and schemas belong in `contracts/agent/v1/`. Use `scripts/` for development lifecycle tooling and `packaging/` for platform release assets.
+StaffDeck combines a Python 3.11+ FastAPI service with a React/TypeScript console. Backend application code lives in `backend/app/`; entry points such as `backend/single_port_app.py` support the desktop and single-port runtime. Backend tests are in `backend/tests/`, and the supported conversation runtime is Harness v2. Frontend code is in `frontend-enterprise/src/`, with static assets in `frontend-enterprise/public/` and colocated `*.test.ts` or `*.test.tsx` files. Use `scripts/` for development lifecycle tooling and `packaging/` for platform release assets.
 
 ## Build, Test, and Development Commands
 

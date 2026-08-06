@@ -1,4 +1,4 @@
-from app.core.legacy_graph_rules import LegacyGraphRules
+from app.core.graph_rules import GraphRules
 
 
 def _graph() -> dict:
@@ -13,8 +13,18 @@ def _graph() -> dict:
             {"node_id": "check_payee", "allowed_actions": ["continue_flow"]},
         ],
         "edges": [
-            {"source_node_id": "start", "next_node_id": "check_sensitive", "condition": "ready", "priority": 1},
-            {"source_node_id": "start", "next_node_id": "check_payee", "condition": "ready", "priority": 0},
+            {
+                "source_node_id": "start",
+                "next_node_id": "check_sensitive",
+                "condition": "ready",
+                "priority": 1,
+            },
+            {
+                "source_node_id": "start",
+                "next_node_id": "check_payee",
+                "condition": "ready",
+                "priority": 0,
+            },
             {"source_node_id": "check_payee", "next_node_id": "report", "priority": 0},
             {"source_node_id": "check_sensitive", "next_node_id": "report", "priority": 0},
         ],
@@ -24,19 +34,17 @@ def _graph() -> dict:
 def test_graph_runtime_preserves_legacy_order_and_parallel_siblings() -> None:
     content = _graph()
 
-    assert [node["node_id"] for node in LegacyGraphRules.ordered_nodes(content)] == [
+    assert [node["node_id"] for node in GraphRules.ordered_nodes(content)] == [
         "start",
         "check_payee",
         "report",
         "check_sensitive",
     ]
-    assert [step["step_id"] for step in LegacyGraphRules.next_steps(content, "start")] == [
+    assert [step["step_id"] for step in GraphRules.next_steps(content, "start")] == [
         "check_payee",
         "check_sensitive",
     ]
-    assert LegacyGraphRules.sibling_steps(content, "start", "check_payee") == [
-        "check_sensitive"
-    ]
+    assert GraphRules.sibling_steps(content, "start", "check_payee") == ["check_sensitive"]
 
 
 def test_graph_runtime_keeps_exclusive_conditions_out_of_pending_siblings() -> None:
@@ -44,32 +52,30 @@ def test_graph_runtime_keeps_exclusive_conditions_out_of_pending_siblings() -> N
     content["edges"][0]["condition"] = "sensitive"
     content["edges"][1]["condition"] = "payee"
 
-    assert LegacyGraphRules.sibling_steps(content, "start", "check_payee") == []
+    assert GraphRules.sibling_steps(content, "start", "check_payee") == []
 
 
 def test_graph_runtime_normalizes_pending_without_reordering() -> None:
-    assert LegacyGraphRules.normalize_pending_steps(
+    assert GraphRules.normalize_pending_steps(
         [" check_sensitive ", "report", "check_sensitive", "", None]
     ) == ["check_sensitive", "report"]
 
 
 def test_graph_runtime_default_next_step_matches_legacy_rules() -> None:
     content = _graph()
-    assert LegacyGraphRules.default_next_step(content, "check_payee")["step_id"] == "report"
-    assert LegacyGraphRules.default_next_step(content, "start") is None
+    assert GraphRules.default_next_step(content, "check_payee")["step_id"] == "report"
+    assert GraphRules.default_next_step(content, "start") is None
 
     content["edges"][0]["condition"] = "else"
-    assert LegacyGraphRules.default_next_step(content, "start")["step_id"] == "check_sensitive"
+    assert GraphRules.default_next_step(content, "start")["step_id"] == "check_sensitive"
 
 
 def test_graph_runtime_terminal_position_preserves_legacy_slot_semantics() -> None:
     content = _graph()
 
-    assert not LegacyGraphRules.terminal_position(content, "report", {})
-    assert LegacyGraphRules.terminal_position(content, "report", {"message_content": []})
-    assert LegacyGraphRules.terminal_position(
-        content, "report", {"message_content": "Golden report"}
-    )
+    assert not GraphRules.terminal_position(content, "report", {})
+    assert GraphRules.terminal_position(content, "report", {"message_content": []})
+    assert GraphRules.terminal_position(content, "report", {"message_content": "Golden report"})
 
 
 def test_graph_runtime_legacy_node_defaults_and_dangling_edges() -> None:
@@ -82,14 +88,12 @@ def test_graph_runtime_legacy_node_defaults_and_dangling_edges() -> None:
         ],
     }
 
-    assert [node["node_id"] for node in LegacyGraphRules.ordered_nodes(content)] == [
+    assert [node["node_id"] for node in GraphRules.ordered_nodes(content)] == [
         "start",
         "end",
     ]
-    assert [step["step_id"] for step in LegacyGraphRules.next_steps(content, "start")] == [
-        "end"
-    ]
-    assert LegacyGraphRules.current_step(content, "end") == {
+    assert [step["step_id"] for step in GraphRules.next_steps(content, "start")] == ["end"]
+    assert GraphRules.current_step(content, "end") == {
         "step_id": "end",
         "node_id": "end",
         "type": None,

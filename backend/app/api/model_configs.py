@@ -12,7 +12,11 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.db.models import AgentModelBinding, ModelConfig, User, utc_now
 from app.llm import LLMClient, LLMError
-from app.llm.model_config_resolver import resolve_model_config_for_verification
+from app.llm.model_config_resolver import (
+    ResolvedModelConfig,
+    resolve_model_config_for_verification,
+    snapshot_model_config,
+)
 from app.llm.model_protocols import (
     LEGACY_OPENAI_PROVIDER,
     ModelApiProtocol,
@@ -87,7 +91,9 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
     )
 
 
-@router.get("", response_model=list[ModelConfigRead], dependencies=[Depends(require_current_tenant)])
+@router.get(
+    "", response_model=list[ModelConfigRead], dependencies=[Depends(require_current_tenant)]
+)
 def list_model_configs(
     tenant_id: str = Query(...), db: Session = Depends(get_session)
 ) -> list[ModelConfigRead]:
@@ -99,6 +105,7 @@ def list_model_configs(
 @router.post("", response_model=ModelConfigRead)
 def create_model_config(
     request: ModelConfigCreateRequest,
+    verify_before_save: bool = False,
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ModelConfigRead:
@@ -126,6 +133,12 @@ def create_model_config(
         enabled=False,
         trust_status="unverified",
     )
+    if verify_before_save and request.enabled:
+        _verify_candidate_for_save(row)
+        row.enabled = True
+        if request.is_default or not _has_available_model(db, request.tenant_id):
+            _clear_default(db, request.tenant_id)
+            row.is_default = True
     db.add(row)
     _commit_or_conflict(db)
     db.refresh(row)
@@ -136,14 +149,20 @@ def create_model_config(
 def update_model_config(
     config_id: str,
     request: ModelConfigUpdateRequest,
+    verify_before_save: bool = False,
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ModelConfigRead:
     ensure_tenant_admin(request.tenant_id, current_user)
     row = _get_model_config(db, request.tenant_id, config_id)
-    protocol = resolve_api_protocol(request.api_protocol, request.provider) if (
-        request.api_protocol is not None or request.provider is not None
-    ) else ModelApiProtocol(row.api_protocol)
+    has_other_available_model = _has_available_model(
+        db, request.tenant_id, exclude_config_id=config_id
+    )
+    protocol = (
+        resolve_api_protocol(request.api_protocol, request.provider)
+        if (request.api_protocol is not None or request.provider is not None)
+        else ModelApiProtocol(row.api_protocol)
+    )
     target_temperature = request.temperature if request.temperature is not None else row.temperature
     target_tokens = (
         request.max_output_tokens
@@ -193,7 +212,19 @@ def update_model_config(
         row.verified_fingerprint = None
         row.enabled = False
         row.is_default = False
-    else:
+    if verify_before_save and request.enabled is True:
+        try:
+            _verify_candidate_for_save(row)
+        except Exception:
+            db.rollback()
+            raise
+        row.enabled = True
+        if request.is_default is True or not has_other_available_model:
+            _clear_default(db, request.tenant_id)
+            row.is_default = True
+        elif request.is_default is False:
+            row.is_default = False
+    elif not security_changed:
         if request.enabled is False:
             row.enabled = False
             row.is_default = False
@@ -285,45 +316,9 @@ def test_model_config(
     _commit_or_conflict(db)
     capabilities: list[ModelCapabilityTestResult] = []
     output: str | None = None
-    verification_started = monotonic()
     try:
         config = resolve_model_config_for_verification(db, tenant_id, config_id, attempt_id)
-        for capability_id, max_tokens, probe_timeout in MODEL_VERIFICATION_PROBES:
-            remaining = MODEL_VERIFICATION_DEADLINE_SECONDS - (
-                monotonic() - verification_started
-            )
-            if remaining <= 0:
-                raise LLMError("MODEL_VERIFICATION_DEADLINE_EXCEEDED")
-            probe_config = replace(
-                config,
-                timeout_seconds=min(probe_timeout, remaining),
-                max_output_tokens=_verification_probe_tokens(
-                    config.api_protocol,
-                    capability_id,
-                    min(max_tokens, config.max_output_tokens),
-                ),
-            )
-            probe_client = LLMClient(probe_config)
-            if capability_id == "text":
-                output = probe_client.generate_text(
-                    "你是一个连接测试助手。请用一句中文回复连接成功。",
-                    {"message": "ping"},
-                )
-            elif capability_id == "stream":
-                stream_text = "".join(
-                    probe_client.generate_text_stream(
-                        "你是一个连接测试助手。", {"message": "请回复 stream-ok"}
-                    )
-                )
-                if not stream_text.strip():
-                    raise LLMError("MODEL_EMPTY_OUTPUT")
-            else:
-                json_output = probe_client.generate_json(
-                    "只返回 JSON object。", {"message": "返回 {\"ok\": true}"}
-                )
-                if not isinstance(json_output, dict):
-                    raise LLMError("MODEL_INVALID_JSON")
-            capabilities.append(ModelCapabilityTestResult(id=capability_id, success=True))
+        capabilities, output = _run_verification_probes(config)
         db.refresh(row)
         if (
             row.security_revision != started_security_revision
@@ -428,6 +423,66 @@ def test_model_config(
         raise
 
 
+def _verify_candidate_for_save(row: ModelConfig) -> None:
+    attempt_id = uuid4().hex
+    row.verification_attempt_id = attempt_id
+    row.verification_attempt_status = "verifying"
+    row.verification_started_at = utc_now()
+    row.verification_attempt_error_code = None
+    config = replace(snapshot_model_config(row), purpose="verification")
+    try:
+        _run_verification_probes(config)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    row.trust_status = "verified"
+    row.verified_at = utc_now()
+    row.verified_fingerprint = _fingerprint(row)
+    row.verification_attempt_status = "succeeded"
+
+
+def _run_verification_probes(
+    config: ResolvedModelConfig,
+) -> tuple[list[ModelCapabilityTestResult], str | None]:
+    capabilities: list[ModelCapabilityTestResult] = []
+    output: str | None = None
+    verification_started = monotonic()
+    for capability_id, max_tokens, probe_timeout in MODEL_VERIFICATION_PROBES:
+        remaining = MODEL_VERIFICATION_DEADLINE_SECONDS - (monotonic() - verification_started)
+        if remaining <= 0:
+            raise LLMError("MODEL_VERIFICATION_DEADLINE_EXCEEDED")
+        probe_config = replace(
+            config,
+            timeout_seconds=min(probe_timeout, remaining),
+            max_output_tokens=_verification_probe_tokens(
+                config.api_protocol,
+                capability_id,
+                min(max_tokens, config.max_output_tokens),
+            ),
+        )
+        probe_client = LLMClient(probe_config)
+        if capability_id == "text":
+            output = probe_client.generate_text(
+                "你是一个连接测试助手。请用一句中文回复连接成功。",
+                {"message": "ping"},
+            )
+        elif capability_id == "stream":
+            stream_text = "".join(
+                probe_client.generate_text_stream(
+                    "你是一个连接测试助手。", {"message": "请回复 stream-ok"}
+                )
+            )
+            if not stream_text.strip():
+                raise LLMError("MODEL_EMPTY_OUTPUT")
+        else:
+            json_output = probe_client.generate_json(
+                "只返回 JSON object。", {"message": '返回 {"ok": true}'}
+            )
+            if not isinstance(json_output, dict):
+                raise LLMError("MODEL_INVALID_JSON")
+        capabilities.append(ModelCapabilityTestResult(id=capability_id, success=True))
+    return capabilities, output
+
+
 def _verification_error_code(exc: Exception) -> str:
     value = str(exc).strip()
     if value.startswith("MODEL_") and " " not in value:
@@ -466,16 +521,16 @@ def _get_model_config(db: Session, tenant_id: str, config_id: str) -> ModelConfi
     return row
 
 
-def _has_available_model(db: Session, tenant_id: str) -> bool:
-    return (
-        db.exec(
-            select(ModelConfig).where(
-                ModelConfig.tenant_id == tenant_id,
-                (ModelConfig.enabled == True) | (ModelConfig.is_default == True),  # noqa: E712
-            )
-        ).first()
-        is not None
+def _has_available_model(
+    db: Session, tenant_id: str, *, exclude_config_id: str | None = None
+) -> bool:
+    statement = select(ModelConfig).where(
+        ModelConfig.tenant_id == tenant_id,
+        (ModelConfig.enabled == True) | (ModelConfig.is_default == True),  # noqa: E712
     )
+    if exclude_config_id:
+        statement = statement.where(ModelConfig.id != exclude_config_id)
+    return db.exec(statement).first() is not None
 
 
 def _clear_default(db: Session, tenant_id: str) -> None:
@@ -512,9 +567,7 @@ def _request_protocol_options(
 def _validate_sampling(
     protocol: ModelApiProtocol, temperature: float, max_output_tokens: int
 ) -> None:
-    max_temperature = (
-        1 if protocol is ModelApiProtocol.ANTHROPIC_MESSAGES else 2
-    )
+    max_temperature = 1 if protocol is ModelApiProtocol.ANTHROPIC_MESSAGES else 2
     if not 0 <= temperature <= max_temperature:
         raise HTTPException(status_code=422, detail="MODEL_TEMPERATURE_INVALID")
     if max_output_tokens <= 0:

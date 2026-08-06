@@ -4,8 +4,8 @@ from collections.abc import Callable
 from typing import Any
 
 
-class LegacyGraphRules:
-    """Pure legacy Skill graph rules extracted from AgentLoop."""
+class GraphRules:
+    """Pure Skill graph rules shared by Harness v2 execution and session projection."""
 
     @staticmethod
     def node_as_step(node: dict[str, Any]) -> dict[str, Any]:
@@ -48,9 +48,7 @@ class LegacyGraphRules:
         if not nodes:
             return []
         nodes_by_id = {
-            str(node.get("node_id") or ""): node
-            for node in nodes
-            if node.get("node_id")
+            str(node.get("node_id") or ""): node for node in nodes if node.get("node_id")
         }
         start_node_id = str(content.get("start_node_id") or "").strip()
         if not start_node_id or start_node_id not in nodes_by_id:
@@ -107,10 +105,7 @@ class LegacyGraphRules:
         nodes: list[dict[str, Any]],
         outgoing: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        nodes_by_id = {
-            str(node.get("node_id") or ""): cls.node_as_step(node)
-            for node in nodes
-        }
+        nodes_by_id = {str(node.get("node_id") or ""): cls.node_as_step(node) for node in nodes}
         return [
             nodes_by_id[target_id]
             for target_id in (str(edge.get("next_node_id") or "") for edge in outgoing)
@@ -133,10 +128,7 @@ class LegacyGraphRules:
         nodes: list[dict[str, Any]],
         outgoing: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
-        nodes_by_id = {
-            str(node.get("node_id") or ""): cls.node_as_step(node)
-            for node in nodes
-        }
+        nodes_by_id = {str(node.get("node_id") or ""): cls.node_as_step(node) for node in nodes}
         if not outgoing:
             return None
         if len(outgoing) == 1:
@@ -265,9 +257,7 @@ class LegacyGraphRules:
     ) -> bool:
         if not active_step_id:
             return False
-        terminal_node_ids = {
-            str(node_id) for node_id in content.get("terminal_node_ids", [])
-        }
+        terminal_node_ids = {str(node_id) for node_id in content.get("terminal_node_ids", [])}
         if active_step_id not in terminal_node_ids:
             return False
         current_step = cls.current_step(content, active_step_id)
@@ -308,6 +298,5 @@ class LegacyGraphRules:
             "ask_clarification",
         }
         return all(
-            action in terminal_actions or action.startswith("call_tool:")
-            for action in actions
+            action in terminal_actions or action.startswith("call_tool:") for action in actions
         )
