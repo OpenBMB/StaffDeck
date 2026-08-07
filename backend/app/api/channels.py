@@ -23,6 +23,10 @@ from app.channels.adapters.dingtalk import (
     DingTalkPermanentError,
     validate_dingtalk_credentials,
 )
+from app.channels.adapters.discord import (
+    DiscordPermanentError,
+    validate_discord_credentials,
+)
 from app.channels.adapters.feishu import (
     FeishuPermanentError,
     validate_feishu_credentials,
@@ -45,6 +49,7 @@ from app.channels.schema import (
     ChannelQRCodeRead,
     ChannelQRCodeStatusRead,
     DingTalkCredentialsRequest,
+    DiscordCredentialsRequest,
     FeishuCredentialsRequest,
     MyIdentityBindingRead,
     WeComCredentialsRequest,
@@ -1085,6 +1090,82 @@ def save_dingtalk_credentials(
             db.rollback()
             _resume_binding(binding.channel, binding_id, start=should_run)
             raise HTTPException(status_code=409, detail="该钉钉应用已被其他渠道绑定使用") from exc
+        except Exception:
+            db.rollback()
+            _resume_binding(binding.channel, binding_id, start=should_run)
+            raise
+        _resume_binding(binding.channel, binding_id, start=True)
+    return channel_binding_read(db, binding)
+
+
+@router.post("/{binding_id}/discord/credentials", response_model=ChannelBindingRead)
+def save_discord_credentials(
+    binding_id: str,
+    request: DiscordCredentialsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> ChannelBindingRead:
+    """Validate and save Discord Bot Token, then start its connector."""
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    binding = _get_binding(db, request.tenant_id, binding_id)
+    _ensure_binding_manager(db, request.tenant_id, binding, current_user)
+    if binding.channel != "discord":
+        raise HTTPException(status_code=400, detail="该绑定不是 Discord 渠道")
+    bot_token = request.bot_token.strip()
+    if not bot_token:
+        raise HTTPException(status_code=400, detail="Bot Token 不能为空")
+    old_bot_id = str((binding.config_json or {}).get("bot_id") or "").strip()
+    try:
+        bot_info = validate_discord_credentials(bot_token)
+    except DiscordPermanentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("验证 Discord 凭证失败 binding=%s", binding_id, exc_info=True)
+        raise HTTPException(status_code=502, detail="Discord 凭证验证暂时失败，请稍后重试") from exc
+    bot_id = str(bot_info.get("bot_id") or "").strip()
+    bot_name = str(bot_info.get("bot_name") or "").strip()
+    if not bot_id:
+        raise HTTPException(status_code=400, detail="Bot 信息无效")
+    if old_bot_id and old_bot_id != bot_id:
+        raise HTTPException(status_code=400, detail="应用变更不允许直接修改，请删除后重新创建绑定")
+    account_key = external_account_key("discord", {"bot_id": bot_id})
+    if not account_key:
+        raise HTTPException(status_code=400, detail="Bot 信息无效")
+    _ensure_external_account_available(db, account_key, binding_id)
+    db.rollback()
+    with binding_lifecycle_lock(binding_id):
+        binding = _get_binding(db, request.tenant_id, binding_id)
+        expected_revision = binding.config_revision
+        should_run = bool(binding.status == "active" and binding.credentials_enc)
+        current_bot_id = str((binding.config_json or {}).get("bot_id") or "").strip()
+        if current_bot_id and current_bot_id != bot_id:
+            raise HTTPException(status_code=409, detail="渠道配置已被其他请求修改，请重试")
+        db.rollback()
+        _quiesce_binding_or_409(binding.channel, binding_id, should_run=should_run)
+        try:
+            binding = _get_binding(db, request.tenant_id, binding_id)
+            _ensure_revision(binding, expected_revision)
+            latest_bot_id = str((binding.config_json or {}).get("bot_id") or "").strip()
+            if latest_bot_id and latest_bot_id != bot_id:
+                raise HTTPException(status_code=409, detail="渠道配置已被其他请求修改，请重试")
+            _ensure_external_account_available(db, account_key, binding_id)
+            config = dict(binding.config_json or {})
+            config.update({"bot_id": bot_id, "bot_name": bot_name, "bound_at": utc_now().isoformat()})
+            binding.credentials_enc = encrypt_channel_secret(bot_token)
+            binding.config_json = config
+            binding.external_account_key = account_key
+            binding.config_revision += 1
+            binding.status = "active"
+            binding.connected = False
+            binding.updated_at = utc_now()
+            db.add(binding)
+            adopt_orphan_channel_sessions(db, binding)
+            db.commit()
+            db.refresh(binding)
+        except IntegrityError as exc:
+            db.rollback()
+            _resume_binding(binding.channel, binding_id, start=should_run)
+            raise HTTPException(status_code=409, detail="该 Discord 机器人已被其他渠道绑定使用") from exc
         except Exception:
             db.rollback()
             _resume_binding(binding.channel, binding_id, start=should_run)
