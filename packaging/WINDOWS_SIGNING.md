@@ -56,7 +56,8 @@ Do not commit a PFX file or its password. In CI, store both as protected
 secrets. `WINDOWS_TIMESTAMP_URL` defaults to DigiCert's RFC 3161 timestamp
 service and can be overridden when required.
 
-The build fails closed when no certificate or external signer is configured.
-For a local-only developer build that will not be distributed, explicitly set
-`$env:WINDOWS_ALLOW_UNSIGNED = "1"`; the output will remain marked as
-`UNSIGNED` and must not be sent to customers.
+When no certificate or external signer is configured, the build continues and
+marks the output as `UNSIGNED`. On Windows hosts where application-control
+policy blocks the bundled SRT, StaffDeck will show a high-risk degraded mode
+and execute without SRT. Configure a trusted signer for production deployments
+to preserve process and filesystem isolation.

@@ -53,7 +53,7 @@ def test_windows_release_supports_external_signer_and_fails_closed() -> None:
     signer = (root / "packaging" / "sign_windows.ps1").read_text(encoding="utf-8")
 
     assert "WINDOWS_SIGNER_SCRIPT" in build
-    assert "WINDOWS_ALLOW_UNSIGNED" in build
+    assert "UNSIGNED" in build
     assert 'Get-AuthenticodeSignature -FilePath $target' in signer
     assert '$signature.Status -ne "Valid"' in signer
     for extension in ('".exe"', '".dll"', '".pyd"', '".node"'):

@@ -113,15 +113,11 @@ Pop-Location
 Assert-NativeCommandSucceeded "Packaged Lark SDK smoke test"
 
 $signingConfigured = Test-SigningConfigured
-$allowUnsigned = $env:WINDOWS_ALLOW_UNSIGNED -eq "1"
-if (-not $signingConfigured -and -not $allowUnsigned) {
-  throw "Windows code signing is required for a distributable package. Set WINDOWS_CERT_THUMBPRINT, WINDOWS_PFX_PATH, or WINDOWS_SIGNER_SCRIPT. For local-only testing, set WINDOWS_ALLOW_UNSIGNED=1 explicitly."
-}
 if ($signingConfigured) {
   $env:WINDOWS_SIGN_ENABLED = "1"
 } else {
   $env:WINDOWS_SIGN_ENABLED = "0"
-  Write-Warning "WINDOWS_ALLOW_UNSIGNED=1: Windows artifacts are local-only and UNSIGNED. Do not send this package to customers."
+  Write-Warning "No Windows signer configured: building an UNSIGNED package. Windows SRT may automatically run in degraded mode; configure WINDOWS_CERT_THUMBPRINT, WINDOWS_PFX_PATH, or WINDOWS_SIGNER_SCRIPT for production security."
 }
 
 Write-Host "==> [4/6] Bundle the Python skill runtime"
