@@ -333,7 +333,8 @@ class _FakeDiscordClient:
         self.on_ready_fired = threading.Event()
 
     def event(self, coro):
-        self._handlers[coro.__name__.lstrip("_")] = coro
+        # 与真实 discord.py Client.event() 语义一致:setattr(self, coro.__name__, coro)
+        self._handlers[coro.__name__] = coro
         return coro
 
     async def start(self, token: str) -> None:

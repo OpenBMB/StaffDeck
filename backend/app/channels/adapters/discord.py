@@ -298,9 +298,11 @@ class DiscordStreamManager:
         intents.message_content = True
         client = discord.Client(intents=intents)
 
-        @client.event
         async def _on_message(message) -> None:
             await on_message(message)
+
+        _on_message.__name__ = "on_message"
+        client.event(_on_message)
 
         return client
 
@@ -317,6 +319,7 @@ class DiscordStreamManager:
             async def _on_ready() -> None:
                 await mark_connected(True)
 
+            _on_ready.__name__ = "on_ready"
             register_event(_on_ready)
         else:
             await mark_connected(True)
