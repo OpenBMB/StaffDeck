@@ -86,6 +86,7 @@ class AgentCreate(BaseModel):
     persona_prompt: str | None = None
     source_mode: Literal["copy", "blank"] = "blank"
     copy_from_agent_id: str | None = None
+    harness_max_actions: int = Field(default=32, ge=1, le=100)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -94,6 +95,7 @@ class AgentUpdate(BaseModel):
     description: str | None = None
     persona_prompt: str | None = None
     status: Literal["active", "archived"] | None = None
+    harness_max_actions: int | None = Field(default=None, ge=1, le=100)
     metadata: dict[str, Any] | None = None
 
 

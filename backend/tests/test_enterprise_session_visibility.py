@@ -26,6 +26,7 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
+    HarnessInvocationRecord,
     HarnessRunRecord,
     HarnessSessionLeaseRecord,
     HarnessTaskFrameRecord,
@@ -238,6 +239,18 @@ def test_single_session_json_export_contains_complete_log_envelope() -> None:
                     event_type="task.completed",
                     payload_json={"task_id": "task_export"},
                 ),
+                HarnessInvocationRecord(
+                    tenant_id="tenant_demo",
+                    session_id="session_channel",
+                    task_id="task_export",
+                    run_id="run_export",
+                    call_id="call_export",
+                    tool_name="expense.lookup",
+                    request_digest="sha256:test",
+                    status="completed",
+                    arguments_json={"month": "2026-08"},
+                    result_json={"success": True, "data": {"remaining": 1200}},
+                ),
             ]
         )
         db.commit()
@@ -261,6 +274,11 @@ def test_single_session_json_export_contains_complete_log_envelope() -> None:
         ]
         assert payload["item"]["feedback"][0]["rating"] == "up"
         assert payload["item"]["events"][0]["payload"] == {"task_id": "task_export"}
+        assert payload["item"]["tool_invocations"][0]["tool_name"] == "expense.lookup"
+        assert payload["item"]["tool_invocations"][0]["result"] == {
+            "success": True,
+            "data": {"remaining": 1200},
+        }
         assert "traces" in payload["item"]
 
 

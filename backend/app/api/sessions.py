@@ -16,6 +16,7 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
+    HarnessInvocationRecord,
     Message,
     MessageFeedback,
     Skill,
@@ -146,12 +147,21 @@ def _session_details_payload(
         )
         .order_by(MessageFeedback.updated_at.desc())
     ).all()
+    invocation_rows = db.exec(
+        select(HarnessInvocationRecord)
+        .where(
+            HarnessInvocationRecord.tenant_id == tenant_id,
+            HarnessInvocationRecord.session_id.in_(session_ids),
+        )
+        .order_by(HarnessInvocationRecord.started_at)
+    ).all()
     skills = db.exec(select(Skill).where(Skill.tenant_id == tenant_id)).all()
     skill_names = {skill.skill_id: skill.name for skill in skills}
     session_payload_by_id = {str(payload["id"]): payload for payload in _session_payloads(db, rows)}
     messages_by_session = _group_by_session_id(messages)
     events_by_session = _group_by_session_id(events)
     feedback_by_session = _group_by_session_id(feedback_rows)
+    invocations_by_session = _group_by_session_id(invocation_rows)
     return [
         _build_session_detail_payload(
             db,
@@ -159,6 +169,7 @@ def _session_details_payload(
             messages_by_session.get(row.id, []),
             events_by_session.get(row.id, []),
             feedback_by_session.get(row.id, []),
+            invocations_by_session.get(row.id, []),
             skill_names,
         )
         for row in rows
@@ -178,6 +189,7 @@ def _build_session_detail_payload(
     messages: list[Message],
     events: list[AgentEvent],
     feedback_rows: list[MessageFeedback],
+    invocation_rows: list[HarnessInvocationRecord],
     skill_names: dict[str, str],
 ) -> dict:
     feedback_by_message = {item.message_id: item for item in feedback_rows}
@@ -212,6 +224,22 @@ def _build_session_detail_payload(
                 "created_at": event.created_at.isoformat(),
             }
             for event in events
+        ],
+        "tool_invocations": [
+            {
+                "id": item.id,
+                "task_id": item.task_id,
+                "run_id": item.run_id,
+                "call_id": item.call_id,
+                "tool_name": item.tool_name,
+                "status": item.status,
+                "arguments": item.arguments_json,
+                "result": item.result_json,
+                "replayed_from_invocation_id": item.replayed_from_invocation_id,
+                "started_at": item.started_at.isoformat(),
+                "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+            }
+            for item in invocation_rows
         ],
     }
 

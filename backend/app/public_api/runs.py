@@ -61,6 +61,7 @@ _TRACE_EVENT_MAP = {
     "capability_search_completed": "run.capability.search",
     "capability_described": "run.capability.described",
     "harness_tool_completed": "run.capability.completed",
+    "harness_step_timeout": "run.sop.step.timeout",
     "knowledge_result": "run.citation",
     "tool_result": "run.tool.completed",
     "skill_state": "run.sop.state",

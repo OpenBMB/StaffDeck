@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import is_dataclass, replace
 import json
+import time
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -22,9 +24,7 @@ from app.observability.spans import llm_operation
 from app.session.slot_policy import strip_router_generated_message_slots
 
 
-PROMPT_PATH = (
-    paths.resource_dir() / "app" / "llm" / "prompts" / "harness_agent_prompt.md"
-)
+PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "harness_agent_prompt.md"
 ToolInvoker = Callable[[str, dict[str, Any]], dict[str, Any]]
 TraceSink = Callable[[str, dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
@@ -62,24 +62,36 @@ class HarnessTaskAgent:
         trace_sink: TraceSink | None = None,
         is_cancelled: CancellationCheck | None = None,
         image_payloads: list[ValidatedTaskImagePayload] | None = None,
+        step_deadline_monotonic: float | None = None,
+        step_timeout_seconds: int | None = None,
     ) -> TaskExecutionResult:
         max_actions = max(1, min(int(max_actions), 100))
         transcript: list[dict[str, Any]] = []
         citations: list[dict[str, Any]] = []
         evidence_results: list[dict[str, Any]] = []
         capability_results: list[dict[str, Any]] = []
+        satisfied_required_knowledge_ids: set[str] = set()
         artifacts: list[dict[str, Any]] = []
         allowed_names = requirement.capability_manifest.allowed_names()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
 
         for iteration in range(1, max_actions + 1):
             _raise_if_cancelled(is_cancelled)
-            requirement_payload = requirement.model_dump(mode="json")
-            attachment_descriptors, attachment_context = (
-                isolated_attachment_context(
-                    requirement.attachments,
-                    image_payloads,
+            if _deadline_expired(step_deadline_monotonic):
+                return _step_timeout_result(
+                    requirement,
+                    action_count=iteration - 1,
+                    timeout_seconds=step_timeout_seconds,
+                    capability_results=capability_results,
+                    citations=citations,
+                    evidence_results=evidence_results,
+                    artifacts=artifacts,
+                    trace_sink=trace_sink,
                 )
+            requirement_payload = requirement.model_dump(mode="json")
+            attachment_descriptors, attachment_context = isolated_attachment_context(
+                requirement.attachments,
+                image_payloads,
             )
             requirement_payload["attachments"] = attachment_descriptors
             payload = {
@@ -92,12 +104,26 @@ class HarnessTaskAgent:
                 payload["conversation_context"] = attachment_context
             try:
                 with llm_operation("harness.task_action"):
-                    raw = LLMClient(model_config).generate_json(
+                    raw = _deadline_llm_client(
+                        model_config,
+                        step_deadline_monotonic,
+                    ).generate_json(
                         system_prompt,
                         payload,
                     )
                 action = HarnessAction.model_validate(raw)
             except (ValidationError, LLMError) as exc:
+                if _deadline_expired(step_deadline_monotonic):
+                    return _step_timeout_result(
+                        requirement,
+                        action_count=iteration - 1,
+                        timeout_seconds=step_timeout_seconds,
+                        capability_results=capability_results,
+                        citations=citations,
+                        evidence_results=evidence_results,
+                        artifacts=artifacts,
+                        trace_sink=trace_sink,
+                    )
                 if trace_sink:
                     trace_sink(
                         "harness_action_failed",
@@ -116,6 +142,17 @@ class HarnessTaskAgent:
                     error={"code": "HARNESS_ACTION_INVALID", "message": str(exc)},
                 )
             _raise_if_cancelled(is_cancelled)
+            if _deadline_expired(step_deadline_monotonic):
+                return _step_timeout_result(
+                    requirement,
+                    action_count=iteration,
+                    timeout_seconds=step_timeout_seconds,
+                    capability_results=capability_results,
+                    citations=citations,
+                    evidence_results=evidence_results,
+                    artifacts=artifacts,
+                    trace_sink=trace_sink,
+                )
 
             if trace_sink:
                 trace_sink(
@@ -127,6 +164,45 @@ class HarnessTaskAgent:
                     },
                 )
             if action.action == "finish":
+                missing_capabilities = _missing_required_capabilities(
+                    requirement,
+                    capability_results,
+                    satisfied_required_knowledge_ids,
+                )
+                if action.status in {None, "completed"} and missing_capabilities:
+                    transcript.extend(
+                        [
+                            {
+                                "role": "assistant",
+                                "action": "finish",
+                                "status": action.status or "completed",
+                            },
+                            {
+                                "role": "tool",
+                                "tool_name": "harness_requirement_check",
+                                "result": {
+                                    "success": False,
+                                    "error": {
+                                        "code": "REQUIRED_CAPABILITY_NOT_INVOKED",
+                                        "message": (
+                                            "当前 SOP 节点尚未成功执行强制能力："
+                                            + "、".join(missing_capabilities)
+                                        ),
+                                    },
+                                },
+                            },
+                        ]
+                    )
+                    if trace_sink:
+                        trace_sink(
+                            "harness_completion_blocked",
+                            {
+                                "iteration": iteration,
+                                "reason": "required_capability_not_invoked",
+                                "missing_capabilities": missing_capabilities,
+                            },
+                        )
+                    continue
                 return _finish_result(
                     requirement,
                     action,
@@ -168,6 +244,7 @@ class HarnessTaskAgent:
                         "message": str(exc),
                     },
                 }
+            bounded_result = _bounded_capability_result(tool_name, result)
             transcript.extend(
                 [
                     {
@@ -179,16 +256,22 @@ class HarnessTaskAgent:
                     {
                         "role": "tool",
                         "tool_name": tool_name,
-                        "result": _bounded_capability_result(
-                            tool_name,
-                            result,
-                        ),
+                        "result": bounded_result,
                     },
                 ]
             )
             if tool_name not in {"capability_search", "capability_describe"}:
-                capability_results.append(
-                    _bounded_capability_result(tool_name, result)
+                capability_results.append(bounded_result)
+            if _deadline_expired(step_deadline_monotonic):
+                return _step_timeout_result(
+                    requirement,
+                    action_count=iteration,
+                    timeout_seconds=step_timeout_seconds,
+                    capability_results=capability_results,
+                    citations=citations,
+                    evidence_results=evidence_results,
+                    artifacts=artifacts,
+                    trace_sink=trace_sink,
                 )
             activated_names = _activate_described_capabilities(
                 requirement,
@@ -197,6 +280,13 @@ class HarnessTaskAgent:
             )
             allowed_names.update(activated_names)
             _extend_dict_list(artifacts, result.get("artifacts"))
+            if tool_name == "knowledge_search" and bool(result.get("success")):
+                requested_knowledge_ids = _string_list(
+                    (action.arguments or {}).get("knowledge_base_ids")
+                )
+                satisfied_required_knowledge_ids.update(
+                    requested_knowledge_ids or requirement.required_knowledge_base_ids
+                )
             if (
                 tool_name == "knowledge_search"
                 and bool(result.get("success"))
@@ -249,14 +339,10 @@ def _activate_described_capabilities(
         != requirement.capability_manifest.snapshot_revision
     ):
         return set()
-    raw_descriptors = (
-        data.get("activated_capabilities")
-    )
+    raw_descriptors = data.get("activated_capabilities")
     if not isinstance(raw_descriptors, list):
         return set()
-    existing = {
-        item.name: item for item in requirement.capability_manifest.available
-    }
+    existing = {item.name: item for item in requirement.capability_manifest.available}
     activated: set[str] = set()
     for raw in raw_descriptors:
         if not isinstance(raw, dict):
@@ -271,6 +357,23 @@ def _activate_described_capabilities(
         activated.add(descriptor.name)
     requirement.capability_manifest.available = list(existing.values())
     return activated
+
+
+def _missing_required_capabilities(
+    requirement: TaskRequirement,
+    capability_results: list[dict[str, Any]],
+    satisfied_required_knowledge_ids: set[str],
+) -> list[str]:
+    succeeded = {
+        str(item.get("tool_name") or "")
+        for item in capability_results
+        if isinstance(item, dict) and item.get("success") is True
+    }
+    missing = [name for name in requirement.required_capability_names if name not in succeeded]
+    for knowledge_base_id in requirement.required_knowledge_base_ids:
+        if knowledge_base_id not in satisfied_required_knowledge_ids:
+            missing.append(f"knowledge_search:{knowledge_base_id}")
+    return missing
 
 
 def _finish_result(
@@ -307,9 +410,7 @@ def _finish_result(
     )
 
 
-def _extend_dict_list(
-    target: list[dict[str, Any]], value: object
-) -> None:
+def _extend_dict_list(target: list[dict[str, Any]], value: object) -> None:
     if not isinstance(value, list):
         return
     for item in value:
@@ -320,6 +421,68 @@ def _extend_dict_list(
 def _raise_if_cancelled(check: CancellationCheck | None) -> None:
     if check is not None and check():
         raise HarnessExecutionCancelled("Harness execution was cancelled.")
+
+
+def _deadline_expired(deadline_monotonic: float | None) -> bool:
+    return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
+
+
+def _deadline_llm_client(
+    model_config: ModelConfig,
+    deadline_monotonic: float | None,
+) -> LLMClient:
+    if deadline_monotonic is None:
+        return LLMClient(model_config)
+    remaining = max(deadline_monotonic - time.monotonic(), 0.1)
+    configured = getattr(model_config, "timeout_seconds", None)
+    timeout_seconds = min(float(configured), remaining) if configured else remaining
+    if is_dataclass(model_config):
+        limited_config = replace(model_config, timeout_seconds=timeout_seconds)
+    else:
+        limited_config = model_config.model_copy(
+            update={"timeout_seconds": timeout_seconds}
+        )
+    return LLMClient(limited_config)
+
+
+def _step_timeout_result(
+    requirement: TaskRequirement,
+    *,
+    action_count: int,
+    timeout_seconds: int | None,
+    capability_results: list[dict[str, Any]],
+    citations: list[dict[str, Any]],
+    evidence_results: list[dict[str, Any]],
+    artifacts: list[dict[str, Any]],
+    trace_sink: TraceSink | None,
+) -> TaskExecutionResult:
+    limit_text = f"{timeout_seconds} 秒" if timeout_seconds else "配置的时间"
+    error = {
+        "code": "SOP_STEP_TIMEOUT",
+        "message": f"当前 SOP 单步运行超过 {limit_text}，已停止继续执行。",
+        "timeout_seconds": timeout_seconds,
+    }
+    if trace_sink:
+        trace_sink(
+            "harness_step_timeout",
+            {
+                "timeout_seconds": timeout_seconds,
+                "action_count": max(0, action_count),
+                "error": error,
+            },
+        )
+    return TaskExecutionResult(
+        task_frame_id=requirement.task_frame_id,
+        status="failed",
+        reply_fragment=error["message"],
+        citations=citations,
+        evidence_results=evidence_results,
+        capability_results=capability_results,
+        artifacts=artifacts,
+        task_summary="SOP 单步运行超时。",
+        action_count=max(0, action_count),
+        error=error,
+    )
 
 
 def _bounded_capability_result(
@@ -349,6 +512,12 @@ def _bounded_capability_result(
         "preview": serialized[:max_chars],
         "error": result.get("error"),
     }
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _trace_capability_result(

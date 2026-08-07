@@ -4,7 +4,7 @@ import hashlib
 import os
 import stat
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 HarnessWorkspaceSnapshot = dict[str, tuple[int, int, int, int]]
@@ -231,6 +231,7 @@ def publish_changed_harness_artifacts(
     max_entries: int = 1000,
     max_artifacts: int = 20,
     max_file_bytes: int = 50 * 1024 * 1024,
+    path_filter: Callable[[str], bool] | None = None,
 ) -> list[dict[str, object]]:
     """Publish regular files created or modified by one sandboxed command."""
 
@@ -239,6 +240,7 @@ def publish_changed_harness_artifacts(
         {"path": path}
         for path, identity in sorted(after.items())
         if before.get(path) != identity
+        and (path_filter is None or path_filter(path))
     ]
     return publish_harness_artifacts(
         workspace_root,

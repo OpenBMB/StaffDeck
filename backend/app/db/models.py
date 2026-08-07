@@ -598,6 +598,7 @@ class AgentProfile(SQLModel, table=True):
     persona_prompt: Optional[str] = None
     is_overall: bool = Field(default=False, index=True)
     status: str = Field(default="active", index=True)
+    harness_max_actions: int = Field(default=32)
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

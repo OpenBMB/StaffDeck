@@ -136,7 +136,7 @@ def test_exec_command_builds_fixed_isolated_argv_and_structured_result(
     assert result.data["status"] == "completed"
     assert result.data["ok"] is True
     assert result.data["stdout"] == "done\n"
-    assert result.data["cwd"] == "."
+    assert result.data["cwd"] == "/workspace"
     assert result.data["sandbox"] == "bubblewrap"
     assert captured["cwd"] == workspace
     assert captured["timeout_seconds"] == 2
@@ -195,6 +195,19 @@ def test_exec_command_allows_newline_separated_statements_inside_sandbox(
     argv = captured["argv"]
     assert isinstance(argv, list)
     assert argv[-1] == script
+
+
+def test_non_mount_sandbox_rewrites_model_visible_workspace_paths() -> None:
+    command = (
+        "python /workspace/generate.py --input '/workspace/attachments/a.png'\n"
+        "printf '%s' /workspace/output.png"
+    )
+
+    assert command_module._command_for_sandbox_workspace(command, "srt") == (
+        "python ./generate.py --input './attachments/a.png'\n"
+        "printf '%s' ./output.png"
+    )
+    assert command_module._command_for_sandbox_workspace(command, "bubblewrap") == command
 
 
 def test_exec_command_validates_every_line_of_multiline_script(tmp_path: Path) -> None:

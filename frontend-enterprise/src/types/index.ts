@@ -4,6 +4,9 @@ export type SkillCapabilityRefs = {
   general_skill_ids: string[];
   tool_ids: string[];
   knowledge_base_ids: string[];
+  required_general_skill_ids?: string[];
+  required_tool_ids?: string[];
+  required_knowledge_base_ids?: string[];
 };
 
 export type SkillGraphNode = Record<string, unknown> & {
@@ -16,6 +19,7 @@ export type SkillCard = {
   version: string;
   business_domain?: string;
   description: string;
+  step_timeout_seconds?: number | null;
   trigger_intents: string[];
   user_utterance_examples: string[];
   goal: string[];
@@ -193,6 +197,7 @@ export type AgentProfileRead = {
   persona_prompt?: string;
   is_overall: boolean;
   status: 'active' | 'archived' | string;
+  harness_max_actions?: number;
   metadata: Record<string, unknown>;
   resources: AgentResourceBindingRead[];
   created_at: string;
@@ -382,6 +387,9 @@ export type ToolRead = {
   headers: Record<string, unknown>;
   auth: Record<string, unknown>;
   mcp_config: Record<string, unknown>;
+  execution_policy?: {
+    timeout_seconds: number;
+  } | null;
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
   allowed_skills: string[];
@@ -531,6 +539,8 @@ export type ChatAttachmentRead = {
   text?: string | null;
   preview?: string | null;
   data_url?: string | null;
+  sandbox_path?: string | null;
+  sha256?: string | null;
   python_summary?: string | null;
   error?: string | null;
 };
@@ -557,6 +567,7 @@ export type HarnessWorkspaceArtifact = {
   type: 'workspace_file';
   task_frame_id: string;
   path: string;
+  sandbox_path?: string | null;
   sha256?: string | null;
   size?: number | null;
   display_name?: string | null;
@@ -668,6 +679,19 @@ export type EnterpriseSessionDetailRead = {
     created_at: string;
   }>;
   traces: TurnTraceRead[];
+  tool_invocations?: Array<{
+    id: string;
+    task_id: string;
+    run_id: string;
+    call_id: string;
+    tool_name: string;
+    status: string;
+    arguments: Record<string, unknown>;
+    result: Record<string, unknown>;
+    replayed_from_invocation_id?: string | null;
+    started_at: string;
+    finished_at?: string | null;
+  }>;
 };
 
 export type AgentWorkRecordEventRead = {

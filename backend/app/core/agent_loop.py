@@ -984,9 +984,19 @@ class AgentLoop:
         row = self.db.get(PersonaConfig, tenant_id)
         return row.system_prompt if row else None
 
-    def _get_agent_loop_max_actions(self, tenant_id: str) -> int:
+    def _get_agent_loop_max_actions(
+        self, tenant_id: str, agent_id: str | None = None
+    ) -> int:
         if not hasattr(self.db, "get"):
             return MAX_TOOL_ACTIONS_PER_TURN
+        agent = self.db.get(AgentProfile, agent_id) if agent_id else None
+        if agent is not None and (
+            agent.tenant_id != tenant_id or agent.status != "active"
+        ):
+            agent = None
+        if agent is not None:
+            value = agent.harness_max_actions
+            return max(1, min(int(value), MAX_TOOL_ACTIONS_PER_TURN_LIMIT))
         row = self.db.get(UIConfig, tenant_id)
         value = row.agent_loop_max_actions if row else MAX_TOOL_ACTIONS_PER_TURN
         return max(1, min(int(value), MAX_TOOL_ACTIONS_PER_TURN_LIMIT))

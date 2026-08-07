@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
+import time
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -243,7 +244,11 @@ class HarnessV2Engine:
 
         remaining_turn_actions = max(
             0,
-            int(self.owner._get_agent_loop_max_actions(request.tenant_id)),
+            int(
+                self.owner._get_agent_loop_max_actions(
+                    request.tenant_id, session.agent_id
+                )
+            ),
         )
         execution_payloads: list[dict[str, object]] = []
         execution_results: list[TaskExecutionResult] = []
@@ -514,8 +519,14 @@ class HarnessV2Engine:
             tenant_id=request.tenant_id,
             session_id=session.id,
             task_frame_id=row.task_id,
+            user_id=request.user_id or "",
         )
         image_payloads = validated_task_image_payloads(request.attachments)
+        step_timeout_seconds = (
+            _skill_step_timeout_seconds(active_skill)
+            if frame.kind == "sop"
+            else None
+        )
         self.events.record(
             request.tenant_id,
             session.id,
@@ -525,6 +536,8 @@ class HarnessV2Engine:
                 "kind": row.kind,
                 "skill_id": row.skill_id,
                 "step_id": row.step_id,
+                "step_timeout_seconds": step_timeout_seconds,
+                "harness_max_actions": max_actions,
                 "execution_engine": "harness_v2",
             },
         )
@@ -534,6 +547,11 @@ class HarnessV2Engine:
 
         while remaining_actions > 0:
             self._raise_if_cancelled(request, session)
+            step_deadline_monotonic = (
+                time.monotonic() + step_timeout_seconds
+                if step_timeout_seconds is not None
+                else None
+            )
             frame.target_step_id = row.step_id or session.active_step_id
             manifest = self.manifests.build(
                 request.tenant_id,
@@ -610,6 +628,7 @@ class HarnessV2Engine:
                     row
                 ),
                 trace_sink=trace,
+                step_deadline_monotonic=step_deadline_monotonic,
             )
 
             result = self.task_agent.run(
@@ -620,7 +639,10 @@ class HarnessV2Engine:
                 trace_sink=trace,
                 is_cancelled=lambda: self._is_cancelled(request, session),
                 image_payloads=image_payloads,
+                step_deadline_monotonic=step_deadline_monotonic,
+                step_timeout_seconds=step_timeout_seconds,
             )
+            _merge_discovered_artifacts(result, invoker.discover_artifacts())
             results.append(result)
             remaining_actions -= max(1, result.action_count)
 
@@ -756,6 +778,7 @@ class HarnessV2Engine:
                 "status": combined.status,
                 "step_id": row.step_id,
                 "action_count": combined.action_count,
+                "error": combined.error,
                 "execution_engine": "harness_v2",
             },
         )
@@ -1244,6 +1267,25 @@ def _aggregate_artifacts(
     return artifacts
 
 
+def _merge_discovered_artifacts(
+    result: TaskExecutionResult,
+    discovered: list[dict[str, Any]],
+) -> None:
+    known_paths = {
+        str(item.get("path") or "")
+        for item in result.artifacts
+        if isinstance(item, dict) and item.get("path")
+    }
+    for item in discovered:
+        path = str(item.get("path") or "")
+        if not path or path in known_paths:
+            continue
+        result.artifacts.append(dict(item))
+        known_paths.add(path)
+        if len(result.artifacts) >= 20:
+            break
+
+
 def _append_session_handoff_artifact(
     result: TaskExecutionResult,
     session: ChatSession,
@@ -1369,6 +1411,19 @@ def _source_user_message(db: Any, row: HarnessTaskFrameRecord) -> str:
     if message is None or message.role != "user":
         return ""
     return str(message.content or "").strip()
+
+
+def _skill_step_timeout_seconds(skill: Skill | None) -> int | None:
+    if skill is None or not isinstance(skill.content_json, dict):
+        return None
+    raw = skill.content_json.get("step_timeout_seconds")
+    if raw in (None, ""):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(value, 3600))
 
 
 def _dependency_order(

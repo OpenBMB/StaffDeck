@@ -34,6 +34,7 @@ from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_v2_engine import (
     HarnessV2Engine,
     _globalize_citations,
+    _prior_result,
     _with_recoverable_first_session,
 )
 from app.core.task_frame_store import (
@@ -81,6 +82,8 @@ from app.session.session_schema import (
     SessionPublic,
     TurnPlan,
 )
+from app.session.attachment_store import stage_chat_attachment
+from app.skills.skill_schema import SkillCapabilityRefs
 
 
 def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
@@ -93,9 +96,7 @@ def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
 
     first = _with_recoverable_first_session(request)
     retry = _with_recoverable_first_session(request.model_copy())
-    other_user = _with_recoverable_first_session(
-        request.model_copy(update={"user_id": "user-2"})
-    )
+    other_user = _with_recoverable_first_session(request.model_copy(update={"user_id": "user-2"}))
 
     assert first.session_id
     assert first.session_id == retry.session_id
@@ -118,22 +119,28 @@ def test_agent_loop_has_no_legacy_runtime_switch(monkeypatch) -> None:
         loop = AgentLoop(db)
 
         assert not hasattr(loop, "_uses_harness_v2")
-        assert loop.handle_turn(
-            ChatTurnRequest(
-                tenant_id="tenant-demo",
-                message="普通对话",
-                channel="web",
-                interaction_mode="normal",
+        assert (
+            loop.handle_turn(
+                ChatTurnRequest(
+                    tenant_id="tenant-demo",
+                    message="普通对话",
+                    channel="web",
+                    interaction_mode="normal",
+                )
             )
-        ) == "普通对话"
-        assert loop.handle_turn(
-            ChatTurnRequest(
-                tenant_id="tenant-demo",
-                message="执行自动任务",
-                channel="scheduled_task",
-                interaction_mode="scheduled_task",
+            == "普通对话"
+        )
+        assert (
+            loop.handle_turn(
+                ChatTurnRequest(
+                    tenant_id="tenant-demo",
+                    message="执行自动任务",
+                    channel="scheduled_task",
+                    interaction_mode="scheduled_task",
+                )
             )
-        ) == "执行自动任务"
+            == "执行自动任务"
+        )
 
     assert calls == [("web", "normal"), ("scheduled_task", "scheduled_task")]
 
@@ -222,26 +229,14 @@ def test_harness_stream_retry_bootstraps_the_same_first_session(
 
         monkeypatch.setattr(loop, "handle_turn", fake_handle_turn)
         first_events = list(loop._handle_turn_stream_v2(request))
-        retry_events = list(
-            loop._handle_turn_stream_v2(request.model_copy())
-        )
+        retry_events = list(loop._handle_turn_stream_v2(request.model_copy()))
         sessions = db.exec(
-            select(ChatSession).where(
-                ChatSession.tenant_id == request.tenant_id
-            )
+            select(ChatSession).where(ChatSession.tenant_id == request.tenant_id)
         ).all()
 
     assert seen_session_ids == [expected_session_id, expected_session_id]
-    assert [
-        event
-        for event in first_events
-        if event["event"] == "session_created"
-    ]
-    assert not [
-        event
-        for event in retry_events
-        if event["event"] == "session_created"
-    ]
+    assert [event for event in first_events if event["event"] == "session_created"]
+    assert not [event for event in retry_events if event["event"] == "session_created"]
     assert [session.id for session in sessions] == [expected_session_id]
 
 
@@ -514,9 +509,7 @@ def test_task_request_compiler_builds_a_composite_requirement_without_outer_cont
             {"kind": "preference", "content": "用户偏好短信通知。"},
             {"kind": "empty", "content": "   "},
         ],
-        prior_task_results=[
-            {"task_frame_id": "task-prior", "task_summary": "身份已核验"}
-        ],
+        prior_task_results=[{"task_frame_id": "task-prior", "task_summary": "身份已核验"}],
         attachments=[
             {
                 "attachment_id": "attachment-1",
@@ -554,9 +547,92 @@ def test_task_request_compiler_builds_a_composite_requirement_without_outer_cont
     dumped = requirement.model_dump(mode="json")
     assert "source_message" not in dumped
     assert "conversation_context" not in dumped
-    assert "OUTER_CONTEXT_MUST_NOT_LEAK" not in json.dumps(
-        dumped, ensure_ascii=False
+    assert "OUTER_CONTEXT_MUST_NOT_LEAK" not in json.dumps(dumped, ensure_ascii=False)
+
+
+def test_task_requirement_only_marks_explicitly_required_node_capabilities() -> None:
+    skill = Skill(
+        id="skill-http-chain",
+        tenant_id="tenant-demo",
+        skill_id="http-chain",
+        name="HTTP 串行流程",
+        status="published",
+        content_json={
+            "start_node_id": "ocr",
+            "nodes": [
+                {
+                    "node_id": "ocr",
+                    "type": "tool_call",
+                    "name": "调用 OCR",
+                    "allowed_actions": ["call_tool:OCR解析", "continue_flow"],
+                    "capability_refs": {
+                        "tool_ids": ["tool-ocr", "tool-final"],
+                        "required_tool_ids": ["tool-ocr"],
+                    },
+                }
+            ],
+        },
     )
+    frame = PlannedTaskFrame(
+        task_id="task-http-chain",
+        kind="sop",
+        target_skill_id="http-chain",
+        target_step_id="ocr",
+    )
+    manifest = CapabilityManifest(
+        available=[
+            CapabilityDescriptor(
+                capability_id="tool-ocr",
+                name="ocr_parse",
+                kind="tool",
+            ),
+            CapabilityDescriptor(
+                capability_id="tool-final",
+                name="expense_rule_execute",
+                kind="tool",
+            ),
+        ]
+    )
+
+    requirement = TaskRequestCompiler().compile(
+        frame,
+        _chat_session(active_skill_id="http-chain", active_step_id="ocr"),
+        skill,
+        manifest,
+    )
+
+    assert requirement.required_capability_names == ["ocr_parse"]
+    assert any("ocr_parse" in item for item in requirement.completion_criteria)
+
+
+def test_required_capability_refs_must_also_be_selected() -> None:
+    with pytest.raises(ValueError, match="required_tool_ids"):
+        SkillCapabilityRefs(required_tool_ids=["tool-ocr"])
+
+
+def test_sop_step_result_keeps_capability_output_for_the_next_step() -> None:
+    projected = _prior_result(
+        TaskExecutionResult(
+            task_frame_id="task-http-chain",
+            status="completed",
+            task_summary="OCR 完成",
+            capability_results=[
+                {
+                    "tool_name": "ocr_parse",
+                    "success": True,
+                    "data": {"text": "merchant=M1"},
+                }
+            ],
+        )
+    )
+
+    assert projected["capability_results"] == [
+        {
+            "tool_name": "ocr_parse",
+            "success": True,
+            "data": {"text": "merchant=M1"},
+        }
+    ]
 
 
 def test_attachments_are_materialized_inside_only_the_task_workspace(
@@ -593,11 +669,56 @@ def test_attachments_are_materialized_inside_only_the_task_workspace(
     )
 
     assert descriptors[0]["materialized"] is True
-    relative_path = str(descriptors[0]["workspace_path"])
-    assert ".." not in relative_path
+    sandbox_path = str(descriptors[0]["workspace_path"])
+    assert sandbox_path.startswith("/workspace/attachments/")
+    assert ".." not in sandbox_path
+    relative_path = sandbox_path.removeprefix("/workspace/")
     assert (workspace / relative_path).read_text(encoding="utf-8") == "evidence"
     assert descriptors[1]["materialized"] is False
     assert not (workspace / "image.png").exists()
+
+
+def test_staged_image_is_both_a_sandbox_file_and_vision_payload(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    raw = b"img"
+    parsed = ChatAttachmentRead(
+        id="image-staged",
+        filename="screen.png",
+        content_type="image/png",
+        size=len(raw),
+        kind="image",
+        data_url="data:image/png;base64,aW1n",
+    )
+    attachment = stage_chat_attachment(
+        parsed,
+        raw,
+        tenant_id="tenant-demo",
+        user_id="user-demo",
+    )
+    descriptors = materialize_task_attachments(
+        [attachment],
+        tenant_id="tenant-demo",
+        user_id="user-demo",
+        session_id="session-demo",
+        task_frame_id="task-staged-image",
+    )
+    payloads = validated_task_image_payloads([attachment])
+    workspace = harness_task_workspace_path(
+        tenant_id="tenant-demo",
+        session_id="session-demo",
+        task_frame_id="task-staged-image",
+    )
+
+    assert descriptors[0]["materialized"] is True
+    assert descriptors[0]["vision_available"] is True
+    sandbox_path = str(descriptors[0]["workspace_path"])
+    assert sandbox_path.startswith("/workspace/attachments/")
+    assert (workspace / sandbox_path.removeprefix("/workspace/")).read_bytes() == raw
+    assert len(payloads) == 1
+    assert payloads[0].data_url == attachment.data_url
 
 
 def test_capability_manifest_only_exposes_current_step_sop_specific_resources() -> None:
@@ -716,8 +837,91 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     assert "default" not in operation_schema
     assert shared_descriptor.input_schema["required"] == ["query", "operation"]
     assert shared_descriptor.metadata["execution_policy"] == "inspect_then_decide"
-    assert shared_descriptor.metadata["script_execution"] == (
-        "explicit_after_read"
+    assert shared_descriptor.metadata["script_execution"] == ("explicit_after_read")
+
+
+def test_general_tools_remain_discoverable_across_sop_steps() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant-demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent-overall",
+                tenant_id="tenant-demo",
+                name="整体智能体",
+                is_overall=True,
+            )
+        )
+        tools = [
+            Tool(
+                id="tool-ocr",
+                tenant_id="tenant-demo",
+                name="ocr_parse",
+                method="POST",
+                url="https://example.test/ocr",
+                capability_scope="general",
+            ),
+            Tool(
+                id="tool-final",
+                tenant_id="tenant-demo",
+                name="expense_rule_execute",
+                method="POST",
+                url="https://example.test/final",
+                capability_scope="general",
+            ),
+            Tool(
+                id="tool-unrelated",
+                tenant_id="tenant-demo",
+                name="send_notice",
+                method="POST",
+                url="https://example.test/notice",
+                capability_scope="general",
+            ),
+        ]
+        db.add_all(tools)
+        db.flush()
+        for tool in tools:
+            ensure_open_gallery_binding(db, "tenant-demo", "tool", tool.id)
+        db.commit()
+        skill = Skill(
+            id="skill-chain",
+            tenant_id="tenant-demo",
+            skill_id="chain",
+            name="串行工具流程",
+            status="published",
+            content_json={
+                "start_node_id": "ocr",
+                "nodes": [
+                    {
+                        "node_id": "ocr",
+                        "type": "tool_call",
+                        "name": "OCR",
+                        "capability_refs": {"tool_ids": ["tool-ocr"]},
+                    },
+                    {
+                        "node_id": "final",
+                        "type": "tool_call",
+                        "name": "规则执行",
+                        "capability_refs": {"tool_ids": ["tool-final"]},
+                    },
+                ],
+            },
+        )
+
+        first = CapabilityManifestBuilder(db).build("tenant-demo", "agent-overall", skill, "ocr")
+        final = CapabilityManifestBuilder(db).build("tenant-demo", "agent-overall", skill, "final")
+        conversation = CapabilityManifestBuilder(db).build(
+            "tenant-demo", "agent-overall", None, None
+        )
+
+    assert "ocr_parse" in first.allowed_names()
+    assert "expense_rule_execute" in first.allowed_names()
+    assert "send_notice" in first.allowed_names()
+    assert "expense_rule_execute" in final.allowed_names()
+    assert "ocr_parse" in final.allowed_names()
+    assert "send_notice" in final.allowed_names()
+    assert {"ocr_parse", "expense_rule_execute", "send_notice"}.issubset(
+        conversation.allowed_names()
     )
 
 
@@ -727,9 +931,7 @@ def test_windows_manifest_exposes_platform_shell_exec_command(monkeypatch) -> No
     with Session(engine) as db:
         db.add(Tenant(id="tenant-demo", name="Demo"))
         db.commit()
-        manifest = CapabilityManifestBuilder(db).build(
-            "tenant-demo", None, None, None
-        )
+        manifest = CapabilityManifestBuilder(db).build("tenant-demo", None, None, None)
 
     assert "exec_command" in manifest.allowed_names()
 
@@ -927,12 +1129,8 @@ def test_external_failure_claim_is_released_only_when_request_was_not_sent() -> 
     assert _failure_was_not_sent(
         {"success": False, "error": {"code": "CAPABILITY_SNAPSHOT_CHANGED"}}
     )
-    assert not _failure_was_not_sent(
-        {"success": False, "error": {"code": "TIMEOUT"}}
-    )
-    assert not _failure_was_not_sent(
-        {"success": False, "error": {"code": "HTTP_ERROR"}}
-    )
+    assert not _failure_was_not_sent({"success": False, "error": {"code": "TIMEOUT"}})
+    assert not _failure_was_not_sent({"success": False, "error": {"code": "HTTP_ERROR"}})
 
 
 def test_invoker_requires_run_local_activation_before_hidden_capability_call(
@@ -975,9 +1173,9 @@ def test_invoker_requires_run_local_activation_before_hidden_capability_call(
     assert blocked["error"]["code"] == "CAPABILITY_NOT_ACTIVATED"
     assert described["success"] is True
     assert described["data"]["snapshot_revision"] == manifest.snapshot_revision
-    assert [
-        item["name"] for item in described["data"]["activated_capabilities"]
-    ] == ["list_directory"]
+    assert [item["name"] for item in described["data"]["activated_capabilities"]] == [
+        "list_directory"
+    ]
     assert executed["success"] is True
 
 
@@ -988,9 +1186,7 @@ def test_file_mutation_is_private_until_publish_artifact_succeeds(
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
     engine = _test_engine()
     with Session(engine) as db:
-        manifest = CapabilityManifestBuilder(db).build(
-            "tenant-demo", None, None, None
-        )
+        manifest = CapabilityManifestBuilder(db).build("tenant-demo", None, None, None)
         invoker = HarnessCapabilityInvoker(
             db,
             tenant_id="tenant-demo",
@@ -1021,6 +1217,7 @@ def test_file_mutation_is_private_until_publish_artifact_succeeds(
             "type": "workspace_file",
             "task_frame_id": "task-artifact",
             "path": "reports/result.txt",
+            "sandbox_path": "/workspace/reports/result.txt",
             "sha256": published["data"]["sha256"],
             "size": 5,
             "display_name": "结果.txt",
@@ -1030,6 +1227,46 @@ def test_file_mutation_is_private_until_publish_artifact_succeeds(
             "source": "harness",
         }
     ]
+
+
+def test_workspace_discovery_returns_source_and_generated_image(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        manifest = CapabilityManifestBuilder(db).build("tenant-demo", None, None, None)
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-multi-artifact",
+            model_config=_model_config(),
+            manifest=manifest,
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        written = invoker.invoke(
+            "write_file",
+            {
+                "path": "/workspace/generate_chart.py",
+                "content": "print('chart')\n",
+            },
+        )
+        (invoker.workspace_root / "chart.png").write_bytes(b"png")
+        artifacts = invoker.discover_artifacts()
+
+    assert written["data"]["path"] == "/workspace/generate_chart.py"
+    assert {item["path"] for item in artifacts} == {
+        "chart.png",
+        "generate_chart.py",
+    }
+    assert {item["sandbox_path"] for item in artifacts} == {
+        "/workspace/chart.png",
+        "/workspace/generate_chart.py",
+    }
 
 
 def test_external_idempotency_key_is_stable_per_task_not_entire_session(
@@ -1144,9 +1381,10 @@ def test_general_skill_harness_tool_reads_full_package_when_requested(
         )
 
     assert read_result["success"] is True
-    assert [
-        item["path"] for item in read_result["data"]["package"]["files"]
-    ] == ["SKILL.md", "scripts/run.sh"]
+    assert [item["path"] for item in read_result["data"]["package"]["files"]] == [
+        "SKILL.md",
+        "scripts/run.sh",
+    ]
     assert read_result["data"]["operation"] == "read"
     assert "只有确实需要" in read_result["data"]["notice"]
 
@@ -1205,11 +1443,40 @@ def test_general_skill_harness_tool_defaults_to_read_instead_of_generating_code(
     assert result["success"] is True
     assert result["data"]["operation"] == "read"
     skill_file = next(
-        item
-        for item in result["data"]["package"]["files"]
-        if item["path"] == "SKILL.md"
+        item for item in result["data"]["package"]["files"] if item["path"] == "SKILL.md"
     )
     assert skill_file["content_preview"].startswith("# Policy Guide")
+
+
+def test_harness_task_agent_stops_when_sop_step_deadline_is_exhausted() -> None:
+    trace_events: list[tuple[str, dict[str, object]]] = []
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-timeout",
+            kind="sop",
+            goal="执行受限步骤",
+            requirements=["在时间上限内完成"],
+            capability_manifest=CapabilityManifest(),
+        ),
+        _model_config(),
+        lambda _name, _arguments: {"success": True},
+        max_actions=3,
+        step_deadline_monotonic=0,
+        step_timeout_seconds=12,
+        trace_sink=lambda event_type, payload: trace_events.append(
+            (event_type, payload)
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.action_count == 0
+    assert result.error == {
+        "code": "SOP_STEP_TIMEOUT",
+        "message": "当前 SOP 单步运行超过 12 秒，已停止继续执行。",
+        "timeout_seconds": 12,
+    }
+    assert trace_events[0][0] == "harness_step_timeout"
 
 
 def test_general_skill_harness_tool_rejects_execute_before_read(
@@ -1373,9 +1640,7 @@ def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
             active_step_id=None,
             agent_id=None,
             is_cancelled=cancelled,
-            trace_sink=lambda event_type, payload: trace_events.append(
-                (event_type, payload)
-            ),
+            trace_sink=lambda event_type, payload: trace_events.append((event_type, payload)),
         )
         result = invoker._invoke_general_skill(
             skill.id,
@@ -1461,11 +1726,14 @@ def test_general_skill_harness_tool_preserves_structured_sandbox_failure(
             active_step_id=None,
             agent_id=None,
         )
-        assert invoker._invoke_general_skill(
-            skill.id,
-            descriptor.metadata,
-            {"query": "run", "operation": "read"},
-        )["success"] is True
+        assert (
+            invoker._invoke_general_skill(
+                skill.id,
+                descriptor.metadata,
+                {"query": "run", "operation": "read"},
+            )["success"]
+            is True
+        )
         result = invoker._invoke_general_skill(
             skill.id,
             descriptor.metadata,
@@ -1562,11 +1830,14 @@ def test_general_skill_harness_tool_publishes_valid_artifact_among_failures(
             active_step_id=None,
             agent_id=None,
         )
-        assert invoker._invoke_general_skill(
-            skill.id,
-            descriptor.metadata,
-            {"query": "run", "operation": "read"},
-        )["success"] is True
+        assert (
+            invoker._invoke_general_skill(
+                skill.id,
+                descriptor.metadata,
+                {"query": "run", "operation": "read"},
+            )["success"]
+            is True
+        )
         result = invoker._invoke_general_skill(
             skill.id,
             descriptor.metadata,
@@ -1653,9 +1924,7 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
         _model_config(),
         invoke_tool,
         max_actions=3,
-        trace_sink=lambda event_type, payload: trace_events.append(
-            (event_type, payload)
-        ),
+        trace_sink=lambda event_type, payload: trace_events.append((event_type, payload)),
     )
 
     assert result.status == "completed"
@@ -1664,9 +1933,7 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
     assert result.citations == [{"source": "logistics"}]
     assert invoked == [("allowed.tool", {"query": "ORDER-1"})]
     completed = next(
-        payload
-        for event_type, payload in trace_events
-        if event_type == "harness_tool_completed"
+        payload for event_type, payload in trace_events if event_type == "harness_tool_completed"
     )
     assert completed["result"] == {
         "tool_name": "allowed.tool",
@@ -1686,9 +1953,7 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
     assert isinstance(second_transcript, list)
     assert second_transcript[0]["tool_name"] == "forbidden.tool"
     assert second_transcript[0]["result"]["error"]["code"] == "TOOL_NOT_AVAILABLE"
-    assert "OUTER_CONTEXT_MUST_NOT_LEAK" not in json.dumps(
-        payloads, ensure_ascii=False
-    )
+    assert "OUTER_CONTEXT_MUST_NOT_LEAK" not in json.dumps(payloads, ensure_ascii=False)
     assert "不得为了“更精准”而在零检索、零工具结果时提前结束" in system_prompts[0]
     assert "首次调用某个" in system_prompts[0]
     assert "不得跳过 read 直接 execute" in system_prompts[0]
@@ -1771,9 +2036,7 @@ def test_harness_agent_activates_described_capability_for_current_revision(
 
     assert result.status == "completed"
     assert invoked == ["capability_describe", "orders.lookup"]
-    assert [item["tool_name"] for item in result.capability_results] == [
-        "orders.lookup"
-    ]
+    assert [item["tool_name"] for item in result.capability_results] == ["orders.lookup"]
 
 
 def test_harness_agent_rejects_describe_result_from_another_snapshot() -> None:
@@ -2174,6 +2437,159 @@ def test_harness_agent_drops_tampered_image_data_url(
     assert "https://example.test/image.png" not in json.dumps(task_requirement)
 
 
+def test_harness_agent_cannot_skip_required_sop_tool(
+    monkeypatch,
+) -> None:
+    actions = iter(
+        [
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "直接完成",
+                "task_summary": "试图跳过 OCR",
+            },
+            {
+                "action": "tool",
+                "tool_name": "ocr_parse",
+                "arguments": {"merchant_code": "M1", "project_code": "P1"},
+            },
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "OCR 已完成",
+                "task_summary": "当前节点完成",
+            },
+        ]
+    )
+    payloads: list[dict[str, object]] = []
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            payloads.append(deepcopy(payload))
+            return next(actions)
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def invoke_tool(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        calls.append((name, arguments))
+        return {"success": True, "data": {"text": "OCR result"}}
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    requirement = TaskRequirement(
+        task_frame_id="task-required-tool",
+        kind="sop",
+        goal="完成 OCR 节点",
+        required_capability_names=["ocr_parse"],
+        capability_manifest=CapabilityManifest(
+            available=[
+                CapabilityDescriptor(
+                    capability_id="tool-ocr",
+                    name="ocr_parse",
+                    kind="tool",
+                )
+            ]
+        ),
+    )
+
+    result = HarnessTaskAgent().run(
+        requirement,
+        _model_config(),
+        invoke_tool,
+        max_actions=4,
+    )
+
+    assert result.status == "completed"
+    assert result.action_count == 3
+    assert calls == [
+        (
+            "ocr_parse",
+            {"merchant_code": "M1", "project_code": "P1"},
+        )
+    ]
+    transcript = payloads[1]["harness_transcript"]
+    assert isinstance(transcript, list)
+    assert transcript[-1]["result"]["error"]["code"] == ("REQUIRED_CAPABILITY_NOT_INVOKED")
+
+
+def test_harness_agent_requires_the_configured_knowledge_base(monkeypatch) -> None:
+    actions = iter(
+        [
+            {
+                "action": "tool",
+                "tool_name": "knowledge_search",
+                "arguments": {"query": "报销规则", "knowledge_base_ids": ["kb-other"]},
+            },
+            {
+                "action": "finish",
+                "status": "completed",
+                "task_summary": "检索了错误知识库",
+            },
+            {
+                "action": "tool",
+                "tool_name": "knowledge_search",
+                "arguments": {"query": "报销规则", "knowledge_base_ids": ["kb-policy"]},
+            },
+            {
+                "action": "finish",
+                "status": "completed",
+                "task_summary": "已检索指定知识库",
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, _payload: dict[str, object]
+        ) -> dict[str, object]:
+            return next(actions)
+
+    calls: list[dict[str, object]] = []
+
+    def invoke_tool(_name: str, arguments: dict[str, object]) -> dict[str, object]:
+        calls.append(arguments)
+        return {"success": True, "data": {"chunks": []}}
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    requirement = TaskRequirement(
+        task_frame_id="task-required-knowledge",
+        kind="sop",
+        goal="查询报销制度",
+        required_capability_names=["knowledge_search"],
+        required_knowledge_base_ids=["kb-policy"],
+        capability_manifest=CapabilityManifest(
+            available=[
+                CapabilityDescriptor(
+                    capability_id="knowledge.search",
+                    name="knowledge_search",
+                    kind="knowledge",
+                )
+            ]
+        ),
+    )
+
+    result = HarnessTaskAgent().run(
+        requirement,
+        _model_config(),
+        invoke_tool,
+        max_actions=4,
+    )
+
+    assert result.status == "completed"
+    assert result.action_count == 4
+    assert calls == [
+        {"query": "报销规则", "knowledge_base_ids": ["kb-other"]},
+        {"query": "报销规则", "knowledge_base_ids": ["kb-policy"]},
+    ]
+
+
 def test_task_frame_store_persists_frames_and_projects_only_active_sop_work() -> None:
     engine = _test_engine()
     with Session(engine) as db:
@@ -2237,9 +2653,7 @@ def test_task_frame_store_persists_frames_and_projects_only_active_sop_work() ->
 
     with Session(engine) as db:
         persisted = db.exec(
-            select(HarnessTaskFrameRecord).order_by(
-                HarnessTaskFrameRecord.sequence
-            )
+            select(HarnessTaskFrameRecord).order_by(HarnessTaskFrameRecord.sequence)
         ).all()
         reloaded_session = db.get(ChatSession, "session-1")
 
@@ -2373,8 +2787,7 @@ def test_dependent_followup_stays_queued_then_releases_with_parent_result() -> N
         assert purchase.error_json == {"code": "DEPENDENCY_WAITING"}
         assert store.ready_dependency_frames(session) == []
         assert any(
-            item["task_id"] == "task-purchase-a3"
-            and item["status"] == "pending"
+            item["task_id"] == "task-purchase-a3" and item["status"] == "pending"
             for item in session.pending_tasks_json
         )
 
@@ -2440,9 +2853,7 @@ def test_dependent_followup_stays_queued_then_releases_with_parent_result() -> N
         )
 
         assert requirement.source_user_message == "退完帮我买一个 A3"
-        assert requirement.prior_task_results[0]["task_frame_id"] == (
-            "task-refund"
-        )
+        assert requirement.prior_task_results[0]["task_frame_id"] == ("task-refund")
 
 
 def test_ready_dependency_frames_repairs_legacy_dependency_block() -> None:
@@ -2665,9 +3076,7 @@ def test_latest_awaiting_conversation_takes_focus_without_losing_sop() -> None:
             session.context_state_json["harness_v2"]["active_task_frame_id"]
             == "conversation-latest"
         )
-        assert [item["task_id"] for item in session.pending_tasks_json] == [
-            "sop-task"
-        ]
+        assert [item["task_id"] for item in session.pending_tasks_json] == ["sop-task"]
 
 
 def test_frame_and_run_completion_are_fenced_by_current_lease() -> None:

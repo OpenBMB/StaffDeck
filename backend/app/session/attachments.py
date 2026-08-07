@@ -4,12 +4,14 @@ import base64
 import csv
 import io
 import json
+import hashlib
 import mimetypes
 import re
 from collections.abc import Iterable
 from typing import Any
 
 from app.db.models import new_id
+from app.session.attachment_store import sandbox_attachment_path
 from app.session.session_schema import ChatAttachmentRead
 
 
@@ -169,6 +171,14 @@ def validate_chat_turn_attachments(
             content_type=content_type,
             size=size,
         )
+        sha256 = str(attachment.sha256 or "").strip().lower() or None
+        if sha256 and not re.fullmatch(r"[a-f0-9]{64}", sha256):
+            raise ValueError(f"{filename} 的 SHA-256 无效")
+        sandbox_path = str(attachment.sandbox_path or "").strip() or None
+        if sandbox_path and sandbox_path != sandbox_attachment_path(
+            attachment.model_copy(update={"filename": filename})
+        ):
+            raise ValueError(f"{filename} 的沙箱路径无效")
         normalized.append(
             attachment.model_copy(
                 update={
@@ -178,6 +188,8 @@ def validate_chat_turn_attachments(
                     "text": text,
                     "preview": preview,
                     "data_url": data_url,
+                    "sandbox_path": sandbox_path,
+                    "sha256": sha256,
                     "python_summary": _round_trip_summary(
                         filename,
                         content_type,
@@ -221,6 +233,8 @@ def _validated_image_data_url(
         raise ValueError(f"{filename} 的图片 data URL 无效") from exc
     if len(decoded) > IMAGE_DATA_URL_LIMIT_BYTES or len(decoded) != size:
         raise ValueError(f"{filename} 的图片 data URL 大小不一致或超限")
+    if attachment.sha256 and hashlib.sha256(decoded).hexdigest() != attachment.sha256.lower():
+        raise ValueError(f"{filename} 的图片 data URL 与上传文件不一致")
     return raw
 
 

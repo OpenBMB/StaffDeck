@@ -95,6 +95,7 @@ const TOOL_FORM_INITIAL_VALUES = {
   mcp_config: '{}',
   input_schema: '{}',
   output_schema: '{}',
+  timeout_seconds: 8,
   capability_scope: 'general' as CapabilityScope,
 };
 
@@ -1855,6 +1856,25 @@ function ToolFormFields({
         </Field>
       </div>
 
+      <Field
+        label="调用超时上限（秒）"
+        htmlFor="tool-timeout-seconds"
+        hint="每个工具独立生效，支持 1–300 秒；HTTP、MCP 和对话 Harness 调用均使用此值。"
+      >
+        <Input
+          id="tool-timeout-seconds"
+          type="number"
+          min={1}
+          max={300}
+          step={1}
+          value={values.timeout_seconds}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            setField('timeout_seconds', Number.isFinite(next) ? next : 8);
+          }}
+        />
+      </Field>
+
       <div className="grid grid-cols-1 gap-[16px] sm:grid-cols-2">
         <Field label="Headers JSON" htmlFor="tool-headers">
           <Textarea
@@ -2126,6 +2146,7 @@ function toolToFormValues(row: ToolRead): ToolFormValues {
     input_schema: JSON.stringify(row.input_schema || {}, null, 2),
     output_schema: JSON.stringify(row.output_schema || {}, null, 2),
     allowed_skills: (row.allowed_skills || []).join(','),
+    timeout_seconds: row.execution_policy?.timeout_seconds ?? 8,
     capability_scope: normalizeCapabilityScope(row.capability_scope),
   };
 }
@@ -2144,6 +2165,9 @@ function buildToolPayload(values: ToolFormValues) {
       headers: parseJson(values.headers, {}),
       auth: parseJson(values.auth, {}),
       mcp_config: values.tool_type === 'mcp' ? parseJson(values.mcp_config, {}) : {},
+      execution_policy: {
+        timeout_seconds: Math.max(1, Math.min(300, Number(values.timeout_seconds) || 8)),
+      },
       input_schema: parseJson(values.input_schema, {}),
       output_schema: parseJson(values.output_schema, {}),
       allowed_skills: String(values.allowed_skills || '').split(',').map((item) => item.trim()).filter(Boolean),

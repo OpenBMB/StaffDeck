@@ -289,6 +289,9 @@ def exec_command(
             if sys.platform != "win32":
                 raise
             backend = "unsandboxed"
+    else:
+        ensure_backend_usable(backend)
+    command = _command_for_sandbox_workspace(command, backend)
     output_limit = min(
         args.max_output_bytes,
         max(1, context.limits.max_result_bytes // 4),
@@ -354,10 +357,18 @@ def exec_command(
         "output_truncated": process.output_truncated,
         "timeout_seconds": args.timeout_seconds,
         "duration_ms": process.duration_ms,
-        "cwd": ".",
+        "cwd": SANDBOX_WORKSPACE,
         "sandbox": backend,
         "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
     }
+
+
+def _command_for_sandbox_workspace(command: str, backend: str) -> str:
+    """Make the stable model-visible /workspace path work on non-mount sandboxes."""
+
+    if backend == "bubblewrap":
+        return command
+    return re.sub(r"(?<![A-Za-z0-9_.-])/workspace(?=/|\s|$|[\"'])", ".", command)
 
 
 def register_command_tools(registry: HarnessRegistry) -> HarnessRegistry:

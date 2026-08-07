@@ -73,6 +73,7 @@ import {
   hasAssistantCarrierForTurn,
   hasAssistantMessageForTurn,
   hasRenderableStreamingText,
+  formatTracePayload,
   hasRecoverableEventProgress,
   hasServerMessageForTurn,
   isDraftConversationKey,
@@ -1920,6 +1921,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       || item.event === 'task_frame_finished'
       || item.event === 'harness_action_created'
       || item.event === 'harness_tool_completed'
+      || item.event === 'harness_step_timeout'
     ) {
       const line = harnessEventTraceLine(item.event, item.data);
       if (line) upsertVisibleTraceLine(line);
@@ -2016,11 +2018,15 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     if (item.event === 'tool_result') {
       const tool = normalizeTraceTool(item.data);
       if (tool) {
+        const output = formatTracePayload(tool.content);
         upsertVisibleTraceLine({
           id: `tool_${tool.toolCallId || tool.rawToolName || tool.toolId}`,
           kind: 'tool',
           text: `${tool.isError ? '工具调用失败' : '调用工具'} ${tool.toolName}`,
           detail: toolTraceDetail(tool),
+          output: output || undefined,
+          outputLanguage: output ? 'json' : undefined,
+          outputTitle: output ? '查看工具结果' : undefined,
           state: tool.isError ? 'failed' : 'completed',
           icon: 'tool',
         });
