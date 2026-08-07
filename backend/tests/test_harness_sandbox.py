@@ -171,9 +171,10 @@ def test_windows_diagnostics_requires_successful_srt_initialization(
 
     report = sandbox.diagnostics()
 
-    assert report.status == "unavailable"
-    assert report.code == "SANDBOX_WINDOWS_SETUP_REQUIRED"
-    assert "windows-install" in (report.remediation or "")
+    assert report.status == "degraded"
+    assert report.code == "SANDBOX_UNSANDBOXED_FALLBACK"
+    assert report.backend == "unsandboxed"
+    assert "高风险" in (report.remediation or "")
 
 
 def test_windows_srt_probe_uses_bundle_directory(monkeypatch, tmp_path: Path) -> None:

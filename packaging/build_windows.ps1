@@ -8,7 +8,11 @@ Set-Location $Repo
 if (-not $env:VERSION) { $env:VERSION = "0.1.0" }
 
 function Test-SigningConfigured {
-  return [bool]($env:WINDOWS_CERT_THUMBPRINT -or $env:WINDOWS_PFX_PATH)
+  return [bool](
+    $env:WINDOWS_CERT_THUMBPRINT -or
+    $env:WINDOWS_PFX_PATH -or
+    $env:WINDOWS_SIGNER_SCRIPT
+  )
 }
 
 function Assert-NativeCommandSucceeded {
@@ -113,7 +117,7 @@ if ($signingConfigured) {
   $env:WINDOWS_SIGN_ENABLED = "1"
 } else {
   $env:WINDOWS_SIGN_ENABLED = "0"
-  Write-Warning "Code signing is not configured; Windows artifacts will be UNSIGNED."
+  Write-Warning "No Windows signer configured: building an UNSIGNED package. Windows SRT may automatically run in degraded mode; configure WINDOWS_CERT_THUMBPRINT, WINDOWS_PFX_PATH, or WINDOWS_SIGNER_SCRIPT for production security."
 }
 
 Write-Host "==> [4/6] Bundle the Python skill runtime"

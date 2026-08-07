@@ -47,7 +47,17 @@ def diagnostics() -> SandboxDiagnostics:
             "未检测到可用的 SRT 或 Bubblewrap 沙盒运行时。",
             "请修复安装或重新安装 StaffDeck。",
         )
-    return _environment_diagnostics(backend)
+    report = _environment_diagnostics(backend)
+    if sys.platform == "win32" and report.status == "unavailable":
+        return SandboxDiagnostics(
+            "degraded",
+            "SANDBOX_UNSANDBOXED_FALLBACK",
+            "安全沙盒不可用，当前已自动降级为无沙盒执行。",
+            "高风险部署：执行可以访问 StaffDeck 进程权限范围内的主机资源。"
+            "生产环境请配置已签名的 Windows SRT，或将 StaffDeck 放入隔离容器/专用虚拟机。",
+            backend="unsandboxed",
+        )
+    return report
 
 
 def _environment_diagnostics(backend: str) -> SandboxDiagnostics:
@@ -73,8 +83,9 @@ def _environment_diagnostics(backend: str) -> SandboxDiagnostics:
             return SandboxDiagnostics(
                 "unavailable",
                 "SANDBOX_WINDOWS_SETUP_REQUIRED",
-                "Windows 安全执行环境尚未完成初始化，或账户/WFP 网络规则不可用。",
-                f"请在这台 Windows 主机上确认 UAC 后执行：{windows_install_command()}",
+                "Windows 沙盒初始化失败：账户/WFP 尚未就绪，或捆绑的 Node/SRT 运行时未通过 Windows 应用控制校验。",
+                "请先确认安装包中的 node.exe 和 srt-win.exe 均为有效 Authenticode 签名；只有账户或 WFP 未初始化时才需要管理员执行："
+                f"{windows_install_command()}",
                 backend=backend,
             )
     return SandboxDiagnostics("ready", None, f"沙盒可用（{backend}）。", backend=backend)

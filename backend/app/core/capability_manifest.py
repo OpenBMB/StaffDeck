@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 from typing import Any
 
 from sqlmodel import Session, select
@@ -66,17 +65,6 @@ class CapabilityManifestBuilder:
         register_command_tools(builtin_registry)
         for spec in builtin_registry.specs():
             is_command = spec.name == "exec_command"
-            if is_command and sys.platform == "win32":
-                unavailable.append(
-                    _unavailable(
-                        "builtin.command.exec_command",
-                        spec.name,
-                        "file",
-                        "general",
-                        "Windows 不支持 Bash exec_command，请使用 Python 通用技能或 PowerShell 适配器。",
-                    )
-                )
-                continue
             available.append(
                 CapabilityDescriptor(
                     capability_id=(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -34,6 +35,66 @@ from app.harness.sandbox import (
 from app.security.managed_subprocess import ManagedProcess, ManagedProcessError
 
 _BASH_PATH = "/bin/bash"
+_WINDOWS_POWERSHELL = "powershell.exe"
+_WINDOWS_DENIED_COMMANDS = {
+    "bash",
+    "bash.exe",
+    "cmd",
+    "cmd.exe",
+    "cscript",
+    "cscript.exe",
+    "diskpart",
+    "format",
+    "format-volume",
+    "icacls",
+    "iex",
+    "invoke-command",
+    "invoke-expression",
+    "mshta",
+    "mshta.exe",
+    "new-service",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
+    "reg",
+    "reg.exe",
+    "register-scheduledtask",
+    "remove-item",
+    "restart-computer",
+    "rundll32",
+    "rundll32.exe",
+    "sc",
+    "sc.exe",
+    "schtasks",
+    "schtasks.exe",
+    "set-service",
+    "sh",
+    "sh.exe",
+    "shutdown",
+    "shutdown.exe",
+    "start-job",
+    "start-process",
+    "start-service",
+    "stop-computer",
+    "stop-service",
+    "takeown",
+    "takeown.exe",
+    "wscript",
+    "wscript.exe",
+}
+_WINDOWS_COMMAND_START = re.compile(
+    r"(?im)(?:^|[;&\n|])\s*(?:&\s*)?['\"]?([a-z][a-z0-9_.-]*)['\"]?(?=\s|$)"
+)
+_WINDOWS_ABSOLUTE_PATH = re.compile(
+    r"(?i)(?:\b[a-z]:[\\/]|(?<![:/a-z0-9_])/(?:[^/\s]|$)|\\\\|~[\\/])"
+)
+_WINDOWS_PARENT_PATH = re.compile(r"(?:^|[\\/\s\"'=:(])\.\.(?:[\\/\s\"')]|$)")
+_WINDOWS_PROFILE_EXPANSION = re.compile(
+    r"(?i)(?:\$env:(?:userprofile|homedrive|homepath|appdata|localappdata|programdata)\b"
+    r"|\$(?:userprofile|home|profile|pshome|psscriptroot)\b"
+    r"|%[a-z_][a-z0-9_]*%)"
+)
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _MAX_TIMEOUT_SECONDS = 120.0
 _DEFAULT_OUTPUT_BYTES = 32 * 1024
@@ -195,9 +256,9 @@ def exec_command(
     context: HarnessToolContext,
     arguments: BaseModel,
 ) -> dict[str, Any]:
-    """Execute one bounded command in a fail-closed OS process sandbox.
+    """Execute one bounded platform-shell program in a fail-closed OS sandbox.
 
-    The model supplies only the Bash program. Every process argument that
+    The model supplies only the shell program. Every process argument that
     creates the sandbox is trusted and passed separately to ``subprocess``.
     There is deliberately no unsandboxed fallback.
     """
@@ -205,11 +266,9 @@ def exec_command(
     args = _as_exec_arguments(arguments)
     command = args.command.strip()
     if sys.platform == "win32":
-        raise HarnessExecutionError(
-            "SANDBOX_UNSUPPORTED",
-            "Windows 当前不支持 Bash exec_command；请使用 Python 通用技能或 PowerShell 适配器。",
-        )
-    _validate_command(command)
+        _validate_windows_command(command)
+    else:
+        _validate_command(command)
     workspace = _prepare_workspace(context)
     backend = available_backend()
     # Keep the existing Bubblewrap seam patchable for unit tests and Linux
@@ -222,7 +281,14 @@ def exec_command(
         else:
             backend = "bubblewrap"
     if backend is None:
-        backend = require_backend()
+        backend = "unsandboxed" if sys.platform == "win32" else require_backend()
+    elif backend == "srt":
+        try:
+            ensure_backend_usable(backend)
+        except HarnessExecutionError:
+            if sys.platform != "win32":
+                raise
+            backend = "unsandboxed"
     else:
         ensure_backend_usable(backend)
     command = _command_for_sandbox_workspace(command, backend)
@@ -234,7 +300,9 @@ def exec_command(
     sandbox_temp: tempfile.TemporaryDirectory[str] | None = None
     sandbox_temp_path: Path | None = None
     try:
-        if backend == "srt":
+        if backend == "unsandboxed":
+            argv = _unsandboxed_argv(command)
+        elif backend == "srt":
             sandbox_temp = _create_srt_temp_directory()
             sandbox_temp_path = Path(sandbox_temp.name)
             settings_path = _write_srt_settings(
@@ -309,10 +377,14 @@ def register_command_tools(registry: HarnessRegistry) -> HarnessRegistry:
     registry.register(
         name="exec_command",
         description=(
-            "Run a bounded Bash script, including multiple newline-separated "
+            "Run a bounded platform shell script, including multiple newline-separated "
             "statements, inside this TaskFrame workspace. "
-            "The selected OS sandbox makes only this workspace writable and applies "
-            "the tenant's configured network policy."
+            "Linux and macOS use Bash; Windows uses PowerShell. The selected OS "
+            "sandbox makes only this workspace writable and applies the tenant's "
+            "configured network policy. On Windows do not use Bash syntax (heredoc, "
+            "python3, py -3, or bash chaining); use PowerShell statements. In a "
+            "packaged Windows build, python/python3 resolve to the bundled runtime; "
+            "in source deployments, use the General Skill Python runtime."
         ),
         argument_model=ExecCommandArguments,
         handler=exec_command,
@@ -359,15 +431,29 @@ def run_sandboxed_process(
         else:
             backend = "bubblewrap"
     if backend is None:
-        backend = require_backend()
+        backend = "unsandboxed" if sys.platform == "win32" else require_backend()
+    elif backend == "srt":
+        try:
+            ensure_backend_usable(backend)
+        except HarnessExecutionError:
+            if sys.platform != "win32":
+                raise
+            backend = "unsandboxed"
+    if backend == "unsandboxed":
+        process_argv = [str(item) for item in argv]
+        process_env = dict(env or {})
+        host_cwd = (cwd or workspace).resolve()
     else:
-        ensure_backend_usable(backend)
-    execution = SandboxExecutionContext.create(workspace, backend)
-    process_argv = execution.map_argv([str(item) for item in argv])
-    process_env = execution.map_env(env, path_keys=env_path_keys)
-    host_cwd = execution.host_cwd(cwd)
+        execution = SandboxExecutionContext.create(workspace, backend)
+        process_argv = execution.map_argv([str(item) for item in argv])
+        process_env = execution.map_env(env, path_keys=env_path_keys)
+        host_cwd = execution.host_cwd(cwd)
     if stdin_json is not None:
-        mapped_payload = execution.map_payload(stdin_json, path_keys=stdin_path_keys)
+        mapped_payload = (
+            stdin_json
+            if backend == "unsandboxed"
+            else execution.map_payload(stdin_json, path_keys=stdin_path_keys)
+        )
         stdin_bytes = json.dumps(mapped_payload, ensure_ascii=False).encode("utf-8")
     command = (
         subprocess.list2cmdline(process_argv)
@@ -377,7 +463,9 @@ def run_sandboxed_process(
     settings_path: Path | None = None
     sandbox_temp: tempfile.TemporaryDirectory[str] | None = None
     try:
-        if backend == "srt":
+        if backend == "unsandboxed":
+            sandbox_argv = process_argv
+        elif backend == "srt":
             sandbox_temp = _create_srt_temp_directory()
             sandbox_temp_path = Path(sandbox_temp.name)
             process_env["TMPDIR"] = str(sandbox_temp_path)
@@ -592,6 +680,9 @@ def _write_srt_settings(
             )
         )
     allow_read = [str(workspace.resolve())]
+    runtime_root = _bundled_runtime_root()
+    if runtime_root is not None:
+        allow_read.append(str(runtime_root))
     allow_write = ["."]
     if sandbox_temp is not None:
         resolved_temp = str(sandbox_temp.resolve(strict=True))
@@ -652,7 +743,7 @@ def _srt_argv(*, settings_path: Path, command: str) -> list[str]:
         raise HarnessExecutionError("SANDBOX_UNAVAILABLE", "SRT executable is unavailable.")
     node, cli = resolved
     if sys.platform == "win32":
-        shell_args = ["-c", command]
+        shell_args = ["-c", _windows_powershell_command(command)]
     else:
         shell_args = [_BASH_PATH, "--noprofile", "--norc", "-c", command]
     return [
@@ -662,6 +753,44 @@ def _srt_argv(*, settings_path: Path, command: str) -> list[str]:
         str(settings_path),
         *shell_args,
     ]
+
+
+def _windows_powershell_command(command: str) -> str:
+    # Windows PowerShell inherits the machine code page for redirected output;
+    # force UTF-8 so the harness' UTF-8 decoder preserves non-ASCII results.
+    runtime_alias = ""
+    runtime = _bundled_runtime_root()
+    if runtime is not None:
+        python_path = str(runtime / "python.exe").replace("'", "''")
+        runtime_alias = (
+            f"$staffdeckPython = '{python_path}'\n"
+            "function Invoke-StaffDeckPython { & $staffdeckPython @args }\n"
+            "Set-Alias -Name python -Value Invoke-StaffDeckPython\n"
+            "Set-Alias -Name python3 -Value Invoke-StaffDeckPython\n"
+        )
+    script = (
+        "$OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+        "[Console]::OutputEncoding = $OutputEncoding\n"
+        f"{runtime_alias}"
+        f"{command}"
+    )
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    return f"{_WINDOWS_POWERSHELL} -NoProfile -NonInteractive -EncodedCommand {encoded}"
+
+
+def _unsandboxed_argv(command: str) -> list[str]:
+    if sys.platform == "win32":
+        encoded = _windows_powershell_command(command).split()[-1]
+        return [_WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    return [_BASH_PATH, "--noprofile", "--norc", "-c", command]
+
+
+def _bundled_runtime_root() -> Path | None:
+    """Return the frozen app's bundled Python directory, when present."""
+    if sys.platform != "win32":
+        return None
+    root = Path(sys.executable).resolve().parent / "runtime"
+    return root if (root / "python.exe").is_file() else None
 
 
 def _bubblewrap_argv(
@@ -986,6 +1115,51 @@ def _validate_command(command: str) -> None:
             raise _command_denied(f"Dangerous command is not allowed: {executable}")
 
     _validate_command_specific_arguments(words)
+
+
+def _validate_windows_command(command: str) -> None:
+    if not command or not command.strip():
+        raise _command_denied("Command cannot be empty.")
+    if "\x00" in command:
+        raise _command_denied("Command cannot contain a null byte.")
+    if any(
+        ord(character) < 0x20 and character not in {"\t", "\n", "\r"}
+        for character in command
+    ):
+        raise _command_denied("Command contains an unsupported control character.")
+    if len(command) > _MAX_COMMAND_CHARS:
+        raise _command_denied("Command exceeds the maximum length.")
+    if re.search(r"(?m)(?:^|\n)\s*<<\s*['\"]?", command):
+        raise _command_denied(
+            "Bash heredoc syntax is not supported on Windows PowerShell. "
+            "Use write_file/General Skill for Python files, or a PowerShell here-string."
+        )
+    if "&&" in command:
+        raise _command_denied(
+            "Bash command chaining (&&) is not supported by this Windows PowerShell. "
+            "Use newline-separated PowerShell statements or ';'."
+        )
+    if re.search(r"(?im)(?:^|[;&|\n])\s*py(?:\.exe)?(?:\s|$)", command):
+        raise _command_denied(
+            "py is not the bundled Python runtime on Windows. "
+            "Use the General Skill Python runtime for Python execution."
+        )
+    if _WINDOWS_PARENT_PATH.search(command):
+        raise _command_denied("Parent-directory traversal is not allowed.")
+    if _WINDOWS_ABSOLUTE_PATH.search(command):
+        raise _command_denied("Absolute and home-relative paths are not allowed.")
+    if _WINDOWS_PROFILE_EXPANSION.search(command):
+        raise _command_denied("Host profile path expansion is not allowed.")
+
+    commands = {
+        match.group(1).casefold()
+        for match in _WINDOWS_COMMAND_START.finditer(command)
+    }
+    denied = sorted(commands & _WINDOWS_DENIED_COMMANDS)
+    if denied:
+        raise _command_denied(
+            f"Dangerous or nested shell command is not allowed: {denied[0]}"
+        )
 
 
 def _validate_command_specific_arguments(words: list[str]) -> None:

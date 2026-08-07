@@ -352,7 +352,7 @@ export type UIConfigRead = {
   sandbox_backend?: string | null;
   sandbox_setup_required?: boolean;
   sandbox_setup_instructions?: string | null;
-  sandbox_status?: 'ready' | 'unavailable';
+  sandbox_status?: 'ready' | 'unavailable' | 'degraded';
   sandbox_status_code?: string | null;
   sandbox_status_message?: string | null;
   sandbox_status_remediation?: string | null;
