@@ -98,11 +98,11 @@ class APIClient(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("apiclient"), primary_key=True)
     tenant_id: str = Field(index=True)
     name: str
-    description: Optional[str] = None
-    scopes_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+    scopes_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     status: str = Field(default="active", index=True)
     created_by_user_id: Optional[str] = Field(default=None, index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -122,7 +122,7 @@ class APICredential(SQLModel, table=True):
     name: str
     key_prefix: str = Field(index=True)
     key_digest: str
-    scopes_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    scopes_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     status: str = Field(default="active", index=True)
     expires_at: Optional[datetime] = Field(default=None, index=True)
     last_used_at: Optional[datetime] = Field(default=None, index=True)
@@ -148,7 +148,7 @@ class APIIdempotencyRecord(SQLModel, table=True):
     idempotency_key: str = Field(index=True)
     request_hash: str
     status_code: int = 200
-    response_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    response_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     resource_id: Optional[str] = Field(default=None, index=True)
     expires_at: datetime = Field(index=True)
     created_at: datetime = Field(default_factory=utc_now)
@@ -166,9 +166,9 @@ class APIJob(SQLModel, table=True):
     status: str = Field(default="queued", index=True)
     stage: str = Field(default="queued", index=True)
     progress: float = 0.0
-    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     cancel_requested: bool = False
     retryable: bool = False
     execution_owner: Optional[str] = Field(default=None, index=True)
@@ -192,7 +192,7 @@ class APIJobEvent(SQLModel, table=True):
     job_id: str = Field(index=True)
     sequence: int = Field(index=True)
     event_type: str = Field(index=True)
-    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     public: bool = True
     created_at: datetime = Field(default_factory=utc_now)
 
@@ -256,7 +256,7 @@ class WebhookEndpoint(SQLModel, table=True):
     name: str
     url: str
     secret_encrypted: str
-    events_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    events_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     status: str = Field(default="active", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -273,14 +273,14 @@ class WebhookDelivery(SQLModel, table=True):
     endpoint_id: str = Field(index=True)
     event_id: str = Field(index=True)
     event_type: str = Field(index=True)
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     status: str = Field(default="queued", index=True)
     delivery_owner: Optional[str] = Field(default=None, index=True)
     lease_expires_at: Optional[datetime] = Field(default=None, index=True)
     attempt_count: int = 0
     next_attempt_at: Optional[datetime] = Field(default=None, index=True)
     last_status_code: Optional[int] = None
-    last_error: Optional[str] = None
+    last_error: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     delivered_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=utc_now)
@@ -302,7 +302,7 @@ class ExternalSessionBinding(SQLModel, table=True):
     external_session_id: str = Field(index=True)
     external_user_id: Optional[str] = Field(default=None, index=True)
     session_id: str = Field(index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -316,11 +316,11 @@ class APISOPDraft(SQLModel, table=True):
     skill_id: str = Field(index=True)
     base_version: Optional[str] = Field(default=None, index=True)
     draft_version: str = Field(index=True)
-    content_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+    content_json: dict[str, Any] = Field(sa_column=Column(PortableJSON, nullable=False))
     status: str = Field(default="draft", index=True)
     source: str = Field(default="structured", index=True)
-    warnings_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    validation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    warnings_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    validation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     etag: str = Field(index=True)
     created_by_credential_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
@@ -693,8 +693,8 @@ class UIConfig(SQLModel, table=True):
     agent_loop_max_actions: int = 32
     sandbox_enabled: bool = False
     sandbox_network_mode: str = Field(default="all")
-    sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    harness_storage_path: Optional[str] = None
+    sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    harness_storage_path: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1209,15 +1209,15 @@ class HarnessTaskFrameRecord(SQLModel, table=True):
     sequence: int = 0
     skill_id: Optional[str] = Field(default=None, index=True)
     step_id: Optional[str] = Field(default=None, index=True)
-    user_intent: Optional[str] = None
-    requirements_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    slots_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    depends_on_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    user_intent: Optional[str] = Field(default=None, sa_column=Column(Text))
+    requirements_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    slots_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    depends_on_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     task_requirement_json: dict[str, Any] = Field(
-        default_factory=dict, sa_column=Column(JSON)
+        default_factory=dict, sa_column=Column(PortableJSON)
     )
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     state_version: int = 1
     attempt_no: int = 0
     lease_owner: Optional[str] = Field(default=None, index=True)
@@ -1241,12 +1241,12 @@ class HarnessRunRecord(SQLModel, table=True):
     lease_expires_at: Optional[datetime] = Field(default=None, index=True)
     action_count: int = 0
     task_requirement_json: dict[str, Any] = Field(
-        default_factory=dict, sa_column=Column(JSON)
+        default_factory=dict, sa_column=Column(PortableJSON)
     )
     capability_snapshot_json: dict[str, Any] = Field(
-        default_factory=dict, sa_column=Column(JSON)
+        default_factory=dict, sa_column=Column(PortableJSON)
     )
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -1277,11 +1277,11 @@ class HarnessTurnRecord(SQLModel, table=True):
     user_message_id: Optional[str] = Field(default=None, index=True)
     response_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(PortableJSON),
     )
     error_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(PortableJSON),
     )
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: Optional[datetime] = None
@@ -1333,13 +1333,13 @@ class HarnessInvocationRecord(SQLModel, table=True):
     )
     replayed_from_invocation_id: Optional[str] = Field(default=None, index=True)
     status: str = Field(default="started", index=True)
-    arguments_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    arguments_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     response_cache_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(PortableJSON),
     )
-    approval_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    approval_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
