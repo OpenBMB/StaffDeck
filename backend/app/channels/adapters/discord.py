@@ -230,7 +230,7 @@ class DiscordStreamManager:
         db_engine=None,
         client_factory: Callable[..., Any] | None = None,
     ) -> None:
-        from app.db.engine import engine
+        from app.db import engine
 
         self._engine = db_engine or engine
         # client_factory(bot_token, on_message) -> 已挂载回调的 discord.Client 实例
