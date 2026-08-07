@@ -378,7 +378,7 @@ class DiscordStreamManager:
         if start:
             self.ensure_binding(binding_id)
 
-    def wait_binding_stopped(self, binding_id: str, *, timeout_seconds: float = 5.0) -> bool:
+    def wait_binding_stopped(self, binding_id: str, timeout_seconds: float = 5.0) -> bool:
         with self._lock:
             thread = self._threads.get(binding_id)
         if thread is None:
