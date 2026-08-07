@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tarfile
 import urllib.request
+import urllib.error
+import time
 from pathlib import Path
 
 for stream in (sys.stdout, sys.stderr):
@@ -47,6 +49,32 @@ def _machine() -> str:
     return machine
 
 
+def _download(url: str, destination: Path, *, attempts: int = 5) -> None:
+    """Download a release asset with retries for transient GitHub 5xx errors."""
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "StaffDeck-runtime-fetch/1.0", "Accept": "application/octet-stream"},
+            )
+            with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as output:
+                while chunk := response.read(1024 * 1024):
+                    output.write(chunk)
+            temporary.replace(destination)
+            return
+        except (OSError, urllib.error.HTTPError) as error:
+            last_error = error
+            temporary.unlink(missing_ok=True)
+            if attempt == attempts:
+                break
+            delay = min(30, 2 ** (attempt - 1))
+            print(f"下载暂时失败（第 {attempt}/{attempts} 次）：{error}；{delay}s 后重试", file=sys.stderr)
+            time.sleep(delay)
+    raise RuntimeError(f"下载运行时失败（重试 {attempts} 次）：{url}: {last_error}") from last_error
+
+
 def main(argv: list[str]) -> int:
     dest = argv[0]
     expect_arch = None
@@ -71,7 +99,7 @@ def main(argv: list[str]) -> int:
     dest_dir.mkdir(parents=True, exist_ok=True)
     tgz = dest_dir / asset
     print(f"下载 {BASE}/{asset} ...")
-    urllib.request.urlretrieve(f"{BASE}/{asset}", tgz)
+    _download(f"{BASE}/{asset}", tgz)
     with tarfile.open(tgz) as tar:
         tar.extractall(dest_dir)
     py = dest_dir / "python" / ("python.exe" if key[0] == "Windows" else "bin/python3")
