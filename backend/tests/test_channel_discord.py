@@ -423,3 +423,11 @@ def test_discord_wait_binding_stopped_accepts_positional_timeout():
     # 位置参数形式（与 channels/__init__.py:230 一致）不应抛 TypeError
     result = manager.wait_binding_stopped("chan-none", 0.1)
     assert result is True
+
+
+def test_discord_hub_wait_binding_ingress_stopped_discord_branch():
+    """hub 层 wait_binding_ingress_stopped("discord", ...) 以位置参数走 discord 分支（__init__.py:230）。"""
+    from app.channels import wait_binding_ingress_stopped
+
+    result = wait_binding_ingress_stopped("discord", "chan-none", 0.1)
+    assert result is True
