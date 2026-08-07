@@ -192,6 +192,8 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
             return
         if binding.channel == "feishu":
             valid_target = bool(target.get("message_id") or target.get("receive_id"))
+        elif binding.channel == "discord":
+            valid_target = bool(target.get("channel_id"))
         else:
             valid_target = bool(target.get("to_user_id") and target.get("context_token"))
         if not valid_target:
