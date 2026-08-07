@@ -224,6 +224,18 @@ def _migrate_sqlite_skill_schema() -> None:
                 )
             )
 
+        if "agent_profiles" in tables:
+            agent_columns = {
+                column["name"] for column in inspector.get_columns("agent_profiles")
+            }
+            if "harness_max_actions" not in agent_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE agent_profiles ADD COLUMN harness_max_actions "
+                        "INTEGER NOT NULL DEFAULT 32"
+                    )
+                )
+
         if "ui_configs" in tables:
             ui_columns = {column["name"] for column in inspector.get_columns("ui_configs")}
             if "reflection_max_rounds" not in ui_columns:
@@ -2204,11 +2216,11 @@ def _seed_default_agents(conn, tables: set[str]) -> None:
                     """
                     INSERT INTO agent_profiles (
                         id, tenant_id, name, description, persona_prompt, is_overall,
-                        status, metadata_json, created_at, updated_at
+                        harness_max_actions, status, metadata_json, created_at, updated_at
                     )
                     VALUES (
                         :id, :tenant_id, :name, :description, NULL, :is_overall,
-                        'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        32, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                     )
                     """
                 ),

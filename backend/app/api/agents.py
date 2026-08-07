@@ -150,6 +150,7 @@ def create_agent(
         persona_prompt=request.persona_prompt,
         is_overall=request.is_overall,
         status="active",
+        harness_max_actions=request.harness_max_actions,
         metadata_json=_metadata_with_creator(request.metadata or {}, user),
     )
     db.add(row)
@@ -388,6 +389,8 @@ def update_agent(
         row.persona_prompt = request.persona_prompt
     if request.status is not None:
         row.status = request.status
+    if request.harness_max_actions is not None:
+        row.harness_max_actions = request.harness_max_actions
     if request.metadata is not None:
         row.metadata_json = _metadata_preserving_creator(
             row.metadata_json or {}, request.metadata, user
@@ -939,6 +942,7 @@ def agent_read(
         persona_prompt=row.persona_prompt,
         is_overall=row.is_overall,
         status=row.status,
+        harness_max_actions=max(1, min(int(row.harness_max_actions or 32), 100)),
         metadata=metadata,
         resources=[binding_read(binding) for binding in bindings],
         created_at=row.created_at.isoformat(),

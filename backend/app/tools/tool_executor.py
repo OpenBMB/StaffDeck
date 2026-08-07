@@ -38,6 +38,7 @@ class ToolExecutor:
         tool_call: ToolCall,
         active_skill_id: str | None = None,
         agent_id: str | None = None,
+        timeout_seconds_override: float | None = None,
     ) -> ToolResult:
         with self.db.no_autoflush:
             tool = self.db.exec(
@@ -60,7 +61,11 @@ class ToolExecutor:
             return self._error(tool.name, "NOT_ALLOWED", "当前技能不允许调用该工具。")
 
         if (tool.tool_type or "http") == "mcp":
-            return self._execute_mcp_tool(tool, tool_call.arguments)
+            return self._execute_mcp_tool(
+                tool,
+                tool_call.arguments,
+                timeout_seconds_override=timeout_seconds_override,
+            )
         if (tool.tool_type or "http") != "http":
             return self._error(
                 tool.name, "UNSUPPORTED_TOOL_TYPE", f"不支持的工具类型：{tool.tool_type}"
@@ -70,7 +75,10 @@ class ToolExecutor:
             tool.url,
             self._resolve_headers(tool.headers_json or {}, tool.auth_json or {}),
         )
-        policy = self._execution_policy(tool)
+        policy = self._execution_policy(
+            tool,
+            timeout_seconds_override=timeout_seconds_override,
+        )
         try:
             with httpx.Client(timeout=policy.timeout_seconds) as client:
                 if tool.method.upper() == "GET":
@@ -104,10 +112,19 @@ class ToolExecutor:
         except Exception as exc:
             return self._error(tool.name, "EXECUTION_ERROR", str(exc))
 
-    def _execute_mcp_tool(self, tool: Tool, arguments: dict[str, Any]) -> ToolResult:
+    def _execute_mcp_tool(
+        self,
+        tool: Tool,
+        arguments: dict[str, Any],
+        *,
+        timeout_seconds_override: float | None = None,
+    ) -> ToolResult:
         try:
             config, tool_name = self._resolve_mcp_config(tool)
-            policy = self._execution_policy(tool)
+            policy = self._execution_policy(
+                tool,
+                timeout_seconds_override=timeout_seconds_override,
+            )
             data = execute_mcp_tool(
                 config,
                 arguments,
@@ -120,7 +137,12 @@ class ToolExecutor:
         except Exception as exc:
             return self._error(tool.name, "MCP_EXECUTION_ERROR", str(exc))
 
-    def _execution_policy(self, tool: Tool) -> ToolExecutionPolicy:
+    def _execution_policy(
+        self,
+        tool: Tool,
+        *,
+        timeout_seconds_override: float | None = None,
+    ) -> ToolExecutionPolicy:
         execution = (tool.config_json or {}).get("execution")
         raw_timeout = execution.get("timeout_seconds") if isinstance(execution, dict) else None
         try:
@@ -129,6 +151,8 @@ class ToolExecutor:
             timeout_seconds = self.settings.tool_timeout_seconds
         if not 1 <= timeout_seconds <= 300:
             timeout_seconds = self.settings.tool_timeout_seconds
+        if timeout_seconds_override is not None:
+            timeout_seconds = min(timeout_seconds, max(float(timeout_seconds_override), 0.1))
         return ToolExecutionPolicy(timeout_seconds=timeout_seconds)
 
     def _resolve_mcp_config(self, tool: Tool) -> tuple[dict[str, Any], str | None]:

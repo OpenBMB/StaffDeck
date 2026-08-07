@@ -55,9 +55,7 @@ class CapabilityManifestBuilder:
         step_id: str | None,
     ) -> CapabilityManifest:
         if agent_id and get_agent(self.db, tenant_id, agent_id) is None:
-            raise CapabilityAuthorizationError(
-                "当前员工不存在、已归档或不属于该租户。"
-            )
+            raise CapabilityAuthorizationError("当前员工不存在、已归档或不属于该租户。")
         refs = current_step_capability_refs(skill, step_id)
         available: list[CapabilityDescriptor] = []
         unavailable: list[CapabilityDescriptor] = []
@@ -82,34 +80,22 @@ class CapabilityManifestBuilder:
             available.append(
                 CapabilityDescriptor(
                     capability_id=(
-                        f"builtin.command.{spec.name}"
-                        if is_command
-                        else f"builtin.fs.{spec.name}"
+                        f"builtin.command.{spec.name}" if is_command else f"builtin.fs.{spec.name}"
                     ),
                     name=spec.name,
                     kind="file",
                     description=spec.description,
                     input_schema=dict(spec.input_schema),
                     metadata={
-                        "provider": (
-                            "builtin.command" if is_command else "builtin.fs"
-                        ),
+                        "provider": ("builtin.command" if is_command else "builtin.fs"),
                         "side_effect": spec.side_effect,
-                        **(
-                            {"sandbox": available_backend() or "unavailable"}
-                            if is_command
-                            else {}
-                        ),
+                        **({"sandbox": available_backend() or "unavailable"} if is_command else {}),
                     },
                 )
             )
 
         visible_general = _visible_general_skills(self.db, tenant_id, agent_id)
-        general_by_ref = {
-            ref: row
-            for row in visible_general
-            for ref in (row.id, row.slug)
-        }
+        general_by_ref = {ref: row for row in visible_general for ref in (row.id, row.slug)}
         for row in visible_general:
             scope = _scope(row)
             if scope is None:
@@ -124,8 +110,7 @@ class CapabilityManifestBuilder:
                 )
                 continue
             explicitly_allowed = any(
-                general_by_ref.get(ref) is row
-                for ref in refs["general_skill_ids"]
+                general_by_ref.get(ref) is row for ref in refs["general_skill_ids"]
             )
             if scope == "sop_specific" and not explicitly_allowed:
                 continue
@@ -168,14 +153,8 @@ class CapabilityManifestBuilder:
                 )
             )
 
-        visible_tools = visible_tool_rows(
-            self.db, tenant_id, agent_id, include_inactive=False
-        )
-        tool_by_ref = {
-            ref: row
-            for row in visible_tools
-            for ref in (row.id, row.name)
-        }
+        visible_tools = visible_tool_rows(self.db, tenant_id, agent_id, include_inactive=False)
+        tool_by_ref = {ref: row for row in visible_tools for ref in (row.id, row.name)}
         for row in visible_tools:
             scope = _scope(row)
             if scope is None:
@@ -189,9 +168,7 @@ class CapabilityManifestBuilder:
                     )
                 )
                 continue
-            explicitly_allowed = any(
-                tool_by_ref.get(ref) is row for ref in refs["tool_ids"]
-            )
+            explicitly_allowed = any(tool_by_ref.get(ref) is row for ref in refs["tool_ids"])
             if scope == "sop_specific" and not explicitly_allowed:
                 continue
             if row.allowed_skills_json and (
@@ -291,9 +268,7 @@ class CapabilityManifestBuilder:
                     },
                     metadata={
                         "allowed_knowledge_base_ids": allowed_knowledge_ids,
-                        "allowed_knowledge_base_version_ids": (
-                            allowed_knowledge_version_ids
-                        ),
+                        "allowed_knowledge_base_version_ids": (allowed_knowledge_version_ids),
                         "knowledge_version_by_base_id": knowledge_version_by_base_id,
                         "knowledge_scope_by_base_id": knowledge_scope_by_base_id,
                     },
@@ -333,9 +308,7 @@ class CapabilityManifestBuilder:
                         ref,
                         "general_skill",
                         "sop_specific",
-                        _explicit_reason(
-                            self.db.get(GeneralSkill, ref), tenant_id
-                        ),
+                        _explicit_reason(self.db.get(GeneralSkill, ref), tenant_id),
                     )
                 )
         for ref in refs["tool_ids"]:
@@ -516,9 +489,7 @@ def _visible_general_skills(
         return []
     if not agent or agent.is_overall:
         return [
-            row
-            for row in rows
-            if is_open_gallery_resource(db, tenant_id, "general_skill", row)
+            row for row in rows if is_open_gallery_resource(db, tenant_id, "general_skill", row)
         ]
     bindings = db.exec(
         select(AgentResourceBinding).where(
@@ -573,21 +544,21 @@ def _snapshot_revision(
 ) -> str:
     def stable_key(item: CapabilityDescriptor) -> tuple[str, str, str]:
         return (item.kind, item.name, item.capability_id)
+
     payload = {
-        "available": [
-            item.model_dump(mode="json")
-            for item in sorted(available, key=stable_key)
-        ],
+        "available": [item.model_dump(mode="json") for item in sorted(available, key=stable_key)],
         "unavailable": [
-            item.model_dump(mode="json")
-            for item in sorted(unavailable, key=stable_key)
+            item.model_dump(mode="json") for item in sorted(unavailable, key=stable_key)
         ],
     }
-    return "sha256:" + hashlib.sha256(
-        json.dumps(
-            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+    )
 
 
 def _available_invocation_name(

@@ -12,7 +12,13 @@ from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
 from app.skills.llm_limits import skill_model_config
 from app.skills.skill_reflection import reflect_skill_response, reflect_skill_response_stream
-from app.skills.skill_schema import SkillDistillRequest, SkillDistillResponse, SkillCard, SkillGraphNode, ToolSuggestion
+from app.skills.skill_schema import (
+    SkillDistillRequest,
+    SkillDistillResponse,
+    SkillCard,
+    SkillGraphNode,
+    ToolSuggestion,
+)
 from app.skills.step_ids import ensure_unique_node_ids, skill_card_with_unique_step_ids
 
 
@@ -47,10 +53,14 @@ FINAL_RESPONSE_INSTRUCTION_SUFFIX = "给用户明确最终回复；无法闭环�
 
 
 class SkillDistiller:
-    def distill(self, request: SkillDistillRequest, model_config: ModelConfig) -> SkillDistillResponse:
+    def distill(
+        self, request: SkillDistillRequest, model_config: ModelConfig
+    ) -> SkillDistillResponse:
         return self._generate_response(request, model_config)
 
-    def distill_stream(self, request: SkillDistillRequest, model_config: ModelConfig) -> SkillDistillResponse:
+    def distill_stream(
+        self, request: SkillDistillRequest, model_config: ModelConfig
+    ) -> SkillDistillResponse:
         return self._generate_response(request, model_config)
 
     def stream_text(self, request: SkillDistillRequest, model_config: ModelConfig):
@@ -69,13 +79,20 @@ class SkillDistiller:
         except (LLMError, json.JSONDecodeError, TypeError, ValueError) as exc:
             try:
                 yield {"event": "status", "data": {"text": "模型输出需要修复，正在重试"}}
-                response = self._repair_response(client, prompt, payload, "".join(chunks), str(exc), request)
+                response = self._repair_response(
+                    client, prompt, payload, "".join(chunks), str(exc), request
+                )
             except (LLMError, json.JSONDecodeError, TypeError, ValueError) as repair_exc:
                 try:
                     yield {"event": "status", "data": {"text": "模型修复失败，改用分段生成"}}
-                    response = self._staged_response(client, prompt, payload, request, str(repair_exc))
+                    response = self._staged_response(
+                        client, prompt, payload, request, str(repair_exc)
+                    )
                 except (LLMError, json.JSONDecodeError, TypeError, ValueError) as staged_exc:
-                    yield {"event": "status", "data": {"text": "模型多轮生成失败，使用最低可运行草稿"}}
+                    yield {
+                        "event": "status",
+                        "data": {"text": "模型多轮生成失败，使用最低可运行草稿"},
+                    }
                     response = self._fallback_response(
                         request, f"模型多轮生成未能完成，已使用最低可运行草稿：{staged_exc}"
                     )
@@ -104,7 +121,9 @@ class SkillDistiller:
         yield {"event": "status", "data": {"text": "校验完成，已完成 Skill Card 结构化"}}
         yield {"event": "complete", "data": response.model_dump(mode="json")}
 
-    def _generate_response(self, request: SkillDistillRequest, model_config: ModelConfig) -> SkillDistillResponse:
+    def _generate_response(
+        self, request: SkillDistillRequest, model_config: ModelConfig
+    ) -> SkillDistillResponse:
         payload = self._payload(request)
         model_input = self._model_input(request, payload)
         prompt = PROMPT_PATH.read_text(encoding="utf-8")
@@ -118,7 +137,9 @@ class SkillDistiller:
                 response = self._repair_response(client, prompt, payload, output, str(exc), request)
             except (LLMError, json.JSONDecodeError, TypeError, ValueError) as repair_exc:
                 try:
-                    response = self._staged_response(client, prompt, payload, request, str(repair_exc))
+                    response = self._staged_response(
+                        client, prompt, payload, request, str(repair_exc)
+                    )
                 except (LLMError, json.JSONDecodeError, TypeError, ValueError) as staged_exc:
                     response = self._fallback_response(
                         request, f"模型多轮生成未能完成，已使用最低可运行草稿：{staged_exc}"
@@ -204,19 +225,26 @@ class SkillDistiller:
                     "target_node_index": index,
                     "target_node": node,
                     "generation_instruction": (
-                        "只扩写 target_node。输出 JSON：{\"node\": {...}, \"warnings\": [], "
-                        "\"tool_mentions\": []}。node 必须包含 node_id、type、name、instruction、"
-                        "expected_user_info、allowed_actions。不要输出完整技能。"
+                        '只扩写 target_node。输出 JSON：{"node": {...}, "warnings": [], '
+                        '"tool_mentions": []}。node 必须包含 node_id、type、name、instruction、'
+                        "expected_user_info、allowed_actions、capability_refs。capability_refs 中"
+                        "允许能力与 required_*_ids 强制能力必须区分；不要输出完整技能。"
                     ),
                 },
             )
             try:
                 node_raw = _raw_json_from_text(node_text)
-                node_data = node_raw.get("node") if isinstance(node_raw.get("node"), dict) else node_raw
+                node_data = (
+                    node_raw.get("node") if isinstance(node_raw.get("node"), dict) else node_raw
+                )
                 nodes[index] = SkillGraphNode.model_validate(node_data).model_dump(mode="json")
-                warnings.extend(str(item) for item in node_raw.get("warnings", []) if str(item).strip())
+                warnings.extend(
+                    str(item) for item in node_raw.get("warnings", []) if str(item).strip()
+                )
                 if isinstance(node_raw.get("tool_mentions"), list):
-                    tool_mentions.extend(item for item in node_raw["tool_mentions"] if isinstance(item, dict))
+                    tool_mentions.extend(
+                        item for item in node_raw["tool_mentions"] if isinstance(item, dict)
+                    )
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 warnings.append(f"模型未能扩写节点 {index + 1}，已保留大纲节点：{exc}")
 
@@ -267,7 +295,9 @@ class SkillDistiller:
             total_tool_count=len(request.available_tools),
         )
 
-    def _normalize_response(self, raw: dict[str, Any], request: SkillDistillRequest) -> SkillDistillResponse:
+    def _normalize_response(
+        self, raw: dict[str, Any], request: SkillDistillRequest
+    ) -> SkillDistillResponse:
         draft = raw.get("draft_skill") if isinstance(raw.get("draft_skill"), dict) else raw
         warnings = list(raw.get("warnings") or [])
         fallback = self._fallback_card(request)
@@ -286,8 +316,14 @@ class SkillDistiller:
             start_node_id = nodes[0]["node_id"]
             warnings.append("模型输出的 start_node_id 不存在，已改为第一个节点。")
         terminal_node_ids = _string_list(draft.get("terminal_node_ids"), fallback.terminal_node_ids)
-        terminal_node_ids = [node_id for node_id in terminal_node_ids if node_id in node_id_map] or [nodes[-1]["node_id"]]
-        raw_tool_mentions = raw.get("tool_mentions") if isinstance(raw.get("tool_mentions"), list) else raw.get("tool_suggestions")
+        terminal_node_ids = [
+            node_id for node_id in terminal_node_ids if node_id in node_id_map
+        ] or [nodes[-1]["node_id"]]
+        raw_tool_mentions = (
+            raw.get("tool_mentions")
+            if isinstance(raw.get("tool_mentions"), list)
+            else raw.get("tool_suggestions")
+        )
         tool_resolutions = _normalize_tool_suggestions(raw_tool_mentions, request, [])
         nodes, missing_tool_names = _remove_unknown_tool_actions(
             nodes,
@@ -304,13 +340,18 @@ class SkillDistiller:
             response_rules.append(CLOSED_LOOP_RESPONSE_RULE)
         if ADAPTIVE_FLOW_RESPONSE_RULE not in response_rules:
             response_rules.append(ADAPTIVE_FLOW_RESPONSE_RULE)
-        if _steps_declare_confirmation(nodes) and CONFIRMATION_FLOW_RESPONSE_RULE not in response_rules:
+        if (
+            _steps_declare_confirmation(nodes)
+            and CONFIRMATION_FLOW_RESPONSE_RULE not in response_rules
+        ):
             response_rules.append(CONFIRMATION_FLOW_RESPONSE_RULE)
         normalized = {
             "skill_id": _string(draft.get("skill_id"), fallback.skill_id),
             "name": _string(draft.get("name"), fallback.name),
             "version": _string(draft.get("version"), "1.0.0"),
-            "business_domain": _string(draft.get("business_domain"), fallback.business_domain or "general"),
+            "business_domain": _string(
+                draft.get("business_domain"), fallback.business_domain or "general"
+            ),
             "description": _string(draft.get("description"), fallback.description),
             "trigger_intents": _string_list(draft.get("trigger_intents"), fallback.trigger_intents),
             "user_utterance_examples": _string_list(
@@ -329,15 +370,23 @@ class SkillDistiller:
             "edges": edges,
             "start_node_id": start_node_id,
             "terminal_node_ids": terminal_node_ids,
-            "interruption_policy": _string_dict(draft.get("interruption_policy"), fallback.interruption_policy),
+            "interruption_policy": _string_dict(
+                draft.get("interruption_policy"), fallback.interruption_policy
+            ),
         }
-        draft_skill, card_warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(normalized))
+        draft_skill, card_warnings = skill_card_with_unique_step_ids(
+            SkillCard.model_validate(normalized)
+        )
         warnings.extend(card_warnings)
         if missing_tool_names:
-            tool_resolutions = _normalize_tool_suggestions(raw_tool_mentions, request, missing_tool_names)
+            tool_resolutions = _normalize_tool_suggestions(
+                raw_tool_mentions, request, missing_tool_names
+            )
         warnings.extend(_tool_resolution_warnings(tool_resolutions))
         tool_suggestions = [
-            item for item in tool_resolutions if item.resolution_status in {"existing", "new_candidate"}
+            item
+            for item in tool_resolutions
+            if item.resolution_status in {"existing", "new_candidate"}
         ]
         response = SkillDistillResponse(
             draft_skill=draft_skill,
@@ -385,7 +434,9 @@ class SkillDistiller:
 
         return normalized_nodes, warnings
 
-    def _normalize_nodes(self, value: Any, fallback_nodes: list[SkillGraphNode]) -> list[dict[str, Any]]:
+    def _normalize_nodes(
+        self, value: Any, fallback_nodes: list[SkillGraphNode]
+    ) -> list[dict[str, Any]]:
         if not isinstance(value, list):
             return [node.model_dump() for node in fallback_nodes]
         nodes: list[dict[str, Any]] = []
@@ -400,21 +451,31 @@ class SkillDistiller:
                     "name": _string(item.get("name"), fallback.name),
                     "instruction": _string(item.get("instruction"), fallback.instruction),
                     "optional": bool(item.get("optional", fallback.optional)),
-                    "condition": item.get("condition") if isinstance(item.get("condition"), str) else fallback.condition,
+                    "condition": item.get("condition")
+                    if isinstance(item.get("condition"), str)
+                    else fallback.condition,
                     "expected_user_info": _string_list(
                         item.get("expected_user_info"), fallback.expected_user_info
                     ),
                     "allowed_actions": _normalize_actions(
                         _string_list(item.get("allowed_actions"), fallback.allowed_actions)
                     ),
-                    "knowledge_scope": item.get("knowledge_scope") if isinstance(item.get("knowledge_scope"), dict) else fallback.knowledge_scope,
-                    "retry_policy": item.get("retry_policy") if isinstance(item.get("retry_policy"), dict) else fallback.retry_policy,
-                    "metadata": item.get("metadata") if isinstance(item.get("metadata"), dict) else fallback.metadata,
+                    "knowledge_scope": item.get("knowledge_scope")
+                    if isinstance(item.get("knowledge_scope"), dict)
+                    else fallback.knowledge_scope,
+                    "retry_policy": item.get("retry_policy")
+                    if isinstance(item.get("retry_policy"), dict)
+                    else fallback.retry_policy,
+                    "metadata": item.get("metadata")
+                    if isinstance(item.get("metadata"), dict)
+                    else fallback.metadata,
                 }
             )
         return nodes or [node.model_dump() for node in fallback_nodes]
 
-    def _normalize_edges(self, value: Any, nodes: list[dict[str, Any]], fallback_edges: list[Any]) -> list[dict[str, Any]]:
+    def _normalize_edges(
+        self, value: Any, nodes: list[dict[str, Any]], fallback_edges: list[Any]
+    ) -> list[dict[str, Any]]:
         node_ids = {str(node.get("node_id") or "") for node in nodes}
         edges: list[dict[str, Any]] = []
         if isinstance(value, list):
@@ -429,7 +490,9 @@ class SkillDistiller:
                     {
                         "source_node_id": source,
                         "next_node_id": target,
-                        "condition": item.get("condition") if isinstance(item.get("condition"), str) else None,
+                        "condition": item.get("condition")
+                        if isinstance(item.get("condition"), str)
+                        else None,
                         "priority": int(item.get("priority") or index),
                         "label": item.get("label") if isinstance(item.get("label"), str) else None,
                     }
@@ -454,8 +517,12 @@ class SkillDistiller:
             for index in range(len(nodes) - 1)
         ]
 
-    def _fallback_response(self, request: SkillDistillRequest, warning: str) -> SkillDistillResponse:
-        return SkillDistillResponse(draft_skill=self._fallback_card(request), warnings=_compact_warnings([warning]))
+    def _fallback_response(
+        self, request: SkillDistillRequest, warning: str
+    ) -> SkillDistillResponse:
+        return SkillDistillResponse(
+            draft_skill=self._fallback_card(request), warnings=_compact_warnings([warning])
+        )
 
     def _fallback_card(self, request: SkillDistillRequest) -> SkillCard:
         title = request.title.strip() or "新技能"
@@ -502,7 +569,14 @@ class SkillDistiller:
                 ADAPTIVE_FLOW_RESPONSE_RULE,
             ],
             nodes=nodes,
-            edges=[{"source_node_id": "understand_request", "next_node_id": "reply_result", "priority": 0, "label": "默认推进"}],
+            edges=[
+                {
+                    "source_node_id": "understand_request",
+                    "next_node_id": "reply_result",
+                    "priority": 0,
+                    "label": "默认推进",
+                }
+            ],
             start_node_id="understand_request",
             terminal_node_ids=["reply_result"],
             interruption_policy={
@@ -517,7 +591,9 @@ class SkillDistiller:
 def _steps_have_tool_action(steps: list[dict[str, Any]]) -> bool:
     for step in steps:
         actions = step.get("allowed_actions", [])
-        if isinstance(actions, list) and any(str(action).startswith("call_tool:") for action in actions):
+        if isinstance(actions, list) and any(
+            str(action).startswith("call_tool:") for action in actions
+        ):
             return True
     return False
 
@@ -557,7 +633,9 @@ def _attach_declared_confirmation_to_tool_steps(steps: list[dict[str, Any]]) -> 
                 confirmed_fields.append(field)
 
 
-def _append_tool_confirmation_instruction(step: dict[str, Any], confirmation_fields: list[str]) -> None:
+def _append_tool_confirmation_instruction(
+    step: dict[str, Any], confirmation_fields: list[str]
+) -> None:
     if not confirmation_fields:
         return
     field_text = "、".join(f"{field}=true" for field in confirmation_fields)
@@ -581,7 +659,9 @@ def _unique_step_id(steps: list[dict[str, Any]], base: str) -> str:
     return f"{base}_{index}"
 
 
-def _ensure_linear_reachability(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _ensure_linear_reachability(
+    nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     if len(nodes) < 2:
         return edges
     existing = {
@@ -622,7 +702,9 @@ def _unique_warnings(warnings: list[str]) -> list[str]:
 
 
 def _compact_warnings(warnings: list[str]) -> list[str]:
-    return _unique_warnings([_compact_warning(str(warning)) for warning in warnings if str(warning).strip()])
+    return _unique_warnings(
+        [_compact_warning(str(warning)) for warning in warnings if str(warning).strip()]
+    )
 
 
 def _compact_warning(warning: str) -> str:
@@ -652,7 +734,11 @@ def _distill_model_input(
         sections.append(f"业务领域：{business_domain.strip()}")
     sections.extend(("原始流程：", raw_content.strip()))
 
-    tools = [item for item in available_tools if isinstance(item, dict)] if isinstance(available_tools, list) else []
+    tools = (
+        [item for item in available_tools if isinstance(item, dict)]
+        if isinstance(available_tools, list)
+        else []
+    )
     sections.append("可用工具（只选择与原始流程语义匹配的工具）：")
     if not tools:
         sections.append("无可用工具。流程需要外部接口时，请指出缺少的接口，不要臆造工具。")
@@ -677,7 +763,9 @@ def _distill_model_input(
 
     omitted = max(0, total_tool_count - len(tools))
     if omitted:
-        sections.append(f"另有 {omitted} 个与当前流程相关性较低的工具未展开；不得猜测或调用未列出的工具。")
+        sections.append(
+            f"另有 {omitted} 个与当前流程相关性较低的工具未展开；不得猜测或调用未列出的工具。"
+        )
     return "\n".join(sections)
 
 
@@ -705,10 +793,11 @@ def _compact_available_tools(
         }
         if tool.get("requires_confirmation") is True:
             projected["requires_confirmation"] = True
-        projected = {key: value for key, value in projected.items() if value not in (None, "", [], {})}
+        projected = {
+            key: value for key, value in projected.items() if value not in (None, "", [], {})
+        }
         candidate_text = " ".join(
-            str(tool.get(key) or "")
-            for key in ("name", "display_name", "description", "bucket")
+            str(tool.get(key) or "") for key in ("name", "display_name", "description", "bucket")
         )
         score = len(source_terms & _tool_relevance_terms(candidate_text))
         lowered_source = source_text.lower()
@@ -1009,7 +1098,11 @@ def _tool_mention_to_resolution(item: dict[str, Any], request: Any) -> ToolSugge
     input_schema = item.get("input_schema")
     output_schema = item.get("output_schema")
     source_excerpt = _string(item.get("source_excerpt"), "") or None
-    reason = _string(item.get("reason"), "") or _string(item.get("purpose"), "") or "模型从技能文档中抽取到该工具提及。"
+    reason = (
+        _string(item.get("reason"), "")
+        or _string(item.get("purpose"), "")
+        or "模型从技能文档中抽取到该工具提及。"
+    )
 
     matched_tool = _match_available_tool(name, url, request.available_tools)
     if matched_tool is not None:
@@ -1020,11 +1113,19 @@ def _tool_mention_to_resolution(item: dict[str, Any], request: Any) -> ToolSugge
             description=_string(matched_tool.get("description"), description),
             method=_tool_method(matched_tool.get("method"), method),
             url=_string(matched_tool.get("url"), url),
-            input_schema=matched_tool.get("input_schema") if isinstance(matched_tool.get("input_schema"), dict) else {},
-            output_schema=matched_tool.get("output_schema") if isinstance(matched_tool.get("output_schema"), dict) else {},
-            sample_arguments=item.get("sample_arguments") if isinstance(item.get("sample_arguments"), dict) else {},
+            input_schema=matched_tool.get("input_schema")
+            if isinstance(matched_tool.get("input_schema"), dict)
+            else {},
+            output_schema=matched_tool.get("output_schema")
+            if isinstance(matched_tool.get("output_schema"), dict)
+            else {},
+            sample_arguments=item.get("sample_arguments")
+            if isinstance(item.get("sample_arguments"), dict)
+            else {},
             source_excerpt=source_excerpt,
-            probe_result=item.get("probe_result") if isinstance(item.get("probe_result"), dict) else None,
+            probe_result=item.get("probe_result")
+            if isinstance(item.get("probe_result"), dict)
+            else None,
             reason="已匹配到现有工具配置。",
             resolution_status="existing",
             matched_tool_id=_string(matched_tool.get("id"), "") or None,
@@ -1045,9 +1146,13 @@ def _tool_mention_to_resolution(item: dict[str, Any], request: Any) -> ToolSugge
             url=url if _tool_suggestion_url_in_source(url, request) else "",
             input_schema=input_schema if isinstance(input_schema, dict) else {},
             output_schema=output_schema if isinstance(output_schema, dict) else {},
-            sample_arguments=item.get("sample_arguments") if isinstance(item.get("sample_arguments"), dict) else {},
+            sample_arguments=item.get("sample_arguments")
+            if isinstance(item.get("sample_arguments"), dict)
+            else {},
             source_excerpt=source_excerpt,
-            probe_result=item.get("probe_result") if isinstance(item.get("probe_result"), dict) else None,
+            probe_result=item.get("probe_result")
+            if isinstance(item.get("probe_result"), dict)
+            else None,
             reason=reason,
             resolution_status="incomplete",
             missing_reason="；".join(missing_reasons),
@@ -1061,15 +1166,21 @@ def _tool_mention_to_resolution(item: dict[str, Any], request: Any) -> ToolSugge
         url=url,
         input_schema=input_schema,
         output_schema=output_schema,
-        sample_arguments=item.get("sample_arguments") if isinstance(item.get("sample_arguments"), dict) else {},
+        sample_arguments=item.get("sample_arguments")
+        if isinstance(item.get("sample_arguments"), dict)
+        else {},
         source_excerpt=source_excerpt,
-        probe_result=item.get("probe_result") if isinstance(item.get("probe_result"), dict) else None,
+        probe_result=item.get("probe_result")
+        if isinstance(item.get("probe_result"), dict)
+        else None,
         reason=reason,
         resolution_status="new_candidate",
     )
 
 
-def _tool_mention_missing_reasons(url: str, input_schema: Any, output_schema: Any, request: Any) -> list[str]:
+def _tool_mention_missing_reasons(
+    url: str, input_schema: Any, output_schema: Any, request: Any
+) -> list[str]:
     reasons: list[str] = []
     if not url:
         reasons.append("缺少可访问接口地址或路径")
@@ -1082,7 +1193,9 @@ def _tool_mention_missing_reasons(url: str, input_schema: Any, output_schema: An
     return reasons
 
 
-def _match_available_tool(name: str, url: str, available_tools: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _match_available_tool(
+    name: str, url: str, available_tools: list[dict[str, Any]]
+) -> dict[str, Any] | None:
     name_text = name.strip()
     url_candidates = set(_tool_url_candidates(url))
     for tool in available_tools:
@@ -1161,12 +1274,20 @@ def _infer_goals(raw: str) -> list[str]:
 
 
 def _split_clauses(text: str) -> list[str]:
-    normalized = text.replace("\n", "，").replace("；", "，").replace(";", "，").replace(",", "，").replace("。", "，")
+    normalized = (
+        text.replace("\n", "，")
+        .replace("；", "，")
+        .replace(";", "，")
+        .replace(",", "，")
+        .replace("。", "，")
+    )
     return [part.strip() for part in normalized.split("，")]
 
 
 def _slugify(title: str, raw: str) -> str:
-    ascii_slug = "".join(char.lower() if char.isalnum() else "_" for char in title if ord(char) < 128)
+    ascii_slug = "".join(
+        char.lower() if char.isalnum() else "_" for char in title if ord(char) < 128
+    )
     ascii_slug = "_".join(part for part in ascii_slug.split("_") if part)
     if ascii_slug:
         return ascii_slug[:48]

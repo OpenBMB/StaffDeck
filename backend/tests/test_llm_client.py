@@ -820,6 +820,58 @@ def test_generate_text_does_not_guess_image_support_from_model_name():
     }
 
 
+def test_generate_text_retries_without_images_only_after_provider_rejects_them():
+    class RejectingImageCompletions(_FakeChatCompletions):
+        def create(self, **kwargs):  # noqa: ANN003
+            self.calls.append(kwargs)
+            content = kwargs["messages"][1]["content"]
+            if isinstance(content, list) and any(
+                part.get("type") == "image_url"
+                for part in content
+                if isinstance(part, dict)
+            ):
+                raise ValueError("image_url is unsupported by this model")
+            message = type("Message", (), {"content": "fallback-ok"})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Completion", (), {"choices": [choice]})()
+
+    client = object.__new__(LLMClient)
+    fake_client = _FakeOpenAIClient()
+    fake_client.chat.completions = RejectingImageCompletions()
+    client.client = fake_client
+    client.model = "provider-model"
+    client.temperature = 0.2
+    client.max_output_tokens = 256
+
+    output = client.generate_text(
+        "system prompt",
+        {
+            "conversation_context": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "看图，并参考 /workspace/attachments/screen.png",
+                        "images": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": "data:image/png;base64,AAAA"
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+
+    assert output == "fallback-ok"
+    assert len(fake_client.chat.completions.calls) == 2
+    fallback_content = fake_client.chat.completions.calls[1]["messages"][1]["content"]
+    assert all(part.get("type") != "image_url" for part in fallback_content)
+    assert "/workspace/attachments/screen.png" in fallback_content[0]["text"]
+
+
 def test_generate_json_extracts_fenced_json(monkeypatch):
     client = object.__new__(LLMClient)
 
@@ -1194,4 +1246,3 @@ def test_generate_text_stream_preserves_budget_above_escalation_ceiling():
     assert len(calls) == 2
     assert calls[0]["max_tokens"] == 65536
     assert calls[1]["max_tokens"] == 65536
-

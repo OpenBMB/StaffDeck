@@ -31,6 +31,7 @@ import {
   type CSSProperties,
   type DragEvent,
   type HTMLAttributes,
+  type HTMLInputTypeAttribute,
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -287,6 +288,12 @@ import {
   type ToolStatusBadgeVariant,
 } from './distillPageStyles';
 import { buildDistillFailure, type DistillFailure } from './distillFailure';
+import {
+  skillNodeFlowPosition,
+  withSkillNodeFlowPosition,
+  withoutSkillEdgeAt,
+  type SkillFlowPosition,
+} from './skillFlowModel';
 import { api, ApiError, streamGet, streamPost, TENANT_ID } from '../api/client';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import type {
@@ -363,6 +370,21 @@ type CapabilityReferenceOption = SelectOption & {
   description?: string;
   capabilityScope?: unknown;
   unavailableReason?: string;
+};
+
+const CAPABILITY_REFERENCE_FIELDS = [
+  'general_skill_ids',
+  'tool_ids',
+  'knowledge_base_ids',
+  'required_general_skill_ids',
+  'required_tool_ids',
+  'required_knowledge_base_ids',
+];
+
+const REQUIRED_CAPABILITY_FIELD_BY_ALLOWED: Record<string, string> = {
+  general_skill_ids: 'required_general_skill_ids',
+  tool_ids: 'required_tool_ids',
+  knowledge_base_ids: 'required_knowledge_base_ids',
 };
 
 const NODE_TYPE_OPTIONS: SelectOption[] = [
@@ -2883,8 +2905,12 @@ function SourceInput({
   ...rest
 }: {
   className?: string;
+  type?: HTMLInputTypeAttribute;
   value?: string;
   placeholder?: string;
+  min?: number;
+  max?: number;
+  step?: number;
   disabled?: boolean;
   readOnly?: boolean;
   style?: CSSProperties;
@@ -3107,11 +3133,16 @@ function SkillSource({
 }) {
   const [deleteNodeIndex, setDeleteNodeIndex] = useState<number | null>(null);
 
-  function editBasic(field: keyof SkillCard, value: string | string[]) {
+  function editBasic(
+    field: keyof SkillCard,
+    value: string | string[] | number | null,
+  ) {
     if (field === 'skill_id' && lockSkillId) return;
     const next = cloneSkill(skill);
     if (field === 'trigger_intents' || field === 'user_utterance_examples' || field === 'goal' || field === 'required_info' || field === 'response_rules') {
-      next[field] = Array.isArray(value) ? value : splitEditableList(value);
+      next[field] = Array.isArray(value) ? value : splitEditableList(String(value ?? ''));
+    } else if (field === 'step_timeout_seconds') {
+      next.step_timeout_seconds = typeof value === 'number' ? value : null;
     } else if (field === 'skill_id' || field === 'name' || field === 'version' || field === 'business_domain' || field === 'description') {
       next[field] = String(value);
     }
@@ -3126,6 +3157,9 @@ function SkillSource({
       'general_skill_ids',
       'tool_ids',
       'knowledge_base_ids',
+      'required_general_skill_ids',
+      'required_tool_ids',
+      'required_knowledge_base_ids',
     ].includes(field)
       ? Array.isArray(value)
         ? value
@@ -3160,12 +3194,19 @@ function SkillSource({
       onEdit(next, stepTargetPath(index));
       return;
     }
-    if (['general_skill_ids', 'tool_ids', 'knowledge_base_ids'].includes(nodeField)) {
+    if (CAPABILITY_REFERENCE_FIELDS.includes(nodeField)) {
       const currentRefs = nodeCapabilityRefs(currentNode);
-      currentNode.capability_refs = { ...currentRefs, [nodeField]: listValue };
+      currentNode.capability_refs = updateCapabilityRefs(
+        currentRefs,
+        nodeField,
+        asStringList(listValue),
+      );
       delete currentNode.general_skill_ids;
       delete currentNode.tool_ids;
       delete currentNode.knowledge_base_ids;
+      delete currentNode.required_general_skill_ids;
+      delete currentNode.required_tool_ids;
+      delete currentNode.required_knowledge_base_ids;
     } else {
       currentNode[nodeField] = listValue;
     }
@@ -3240,6 +3281,9 @@ function SkillSource({
         general_skill_ids: [],
         tool_ids: [],
         knowledge_base_ids: [],
+        required_general_skill_ids: [],
+        required_tool_ids: [],
+        required_knowledge_base_ids: [],
       },
       knowledge_scope: {},
       retry_policy: {},
@@ -3458,6 +3502,14 @@ function SkillSource({
             <EditableSourceTextLine label={fieldLabel('version')} value={skill.version} onChange={(value) => editBasic('version', value)} />
             <EditableSourceTextLine label={fieldLabel('business_domain')} value={skill.business_domain || ''} onChange={(value) => editBasic('business_domain', value)} />
             <EditableSourceTextLine label={fieldLabel('description')} value={skill.description || ''} multiline onChange={(value) => editBasic('description', value)} />
+            <EditableSourceNumberLine
+              label={fieldLabel('step_timeout_seconds')}
+              value={skill.step_timeout_seconds}
+              min={1}
+              max={3600}
+              placeholder="不单独限制"
+              onChange={(value) => editBasic('step_timeout_seconds', value)}
+            />
             <EditableSourceListLine label={fieldLabel('trigger_intents')} values={skill.trigger_intents} onChange={(value) => editBasic('trigger_intents', value)} />
             <EditableSourceListLine label={fieldLabel('user_utterance_examples')} values={skill.user_utterance_examples} onChange={(value) => editBasic('user_utterance_examples', value)} />
             <EditableSourceListLine label={fieldLabel('goal')} values={skill.goal} onChange={(value) => editBasic('goal', value)} />
@@ -3541,23 +3593,29 @@ function SkillSource({
                     <EditableCapabilityReferencesLine
                       label="SOP 技能"
                       values={asStringList(step.general_skill_ids)}
+                      requiredValues={asStringList(step.required_general_skill_ids)}
                       options={generalSkillOptions}
                       emptyText="未指定技能"
                       onChange={(value) => editStep(index, 'general_skill_ids', value)}
+                      onRequiredChange={(value) => editStep(index, 'required_general_skill_ids', value)}
                     />
                     <EditableCapabilityReferencesLine
                       label="SOP 工具"
                       values={asStringList(step.tool_ids)}
+                      requiredValues={asStringList(step.required_tool_ids)}
                       options={toolOptions}
                       emptyText="未指定工具"
                       onChange={(value) => editStep(index, 'tool_ids', value)}
+                      onRequiredChange={(value) => editStep(index, 'required_tool_ids', value)}
                     />
                     <EditableCapabilityReferencesLine
                       label="SOP 知识库"
                       values={asStringList(step.knowledge_base_ids)}
+                      requiredValues={asStringList(step.required_knowledge_base_ids)}
                       options={knowledgeBaseOptions}
                       emptyText="未指定知识库"
                       onChange={(value) => editStep(index, 'knowledge_base_ids', value)}
+                      onRequiredChange={(value) => editStep(index, 'required_knowledge_base_ids', value)}
                     />
                     <EditableFlowRulesLine
                       sourceNodeId={stepId}
@@ -3642,6 +3700,8 @@ function SkillFlow({
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [flowViewportWidth, setFlowViewportWidth] = useState(0);
   const [armedConnectionSourceId, setArmedConnectionSourceId] = useState('');
+  const [selectedEdgeId, setSelectedEdgeId] = useState('');
+  const [nodePositionOverrides, setNodePositionOverrides] = useState<Record<string, SkillFlowPosition>>({});
   const [connectionDrag, setConnectionDrag] = useState<{
     sourceNodeId: string;
     targetNodeId: string;
@@ -3653,6 +3713,17 @@ function SkillFlow({
   const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
   const connectionPointerRef = useRef<{ sourceNodeId: string; startX: number; startY: number } | null>(null);
   const connectionDragRef = useRef<typeof connectionDrag>(null);
+  const nodeDragRef = useRef<{
+    pointerId: number;
+    nodeId: string;
+    nodeIndex: number;
+    pointerX: number;
+    pointerY: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressNodeClickRef = useRef('');
   const panStateRef = useRef<{
     pointerId: number;
     x: number;
@@ -3671,7 +3742,7 @@ function SkillFlow({
   );
   const graphKey = `${skill.skill_id || 'skill'}:${skill.version || 'draft'}:${nodes.length}:${skill.start_node_id || ''}`;
   const centeredGraphKey = useRef('');
-  const graphLayout = buildSkillFlowCanvasLayout(skill, nodes, nodeNameMap);
+  const graphLayout = buildSkillFlowCanvasLayout(skill, nodes, nodeNameMap, nodePositionOverrides);
   const zoomedWidth = graphLayout.width * flowZoom;
   const zoomedHeight = graphLayout.height * flowZoom;
   const canvasWidth = Math.max(zoomedWidth, flowViewportWidth);
@@ -3719,6 +3790,9 @@ function SkillFlow({
       'general_skill_ids',
       'tool_ids',
       'knowledge_base_ids',
+      'required_general_skill_ids',
+      'required_tool_ids',
+      'required_knowledge_base_ids',
     ].includes(field)
       ? Array.isArray(value) ? value : splitEditableList(String(value))
       : value;
@@ -3747,12 +3821,19 @@ function SkillFlow({
       }));
       if (next.start_node_id === previousId) next.start_node_id = nextId;
       next.terminal_node_ids = asStringList(next.terminal_node_ids).map((nodeId) => (nodeId === previousId ? nextId : nodeId));
-    } else if (['general_skill_ids', 'tool_ids', 'knowledge_base_ids'].includes(nodeField)) {
+    } else if (CAPABILITY_REFERENCE_FIELDS.includes(nodeField)) {
       const currentRefs = nodeCapabilityRefs(currentNode);
-      currentNode.capability_refs = { ...currentRefs, [nodeField]: listValue };
+      currentNode.capability_refs = updateCapabilityRefs(
+        currentRefs,
+        nodeField,
+        asStringList(listValue),
+      );
       delete currentNode.general_skill_ids;
       delete currentNode.tool_ids;
       delete currentNode.knowledge_base_ids;
+      delete currentNode.required_general_skill_ids;
+      delete currentNode.required_tool_ids;
+      delete currentNode.required_knowledge_base_ids;
     } else {
       currentNode[nodeField] = listValue;
     }
@@ -3760,11 +3841,16 @@ function SkillFlow({
     onEdit(next, stepTargetPath(index));
   };
 
-  const editFlowBasic = (field: keyof SkillCard, value: string | string[]) => {
+  const editFlowBasic = (
+    field: keyof SkillCard,
+    value: string | string[] | number | null,
+  ) => {
     if (field === 'skill_id' && lockSkillId) return;
     const next = cloneSkill(skill);
     if (field === 'trigger_intents' || field === 'user_utterance_examples' || field === 'goal' || field === 'required_info' || field === 'response_rules') {
-      next[field] = Array.isArray(value) ? value : splitEditableList(value);
+      next[field] = Array.isArray(value) ? value : splitEditableList(String(value ?? ''));
+    } else if (field === 'step_timeout_seconds') {
+      next.step_timeout_seconds = typeof value === 'number' ? value : null;
     } else if (field === 'skill_id' || field === 'name' || field === 'version' || field === 'business_domain' || field === 'description') {
       next[field] = String(value);
     }
@@ -3838,6 +3924,64 @@ function SkillFlow({
     if (sourceIndex >= 0) setSelectedNodeIndex(sourceIndex);
     onEdit(next, stepTargetPath(Math.max(sourceIndex, 0)));
     notify.success(`已连接到「${targetName}」，右侧流转规则已同步`);
+  };
+  const deleteFlowEdgeAt = (edgeIndex: number) => {
+    const edge = normalizeSkillEdges(skill)[edgeIndex];
+    if (!edge) return;
+    const sourceNodeId = String(edge.source_node_id || '');
+    const targetNodeId = String(edge.next_node_id || '');
+    const sourceIndex = nodes.findIndex((node, index) => (
+      String(node.node_id || node.step_id || `node_${index + 1}`) === sourceNodeId
+    ));
+    onEdit(withoutSkillEdgeAt(skill, edgeIndex), stepTargetPath(Math.max(sourceIndex, 0)));
+    setSelectedEdgeId('');
+    notify.success(`已删除「${nodeNameMap[sourceNodeId] || sourceNodeId} → ${nodeNameMap[targetNodeId] || targetNodeId}」流转`);
+  };
+  const startNodeDrag = (
+    event: ReactPointerEvent<HTMLDivElement>,
+    node: SkillFlowCanvasNode,
+  ) => {
+    if (event.button !== 0 || connectionDrag || armedConnectionSourceId) return;
+    const target = event.target as HTMLElement;
+    if (target.closest('button, input, textarea, select, [role="combobox"], [data-flow-connect-handle]')) return;
+    nodeDragRef.current = {
+      pointerId: event.pointerId,
+      nodeId: node.nodeId,
+      nodeIndex: node.index,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      startX: node.x,
+      startY: node.y,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const handleNodePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = nodeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const deltaX = (event.clientX - drag.pointerX) / flowZoom;
+    const deltaY = (event.clientY - drag.pointerY) / flowZoom;
+    if (!drag.moved && Math.hypot(deltaX, deltaY) < 4) return;
+    drag.moved = true;
+    const position = {
+      x: Math.max(32, drag.startX + deltaX),
+      y: Math.max(32, drag.startY + deltaY),
+    };
+    setFlowPreset(null);
+    setNodePositionOverrides((current) => ({ ...current, [drag.nodeId]: position }));
+  };
+  const finishNodeDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = nodeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    nodeDragRef.current = null;
+    if (!drag.moved) return;
+    const position = {
+      x: Math.max(32, drag.startX + (event.clientX - drag.pointerX) / flowZoom),
+      y: Math.max(32, drag.startY + (event.clientY - drag.pointerY) / flowZoom),
+    };
+    setNodePositionOverrides((current) => ({ ...current, [drag.nodeId]: position }));
+    suppressNodeClickRef.current = drag.nodeId;
+    onEdit(withSkillNodeFlowPosition(skill, drag.nodeIndex, position), stepTargetPath(drag.nodeIndex));
   };
   const updateZoom = (
     nextZoom: number,
@@ -4056,9 +4200,27 @@ function SkillFlow({
     if (selectedNodeIndex !== null && selectedNodeIndex >= nodes.length) setSelectedNodeIndex(nodes.length - 1);
   }, [nodes.length, selectedNodeIndex]);
   useEffect(() => {
+    setNodePositionOverrides({});
+    setSelectedEdgeId('');
+  }, [skill.skill_id]);
+  useEffect(() => {
+    const visibleEdgeIds = new Set(graphLayout.edges.map((edge) => edge.id));
+    if (selectedEdgeId && !visibleEdgeIds.has(selectedEdgeId)) setSelectedEdgeId('');
+  }, [graphLayout.edges, selectedEdgeId]);
+  useEffect(() => {
     if (!isFullscreen) return undefined;
     const previousOverflow = document.body.style.overflow;
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedEdgeId) {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+        const selectedEdge = graphLayout.edges.find((edge) => edge.id === selectedEdgeId);
+        if (selectedEdge?.edgeIndex !== undefined) {
+          event.preventDefault();
+          deleteFlowEdgeAt(selectedEdge.edgeIndex);
+        }
+        return;
+      }
       if (event.key !== 'Escape') return;
       event.preventDefault();
       if (connectionDrag) {
@@ -4081,7 +4243,7 @@ function SkillFlow({
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [armedConnectionSourceId, connectionDrag, isFullscreen, onFullscreenChange]);
+  }, [armedConnectionSourceId, connectionDrag, graphLayout.edges, isFullscreen, onFullscreenChange, selectedEdgeId]);
   useEffect(() => {
     const container = containerRef.current;
     if (!container || isFullscreen || centeredGraphKey.current === graphKey) return undefined;
@@ -4102,8 +4264,14 @@ function SkillFlow({
       role={isFullscreen ? 'dialog' : undefined}
       aria-modal={isFullscreen || undefined}
       aria-label={isFullscreen ? 'SOP 流程图全屏查看' : undefined}
-      onPointerMove={handleConnectionPointerMove}
-      onPointerUp={handleConnectionPointerUp}
+      onPointerMove={(event) => {
+        handleConnectionPointerMove(event);
+        handleNodePointerMove(event);
+      }}
+      onPointerUp={(event) => {
+        handleConnectionPointerUp(event);
+        finishNodeDrag(event);
+      }}
     >
       <div className={cn(FLOW_VIEWER_CLASS, isFullscreen && FLOW_VIEWER_FULLSCREEN_PANEL_CLASS)}>
         <div className={cn(FLOW_ZOOM_TOOLBAR_CLASS, isFullscreen && FLOW_ZOOM_TOOLBAR_FULLSCREEN_CLASS)} aria-label="流程图控制">
@@ -4113,7 +4281,7 @@ function SkillFlow({
               <span className="grid min-w-0 gap-[2px]">
                 <strong className="truncate text-[14px] font-medium text-[#18181a]">{skill.name || 'SOP 流程图'}</strong>
                 <span className={FLOW_VIEWER_TITLE_META_CLASS}>
-                  {nodes.length} 个节点 · {graphLayout.edges.length} 条连线 · {armedConnectionSourceId ? '点击目标节点完成连接' : '按 Esc 退出'}
+                  {nodes.length} 个节点 · {graphLayout.edges.length} 条连线 · {armedConnectionSourceId ? '点击目标节点完成连接' : '拖动节点调整排版，选择连线可删除'}
                 </span>
               </span>
             </div>
@@ -4218,7 +4386,7 @@ function SkillFlow({
             }}
           >
             <svg
-              className={FLOW_EDGES_CLASS}
+              className={cn(FLOW_EDGES_CLASS, 'pointer-events-auto')}
               width={graphLayout.width}
               height={graphLayout.height}
               viewBox={`0 0 ${graphLayout.width} ${graphLayout.height}`}
@@ -4230,25 +4398,77 @@ function SkillFlow({
                 </marker>
               </defs>
               {graphLayout.edges.map((edge) => (
-                <path
-                  className={FLOW_EDGE_PATH_CLASS}
-                  d={edge.path}
-                  key={edge.id}
-                  markerEnd="url(#skill-flow-arrow)"
-                >
-                  <title>{edge.title}</title>
-                </path>
+                <g key={edge.id}>
+                  <path
+                    className={cn(
+                      FLOW_EDGE_PATH_CLASS,
+                      'pointer-events-none',
+                      selectedEdgeId === edge.id && 'stroke-[#04756f]! [stroke-width:2.5] opacity-100',
+                    )}
+                    d={edge.path}
+                    markerEnd="url(#skill-flow-arrow)"
+                  >
+                    <title>{edge.title}</title>
+                  </path>
+                  {edge.kind === 'edge' && (
+                    <path
+                      d={edge.path}
+                      fill="none"
+                      stroke="transparent"
+                      strokeWidth="18"
+                      className="cursor-pointer [pointer-events:stroke]"
+                      aria-label={`选择流转 ${edge.title}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedEdgeId(edge.id);
+                      }}
+                    />
+                  )}
+                </g>
               ))}
             </svg>
             {graphLayout.edges.map((edge) => (
-              <span
-                className={flowEdgeLabelClass(edge.labelTone || edge.kind)}
+              <div
+                className={cn(
+                  flowEdgeLabelClass(edge.labelTone || edge.kind),
+                  edge.kind === 'edge' && 'group/flow-edge pointer-events-auto! flex cursor-pointer items-center gap-[5px]',
+                  selectedEdgeId === edge.id && 'border-[#04756f]! bg-[#f3fbf8]! text-[#075f59]!',
+                )}
                 key={`${edge.id}_label`}
                 style={{ left: edge.labelX, top: edge.labelY }}
                 title={edge.title}
               >
-                {edge.label}
-              </span>
+                {edge.kind === 'edge' ? (
+                  <button
+                    type="button"
+                    className="min-w-0 cursor-pointer truncate border-0 bg-transparent p-0 text-inherit focus-visible:outline-none"
+                    aria-label={`选择流转 ${edge.title}`}
+                    onClick={() => setSelectedEdgeId(edge.id)}
+                  >
+                    {edge.label}
+                  </button>
+                ) : (
+                  <span className="min-w-0 truncate">{edge.label}</span>
+                )}
+                {edge.kind === 'edge' && edge.edgeIndex !== undefined && (
+                  <button
+                    type="button"
+                    className={cn(
+                      'grid size-[17px] shrink-0 place-items-center rounded-full border-0 bg-transparent p-0 text-[13px] leading-none text-[#858b9c] opacity-0 transition-opacity hover:bg-[#fee2e2] hover:text-[#b42318] focus-visible:opacity-100 focus-visible:outline-none group-hover/flow-edge:opacity-100',
+                      selectedEdgeId === edge.id && 'opacity-100',
+                    )}
+                    aria-label={`删除流转 ${edge.title}`}
+                    title="删除这条流转规则"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      deleteFlowEdgeAt(edge.edgeIndex as number);
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
             ))}
             <div
               className={FLOW_ROOT_POSITION_CLASS}
@@ -4272,6 +4492,11 @@ function SkillFlow({
                   <FlowMetaRow label="业务域">
                     <span className={FLOW_CHIP_CLASS}>{skill.business_domain || '-'}</span>
                   </FlowMetaRow>
+                  <FlowMetaRow label="单步上限">
+                    <span className={FLOW_CHIP_CLASS}>
+                      {skill.step_timeout_seconds ? `${skill.step_timeout_seconds} 秒` : '未单独限制'}
+                    </span>
+                  </FlowMetaRow>
                   <FlowMetaRow label="必填信息">
                     <PlainChipList values={skill.required_info} />
                   </FlowMetaRow>
@@ -4287,6 +4512,13 @@ function SkillFlow({
                 data-flow-node-id={item.nodeId}
                 key={item.nodeId}
                 style={{ left: item.x, top: item.y, width: item.width, height: item.height }}
+                onPointerDown={(event) => startNodeDrag(event, item)}
+                onClickCapture={(event) => {
+                  if (suppressNodeClickRef.current !== item.nodeId) return;
+                  suppressNodeClickRef.current = '';
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
               >
                 <SkillFlowNodeCard
                   index={item.index}
@@ -4403,7 +4635,10 @@ function SkillFlowBasicInspector({
 }: {
   skill: SkillCard;
   lockSkillId?: boolean;
-  onEditBasic: (field: keyof SkillCard, value: string | string[]) => void;
+  onEditBasic: (
+    field: keyof SkillCard,
+    value: string | string[] | number | null,
+  ) => void;
 }) {
   return (
     <aside className={FLOW_INSPECTOR_CLASS} aria-label="编辑 SOP 基础信息">
@@ -4421,6 +4656,14 @@ function SkillFlowBasicInspector({
             <EditableSourceTextLine label={fieldLabel('skill_id')} value={skill.skill_id || ''} readOnly={lockSkillId} onChange={(value) => onEditBasic('skill_id', value)} />
             <EditableSourceTextLine label={fieldLabel('version')} value={skill.version || ''} onChange={(value) => onEditBasic('version', value)} />
             <EditableSourceTextLine label={fieldLabel('business_domain')} value={skill.business_domain || ''} onChange={(value) => onEditBasic('business_domain', value)} />
+            <EditableSourceNumberLine
+              label={fieldLabel('step_timeout_seconds')}
+              value={skill.step_timeout_seconds}
+              min={1}
+              max={3600}
+              placeholder="不单独限制"
+              onChange={(value) => onEditBasic('step_timeout_seconds', value)}
+            />
           </FlowInspectorSection>
           <FlowInspectorSection title="触发与目标" description="说明何时进入流程，以及模型需要完成什么。">
             <EditableSourceTextLine label={fieldLabel('description')} value={skill.description || ''} multiline onChange={(value) => onEditBasic('description', value)} />
@@ -4511,9 +4754,9 @@ function SkillFlowInspector({
             <EditableSourceActionLine values={asStringList(node.allowed_actions)} options={actionOptions} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} onChange={(value) => onEditNode(nodeIndex, 'allowed_actions', value)} />
           </FlowInspectorSection>
           <FlowInspectorSection title="节点专用能力" description="SOP-specific 能力只有在这里明确引用后，才会进入当前节点的 Harness 能力清单。">
-            <EditableCapabilityReferencesLine label="SOP 技能" values={asStringList(node.general_skill_ids)} options={generalSkillOptions} emptyText="未指定技能" onChange={(value) => onEditNode(nodeIndex, 'general_skill_ids', value)} />
-            <EditableCapabilityReferencesLine label="SOP 工具" values={asStringList(node.tool_ids)} options={toolOptions} emptyText="未指定工具" onChange={(value) => onEditNode(nodeIndex, 'tool_ids', value)} />
-            <EditableCapabilityReferencesLine label="SOP 知识库" values={asStringList(node.knowledge_base_ids)} options={knowledgeBaseOptions} emptyText="未指定知识库" onChange={(value) => onEditNode(nodeIndex, 'knowledge_base_ids', value)} />
+            <EditableCapabilityReferencesLine label="SOP 技能" values={asStringList(node.general_skill_ids)} requiredValues={asStringList(node.required_general_skill_ids)} options={generalSkillOptions} emptyText="未指定技能" onChange={(value) => onEditNode(nodeIndex, 'general_skill_ids', value)} onRequiredChange={(value) => onEditNode(nodeIndex, 'required_general_skill_ids', value)} />
+            <EditableCapabilityReferencesLine label="SOP 工具" values={asStringList(node.tool_ids)} requiredValues={asStringList(node.required_tool_ids)} options={toolOptions} emptyText="未指定工具" onChange={(value) => onEditNode(nodeIndex, 'tool_ids', value)} onRequiredChange={(value) => onEditNode(nodeIndex, 'required_tool_ids', value)} />
+            <EditableCapabilityReferencesLine label="SOP 知识库" values={asStringList(node.knowledge_base_ids)} requiredValues={asStringList(node.required_knowledge_base_ids)} options={knowledgeBaseOptions} emptyText="未指定知识库" onChange={(value) => onEditNode(nodeIndex, 'knowledge_base_ids', value)} onRequiredChange={(value) => onEditNode(nodeIndex, 'required_knowledge_base_ids', value)} />
           </FlowInspectorSection>
           <FlowInspectorSection title="流转与失败处理" description="按优先级判断规则；未命中时使用重试策略或终止流程。">
             <EditableFlowRulesLine sourceNodeId={nodeId} edges={outgoingEdges} nodes={nodes} nodeOptions={nodeOptions} terminal={terminal} onAdd={() => onAddEdge(nodeIndex)} onUpdate={(edgeIndex, patch) => onUpdateEdge(nodeIndex, edgeIndex, patch)} onDelete={(edgeIndex) => onDeleteEdge(nodeIndex, edgeIndex)} />
@@ -4577,6 +4820,7 @@ function SkillFlowNodeCard({
       <SelectableTarget
         className={cn(
           distillFlowNodeClass(path, false, selectedPaths, highlightedPaths, updatingPaths, dirtyPaths),
+          'cursor-grab! active:cursor-grabbing!',
           dropTarget && 'border-[#04756f]! shadow-[0_0_0_4px_rgba(4,117,111,0.12),0_12px_30px_rgba(4,117,111,0.10)]',
         )}
         target={{ path, label: `节点 ${index + 1}：${step.name || nodeId}` }}
@@ -4688,6 +4932,9 @@ function skillGraphSteps(skill: SkillCard): Array<Record<string, unknown>> {
         general_skill_ids: capabilityRefs.general_skill_ids,
         tool_ids: capabilityRefs.tool_ids,
         knowledge_base_ids: capabilityRefs.knowledge_base_ids,
+        required_general_skill_ids: capabilityRefs.required_general_skill_ids,
+        required_tool_ids: capabilityRefs.required_tool_ids,
+        required_knowledge_base_ids: capabilityRefs.required_knowledge_base_ids,
         knowledge_scope: isRecord(node.knowledge_scope) ? node.knowledge_scope : {},
         retry_policy: isRecord(node.retry_policy) ? node.retry_policy : {},
         metadata: isRecord(node.metadata) ? node.metadata : {},
@@ -4699,11 +4946,38 @@ function skillGraphSteps(skill: SkillCard): Array<Record<string, unknown>> {
 
 function nodeCapabilityRefs(node: Record<string, unknown>) {
   const refs = isRecord(node.capability_refs) ? node.capability_refs : {};
+  const generalSkillIds = asStringList(refs.general_skill_ids ?? node.general_skill_ids);
+  const toolIds = asStringList(refs.tool_ids ?? node.tool_ids);
+  const knowledgeBaseIds = asStringList(refs.knowledge_base_ids ?? node.knowledge_base_ids);
   return {
-    general_skill_ids: asStringList(refs.general_skill_ids ?? node.general_skill_ids),
-    tool_ids: asStringList(refs.tool_ids ?? node.tool_ids),
-    knowledge_base_ids: asStringList(refs.knowledge_base_ids ?? node.knowledge_base_ids),
+    general_skill_ids: generalSkillIds,
+    tool_ids: toolIds,
+    knowledge_base_ids: knowledgeBaseIds,
+    required_general_skill_ids: asStringList(
+      refs.required_general_skill_ids ?? node.required_general_skill_ids,
+    ).filter((value) => generalSkillIds.includes(value)),
+    required_tool_ids: asStringList(
+      refs.required_tool_ids ?? node.required_tool_ids,
+    ).filter((value) => toolIds.includes(value)),
+    required_knowledge_base_ids: asStringList(
+      refs.required_knowledge_base_ids ?? node.required_knowledge_base_ids,
+    ).filter((value) => knowledgeBaseIds.includes(value)),
   };
+}
+
+function updateCapabilityRefs(
+  refs: ReturnType<typeof nodeCapabilityRefs>,
+  field: string,
+  values: string[],
+): ReturnType<typeof nodeCapabilityRefs> {
+  const next = { ...refs, [field]: Array.from(new Set(values)) };
+  const requiredField = REQUIRED_CAPABILITY_FIELD_BY_ALLOWED[field];
+  if (requiredField) {
+    next[requiredField as keyof typeof next] = asStringList(
+      next[requiredField as keyof typeof next],
+    ).filter((value) => values.includes(value));
+  }
+  return next;
 }
 
 function skillGraphEdgeMap(skill: SkillCard): Record<string, Array<Record<string, unknown>>> {
@@ -4785,6 +5059,7 @@ type SkillFlowCanvasNode = {
 type SkillFlowCanvasEdge = {
   id: string;
   kind: 'root' | 'edge';
+  edgeIndex?: number;
   labelTone?: 'root' | 'branch' | 'parallel' | 'return';
   label: string;
   title: string;
@@ -4821,6 +5096,7 @@ function buildSkillFlowCanvasLayout(
   skill: SkillCard,
   nodes: Array<Record<string, unknown>>,
   nodeNameMap: Record<string, string>,
+  positionOverrides: Record<string, SkillFlowPosition> = {},
 ) {
   const layerLayout = buildSkillFlowLayout(skill, nodes);
   const cardWidth = 360;
@@ -4836,9 +5112,9 @@ function buildSkillFlowCanvasLayout(
     layer.length * cardWidth + Math.max(0, layer.length - 1) * columnGap
   ));
   const maxContentWidth = Math.max(rootWidth, ...layerWidths, 0);
-  const width = Math.max(1180, paddingX * 2 + maxContentWidth);
+  const baseWidth = Math.max(1180, paddingX * 2 + maxContentWidth);
   const root = {
-    x: (width - rootWidth) / 2,
+    x: (baseWidth - rootWidth) / 2,
     y: paddingY,
     width: rootWidth,
     height: rootHeight,
@@ -4848,13 +5124,17 @@ function buildSkillFlowCanvasLayout(
 
   layerLayout.layers.forEach((layer, layerIndex) => {
     const layerWidth = layer.length * cardWidth + Math.max(0, layer.length - 1) * columnGap;
-    const layerStartX = Math.max(paddingX, (width - layerWidth) / 2);
+    const layerStartX = Math.max(paddingX, (baseWidth - layerWidth) / 2);
     layer.forEach((item, itemIndex) => {
       const positioned = {
         ...item,
         rank: layerIndex,
-        x: layerStartX + itemIndex * (cardWidth + columnGap),
-        y: paddingY + rootHeight + rootGap + layerIndex * (cardHeight + rowGap),
+        x: positionOverrides[item.nodeId]?.x
+          ?? skillNodeFlowPosition(item.step)?.x
+          ?? layerStartX + itemIndex * (cardWidth + columnGap),
+        y: positionOverrides[item.nodeId]?.y
+          ?? skillNodeFlowPosition(item.step)?.y
+          ?? paddingY + rootHeight + rootGap + layerIndex * (cardHeight + rowGap),
         width: cardWidth,
         height: cardHeight,
       };
@@ -4862,6 +5142,11 @@ function buildSkillFlowCanvasLayout(
       positionMap.set(item.nodeId, positioned);
     });
   });
+
+  const width = Math.max(
+    baseWidth,
+    ...positionedNodes.map((node) => node.x + node.width + paddingX),
+  );
 
   const rawEdges = Array.isArray(skill.edges) ? skill.edges : [];
   const edgeSiblingCounts = rawEdges.reduce<Record<string, number>>((acc, edge) => {
@@ -4885,7 +5170,11 @@ function buildSkillFlowCanvasLayout(
   const edgeSiblingIndexes: Record<string, number> = {};
   const incomingIndexes: Record<string, number> = {};
   const layoutEdges: SkillFlowCanvasEdge[] = [];
-  const height = paddingY * 2 + rootHeight + rootGap + layerLayout.layers.length * cardHeight + Math.max(0, layerLayout.layers.length - 1) * rowGap;
+  const baseHeight = paddingY * 2 + rootHeight + rootGap + layerLayout.layers.length * cardHeight + Math.max(0, layerLayout.layers.length - 1) * rowGap;
+  const height = Math.max(
+    baseHeight,
+    ...positionedNodes.map((node) => node.y + node.height + paddingY),
+  );
   const startNode = positionMap.get(String(skill.start_node_id || positionedNodes[0]?.nodeId || ''));
   if (startNode) {
     const sourceX = root.x + root.width / 2;
@@ -4948,6 +5237,7 @@ function buildSkillFlowCanvasLayout(
     layoutEdges.push({
       id: `${sourceId}_${targetId}_${index}`,
       kind: 'edge',
+      edgeIndex: index,
       label: compactEdgeLabel(label),
       title,
       path,
@@ -5604,6 +5894,52 @@ function EditableSourceTextLine({
   );
 }
 
+function EditableSourceNumberLine({
+  label,
+  value,
+  min,
+  max,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  value?: number | null;
+  min: number;
+  max: number;
+  placeholder?: string;
+  onChange: (value: number | null) => void;
+}) {
+  return (
+    <div className={SOURCE_LINE_CLASS}>
+      <span className={SOURCE_KEY_CLASS}>{label}</span>
+      <span className={SOURCE_VALUE_CLASS}>
+        <EditableSourceField>
+          <SourceInput
+            className={SOURCE_EDIT_INPUT_CLASS}
+            type="number"
+            min={min}
+            max={max}
+            step={1}
+            value={value == null ? '' : String(value)}
+            placeholder={placeholder}
+            style={sourceInputStyle(value == null ? '' : String(value))}
+            onChange={(event) => {
+              if (!event.target.value.trim()) {
+                onChange(null);
+                return;
+              }
+              const next = Number(event.target.value);
+              if (Number.isFinite(next)) {
+                onChange(Math.max(min, Math.min(max, Math.round(next))));
+              }
+            }}
+          />
+        </EditableSourceField>
+      </span>
+    </div>
+  );
+}
+
 function EditableSourceListLine({
   label,
   values,
@@ -5858,19 +6194,24 @@ function EditableSourceActionLine({
 function EditableCapabilityReferencesLine({
   label,
   values,
+  requiredValues,
   options,
   emptyText,
   onChange,
+  onRequiredChange,
 }: {
   label: string;
   values: string[];
+  requiredValues: string[];
   options: CapabilityReferenceOption[];
   emptyText: string;
   onChange: (value: string[]) => void;
+  onRequiredChange: (value: string[]) => void;
 }) {
   const [query, setQuery] = useState('');
   const mergedOptions = mergeCapabilityReferenceOptions(options, values);
   const selected = new Set(values);
+  const required = new Set(requiredValues);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredOptions = mergedOptions
     .filter((option) => {
@@ -5889,6 +6230,15 @@ function EditableCapabilityReferencesLine({
       return;
     }
     onChange(values.filter((item) => item !== value));
+    onRequiredChange(requiredValues.filter((item) => item !== value));
+  }
+
+  function setRequired(value: string, checked: boolean) {
+    if (checked) {
+      onRequiredChange(Array.from(new Set([...requiredValues, value])));
+      return;
+    }
+    onRequiredChange(requiredValues.filter((item) => item !== value));
   }
 
   return (
@@ -5911,10 +6261,18 @@ function EditableCapabilityReferencesLine({
                       return (
                         <span
                           key={value}
-                          className="inline-flex max-w-[180px] items-center rounded-full bg-[#eef3fb] px-[8px] py-[3px] text-[11px] text-[#464c5e]"
+                          className={cn(
+                            'inline-flex max-w-[200px] items-center gap-[5px] rounded-full px-[8px] py-[3px] text-[11px]',
+                            required.has(value)
+                              ? 'bg-[#fff1dc] text-[#9a5a00]'
+                              : 'bg-[#eef3fb] text-[#464c5e]',
+                          )}
                           title={option?.label || value}
                         >
                           <span className="truncate">{option?.label || value}</span>
+                          <span className="shrink-0 text-[9px] opacity-75">
+                            {required.has(value) ? '强制' : '可选'}
+                          </span>
                         </span>
                       );
                     })
@@ -5942,7 +6300,7 @@ function EditableCapabilityReferencesLine({
                     const checked = selected.has(option.value);
                     const disabled = Boolean(option.unavailableReason) && !checked;
                     return (
-                      <label
+                      <div
                         key={option.value}
                         className={cn(
                           'flex items-start gap-[10px] rounded-[8px] px-[9px] py-[8px]',
@@ -5954,6 +6312,7 @@ function EditableCapabilityReferencesLine({
                           disabled={disabled}
                           className="mt-[2px]"
                           onCheckedChange={(next) => toggle(option.value, next === true)}
+                          aria-label={`${checked ? '取消选择' : '选择'}${option.label}`}
                         />
                         <span className="min-w-0 flex-1">
                           <span className="flex min-w-0 flex-wrap items-center gap-[6px]">
@@ -5967,13 +6326,41 @@ function EditableCapabilityReferencesLine({
                             {option.description || option.value}
                           </span>
                         </span>
-                      </label>
+                        {checked && (
+                          <span className="inline-flex shrink-0 rounded-[7px] bg-[#f0f2f6] p-[2px] text-[10px]">
+                            <button
+                              type="button"
+                              className={cn(
+                                'rounded-[5px] px-[7px] py-[3px] transition-colors',
+                                !required.has(option.value)
+                                  ? 'bg-white text-[#1a71ff] shadow-sm'
+                                  : 'text-[#7c8495] hover:text-[#464c5e]',
+                              )}
+                              onClick={() => setRequired(option.value, false)}
+                            >
+                              可选执行
+                            </button>
+                            <button
+                              type="button"
+                              className={cn(
+                                'rounded-[5px] px-[7px] py-[3px] transition-colors',
+                                required.has(option.value)
+                                  ? 'bg-[#fff7e8] text-[#a45f00] shadow-sm'
+                                  : 'text-[#7c8495] hover:text-[#464c5e]',
+                              )}
+                              onClick={() => setRequired(option.value, true)}
+                            >
+                              强制执行
+                            </button>
+                          </span>
+                        )}
+                      </div>
                     );
                   })
                 )}
               </div>
               <div className="border-t border-[#eceef1] px-[12px] py-[8px] text-[11px] leading-[1.45] text-[#858b9c]">
-                仅限 SOP 的能力只有被当前步骤选中后，才会提供给执行模型。
+                通用能力始终可由模型自主选择；仅限 SOP 的能力需在当前节点选择。标记为强制执行后，成功调用才允许推进节点。
               </div>
             </PopoverContent>
           </Popover>
@@ -6525,6 +6912,10 @@ function parseCompleteStreamSkill(streamText: string): SkillCard | null {
       version: stringValue(draft.version, '1.0.0'),
       business_domain: stringValue(draft.business_domain, ''),
       description: stringValue(draft.description, ''),
+      step_timeout_seconds:
+        typeof draft.step_timeout_seconds === 'number'
+          ? draft.step_timeout_seconds
+          : null,
       trigger_intents: asStringList(draft.trigger_intents),
       user_utterance_examples: asStringList(draft.user_utterance_examples),
       goal: asStringList(draft.goal),
@@ -6594,6 +6985,9 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
   const generalSkillIds = extractJsonStringArrayField(fragment, 'general_skill_ids') || [];
   const toolIds = extractJsonStringArrayField(fragment, 'tool_ids') || [];
   const knowledgeBaseIds = extractJsonStringArrayField(fragment, 'knowledge_base_ids') || [];
+  const requiredGeneralSkillIds = extractJsonStringArrayField(fragment, 'required_general_skill_ids') || [];
+  const requiredToolIds = extractJsonStringArrayField(fragment, 'required_tool_ids') || [];
+  const requiredKnowledgeBaseIds = extractJsonStringArrayField(fragment, 'required_knowledge_base_ids') || [];
   if (
     !nodeId
     && !name
@@ -6619,6 +7013,9 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
       general_skill_ids: generalSkillIds,
       tool_ids: toolIds,
       knowledge_base_ids: knowledgeBaseIds,
+      required_general_skill_ids: requiredGeneralSkillIds,
+      required_tool_ids: requiredToolIds,
+      required_knowledge_base_ids: requiredKnowledgeBaseIds,
     },
     knowledge_scope: {},
     retry_policy: {},
@@ -7164,6 +7561,9 @@ function canonicalizeSkillCapabilityRefs(skill: SkillCard): SkillCard {
     delete legacyFields.general_skill_ids;
     delete legacyFields.tool_ids;
     delete legacyFields.knowledge_base_ids;
+    delete legacyFields.required_general_skill_ids;
+    delete legacyFields.required_tool_ids;
+    delete legacyFields.required_knowledge_base_ids;
     return normalized;
   });
   return next;
@@ -7291,6 +7691,9 @@ function blankSkillForAnimation(skill: SkillCard): SkillCard {
       general_skill_ids: [],
       tool_ids: [],
       knowledge_base_ids: [],
+      required_general_skill_ids: [],
+      required_tool_ids: [],
+      required_knowledge_base_ids: [],
     },
     knowledge_scope: {},
     retry_policy: {},
@@ -7315,6 +7718,7 @@ function sectionSignature(skill: SkillCard, path: string): string {
       version: skill.version,
       business_domain: skill.business_domain || '',
       description: skill.description,
+      step_timeout_seconds: skill.step_timeout_seconds ?? null,
       trigger_intents: skill.trigger_intents || [],
       user_utterance_examples: skill.user_utterance_examples || [],
       goal: skill.goal || [],
@@ -7519,6 +7923,7 @@ function toolPayloadFromSuggestion(suggestion: ToolSuggestionItem, skillId?: str
     mcp_config: suggestion.tool_type === 'mcp' ? suggestion.mcp_config || {} : {},
     input_schema: suggestion.input_schema || {},
     output_schema: outputSchema,
+    execution_policy: { timeout_seconds: 8 },
     allowed_skills: skillId ? [skillId] : [],
     enabled: true,
   };
@@ -7543,6 +7948,7 @@ function toolReadFromSuggestion(suggestion: ToolSuggestionItem, skillId?: string
     mcp_config: suggestion.tool_type === 'mcp' ? suggestion.mcp_config || {} : {},
     input_schema: suggestion.input_schema || {},
     output_schema: outputSchema,
+    execution_policy: { timeout_seconds: 8 },
     allowed_skills: skillId ? [skillId] : [],
     enabled: true,
     created_at: new Date().toISOString(),
@@ -7564,6 +7970,7 @@ function fieldLabel(field: string): string {
     version: '版本',
     business_domain: '业务域',
     description: '描述',
+    step_timeout_seconds: '单步运行上限（秒）',
     trigger_intents: '触发意图',
     user_utterance_examples: '示例话术',
     goal: '目标',

@@ -156,6 +156,13 @@ def test_execution_policy_uses_tool_timeout_and_falls_back_for_invalid_values() 
     )
 
     assert executor._execution_policy(configured).timeout_seconds == 20
+    assert (
+        executor._execution_policy(
+            configured,
+            timeout_seconds_override=3.5,
+        ).timeout_seconds
+        == 3.5
+    )
     assert executor._execution_policy(invalid).timeout_seconds == 8
 
 

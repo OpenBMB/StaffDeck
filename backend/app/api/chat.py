@@ -926,11 +926,23 @@ async def upload_chat_attachments(
     if len(files) > MAX_CHAT_ATTACHMENTS:
         raise HTTPException(status_code=400, detail=f"最多一次上传 {MAX_CHAT_ATTACHMENTS} 个文件")
     parsed: list[ChatAttachmentRead] = []
+    from app.session.attachment_store import stage_chat_attachment
+
     for file in files:
         data = await file.read()
         if len(data) > MAX_CHAT_ATTACHMENT_BYTES:
             raise HTTPException(status_code=413, detail=f"{file.filename or '文件'} 超过上传大小限制")
-        parsed.append(parse_chat_attachment(file.filename or "uploaded-file", file.content_type, data))
+        attachment = parse_chat_attachment(
+            file.filename or "uploaded-file", file.content_type, data
+        )
+        parsed.append(
+            stage_chat_attachment(
+                attachment,
+                data,
+                tenant_id=tenant_id,
+                user_id=current_user.id,
+            )
+        )
     return parsed
 
 
@@ -2731,6 +2743,16 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
         detail_parts = [
             "SOP TaskFrame" if kind == "sop" else "对话 TaskFrame",
             f"步骤 {step_id}" if step_id else "",
+            (
+                f"单步上限 {payload.get('step_timeout_seconds')} 秒"
+                if payload.get("step_timeout_seconds")
+                else ""
+            ),
+            (
+                f"Harness 最多 {payload.get('harness_max_actions')} 轮"
+                if payload.get("harness_max_actions")
+                else ""
+            ),
         ]
         return {
             "id": f"harness_frame_{frame_id}",
@@ -2803,6 +2825,23 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
             "outputTitle": "查看能力结果" if output else None,
             "collapsible": bool(output),
             "state": "completed" if success else "failed",
+        }
+    if event_type == "harness_step_timeout":
+        timeout_seconds = payload.get("timeout_seconds")
+        action_count = payload.get("action_count")
+        return {
+            "id": f"harness_timeout_{frame_id}",
+            "kind": "skill",
+            "text": "SOP 单步运行超时",
+            "detail": " · ".join(
+                part
+                for part in (
+                    f"上限 {timeout_seconds} 秒" if timeout_seconds else "",
+                    f"已执行 {action_count} 个动作" if isinstance(action_count, int) else "",
+                )
+                if part
+            ) or None,
+            "state": "failed",
         }
     return None
 
@@ -3030,6 +3069,7 @@ def _event_trace_line(
         "task_frame_finished",
         "harness_action_created",
         "harness_tool_completed",
+        "harness_step_timeout",
     }:
         return _harness_event_trace_line(event)
     if event.event_type == "stream_status":
@@ -3415,11 +3455,16 @@ def _event_trace_line(
         success = payload.get("success")
         is_error = bool(payload.get("isError")) if success is None else not bool(success)
         detail_payload = content if isinstance(content, dict) else payload
+        output = _trace_payload_text(detail_payload)
         return {
             "id": f"tool_{tool_call_id}",
             "kind": "tool",
             "text": f"{'工具调用失败' if is_error else '调用工具'} {display_name}",
             "detail": _tool_trace_detail(detail_payload),
+            "output": output or None,
+            "outputLanguage": _trace_payload_language(output) if output else None,
+            "outputTitle": "查看工具结果" if output else None,
+            "collapsible": bool(output),
             "state": "failed" if is_error else "completed",
         }
     if event.event_type == "tool_call_finished":

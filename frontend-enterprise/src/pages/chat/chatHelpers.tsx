@@ -1323,7 +1323,7 @@ export function mergeTurnTraceSnapshot(existing: TurnTrace | undefined, incoming
   };
 }
 
-function formatTracePayload(value: unknown): string {
+export function formatTracePayload(value: unknown): string {
   if (value === undefined || value === null || value === '') return '';
   if (typeof value === 'string') {
     try {
@@ -1369,11 +1369,35 @@ export function harnessEventTraceLine(
       id: `harness_frame_${frameId}`,
       kind: kind === 'sop' ? 'skill' : 'decision',
       text: '开始执行任务',
-      detail: [kind === 'sop' ? 'SOP TaskFrame' : '对话 TaskFrame', stepId ? `步骤 ${stepId}` : '']
+      detail: [
+        kind === 'sop' ? 'SOP TaskFrame' : '对话 TaskFrame',
+        stepId ? `步骤 ${stepId}` : '',
+        typeof data.step_timeout_seconds === 'number'
+          ? `单步上限 ${data.step_timeout_seconds} 秒`
+          : '',
+        typeof data.harness_max_actions === 'number'
+          ? `Harness 最多 ${data.harness_max_actions} 轮`
+          : '',
+      ]
         .filter(Boolean)
         .join(' · '),
       state: 'running',
       icon: kind === 'sop' ? 'advance' : 'execute',
+    };
+  }
+  if (eventName === 'harness_step_timeout') {
+    const timeoutSeconds = typeof data.timeout_seconds === 'number' ? data.timeout_seconds : undefined;
+    const actionCount = typeof data.action_count === 'number' ? data.action_count : undefined;
+    return {
+      id: `harness_timeout_${frameId}`,
+      kind: 'skill',
+      text: 'SOP 单步运行超时',
+      detail: [
+        timeoutSeconds === undefined ? '' : `上限 ${timeoutSeconds} 秒`,
+        actionCount === undefined ? '' : `已执行 ${actionCount} 个动作`,
+      ].filter(Boolean).join(' · '),
+      state: 'failed',
+      icon: 'loading',
     };
   }
   if (eventName === 'task_frame_finished') {
@@ -1927,6 +1951,9 @@ export function harnessWorkspaceArtifacts(
       type: 'workspace_file',
       task_frame_id: artifact.task_frame_id,
       path: artifact.path,
+      ...(typeof artifact.sandbox_path === 'string'
+        ? { sandbox_path: artifact.sandbox_path }
+        : {}),
       ...(typeof artifact.sha256 === 'string' ? { sha256: artifact.sha256 } : {}),
       ...(typeof artifact.size === 'number' && Number.isFinite(artifact.size)
         ? { size: artifact.size }

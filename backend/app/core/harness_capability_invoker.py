@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import json
 import mimetypes
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -53,8 +54,11 @@ from app.harness import (
     HarnessToolContext,
     build_file_tool_registry,
     open_harness_artifact,
+    publish_changed_harness_artifacts,
     register_command_tools,
+    snapshot_harness_workspace,
 )
+from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
 from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
@@ -84,6 +88,7 @@ class HarnessCapabilityInvoker:
         is_cancelled: Any | None = None,
         ensure_execution_lease: Any | None = None,
         trace_sink: Callable[[str, dict[str, Any]], None] | None = None,
+        step_deadline_monotonic: float | None = None,
     ) -> None:
         self.db = db
         self.tenant_id = tenant_id
@@ -100,11 +105,13 @@ class HarnessCapabilityInvoker:
         self.is_cancelled = is_cancelled
         self.ensure_execution_lease = ensure_execution_lease
         self.trace_sink = trace_sink
+        self.step_deadline_monotonic = step_deadline_monotonic
         self.run_id = str(run_id or new_id("hrun"))
         self.workspace_root = _workspace_root(
             tenant_id, session.id, task_frame_id
         )
         self.workspace_root.mkdir(parents=True, exist_ok=True)
+        self._workspace_snapshot = snapshot_harness_workspace(self.workspace_root)
         ui_config = self.db.get(UIConfig, tenant_id)
         sandbox_mode = parse_network_policy(
             getattr(ui_config, "sandbox_network_mode", None) if ui_config else None
@@ -264,6 +271,38 @@ class HarnessCapabilityInvoker:
         self.db.commit()
         return result
 
+    def discover_artifacts(self) -> list[dict[str, Any]]:
+        """Publish every user-facing file changed during this AgentLoop run."""
+
+        try:
+            discovered = publish_changed_harness_artifacts(
+                self.workspace_root,
+                self.task_frame_id,
+                self._workspace_snapshot,
+                operation="workspace_discovery",
+                path_filter=_is_user_facing_workspace_file,
+            )
+        except (HarnessArtifactAccessError, OSError):
+            return []
+        artifacts: list[dict[str, Any]] = []
+        for raw in discovered:
+            item = dict(raw)
+            relative_path = str(item.get("path") or "")
+            display_name = Path(relative_path).name
+            item.update(
+                {
+                    "sandbox_path": _sandbox_path(relative_path),
+                    "display_name": display_name,
+                    "content_type": (
+                        mimetypes.guess_type(display_name)[0]
+                        or "application/octet-stream"
+                    ),
+                    "source": "harness.workspace_discovery",
+                }
+            )
+            artifacts.append(item)
+        return artifacts
+
     def _logical_action_key(
         self,
         descriptor: CapabilityDescriptor,
@@ -382,6 +421,7 @@ class HarnessCapabilityInvoker:
                             "type": "workspace_file",
                             "task_frame_id": self.task_frame_id,
                             "path": artifact_path,
+                            "sandbox_path": _sandbox_path(artifact_path),
                             "sha256": data.get("sha256"),
                             "size": data.get("size"),
                             "display_name": data.get("display_name"),
@@ -399,7 +439,7 @@ class HarnessCapabilityInvoker:
                 )
             return {
                 "success": True,
-                "data": data,
+                "data": _model_visible_file_result(data),
                 "artifacts": artifacts,
                 "duration_ms": result.duration_ms,
             }
@@ -772,6 +812,7 @@ class HarnessCapabilityInvoker:
                         "type": "workspace_file",
                         "task_frame_id": self.task_frame_id,
                         "path": path,
+                        "sandbox_path": _sandbox_path(path),
                         "sha256": digest,
                         "size": opened.size,
                         "display_name": display_name,
@@ -920,8 +961,14 @@ class HarnessCapabilityInvoker:
             ToolCall(name=source_tool_name, arguments=arguments),
             active_skill_id=self.active_skill_id,
             agent_id=self.agent_id,
+            timeout_seconds_override=self._remaining_step_seconds(),
         )
         return result.model_dump(mode="json")
+
+    def _remaining_step_seconds(self) -> float | None:
+        if self.step_deadline_monotonic is None:
+            return None
+        return max(self.step_deadline_monotonic - time.monotonic(), 0.1)
 
 
 def _workspace_root(
@@ -1125,3 +1172,50 @@ def _audit_result(result: dict[str, Any]) -> dict[str, Any]:
             if isinstance(item, dict)
         ]
     return audited
+
+
+def _sandbox_path(relative_path: str) -> str:
+    normalized = str(relative_path or "").strip().replace("\\", "/")
+    if normalized == SANDBOX_WORKSPACE or normalized.startswith(
+        f"{SANDBOX_WORKSPACE}/"
+    ):
+        return normalized
+    if normalized in {"", "."}:
+        return SANDBOX_WORKSPACE
+    return f"{SANDBOX_WORKSPACE}/{normalized.lstrip('/')}"
+
+
+def _model_visible_file_result(value: Any, *, key: str = "") -> Any:
+    path_keys = {"path", "source_path", "destination_path", "cwd"}
+    if isinstance(value, dict):
+        return {
+            item_key: _model_visible_file_result(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_model_visible_file_result(item, key=key) for item in value]
+    if isinstance(value, str) and key in path_keys:
+        return _sandbox_path(value)
+    return value
+
+
+def _is_user_facing_workspace_file(path: str) -> bool:
+    parts = Path(path).parts
+    if not parts:
+        return False
+    first = parts[0]
+    if first == "attachments" or first.startswith("general_skill_"):
+        return False
+    if any(
+        part in {
+            ".git",
+            ".harness-trash",
+            ".pytest_cache",
+            "__pycache__",
+            "node_modules",
+        }
+        or part.startswith(".tmp-")
+        for part in parts
+    ):
+        return False
+    return Path(path).suffix.lower() not in {".pyc", ".pyo", ".part", ".tmp"}

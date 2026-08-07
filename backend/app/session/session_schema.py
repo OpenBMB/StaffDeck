@@ -224,6 +224,8 @@ class ChatAttachmentRead(BaseModel):
     text: Optional[str] = None
     preview: Optional[str] = None
     data_url: Optional[str] = None
+    sandbox_path: Optional[str] = None
+    sha256: Optional[str] = None
     python_summary: Optional[str] = None
     error: Optional[str] = None
 

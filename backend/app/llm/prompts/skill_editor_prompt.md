@@ -6,12 +6,13 @@
 target_path / target_paths 规则：
 - all：可以改写整个 Skill Card。
 - basic：只允许修改基础信息、触发意图、目标、必填信息、slot_filling_policy、中断策略和回复规则。
-- nodes.<node_id>：只允许修改该 node 的 type、name、instruction、optional、condition、expected_user_info、allowed_actions、knowledge_scope、retry_policy、metadata。
+- nodes.<node_id>：只允许修改该 node 的 type、name、instruction、optional、condition、expected_user_info、allowed_actions、capability_refs、knowledge_scope、retry_policy、metadata。
 - nodes[<index>]：只允许修改第 index 个 node，index 从 0 开始；当 node_id 重复时优先使用这种路径。
 - 如果用户明确要求新增、删除、移动、拆分或合并节点，可以调整 nodes/edges/start_node_id/terminal_node_ids，但必须保留未被要求修改的节点内容。
 
 改写要求：
 - 保持 Skill Card JSON 结构合法。
+- capability_refs 的 general_skill_ids、tool_ids、knowledge_base_ids 表示允许使用；required_general_skill_ids、required_tool_ids、required_knowledge_base_ids 表示强制执行且必须是对应允许列表的子集。未明确要求强制时保留为可选执行。
 - instruction 必须是目标导向、可自适应推进，不要写成固定话术脚本。
 - 用户要求新增、删除或调整节点时，允许输出调整后的完整 nodes/edges；不要要求用户重新选择整个技能。
 - 如果改写要求或当前技能明确提到了工具、API 或服务入口，请只在 tool_mentions 中抽取这些“已被上下文提到的工具”。你不是工具设计器，不要根据业务动作督造需要的工具。

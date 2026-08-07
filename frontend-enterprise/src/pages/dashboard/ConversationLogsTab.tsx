@@ -68,6 +68,7 @@ type ConversationDetail = {
   feedback: Array<Record<string, unknown>>;
   events: EnterpriseSessionDetailRead['events'];
   traces: TurnTraceRead[];
+  toolInvocations: NonNullable<EnterpriseSessionDetailRead['tool_invocations']>;
 };
 
 const FILTER_TABS: UnderlineTabItem<ConversationLogFilter>[] = [
@@ -290,6 +291,7 @@ export default function ConversationLogsTab() {
         feedback: sessionDetail.feedback || [],
         events: sessionDetail.events || [],
         traces: sessionDetail.traces || [],
+        toolInvocations: sessionDetail.tool_invocations || [],
       });
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载对话详情失败');
@@ -718,6 +720,47 @@ function FeedbackDetailDialog({
                   ))
                 : null}
             </div>
+
+            <section className="rounded-[14px] border border-[#e3e7f1] bg-[#fafbfc] p-[14px]">
+              <div className="flex flex-wrap items-center justify-between gap-[8px]">
+                <div>
+                  <strong className="text-[13px] font-semibold text-[#18181a]">工具调用与原始日志 JSON</strong>
+                  <p className="m-0 mt-[3px] text-[11px] text-[#858b9c]">
+                    包含工具参数、返回结果、Trace、事件和消息，敏感字段使用服务端审计副本。
+                  </p>
+                </div>
+                <StatusBadge tone="blue">{detail.toolInvocations.length} 次工具调用</StatusBadge>
+              </div>
+
+              {detail.toolInvocations.length > 0 && (
+                <div className="mt-[12px] grid gap-[8px]">
+                  {detail.toolInvocations.map((invocation) => (
+                    <details key={invocation.id} className="rounded-[10px] border border-[#e6e9ef] bg-white px-[12px] py-[9px]">
+                      <summary className="cursor-pointer text-[12px] font-medium text-[#464c5e]">
+                        {invocation.tool_name} · {invocation.status} · {formatDateTime(invocation.started_at)}
+                      </summary>
+                      <pre className="mt-[10px] max-h-[360px] overflow-auto rounded-[8px] bg-[#18181a] p-[12px] text-[11px] leading-[1.55] text-[#d8e2f0]">
+                        {JSON.stringify(invocation, null, 2)}
+                      </pre>
+                    </details>
+                  ))}
+                </div>
+              )}
+
+              <details className="mt-[10px] rounded-[10px] border border-[#e6e9ef] bg-white px-[12px] py-[9px]">
+                <summary className="cursor-pointer text-[12px] font-medium text-[#464c5e]">查看完整会话日志 JSON</summary>
+                <pre className="mt-[10px] max-h-[520px] overflow-auto rounded-[8px] bg-[#18181a] p-[12px] text-[11px] leading-[1.55] text-[#d8e2f0]">
+                  {JSON.stringify({
+                    session: detail.session,
+                    messages: detail.messages,
+                    feedback: detail.feedback,
+                    traces: detail.traces,
+                    events: detail.events,
+                    tool_invocations: detail.toolInvocations,
+                  }, null, 2)}
+                </pre>
+              </details>
+            </section>
           </div>
         )}
       </DialogContent>

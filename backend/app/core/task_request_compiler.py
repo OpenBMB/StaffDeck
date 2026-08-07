@@ -48,9 +48,7 @@ class CapabilityManifest(BaseModel):
 
     def allowed_names(self) -> set[str]:
         return {
-            item.name
-            for item in self.available
-            if item.available and str(item.name or "").strip()
+            item.name for item in self.available if item.available and str(item.name or "").strip()
         }
 
 
@@ -64,6 +62,8 @@ class TaskRequirement(BaseModel):
     required_slots: list[str] = Field(default_factory=list)
     known_slots: dict[str, Any] = Field(default_factory=dict)
     completion_criteria: list[str] = Field(default_factory=list)
+    required_capability_names: list[str] = Field(default_factory=list)
+    required_knowledge_base_ids: list[str] = Field(default_factory=list)
     allowed_transitions: list[dict[str, Any]] = Field(default_factory=list)
     memory_projection: list[dict[str, str]] = Field(default_factory=list)
     prior_task_results: list[dict[str, Any]] = Field(default_factory=list)
@@ -124,11 +124,7 @@ class TaskRequestCompiler:
         requirements = _unique(
             [
                 str((current_node or {}).get("instruction") or "").strip(),
-                (
-                    "补齐以下字段：" + "、".join(required_slots)
-                    if required_slots
-                    else ""
-                ),
+                ("补齐以下字段：" + "、".join(required_slots) if required_slots else ""),
                 *frame.requirements,
             ]
         )
@@ -140,14 +136,29 @@ class TaskRequestCompiler:
                     if expected_fields
                     else ""
                 ),
-                *(
-                    _text_list((skill.content_json or {}).get("goal"))
-                    if skill is not None
-                    else []
-                ),
+                *(_text_list((skill.content_json or {}).get("goal")) if skill is not None else []),
                 "完整处理 TaskRequirement 中的全部子需求。",
             ]
         )
+        required_capability_names, required_knowledge_base_ids = _required_step_capabilities(
+            current_node,
+            manifest,
+        )
+        if required_capability_names:
+            completion_criteria = _unique(
+                [
+                    *completion_criteria,
+                    "成功调用当前 SOP 节点标记为强制执行的能力："
+                    + "、".join(required_capability_names),
+                ]
+            )
+        if required_knowledge_base_ids:
+            completion_criteria = _unique(
+                [
+                    *completion_criteria,
+                    "检索当前 SOP 节点要求的知识库：" + "、".join(required_knowledge_base_ids),
+                ]
+            )
         return TaskRequirement(
             task_frame_id=str(frame.task_id or ""),
             kind=frame.kind,
@@ -158,6 +169,8 @@ class TaskRequestCompiler:
             required_slots=required_slots,
             known_slots=known_slots,
             completion_criteria=completion_criteria,
+            required_capability_names=required_capability_names,
+            required_knowledge_base_ids=required_knowledge_base_ids,
             allowed_transitions=_transitions(skill, current_node),
             memory_projection=_memory_projection(memory_context),
             prior_task_results=list(prior_task_results or []),
@@ -166,9 +179,7 @@ class TaskRequestCompiler:
         )
 
 
-def current_step_capability_refs(
-    skill: Skill | None, step_id: str | None
-) -> dict[str, list[str]]:
+def current_step_capability_refs(skill: Skill | None, step_id: str | None) -> dict[str, list[str]]:
     node = _current_node(skill, step_id)
     refs = (node or {}).get("capability_refs")
     result = {
@@ -208,14 +219,40 @@ def _current_node(skill: Skill | None, step_id: str | None) -> dict[str, Any] | 
     return None
 
 
-def _transitions(
-    skill: Skill | None, current_node: dict[str, Any] | None
-) -> list[dict[str, Any]]:
+def _required_step_capabilities(
+    current_node: dict[str, Any] | None,
+    manifest: CapabilityManifest,
+) -> tuple[list[str], list[str]]:
+    if not current_node:
+        return [], []
+    refs = current_node.get("capability_refs")
+    if not isinstance(refs, dict):
+        return [], []
+    required_tool_refs = set(_text_list(refs.get("required_tool_ids")))
+    required_skill_refs = set(_text_list(refs.get("required_general_skill_ids")))
+    required_knowledge_base_ids = _text_list(refs.get("required_knowledge_base_ids"))
+    required: list[str] = []
+    for descriptor in manifest.available:
+        if not descriptor.available:
+            continue
+        matches_tool = descriptor.kind == "tool" and (
+            descriptor.capability_id in required_tool_refs or descriptor.name in required_tool_refs
+        )
+        matches_skill = descriptor.kind == "general_skill" and (
+            descriptor.capability_id in required_skill_refs
+            or descriptor.name in required_skill_refs
+        )
+        if matches_tool or matches_skill:
+            required.append(descriptor.name)
+    if required_knowledge_base_ids:
+        required.append("knowledge_search")
+    return _unique(required), required_knowledge_base_ids
+
+
+def _transitions(skill: Skill | None, current_node: dict[str, Any] | None) -> list[dict[str, Any]]:
     if skill is None or current_node is None:
         return []
-    node_id = str(
-        current_node.get("node_id") or current_node.get("step_id") or ""
-    ).strip()
+    node_id = str(current_node.get("node_id") or current_node.get("step_id") or "").strip()
     transitions: list[dict[str, Any]] = []
     for edge in (skill.content_json or {}).get("edges") or []:
         if not isinstance(edge, dict):
@@ -247,9 +284,7 @@ def _goal(
     return str(frame.user_intent or "完成用户本轮请求。").strip()
 
 
-def _sop_context(
-    skill: Skill | None, current_node: dict[str, Any] | None
-) -> dict[str, Any]:
+def _sop_context(skill: Skill | None, current_node: dict[str, Any] | None) -> dict[str, Any]:
     if skill is None:
         return {}
     return {

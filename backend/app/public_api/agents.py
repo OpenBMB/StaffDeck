@@ -81,6 +81,7 @@ def create_agent(
             persona_prompt=body.persona_prompt,
             source_mode=body.source_mode,
             copy_from_agent_id=body.copy_from_agent_id,
+            harness_max_actions=body.harness_max_actions,
             metadata=body.metadata,
         ),
         db,

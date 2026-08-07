@@ -354,7 +354,7 @@ export const FLOW_EDGE_PATH_CLASS =
 export const FLOW_EDGE_LABEL_BASE_CLASS =
   'pointer-events-none absolute z-[4] max-w-[176px] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border border-[#d7cbbb] bg-[#fffdf8]/98 px-[9px] py-[4px] text-[11px] leading-[1.35] text-ellipsis whitespace-nowrap text-[#5f574b] shadow-[0_8px_18px_rgba(38,32,23,0.1)]';
 export const FLOW_ROOT_POSITION_CLASS = 'absolute z-[6]';
-export const FLOW_NODE_POSITION_CLASS = 'absolute z-[7]';
+export const FLOW_NODE_POSITION_CLASS = 'absolute z-[7] cursor-grab touch-none active:cursor-grabbing';
 export const FLOW_NODE_SHELL_CLASS =
   'grid h-full w-full max-w-none justify-items-stretch gap-[8px]';
 

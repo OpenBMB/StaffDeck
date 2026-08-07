@@ -211,6 +211,12 @@ class LLMClient:
                     completion = self._protocol_driver().complete(request)
                 except BaseException as exc:
                     span.fail(exc, **_completion_span_metrics(None))
+                    if _image_parameter_unsupported(exc) and _messages_have_images(
+                        request_messages
+                    ):
+                        request_messages = _without_image_parts(request_messages)
+                        request["messages"] = request_messages
+                        continue
                     raise
                 content = _completion_message_content(completion)
                 metrics = _completion_span_metrics(completion)
@@ -363,6 +369,11 @@ class LLMClient:
                         reasoning_chars=reasoning_chars,
                         **stream_usage_metrics,
                     )
+                    if not emitted_text and _image_parameter_unsupported(
+                        exc
+                    ) and _messages_have_images(request_messages):
+                        request_messages = _without_image_parts(request_messages)
+                        continue
                     raise
                 if emitted_text:
                     span.finish(
@@ -698,6 +709,88 @@ def _request_messages(
     elif not context_messages:
         messages.append({"role": "user", "content": "{}"})
     return messages
+
+
+def _messages_have_images(messages: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(part, dict)
+        and str(part.get("type") or "") in {"image", "image_url", "input_image"}
+        for message in messages
+        for part in (
+            message.get("content")
+            if isinstance(message.get("content"), list)
+            else []
+        )
+    )
+
+
+def _without_image_parts(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stripped = copy.deepcopy(messages)
+    for message in stripped:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        text_parts = [
+            part
+            for part in content
+            if not (
+                isinstance(part, dict)
+                and str(part.get("type") or "")
+                in {"image", "image_url", "input_image"}
+            )
+        ]
+        message["content"] = text_parts or [
+            {
+                "type": "text",
+                "text": "图片参数不受当前模型支持；请改用任务中提供的沙箱文件路径。",
+            }
+        ]
+    return stripped
+
+
+def _image_parameter_unsupported(exc: BaseException) -> bool:
+    fragments: list[str] = []
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        fragments.extend((str(current), repr(current)))
+        body = getattr(current, "body", None)
+        if body is not None:
+            try:
+                fragments.append(json.dumps(body, ensure_ascii=False, default=str))
+            except (TypeError, ValueError):
+                fragments.append(str(body))
+        response = getattr(current, "response", None)
+        response_text = getattr(response, "text", None)
+        if response_text:
+            fragments.append(str(response_text))
+        current = current.__cause__ or current.__context__
+    detail = " ".join(fragments).lower()
+    image_markers = (
+        "image_url",
+        "input_image",
+        "image input",
+        "image parameter",
+        "vision",
+        "multimodal",
+        "图片",
+        "图像",
+    )
+    unsupported_markers = (
+        "not support",
+        "unsupported",
+        "does not accept",
+        "invalid content type",
+        "invalid parameter",
+        "unknown parameter",
+        "not allowed",
+        "不支持",
+        "无效参数",
+    )
+    return any(marker in detail for marker in image_markers) and any(
+        marker in detail for marker in unsupported_markers
+    )
 
 
 def _fit_request_messages(

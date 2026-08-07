@@ -59,8 +59,12 @@ def test_mime_diagnostic_does_not_record_requested_asset_name(
     app = FastAPI()
     app.mount("/assets", single_port_app.FrontendStaticFiles(directory=asset_dir))
 
-    with caplog.at_level("WARNING", logger="staffdeck.static"):
-        response = TestClient(app).head(f"/assets/{sensitive_name}")
+    single_port_app.logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level("WARNING", logger="staffdeck.static"):
+            response = TestClient(app).head(f"/assets/{sensitive_name}")
+    finally:
+        single_port_app.logger.removeHandler(caplog.handler)
 
     assert response.status_code == 200
     assert "Corrected frontend MIME suffix=.js" in caplog.text

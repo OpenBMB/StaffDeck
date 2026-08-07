@@ -36,3 +36,20 @@ def test_agent_loop_action_budget_clamps_stored_values_to_100() -> None:
     )
 
     assert AgentLoop._get_agent_loop_max_actions(owner, "tenant_test") == 100
+
+
+def test_agent_loop_action_budget_prefers_employee_configuration() -> None:
+    agent = SimpleNamespace(
+        tenant_id="tenant_test",
+        status="active",
+        harness_max_actions=17,
+    )
+
+    def get(model, key):
+        if model.__name__ == "AgentProfile" and key == "agent_1":
+            return agent
+        return SimpleNamespace(agent_loop_max_actions=64)
+
+    owner = SimpleNamespace(db=SimpleNamespace(get=get))
+
+    assert AgentLoop._get_agent_loop_max_actions(owner, "tenant_test", "agent_1") == 17

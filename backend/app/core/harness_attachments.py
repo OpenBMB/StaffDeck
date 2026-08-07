@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import re
-from pathlib import PurePath
+import hashlib
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from app.core.harness_session_cleanup import (
@@ -19,6 +21,10 @@ from app.session.attachments import (
     IMAGE_DATA_URL_LIMIT_BYTES,
     image_payloads_from_attachments,
     validate_chat_turn_attachments,
+)
+from app.session.attachment_store import (
+    read_staged_chat_attachment,
+    sandbox_attachment_path,
 )
 from app.session.session_schema import ChatAttachmentRead
 
@@ -40,6 +46,7 @@ def materialize_task_attachments(
     tenant_id: str,
     session_id: str,
     task_frame_id: str,
+    user_id: str = "",
 ) -> list[dict[str, Any]]:
     if not attachments:
         return []
@@ -57,6 +64,11 @@ def materialize_task_attachments(
     executor = HarnessExecutor(build_file_tool_registry())
     descriptors: list[dict[str, Any]] = []
     for index, attachment in enumerate(attachments, start=1):
+        staged_data = read_staged_chat_attachment(
+            attachment,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        ) if user_id and attachment.sha256 else None
         descriptor: dict[str, Any] = {
             "attachment_id": attachment.id,
             "filename": attachment.filename,
@@ -76,17 +88,53 @@ def materialize_task_attachments(
                         "image_error": image_error,
                     }
                 )
-        content = attachment.text
-        if content:
-            path = _attachment_path(attachment, index)
+        if staged_data is not None:
+            sandbox_path = sandbox_attachment_path(attachment, index)
+            relative_path = sandbox_path.removeprefix("/workspace/")
+            try:
+                _write_workspace_bytes(workspace, relative_path, staged_data)
+                descriptor.update(
+                    {
+                        "workspace_path": sandbox_path,
+                        "sandbox_path": sandbox_path,
+                        "sha256": hashlib.sha256(staged_data).hexdigest(),
+                        "materialized": True,
+                        "note": "原始附件已写入当前 TaskFrame 沙箱。",
+                    }
+                )
+            except OSError as exc:
+                descriptor.update(
+                    {
+                        "materialized": False,
+                        "error": f"附件写入失败：{type(exc).__name__}",
+                    }
+                )
+            if attachment.kind == "pdf" and attachment.text:
+                extracted_path = f"{sandbox_path}.extracted.txt"
+                extracted_result = executor.execute(
+                    context,
+                    HarnessToolCall(
+                        call_id=f"attachment-text-{index}",
+                        name="write_file",
+                        arguments={
+                            "path": extracted_path,
+                            "content": attachment.text,
+                            "create_parents": True,
+                        },
+                    ),
+                )
+                if extracted_result.success:
+                    descriptor["extracted_text_path"] = extracted_path
+        elif attachment.text:
+            sandbox_path = sandbox_attachment_path(attachment, index)
             result = executor.execute(
                 context,
                 HarnessToolCall(
                     call_id=f"attachment-{index}",
                     name="write_file",
                     arguments={
-                        "path": path,
-                        "content": content,
+                        "path": sandbox_path,
+                        "content": attachment.text,
                         "create_parents": True,
                     },
                 ),
@@ -95,11 +143,12 @@ def materialize_task_attachments(
                 data = dict(result.data or {})
                 descriptor.update(
                     {
-                        "workspace_path": data.get("path"),
+                        "workspace_path": sandbox_path,
+                        "sandbox_path": sandbox_path,
                         "sha256": data.get("sha256"),
                         "materialized": True,
                         "note": (
-                            "PDF 附件保存的是服务端提取文本。"
+                            "未找到原始上传暂存；PDF 附件保存的是服务端提取文本。"
                             if attachment.kind == "pdf"
                             else "附件文本已保存到当前 TaskFrame workspace。"
                         ),
@@ -282,16 +331,21 @@ def _descriptor_image_attachment(
         return None
 
 
-def _attachment_path(
-    attachment: ChatAttachmentRead,
-    index: int,
-) -> str:
-    basename = PurePath(attachment.filename or f"attachment-{index}").name
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", basename).strip(".-")
-    safe_name = safe_name[:96] or f"attachment-{index}.txt"
-    if attachment.kind == "pdf":
-        safe_name = f"{safe_name}.extracted.txt"
-    return (
-        "attachments/"
-        f"{harness_path_segment(attachment.id)[:32]}-{safe_name}"
+def _write_workspace_bytes(workspace: Path, relative_path: str, data: bytes) -> None:
+    destination = workspace.joinpath(*relative_path.split("/"))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    resolved_parent = destination.parent.resolve(strict=True)
+    resolved_parent.relative_to(workspace.resolve(strict=True))
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{destination.name}-",
+        dir=str(destination.parent),
     )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)

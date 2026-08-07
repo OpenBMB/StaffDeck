@@ -15,6 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.harness.contracts import HarnessToolContext
+from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
 from app.harness.registry import HarnessRegistry
 
@@ -959,7 +960,8 @@ def _normalize_relative_path(raw_path: str, *, allow_root: bool) -> PurePosixPat
         raise HarnessExecutionError("INVALID_PATH", "Path cannot be empty.")
     if PureWindowsPath(raw_path).drive:
         raise HarnessExecutionError("INVALID_PATH", "Absolute or drive-qualified paths are denied.")
-    normalized = PurePosixPath(raw_path.replace("\\", "/"))
+    normalized_raw = _strip_sandbox_workspace_prefix(raw_path.replace("\\", "/"))
+    normalized = PurePosixPath(normalized_raw)
     if normalized.is_absolute():
         raise HarnessExecutionError("INVALID_PATH", "Absolute paths are denied.")
     parts = tuple(part for part in normalized.parts if part not in {"", "."})
@@ -977,13 +979,22 @@ def _normalize_glob(raw_pattern: str | None) -> str:
         raise HarnessExecutionError("INVALID_PATTERN", "Glob pattern cannot be empty.")
     if PureWindowsPath(raw_pattern).drive:
         raise HarnessExecutionError("INVALID_PATTERN", "Absolute glob patterns are denied.")
-    pattern = raw_pattern.replace("\\", "/")
+    pattern = _strip_sandbox_workspace_prefix(raw_pattern.replace("\\", "/"))
     parsed = PurePosixPath(pattern)
     if parsed.is_absolute() or ".." in parsed.parts:
         raise HarnessExecutionError("INVALID_PATTERN", "Glob traversal outside the workspace is denied.")
     if _TRASH_DIRECTORY in parsed.parts:
         raise HarnessExecutionError("RESERVED_PATH", "Harness trash cannot be searched.")
     return pattern
+
+
+def _strip_sandbox_workspace_prefix(raw_path: str) -> str:
+    if raw_path == SANDBOX_WORKSPACE:
+        return "."
+    prefix = f"{SANDBOX_WORKSPACE}/"
+    if raw_path.startswith(prefix):
+        return raw_path[len(prefix) :]
+    return raw_path
 
 
 def _glob_matches(relative_path: str, pattern: str) -> bool:
