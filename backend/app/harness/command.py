@@ -370,7 +370,10 @@ def register_command_tools(registry: HarnessRegistry) -> HarnessRegistry:
             "statements, inside this TaskFrame workspace. "
             "Linux and macOS use Bash; Windows uses PowerShell. The selected OS "
             "sandbox makes only this workspace writable and applies the tenant's "
-            "configured network policy."
+            "configured network policy. On Windows do not use Bash syntax (heredoc, "
+            "python3, py -3, or bash chaining); use PowerShell statements. In a "
+            "packaged Windows build, python/python3 resolve to the bundled runtime; "
+            "in source deployments, use the General Skill Python runtime."
         ),
         argument_model=ExecCommandArguments,
         handler=exec_command,
@@ -666,6 +669,9 @@ def _write_srt_settings(
             )
         )
     allow_read = [str(workspace.resolve())]
+    runtime_root = _bundled_runtime_root()
+    if runtime_root is not None:
+        allow_read.append(str(runtime_root))
     allow_write = ["."]
     if sandbox_temp is not None:
         resolved_temp = str(sandbox_temp.resolve(strict=True))
@@ -741,9 +747,20 @@ def _srt_argv(*, settings_path: Path, command: str) -> list[str]:
 def _windows_powershell_command(command: str) -> str:
     # Windows PowerShell inherits the machine code page for redirected output;
     # force UTF-8 so the harness' UTF-8 decoder preserves non-ASCII results.
+    runtime_alias = ""
+    runtime = _bundled_runtime_root()
+    if runtime is not None:
+        python_path = str(runtime / "python.exe").replace("'", "''")
+        runtime_alias = (
+            f"$staffdeckPython = '{python_path}'\n"
+            "function Invoke-StaffDeckPython { & $staffdeckPython @args }\n"
+            "Set-Alias -Name python -Value Invoke-StaffDeckPython\n"
+            "Set-Alias -Name python3 -Value Invoke-StaffDeckPython\n"
+        )
     script = (
         "$OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
         "[Console]::OutputEncoding = $OutputEncoding\n"
+        f"{runtime_alias}"
         f"{command}"
     )
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
@@ -752,14 +769,17 @@ def _windows_powershell_command(command: str) -> str:
 
 def _unsandboxed_argv(command: str) -> list[str]:
     if sys.platform == "win32":
-        script = (
-            "$OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
-            "[Console]::OutputEncoding = $OutputEncoding\n"
-            f"{command}"
-        )
-        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        encoded = _windows_powershell_command(command).split()[-1]
         return [_WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
     return [_BASH_PATH, "--noprofile", "--norc", "-c", command]
+
+
+def _bundled_runtime_root() -> Path | None:
+    """Return the frozen app's bundled Python directory, when present."""
+    if sys.platform != "win32":
+        return None
+    root = Path(sys.executable).resolve().parent / "runtime"
+    return root if (root / "python.exe").is_file() else None
 
 
 def _bubblewrap_argv(
@@ -1098,6 +1118,21 @@ def _validate_windows_command(command: str) -> None:
         raise _command_denied("Command contains an unsupported control character.")
     if len(command) > _MAX_COMMAND_CHARS:
         raise _command_denied("Command exceeds the maximum length.")
+    if re.search(r"(?m)(?:^|\n)\s*<<\s*['\"]?", command):
+        raise _command_denied(
+            "Bash heredoc syntax is not supported on Windows PowerShell. "
+            "Use write_file/General Skill for Python files, or a PowerShell here-string."
+        )
+    if "&&" in command:
+        raise _command_denied(
+            "Bash command chaining (&&) is not supported by this Windows PowerShell. "
+            "Use newline-separated PowerShell statements or ';'."
+        )
+    if re.search(r"(?im)(?:^|[;&|\n])\s*py(?:\.exe)?(?:\s|$)", command):
+        raise _command_denied(
+            "py is not the bundled Python runtime on Windows. "
+            "Use the General Skill Python runtime for Python execution."
+        )
     if _WINDOWS_PARENT_PATH.search(command):
         raise _command_denied("Parent-directory traversal is not allowed.")
     if _WINDOWS_ABSOLUTE_PATH.search(command):

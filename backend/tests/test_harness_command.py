@@ -347,6 +347,37 @@ def test_windows_validator_rejects_escape_and_nested_host_commands(command: str)
     assert denied.value.error.code == "COMMAND_DENIED"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 heart_png.py && python3 - <<'PY'\nprint('x')\nPY",
+        "py -3 heart_png.py",
+    ],
+)
+def test_windows_validator_explains_bash_and_python_runtime_mismatch(
+    command: str,
+) -> None:
+    with pytest.raises(HarnessExecutionError) as denied:
+        command_module._validate_windows_command(command)
+
+    assert denied.value.error.code == "COMMAND_DENIED"
+    assert "General Skill" in denied.value.error.message or "PowerShell" in denied.value.error.message
+
+
+def test_packaged_windows_shell_aliases_bundled_python(tmp_path: Path, monkeypatch) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "python.exe").write_bytes(b"bundled")
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setattr(command_module.sys, "executable", str(tmp_path / "staffdeck.exe"))
+
+    encoded = command_module._windows_powershell_command("python3 -c 'print(1)'").split()[-1]
+    script = base64.b64decode(encoded).decode("utf-16le")
+
+    assert "Set-Alias -Name python3" in script
+    assert str(runtime / "python.exe") in script
+
+
 def test_srt_protects_frozen_default_database_without_blocking_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
