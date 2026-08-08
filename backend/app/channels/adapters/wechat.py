@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import os
 import threading
@@ -11,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import text
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from app.channels.adapters.base import (
@@ -46,6 +45,27 @@ RECOVERY_MAX_FAILURES = 5
 WECHAT_ALLOWED_HOSTS = ("ilinkai.weixin.qq.com",)
 
 
+# 同进程运行时补丁串行锁:读-改-写不是单条 SQL,避免并发补丁互相覆盖
+# (跨会话/进程的并发写由 SELECT ... FOR UPDATE 行锁互斥,见 _patch_runtime_config)
+_runtime_patch_locks: dict[str, threading.Lock] = {}
+_runtime_patch_locks_guard = threading.Lock()
+
+
+def _runtime_patch_lock(binding_id: str) -> threading.Lock:
+    with _runtime_patch_locks_guard:
+        lock = _runtime_patch_locks.get(binding_id)
+        if lock is None:
+            lock = threading.Lock()
+            _runtime_patch_locks[binding_id] = lock
+        return lock
+
+
+def _drop_runtime_patch_lock(binding_id: str) -> None:
+    """binding ingress 停止后清理其补丁锁,避免锁字典随绑定增删无上限累积。"""
+    with _runtime_patch_locks_guard:
+        _runtime_patch_locks.pop(binding_id, None)
+
+
 def _patch_runtime_config(
     db_engine,
     binding_id: str,
@@ -57,49 +77,53 @@ def _patch_runtime_config(
     expected_values: dict[str, Any] | None = None,
     binding_values: dict[str, Any] | None = None,
 ) -> bool:
-    """Atomically patch connector-owned JSON keys without replacing API configuration."""
-    config_expr = "COALESCE(config_json, '{}')"
-    params: dict[str, Any] = {"binding_id": binding_id, "updated_at": utc_now()}
-    for index, (key, value) in enumerate((set_values or {}).items()):
-        params[f"set_path_{index}"] = f"$.{key}"
-        params[f"set_value_{index}"] = json.dumps(value, ensure_ascii=False)
-        config_expr = (
-            f"json_set({config_expr}, :set_path_{index}, json(:set_value_{index}))"
-        )
-    for index, key in enumerate(remove_keys):
-        params[f"remove_path_{index}"] = f"$.{key}"
-        config_expr = f"json_remove({config_expr}, :remove_path_{index})"
+    """Atomically patch connector-owned JSON keys without replacing API configuration.
 
-    assignments = ["updated_at = :updated_at"]
-    if set_values or remove_keys:
-        assignments.insert(0, f"config_json = {config_expr}")
+    ORM 读-改-写 + SELECT ... FOR UPDATE 行锁 + config_revision CAS:读取即锁定
+    目标行直到提交,与 API 侧补丁(_patch_binding_config_key,同样持 FOR UPDATE)
+    互斥,关闭整份 JSON 读-改-写的丢写窗口;PG 真实加锁,SQLite 不支持 FOR UPDATE
+    由 SQLAlchemy 自动省略(单行 WAL 写串行 + 同进程补丁锁,行为不变)。
+    expected_revision/expected_values 在 Python 侧校验后随写回一并执行。
+    """
     allowed_binding_values = {"connected", "status"}
+    column_values: dict[str, Any] = {}
     for key, value in (binding_values or {}).items():
         if key not in allowed_binding_values:
             raise ValueError(f"unsupported binding runtime field: {key}")
-        params[f"binding_value_{key}"] = value
-        assignments.append(f"{key} = :binding_value_{key}")
+        column_values[key] = value
 
-    predicates = ["id = :binding_id"]
-    if require_active:
-        predicates.append("status = 'active'")
-    if expected_revision is not None:
-        params["expected_revision"] = expected_revision
-        predicates.append("config_revision = :expected_revision")
-    for index, (key, value) in enumerate((expected_values or {}).items()):
-        params[f"expected_path_{index}"] = f"$.{key}"
-        params[f"expected_value_{index}"] = value
-        predicates.append(
-            f"json_extract(config_json, :expected_path_{index}) = :expected_value_{index}"
-        )
+    with _runtime_patch_lock(binding_id), Session(db_engine) as db:
+        binding = db.exec(
+            select(ChannelBinding)
+            .where(ChannelBinding.id == binding_id)
+            .with_for_update()
+        ).first()
+        if not binding:
+            return False
+        if require_active and binding.status != "active":
+            return False
+        revision = binding.config_revision
+        if expected_revision is not None and revision != expected_revision:
+            return False
+        config = dict(binding.config_json or {})
+        for key, value in (expected_values or {}).items():
+            if config.get(key) != value:
+                return False
+        for key, value in (set_values or {}).items():
+            config[key] = value
+        for key in remove_keys:
+            config.pop(key, None)
 
-    with Session(db_engine) as db:
+        values: dict[str, Any] = {"updated_at": utc_now(), **column_values}
+        if set_values or remove_keys:
+            values["config_json"] = config
         result = db.exec(
-            text(
-                f"UPDATE channel_bindings SET {', '.join(assignments)} "
-                f"WHERE {' AND '.join(predicates)}"
-            ),
-            params=params,
+            update(ChannelBinding)
+            .where(
+                ChannelBinding.id == binding_id,
+                ChannelBinding.config_revision == revision,
+            )
+            .values(**values)
         )
         db.commit()
         return result.rowcount == 1
@@ -547,7 +571,11 @@ class WeChatPollManager:
         if thread and thread.is_alive():
             deadline = time.monotonic() + max(0.0, timeout_seconds)
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        return not (thread and thread.is_alive())
+        stopped = not (thread and thread.is_alive())
+        if stopped:
+            # 线程确认退出后清理其运行时补丁锁,避免锁字典随绑定增删无上限累积
+            _drop_runtime_patch_lock(binding_id)
+        return stopped
 
     def running_binding_ids(self) -> set[str]:
         with self._lock:

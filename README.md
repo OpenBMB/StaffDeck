@@ -260,6 +260,23 @@ Digital employees can serve users directly over IM channels: users chat with emp
 - Channel credentials (bot tokens/secrets) are stored Fernet-encrypted and never returned by any API;
 - Binding management is restricted to admins or the binding creator; mounting an employee exposes it to all users of that channel — grant with care.
 
+## Database Backends
+
+StaffDeck keeps all state in one SQL database and defaults to local SQLite (zero setup). The data layer is dialect-pluggable: business code goes through SQLAlchemy ORM, and the few dialect-specific points (day bucketing, JSON config patching, process/advisory locks, partial indexes) are centralized in `backend/app/db/dialect.py`.
+
+| Backend | Status | Notes |
+| --- | --- | --- |
+| SQLite (default) | Supported | File database; process locks are file locks placed next to the DB file. |
+| PostgreSQL / openGauss | Experimental | Full feature set via the `postgresql` dialect. Install the optional driver first: `pip install "skill-agent-loop-backend[postgres]"`, then set `DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"` in `backend/.env`. |
+| MySQL / Dameng (达梦) | Adapter needed | Register a small dialect adapter (see the `dialect.py` docstring). These engines lack partial unique indexes, so the "one default model per tenant" invariant is enforced in code plus a startup check (no DB-level constraint at runtime); without a native advisory-lock implementation, the connector lock fails loudly at startup instead of silently mis-locking. JSON columns degrade to CLOB via `PortableJSON`; long-text columns are explicitly `Text` (no silent VARCHAR(255) truncation). |
+
+Current limitations when running on PostgreSQL/openGauss:
+
+- **Fresh databases only**: `create_all` initializes a new database, but there is no migration path for existing schemas yet (Alembic migrations are a follow-up task). A startup warning is emitted as a reminder.
+- **Single-writer startup**: run only one application worker during first boot/upgrades — concurrent `create_all` + demo seeding from multiple workers can race (DuplicateTable / unique conflicts). SQLite serializes this via write locks; PostgreSQL deployments should init with a single worker first.
+- `APP_TIMEZONE` only affects PostgreSQL day bucketing; on SQLite, day buckets always use the server's local timezone.
+- Run exactly one connector process per database — the single-instance guard uses a session-scoped PostgreSQL advisory lock (held on a dedicated autocommit connection) with periodic liveness checks (channel services degrade and stop if the lock is lost).
+
 ## Project Structure
 
 ```text
