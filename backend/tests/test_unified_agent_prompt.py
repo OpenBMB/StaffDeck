@@ -105,7 +105,7 @@ def test_four_agent_stages_use_identical_system_and_stage_local_user_content(
         assert payload["_agent_stage"]["output_contract"]
 
 
-def test_general_skill_substages_use_the_same_unified_system_prompt(monkeypatch) -> None:
+def test_general_skill_substages_share_base_prompt_with_skill_caching_suffix(monkeypatch) -> None:
     systems: dict[str, str] = {}
 
     def fake_init(self, model_config):  # noqa: ANN001
@@ -199,5 +199,18 @@ def test_general_skill_substages_use_the_same_unified_system_prompt(monkeypatch)
         "Reflection / General Skill Review",
         "Response Generator / General Skill Reply",
     }
-    assert len(set(systems.values())) == 1
-    assert "统一执行引擎" in next(iter(systems.values()))
+    base_prompt = systems["Router / General Skill Selector"]
+    assert "统一执行引擎" in base_prompt
+    # Selector and Reply never see the full SKILL.md, so their system
+    # message stays on the pure base prompt regardless of which skill is
+    # active — that keeps it maximally cache-stable across skills.
+    assert systems["Response Generator / General Skill Reply"] == base_prompt
+    # Plan and Review embed the active skill's SKILL.md in the system
+    # prompt (not the per-turn payload) so repeat calls for the same skill
+    # hit the provider's prefix cache instead of re-billing the full text
+    # on every turn.
+    skill_aware_prompt = systems["Step Agent / General Skill Plan"]
+    assert systems["Reflection / General Skill Review"] == skill_aware_prompt
+    assert skill_aware_prompt.startswith(base_prompt)
+    assert skill.skill_markdown in skill_aware_prompt
+    assert skill_aware_prompt != base_prompt
