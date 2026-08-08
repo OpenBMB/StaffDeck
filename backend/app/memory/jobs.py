@@ -5,6 +5,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app.async_jobs import AsyncJob, enqueue_async_job
+from app.channels.adapters.base import is_group_conv_id
 from app.db import engine
 from app.db.models import AgentEvent, ChatSession, Message, ModelConfig
 from app.memory.service import MemoryService, memory_read
@@ -62,6 +63,9 @@ def run_memory_capture_job(payload: dict[str, Any]) -> None:
                 },
             )
             db.commit()
+            return
+        # 群记忆红线:群聊会话不沉淀任何记忆(成员隐私不得混入群账号/跨成员共享)
+        if is_group_conv_id(chat_session.channel or "", chat_session.external_conv_id or ""):
             return
 
         user_events = db.exec(

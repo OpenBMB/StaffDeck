@@ -1652,22 +1652,29 @@ def test_worker_retirement_and_reconcile_rebuild(monkeypatch) -> None:
     manager.stop_binding(binding_id)
 
 
-def test_group_without_chatid_degrades_to_p2p_with_warning(caplog) -> None:
+def test_group_without_chatid_dropped_with_warning(caplog) -> None:
     import logging
 
     frame = _text_frame(chattype="group", chatid="")
     with caplog.at_level(logging.WARNING, logger="app.channels.adapters.wecom"):
         inbound = normalize_wecom_frame(frame)
-    assert inbound is not None
-    # chattype=group 但缺 chatid:降级私聊,不退化为"每人一个群会话"
-    assert inbound.is_group is False
-    assert inbound.external_conv_id == "wecom_p2p_zhangsan"
+    # chattype=group 但缺 chatid:无法构成稳定群会话,丢弃,绝不降级混入私聊
+    assert inbound is None
     assert any("缺少 chatid" in record.message for record in caplog.records)
 
     # 有 chatid 的群形态不变
     group = normalize_wecom_frame(_text_frame(chatid="wr_1", chattype="group"))
     assert group is not None and group.is_group is True
     assert group.external_conv_id == "wecom_group_wr_1"
+
+
+def test_single_chattype_with_chatid_is_p2p() -> None:
+    """chattype=single 却带 chatid 的异常帧:以 chattype 为准按私聊处理。"""
+    inbound = normalize_wecom_frame(_text_frame(chattype="single", chatid="wr_ignored"))
+    assert inbound is not None
+    assert inbound.is_group is False
+    assert inbound.group_id == ""
+    assert inbound.external_conv_id == "wecom_p2p_zhangsan"
 
 
 # ---------- 断开超时主动告警 ----------

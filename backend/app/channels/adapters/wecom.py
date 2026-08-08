@@ -57,11 +57,11 @@ def normalize_wecom_frame(frame: dict[str, Any], *, account_scope: str = "") -> 
     chat_id = str(body.get("chatid") or "").strip()
     chattype = str(body.get("chattype") or "").strip()
     if chattype == "group" and not chat_id:
-        # 群消息缺 chatid 时按私聊降级,避免群会话退化为每人一个会话
-        logger.warning("企微群消息缺少 chatid,按私聊降级处理 msgid=%s", body.get("msgid"))
-        chattype = "single"
-    # 官方文档：chatid 仅群聊返回
-    is_group = bool(chat_id)
+        # 群消息缺 chatid 无法构成稳定群会话:丢弃,绝不降级混入成员私聊会话
+        logger.warning("企微群消息缺少 chatid,丢弃 msgid=%s", body.get("msgid"))
+        return None
+    # 以 chattype 为准(官方文档 chatid 仅群聊返回,但字段存在性不等于会话类型)
+    is_group = chattype == "group"
     headers = frame.get("headers") or {}
     event_id = str(body.get("msgid") or body.get("msg_id") or headers.get("req_id") or "").strip()
     if not event_id:
@@ -72,10 +72,10 @@ def normalize_wecom_frame(frame: dict[str, Any], *, account_scope: str = "") -> 
         event_id=event_id,
         from_user_id=from_user_id,
         to_user_id=str(body.get("aibotid") or "").strip(),
-        session_id=chat_id or from_user_id,
-        group_id=chat_id,
+        session_id=(chat_id or from_user_id) if is_group else from_user_id,
+        group_id=chat_id if is_group else "",
         # 企微无 context_token 概念：发送仅需 chatid，占位保持内核必填语义
-        context_token=chat_id or from_user_id,
+        context_token=(chat_id or from_user_id) if is_group else from_user_id,
         text=text,
         is_group=is_group,
         raw=frame,

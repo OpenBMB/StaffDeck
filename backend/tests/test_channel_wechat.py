@@ -970,3 +970,21 @@ def test_chunk_client_id_carries_chunk_index() -> None:
     random_ids = [payload["msg"]["client_id"] for payload in sent]
     assert len(set(random_ids)) == 3
     assert all(not cid.startswith("staffdeck:msg_1") for cid in random_ids)
+
+
+def test_is_group_conv_id_formats() -> None:
+    from app.channels.adapters.base import is_group_conv_id
+
+    # 无 scope 旧格式 / 带 scope / 成员级(#member)三种群格式均判真
+    assert is_group_conv_id("wechat", "wechat_group_room_1") is True
+    assert is_group_conv_id("wecom", "wecom_corpA_group_wr_1") is True
+    assert is_group_conv_id("wecom", "wecom_corpA_group_wr_1#zhangsan") is True
+    assert is_group_conv_id("feishu", "feishu_group_oc_1:thread:ot_1") is True
+    # 私聊不误判
+    assert is_group_conv_id("wechat", "wechat_p2p_user_1") is False
+    assert is_group_conv_id("wecom", "wecom_corpA_p2p_zhangsan") is False
+    # 私聊用户 ID 含 "_group_" 也不能误判为群(评审案例)
+    assert is_group_conv_id("wechat", "wechat_p2p_user_group_alice") is False
+    assert is_group_conv_id("wecom", "wecom_corpA_p2p_user_group_bob") is False
+    # channel 不匹配不误判
+    assert is_group_conv_id("wechat", "wecom_group_wr_1") is False

@@ -19,6 +19,7 @@ from app.channels import (
     resume_binding_ingress,
     wait_binding_ingress_stopped,
 )
+from app.channels.adapters.base import is_group_conv_id
 from app.channels.adapters.dingtalk import (
     DingTalkPermanentError,
     validate_dingtalk_credentials,
@@ -1275,7 +1276,6 @@ def list_channel_conversations(
         ).all()
         message_counts = {session_id: count for session_id, count in count_rows}
 
-    group_prefix = f"{binding.channel}_group_"
     conversations: list[ChannelConversationRead] = []
     for chat_session in page:
         last_message = db.exec(
@@ -1291,7 +1291,9 @@ def list_channel_conversations(
                 external_conv_id=external_conv_id,
                 display_name=identity_names.get(chat_session.user_id)
                 or user_names.get(chat_session.user_id),
-                is_group=bool(external_conv_id and external_conv_id.startswith(group_prefix)),
+                is_group=bool(
+                    external_conv_id and is_group_conv_id(binding.channel, external_conv_id)
+                ),
                 agent_id=chat_session.agent_id,
                 agent_name=agent_name_map.get(chat_session.agent_id),
                 message_count=message_counts.get(chat_session.id, 0),
