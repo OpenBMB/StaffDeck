@@ -192,6 +192,8 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
             return
         if binding.channel == "feishu":
             valid_target = bool(target.get("message_id") or target.get("receive_id"))
+        elif binding.channel == "discord":
+            valid_target = bool(target.get("channel_id"))
         else:
             valid_target = bool(target.get("to_user_id") and target.get("context_token"))
         if not valid_target:
@@ -785,6 +787,12 @@ def notify_binding_creator(db: Session, binding: ChannelBinding, text: str) -> N
         if chat_session and (chat_session.channel_target_json or {}).get("to_user_id"):
             target = dict(chat_session.channel_target_json)
             session_id = chat_session.id
+        elif binding.channel == "discord":
+            # discord 无 context_token 体系,fallback 缺 channel_id 必然永久失败,跳过
+            logger.info(
+                "渠道告警跳过:discord 创建者无可用会话目标 binding=%s", binding.id
+            )
+            return
         else:
             target = {"to_user_id": identity.external_user_id, "context_token": ""}
             session_id = f"alert:{identity.id}"

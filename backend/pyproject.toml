@@ -27,7 +27,8 @@ dependencies = [
   "tzdata>=2025.2",
   "uvicorn[standard]>=0.30.0",
   "wecom-aibot-python-sdk>=1.0.2",
-  "dingtalk-stream>=0.24.3,<0.25.0"
+  "dingtalk-stream>=0.24.3,<0.25.0",
+  "discord.py>=2.3.0,<2.6.0"
 ]
 
 [project.optional-dependencies]
