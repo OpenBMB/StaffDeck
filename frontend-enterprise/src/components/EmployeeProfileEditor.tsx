@@ -20,7 +20,7 @@ import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
 import { api, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
 import { employeeDisplayName, employeeProfile } from '../employee';
-import type { AgentProfileRead } from '../types';
+import type { AgentModelBindingRead, AgentProfileRead, ModelConfigRead } from '../types';
 import EmployeeAvatar from './EmployeeAvatar';
 
 type EmployeeProfileFormValues = {
@@ -72,6 +72,8 @@ export default function EmployeeProfileEditor({
 }) {
   const [form, setForm] = useState<EmployeeProfileFormValues>(BLANK_FORM);
   const [saving, setSaving] = useState(false);
+  const [models, setModels] = useState<ModelConfigRead[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState('');
   const profile = useMemo(() => employeeProfile(agent), [agent]);
 
   const update = (patch: Partial<EmployeeProfileFormValues>) => setForm((prev) => ({ ...prev, ...patch }));
@@ -92,6 +94,13 @@ export default function EmployeeProfileEditor({
       status: agent.status === 'archived' ? 'archived' : 'active',
       publishedToGallery: agent.metadata?.published_to_gallery === true,
     });
+    void Promise.all([
+      api.get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}`),
+      api.get<AgentModelBindingRead[]>(`/api/enterprise/agents/${agent.id}/models?tenant_id=${TENANT_ID}`),
+    ]).then(([modelRows, bindingRows]) => {
+      setModels(modelRows.filter((row) => row.enabled));
+      setSelectedModelId(bindingRows.find((row) => row.role === 'default')?.model_config_id || '');
+    }).catch((error) => notify.error(error instanceof Error ? error.message : '加载模型配置失败'));
   }, [agent, open, profile]);
 
   async function save() {
@@ -131,6 +140,10 @@ export default function EmployeeProfileEditor({
         status: form.status,
         harness_max_actions: Math.max(1, Math.min(100, form.harnessMaxActions || 32)),
         metadata,
+      });
+      await api.put(`/api/enterprise/agents/${agent.id}/models`, {
+        tenant_id: TENANT_ID,
+        bindings: selectedModelId ? [{ role: 'default', model_config_id: selectedModelId }] : [],
       });
       notify.success('数字员工档案已更新');
       onSaved?.(saved);
@@ -197,6 +210,22 @@ export default function EmployeeProfileEditor({
               </LabeledField>
               <LabeledField label="岗位执行约束">
                 <Textarea rows={4} value={form.personaPrompt} placeholder="员工在对话中的角色、人设、回复风格和执行边界" onChange={(event) => update({ personaPrompt: event.target.value })} />
+              </LabeledField>
+              <LabeledField label="默认模型">
+                <Select value={selectedModelId || '__global__'} onValueChange={(value) => setSelectedModelId(value === '__global__' ? '' : value)}>
+                  <SelectTrigger className={`${SELECT_TRIGGER_CLASS} w-full`}>
+                    <SelectValue placeholder="跟随模型配置中的默认模型" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__global__">跟随模型配置中的默认模型</SelectItem>
+                    {models.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>
+                        {model.name} · {model.model}{model.is_default ? ' · 全局默认' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-[11px] text-muted-foreground">未单独绑定时，使用模型配置中标记的全局默认模型。</span>
               </LabeledField>
 
               <div className="rounded-[14px] border border-[#e3e7f1] bg-[#fafbfc] p-[14px]">

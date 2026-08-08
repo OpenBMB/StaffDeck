@@ -204,6 +204,12 @@ export type AgentProfileRead = {
   updated_at: string;
 };
 
+export type AgentModelBindingRead = {
+  role: string;
+  model_config_id: string;
+  effective: boolean;
+};
+
 export type ToolSuggestion = {
   name: string;
   display_name?: string;

@@ -119,6 +119,12 @@ class AgentModelsUpdateRequest(BaseModel):
     bindings: list[AgentModelBindingInput] = Field(default_factory=list)
 
 
+class AgentModelBindingRead(BaseModel):
+    role: str
+    model_config_id: str
+    effective: bool = False
+
+
 class AgentSkillRollbackRequest(BaseModel):
     tenant_id: str
     version: str
