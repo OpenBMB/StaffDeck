@@ -42,6 +42,23 @@ class Settings(BaseSettings):
     # 否则常量失效或权限未开时，每条入站消息都会留下一条失败的 reaction 投递。
     channel_dingtalk_reaction_enabled: bool = False
 
+    # OIDC (OpenID Connect) 单点登录。未配置 issuer 时视为关闭，登录页不显示 SSO 入口。
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""
+    oidc_name: str = ""  # 登录页 SSO 按钮展示名;留空时回退为 issuer 主机名
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_scopes: str = "openid profile email"
+    # 留空时按请求 base_url 自动推导（https://host/api/auth/oidc/callback），
+    # 生产建议显式配置，避免反向代理场景下 base_url 推导偏差。
+    oidc_redirect_uri: str = ""
+    # OIDC 用户归属租户与默认角色；首次登录自动建号（可关闭自动建号仅允许已有账号绑定）。
+    oidc_tenant_id: str = "tenant_demo"
+    oidc_default_role: str = "member"
+    oidc_auto_provision: bool = True
+    # ID token 校验时钟偏移容忍秒数
+    oidc_clock_skew_seconds: int = 120
+
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),
         env_file_encoding="utf-8", extra="ignore",

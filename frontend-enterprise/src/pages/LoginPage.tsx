@@ -1,9 +1,14 @@
-import { useState, type KeyboardEvent } from 'react';
+import { useEffect, useState, type KeyboardEvent } from 'react';
 
 import { api, TENANT_ID } from '../api/client';
-import { setEnterpriseAuthSession, type EnterpriseAuthSession } from '../auth';
+import {
+  clearEnterpriseAuthSession,
+  setEnterpriseAuthSession,
+  type EnterpriseAuthSession,
+} from '../auth';
 import AppHeader from '../components/AppHeader';
 import BrandLogo from '../components/BrandLogo';
+import { consumeOidcCallback } from '../oidcCallback';
 import IconFieldClear from '../assets/icons/field-clear.svg?react';
 import IconFieldEye from '../assets/icons/field-eye.svg?react';
 import IconFieldEyeOn from '../assets/icons/field-eye-on.svg?react';
@@ -27,6 +32,67 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [usernameError, setUsernameError] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [oidcEnabled, setOidcEnabled] = useState(false);
+  const [oidcName, setOidcName] = useState('');
+  const [oidcError, setOidcError] = useState('');
+
+  // 挂载时处理 SSO 回调:消费 URL 中的 oidc_token/oidc_error 并清理 URL,防止刷新重放
+  useEffect(() => {
+    const { token, error, cleanUrl } = consumeOidcCallback(window.location.href);
+    if (cleanUrl !== window.location.pathname + window.location.search + window.location.hash) {
+      window.history.replaceState(null, '', cleanUrl);
+    }
+    if (token) {
+      void completeOidcLogin(token);
+    } else if (error) {
+      setOidcError(error);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 探测后端是否启用 OIDC;未启用时不展示 SSO 入口
+  useEffect(() => {
+    api
+      .get<{ enabled: boolean; name: string }>('/api/auth/oidc/config')
+      .then((config) => {
+        setOidcEnabled(config.enabled);
+        setOidcName(config.name);
+      })
+      .catch(() => {
+        // 探测失败按未启用处理,不打扰正常密码登录
+      });
+  }, []);
+
+  async function completeOidcLogin(token: string) {
+    try {
+      // 先落最小会话以便 /me 请求携带 Authorization 头,再以完整用户信息重建会话。
+      // 注意 user.id 必须非空:auth.readStoredSession 以 user.id 判断会话有效性,
+      // 空串会导致 getEnterpriseAuthSession() 返回 null,/me 不带令牌而 401。
+      setEnterpriseAuthSession({
+        token,
+        user: { id: 'oidc-pending', tenant_id: '', username: '', role: 'member' },
+      });
+      const user = await api.get<{
+        id: string;
+        tenant_id: string;
+        username: string;
+        display_name?: string;
+        role: 'admin' | 'member';
+        avatar_url?: string;
+      }>('/api/auth/me');
+      const session: EnterpriseAuthSession = { token, user };
+      setEnterpriseAuthSession(session);
+      onLogin(session);
+    } catch {
+      // 令牌无效或 /me 失败:清理最小会话,避免残留占位会话误导登录守卫
+      clearEnterpriseAuthSession();
+      setOidcError('SSO 登录失败，令牌无效或已过期，请重新发起登录');
+    }
+  }
+
+  function startOidcLogin() {
+    window.location.href = '/api/auth/oidc/authorize';
+  }
 
   async function login() {
     const trimmedUsername = username.trim();
@@ -79,14 +145,29 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             数字员工运营平台
           </h1>
 
+          {oidcError && (
+            <p className="mt-[12px] max-w-[320px] text-center text-[13px] text-[#f54a45]">{oidcError}</p>
+          )}
+
           {!showForm ? (
-            <button
-              type="button"
-              onClick={() => setShowForm(true)}
-              className="mt-[24px] flex items-center justify-center rounded-[10px] bg-[#18181a] px-[36px] py-[10px] text-[16px] font-normal text-white transition-colors hover:bg-[#18181a]/90"
-            >
-              登录
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setShowForm(true)}
+                className="mt-[24px] flex items-center justify-center rounded-[10px] bg-[#18181a] px-[36px] py-[10px] text-[16px] font-normal text-white transition-colors hover:bg-[#18181a]/90"
+              >
+                登录
+              </button>
+              {oidcEnabled && (
+                <button
+                  type="button"
+                  onClick={startOidcLogin}
+                  className="mt-[12px] flex items-center justify-center rounded-[10px] border border-[#e3e7f1] bg-white px-[36px] py-[10px] text-[16px] text-[#464c5e] transition-colors hover:bg-[#f6f6f6]"
+                >
+                  使用{oidcName ? ` ${oidcName}` : ''} 登录
+                </button>
+              )}
+            </>
           ) : (
             <form
               className="mt-[24px] flex w-[320px] flex-col duration-300 ease-out animate-in fade-in slide-in-from-top-4"
@@ -162,6 +243,15 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               >
                 {loading ? '登录中…' : '登录'}
               </button>
+              {oidcEnabled && (
+                <button
+                  type="button"
+                  onClick={startOidcLogin}
+                  className="mt-[12px] self-center text-[13px] text-[#757f9c] transition-colors hover:text-[#464c5e]"
+                >
+                  或使用{oidcName ? ` ${oidcName}` : ''} 登录
+                </button>
+              )}
             </form>
           )}
         </div>

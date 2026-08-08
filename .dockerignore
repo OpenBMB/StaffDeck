@@ -1,0 +1,13 @@
+.git
+.gitignore
+.dev
+docs
+packaging
+scripts
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/*.db
+**/*.pyc
+*.log

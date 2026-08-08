@@ -36,9 +36,26 @@ class User(SQLModel, table=True):
     role: str = Field(default="member", index=True)
     # 账号来源:web=网页端创建;wechat 等=渠道懒建(用户管理列表默认隐藏)
     source: str = Field(default="web", index=True)
+    # OIDC 唯一标识(sub claim):同一身份提供方下稳定不变,用于 SSO 用户映射;
+    # 空值表示非 OIDC 账号,unique index 为 partial(WHERE oidc_sub IS NOT NULL)
+    oidc_sub: Optional[str] = None
     password_hash: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class OIDCAuthState(SQLModel, table=True):
+    """OIDC 授权流服务端状态:authorize 生成的 state 与 PKCE verifier/nonce,
+    回调时一次性消费(校验后删除)。独立小表,create_all 自动建表,无需 ALTER。
+    """
+
+    __tablename__ = "oidc_auth_states"
+
+    state: str = Field(primary_key=True)
+    code_verifier: str
+    nonce: str
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
 
 
 class UserAvatar(SQLModel, table=True):
