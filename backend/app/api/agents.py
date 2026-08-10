@@ -59,6 +59,7 @@ from app.db.models import (
     KnowledgeChunk,
     KnowledgeDocument,
     Message,
+    ModelConfig,
     ScheduledTask,
     Skill,
     Tool,
@@ -696,6 +697,8 @@ def update_agent_models(
 ) -> dict[str, object]:
     _ensure_can_manage_agent(_get_agent(db, request.tenant_id, agent_id), current_user)
     for item in request.bindings:
+        if item.role != "default":
+            continue
         existing = db.exec(
             select(AgentModelBinding).where(
                 AgentModelBinding.tenant_id == request.tenant_id,
@@ -716,8 +719,46 @@ def update_agent_models(
                 model_config_id=item.model_config_id,
             )
         )
+    if not any(item.role == "default" for item in request.bindings):
+        existing_default = db.exec(
+            select(AgentModelBinding).where(
+                AgentModelBinding.tenant_id == request.tenant_id,
+                AgentModelBinding.agent_id == agent_id,
+                AgentModelBinding.role == "default",
+            )
+        ).first()
+        if existing_default:
+            db.delete(existing_default)
     db.commit()
     return {"status": "updated", "agent_id": agent_id}
+
+
+@enterprise_router.get("/{agent_id}/models", response_model=list[dict[str, object]])
+def get_agent_models(
+    agent_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> list[dict[str, object]]:
+    agent = _get_agent(db, tenant_id, agent_id)
+    _ensure_can_access_agent(agent, current_user)
+    rows = db.exec(
+        select(AgentModelBinding).where(
+            AgentModelBinding.tenant_id == tenant_id,
+            AgentModelBinding.agent_id == agent_id,
+        )
+    ).all()
+    default = db.exec(
+        select(ModelConfig).where(
+            ModelConfig.tenant_id == tenant_id,
+            ModelConfig.is_default == True,  # noqa: E712
+            ModelConfig.enabled == True,  # noqa: E712
+        )
+    ).first()
+    result = [{"role": row.role, "model_config_id": row.model_config_id, "effective": True} for row in rows]
+    if not any(row["role"] == "default" for row in result) and default:
+        result.append({"role": "default", "model_config_id": default.id, "effective": False})
+    return result
 
 
 @chat_router.get("", response_model=list[AgentProfileRead])

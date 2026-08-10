@@ -18,7 +18,7 @@ import {
   TeamOutlined,
 } from '../icons';
 import type { HTMLAttributes, ReactNode } from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError, TENANT_ID } from '../api/client';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
@@ -99,6 +99,9 @@ import type {
 const KNOWLEDGE_PAGE_SIZE = 10;
 const KNOWLEDGE_SEARCH_MODEL_STORAGE_KEY = 'knowledge-search-model';
 const TERMINAL_KNOWLEDGE_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+const KnowledgeGraphVisualization = lazy(() => import('@/components/knowledge/KnowledgeGraphVisualization').then(
+  (module) => ({ default: module.KnowledgeGraphVisualization }),
+));
 
 type KnowledgeBaseVersionRead = {
   id: string;
@@ -2142,6 +2145,7 @@ function 目录索引Overview({
   const [detailView, setDetailView] = useState<KnowledgeDetailView | null>(null);
   const [detailFocusKey, setDetailFocusKey] = useState<string | null>(null);
   const [activeContentView, setActiveContentView] = useState<KnowledgeContentView>('evidence');
+  const [wikiPresentation, setWikiPresentation] = useState<'graph' | 'cards'>('graph');
   const metadata = document.metadata || {};
   const documentCard = isRecord(metadata.document_card) ? metadata.document_card : {};
   const wikiStructureConcepts = useMemo(() => sortWikiConcepts(okfConcepts), [okfConcepts]);
@@ -2280,13 +2284,33 @@ function 目录索引Overview({
         </div>
       </div>
 
-      <div className="knowledge-overview-panel">
+      <div className={cn('knowledge-overview-panel', activeContentView === 'wiki' && wikiPresentation === 'graph' && 'is-graph')}>
         <div className="knowledge-overview-panel-head">
           <span>
             <strong>{activeContent.title}</strong>
             <small>{activeContent.description}</small>
           </span>
-          <div className="flex items-center gap-[8px]">
+          <div className="knowledge-overview-panel-actions">
+            {activeContentView === 'wiki' && (
+              <div className="knowledge-graph-view-switch" aria-label="知识图谱呈现方式">
+                <button
+                  type="button"
+                  className={wikiPresentation === 'graph' ? 'is-active' : ''}
+                  aria-pressed={wikiPresentation === 'graph'}
+                  onClick={() => setWikiPresentation('graph')}
+                >
+                  图谱
+                </button>
+                <button
+                  type="button"
+                  className={wikiPresentation === 'cards' ? 'is-active' : ''}
+                  aria-pressed={wikiPresentation === 'cards'}
+                  onClick={() => setWikiPresentation('cards')}
+                >
+                  卡片
+                </button>
+              </div>
+            )}
             <KTag>{activeContent.count}</KTag>
             <button
               type="button"
@@ -2297,58 +2321,70 @@ function 目录索引Overview({
             </button>
           </div>
         </div>
-        {activeContentView === 'sections' && (
-          <div className="knowledge-layer-explain" aria-label="知识层级说明">
-            <span>
-              <strong>目录索引</strong>
-              <small>目录索引，用于按资料、章节、主题逐级展开</small>
-            </span>
-            <span>
-              <strong>知识图谱</strong>
-              <small>最底层可读知识页，回答时基于页面内容并追溯引用来源</small>
-            </span>
-          </div>
+        {activeContentView === 'wiki' && wikiPresentation === 'graph' ? (
+          <Suspense fallback={<div className="kgv-empty">加载中…</div>}>
+            <KnowledgeGraphVisualization
+              concepts={okfConcepts}
+              knowledgeBaseKey={knowledgeBase?.id || document.knowledge_base_id}
+              onViewConcept={onViewConcept}
+            />
+          </Suspense>
+        ) : (
+          <>
+            {activeContentView === 'sections' && (
+              <div className="knowledge-layer-explain" aria-label="知识层级说明">
+                <span>
+                  <strong>目录索引</strong>
+                  <small>目录索引，用于按资料、章节、主题逐级展开</small>
+                </span>
+                <span>
+                  <strong>知识图谱</strong>
+                  <small>最底层可读知识页，回答时基于页面内容并追溯引用来源</small>
+                </span>
+              </div>
+            )}
+            <div className="knowledge-mini-list">
+              {activeContent.items.length === 0 ? (
+                <span className="knowledge-empty-note">{activeContent.emptyText}</span>
+              ) : (
+                activeContent.items.map((entry) => (
+                  <button
+                    type="button"
+                    className="knowledge-mini-item"
+                    key={`${activeContentView}-${entry.key}`}
+                    onClick={() => {
+                      if (activeContentView === 'sections' && entry.indexGroup) {
+                        openContentDetail('sections', entry.indexGroup.key);
+                        return;
+                      }
+                      if ((activeContentView === 'sections' || activeContentView === 'wiki') && entry.concept) {
+                        onViewConcept(entry.concept);
+                        return;
+                      }
+                      if (activeContentView === 'evidence' && entry.bucket) {
+                        openContentDetail('evidence', entry.bucket.id);
+                        return;
+                      }
+                      openContentDetail(activeContentView, entry.key);
+                    }}
+                    title={
+                      activeContentView === 'sections' && entry.indexGroup
+                        ? '查看目录下的知识图谱'
+                        : (activeContentView === 'sections' || activeContentView === 'wiki') && entry.concept
+                          ? '查看知识图谱'
+                          : activeContentView === 'evidence'
+                            ? '查看引用来源'
+                          : '查看详情'
+                    }
+                  >
+                    <strong>{entry.title}</strong>
+                    <small>{entry.summary}</small>
+                  </button>
+                ))
+              )}
+            </div>
+          </>
         )}
-        <div className="knowledge-mini-list">
-          {activeContent.items.length === 0 ? (
-            <span className="knowledge-empty-note">{activeContent.emptyText}</span>
-          ) : (
-            activeContent.items.map((entry) => (
-              <button
-                type="button"
-                className="knowledge-mini-item"
-                key={`${activeContentView}-${entry.key}`}
-                onClick={() => {
-                  if (activeContentView === 'sections' && entry.indexGroup) {
-                    openContentDetail('sections', entry.indexGroup.key);
-                    return;
-                  }
-                  if ((activeContentView === 'sections' || activeContentView === 'wiki') && entry.concept) {
-                    onViewConcept(entry.concept);
-                    return;
-                  }
-                  if (activeContentView === 'evidence' && entry.bucket) {
-                    openContentDetail('evidence', entry.bucket.id);
-                    return;
-                  }
-                  openContentDetail(activeContentView, entry.key);
-                }}
-                title={
-                  activeContentView === 'sections' && entry.indexGroup
-                    ? '查看目录下的知识图谱'
-                    : (activeContentView === 'sections' || activeContentView === 'wiki') && entry.concept
-                      ? '查看知识图谱'
-                      : activeContentView === 'evidence'
-                        ? '查看引用来源'
-                      : '查看详情'
-                }
-              >
-                <strong>{entry.title}</strong>
-                <small>{entry.summary}</small>
-              </button>
-            ))
-          )}
-        </div>
       </div>
 
       <KDialog

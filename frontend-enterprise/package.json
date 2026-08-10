@@ -17,6 +17,7 @@
     "@tailwindcss/vite": "^4.3.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cytoscape": "^3.34.0",
     "lucide-react": "^1.27.0",
     "pinyin-pro": "^3.28.2",
     "qrcode": "^1.5.4",
