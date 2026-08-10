@@ -202,7 +202,7 @@ export default function EmployeeGalleryPage({
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
       <AppHeader
         onLogout={onLogout}
-        userName={currentUser?.username}
+        userName={currentUser?.display_name || currentUser?.username}
         left={(
           <div className="flex h-[50px] w-full items-center gap-[6px] rounded-[20px] bg-white px-[20px] text-[#757F9C] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
             <IconSearch className="size-[20px] shrink-0" />

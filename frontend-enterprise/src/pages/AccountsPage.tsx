@@ -46,6 +46,12 @@ type EmployeeAccount = {
   username: string;
   display_name?: string;
   role: 'admin' | 'member';
+  employee_code?: string;
+  email?: string;
+  department?: string;
+  position?: string;
+  auth_source?: string;
+  synced_at?: string;
   created_at?: string;
   updated_at?: string;
 };
@@ -54,6 +60,9 @@ type AccountDraft = {
   displayName: string;
   password: string;
   role: 'admin' | 'member';
+  email: string;
+  department: string;
+  position: string;
 };
 
 type AccountCreateDraft = {
@@ -61,6 +70,9 @@ type AccountCreateDraft = {
   displayName: string;
   password: string;
   role: 'admin' | 'member';
+  email: string;
+  department: string;
+  position: string;
 };
 
 const ACCOUNT_PAGE_SIZE = 10;
@@ -84,7 +96,7 @@ export default function AccountsPage({
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [editing, setEditing] = useState<EmployeeAccount | null>(null);
-  const [draft, setDraft] = useState<AccountDraft>({ displayName: '', password: '', role: 'member' });
+  const [draft, setDraft] = useState<AccountDraft>({ displayName: '', password: '', role: 'member', email: '', department: '', position: '' });
   const [saving, setSaving] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createDraft, setCreateDraft] = useState<AccountCreateDraft>({
@@ -92,6 +104,9 @@ export default function AccountsPage({
     displayName: '',
     password: '',
     role: 'member',
+    email: '',
+    department: '',
+    position: '',
   });
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<EmployeeAccount | null>(null);
@@ -117,7 +132,7 @@ export default function AccountsPage({
     const keyword = searchText.trim().toLowerCase();
     if (!keyword) return rows;
     return rows.filter((row) =>
-      [row.username, row.display_name || '', row.role === 'admin' ? '管理员' : '普通成员']
+      [row.username, row.display_name || '', row.role === 'admin' ? '管理员' : '普通成员', row.employee_code || '', row.email || '', row.department || '', row.position || '']
         .some((value) => value.toLowerCase().includes(keyword)),
     );
   }, [rows, searchText]);
@@ -126,11 +141,18 @@ export default function AccountsPage({
 
   function openEdit(row: EmployeeAccount) {
     setEditing(row);
-    setDraft({ displayName: row.display_name || row.username, password: '', role: row.role });
+    setDraft({
+      displayName: row.display_name || row.username,
+      password: '',
+      role: row.role,
+      email: row.email || '',
+      department: row.department || '',
+      position: row.position || '',
+    });
   }
 
   function openCreate() {
-    setCreateDraft({ username: '', displayName: '', password: '', role: 'member' });
+    setCreateDraft({ username: '', displayName: '', password: '', role: 'member', email: '', department: '', position: '' });
     setCreateOpen(true);
   }
 
@@ -149,6 +171,9 @@ export default function AccountsPage({
         password,
         display_name: createDraft.displayName.trim() || username,
         role: createDraft.role,
+        email: createDraft.email.trim() || undefined,
+        department: createDraft.department.trim() || undefined,
+        position: createDraft.position.trim() || undefined,
       });
       notify.success('账号已创建');
       setCreateOpen(false);
@@ -169,6 +194,9 @@ export default function AccountsPage({
         display_name: draft.displayName.trim() || editing.username,
         password: draft.password.trim() || undefined,
         role: draft.role,
+        email: draft.email.trim() || undefined,
+        department: draft.department.trim() || undefined,
+        position: draft.position.trim() || undefined,
       });
       notify.success('账号已更新');
       setEditing(null);
@@ -243,9 +271,27 @@ export default function AccountsPage({
     },
     {
       key: 'display_name',
-      title: '显示名',
-      width: 200,
+      title: '姓名',
+      width: 140,
       render: (row) => <span className="block truncate">{row.display_name || row.username}</span>,
+    },
+    {
+      key: 'department',
+      title: '部门',
+      width: 160,
+      render: (row) => <span className="block truncate text-[#858b9c]">{row.department || '—'}</span>,
+    },
+    {
+      key: 'position',
+      title: '岗位',
+      width: 160,
+      render: (row) => <span className="block truncate text-[#858b9c]">{row.position || '—'}</span>,
+    },
+    {
+      key: 'email',
+      title: '邮箱',
+      width: 200,
+      render: (row) => <span className="block truncate text-[#858b9c]">{row.email || '—'}</span>,
     },
     {
       key: 'role',

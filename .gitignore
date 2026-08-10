@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# 第三方克隆仓库（agency-agents 技能库等），不纳入版本控制
+vendor/
 *.cer
 *.certSigningRequest
 *.csr

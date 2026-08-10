@@ -175,7 +175,7 @@ function ScheduledTaskEditorPage({
     >
       <AppHeader
         onLogout={onLogout}
-        userName={currentUser?.username}
+        userName={currentUser?.display_name || currentUser?.username}
         title={isEdit ? '编辑定时任务' : '新建空白定时任务'}
         description="保存后到点会拉起一个新的执行记录，并交给当前员工按 SOP、技能、资料和工具执行。"
       />

@@ -768,7 +768,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
     <div className={embedded ? undefined : 'min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]'}>
       {!embedded && (
         <>
-          <AppHeader onLogout={onLogout} userName={currentUser?.username} title={pageTitle} />
+          <AppHeader onLogout={onLogout} userName={currentUser?.display_name || currentUser?.username} title={pageTitle} />
           <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
             <UIButton
               variant="outline"
@@ -920,10 +920,12 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
         items={agentImportSourceSkills.map((item) => ({
           id: item.id,
           label: (
-            <>
+            <span title={item.slug} className="block truncate">
               {item.name}
-              <span className="text-[#858b9c]"> · {item.slug}</span>
-            </>
+              {item.description && (
+                <span className="text-[#858b9c]"> · {item.description}</span>
+              )}
+            </span>
           ),
         }))}
         selectedIds={agentImportSelectedSkillIds}
@@ -2479,7 +2481,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     >
       <AppHeader
         onLogout={onLogout}
-        userName={currentUser?.username}
+        userName={currentUser?.display_name || currentUser?.username}
         title={pageTitle}
         description={pageDescription}
       />
@@ -2902,10 +2904,12 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         items={agentImportSourceSkills.map((item) => ({
           id: item.id,
           label: (
-            <>
+            <span title={item.slug} className="block truncate">
               {item.name}
-              <span className="text-[#858b9c]"> · {item.slug}</span>
-            </>
+              {item.description && (
+                <span className="text-[#858b9c]"> · {item.description}</span>
+              )}
+            </span>
           ),
         }))}
         selectedIds={agentImportSelectedSkillIds}

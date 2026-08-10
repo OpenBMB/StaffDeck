@@ -613,7 +613,7 @@ export default function SkillsPage({
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
-      <AppHeader onLogout={onLogout} userName={currentUser?.username} title="SOP" />
+      <AppHeader onLogout={onLogout} userName={currentUser?.display_name || currentUser?.username} title="SOP" />
 
       <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
         <UIButton

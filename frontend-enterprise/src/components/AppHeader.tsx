@@ -241,6 +241,9 @@ export default function AppHeader({
                   (initial ?? '--')
                 )}
               </span>
+              {userName && (
+                <span className="max-w-[140px] truncate text-[13px] font-medium text-[#464c5e]">{userName}</span>
+              )}
               <IconChevronDown className="size-[14px] shrink-0 text-[#757F9C]" />
             </DropdownMenuTrigger>
             <DropdownMenuContent

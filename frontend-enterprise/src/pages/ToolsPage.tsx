@@ -662,7 +662,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
-      <AppHeader onLogout={onLogout} userName={currentUser?.username} title={pageTitle} />
+      <AppHeader onLogout={onLogout} userName={currentUser?.display_name || currentUser?.username} title={pageTitle} />
 
       <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
         <UIButton
@@ -1077,7 +1077,7 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
       <AppHeader
         onLogout={onLogout}
-        userName={currentUser?.username}
+        userName={currentUser?.display_name || currentUser?.username}
         title={isEdit ? '编辑工具' : '新建工具'}
         description={
           isEdit
@@ -1207,7 +1207,7 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
       <AppHeader
         onLogout={onLogout}
-        userName={currentUser?.username}
+        userName={currentUser?.display_name || currentUser?.username}
         title="工具测试"
         description="用测试参数直接调用已保存工具，检查员工后续调用时的实际返回。"
       />
@@ -1566,7 +1566,7 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
       <AppHeader
         onLogout={onLogout}
-        userName={currentUser?.username}
+        userName={currentUser?.display_name || currentUser?.username}
         title={isEdit ? '编辑 MCP 服务器' : '新建工具'}
         description="配置 MCP Server 连接后，可发现其提供的工具并同步为工具集。"
       />

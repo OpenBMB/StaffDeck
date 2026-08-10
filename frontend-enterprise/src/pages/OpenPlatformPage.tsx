@@ -541,7 +541,7 @@ export default function OpenPlatformPage({
           } : undefined}
           onOpenItem={(item) => setDetailItem({ kind: selectedKind, item })}
           onLogout={onLogout}
-          userName={currentUser?.username}
+          userName={currentUser?.display_name || currentUser?.username}
         />
         {renderItemDrawer()}
         {renderConfirm()}
@@ -554,7 +554,7 @@ export default function OpenPlatformPage({
       <AppHeader
         className="mb-[24px]"
         onLogout={onLogout}
-        userName={currentUser?.username}
+        userName={currentUser?.display_name || currentUser?.username}
         title="开放广场平台"
       />
       <div className="mx-auto grid w-full grid-cols-1 gap-[12px] sm:grid-cols-2 xl:min-h-0 xl:flex-1 xl:grid-cols-5 xl:grid-rows-1">

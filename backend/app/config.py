@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     general_skill_pip_index_url: str = ""
     general_skill_pip_timeout_seconds: int = 180
     general_skill_network_install: bool = True
+    # SSO 集成
+    sso_backend_url: str = "http://127.0.0.1:8086"
+    sso_frontend_url: str = "http://192.168.100.235:5173"
+    # SSO 浏览器侧公开地址（用于 /sso/login 跳转）；为空时回退到 sso_backend_url
+    sso_public_url: str = ""
+    sso_cookie_name: str = "sso_oidc_sid"
+    sso_default_tenant: str = "tenant_demo"
     channel_secret: str = ""
     staffdeck_role: str = "all"
     wechat_ilink_base_url: str = "https://ilinkai.weixin.qq.com"

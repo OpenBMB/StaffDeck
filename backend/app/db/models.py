@@ -37,6 +37,13 @@ class User(SQLModel, table=True):
     # 账号来源:web=网页端创建;wechat 等=渠道懒建(用户管理列表默认隐藏)
     source: str = Field(default="web", index=True)
     password_hash: str
+    # 员工信息字段（SSO 同步自 meta.platform_users）
+    employee_code: Optional[str] = Field(default=None, index=True)
+    email: Optional[str] = None
+    department: Optional[str] = None
+    position: Optional[str] = None
+    auth_source: str = Field(default="local", index=True)
+    synced_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

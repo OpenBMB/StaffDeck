@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent } from 'react';
+import { useEffect, useState, type KeyboardEvent } from 'react';
 
 import { api, TENANT_ID } from '../api/client';
 import { setEnterpriseAuthSession, type EnterpriseAuthSession } from '../auth';
@@ -7,7 +7,6 @@ import BrandLogo from '../components/BrandLogo';
 import IconFieldClear from '../assets/icons/field-clear.svg?react';
 import IconFieldEye from '../assets/icons/field-eye.svg?react';
 import IconFieldEyeOn from '../assets/icons/field-eye-on.svg?react';
-import loginPreview from '../assets/staffdeck/login-preview.png';
 
 export type LoginPageProps = {
   onLogin: (session: EnterpriseAuthSession) => void;
@@ -27,6 +26,39 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [usernameError, setUsernameError] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [ssoLoading, setSsoLoading] = useState(false);
+  const [ssoError, setSsoError] = useState('');
+
+  // 检测 SSO 回跳（URL 含 ?sso_done=1），自动验证 cookie
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('sso_done') !== '1') return;
+
+    setSsoLoading(true);
+    api
+      .post<EnterpriseAuthSession>('/api/auth/sso/verify', {})
+      .then((session) => {
+        setEnterpriseAuthSession(session);
+        onLogin(session);
+      })
+      .catch((error) => {
+        setSsoLoading(false);
+        setSsoError(error instanceof Error ? error.message : 'SSO 登录失败');
+      });
+  }, [onLogin]);
+
+  // SSO 登录：获取登录 URL 并跳转
+  async function startSsoLogin() {
+    setSsoLoading(true);
+    setSsoError('');
+    try {
+      const { login_url } = await api.get<{ login_url: string }>('/api/auth/sso/login-url');
+      window.location.href = login_url;
+    } catch (error) {
+      setSsoLoading(false);
+      setSsoError(error instanceof Error ? error.message : '获取 SSO 登录地址失败');
+    }
+  }
 
   async function login() {
     const trimmedUsername = username.trim();
@@ -74,19 +106,33 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             我们来做什么？
           </span>
           <h1 className="mt-[6px] text-center text-[54px] font-semibold leading-[80px] tracking-[1.08px] text-[#18181a]">
-            StaffDeck
+            Hemony&Miconvey
             <br />
             数字员工运营平台
           </h1>
 
           {!showForm ? (
-            <button
-              type="button"
-              onClick={() => setShowForm(true)}
-              className="mt-[24px] flex items-center justify-center rounded-[10px] bg-[#18181a] px-[36px] py-[10px] text-[16px] font-normal text-white transition-colors hover:bg-[#18181a]/90"
-            >
-              登录
-            </button>
+            <div className="mt-[24px] flex w-[320px] flex-col items-center gap-[12px]">
+              <button
+                type="button"
+                onClick={startSsoLogin}
+                disabled={ssoLoading}
+                className="flex h-[44px] w-full items-center justify-center rounded-[10px] bg-[#18181a] px-[36px] text-[16px] font-normal text-white transition-colors hover:bg-[#18181a]/90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {ssoLoading ? 'SSO 登录中…' : '使用 OA 账号登录'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowForm(true)}
+                disabled={ssoLoading}
+                className="text-[13px] text-[#757f9c] underline-offset-[3px] transition-colors hover:text-[#18181a] hover:underline disabled:opacity-60"
+              >
+                使用本地账号登录
+              </button>
+              {ssoError && (
+                <span className="text-center text-[12px] text-[#f54a45]">{ssoError}</span>
+              )}
+            </div>
           ) : (
             <form
               className="mt-[24px] flex w-[320px] flex-col duration-300 ease-out animate-in fade-in slide-in-from-top-4"
@@ -166,14 +212,6 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           )}
         </div>
 
-        <div className="mt-[32px] flex w-full justify-center">
-          <img
-            src={loginPreview}
-            alt="StaffDeck 产品预览"
-            className="h-auto w-full max-w-[1200px] select-none object-contain"
-            draggable={false}
-          />
-        </div>
       </main>
     </div>
   );

@@ -407,7 +407,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const redirectToLogin = useCallback(() => {
     if (anonymous) return;
     clearEnterpriseAuthSession();
-    window.location.href = '/';
+    window.location.href = import.meta.env.BASE_URL;
   }, [anonymous]);
 
   useEffect(() => () => {

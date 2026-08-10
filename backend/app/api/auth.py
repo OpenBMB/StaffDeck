@@ -9,12 +9,14 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Res
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
+from app.config import get_settings
 from app.db import get_session
 from app.db.models import APIClient, APICredential, User, UserAvatar, utc_now
 from app.public_api.auth import generate_api_key
 from app.public_api.credential_profiles import USER_FULL_ACCESS_SCOPES
 from app.security.auth import create_access_token, get_current_user, hash_password, verify_password
 from app.security.permissions import MEMBER_ROLE, is_admin_user
+from app.security.sso import sso_login_and_issue_token
 from app.security.tenant import ensure_tenant
 
 
@@ -51,6 +53,12 @@ class UserRead(BaseModel):
     display_name: Optional[str] = None
     role: Literal["admin", "member"]
     source: str = "web"
+    employee_code: Optional[str] = None
+    email: Optional[str] = None
+    department: Optional[str] = None
+    position: Optional[str] = None
+    auth_source: str = "local"
+    synced_at: Optional[str] = None
     # 仅 /me 与 /login 带出:头像资源指针(存在性标识),不内联二进制——
     # 完整 data_url 可达 2.67MB,内联会把登录/会话刷新响应与前端 localStorage 撑爆
     avatar_url: Optional[str] = None
@@ -416,6 +424,12 @@ def _user_read(user: User, avatar_url: Optional[str] = None) -> UserRead:
         display_name=user.display_name,
         role=user.role,
         source=user.source,
+        employee_code=user.employee_code,
+        email=user.email,
+        department=user.department,
+        position=user.position,
+        auth_source=user.auth_source,
+        synced_at=user.synced_at.isoformat() if user.synced_at else None,
         avatar_url=avatar_url,
         created_at=user.created_at.isoformat() if user.created_at else None,
         updated_at=user.updated_at.isoformat() if user.updated_at else None,
@@ -545,3 +559,37 @@ def _account_api_credential_read(
         created_at=row.created_at,
         revoked_at=row.revoked_at,
     )
+
+
+# -- SSO 集成端点 ----------------------------------------------
+
+
+class SsoLoginUrlResponse(BaseModel):
+    login_url: str
+
+
+@router.get("/sso/login-url", response_model=SsoLoginUrlResponse)
+def get_sso_login_url() -> SsoLoginUrlResponse:
+    """返回 SSO 登录入口 URL，前端跳转到此 URL 完成 OA 登录。"""
+    settings = get_settings()
+    frontend_url = settings.sso_frontend_url.rstrip("/")
+    sso_login_base = (
+        settings.sso_public_url.rstrip("/")
+        if settings.sso_public_url
+        else settings.sso_backend_url.rstrip("/") + "/sso"
+    )
+    login_url = sso_login_base + "/login?return_to=" + frontend_url + "/?sso_done=1"
+    return SsoLoginUrlResponse(login_url=login_url)
+
+
+@router.post("/sso/verify", response_model=LoginResponse)
+def sso_verify(request: Request, db: Session = Depends(get_session)) -> LoginResponse:
+    """验证 SSO cookie 并签发 staffdeck 本地 token。"""
+    cookie = request.headers.get("Cookie", "")
+    if not cookie:
+        raise HTTPException(status_code=401, detail="No cookie provided")
+    try:
+        token, user = sso_login_and_issue_token(cookie, db)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    return LoginResponse(token=token, user=_user_read(user))

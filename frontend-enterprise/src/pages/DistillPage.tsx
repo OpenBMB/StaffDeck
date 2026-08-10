@@ -2155,7 +2155,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
 
   return (
     <div className={DISTILL_PAGE_CLASS}>
-      <AppHeader className="shrink-0" onLogout={onLogout} userName={currentUser?.username} title={pageTitle} />
+      <AppHeader className="shrink-0" onLogout={onLogout} userName={currentUser?.display_name || currentUser?.username} title={pageTitle} />
       <div className={DISTILL_ACTIONS_CLASS}>
         <UIButton variant="outline" className={RETURN_BUTTON_CLASS} onClick={() => navigate('/enterprise/skills')}>
           <ArrowLeftOutlined />

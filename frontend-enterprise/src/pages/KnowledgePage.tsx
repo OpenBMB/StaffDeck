@@ -1067,7 +1067,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
       <AppHeader
         onLogout={onLogout}
-        userName={currentUser?.username}
+        userName={currentUser?.display_name || currentUser?.username}
         title={pageTitle}
         description={isOverallAgent
           ? '维护知识库广场中的知识库、知识图谱与检索调试。'

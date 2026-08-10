@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => {
         '@': path.resolve(__dirname, './src'),
       },
     },
-    base: '/',
+    base: '/staffdeck/',
     test: {
       setupFiles: ['./src/test/setup.ts'],
       environmentOptions: {

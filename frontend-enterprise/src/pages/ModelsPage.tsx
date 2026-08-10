@@ -465,7 +465,7 @@ export default function ModelsPage({
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
-      <AppHeader className="items-center" onLogout={onLogout} userName={currentUser?.username} title="模型" />
+      <AppHeader className="items-center" onLogout={onLogout} userName={currentUser?.display_name || currentUser?.username} title="模型" />
 
       <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
         <UIButton

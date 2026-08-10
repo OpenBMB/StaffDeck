@@ -275,7 +275,7 @@ export default function DashboardPage({
     <div className="min-h-full w-full min-w-0 max-w-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
       <AppHeader
         onLogout={onLogout}
-        userName={currentUser?.username}
+        userName={currentUser?.display_name || currentUser?.username}
         left={(
           <div className="flex flex-wrap items-center gap-x-9 gap-y-6 pt-1 pl-1">
             <div className="flex shrink-0 flex-col items-center">
@@ -299,7 +299,7 @@ export default function DashboardPage({
                 <UiButton
                   variant="outline"
                   className={heroActionButtonClass}
-                  onClick={() => { window.location.href = '/workspace/chat'; }}
+                  onClick={() => { window.location.href = `${import.meta.env.BASE_URL}workspace/chat`; }}
                 >
                   <IconChat className="size-[14px]" />
                   去对话

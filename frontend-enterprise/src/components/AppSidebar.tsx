@@ -583,7 +583,7 @@ function ManagementSidebar({
       <SidebarHeader className="gap-[24px] px-[20px] pt-[10px] group-data-[collapsible=icon]:px-[20px]">
         <div className="flex items-center justify-between">
           <button type="button" title="开放广场">
-            <BrandLogo wordmarkClassName="group-data-[collapsible=icon]:hidden" />
+            <BrandLogo markOnly />
           </button>
           {!brandCollapsed && (
             <button
@@ -1171,7 +1171,7 @@ function ChatSidebarVariant({
         <SidebarHeader className="gap-[24px] px-[20px] pt-[10px]">
           <div className="flex items-center justify-between">
             <button type="button" title="数字员工广场" onClick={onOpenGallery}>
-              <BrandLogo />
+              <BrandLogo markOnly />
             </button>
             <button
               type="button"

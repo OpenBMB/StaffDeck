@@ -38,7 +38,7 @@ const CARD_BADGE_CLASS =
 const STEPS: GuideStep[] = [
   {
     image: galleryImage,
-    eyebrow: "欢迎使用 StaffDeck",
+    eyebrow: "欢迎使用 Hemony&Miconvey",
     titleLines: ["数字员工", "全流程构建与管理平台"],
     description:
       "像招聘、培养、管理真人员工一样，构建你的数字员工团队。把重复的事情交给数字员工，让自己专注更重要的工作。",
