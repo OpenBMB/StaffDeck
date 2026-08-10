@@ -69,6 +69,17 @@ class ModelCapabilityTestResult(BaseModel):
     error_code: Optional[str] = None
 
 
+class ModelProviderErrorDetail(BaseModel):
+    code: str
+    message: str
+    upstream_status: Optional[int] = None
+    provider_code: Optional[str] = None
+    provider_message: Optional[str] = None
+    upstream_body: Optional[str] = None
+    request_id: Optional[str] = None
+    retryable: bool = False
+
+
 class ModelConfigTestResponse(BaseModel):
     success: bool
     message: str
@@ -79,3 +90,4 @@ class ModelConfigTestResponse(BaseModel):
     trust_status: Optional[str] = None
     attempt_status: Optional[str] = None
     capabilities: list[ModelCapabilityTestResult] = Field(default_factory=list)
+    error: Optional[ModelProviderErrorDetail] = None

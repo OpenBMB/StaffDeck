@@ -113,7 +113,52 @@ def test_failed_verified_create_does_not_leave_disabled_model(tmp_path, monkeypa
             )
 
         assert exc_info.value.status_code == 502
+        assert exc_info.value.detail["code"] == "MODEL_CONNECTION_FAILED"
+        assert exc_info.value.detail["message"] == "Connection error"
         assert db.exec(select(ModelConfig)).all() == []
+
+
+def test_model_test_returns_structured_provider_diagnostics(tmp_path, monkeypatch) -> None:
+    class FailingClient:
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def generate_text(self, _prompt, _payload):  # noqa: ANN001
+            raise LLMError(
+                "provider rejected request",
+                code="MODEL_UPSTREAM_ERROR",
+                status_code=422,
+                provider_code="invalid_model",
+                provider_message="model does not exist",
+                upstream_body='{"error":{"code":"invalid_model"}}',
+                request_id="req_123",
+            )
+
+    monkeypatch.setattr("app.api.model_configs.LLMClient", FailingClient)
+    with _db(tmp_path) as db:
+        db.add(
+            ModelConfig(
+                id="model_a",
+                tenant_id="tenant_a",
+                name="Broken",
+                api_key_encrypted=encrypt_secret("secret"),
+                model="missing-model",
+                trust_status="unverified",
+                enabled=False,
+            )
+        )
+        db.commit()
+
+        result = run_model_config_test("model_a", tenant_id="tenant_a", db=db)
+
+        assert result.success is False
+        assert result.message == "MODEL_UPSTREAM_ERROR"
+        assert result.error is not None
+        assert result.error.upstream_status == 422
+        assert result.error.provider_code == "invalid_model"
+        assert result.error.provider_message == "model does not exist"
+        assert result.error.upstream_body == '{"error":{"code":"invalid_model"}}'
+        assert result.error.request_id == "req_123"
 
 
 def test_gemini_model_config_can_be_created(tmp_path) -> None:

@@ -137,6 +137,9 @@ def test_gemini_driver_maps_http_errors_and_cancellation() -> None:
     except ProtocolCallError as exc:
         assert exc.code == "MODEL_RATE_LIMITED"
         assert exc.retryable is True
+        assert exc.status_code == 429
+        assert exc.provider_code == "RESOURCE_EXHAUSTED"
+        assert '"status":"RESOURCE_EXHAUSTED"' in str(exc.upstream_body)
     else:
         raise AssertionError("rate limit unexpectedly succeeded")
 

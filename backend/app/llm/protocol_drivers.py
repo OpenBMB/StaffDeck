@@ -22,10 +22,25 @@ _MAX_REQUEST_BYTES = 25 * 1024 * 1024
 
 
 class ProtocolCallError(Exception):
-    def __init__(self, code: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        provider_code: str | None = None,
+        provider_message: str | None = None,
+        upstream_body: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.retryable = retryable
+        self.status_code = status_code
+        self.provider_code = provider_code
+        self.provider_message = provider_message
+        self.upstream_body = upstream_body
+        self.request_id = request_id
 
 
 class CancellationToken:
@@ -123,7 +138,17 @@ class OpenAIResponsesDriver:
                     )
                     continue
                 if event_type in {"response.failed", "error"}:
-                    raise ProtocolCallError("MODEL_UPSTREAM_ERROR", retryable=True)
+                    error = _object_value(event, "error") or _object_value(
+                        _object_value(event, "response"), "error"
+                    )
+                    provider_code, provider_message = _provider_error_fields(error)
+                    raise ProtocolCallError(
+                        "MODEL_UPSTREAM_ERROR",
+                        retryable=True,
+                        provider_code=provider_code,
+                        provider_message=provider_message,
+                        upstream_body=_safe_upstream_body(error),
+                    )
         except ProtocolCallError:
             raise
         except Exception as exc:
@@ -500,17 +525,21 @@ def _raise_for_gemini_response(response: httpx.Response) -> None:
     if response.status_code < 400:
         return
     status = response.status_code
-    if status == 401:
-        code = "MODEL_AUTHENTICATION_FAILED"
-    elif status == 403:
-        code = "MODEL_PERMISSION_DENIED"
-    elif status == 404:
-        code = "MODEL_ENDPOINT_NOT_FOUND"
-    elif status == 429:
-        code = "MODEL_RATE_LIMITED"
-    else:
-        code = "MODEL_UPSTREAM_ERROR"
-    raise ProtocolCallError(code, retryable=status == 429 or status >= 500)
+    code, retryable = _model_error_classification(status=status)
+    try:
+        body: Any = response.json()
+    except (ValueError, json.JSONDecodeError):
+        body = response.text
+    provider_code, provider_message = _provider_error_fields(body)
+    raise ProtocolCallError(
+        code,
+        retryable=retryable,
+        status_code=status,
+        provider_code=provider_code,
+        provider_message=provider_message,
+        upstream_body=_safe_upstream_body(body),
+        request_id=response.headers.get("x-request-id") or response.headers.get("request-id"),
+    )
 
 
 def _gemini_completion(data: dict[str, Any]) -> Any:
@@ -600,18 +629,128 @@ def _anthropic_request(request: dict[str, Any]) -> dict[str, Any]:
 
 def _protocol_call_error(exc: Exception) -> ProtocolCallError:
     name = type(exc).__name__.lower()
-    status = getattr(exc, "status_code", None)
-    if status == 401 or "authentication" in name:
-        return ProtocolCallError("MODEL_AUTHENTICATION_FAILED")
-    if status == 403 or "permission" in name:
-        return ProtocolCallError("MODEL_PERMISSION_DENIED")
-    if status == 404 or "notfound" in name:
-        return ProtocolCallError("MODEL_ENDPOINT_NOT_FOUND")
-    if status == 429 or "ratelimit" in name:
-        return ProtocolCallError("MODEL_RATE_LIMITED", retryable=True)
-    if "timeout" in name or "connecterror" in name:
-        return ProtocolCallError("MODEL_TIMEOUT", retryable=True)
-    return ProtocolCallError("MODEL_UPSTREAM_ERROR", retryable=True)
+    status = _status_code(exc)
+    body = getattr(exc, "body", None)
+    if body is None:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                body = response.json()
+            except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+                body = getattr(response, "text", None)
+    provider_code, provider_message = _provider_error_fields(body)
+    if not provider_message:
+        provider_message = _safe_fragment(exc, 400)
+    details = {
+        "status_code": status,
+        "provider_code": provider_code,
+        "provider_message": provider_message,
+        "upstream_body": _safe_upstream_body(body),
+        "request_id": _safe_fragment(getattr(exc, "request_id", None), 128),
+    }
+    code, retryable = _model_error_classification(status=status, exception_name=name)
+    return ProtocolCallError(code, retryable=retryable, **details)
+
+
+def _model_error_classification(
+    *,
+    status: int | None,
+    exception_name: str = "",
+) -> tuple[str, bool]:
+    if status == 401 or "authentication" in exception_name:
+        return "MODEL_AUTHENTICATION_FAILED", False
+    if status == 403 or "permission" in exception_name:
+        return "MODEL_PERMISSION_DENIED", False
+    if status == 404 or "notfound" in exception_name:
+        return "MODEL_ENDPOINT_NOT_FOUND", False
+    if status == 429 or "ratelimit" in exception_name:
+        return "MODEL_RATE_LIMITED", True
+    if status in {408, 504} or "timeout" in exception_name or "connecterror" in exception_name:
+        return "MODEL_TIMEOUT", True
+    if status in {400, 422}:
+        return "MODEL_INVALID_REQUEST", False
+    if status == 409:
+        return "MODEL_UPSTREAM_CONFLICT", False
+    if status == 413:
+        return "MODEL_REQUEST_TOO_LARGE", False
+    if status in {500, 502, 503}:
+        return "MODEL_UPSTREAM_UNAVAILABLE", True
+    return "MODEL_UPSTREAM_ERROR", status is None or status >= 500
+
+
+def _status_code(exc: Exception) -> int | None:
+    raw = getattr(exc, "status_code", None)
+    if raw is None:
+        raw = getattr(getattr(exc, "response", None), "status_code", None)
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _provider_error_fields(body: Any) -> tuple[str | None, str | None]:
+    candidate = body
+    if isinstance(candidate, dict) and isinstance(candidate.get("error"), dict):
+        candidate = candidate["error"]
+    if not isinstance(candidate, dict):
+        return None, None
+    code = _safe_fragment(
+        candidate.get("code") or candidate.get("type") or candidate.get("status"),
+        128,
+    )
+    message = _safe_fragment(candidate.get("message") or candidate.get("detail"), 400)
+    return code, message
+
+
+def _safe_upstream_body(body: Any) -> str | None:
+    if body is None:
+        return None
+    redacted = _redact_sensitive_values(body)
+    if isinstance(redacted, str):
+        return _safe_fragment(redacted, 2_000)
+    try:
+        return _safe_fragment(
+            json.dumps(redacted, ensure_ascii=False, separators=(",", ":")),
+            2_000,
+        )
+    except (TypeError, ValueError):
+        return _safe_fragment(redacted, 2_000)
+
+
+def _redact_sensitive_values(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = str(key).lower().replace("-", "_")
+            if any(marker in normalized for marker in ("api_key", "authorization", "token", "secret")):
+                redacted[str(key)] = "[redacted]"
+            else:
+                redacted[str(key)] = _redact_sensitive_values(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_sensitive_values(item) for item in value[:50]]
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
+    return value
+
+
+def _redact_sensitive_text(value: str) -> str:
+    redacted = re.sub(
+        r"(?i)(api[-_ ]?key|authorization|access[-_ ]?token|secret)"
+        r"(\s*[\"']?\s*[:=]\s*[\"']?)([^\s\"',;}]+)",
+        r"\1\2[redacted]",
+        value,
+    )
+    return re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+\-/=]+", "Bearer [redacted]", redacted)
+
+
+def _safe_fragment(value: Any, limit: int) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    if not text:
+        return None
+    return text if len(text) <= limit else f"{text[:limit]}…"
 
 
 def _raise_if_cancelled(request: dict[str, Any]) -> None:

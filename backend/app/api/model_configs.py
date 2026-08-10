@@ -33,6 +33,7 @@ from app.llm.schemas import (
     ModelConfigRead,
     ModelConfigTestResponse,
     ModelConfigUpdateRequest,
+    ModelProviderErrorDetail,
 )
 from app.security.auth import get_current_user, require_current_tenant
 from app.security.encryption import decrypt_secret, encrypt_secret, mask_secret
@@ -406,12 +407,13 @@ def test_model_config(
             )
         return ModelConfigTestResponse(
             success=False,
-            message=str(exc),
+            message=exc.code or "MODEL_CONNECTION_FAILED",
             output=None,
             attempt_id=attempt_id,
             trust_status=row.trust_status,
             attempt_status=row.verification_attempt_status,
             capabilities=capabilities,
+            error=ModelProviderErrorDetail.model_validate(exc.public_detail()),
         )
     except HTTPException as exc:
         detail = str(exc.detail)
@@ -433,7 +435,7 @@ def _verify_candidate_for_save(row: ModelConfig) -> None:
     try:
         _run_verification_probes(config)
     except LLMError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=exc.public_detail()) from exc
     row.trust_status = "verified"
     row.verified_at = utc_now()
     row.verified_fingerprint = _fingerprint(row)
@@ -484,6 +486,8 @@ def _run_verification_probes(
 
 
 def _verification_error_code(exc: Exception) -> str:
+    if isinstance(exc, LLMError) and exc.code:
+        return exc.code
     value = str(exc).strip()
     if value.startswith("MODEL_") and " " not in value:
         return value

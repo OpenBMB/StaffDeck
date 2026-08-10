@@ -6191,7 +6191,7 @@ function EditableSourceActionLine({
   );
 }
 
-function EditableCapabilityReferencesLine({
+export function EditableCapabilityReferencesLine({
   label,
   values,
   requiredValues,
@@ -6230,7 +6230,6 @@ function EditableCapabilityReferencesLine({
       return;
     }
     onChange(values.filter((item) => item !== value));
-    onRequiredChange(requiredValues.filter((item) => item !== value));
   }
 
   function setRequired(value: string, checked: boolean) {
