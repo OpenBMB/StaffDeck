@@ -52,3 +52,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 packaging/assets/staffdeck.iconset/
+
+# 运行期数据与未注册 MCP 脚本副本（正式 server 指向 deploy/mcp/）
+data/
+mcp_servers/
+runtime/
