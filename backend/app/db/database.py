@@ -1592,10 +1592,12 @@ def _seed_skill_versions(conn) -> None:
             text(
                 """
                 SELECT id FROM skill_versions
-                WHERE tenant_id = :tenant_id AND skill_id = :skill_id AND version = :version
+                WHERE id = :id
+                   OR (tenant_id = :tenant_id AND skill_id = :skill_id AND version = :version)
                 """
             ),
-            {"tenant_id": row["tenant_id"], "skill_id": row["skill_id"], "version": version},
+            {"id": f"skillver_{row['id']}",
+             "tenant_id": row["tenant_id"], "skill_id": row["skill_id"], "version": version},
         ).first()
         if existing:
             continue
