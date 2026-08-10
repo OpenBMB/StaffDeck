@@ -178,7 +178,15 @@ function renderBareLinks(text: string, keyPrefix: string): ReactNode[] {
   return nodes;
 }
 
-export function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+export type MarkdownRenderOptions = {
+  renderInternalLink?: (link: { label: string; href: string; key: string }) => ReactNode;
+};
+
+export function renderInlineMarkdown(
+  text: string,
+  keyPrefix: string,
+  options: MarkdownRenderOptions = {},
+): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]*\]\([^\)\n]+\))/g;
   let cursor = 0;
@@ -194,7 +202,7 @@ export function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode
     if (token.startsWith('`') && token.endsWith('`')) {
       nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
     } else if (token.startsWith('**') && token.endsWith('**')) {
-      nodes.push(<strong key={key}>{renderInlineMarkdown(token.slice(2, -2), key)}</strong>);
+      nodes.push(<strong key={key}>{renderInlineMarkdown(token.slice(2, -2), key, options)}</strong>);
     } else {
       const image = token.match(/^!\[([^\]]*)\]\(([^\)\n]+)\)$/);
       if (image) {
@@ -213,6 +221,8 @@ export function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode
               {label}
             </a>,
           );
+        } else if (options.renderInternalLink) {
+          nodes.push(options.renderInternalLink({ label, href, key }));
         } else {
           nodes.push(
             <span key={key} className="md-link-label" title={href}>
@@ -245,10 +255,15 @@ function softLineBreakSeparator(previousLine: string, currentLine: string): stri
   return cjkCharacter.test(previousCharacter) || cjkCharacter.test(currentCharacter) ? '' : ' ';
 }
 
-function renderInlineLines(lines: string[], keyPrefix: string, preserveLineBreaks: boolean): ReactNode[] {
+function renderInlineLines(
+  lines: string[],
+  keyPrefix: string,
+  preserveLineBreaks: boolean,
+  options: MarkdownRenderOptions,
+): ReactNode[] {
   return lines.flatMap((line, lineIndex) => {
     const renderedLine = preserveLineBreaks ? line : line.trim();
-    const nodes = renderInlineMarkdown(renderedLine, `${keyPrefix}-line-${lineIndex}`);
+    const nodes = renderInlineMarkdown(renderedLine, `${keyPrefix}-line-${lineIndex}`, options);
     if (lineIndex === 0) return nodes;
     const separator = preserveLineBreaks
       ? <br key={`${keyPrefix}-br-${lineIndex}`} />
@@ -309,7 +324,12 @@ function isMarkdownTableStart(lines: string[], index: number): boolean {
   return splitMarkdownTableRow(header).length >= 2 && isMarkdownTableSeparator(lines[index + 1]);
 }
 
-function renderMarkdownTable(lines: string[], startIndex: number, key: string): { node: ReactNode; nextIndex: number } {
+function renderMarkdownTable(
+  lines: string[],
+  startIndex: number,
+  key: string,
+  options: MarkdownRenderOptions,
+): { node: ReactNode; nextIndex: number } {
   const header = splitMarkdownTableRow(lines[startIndex]);
   const separator = splitMarkdownTableRow(lines[startIndex + 1]);
   const aligns = separator.map(markdownTableAlign);
@@ -330,7 +350,7 @@ function renderMarkdownTable(lines: string[], startIndex: number, key: string): 
   const renderCells = (cells: string[], rowKey: string) =>
     Array.from({ length: columnCount }, (_, cellIndex) => (
       <td key={`${rowKey}-${cellIndex}`} style={cellStyle(cellIndex)}>
-        {renderInlineMarkdown(cells[cellIndex] || '', `${rowKey}-${cellIndex}`)}
+        {renderInlineMarkdown(cells[cellIndex] || '', `${rowKey}-${cellIndex}`, options)}
       </td>
     ));
 
@@ -343,7 +363,7 @@ function renderMarkdownTable(lines: string[], startIndex: number, key: string): 
             <tr>
               {Array.from({ length: columnCount }, (_, cellIndex) => (
                 <th key={`${key}-head-${cellIndex}`} style={cellStyle(cellIndex)}>
-                  {renderInlineMarkdown(header[cellIndex] || '', `${key}-head-${cellIndex}`)}
+                  {renderInlineMarkdown(header[cellIndex] || '', `${key}-head-${cellIndex}`, options)}
                 </th>
               ))}
             </tr>
@@ -371,7 +391,11 @@ function isBlockBoundary(line: string): boolean {
   );
 }
 
-export function renderMarkdownBlocks(content: string, preserveLineBreaks = true): ReactNode[] {
+export function renderMarkdownBlocks(
+  content: string,
+  preserveLineBreaks = true,
+  options: MarkdownRenderOptions = {},
+): ReactNode[] {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   const blocks: ReactNode[] = [];
   let index = 0;
@@ -421,7 +445,7 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
       resetOrderedListSequence();
       const level = Math.min(heading[1].length, 4) as 1 | 2 | 3 | 4;
       const Tag = `h${level}` as keyof JSX.IntrinsicElements;
-      blocks.push(<Tag key={key}>{renderInlineMarkdown(heading[2], key)}</Tag>);
+      blocks.push(<Tag key={key}>{renderInlineMarkdown(heading[2], key, options)}</Tag>);
       index += 1;
       blockIndex += 1;
       continue;
@@ -434,14 +458,18 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
         quoteLines.push(lines[index].trim().replace(/^>\s?/, ''));
         index += 1;
       }
-      blocks.push(<blockquote key={key}>{renderMarkdownBlocks(quoteLines.join('\n'), preserveLineBreaks)}</blockquote>);
+      blocks.push(
+        <blockquote key={key}>
+          {renderMarkdownBlocks(quoteLines.join('\n'), preserveLineBreaks, options)}
+        </blockquote>,
+      );
       blockIndex += 1;
       continue;
     }
 
     if (isMarkdownTableStart(lines, index)) {
       resetOrderedListSequence();
-      const table = renderMarkdownTable(lines, index, key);
+      const table = renderMarkdownTable(lines, index, key, options);
       blocks.push(table.node);
       index = table.nextIndex;
       blockIndex += 1;
@@ -457,7 +485,9 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
       blocks.push(
         <ul key={key}>
           {items.map((item, itemIndex) => (
-            <li key={`${key}-${itemIndex}`}>{renderInlineMarkdown(item, `${key}-${itemIndex}`)}</li>
+            <li key={`${key}-${itemIndex}`}>
+              {renderInlineMarkdown(item, `${key}-${itemIndex}`, options)}
+            </li>
           ))}
         </ul>,
       );
@@ -480,7 +510,9 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
       blocks.push(
         <ol key={key} start={listStart === 1 ? undefined : listStart}>
           {items.map((item, itemIndex) => (
-            <li key={`${key}-${itemIndex}`}>{renderInlineMarkdown(item.content, `${key}-${itemIndex}`)}</li>
+            <li key={`${key}-${itemIndex}`}>
+              {renderInlineMarkdown(item.content, `${key}-${itemIndex}`, options)}
+            </li>
           ))}
         </ol>,
       );
@@ -500,7 +532,9 @@ export function renderMarkdownBlocks(content: string, preserveLineBreaks = true)
       paragraphLines.push(lines[index]);
       index += 1;
     }
-    blocks.push(<p key={key}>{renderInlineLines(paragraphLines, key, preserveLineBreaks)}</p>);
+    blocks.push(
+      <p key={key}>{renderInlineLines(paragraphLines, key, preserveLineBreaks, options)}</p>,
+    );
     blockIndex += 1;
   }
 
