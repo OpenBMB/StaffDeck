@@ -19,6 +19,7 @@ from app.core.capability_manifest import (
     CapabilityManifestBuilder,
     _available_invocation_name,
     general_skill_snapshot_digest,
+    tool_snapshot_digest,
 )
 from app.core.harness_agent import HarnessTaskAgent
 from app.core.harness_attachments import (
@@ -84,6 +85,7 @@ from app.session.session_schema import (
 )
 from app.session.attachment_store import stage_chat_attachment
 from app.skills.skill_schema import SkillCapabilityRefs
+from app.tools.tool_schema import ToolResult
 
 
 def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
@@ -1267,6 +1269,132 @@ def test_workspace_discovery_returns_source_and_generated_image(
         "/workspace/chart.png",
         "/workspace/generate_chart.py",
     }
+
+
+def test_large_external_json_result_uses_sandbox_reference_and_auto_resolves(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    large_tool = Tool(
+        id="tool-large-json",
+        tenant_id="tenant-demo",
+        name="large_json",
+        method="GET",
+        url="https://example.test/large",
+    )
+    small_tool = Tool(
+        id="tool-small-json",
+        tenant_id="tenant-demo",
+        name="small_json",
+        method="GET",
+        url="https://example.test/small",
+    )
+    sink_tool = Tool(
+        id="tool-json-sink",
+        tenant_id="tenant-demo",
+        name="json_sink",
+        method="POST",
+        url="https://example.test/sink",
+        input_schema={
+            "type": "object",
+            "properties": {"results_02": {"type": "string"}},
+            "required": ["results_02"],
+        },
+    )
+    large_data = {
+        "rows": [
+            {"id": index, "value": f"row-{index}-" + ("x" * 40)}
+            for index in range(100)
+        ]
+    }
+    sink_arguments: list[dict[str, object]] = []
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        if tool_call.name == large_tool.name:
+            return ToolResult(tool_name=tool_call.name, success=True, data=large_data)
+        if tool_call.name == small_tool.name:
+            return ToolResult(
+                tool_name=tool_call.name,
+                success=True,
+                data={"ok": True},
+            )
+        sink_arguments.append(tool_call.arguments)
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=True,
+            data={"accepted": True},
+        )
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(large_tool)
+        db.add(small_tool)
+        db.add(sink_tool)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-json-result",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+
+        def metadata(tool: Tool) -> dict[str, str]:
+            return {
+                "source_tool_name": tool.name,
+                "content_digest": tool_snapshot_digest(db, tool),
+            }
+
+        large_result = invoker._invoke_external_tool(
+            large_tool.id,
+            metadata(large_tool),
+            large_tool.name,
+            {},
+            call_id="hcall-large",
+        )
+        small_result = invoker._invoke_external_tool(
+            small_tool.id,
+            metadata(small_tool),
+            small_tool.name,
+            {},
+            call_id="hcall-small",
+        )
+        reference = large_result["data"]
+        read_result = invoker._invoke_file(
+            "read_file",
+            {"path": reference["sandbox_path"]},
+            call_id="hcall-read",
+        )
+        sink_result = invoker._invoke_external_tool(
+            sink_tool.id,
+            metadata(sink_tool),
+            sink_tool.name,
+            {"results_02": reference},
+            call_id="hcall-sink",
+        )
+        artifacts = invoker.discover_artifacts()
+
+    assert large_result["success"] is True
+    assert reference["kind"] == "sandbox_json_file"
+    assert reference["sandbox_path"] == (
+        "/workspace/.harness/tool-results/hcall-large.json"
+    )
+    assert set(reference) == {"kind", "sandbox_path", "size", "sha256"}
+    assert json.loads(read_result["data"]["content"]) == large_data
+    assert small_result["data"] == {"ok": True}
+    assert sink_result["data"] == {"accepted": True}
+    assert len(sink_arguments) == 1
+    assert json.loads(str(sink_arguments[0]["results_02"])) == large_data
+    assert artifacts == []
 
 
 def test_external_idempotency_key_is_stable_per_task_not_entire_session(

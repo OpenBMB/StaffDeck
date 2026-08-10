@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Check, FlaskConical, LoaderCircle, Trash2 } from 'lucide-react';
 
-import { api, TENANT_ID } from '../api/client';
+import { api, ApiError, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
@@ -57,6 +57,25 @@ type ModelForm = {
   enabled: boolean;
 };
 
+export type ModelProviderErrorDetail = {
+  code: string;
+  message: string;
+  upstream_status?: number | null;
+  provider_code?: string | null;
+  provider_message?: string | null;
+  upstream_body?: string | null;
+  request_id?: string | null;
+  retryable?: boolean;
+};
+
+type ModelTestResponse = {
+  success: boolean;
+  message: string;
+  output?: string;
+  activated: boolean;
+  error?: ModelProviderErrorDetail | null;
+};
+
 const BLANK_MODEL_FORM: ModelForm = {
   name: '',
   api_protocol: 'openai_chat_completions',
@@ -70,7 +89,37 @@ const BLANK_MODEL_FORM: ModelForm = {
   enabled: true,
 };
 
-function modelActionError(error: unknown, fallback: string): string {
+export function modelProviderErrorMessage(
+  error: ModelProviderErrorDetail | null | undefined,
+  fallback: string,
+): string {
+  if (!error) return fallback;
+  const parts = [error.code || fallback];
+  if (typeof error.upstream_status === 'number') parts.push(`HTTP ${error.upstream_status}`);
+  if (error.provider_code) parts.push(`上游错误码：${error.provider_code}`);
+  if (error.provider_message) parts.push(`上游消息：${error.provider_message}`);
+  if (error.upstream_body) parts.push(`上游响应：${error.upstream_body}`);
+  if (error.request_id) parts.push(`Request ID：${error.request_id}`);
+  return parts.join('；');
+}
+
+function providerErrorFromApiError(error: ApiError): ModelProviderErrorDetail | null {
+  try {
+    const payload = JSON.parse(error.body) as { detail?: unknown };
+    if (!payload.detail || typeof payload.detail !== 'object' || Array.isArray(payload.detail)) return null;
+    const detail = payload.detail as Partial<ModelProviderErrorDetail>;
+    if (typeof detail.code !== 'string' || typeof detail.message !== 'string') return null;
+    return detail as ModelProviderErrorDetail;
+  } catch {
+    return null;
+  }
+}
+
+export function modelActionError(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) {
+    const providerError = providerErrorFromApiError(error);
+    if (providerError) return modelProviderErrorMessage(providerError, fallback);
+  }
   const message = error instanceof Error ? error.message : '';
   if (message.includes('MODEL_DEFAULT_CONFLICT')) {
     return '默认模型状态已变化，请刷新后重试';
@@ -280,7 +329,7 @@ export default function ModelsPage({
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), MODEL_TEST_UI_TIMEOUT_MS);
     try {
-      const result = await api.postWithSignal<{ success: boolean; message: string; output?: string; activated: boolean }>(
+      const result = await api.postWithSignal<ModelTestResponse>(
         `/api/enterprise/model-configs/${row.id}/test?tenant_id=${TENANT_ID}&activate_if_initial=true`,
         {},
         controller.signal,
@@ -291,7 +340,7 @@ export default function ModelsPage({
       } else if (result.message === 'MODEL_VERIFICATION_STALE') {
         notify.warning('模型配置或测试状态已发生变化，本次结果未生效，请刷新后重新测试');
       } else {
-        notify.error(result.message);
+        notify.error(modelProviderErrorMessage(result.error, result.message));
       }
       return false;
     } catch (error) {

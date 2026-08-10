@@ -107,6 +107,45 @@ def test_anthropic_driver_omits_temperature_for_claude_five() -> None:
     assert "temperature" not in messages.calls[0]
 
 
+def test_anthropic_driver_preserves_provider_error_diagnostics() -> None:
+    class ProviderError(Exception):
+        status_code = 422
+        request_id = "req_anthropic"
+        body = {
+            "error": {
+                "type": "invalid_request_error",
+                "message": "unknown model",
+                "api_key": "must-not-leak",
+            }
+        }
+
+    class FailingMessages:
+        def create(self, **_kwargs):  # noqa: ANN003
+            raise ProviderError("request rejected")
+
+    driver = AnthropicMessagesDriver(SimpleNamespace(messages=FailingMessages()))
+
+    try:
+        driver.complete(
+            {
+                "model": "missing-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "temperature": 0.2,
+                "max_tokens": 32,
+            }
+        )
+    except ProtocolCallError as exc:
+        assert exc.code == "MODEL_INVALID_REQUEST"
+        assert exc.status_code == 422
+        assert exc.provider_code == "invalid_request_error"
+        assert exc.provider_message == "unknown model"
+        assert exc.request_id == "req_anthropic"
+        assert "must-not-leak" not in str(exc.upstream_body)
+        assert "[redacted]" in str(exc.upstream_body)
+    else:
+        raise AssertionError("provider error unexpectedly succeeded")
+
+
 def test_anthropic_driver_maps_stream_events_to_chat_chunks() -> None:
     events = _ClosableEvents([
         SimpleNamespace(

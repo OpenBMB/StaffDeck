@@ -1,7 +1,7 @@
 import pytest
 
 from app.llm.client import LLMClient, LLMError, _thinking_mode_for_model
-from app.llm.protocol_drivers import ChatCompletionsDriver
+from app.llm.protocol_drivers import ChatCompletionsDriver, ProtocolCallError
 from app.llm.output_policy import operation_output_tokens
 from app.llm.stage_protocol import TURN_STAGE_MESSAGES_KEY, stage_payload
 from app.llm.schemas import ModelConfigCreateRequest
@@ -150,6 +150,41 @@ def test_generate_text_uses_chat_completions_only():
         {"role": "user", "content": '{"hello": "world"}'},
     ]
     assert call["max_tokens"] == 256
+
+
+def test_generate_text_preserves_structured_protocol_diagnostics() -> None:
+    class FailingDriver:
+        request_kind = "responses"
+
+        def complete(self, _request):  # noqa: ANN001
+            raise ProtocolCallError(
+                "MODEL_UPSTREAM_ERROR",
+                status_code=422,
+                provider_code="invalid_model",
+                provider_message="model does not exist",
+                upstream_body='{"error":{"code":"invalid_model"}}',
+                request_id="req_123",
+            )
+
+    client = object.__new__(LLMClient)
+    client.driver = FailingDriver()
+    client.model = "missing-model"
+    client.base_url = "https://provider.example/v1"
+    client.timeout_seconds = 25.0
+    client.temperature = 0.2
+    client.max_output_tokens = 32
+
+    with pytest.raises(LLMError) as exc_info:
+        client.generate_text("system", {"message": "ping"})
+
+    error = exc_info.value
+    assert error.code == "MODEL_UPSTREAM_ERROR"
+    assert error.status_code == 422
+    assert error.provider_code == "invalid_model"
+    assert error.provider_message == "model does not exist"
+    assert error.request_id == "req_123"
+    assert "status_code=422" in str(error)
+    assert "upstream_body=" in str(error)
 
 
 def test_chat_completions_driver_preserves_non_stream_and_stream_requests():

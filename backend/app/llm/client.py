@@ -25,6 +25,7 @@ from app.llm.protocol_drivers import (
     GeminiGenerateContentDriver,
     OpenAIResponsesDriver,
     ProtocolCallError,
+    _protocol_call_error,
 )
 from app.llm.stage_protocol import (
     STAGE_PROTOCOL_KEY,
@@ -37,6 +38,41 @@ from app.security.encryption import decrypt_secret
 
 class LLMError(Exception):
     """Raised when an LLM provider request or response normalization fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        status_code: int | None = None,
+        provider_code: str | None = None,
+        provider_message: str | None = None,
+        upstream_body: str | None = None,
+        request_id: str | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.code = code or (
+            message if message.startswith("MODEL_") and " " not in message else None
+        )
+        self.status_code = status_code
+        self.provider_code = provider_code
+        self.provider_message = provider_message
+        self.upstream_body = upstream_body
+        self.request_id = request_id
+        self.retryable = retryable
+
+    def public_detail(self) -> dict[str, Any]:
+        return {
+            "code": self.code or "MODEL_CONNECTION_FAILED",
+            "message": str(self),
+            "upstream_status": self.status_code,
+            "provider_code": self.provider_code,
+            "provider_message": self.provider_message,
+            "upstream_body": self.upstream_body,
+            "request_id": self.request_id,
+            "retryable": self.retryable,
+        }
 
 
 JSON_REPAIR_ATTEMPTS = 3
@@ -258,8 +294,9 @@ class LLMClient:
             if isinstance(exc, LLMError):
                 raise
             if isinstance(exc, ProtocolCallError):
-                raise LLMError(exc.code) from exc
-            raise LLMError(_provider_failure_detail(self, exc)) from exc
+                raise _llm_error_from_protocol(self, exc) from exc
+            protocol_error = _protocol_call_error(exc)
+            raise _llm_error_from_protocol(self, protocol_error) from exc
 
     def generate_text_stream(
         self,
@@ -428,8 +465,9 @@ class LLMClient:
             if isinstance(exc, LLMError):
                 raise
             if isinstance(exc, ProtocolCallError):
-                raise LLMError(exc.code) from exc
-            raise LLMError(_provider_failure_detail(self, exc)) from exc
+                raise _llm_error_from_protocol(self, exc) from exc
+            protocol_error = _protocol_call_error(exc)
+            raise _llm_error_from_protocol(self, protocol_error) from exc
 
     def _protocol_driver(
         self,
@@ -1087,8 +1125,9 @@ def _provider_failure_detail(client: Any, exc: Exception) -> str:
     timeout = getattr(client, "timeout_seconds", None)
     status_code = getattr(exc, "status_code", None)
     request_id = _safe_fragment(getattr(exc, "request_id", None), 64)
-    error_type = type(exc).__name__
-    message = _safe_fragment(exc, 240) or "no provider error message"
+    error_type = getattr(exc, "code", None) or type(exc).__name__
+    provider_message = _safe_fragment(getattr(exc, "provider_message", None), 400)
+    message = provider_message or _safe_fragment(exc, 240) or "no provider error message"
     provider_code = ""
     body = getattr(exc, "body", None)
     if isinstance(body, dict):
@@ -1097,6 +1136,10 @@ def _provider_failure_detail(client: Any, exc: Exception) -> str:
         provider_message = _safe_fragment(error_body.get("message"), 160)
         if provider_message and provider_message not in message:
             message = f"{message}; provider_message={provider_message}"
+    explicit_provider_code = _safe_fragment(getattr(exc, "provider_code", None), 64)
+    if explicit_provider_code:
+        provider_code = explicit_provider_code
+    upstream_body = _safe_fragment(getattr(exc, "upstream_body", None), 2_000)
     details = [
         f"LLM provider request failed ({error_type})",
         f"message={message}",
@@ -1109,9 +1152,24 @@ def _provider_failure_detail(client: Any, exc: Exception) -> str:
         details.append(f"provider_code={provider_code}")
     if request_id:
         details.append(f"request_id={request_id}")
+    if upstream_body:
+        details.append(f"upstream_body={upstream_body}")
     if timeout is not None:
         details.append(f"timeout_seconds={timeout}")
     return "; ".join(details)
+
+
+def _llm_error_from_protocol(client: Any, exc: ProtocolCallError) -> LLMError:
+    return LLMError(
+        _provider_failure_detail(client, exc),
+        code=exc.code,
+        status_code=exc.status_code,
+        provider_code=exc.provider_code,
+        provider_message=exc.provider_message,
+        upstream_body=exc.upstream_body,
+        request_id=exc.request_id,
+        retryable=exc.retryable,
+    )
 
 
 def _content_shape(content: Any) -> str:
