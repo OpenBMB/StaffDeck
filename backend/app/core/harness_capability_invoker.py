@@ -68,6 +68,11 @@ from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
 
 
+_INLINE_JSON_TOOL_RESULT_MAX_CHARS = 2_000
+_INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
+_SANDBOX_JSON_FILE_KIND = "sandbox_json_file"
+
+
 class HarnessCapabilityInvoker:
     """Executes only capabilities frozen into one TaskFrame manifest."""
 
@@ -235,6 +240,7 @@ class HarnessCapabilityInvoker:
                     descriptor.metadata,
                     name,
                     arguments,
+                    call_id=call_id,
                 )
             else:
                 result = _failure(
@@ -934,6 +940,8 @@ class HarnessCapabilityInvoker:
         metadata: dict[str, Any],
         name: str,
         arguments: dict[str, Any],
+        *,
+        call_id: str,
     ) -> dict[str, Any]:
         source_tool_name = str(
             metadata.get("source_tool_name") or name
@@ -956,14 +964,190 @@ class HarnessCapabilityInvoker:
                 "CAPABILITY_SNAPSHOT_CHANGED",
                 "工具配置在当前 HarnessRun 启动后发生变化，请重新规划。",
             )
+        try:
+            resolved_arguments = self._resolve_json_tool_result_references(
+                arguments,
+                schema=(tool.input_schema if isinstance(tool.input_schema, dict) else None),
+            )
+        except HarnessExecutionError as exc:
+            return _failure(
+                exc.error.code,
+                exc.error.message,
+                retryable=exc.error.retryable,
+                details=dict(exc.error.details),
+            )
         result = ToolExecutor(self.db).execute(
             self.tenant_id,
-            ToolCall(name=source_tool_name, arguments=arguments),
+            ToolCall(name=source_tool_name, arguments=resolved_arguments),
             active_skill_id=self.active_skill_id,
             agent_id=self.agent_id,
             timeout_seconds_override=self._remaining_step_seconds(),
         )
-        return result.model_dump(mode="json")
+        payload = result.model_dump(mode="json")
+        if payload.get("success") is not True:
+            return payload
+        data = payload.get("data")
+        if not isinstance(data, (dict, list)):
+            return payload
+        try:
+            serialized = json.dumps(
+                data,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            return payload
+        if len(serialized) <= _INLINE_JSON_TOOL_RESULT_MAX_CHARS:
+            return payload
+        stored = self._file_executor.execute(
+            self._file_context,
+            HarnessToolCall(
+                call_id=f"{call_id}-result",
+                name="write_file",
+                arguments={
+                    "path": f"{_INTERNAL_TOOL_RESULT_DIRECTORY}/{call_id}.json",
+                    "content": serialized,
+                    "create_parents": True,
+                },
+            ),
+        )
+        if not stored.success:
+            return _failure(
+                "TOOL_RESULT_PERSIST_FAILED",
+                "外部工具已返回结果，但完整 JSON 无法写入当前 TaskFrame 沙箱。",
+                cause={
+                    "code": (
+                        stored.error.code
+                        if stored.error is not None
+                        else "FILE_TOOL_ERROR"
+                    ),
+                    "message": (
+                        stored.error.message
+                        if stored.error is not None
+                        else "沙箱文件写入失败。"
+                    ),
+                },
+            )
+        stored_data = dict(stored.data or {})
+        relative_path = str(stored_data.get("path") or "").strip()
+        payload["data"] = {
+            "kind": _SANDBOX_JSON_FILE_KIND,
+            "sandbox_path": _sandbox_path(relative_path),
+            "size": stored_data.get("size"),
+            "sha256": stored_data.get("sha256"),
+        }
+        return payload
+
+    def _resolve_json_tool_result_references(
+        self,
+        value: Any,
+        *,
+        schema: dict[str, Any] | None = None,
+        depth: int = 0,
+    ) -> Any:
+        if depth > 32:
+            raise HarnessExecutionError(
+                "INVALID_TOOL_RESULT_REFERENCE",
+                "工具参数中的 JSON 结果引用嵌套过深。",
+            )
+        if isinstance(value, list):
+            item_schema = (
+                schema.get("items")
+                if isinstance(schema, dict) and isinstance(schema.get("items"), dict)
+                else None
+            )
+            return [
+                self._resolve_json_tool_result_references(
+                    item,
+                    schema=item_schema,
+                    depth=depth + 1,
+                )
+                for item in value
+            ]
+        if not isinstance(value, dict):
+            return value
+        if value.get("kind") == _SANDBOX_JSON_FILE_KIND:
+            resolved = self._read_json_tool_result_reference(value)
+            if isinstance(schema, dict) and schema.get("type") == "string":
+                return json.dumps(
+                    resolved,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                )
+            return resolved
+        properties = (
+            schema.get("properties")
+            if isinstance(schema, dict) and isinstance(schema.get("properties"), dict)
+            else {}
+        )
+        return {
+            key: self._resolve_json_tool_result_references(
+                item,
+                schema=(properties.get(key) if isinstance(properties.get(key), dict) else None),
+                depth=depth + 1,
+            )
+            for key, item in value.items()
+        }
+
+    def _read_json_tool_result_reference(self, reference: dict[str, Any]) -> Any:
+        sandbox_path = str(reference.get("sandbox_path") or "").strip()
+        prefix = f"{SANDBOX_WORKSPACE}/"
+        if not sandbox_path.startswith(prefix):
+            raise HarnessExecutionError(
+                "INVALID_TOOL_RESULT_REFERENCE",
+                "JSON 结果引用必须使用当前 TaskFrame 的 /workspace 沙箱路径。",
+            )
+        relative_path = sandbox_path[len(prefix) :]
+        expected_prefix = f"{_INTERNAL_TOOL_RESULT_DIRECTORY}/"
+        if (
+            not relative_path.startswith(expected_prefix)
+            or "/" in relative_path[len(expected_prefix) :]
+            or not relative_path.endswith(".json")
+        ):
+            raise HarnessExecutionError(
+                "INVALID_TOOL_RESULT_REFERENCE",
+                "JSON 结果引用不属于 Harness 管理的工具结果目录。",
+            )
+        try:
+            opened = open_harness_artifact(self.workspace_root, relative_path)
+        except HarnessArtifactAccessError as exc:
+            raise HarnessExecutionError(
+                "TOOL_RESULT_REFERENCE_UNAVAILABLE",
+                "引用的 JSON 工具结果文件不存在或不可安全读取。",
+            ) from exc
+        try:
+            if opened.size > self._file_context.limits.max_file_bytes:
+                raise HarnessExecutionError(
+                    "TOOL_RESULT_REFERENCE_TOO_LARGE",
+                    "引用的 JSON 工具结果超过当前 Harness 单文件上限。",
+                    details={
+                        "actual_bytes": opened.size,
+                        "max_bytes": self._file_context.limits.max_file_bytes,
+                    },
+                )
+            expected_sha256 = str(reference.get("sha256") or "").strip().lower()
+            actual_sha256 = opened.sha256()
+            if expected_sha256 and expected_sha256 != actual_sha256:
+                raise HarnessExecutionError(
+                    "TOOL_RESULT_REFERENCE_CHANGED",
+                    "引用的 JSON 工具结果文件已发生变化。",
+                    details={
+                        "expected_sha256": expected_sha256,
+                        "actual_sha256": actual_sha256,
+                    },
+                )
+            raw = b"".join(opened.iter_bytes())
+        finally:
+            opened.close()
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise HarnessExecutionError(
+                "INVALID_TOOL_RESULT_REFERENCE",
+                "引用的工具结果文件不是有效的 UTF-8 JSON。",
+            ) from exc
 
     def _remaining_step_seconds(self) -> float | None:
         if self.step_deadline_monotonic is None:
@@ -1204,7 +1388,10 @@ def _is_user_facing_workspace_file(path: str) -> bool:
     if not parts:
         return False
     first = parts[0]
-    if first == "attachments" or first.startswith("general_skill_"):
+    if (
+        first in {"attachments", ".harness"}
+        or first.startswith("general_skill_")
+    ):
         return False
     if any(
         part in {

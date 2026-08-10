@@ -36,6 +36,15 @@ source_user_message 是创建或最近更新该 TaskFrame 的用户原话，只�
   TaskFrame 结束时系统会发现本轮新增或修改的用户文件并提供下载，因此同一任务生成的
   源码、图片、文档等多个相关文件都应保留。`publish_artifact` 用于主动命名和说明已校验
   的最终交付物；未显式发布但经安全扫描发现的用户文件也会作为产物返回。
+- HTTP/MCP Tool 的 JSON 结果序列化后不超过 2000 字符时直接返回；更大的结果只返回
+  `kind=sandbox_json_file`、`sandbox_path`、`size` 和 `sha256`，完整内容保存在当前
+  TaskFrame 沙箱。需要查看时调用现有 `read_file`，按其 `next_offset` 继续分段读取；
+  不得猜测未读取内容，也不得要求系统生成额外摘要或 Schema。
+- 如果后续 Tool 需要完整的前序大 JSON，把该 `sandbox_json_file` 引用对象原样放入对应
+  参数，Harness 会在执行 Tool 前自动、安全地解引用，并按下游 input schema 还原成 JSON
+  object、array 或完整 JSON 字符串；不要把 JSON 手工复制回参数。
+  这类内部结果文件默认不作为用户下载产物，只有用户明确需要下载原始 JSON 时才调用
+  `publish_artifact` 显式发布。
 - `publish_artifact` 只用于最终交付物，禁止发布用户输入附件、Skill 包文件、缓存、日志、
   临时文件、技能运行器内部源码或构建中间产物。任务要求生成的源码本身可以作为交付物。
   GeneralSkill execute 返回的结构化 artifacts 清单
