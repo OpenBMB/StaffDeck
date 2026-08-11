@@ -1416,7 +1416,7 @@ class AgentLoop:
         chat_session.updated_at = utc_now()
         self.db.add(chat_session)
 
-    def _fallback_session_title_from_message(message: str) -> str:
+    def _fallback_session_title_from_message(self, message: str) -> str:
         return ConversationProjection.fallback_session_title(message)
 
     def _normalize_reply_citation_labels(self, reply: str, citations: object) -> str:
