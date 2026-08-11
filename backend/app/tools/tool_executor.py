@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 
 from app.agents.branching import visible_tool_rows
 from app.config import get_settings
-from app.db.models import MCPServer, Tool
+from app.db.models import MCPServer, Tool, User
 from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
 from app.tools.http_request import prepare_get_request
 from app.tools.mcp_client import MCPClientError, execute_mcp_tool
@@ -79,7 +79,15 @@ class ToolExecutor:
         if request_user_id:
             # 内部端点按调用员工身份执行 RLS（bd-api /api/bd/marketing/query）
             headers = dict(headers)
-            headers.setdefault("X-StaffDeck-User", request_user_id)
+            # 会话 user_id 可能是 SSO UUID(user_xxx)，bd-api 需工号 → 查 User.username 映射
+            resolved_user = request_user_id
+            if request_user_id.startswith("user_"):
+                user_row = self.db.exec(
+                    select(User).where(User.id == request_user_id)
+                ).first()
+                resolved_user = user_row.username if user_row else None
+            if resolved_user:
+                headers.setdefault("X-StaffDeck-User", resolved_user)
         policy = self._execution_policy(
             tool,
             timeout_seconds_override=timeout_seconds_override,
