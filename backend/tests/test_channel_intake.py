@@ -111,8 +111,8 @@ def test_channel_only_attachment_uses_default_message_intent() -> None:
         }
     )
 
-    assert _message_text(binding, image) == "请识别并描述这张图片的内容。"
-    assert _message_text(binding, file) == "请读取并概述这个文件。"
+    assert _message_text(binding, image) == "识别这张图片。"
+    assert _message_text(binding, file) == "读取这个文件。"
 
 
 def test_wecom_following_text_carries_recent_split_file_attachment() -> None:

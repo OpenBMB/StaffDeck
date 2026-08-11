@@ -500,9 +500,9 @@ def _message_text(binding: ChannelBinding, inbound: ChannelInbound) -> str:
     if not text and inbound.attachments:
         kinds = {attachment.kind for attachment in inbound.attachments}
         text = (
-            "请识别并描述这张图片的内容。"
+            "识别这张图片。"
             if kinds == {"image"}
-            else "请读取并概述这个文件。"
+            else "读取这个文件。"
         )
     if not inbound.is_group:
         return text
