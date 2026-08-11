@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 
 import CodeBlock from '@/components/CodeBlock';
@@ -47,13 +48,15 @@ export const CHAT_STREAM_HEARTBEAT_GRACE_MS = 20 * 1000;
 export const CHAT_TRACE_RECOVERY_WINDOW_MS = 10 * 60 * 1000;
 export const STREAM_TERMINAL_EVENTS = new Set(['complete', 'done', 'stream_end', 'stream_cancelled', 'stream_interrupted', 'error', 'error_occurred']);
 export const HIDDEN_GENERAL_SKILL_TRACE_PHASES = new Set(['replying']);
-const DRAFT_SCHEDULE_TYPES = new Set<DraftScheduleType>(['once', 'daily', 'weekly', 'monthly']);
+const DRAFT_SCHEDULE_TYPES = new Set<DraftScheduleType>(['once', 'daily', 'weekly', 'monthly', 'every_5_min']);
 const DRAFT_SCHEDULE_TYPE_LABELS: Record<DraftScheduleType, string> = {
-  once: '一次性',
-  daily: '每天',
-  weekly: '每周',
-  monthly: '每月',
+   once: '一次性',
+   daily: '每天',
+   weekly: '每周',
+   monthly: '每月',
+   every_5_min: '每5分钟',
 };
+
 const DRAFT_WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
 export function sessionReadStorageKey(userId: string): string {
@@ -391,6 +394,38 @@ function isBlockBoundary(line: string): boolean {
   );
 }
 
+/**
+ * ECharts 图表块：解析 ```echarts {chart_option}``` 代码块渲染图表（本地 vendor）。
+ * window.echarts 缺失 / option 非法时由调用方降级为提示（不白屏）。
+ */
+function EChartsChart({ option, className }: { option: unknown; className?: string }): ReactNode {
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    const echartsLib = (window as unknown as Record<string, unknown>).echarts as
+      | { init: (dom: HTMLElement) => { setOption: (o: unknown) => void; resize: () => void; dispose: () => void } }
+      | undefined;
+    if (!el || !echartsLib || !option) return undefined;
+    let disposed = false;
+    try {
+      const inst = echartsLib.init(el);
+      inst.setOption(option);
+      const onResize = () => {
+        if (!disposed) inst.resize();
+      };
+      window.addEventListener('resize', onResize);
+      return () => {
+        disposed = true;
+        window.removeEventListener('resize', onResize);
+        inst.dispose();
+      };
+    } catch {
+      return undefined;
+    }
+  }, [option]);
+  return <div ref={containerRef} className={className ?? 'md-echarts-block'} style={{ width: '100%', height: 360 }} />;
+}
+
 export function renderMarkdownBlocks(
   content: string,
   preserveLineBreaks = true,
@@ -425,6 +460,25 @@ export function renderMarkdownBlocks(
         index += 1;
       }
       if (index < lines.length) index += 1;
+      if (language === 'echarts') {
+        let chartOption: unknown = null;
+        try {
+          chartOption = JSON.parse(codeLines.join('\n'));
+        } catch {
+          chartOption = null;
+        }
+        if (chartOption) {
+          blocks.push(<EChartsChart key={key} option={chartOption} />);
+        } else {
+          blocks.push(
+            <div key={key} className="md-echarts-error" style={{ color: '#b45309', fontSize: 13, padding: '4px 0' }}>
+              ⚠️ 图表数据解析失败，请参考下方表格。
+            </div>,
+          );
+        }
+        blockIndex += 1;
+        continue;
+      }
       blocks.push(
         <CodeBlock key={key} className="md-code-block" code={codeLines.join('\n')} language={language || undefined} />,
       );
@@ -2058,6 +2112,9 @@ export function formatDraftSchedule(draft: ScheduledTaskDraftRead): string {
     return formatted
       ? `一次性 ${formatted}`
       : '一次性';
+  }
+  if (scheduleType === 'every_5_min') {
+    return '每5分钟';
   }
   return `每天 ${schedule.time || '09:00'}`;
 }
