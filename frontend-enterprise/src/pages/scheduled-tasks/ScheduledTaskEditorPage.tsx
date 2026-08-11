@@ -290,10 +290,11 @@ function ScheduledTaskEditorPage({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="daily">每天</SelectItem>
-                  <SelectItem value="weekly">每周</SelectItem>
-                  <SelectItem value="monthly">每月</SelectItem>
-                  <SelectItem value="once">一次性</SelectItem>
+                   <SelectItem value="daily">每天</SelectItem>
+                   <SelectItem value="weekly">每周</SelectItem>
+                   <SelectItem value="monthly">每月</SelectItem>
+                   <SelectItem value="once">一次性</SelectItem>
+                   <SelectItem value="every_5_min">每5分钟</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -311,6 +312,10 @@ function ScheduledTaskEditorPage({
                   onChange={(event) => update('run_at', event.target.value)}
                 />
                 {errors.run_at && <p className={FIELD_ERROR_CLASS}>{errors.run_at}</p>}
+              </div>
+            ) : scheduleType === 'every_5_min' ? (
+              <div className={cn('rounded-[12px] border border-dashed border-[#e3e7f1] px-[14px] py-[12px] text-[13px] leading-[1.6]', FIELD_LABEL_CLASS)}>
+                每 5 分钟自动唤醒一次，无需设置具体执行时间。
               </div>
             ) : (
               <div className="flex flex-col gap-[6px]">

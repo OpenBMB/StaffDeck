@@ -65,7 +65,7 @@ export type ComposerAttachment = ChatAttachmentRead & {
 };
 
 export type ComposerInteractionMode = 'normal' | 'scheduled_task';
-export type DraftScheduleType = 'once' | 'daily' | 'weekly' | 'monthly';
+export type DraftScheduleType = 'once' | 'daily' | 'weekly' | 'monthly' | 'every_5_min';
 
 export function createEmptySlot(): SessionSlot {
   return { serverMessages: [], realtimeMessages: [] };

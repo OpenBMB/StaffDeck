@@ -50,7 +50,7 @@ DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_TASK_TIME = "09:00"
 LEASE_SECONDS = 15 * 60
 WORKER_SLEEP_SECONDS = 5
-SCHEDULE_TYPES = {"once", "daily", "weekly", "monthly"}
+SCHEDULE_TYPES = {"once", "daily", "weekly", "monthly", "every_5_min"}
 
 
 class ScheduledTaskAgentUnavailable(RuntimeError):
@@ -80,7 +80,7 @@ SCHEDULE_DRAFT_PROMPT = """
 - title: 12 到 32 个中文字符，概括自动任务名称
 - prompt: 每次到点后交给数字员工的新会话任务描述，不要包含“帮我设个定时任务”等配置话术
 - description: 可选，解释为什么这样拆解
-- schedule_type: one of "once", "daily", "weekly", "monthly"
+- schedule_type: one of "once", "daily", "weekly", "monthly", "every_5_min"
 - schedule:
   - once: {"run_at": "YYYY-MM-DDTHH:mm:ss±HH:MM"}
   - daily: {"time": "HH:mm"}
@@ -770,6 +770,9 @@ def compute_next_run_at(task: ScheduledTask, after: datetime | None = None) -> d
             if month > 12:
                 year += 1
                 month = 1
+    if task.schedule_type == "every_5_min":
+        candidate = after_local + timedelta(minutes=5)
+        return _to_utc_naive(candidate)
     return None
 
 
@@ -795,6 +798,8 @@ def normalize_schedule(schedule_type: str, schedule: dict[str, Any], timezone: s
             "time": _format_time(_parse_time(str(raw.get("time") or DEFAULT_TASK_TIME))),
             "day_of_month": _normalize_day_of_month(raw.get("day_of_month") or 1),
         }
+    if schedule_type == "every_5_min":
+        return {"interval_minutes": 5}
     raise HTTPException(status_code=400, detail="不支持的自动任务调度类型")
 
 

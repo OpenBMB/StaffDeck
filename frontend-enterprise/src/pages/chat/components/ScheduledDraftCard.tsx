@@ -191,6 +191,7 @@ export default function ScheduledDraftCard({
                 <SelectItem value="daily">每天</SelectItem>
                 <SelectItem value="weekly">每周</SelectItem>
                 <SelectItem value="monthly">每月</SelectItem>
+                <SelectItem value="every_5_min">每5分钟</SelectItem>
               </SelectContent>
             </Select>
           </label>

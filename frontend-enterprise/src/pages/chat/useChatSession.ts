@@ -182,15 +182,17 @@ function queuedTurnPreview(turn: PreparedChatTurn): ChatMessage {
   };
 }
 
-type DraftScheduleType = 'once' | 'daily' | 'weekly' | 'monthly';
+type DraftScheduleType = 'once' | 'daily' | 'weekly' | 'monthly' | 'every_5_min';
 type DraftScheduleFormatter = (schedule: Record<string, unknown>) => string;
 
 const DRAFT_SCHEDULE_FORMATTERS: Record<DraftScheduleType, DraftScheduleFormatter> = {
-  once: (schedule) => `一次性 ${typeof schedule.run_at === 'string' ? schedule.run_at : '待确认时间'}`,
-  weekly: (schedule) => `每周 ${formatScheduleWeekdays(schedule.weekdays)} ${scheduleTime(schedule)}`,
-  monthly: (schedule) => `每月 ${schedule.day_of_month || 1} 号 ${scheduleTime(schedule)}`,
-  daily: (schedule) => `每天 ${scheduleTime(schedule)}`,
+   once: (schedule) => `一次性 ${typeof schedule.run_at === 'string' ? schedule.run_at : '待确认时间'}`,
+   weekly: (schedule) => `每周 ${formatScheduleWeekdays(schedule.weekdays)} ${scheduleTime(schedule)}`,
+   monthly: (schedule) => `每月 ${schedule.day_of_month || 1} 号 ${scheduleTime(schedule)}`,
+   daily: (schedule) => `每天 ${scheduleTime(schedule)}`,
+   every_5_min: (schedule) => `每5分钟 ${scheduleTime(schedule)}`,
 };
+
 
 function scheduleTime(schedule: Record<string, unknown>): string {
   return typeof schedule.time === 'string' ? schedule.time : DEFAULT_SCHEDULE_TIME;
@@ -2507,11 +2509,15 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
             notifyStream();
           }
           const hasTerminalRecoveryEvent = recoveryEvents.some((event) => isTerminalSessionEvent(event, isTerminalEvent));
+          const latestRecoveryEventTime = Math.max(
+            stream.relayRecoveryStartedAt || 0,
+            ...recoveryEvents.map((event) => eventTime(event)),
+          );
           if (
             stream.relayRecoveryStartedAt
             && !hasTerminalRecoveryEvent
             && !hasAssistantMessageForTurn(slot, recoveringTurnId)
-            && now - stream.relayRecoveryStartedAt >= CHAT_STREAM_IDLE_TIMEOUT_MS
+            && now - latestRecoveryEventTime >= CHAT_STREAM_IDLE_TIMEOUT_MS
           ) {
             clearStreamSlot(id, true);
             upsertTraceLine(recoveringTurnId, {

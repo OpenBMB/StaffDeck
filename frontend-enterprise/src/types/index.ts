@@ -467,7 +467,7 @@ export type ScheduledTaskRead = {
   title: string;
   prompt: string;
   description?: string;
-  schedule_type: 'once' | 'daily' | 'weekly' | 'monthly' | string;
+   schedule_type: 'once' | 'daily' | 'weekly' | 'monthly' | 'every_5_min' | string;
   schedule: Record<string, unknown>;
   timezone: string;
   rrule?: string;
@@ -647,7 +647,7 @@ export type ScheduledTaskDraftRead = {
   title: string;
   prompt: string;
   description?: string;
-  schedule_type: 'once' | 'daily' | 'weekly' | 'monthly' | string;
+   schedule_type: 'once' | 'daily' | 'weekly' | 'monthly' | 'every_5_min' | string;
   schedule: Record<string, unknown>;
   timezone: string;
   rrule?: string;

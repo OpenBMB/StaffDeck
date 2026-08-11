@@ -78,7 +78,7 @@ class LLMError(Exception):
 JSON_REPAIR_ATTEMPTS = 3
 EMPTY_RESPONSE_RETRIES = 2
 EMPTY_RESPONSE_MESSAGE = "Model returned an empty response"
-DEFAULT_MODEL_API_TIMEOUT_SECONDS = 600.0
+DEFAULT_MODEL_API_TIMEOUT_SECONDS = 240.0
 DEFAULT_INPUT_TOKEN_BUDGET = 32_000
 TURN_STAGE_MESSAGE_MARKER = "_agent_turn_message"
 # Ceiling for the reasoning-model length-truncation retry escalation. A model

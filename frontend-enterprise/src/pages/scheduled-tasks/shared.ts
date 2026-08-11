@@ -16,17 +16,18 @@ export const WEEKDAY_OPTIONS = [
 ];
 
 export type TaskFormValues = {
-  title: string;
-  prompt: string;
-  description?: string;
-  schedule_type: 'once' | 'daily' | 'weekly' | 'monthly';
-  time: string;
-  run_at: string;
-  weekdays: number[];
-  day_of_month: number;
-  status: 'active' | 'paused';
-  max_runs?: number;
+   title: string;
+   prompt: string;
+   description?: string;
+   schedule_type: 'once' | 'daily' | 'weekly' | 'monthly' | 'every_5_min';
+   time: string;
+   run_at: string;
+   weekdays: number[];
+   day_of_month: number;
+   status: 'active' | 'paused';
+   max_runs?: number;
 };
+
 
 export const INITIAL_VALUES: TaskFormValues = {
   title: '',
@@ -105,39 +106,43 @@ export const RUN_STATUS_BADGE: Record<string, { tone: BadgeTone; text: string }>
   skipped: { tone: 'gray', text: '已跳过' },
 };
 
-const SCHEDULE_TYPES = new Set<TaskFormValues['schedule_type']>(['once', 'daily', 'weekly', 'monthly']);
+const SCHEDULE_TYPES = new Set<TaskFormValues['schedule_type']>(['once', 'daily', 'weekly', 'monthly', 'every_5_min']);
 const SCHEDULE_BUILDERS: Record<
-  TaskFormValues['schedule_type'],
-  (values: TaskFormValues) => Record<string, unknown>
+   TaskFormValues['schedule_type'],
+   (values: TaskFormValues) => Record<string, unknown>
 > = {
-  once: (values) => ({ run_at: values.run_at }),
-  weekly: (values) => ({
-    time: values.time || '09:00',
-    weekdays: values.weekdays?.length ? values.weekdays : [0],
-  }),
-  monthly: (values) => ({
-    time: values.time || '09:00',
-    day_of_month: values.day_of_month || 1,
-  }),
-  daily: (values) => ({ time: values.time || '09:00' }),
+   once: (values) => ({ run_at: values.run_at }),
+   weekly: (values) => ({
+     time: values.time || '09:00',
+     weekdays: values.weekdays?.length ? values.weekdays : [0],
+   }),
+   monthly: (values) => ({
+     time: values.time || '09:00',
+     day_of_month: values.day_of_month || 1,
+   }),
+   daily: (values) => ({ time: values.time || '09:00' }),
+   every_5_min: (values) => ({ time: values.time || '09:00' }),
 };
+
 const SCHEDULE_FORMATTERS: Record<
-  TaskFormValues['schedule_type'],
-  (row: ScheduledTaskRead, schedule: Record<string, unknown>) => string
+   TaskFormValues['schedule_type'],
+   (row: ScheduledTaskRead, schedule: Record<string, unknown>) => string
 > = {
-  once: (row, schedule) => `一次性 · ${formatTime(String(schedule.run_at || row.next_run_at || ''))}`,
-  weekly: (_row, schedule) => {
-    const days = Array.isArray(schedule.weekdays)
-      ? schedule.weekdays
-          .map((item) => WEEKDAY_OPTIONS[Number(item)]?.label)
-          .filter(Boolean)
-          .join('、')
-      : '周一';
-    return `每周 ${days} ${schedule.time || '09:00'}`;
-  },
-  monthly: (_row, schedule) => `每月 ${schedule.day_of_month || 1} 号 ${schedule.time || '09:00'}`,
-  daily: (_row, schedule) => `每天 ${schedule.time || '09:00'}`,
+   once: (row, schedule) => `一次性 · ${formatTime(String(schedule.run_at || row.next_run_at || ''))}`,
+   weekly: (_row, schedule) => {
+     const days = Array.isArray(schedule.weekdays)
+       ? schedule.weekdays
+           .map((item) => WEEKDAY_OPTIONS[Number(item)]?.label)
+           .filter(Boolean)
+           .join('、')
+       : '周一';
+     return `每周 ${days} ${schedule.time || '09:00'}`;
+   },
+   monthly: (_row, schedule) => `每月 ${schedule.day_of_month || 1} 号 ${schedule.time || '09:00'}`,
+   daily: (_row, schedule) => `每天 ${schedule.time || '09:00'}`,
+   every_5_min: (_row, _schedule) => '每5分钟',
 };
+
 
 export function buildSchedule(values: TaskFormValues): Record<string, unknown> {
   return SCHEDULE_BUILDERS[values.schedule_type](values);
