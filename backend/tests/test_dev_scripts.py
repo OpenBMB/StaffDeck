@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -51,6 +52,40 @@ def test_dev_cli_honors_packaged_app_port_range(monkeypatch) -> None:
     monkeypatch.setattr(dev, "_port_available", lambda _host, port: port == 6202)
 
     assert dev._select_available_port("127.0.0.1", 6200) == 6202
+
+
+def test_dev_cli_keeps_complete_frontend_dependencies(monkeypatch) -> None:
+    dev = _load_script("dev")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(dev, "_npm_executable", lambda: "npm")
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(dev.subprocess, "run", run)
+
+    dev._ensure_frontend_dependencies()
+
+    assert len(calls) == 1
+    assert calls[0][-3:] == ["ls", "--depth=0", "--json"]
+
+
+def test_dev_cli_refreshes_incomplete_frontend_dependencies(monkeypatch) -> None:
+    dev = _load_script("dev")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(dev, "_npm_executable", lambda: "npm")
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1 if "ls" in command else 0)
+
+    monkeypatch.setattr(dev.subprocess, "run", run)
+
+    dev._ensure_frontend_dependencies()
+
+    assert len(calls) == 2
+    assert calls[1][-3:] == ["ci", "--no-audit", "--no-fund"]
 
 
 def test_supervisor_does_not_restart_during_startup_grace(monkeypatch) -> None:

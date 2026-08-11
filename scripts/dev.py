@@ -206,6 +206,27 @@ def _build_frontend() -> None:
     )
 
 
+def _ensure_frontend_dependencies() -> None:
+    """Refresh node_modules after a pull adds or changes direct dependencies."""
+    frontend_dir = ROOT_DIR / "frontend-enterprise"
+    npm = _npm_executable()
+    dependency_check = subprocess.run(
+        [npm, "--prefix", str(frontend_dir), "ls", "--depth=0", "--json"],
+        cwd=ROOT_DIR,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if dependency_check.returncode == 0:
+        return
+    print("Frontend dependencies changed or are incomplete; running npm ci...")
+    subprocess.run(
+        [npm, "--prefix", str(frontend_dir), "ci", "--no-audit", "--no-fund"],
+        cwd=ROOT_DIR,
+        check=True,
+    )
+
+
 def _ensure_sandbox_runtime() -> None:
     runtime = ROOT_DIR / "packaging" / "sandbox_runtime"
     cli = runtime / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
@@ -291,6 +312,7 @@ def command_up(detach_flag: bool) -> int:
     detach = detach_flag or _env_flag("DETACH")
     os.environ.setdefault("AUTO_RESTART", "1" if detach else "0")
     supervisor = _load_supervisor()
+    _ensure_frontend_dependencies()
     supervisor.validate_prerequisites()
     _ensure_sandbox_runtime()
     stop_services(verbose=False)
