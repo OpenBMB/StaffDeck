@@ -982,6 +982,7 @@ class HarnessCapabilityInvoker:
             active_skill_id=self.active_skill_id,
             agent_id=self.agent_id,
             timeout_seconds_override=self._remaining_step_seconds(),
+            request_user_id=getattr(self.session, "user_id", None) or None,
         )
         payload = result.model_dump(mode="json")
         if payload.get("success") is not True:

@@ -406,6 +406,7 @@ def test_tool(
         request.tenant_id,
         ToolCall(name=row.name, arguments=request.arguments),
         agent_id=agent_id,
+        request_user_id=getattr(current_user, "employee_code", None),
     )
 
 

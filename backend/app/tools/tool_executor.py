@@ -39,6 +39,7 @@ class ToolExecutor:
         active_skill_id: str | None = None,
         agent_id: str | None = None,
         timeout_seconds_override: float | None = None,
+        request_user_id: str | None = None,
     ) -> ToolResult:
         with self.db.no_autoflush:
             tool = self.db.exec(
@@ -75,6 +76,10 @@ class ToolExecutor:
             tool.url,
             self._resolve_headers(tool.headers_json or {}, tool.auth_json or {}),
         )
+        if request_user_id:
+            # 内部端点按调用员工身份执行 RLS（bd-api /api/bd/marketing/query）
+            headers = dict(headers)
+            headers.setdefault("X-StaffDeck-User", request_user_id)
         policy = self._execution_policy(
             tool,
             timeout_seconds_override=timeout_seconds_override,
