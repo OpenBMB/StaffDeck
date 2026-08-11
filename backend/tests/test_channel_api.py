@@ -1049,6 +1049,11 @@ def test_list_channel_conversation_messages_includes_attachments() -> None:
                             "content_type": "image/png",
                             "size": 1024,
                             "kind": "image",
+                            # 内部/大体量字段不应回传给渠道管理页面
+                            "data_url": "data:image/png;base64,iVBORw0KGgo=",
+                            "sandbox_path": "/sandbox/attachments/photo.png",
+                            "sha256": "abc123",
+                            "text": "secret",
                         }
                     ]
                 },
