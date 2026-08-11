@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
 import io
 import json
-import hashlib
 import mimetypes
 import re
 from collections.abc import Iterable
@@ -105,6 +105,8 @@ def image_payloads_from_attachments(attachments: Iterable[ChatAttachmentRead | d
     normalized = [_coerce_attachment(item) for item in attachments]
     for attachment in normalized:
         if not attachment or not _attachment_is_supported_image(attachment) or not attachment.data_url:
+            continue
+        if not _data_url_has_valid_image_signature(attachment.data_url, attachment.content_type):
             continue
         payloads.append(
             {
@@ -229,6 +231,8 @@ def _validated_image_data_url(
         raise ValueError(f"{filename} 的图片 data URL 无效") from exc
     if len(decoded) > IMAGE_DATA_URL_LIMIT_BYTES or len(decoded) != size:
         raise ValueError(f"{filename} 的图片 data URL 大小不一致或超限")
+    if not _image_bytes_match_content_type(decoded, content_type):
+        raise ValueError(f"{filename} 的图片内容与 MIME 类型不一致")
     if attachment.sha256 and hashlib.sha256(decoded).hexdigest() != attachment.sha256.lower():
         raise ValueError(f"{filename} 的图片 data URL 与上传文件不一致")
     return raw
@@ -432,6 +436,35 @@ def _is_supported_image_file(lower_name: str, content_type: str) -> bool:
 
 def _attachment_is_supported_image(attachment: ChatAttachmentRead) -> bool:
     return attachment.kind == "image" and _is_supported_image_file(attachment.filename.lower(), attachment.content_type)
+
+
+def _data_url_has_valid_image_signature(data_url: str, content_type: str) -> bool:
+    prefix = f"data:{content_type};base64,"
+    if not data_url.startswith(prefix):
+        return False
+    try:
+        data = base64.b64decode(data_url.removeprefix(prefix), validate=True)
+    except (ValueError, TypeError):
+        return False
+    return _image_bytes_match_content_type(data, content_type)
+
+
+def _image_bytes_match_content_type(data: bytes, content_type: str) -> bool:
+    normalized = content_type.lower()
+    if normalized == "image/jpeg":
+        return data.startswith(b"\xff\xd8\xff") and b"\xff\xd9" in data[3:]
+    if normalized == "image/png":
+        return data.startswith(b"\x89PNG\r\n\x1a\n")
+    if normalized == "image/gif":
+        return data.startswith((b"GIF87a", b"GIF89a"))
+    if normalized == "image/webp":
+        return len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP"
+    if normalized == "image/bmp":
+        return data.startswith(b"BM")
+    if normalized == "image/svg+xml":
+        sample = data[:1024].lstrip().lower()
+        return sample.startswith(b"<svg") or (sample.startswith(b"<?xml") and b"<svg" in sample)
+    return False
 
 
 def _image_content_type_for(lower_name: str, content_type: str) -> str:

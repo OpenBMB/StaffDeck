@@ -966,6 +966,7 @@ def test_generate_json_requests_json_object_mode():
 
     assert client.generate_json("prompt", {}) == {"ok": True}
     assert client.client.chat.completions.calls[0]["response_format"] == {"type": "json_object"}
+    assert "json" in str(client.client.chat.completions.calls[0]["messages"][-1]["content"])
 
 
 def test_internal_json_operation_caps_output_without_mutating_system_prompt():
