@@ -3,9 +3,53 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+import httpx
+
 from app.db.models import ChannelBinding
 
 CHANNEL_TEXT_LIMIT = 2000
+
+
+def stream_download_with_limit(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+    max_bytes: int = 0,
+) -> tuple[int, bytes]:
+    """流式下载,超限时立即中止。
+
+    返回 (status_code, body_bytes)。
+    max_bytes > 0 时,Content-Length 超限或累计读取超限均抛 ValueError。
+
+    注意: 当 url 自带 query string(如 OSS 签名 URL)时,不要传 params,
+    否则 httpx 会重新编码 URL 导致签名失效。
+    """
+    kwargs: dict[str, Any] = {}
+    if headers:
+        kwargs["headers"] = headers
+    if params:
+        kwargs["params"] = params
+    if json_body is not None:
+        kwargs["json"] = json_body
+    with client.stream(method, url, **kwargs) as response:
+        if response.status_code >= 400:
+            return response.status_code, response.read()
+        if max_bytes > 0:
+            content_length = response.headers.get("content-length")
+            if content_length and int(content_length) > max_bytes:
+                raise ValueError(f"下载内容超过上限 {max_bytes} bytes (Content-Length={content_length})")
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if max_bytes > 0 and total > max_bytes:
+                raise ValueError(f"下载内容超过上限 {max_bytes} bytes (已读取 {total})")
+            chunks.append(chunk)
+        return response.status_code, b"".join(chunks)
 
 
 @dataclass

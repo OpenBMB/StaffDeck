@@ -11,6 +11,50 @@ logger = logging.getLogger(__name__)
 
 MAX_CHANNEL_MEDIA_BYTES = 25 * 1024 * 1024  # 25MB
 
+# 图片 magic bytes 签名 → (content_type, extension)
+_IMAGE_SIGNATURES: list[tuple[bytes, str, str]] = [
+    (b"\x89PNG\r\n\x1a\n", "image/png", ".png"),
+    (b"\xff\xd8\xff", "image/jpeg", ".jpg"),
+    (b"GIF87a", "image/gif", ".gif"),
+    (b"GIF89a", "image/gif", ".gif"),
+    (b"RIFF", "image/webp", ".webp"),  # 需后续确认 WebP 标记
+    (b"BM", "image/bmp", ".bmp"),
+]
+
+
+def _detect_image_type(data: bytes) -> tuple[str, str] | None:
+    """从字节签名推断图片 content_type 和扩展名。返回 (content_type, ext) 或 None。"""
+    if len(data) < 12:
+        return None
+    for sig, content_type, ext in _IMAGE_SIGNATURES:
+        if data.startswith(sig):
+            if sig == b"RIFF" and data[8:12] != b"WEBP":
+                continue
+            return content_type, ext
+    return None
+
+
+def _resolve_content_type(
+    att_content_type: str,
+    att_filename: str,
+    data: bytes,
+) -> tuple[str, str]:
+    """根据下载字节修正 content_type 和 filename。
+
+    渠道 normalize 阶段可能无法确定真实 MIME(飞书 image_key 不含扩展名,
+    钉钉 picture 消息也不提供类型),因此下载后用 magic bytes 覆盖。
+    """
+    detected = _detect_image_type(data)
+    if detected:
+        content_type, ext = detected
+        filename = att_filename
+        if not filename.lower().endswith(ext):
+            filename = f"{att_filename}{ext}"
+        return content_type, filename
+    # 非图片或无法识别:保留渠道侧提供的值,空则传 None 让 parse 自动推断
+    ct = (att_content_type or "").strip()
+    return (ct or None, att_filename)  # type: ignore[return-value]
+
 
 def inbound_attachments_to_chat(
     binding: ChannelBinding,
@@ -43,20 +87,16 @@ def inbound_attachments_to_chat(
     results: list[ChatAttachmentRead] = []
     for att in inbound.attachments:
         try:
-            data = download_media(binding, att)
+            data = download_media(binding, att, max_bytes=MAX_CHANNEL_MEDIA_BYTES)
             if not data:
                 continue
-            if len(data) > MAX_CHANNEL_MEDIA_BYTES:
-                logger.warning(
-                    "渠道附件超过大小上限 binding=%s media_id=%s size=%d",
-                    binding.id,
-                    att.media_id,
-                    len(data),
-                )
-                continue
-            content_type = att.content_type or None
-            attachment = parse_chat_attachment(
+            content_type, filename = _resolve_content_type(
+                att.content_type,
                 att.filename or att.media_id,
+                data,
+            )
+            attachment = parse_chat_attachment(
+                filename,
                 content_type,
                 data,
             )

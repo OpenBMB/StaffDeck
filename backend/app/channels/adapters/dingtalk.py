@@ -21,6 +21,7 @@ from app.channels.adapters.base import (
     ChannelInboundAttachment,
     register_channel_adapter,
     split_channel_text,
+    stream_download_with_limit,
 )
 from app.channels.crypto import decrypt_channel_secret
 from app.db import engine
@@ -136,6 +137,23 @@ def _text_value(raw: dict[str, Any]) -> str:
     return str(value or "").strip()
 
 
+def _richtext_text(raw: dict[str, Any]) -> str:
+    """从 richtext 消息的 content.richText 数组中拼接文本。"""
+    content = raw.get("content") or {}
+    if not isinstance(content, dict):
+        return ""
+    rich_text = content.get("richText") or content.get("rich_text") or []
+    if not isinstance(rich_text, list):
+        return ""
+    parts: list[str] = []
+    for item in rich_text:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip().lower() == "text":
+            parts.append(str(item.get("text") or ""))
+    return "".join(parts).strip()
+
+
 def _strip_bot_mention(text: str, raw: dict[str, Any], *, is_group: bool) -> str:
     """DingTalk may include the @ token in text.content as well as atUsers."""
     if not is_group or raw.get("isInAtList") is not True:
@@ -154,6 +172,7 @@ def _extract_dingtalk_attachments(
     钉钉 stream SDK 把图片/文件正文放在 raw.content 下:
     - picture: raw.content.downloadCode + raw.content.pictureDownloadCode
     - file: raw.content.downloadCode + raw.content.fileName
+    - richtext: raw.content.richText 数组,遍历 type=="picture" 的条目取 downloadCode
     robotCode 在 download_media 时由适配器从 binding 配置解析(= client_id)。
     """
     attachments: list[ChannelInboundAttachment] = []
@@ -167,8 +186,8 @@ def _extract_dingtalk_attachments(
                 ChannelInboundAttachment(
                     media_id=download_code,
                     kind="image",
-                    filename=f"{download_code[:12]}.jpg",
-                    content_type="image/jpeg",
+                    filename=download_code[:12],
+                    content_type="",
                     download_params={"download_code": download_code, "type": "picture"},
                 )
             )
@@ -185,6 +204,25 @@ def _extract_dingtalk_attachments(
                     download_params={"download_code": download_code, "type": "file"},
                 )
             )
+    elif msgtype in {"richtext", "rich_text"}:
+        rich_text = content.get("richText") or content.get("rich_text") or []
+        if isinstance(rich_text, list):
+            for item in rich_text:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("type") or "").strip().lower() != "picture":
+                    continue
+                download_code = str(item.get("downloadCode") or "").strip()
+                if download_code:
+                    attachments.append(
+                        ChannelInboundAttachment(
+                            media_id=download_code,
+                            kind="image",
+                            filename=download_code[:12],
+                            content_type="",
+                            download_params={"download_code": download_code, "type": "picture"},
+                        )
+                    )
     return attachments
 
 
@@ -193,8 +231,8 @@ def normalize_dingtalk_message(raw: dict[str, Any], *, account_scope: str = "") 
     if not isinstance(raw, dict):
         return None
     msgtype = str(raw.get("msgtype") or "").strip().lower()
-    # 放宽 msgtype 过滤:允许 text / picture / file
-    if msgtype not in {"text", "picture", "file"}:
+    # 放宽 msgtype 过滤:允许 text / picture / file / richtext
+    if msgtype not in {"text", "picture", "file", "richtext", "rich_text"}:
         return None
     sender_id = str(raw.get("senderStaffId") or "").strip()
     if not sender_id:
@@ -209,10 +247,12 @@ def normalize_dingtalk_message(raw: dict[str, Any], *, account_scope: str = "") 
     # 提取图片/文件附件(picture/file 消息)
     attachments = _extract_dingtalk_attachments(raw, msgtype)
 
-    # 文本只在 text 类型时提取
+    # 文本在 text 类型时从 raw.text 提取,richtext 类型时从 content.richText 数组提取
     text = ""
     if msgtype == "text":
         text = _text_value(raw)
+    elif msgtype in {"richtext", "rich_text"}:
+        text = _richtext_text(raw)
     if not text and not attachments:
         return None
 
@@ -411,15 +451,18 @@ class DingTalkAdapter:
         self,
         binding: ChannelBinding,
         attachment: ChannelInboundAttachment,
+        *,
+        max_bytes: int = 0,
     ) -> bytes:
         """钉钉附件下载:先获取下载 URL,再下载文件内容。
 
-        第一步: POST /robot/messageCenter/file/download
+        第一步: POST /robot/messageFiles/download
             body = {"downloadCode": "...", "robotCode": "<client_id>"}
             返回 {"downloadUrl": "..."}
         第二步: GET downloadUrl, 超时 15s。
         robotCode 取 binding 配置的 client_id(_credential 第一个返回值)。
         复用 DingTalkTokenProvider 的 token 刷新重试模式(401 -> invalidate -> 重试一次)。
+        max_bytes > 0 时第二步流式读取,超过上限立即中止。
         """
         download_code = str(
             attachment.download_params.get("download_code") or attachment.media_id
@@ -466,9 +509,20 @@ class DingTalkAdapter:
             raise DingTalkPermanentError("钉钉 token 刷新后仍无法下载附件")
 
         # 第二步:从 downloadUrl 下载实际文件
+        # downloadUrl 自带签名 query string,不传 params 避免 httpx 重新编码 URL 导致签名失效
         try:
             with self._client_factory() as client:
+                if max_bytes > 0:
+                    status, data = stream_download_with_limit(
+                        client, "GET", download_url,
+                        max_bytes=max_bytes,
+                    )
+                    if status != 200:
+                        raise DingTalkTransientError(f"钉钉附件下载失败 HTTP {status}")
+                    return data
                 response = client.get(download_url, timeout=15.0)
+        except ValueError:
+            raise
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise DingTalkTransientError("钉钉附件下载暂时失败") from exc
         if response.status_code != 200:

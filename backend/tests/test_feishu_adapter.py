@@ -553,8 +553,8 @@ def test_normalize_image_message_extracts_attachment() -> None:
     assert isinstance(att, ChannelInboundAttachment)
     assert att.media_id == "img_v3_001"
     assert att.kind == "image"
-    assert att.filename == "img_v3_001.jpg"
-    assert att.content_type == "image/jpeg"
+    assert att.filename == "img_v3_001"  # 不在 normalize 阶段硬编码扩展名
+    assert att.content_type == ""  # 下载后由 _resolve_content_type 推断
     assert att.download_params == {
         "file_key": "img_v3_001",
         "type": "image",
@@ -600,17 +600,22 @@ def test_normalize_image_without_image_key_returns_none() -> None:
     assert _normalize_event(event, bot_open_id="ou_bot") is None
 
 
-def test_normalize_group_attachment_requires_bot_mention() -> None:
-    """群聊 image/file 消息仍需 @ 机器人才能通过。"""
-    # 不带 @ 机器人
+def test_normalize_group_attachment_without_mention_is_accepted() -> None:
+    """群聊 image/file 消息天然不携带 mentions,无需 @ 机器人即可通过。"""
+    # 不带 @ 机器人 → 仍接受(image 消息无法携带 mentions)
     event_no_mention = _p2p_event(
         message_type="image",
         content={"image_key": "img_v3_002"},
         chat_type="group",
     )
-    assert _normalize_event(event_no_mention, bot_open_id="ou_bot") is None
+    result = _normalize_event(event_no_mention, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert inbound.is_group is True
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].media_id == "img_v3_002"
 
-    # 带 @ 机器人
+    # 带 @ 机器人的 text+image 也正常
     event = _group_attachment_event("image", {"image_key": "img_v3_003"})
     result = _normalize_event(event, bot_open_id="ou_bot")
     assert result is not None

@@ -1331,6 +1331,7 @@ def list_channel_conversation_messages(
             role=row.role,
             content=row.content,
             created_at=row.created_at.isoformat(),
+            attachments=(row.metadata_json or {}).get("attachments"),
         )
         for row in rows
     ]

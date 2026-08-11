@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 # 触发 feishu/钉钉适配器注册到全局 _adapters,便于测试中保存/恢复 previous
 import app.channels.adapters.dingtalk
 import app.channels.adapters.feishu  # noqa: F401
@@ -15,9 +17,12 @@ from app.channels.adapters.base import (
     ChannelInboundAttachment,
     get_channel_adapter,
     register_channel_adapter,
+    stream_download_with_limit,
 )
 from app.channels.attachment_bridge import (
     MAX_CHANNEL_MEDIA_BYTES,
+    _detect_image_type,
+    _resolve_content_type,
     inbound_attachments_to_chat,
 )
 from app.channels.crypto import encrypt_channel_secret
@@ -32,7 +37,7 @@ class _FakeAdapter:
         self._download_result = download_result
         self.download_calls: list[tuple[ChannelBinding, ChannelInboundAttachment]] = []
 
-    def download_media(self, binding, attachment):
+    def download_media(self, binding, attachment, *, max_bytes=0):
         self.download_calls.append((binding, attachment))
         if isinstance(self._download_result, Exception):
             raise self._download_result
@@ -220,7 +225,14 @@ def test_bridge_skips_empty_download_result() -> None:
 def test_bridge_skips_oversized_attachment() -> None:
     """超过 MAX_CHANNEL_MEDIA_BYTES 的附件被跳过。"""
     oversized = b"x" * (MAX_CHANNEL_MEDIA_BYTES + 1)
-    fake_adapter = _FakeAdapter(oversized)
+
+    class OversizedAdapter:
+        def download_media(self, binding, attachment, *, max_bytes=0):
+            if max_bytes and len(oversized) > max_bytes:
+                raise ValueError(f"下载内容超过上限 {max_bytes} bytes")
+            return oversized
+
+    fake_adapter = OversizedAdapter()
     previous = get_channel_adapter("feishu")
     register_channel_adapter("feishu", fake_adapter)
     try:
@@ -239,7 +251,7 @@ def test_bridge_continues_on_single_attachment_failure() -> None:
     call_count = {"n": 0}
 
     class MixedAdapter:
-        def download_media(self, binding, attachment):
+        def download_media(self, binding, attachment, *, max_bytes=0):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise RuntimeError("network down")
@@ -305,3 +317,101 @@ def test_bridge_passes_empty_content_type_as_none() -> None:
         assert args[2] == b"some bytes"
     finally:
         register_channel_adapter("feishu", previous)
+
+
+def test_detect_image_type_recognizes_common_formats() -> None:
+    """magic bytes 签名能识别 PNG/JPEG/GIF/WebP/BMP。"""
+    assert _detect_image_type(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20) == ("image/png", ".png")
+    assert _detect_image_type(b"\xff\xd8\xff\xe0" + b"\x00" * 20) == ("image/jpeg", ".jpg")
+    assert _detect_image_type(b"GIF89a" + b"\x00" * 20) == ("image/gif", ".gif")
+    assert _detect_image_type(b"RIFF" + b"\x00" * 4 + b"WEBP" + b"\x00" * 20) == ("image/webp", ".webp")
+    assert _detect_image_type(b"BM" + b"\x00" * 20) == ("image/bmp", ".bmp")
+
+
+def test_detect_image_type_rejects_non_image_data() -> None:
+    """非图片字节或太短的数据返回 None。"""
+    assert _detect_image_type(b"") is None
+    assert _detect_image_type(b"short") is None
+    assert _detect_image_type(b"RIFF" + b"\x00" * 4 + b"XXXX" + b"\x00" * 20) is None
+
+
+def test_resolve_content_type_overrides_with_magic_bytes() -> None:
+    """下载后用 magic bytes 覆盖渠道侧空的 content_type 和 filename。"""
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+    ct, fn = _resolve_content_type("", "img_v3_001", png)
+    assert ct == "image/png"
+    assert fn == "img_v3_001.png"
+
+
+def test_resolve_content_type_preserves_existing_filename_extension() -> None:
+    """filename 已含正确扩展名时不重复追加。"""
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+    ct, fn = _resolve_content_type("", "photo.png", png)
+    assert ct == "image/png"
+    assert fn == "photo.png"
+
+
+def test_resolve_content_type_passes_through_non_image() -> None:
+    """非图片文件保留渠道侧 content_type,空则返回 None。"""
+    ct, fn = _resolve_content_type("", "report.pdf", b"%PDF-1.4")
+    assert ct is None
+    assert fn == "report.pdf"
+
+    ct, fn = _resolve_content_type("application/pdf", "report.pdf", b"%PDF-1.4")
+    assert ct == "application/pdf"
+    assert fn == "report.pdf"
+
+
+def test_stream_download_with_limit_enforces_content_length() -> None:
+    """Content-Length 超限时立即中止,不读取响应体。"""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-length": "100"},
+            content=b"x" * 100,
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport)
+    try:
+        with pytest.raises(ValueError, match="超过上限"):
+            stream_download_with_limit(client, "GET", "https://x/test", max_bytes=50)
+    finally:
+        client.close()
+
+
+def test_stream_download_with_limit_enforces_streamed_body() -> None:
+    """无 Content-Length 时流式累计读取超限即中止。"""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 200)
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport)
+    try:
+        with pytest.raises(ValueError, match="超过上限"):
+            stream_download_with_limit(client, "GET", "https://x/test", max_bytes=100)
+    finally:
+        client.close()
+
+
+def test_stream_download_with_limit_returns_body_when_under_limit() -> None:
+    """未超限时正常返回 body。"""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"hello world")
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport)
+    try:
+        status, data = stream_download_with_limit(
+            client, "GET", "https://x/test", max_bytes=100,
+        )
+        assert status == 200
+        assert data == b"hello world"
+    finally:
+        client.close()

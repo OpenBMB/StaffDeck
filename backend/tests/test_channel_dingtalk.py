@@ -444,8 +444,8 @@ def test_normalize_dingtalk_picture_message_extracts_attachment() -> None:
     assert isinstance(att, ChannelInboundAttachment)
     assert att.media_id == "dc_001"
     assert att.kind == "image"
-    assert att.filename == "dc_001.jpg"
-    assert att.content_type == "image/jpeg"
+    assert att.filename == "dc_001"  # 不在 normalize 阶段硬编码扩展名
+    assert att.content_type == ""  # 下载后由 _resolve_content_type 推断
     assert att.download_params == {"download_code": "dc_001", "type": "picture"}
 
 
@@ -501,6 +501,44 @@ def test_normalize_dingtalk_picture_in_group_requires_at() -> None:
     assert inbound.is_group is True
     assert len(inbound.attachments) == 1
     assert inbound.attachments[0].media_id == "dc_group_ok"
+
+
+def test_normalize_dingtalk_richtext_extracts_attachment_and_text() -> None:
+    """richtext 消息提取图片附件和文本。"""
+    from app.channels.adapters.base import ChannelInboundAttachment
+
+    raw = _raw(
+        msgtype="richText",
+        conversationType="2",
+        isInAtList=True,
+        content={
+            "richText": [
+                {"type": "picture", "downloadCode": "dc_rt_1", "pictureDownloadCode": "dc_rt_1"},
+                {"text": "\n"},
+                {"text": "@staffdeck渠道接入测试机器人"},
+            ]
+        },
+    )
+    inbound = normalize_dingtalk_message(raw)
+    assert inbound is not None
+    assert inbound.is_group is True
+    assert len(inbound.attachments) == 1
+    att = inbound.attachments[0]
+    assert isinstance(att, ChannelInboundAttachment)
+    assert att.media_id == "dc_rt_1"
+    assert att.kind == "image"
+    assert att.download_params == {"download_code": "dc_rt_1", "type": "picture"}
+    # richtext 文本被拼接,@mention 被 strip
+    assert inbound.text == ""
+
+
+def test_normalize_dingtalk_richtext_without_download_code_returns_none() -> None:
+    """richtext 消息但无 picture downloadCode 且无文本时返回 None。"""
+    raw = _raw(
+        msgtype="richText",
+        content={"richText": [{"type": "picture"}, {"text": "\n"}]},
+    )
+    assert normalize_dingtalk_message(raw) is None
 
 
 def _download_media_adapter(*, token_responses=None, download_responses=None,

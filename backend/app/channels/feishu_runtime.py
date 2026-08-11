@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import logging
 from pathlib import Path
 
 from sqlalchemy.pool import NullPool
@@ -13,6 +14,9 @@ from app.channels.crypto import decrypt_channel_secret
 from app.channels.service_feishu_inbox import StageDisposition, stage_feishu_inbound
 from app.db.models import ChannelBinding
 from feishu_connector_worker import SDK_CONTRACT_VERSION
+
+
+logger = logging.getLogger(__name__)
 
 
 def _text_content(message) -> str:
@@ -57,8 +61,8 @@ def _extract_feishu_attachments(message) -> list[ChannelInboundAttachment]:
                 ChannelInboundAttachment(
                     media_id=image_key,
                     kind="image",
-                    filename=f"{image_key}.jpg",
-                    content_type="image/jpeg",
+                    filename=image_key,
+                    content_type="",
                     download_params={
                         "file_key": image_key,
                         "type": "image",
@@ -135,7 +139,7 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
             if str(getattr(getattr(mention, "id", None), "open_id", "") or "")
             == bot_open_id
         ]
-        if not bot_mentions:
+        if not bot_mentions and not attachments:
             return None
         for mention in bot_mentions:
             key = str(getattr(mention, "key", "") or "")
