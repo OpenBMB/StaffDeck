@@ -144,6 +144,12 @@ app.mount(
     FrontendStaticFiles(directory=ENTERPRISE_DIST / "assets", check_dir=False),
     name="assets",
 )
+# 2026-08-11 修复：ECharts 本地 vendor（dist/vendor）需静态挂载，否则 /vendor/echarts.min.js 404 致对话框趋势图空白
+app.mount(
+    "/vendor",
+    FrontendStaticFiles(directory=ENTERPRISE_DIST / "vendor", check_dir=False),
+    name="vendor-assets",
+)
 app.mount(
     "/enterprise/assets",
     FrontendStaticFiles(directory=ENTERPRISE_DIST / "assets", check_dir=False),
