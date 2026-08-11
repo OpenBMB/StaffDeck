@@ -16,7 +16,12 @@ import httpx
 from sqlmodel import Session, select
 from sqlalchemy import update
 
-from app.channels.adapters.base import ChannelInbound, register_channel_adapter, split_channel_text
+from app.channels.adapters.base import (
+    ChannelInbound,
+    ChannelInboundAttachment,
+    register_channel_adapter,
+    split_channel_text,
+)
 from app.channels.crypto import decrypt_channel_secret
 from app.db import engine
 from app.db.models import ChannelBinding
@@ -140,11 +145,56 @@ def _strip_bot_mention(text: str, raw: dict[str, Any], *, is_group: bool) -> str
     return re.sub(r"^\s*@[^\s]+\s*", "", text, count=1).strip()
 
 
+def _extract_dingtalk_attachments(
+    raw: dict[str, Any],
+    msgtype: str,
+) -> list[ChannelInboundAttachment]:
+    """从钉钉消息提取图片/文件附件。
+
+    钉钉 stream SDK 把图片/文件正文放在 raw.content 下:
+    - picture: raw.content.downloadCode + raw.content.pictureDownloadCode
+    - file: raw.content.downloadCode + raw.content.fileName
+    robotCode 在 download_media 时由适配器从 binding 配置解析(= client_id)。
+    """
+    attachments: list[ChannelInboundAttachment] = []
+    content = raw.get("content") or {}
+    if not isinstance(content, dict):
+        content = {}
+    if msgtype == "picture":
+        download_code = str(content.get("downloadCode") or "").strip()
+        if download_code:
+            attachments.append(
+                ChannelInboundAttachment(
+                    media_id=download_code,
+                    kind="image",
+                    filename=f"{download_code[:12]}.jpg",
+                    content_type="image/jpeg",
+                    download_params={"download_code": download_code, "type": "picture"},
+                )
+            )
+    elif msgtype == "file":
+        download_code = str(content.get("downloadCode") or "").strip()
+        file_name = str(content.get("fileName") or "").strip()
+        if download_code:
+            attachments.append(
+                ChannelInboundAttachment(
+                    media_id=download_code,
+                    kind="file",
+                    filename=file_name or download_code[:12],
+                    content_type="",
+                    download_params={"download_code": download_code, "type": "file"},
+                )
+            )
+    return attachments
+
+
 def normalize_dingtalk_message(raw: dict[str, Any], *, account_scope: str = "") -> ChannelInbound | None:
     """Normalize a DingTalk Stream chatbot callback payload."""
     if not isinstance(raw, dict):
         return None
-    if str(raw.get("msgtype") or "") != "text":
+    msgtype = str(raw.get("msgtype") or "").strip().lower()
+    # 放宽 msgtype 过滤:允许 text / picture / file
+    if msgtype not in {"text", "picture", "file"}:
         return None
     sender_id = str(raw.get("senderStaffId") or "").strip()
     if not sender_id:
@@ -153,15 +203,26 @@ def normalize_dingtalk_message(raw: dict[str, Any], *, account_scope: str = "") 
         return None
     message_id = str(raw.get("msgId") or "").strip()
     conversation_id = str(raw.get("conversationId") or "").strip()
-    text = _text_value(raw)
-    if not message_id or not conversation_id or not text:
+    if not message_id or not conversation_id:
         return None
+
+    # 提取图片/文件附件(picture/file 消息)
+    attachments = _extract_dingtalk_attachments(raw, msgtype)
+
+    # 文本只在 text 类型时提取
+    text = ""
+    if msgtype == "text":
+        text = _text_value(raw)
+    if not text and not attachments:
+        return None
+
     is_group = str(raw.get("conversationType") or "") == "2"
     if is_group and raw.get("isInAtList") is not True:
         return None
-    text = _strip_bot_mention(text, raw, is_group=is_group)
-    if not text:
-        return None
+    if text:
+        text = _strip_bot_mention(text, raw, is_group=is_group)
+        if not text and not attachments:
+            return None
     context_token = str(raw.get("sessionWebhook") or "").strip()
     if not context_token:
         return None
@@ -178,6 +239,7 @@ def normalize_dingtalk_message(raw: dict[str, Any], *, account_scope: str = "") 
         raw=raw,
         sender_name=str(raw.get("senderNick") or "").strip(),
         account_scope=account_scope.strip(),
+        attachments=attachments,
     )
 
 
@@ -344,6 +406,74 @@ class DingTalkAdapter:
             target,
             str(target.get("reaction_token") or "") or DINGTALK_ACK_EMOTION_NAME,
         )
+
+    def download_media(
+        self,
+        binding: ChannelBinding,
+        attachment: ChannelInboundAttachment,
+    ) -> bytes:
+        """钉钉附件下载:先获取下载 URL,再下载文件内容。
+
+        第一步: POST /robot/messageCenter/file/download
+            body = {"downloadCode": "...", "robotCode": "<client_id>"}
+            返回 {"downloadUrl": "..."}
+        第二步: GET downloadUrl, 超时 15s。
+        robotCode 取 binding 配置的 client_id(_credential 第一个返回值)。
+        复用 DingTalkTokenProvider 的 token 刷新重试模式(401 -> invalidate -> 重试一次)。
+        """
+        download_code = str(
+            attachment.download_params.get("download_code") or attachment.media_id
+        )
+        if not download_code:
+            raise DingTalkPermanentError("钉钉附件下载缺少 downloadCode")
+        robot_code, _ = _credential(binding)  # robotCode = client_id
+
+        # 第一步:获取下载 URL
+        url = f"{DINGTALK_API_BASE}/robot/messageFiles/download"
+        force_refresh = False
+        download_url: str = ""
+        for attempt in range(2):
+            token = self._tokens.get(binding, force_refresh=force_refresh)
+            force_refresh = False
+            try:
+                with self._client_factory() as client:
+                    response = client.post(
+                        url,
+                        json={"downloadCode": download_code, "robotCode": robot_code},
+                        headers={
+                            "x-acs-dingtalk-access-token": token,
+                            "Content-Type": "application/json",
+                        },
+                    )
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                raise DingTalkTransientError("钉钉附件下载暂时失败") from exc
+            if response.status_code == 401 and attempt == 0:
+                force_refresh = self._tokens.invalidate(binding, expected_token=token)
+                continue
+            if response.status_code == 429 or response.status_code >= 500:
+                raise DingTalkTransientError("钉钉附件下载服务暂时不可用")
+            if response.status_code >= 400:
+                raise DingTalkPermanentError(f"钉钉拒绝附件下载 HTTP {response.status_code}")
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise DingTalkTransientError("钉钉附件下载响应格式无效") from exc
+            download_url = str(data.get("downloadUrl") or "").strip()
+            if not download_url:
+                raise DingTalkPermanentError("钉钉附件下载响应缺少 downloadUrl")
+            break
+        else:
+            raise DingTalkPermanentError("钉钉 token 刷新后仍无法下载附件")
+
+        # 第二步:从 downloadUrl 下载实际文件
+        try:
+            with self._client_factory() as client:
+                response = client.get(download_url, timeout=15.0)
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise DingTalkTransientError("钉钉附件下载暂时失败") from exc
+        if response.status_code != 200:
+            raise DingTalkTransientError(f"钉钉附件下载失败 HTTP {response.status_code}")
+        return response.content
 
     def send(
         self,

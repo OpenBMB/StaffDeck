@@ -1,11 +1,27 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from app.db.models import ChannelBinding
 
 CHANNEL_TEXT_LIMIT = 2000
+
+
+@dataclass
+class ChannelInboundAttachment:
+    """渠道入站附件的内存传递结构(不落库,与 ChannelInbound 同生命周期)。
+
+    各适配器在 normalize 阶段填充,attachment_bridge 通过 download_media
+    获取原始字节后交给 stage_chat_attachment 暂存。
+    """
+
+    media_id: str
+    kind: str  # "image" | "file"
+    filename: str = ""
+    content_type: str = ""
+    size: int = 0
+    download_params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -27,6 +43,9 @@ class ChannelInbound:
     sender_name: str = ""
     # 渠道账号作用域:wechat 置空;wecom 为 corp_id/bot_id/binding.id(intake 以绑定配置为准重算)
     account_scope: str = ""
+    # 入站附件列表(图片/文件);空列表表示纯文本消息。
+    # 不落库,仅在 intake 调用 attachment_bridge 时使用。
+    attachments: list[ChannelInboundAttachment] = field(default_factory=list)
 
     @property
     def conv_key(self) -> str:

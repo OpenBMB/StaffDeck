@@ -945,3 +945,94 @@ def test_concurrent_sweeps_stage_one_incomplete_notice(tmp_path) -> None:
             select(ChannelDelivery).where(ChannelDelivery.kind == "error_notice")
         ).all()
         assert len(notices) == 1
+
+
+def test_inbound_attachment_download_failure_degrades_to_text(monkeypatch) -> None:
+    """渠道附件下载异常时不阻塞文本轮,降级为纯文本处理。"""
+    from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
+    import app.channels.attachment_bridge as bridge_module
+
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    binding = _load_binding(engine, binding_id)
+
+    # 构造一个带附件的 wechat 入站消息(wechat 适配器未实现 download_media,
+    # bridge 会返回空列表;这里进一步模拟 inbound_attachments_to_chat 抛异常
+    # 来验证 intake 的 try/except 降级路径)
+    inbound = ChannelInbound(
+        channel="wechat",
+        event_id="evt_att_fail",
+        from_user_id="user_ab12cd34@im.wechat",
+        to_user_id="bot_1@im.bot",
+        session_id="user_ab12cd34@im.wechat#bot_1@im.bot",
+        group_id="",
+        context_token="ctx_att_fail",
+        text="看这张图",
+        is_group=False,
+        raw={},
+        attachments=[ChannelInboundAttachment(media_id="img_1", kind="image")],
+    )
+
+    # 让 inbound_attachments_to_chat 抛异常,验证 intake 降级
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("下载服务不可用")
+
+    monkeypatch.setattr(bridge_module, "inbound_attachments_to_chat", _boom)
+
+    assert process_inbound(binding, inbound, db_engine=engine) is True
+    # 仍然执行了对话轮
+    assert len(RecordingAgentLoop.calls) == 1
+    request = RecordingAgentLoop.calls[0]
+    # 降级为纯文本:attachments 为空列表
+    assert request.attachments == []
+    assert request.message == "看这张图"
+
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "done"
+
+
+def test_inbound_with_attachments_passes_them_to_request(monkeypatch) -> None:
+    """附件下载成功时,attachments 被填入 ChatTurnRequest。"""
+    from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
+    import app.channels.attachment_bridge as bridge_module
+    from app.session.session_schema import ChatAttachmentRead
+
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    binding = _load_binding(engine, binding_id)
+
+    inbound = ChannelInbound(
+        channel="wechat",
+        event_id="evt_att_ok",
+        from_user_id="user_ab12cd34@im.wechat",
+        to_user_id="bot_1@im.bot",
+        session_id="user_ab12cd34@im.wechat#bot_1@im.bot",
+        group_id="",
+        context_token="ctx_att_ok",
+        text="",
+        is_group=False,
+        raw={},
+        attachments=[ChannelInboundAttachment(media_id="img_1", kind="image")],
+    )
+
+    staged = ChatAttachmentRead(
+        id="file_1",
+        filename="img.jpg",
+        content_type="image/jpeg",
+        size=4,
+        kind="image",
+        sha256="abc",
+        sandbox_path="/ws/x",
+    )
+
+    def _fake_bridge(*_args, **_kwargs):
+        return [staged]
+
+    monkeypatch.setattr(bridge_module, "inbound_attachments_to_chat", _fake_bridge)
+
+    assert process_inbound(binding, inbound, db_engine=engine) is True
+    request = RecordingAgentLoop.calls[0]
+    assert len(request.attachments) == 1
+    assert request.attachments[0].filename == "img.jpg"
+    assert request.attachments[0].sha256 == "abc"

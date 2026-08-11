@@ -7,9 +7,11 @@ from sqlalchemy import event, text
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.channels.adapters.base import ChannelInbound
+from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
 from app.channels.service_feishu_inbox import (
     StageDisposition,
+    decode_replay_envelope,
+    encode_replay_envelope,
     feishu_account_key,
     feishu_identity_scope,
     stage_feishu_inbound,
@@ -504,3 +506,66 @@ def test_claim_is_released_when_claimed_loader_fails(monkeypatch, tmp_path) -> N
         event_row = db.get(ChannelInboundEvent, staged.event_pk)
         assert event_row.status == "received"
         assert event_row.processor_run_id is None
+
+
+def test_envelope_round_trips_attachments_as_dataclass() -> None:
+    inbound = ChannelInbound(
+        channel="feishu",
+        event_id="om_att_1",
+        from_user_id="ou_user_a",
+        to_user_id="ou_bot_a",
+        session_id="oc_chat_a",
+        group_id="",
+        context_token="om_message_a",
+        text="",
+        is_group=False,
+        raw={"event": {"message": {"message_id": "om_att_1"}}},
+        sender_name="User A",
+        account_scope="",
+        attachments=[
+            ChannelInboundAttachment(
+                media_id="img_v3_001",
+                kind="image",
+                filename="photo.png",
+                content_type="image/png",
+                size=1024,
+                download_params={
+                    "file_key": "img_v3_001",
+                    "type": "image",
+                    "message_id": "om_att_1",
+                },
+            ),
+            ChannelInboundAttachment(
+                media_id="file_v3_002",
+                kind="file",
+                filename="doc.pdf",
+                content_type="application/pdf",
+                size=2048,
+                download_params={
+                    "file_key": "file_v3_002",
+                    "type": "file",
+                    "message_id": "om_att_1",
+                },
+            ),
+        ],
+    )
+    envelope = encode_replay_envelope(inbound, app_id="cli_app_a", tenant_key="tenant_key_a")
+    decoded = decode_replay_envelope(envelope)
+    assert len(decoded.attachments) == 2
+    for att in decoded.attachments:
+        assert isinstance(att, ChannelInboundAttachment)
+    assert decoded.attachments[0].media_id == "img_v3_001"
+    assert decoded.attachments[0].kind == "image"
+    assert decoded.attachments[0].download_params["file_key"] == "img_v3_001"
+    assert decoded.attachments[0].download_params["message_id"] == "om_att_1"
+    assert decoded.attachments[1].media_id == "file_v3_002"
+    assert decoded.attachments[1].kind == "file"
+    assert decoded.attachments[1].filename == "doc.pdf"
+
+
+def test_envelope_round_trips_empty_attachments() -> None:
+    inbound = _inbound("om_no_att")
+    assert inbound.attachments == []
+    envelope = encode_replay_envelope(inbound, app_id="cli_app_a", tenant_key="tenant_key_a")
+    decoded = decode_replay_envelope(envelope)
+    assert decoded.attachments == []

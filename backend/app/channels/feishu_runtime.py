@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine
 
-from app.channels.adapters.base import ChannelInbound
+from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
 from app.channels.crypto import decrypt_channel_secret
 from app.channels.service_feishu_inbox import StageDisposition, stage_feishu_inbound
 from app.db.models import ChannelBinding
@@ -21,6 +21,69 @@ def _text_content(message) -> str:
     except (TypeError, ValueError):
         return ""
     return str(parsed.get("text") or "").strip() if isinstance(parsed, dict) else ""
+
+
+def _image_file_content(message) -> dict[str, str]:
+    """从 message.content JSON 中提取 image_key/file_key。
+
+    飞书 image 消息 content 形如: {"image_key": "img_v3_xxxx"}
+    飞书 file 消息 content 形如: {"file_key": "file_v3_xxxx", "file_name": "xxx.pdf"}
+    """
+    try:
+        parsed = json.loads(str(message.content or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
+
+
+def _extract_feishu_attachments(message) -> list[ChannelInboundAttachment]:
+    """从飞书 message 提取图片/文件附件。
+
+    image 消息使用 image_key,file 消息使用 file_key + file_name。
+    message_id 写入 download_params,供 download_media 拼接资源下载 URL。
+    """
+    message_type = str(message.message_type or "").strip().lower()
+    content = _image_file_content(message)
+    if not content:
+        return []
+    message_id = str(message.message_id or "").strip()
+    attachments: list[ChannelInboundAttachment] = []
+    if message_type == "image":
+        image_key = str(content.get("image_key") or "").strip()
+        if image_key:
+            attachments.append(
+                ChannelInboundAttachment(
+                    media_id=image_key,
+                    kind="image",
+                    filename=f"{image_key}.jpg",
+                    content_type="image/jpeg",
+                    download_params={
+                        "file_key": image_key,
+                        "type": "image",
+                        "message_id": message_id,
+                    },
+                )
+            )
+    elif message_type == "file":
+        file_key = str(content.get("file_key") or "").strip()
+        file_name = str(content.get("file_name") or "").strip()
+        if file_key:
+            attachments.append(
+                ChannelInboundAttachment(
+                    media_id=file_key,
+                    kind="file",
+                    filename=file_name or file_key,
+                    content_type="",
+                    download_params={
+                        "file_key": file_key,
+                        "type": "file",
+                        "message_id": message_id,
+                    },
+                )
+            )
+    return attachments
 
 
 def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] | None:
@@ -38,8 +101,10 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
     sender_type = str(sender.sender_type or "").strip().lower()
     chat_id = str(message.chat_id or "").strip()
     chat_type = str(message.chat_type or "").strip().lower()
+    message_type = str(message.message_type or "").strip().lower()
+    # 放宽 message_type 过滤:允许 text / image / file
     if (
-        str(message.message_type or "").strip().lower() != "text"
+        message_type not in {"text", "image", "file"}
         or not app_id
         or not tenant_key
         or not message_id
@@ -48,8 +113,15 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
         or open_id == bot_open_id
     ):
         return None
-    text = _text_content(message)
-    if not text:
+
+    # 提取图片/文件附件(image/file 消息)
+    attachments = _extract_feishu_attachments(message)
+
+    # 文本只在 text 类型时提取
+    text = ""
+    if message_type == "text":
+        text = _text_content(message)
+    if not text and not attachments:
         return None
 
     is_group = chat_type != "p2p"
@@ -70,7 +142,7 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
             if key:
                 text = text.replace(key, " ")
         text = " ".join(text.split())
-        if not text:
+        if not text and not attachments:
             return None
 
     thread_id = str(message.thread_id or "").strip()
@@ -94,6 +166,7 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
             "message": {"message_id": message_id, "chat_id": chat_id},
         },
         sender_name="",
+        attachments=attachments,
     )
     target = {
         "message_id": message_id,
