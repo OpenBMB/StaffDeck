@@ -104,13 +104,11 @@ function messageDisplay(
 function ChannelAttachmentView({
   attachment,
   bindingId,
-  channel,
   sessionId,
   messageId,
 }: {
   attachment: ChannelConversationAttachment;
   bindingId: string;
-  channel?: string;
   sessionId: string;
   messageId: string;
 }) {
@@ -148,22 +146,18 @@ function ChannelAttachmentView({
       type="button"
       className="text-left text-[12px] text-[#3b63c8] underline"
       onClick={() => void api.blob(path).then((blob) => {
+        // Keep the Blob URL alive until the browser has started the download.
+        // Revoking it synchronously after click() can cancel downloads, notably
+        // for files received through the WeChat channel.
         const objectUrl = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = objectUrl;
         link.download = attachment.filename;
-        if (channel === 'wechat') {
-          // WeChat files need the Blob URL to remain available until the
-          // browser starts downloading; immediate revocation cancels it.
-          link.style.display = 'none';
-          document.body.appendChild(link);
-          link.click();
-          link.remove();
-          window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
-          return;
-        }
+        link.style.display = 'none';
+        document.body.appendChild(link);
         link.click();
-        URL.revokeObjectURL(objectUrl);
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
       })}
     >
       {attachment.filename}
@@ -1046,7 +1040,6 @@ export default function ChannelsPage({
                                  key={attachment.id}
                                  attachment={attachment}
                                  bindingId={binding?.id || ''}
-                                 channel={binding?.channel}
                                  sessionId={activeConversation.session_id}
                                  messageId={msg.id}
                                />
