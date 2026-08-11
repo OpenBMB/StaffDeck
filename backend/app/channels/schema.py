@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 from sqlmodel import Session
@@ -152,6 +152,15 @@ class ChannelConversationMessageRead(BaseModel):
     role: str
     content: str
     created_at: str
+    attachments: list["ChannelConversationAttachmentRead"] | None = None
+
+
+class ChannelConversationAttachmentRead(BaseModel):
+    id: str
+    filename: str
+    content_type: str
+    size: int
+    kind: str
 
 
 class ChannelConversationPage(BaseModel):

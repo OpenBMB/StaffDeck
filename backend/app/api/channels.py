@@ -8,6 +8,7 @@ import time
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import Response as FastAPIResponse
 from sqlalchemy import case, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -35,6 +36,7 @@ from app.channels.schema import (
     ChannelBindingAgentsUpdate,
     ChannelBindingCreate,
     ChannelBindingRead,
+    ChannelConversationAttachmentRead,
     ChannelConversationMessageRead,
     ChannelConversationPage,
     ChannelConversationRead,
@@ -91,6 +93,23 @@ from app.security.permissions import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/enterprise/channels", tags=["enterprise:channels"])
+
+
+def _channel_attachment_metadata(metadata: object) -> list[ChannelConversationAttachmentRead]:
+    if not isinstance(metadata, dict):
+        return []
+    raw_attachments = metadata.get("attachments")
+    if not isinstance(raw_attachments, list):
+        return []
+    attachments: list[ChannelConversationAttachmentRead] = []
+    for raw in raw_attachments:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            attachments.append(ChannelConversationAttachmentRead.model_validate(raw))
+        except ValueError:
+            continue
+    return attachments
 
 
 def _patch_binding_config_key(
@@ -1331,6 +1350,57 @@ def list_channel_conversation_messages(
             role=row.role,
             content=row.content,
             created_at=row.created_at.isoformat(),
+            attachments=_channel_attachment_metadata(row.metadata_json) or None,
         )
         for row in rows
     ]
+
+
+@router.get("/{binding_id}/conversations/{session_id}/messages/{message_id}/attachments/{attachment_id}")
+def get_channel_conversation_attachment(
+    binding_id: str,
+    session_id: str,
+    message_id: str,
+    attachment_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> FastAPIResponse:
+    from app.session.attachment_store import read_staged_chat_attachment
+    from app.session.session_schema import ChatAttachmentRead
+
+    ensure_current_user_tenant(tenant_id, current_user)
+    binding = _get_binding(db, tenant_id, binding_id)
+    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    session_ids = {row.id for row in _binding_channel_sessions(db, binding)}
+    if session_id not in session_ids:
+        raise HTTPException(status_code=404, detail="Channel conversation not found")
+    message = db.get(Message, message_id)
+    if not message or message.tenant_id != tenant_id or message.session_id != session_id:
+        raise HTTPException(status_code=404, detail="Channel message not found")
+    raw_attachments = (message.metadata_json or {}).get("attachments")
+    if not isinstance(raw_attachments, list):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    raw = next(
+        (item for item in raw_attachments if isinstance(item, dict) and item.get("id") == attachment_id),
+        None,
+    )
+    session = db.get(ChatSession, session_id)
+    if raw is None or not session or not session.user_id:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        attachment = ChatAttachmentRead.model_validate(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Attachment not found") from exc
+    data = read_staged_chat_attachment(
+        attachment,
+        tenant_id=tenant_id,
+        user_id=session.user_id,
+    )
+    if data is None:
+        raise HTTPException(status_code=404, detail="Attachment content not found")
+    return FastAPIResponse(
+        content=data,
+        media_type=attachment.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{attachment.filename}"'},
+    )

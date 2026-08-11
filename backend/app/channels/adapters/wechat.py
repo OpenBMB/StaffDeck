@@ -1,25 +1,34 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import os
+import ssl
 import threading
 import time
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
+import aiohttp
+import certifi
 import httpx
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.channels.adapters.base import (
     ChannelInbound,
+    ChannelInboundAttachment,
     register_channel_adapter,
     split_channel_text,
 )
 from app.channels.crypto import decrypt_channel_secret
+from app.channels.media import MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES, ensure_channel_media_size
 from app.config import get_settings
 from app.db import engine
 from app.db.models import ChannelBinding, utc_now
@@ -44,6 +53,59 @@ RECOVERY_MAX_FAILURES = 5
 
 # 腾讯官方接入域名:业务请求携带 bot_token,redirect/baseurl 必须限制在官方域内
 WECHAT_ALLOWED_HOSTS = ("ilinkai.weixin.qq.com",)
+
+
+async def _download_wechat_cdn_limited(url: str) -> tuple[bytes, str]:
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    for attempt in range(2):
+        try:
+            timeout = aiohttp.ClientTimeout(total=15.0)
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            async with (
+                aiohttp.ClientSession(timeout=timeout, connector=connector) as client,
+                client.get(url) as response,
+            ):
+                response.raise_for_status()
+                content_length = int(response.headers.get("content-length") or 0)
+                ensure_channel_media_size(content_length, encrypted=True)
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    total += len(chunk)
+                    if total > MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES:
+                        raise ValueError(
+                            "微信媒体密文超过大小上限: "
+                            f"size>{MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES}"
+                        )
+                    chunks.append(chunk)
+                return b"".join(chunks), response.headers.get("content-type", "")
+        except (TimeoutError, aiohttp.ClientConnectionError):
+            if attempt == 1:
+                raise
+    raise RuntimeError("微信媒体下载失败")
+
+
+def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -> bytes:
+    """Decrypt iLink CDN media using the observed AES-ECB/PKCS#7 format."""
+    if not aes_key:
+        return data
+    try:
+        decoded = base64.b64decode(aes_key, validate=True)
+        key = bytes.fromhex(decoded.decode("ascii"))
+        if len(key) not in {16, 24, 32} or len(data) % 16:
+            raise ValueError
+        decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+        padded = decryptor.update(data) + decryptor.finalize()
+        unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+        decrypted = unpadder.update(padded) + unpadder.finalize()
+    except (ValueError, TypeError) as exc:
+        raise WeChatApiError(-1, "微信媒体解密失败") from exc
+    if expected_size > 0 and len(decrypted) != expected_size:
+        raise WeChatApiError(
+            -1,
+            f"微信媒体解密后大小不匹配 expected={expected_size} actual={len(decrypted)}",
+        )
+    return decrypted
 
 
 def _patch_runtime_config(
@@ -165,7 +227,7 @@ class WeChatClient:
         self._client = httpx.Client(transport=transport)
 
     @classmethod
-    def for_binding(cls, binding: ChannelBinding) -> "WeChatClient":
+    def for_binding(cls, binding: ChannelBinding) -> WeChatClient:
         config = dict(binding.config_json or {})
         # 防御纵深:存量 config 里的非法 baseurl 一律钳制回默认官方地址
         base_url = sanitize_wechat_baseurl(
@@ -290,6 +352,54 @@ class WeChatClient:
         )
         resp.raise_for_status()
 
+    def download_media(self, context_token: str, media_id: str) -> bytes:
+        response = self._client.post(
+            f"{self.base_url}/ilink/bot/downloadmedia",
+            headers=self._business_headers(),
+            json={
+                "context_token": context_token,
+                "media_id": media_id,
+                "base_info": self._base_info(),
+            },
+            timeout=15.0,
+        )
+        response.raise_for_status()
+        if "application/json" not in response.headers.get("content-type", "").lower():
+            return response.content
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise WeChatApiError(-1, "下载响应格式无效") from exc
+        errcode = int(data.get("errcode") or data.get("ret") or 0)
+        if errcode:
+            raise WeChatApiError(errcode, str(data.get("errmsg") or ""))
+        raise WeChatApiError(-1, "下载响应缺少二进制内容")
+
+    def download_media_url(
+        self,
+        full_url: str,
+        *,
+        aes_key: str = "",
+        expected_size: int = 0,
+    ) -> bytes:
+        """Download the CDN URL supplied by an iLink image item."""
+        parsed = urlparse(full_url)
+        if parsed.scheme != "https" or not validate_wechat_host(parsed.hostname or ""):
+            raise WeChatApiError(-1, "微信媒体 URL 域名不受信任")
+        raw, content_type = asyncio.run(_download_wechat_cdn_limited(urlunparse(parsed)))
+        if "application/json" not in content_type.lower():
+            return decrypt_wechat_media(
+                raw,
+                aes_key,
+                expected_size=expected_size,
+            )
+        try:
+            data = json.loads(raw)
+        except ValueError as exc:
+            raise WeChatApiError(-1, "媒体下载响应格式无效") from exc
+        errcode = int(data.get("errcode") or data.get("ret") or 0)
+        raise WeChatApiError(errcode or -1, str(data.get("errmsg") or "媒体下载返回 JSON"))
+
 
 class WeChatAdapter:
     """微信适配器:出站 sendmessage + 归一化 + typing + ingress(poll manager)。"""
@@ -299,6 +409,27 @@ class WeChatAdapter:
 
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None:
         return normalize_wechat_message(raw)
+
+    def download_media(
+        self,
+        binding: ChannelBinding,
+        attachment: ChannelInboundAttachment,
+    ) -> bytes:
+        context_token = str(attachment.download_params.get("context_token") or "").strip()
+        if not context_token:
+            raise ValueError("微信附件下载缺少 context_token")
+        client = self._client_factory(binding)
+        full_url = str(attachment.download_params.get("full_url") or "").strip()
+        if full_url:
+            declared_size = int(attachment.download_params.get("declared_size") or 0)
+            expected_size = int(attachment.download_params.get("expected_size") or 0)
+            ensure_channel_media_size(declared_size or expected_size)
+            return client.download_media_url(
+                full_url,
+                aes_key=str(attachment.download_params.get("aes_key") or ""),
+                expected_size=expected_size,
+            )
+        return client.download_media(context_token, attachment.media_id)
 
     def send(
         self,
@@ -411,6 +542,89 @@ def extract_message_text(msg: dict[str, Any]) -> str:
     return str(msg.get("text") or msg.get("content") or "").strip()
 
 
+def extract_message_attachments(msg: dict[str, Any]) -> list[ChannelInboundAttachment]:
+    """Extract assumed iLink image/file item descriptors."""
+    items = msg.get("item_list")
+    if not isinstance(items, list):
+        return []
+    context_token = str(msg.get("context_token") or "").strip()
+    attachments: list[ChannelInboundAttachment] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == 2:
+            info = item.get("image_item") or {}
+            media = info.get("media") or {}
+            full_url = str(media.get("full_url") or "").strip() if isinstance(media, dict) else ""
+            media_id = str(
+                info.get("media_id")
+                or info.get("file_id")
+                or (media.get("media_id") if isinstance(media, dict) else "")
+                or full_url
+            ).strip()
+            if media_id:
+                message_id = str(msg.get("message_id") or msg.get("msg_id") or media_id).strip()
+                download_params = {"context_token": context_token}
+                if full_url:
+                    download_params.update(
+                        {
+                            "full_url": full_url,
+                            "encrypt_query_param": str(
+                                media.get("encrypt_query_param") or ""
+                            ).strip(),
+                            "aes_key": str(media.get("aes_key") or info.get("aeskey") or "").strip(),
+                            # full_url may return a higher-resolution variant with channel
+                            # trailer bytes, so these sizes are only a pre-download limit hint.
+                            "declared_size": max(
+                                int(info.get("mid_size") or 0),
+                                int(info.get("hd_size") or 0),
+                            ),
+                        }
+                    )
+                attachments.append(
+                    ChannelInboundAttachment(
+                        media_id=media_id,
+                        kind="image",
+                        filename=f"{message_id}.jpg",
+                        content_type="image/jpeg",
+                        download_params=download_params,
+                    )
+                )
+        elif item_type == 4:
+            info = item.get("file_item") or {}
+            media = info.get("media") or {}
+            full_url = str(media.get("full_url") or "").strip() if isinstance(media, dict) else ""
+            media_id = str(
+                info.get("media_id")
+                or info.get("file_id")
+                or (media.get("media_id") if isinstance(media, dict) else "")
+                or full_url
+            ).strip()
+            if media_id:
+                download_params = {"context_token": context_token}
+                if full_url:
+                    download_params.update(
+                        {
+                            "full_url": full_url,
+                            "encrypt_query_param": str(
+                                media.get("encrypt_query_param") or ""
+                            ).strip(),
+                            "aes_key": str(media.get("aes_key") or "").strip(),
+                            "expected_size": int(info.get("len") or 0),
+                        }
+                    )
+                attachments.append(
+                    ChannelInboundAttachment(
+                        media_id=media_id,
+                        kind="file",
+                        filename=str(info.get("file_name") or info.get("name") or media_id).strip(),
+                        download_params=download_params,
+                    )
+                )
+    return attachments
+
+
 def normalize_wechat_message(msg: dict[str, Any], *, ilink_bot_id: str = "") -> WeChatInbound | None:
     """归一化 getupdates 消息；自身消息/无文本/无 context_token 返回 None（丢弃）。"""
     if not isinstance(msg, dict) or is_self_message(msg, ilink_bot_id):
@@ -420,7 +634,41 @@ def normalize_wechat_message(msg: dict[str, Any], *, ilink_bot_id: str = "") -> 
         return None
     context_token = str(msg.get("context_token") or "").strip()
     text = extract_message_text(msg)
-    if not context_token or not text:
+    attachments = extract_message_attachments(msg)
+    items = msg.get("item_list")
+    if isinstance(items, list):
+        nested_keys = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for field_name in ("image_item", "file_item", "voice_item"):
+                nested = item.get(field_name)
+                if isinstance(nested, dict):
+                    entry = {
+                        "field": field_name,
+                        "keys": sorted(nested.keys()),
+                        "value_types": {
+                            key: type(value).__name__ for key, value in nested.items()
+                        },
+                    }
+                    media = nested.get("media")
+                    if isinstance(media, dict):
+                        entry["media_keys"] = sorted(media.keys())
+                        entry["media_value_types"] = {
+                            key: type(value).__name__ for key, value in media.items()
+                        }
+                    nested_keys.append(entry)
+        logger.warning(
+            "微信入站消息附件诊断 message_id=%s item_types=%s item_keys=%s "
+            "nested_keys=%s recognized_attachments=%s has_text=%s",
+            str(msg.get("message_id") or msg.get("msg_id") or "").strip(),
+            [item.get("type") for item in items if isinstance(item, dict)],
+            [sorted(item.keys()) for item in items if isinstance(item, dict)],
+            nested_keys,
+            len(attachments),
+            bool(text),
+        )
+    if not context_token or (not text and not attachments):
         return None
     event_id = str(msg.get("message_id") or msg.get("msg_id") or msg.get("client_id") or "").strip()
     if not event_id:
@@ -442,6 +690,7 @@ def normalize_wechat_message(msg: dict[str, Any], *, ilink_bot_id: str = "") -> 
         text=text,
         is_group=is_group,
         raw=msg,
+        attachments=attachments,
     )
 
 

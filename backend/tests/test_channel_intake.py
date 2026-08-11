@@ -1,6 +1,7 @@
+import os
 import threading
 import time
-import os
+from datetime import timedelta
 
 import pytest
 from sqlalchemy.pool import StaticPool
@@ -8,13 +9,16 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.channels.service_intake as intake_module
 import app.core.agent_loop as agent_loop_module
+from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
 from app.channels.service_identity import channel_username
 from app.channels.service_intake import (
-    _send_wechat_typing as _real_send_wechat_typing,
-)
-from app.channels.service_intake import (
+    _message_text,
+    _recent_split_file_attachments,
     _session_lock,
     process_inbound,
+)
+from app.channels.service_intake import (
+    _send_wechat_typing as _real_send_wechat_typing,
 )
 from app.db.models import (
     ChannelBinding,
@@ -82,6 +86,113 @@ def _load_binding(engine, binding_id: str) -> ChannelBinding:
         binding = db.get(ChannelBinding, binding_id)
         db.expunge(binding)
         return binding
+
+
+def test_channel_only_attachment_uses_default_message_intent() -> None:
+    binding = ChannelBinding(tenant_id="tenant_demo", agent_id="agent_1", channel="wecom")
+    image = ChannelInbound(
+        channel="wecom",
+        event_id="evt-image",
+        from_user_id="user-1",
+        to_user_id="bot-1",
+        session_id="user-1",
+        group_id="",
+        context_token="user-1",
+        text="",
+        is_group=False,
+        raw={},
+        attachments=[ChannelInboundAttachment(media_id="image", kind="image")],
+    )
+    file = ChannelInbound(
+        **{
+            **image.__dict__,
+            "event_id": "evt-file",
+            "attachments": [ChannelInboundAttachment(media_id="file", kind="file")],
+        }
+    )
+
+    assert _message_text(binding, image) == "请识别并描述这张图片的内容。"
+    assert _message_text(binding, file) == "请读取并概述这个文件。"
+
+
+def test_wecom_following_text_carries_recent_split_file_attachment() -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine, channel="wecom", config_json={"corp_id": "corp"})
+    binding = _load_binding(engine, binding_id)
+    with Session(engine) as db:
+        db.add(
+            Message(
+                tenant_id="tenant_demo",
+                session_id="session_wecom",
+                role="user",
+                content="",
+                metadata_json={
+                    "attachments": [
+                        {
+                            "id": "file-1",
+                            "filename": "notes.md",
+                            "content_type": "text/markdown",
+                            "size": 4,
+                            "kind": "text",
+                            "text": "note",
+                            "sha256": "a" * 64,
+                            "sandbox_path": "/workspace/attachments/file-1-notes.md",
+                        }
+                    ]
+                },
+            )
+        )
+        db.commit()
+        inbound = ChannelInbound(
+            channel="wecom",
+            event_id="evt-text",
+            from_user_id="user-1",
+            to_user_id="bot-1",
+            session_id="user-1",
+            group_id="",
+            context_token="user-1",
+            text="总结这个文件",
+            is_group=False,
+            raw={},
+        )
+
+        attachments = _recent_split_file_attachments(
+            db, binding, inbound, "session_wecom"
+        )
+
+    assert [item.filename for item in attachments] == ["notes.md"]
+
+
+def test_wecom_following_text_does_not_carry_old_or_group_attachment() -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine, channel="wecom", config_json={"corp_id": "corp"})
+    binding = _load_binding(engine, binding_id)
+    with Session(engine) as db:
+        db.add(
+            Message(
+                tenant_id="tenant_demo",
+                session_id="session_wecom",
+                role="user",
+                content="",
+                metadata_json={"attachments": [{"id": "file-1"}]},
+                created_at=utc_now() - timedelta(minutes=6),
+            )
+        )
+        db.commit()
+        inbound = ChannelInbound(
+            channel="wecom",
+            event_id="evt-text",
+            from_user_id="user-1",
+            to_user_id="bot-1",
+            session_id="room-1",
+            group_id="room-1",
+            context_token="room-1",
+            text="总结这个文件",
+            is_group=True,
+            raw={},
+        )
+
+        assert _recent_split_file_attachments(db, binding, inbound, "session_wecom") == []
 
 
 class RecordingAgentLoop:

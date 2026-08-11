@@ -888,6 +888,15 @@ export type ChannelConversationMessageRead = {
   role: string;
   content: string;
   created_at: string;
+  attachments?: ChannelConversationAttachment[] | null;
+};
+
+export type ChannelConversationAttachment = {
+  id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  kind: 'text' | 'pdf' | 'image' | 'binary';
 };
 
 export type ChannelBindCodeRead = {

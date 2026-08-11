@@ -1,11 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from app.db.models import ChannelBinding
 
 CHANNEL_TEXT_LIMIT = 2000
+
+
+@dataclass
+class ChannelInboundAttachment:
+    """Transient attachment descriptor carried with a normalized channel message."""
+
+    media_id: str
+    kind: str  # image | file
+    filename: str = ""
+    content_type: str = ""
+    size: int = 0
+    download_params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -27,6 +39,7 @@ class ChannelInbound:
     sender_name: str = ""
     # 渠道账号作用域:wechat 置空;wecom 为 corp_id/bot_id/binding.id(intake 以绑定配置为准重算)
     account_scope: str = ""
+    attachments: list[ChannelInboundAttachment] = field(default_factory=list)
 
     @property
     def conv_key(self) -> str:

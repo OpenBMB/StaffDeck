@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import Session, select
 
-from app.channels.adapters.base import ChannelInbound
+from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
 from app.channels.service_durable_inbox import StageDisposition, StageResult
 from app.db.models import ChannelBinding, ChannelInboundEvent, new_id
 
@@ -38,6 +38,11 @@ def decode_wecom_replay_envelope(payload: object) -> ChannelInbound:
         raise ValueError("invalid_envelope_fields")
     try:
         inbound = ChannelInbound(**normalized)
+        inbound.attachments = [
+            ChannelInboundAttachment(**item)
+            for item in inbound.attachments
+            if isinstance(item, dict)
+        ]
     except (TypeError, ValueError) as exc:
         raise ValueError("invalid_envelope_inbound") from exc
     if inbound.channel != "wecom":
