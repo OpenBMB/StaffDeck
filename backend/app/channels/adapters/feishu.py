@@ -8,7 +8,12 @@ from typing import Any, Callable
 
 import httpx
 
-from app.channels.adapters.base import register_channel_adapter, split_channel_text
+from app.channels.adapters.base import (
+    ChannelInboundAttachment,
+    register_channel_adapter,
+    split_channel_text,
+    stream_download_with_limit,
+)
 from app.channels.crypto import decrypt_channel_secret
 from app.db.models import ChannelBinding
 
@@ -308,7 +313,7 @@ class FeishuAdapter:
         target: dict[str, Any],
         reaction_id: str,
     ) -> None:
-        message_id = str((target or {}).get("message_id") or "").strip()
+        message_id = str(target.get("message_id") or "").strip()
         reaction_id = str(reaction_id or "").strip()
         if not message_id or not reaction_id:
             raise FeishuPermanentError("飞书 reaction 清理参数无效")
@@ -319,6 +324,68 @@ class FeishuAdapter:
             params=None,
             body=None,
         )
+
+    def download_media(
+        self,
+        binding: ChannelBinding,
+        attachment: ChannelInboundAttachment,
+        *,
+        max_bytes: int = 0,
+    ) -> bytes:
+        """飞书附件下载:im/v1/messages/{message_id}/resources/{file_key}?type=image|file。
+
+        download_params 中需含 file_key / type / message_id。
+        下载返回二进制流,不走 _request(那个解析 JSON),直接使用 response.content。
+        复用 FeishuTokenProvider 的 token 刷新重试模式(401 -> invalidate -> 重试一次)。
+        max_bytes > 0 时流式读取,超过上限立即中止并抛 ValueError。
+        """
+        file_key = str(attachment.download_params.get("file_key") or attachment.media_id)
+        media_type = str(attachment.download_params.get("type") or "").strip()
+        message_id = str(attachment.download_params.get("message_id") or "").strip()
+        if not file_key or not media_type or not message_id:
+            raise FeishuPermanentError(
+                f"飞书附件下载参数缺失: file_key={file_key} type={media_type} message_id={message_id}"
+            )
+        url = f"{FEISHU_API_BASE}/im/v1/messages/{message_id}/resources/{file_key}"
+        force_refresh = False
+        for attempt in range(2):
+            token = self._tokens.get(binding, force_refresh=force_refresh)
+            force_refresh = False
+            try:
+                with self._client_factory() as client:
+                    if max_bytes > 0:
+                        status, data = stream_download_with_limit(
+                            client, "GET", url,
+                            params={"type": media_type},
+                            headers={"Authorization": f"Bearer {token}"},
+                            max_bytes=max_bytes,
+                        )
+                        if status == 401 and attempt == 0:
+                            force_refresh = self._tokens.invalidate(binding, expected_token=token)
+                            continue
+                        if status == 429 or status >= 500:
+                            raise FeishuTransientError("飞书附件下载服务暂时不可用")
+                        if status >= 400:
+                            raise FeishuPermanentError(f"飞书拒绝附件下载 HTTP {status}")
+                        return data
+                    response = client.get(
+                        url,
+                        params={"type": media_type},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+            except ValueError:
+                raise
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                raise FeishuTransientError("飞书附件下载暂时失败") from exc
+            if response.status_code == 401 and attempt == 0:
+                force_refresh = self._tokens.invalidate(binding, expected_token=token)
+                continue
+            if response.status_code == 429 or response.status_code >= 500:
+                raise FeishuTransientError("飞书附件下载服务暂时不可用")
+            if response.status_code >= 400:
+                raise FeishuPermanentError(f"飞书拒绝附件下载 HTTP {response.status_code}")
+            return response.content
+        raise FeishuPermanentError("飞书 token 刷新后仍无法下载附件")
 
     def send(
         self,

@@ -928,6 +928,25 @@ def process_inbound(
                 return False
             from app.core.agent_loop import AgentLoop
 
+            attachments: list = []
+            if inbound.attachments:
+                from app.channels.attachment_bridge import inbound_attachments_to_chat
+
+                try:
+                    attachments = inbound_attachments_to_chat(
+                        binding,
+                        inbound,
+                        db_engine=use_engine,
+                        tenant_id=binding.tenant_id,
+                        user_id=user_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "渠道附件下载失败 binding=%s event=%s",
+                        binding.id,
+                        inbound.event_id,
+                    )
+
             request = ChatTurnRequest(
                 tenant_id=binding.tenant_id,
                 session_id=session_id,
@@ -936,6 +955,7 @@ def process_inbound(
                 message=_message_text(binding, inbound),
                 channel=binding.channel,
                 client_turn_id=inbound.event_id,
+                attachments=attachments,
             )
             _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 1, db_engine=use_engine)
             try:

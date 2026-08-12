@@ -481,3 +481,462 @@ def test_old_pending_retry_is_not_replayed_outside_uuid_window(tmp_path) -> None
         delivery = db.get(ChannelDelivery, delivery_id)
         assert delivery.status == "failed"
         assert delivery.last_error == "remote_state_unknown"
+
+
+def _p2p_event(*, message_type: str, content: dict, chat_type: str = "p2p"):
+    """构造飞书 P2P/群消息 event(用于 normalize image/file 测试)。"""
+    message = SimpleNamespace(
+        message_id="om_normalize",
+        chat_id="oc_chat" if chat_type == "group" else "",
+        chat_type=chat_type,
+        message_type=message_type,
+        content=json.dumps(content),
+        mentions=[],
+        thread_id="",
+        root_id="",
+    )
+    return SimpleNamespace(
+        header=SimpleNamespace(app_id="cli_app", tenant_key="tenant_key"),
+        event=SimpleNamespace(
+            message=message,
+            sender=SimpleNamespace(
+                sender_id=SimpleNamespace(open_id="ou_sender"),
+                sender_type="user",
+            ),
+        ),
+    )
+
+
+def _group_attachment_event(message_type: str, content: dict) -> object:
+    message = SimpleNamespace(
+        message_id="om_group_att",
+        chat_id="oc_group",
+        chat_type="group",
+        message_type=message_type,
+        content=json.dumps(content),
+        mentions=[
+            SimpleNamespace(
+                id=SimpleNamespace(open_id="ou_bot"),
+                key="@_user_1",
+                mentioned_type="bot",
+            )
+        ],
+        thread_id="",
+        root_id="",
+    )
+    return SimpleNamespace(
+        header=SimpleNamespace(app_id="cli_app", tenant_key="tenant_key"),
+        event=SimpleNamespace(
+            message=message,
+            sender=SimpleNamespace(
+                sender_id=SimpleNamespace(open_id="ou_sender"),
+                sender_type="user",
+            ),
+        ),
+    )
+
+
+def test_normalize_image_message_extracts_attachment() -> None:
+    from app.channels.adapters.base import ChannelInboundAttachment
+
+    event = _p2p_event(
+        message_type="image",
+        content={"image_key": "img_v3_001"},
+    )
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    # 图片消息无文本,但附件存在所以不再被丢弃
+    assert inbound.text == ""
+    assert len(inbound.attachments) == 1
+    att = inbound.attachments[0]
+    assert isinstance(att, ChannelInboundAttachment)
+    assert att.media_id == "img_v3_001"
+    assert att.kind == "image"
+    assert att.filename == "img_v3_001"  # 不在 normalize 阶段硬编码扩展名
+    assert att.content_type == ""  # 下载后由 _resolve_content_type 推断
+    assert att.download_params == {
+        "file_key": "img_v3_001",
+        "type": "image",
+        "message_id": "om_normalize",
+    }
+
+
+def test_normalize_file_message_extracts_attachment_with_filename() -> None:
+    event = _p2p_event(
+        message_type="file",
+        content={"file_key": "file_v3_001", "file_name": "report.pdf"},
+    )
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert inbound.text == ""
+    assert len(inbound.attachments) == 1
+    att = inbound.attachments[0]
+    assert att.media_id == "file_v3_001"
+    assert att.kind == "file"
+    assert att.filename == "report.pdf"
+    assert att.content_type == ""
+    assert att.download_params == {
+        "file_key": "file_v3_001",
+        "type": "file",
+        "message_id": "om_normalize",
+    }
+
+
+def test_normalize_text_message_has_empty_attachments() -> None:
+    """纯文本消息仍正常工作,attachments 为空列表。"""
+    event = _p2p_event(message_type="text", content={"text": "hello"})
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _ = result
+    assert inbound.text == "hello"
+    assert inbound.attachments == []
+
+
+def test_normalize_image_without_image_key_returns_none() -> None:
+    """image 消息但 content 缺 image_key 时返回 None(无文本也无附件)。"""
+    event = _p2p_event(message_type="image", content={})
+    assert _normalize_event(event, bot_open_id="ou_bot") is None
+
+
+def test_normalize_group_attachment_without_mention_is_accepted() -> None:
+    """群聊 image/file 消息天然不携带 mentions,无需 @ 机器人即可通过。"""
+    # 不带 @ 机器人 → 仍接受(image 消息无法携带 mentions)
+    event_no_mention = _p2p_event(
+        message_type="image",
+        content={"image_key": "img_v3_002"},
+        chat_type="group",
+    )
+    result = _normalize_event(event_no_mention, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert inbound.is_group is True
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].media_id == "img_v3_002"
+
+    # 带 @ 机器人的 text+image 也正常
+    event = _group_attachment_event("image", {"image_key": "img_v3_003"})
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, target = result
+    assert inbound.is_group is True
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].media_id == "img_v3_003"
+    assert target["receive_id_type"] == "chat_id"
+    assert target["receive_id"] == "oc_group"
+
+
+def _binary_response(status: int, content: bytes, url: str) -> httpx.Response:
+    return httpx.Response(
+        status,
+        content=content,
+        request=httpx.Request("GET", url),
+    )
+
+
+def test_download_media_calls_resources_endpoint_with_bearer_token() -> None:
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append((url, kwargs))
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token-a", "expire": 7200}, url)
+        # 附件下载请求
+        assert url.endswith("/im/v1/messages/om_msg/resources/img_v3_001")
+        assert kwargs["params"] == {"type": "image"}
+        assert kwargs["headers"]["Authorization"] == "Bearer token-a"
+        return _binary_response(200, b"PNG-bytes", url)
+
+    def factory():
+        return FakeClient(handler)
+
+    adapter = FeishuAdapter(client_factory=factory)
+    from app.channels.adapters.base import ChannelInboundAttachment
+
+    att = ChannelInboundAttachment(
+        media_id="img_v3_001",
+        kind="image",
+        download_params={
+            "file_key": "img_v3_001",
+            "type": "image",
+            "message_id": "om_msg",
+        },
+    )
+    data = adapter.download_media(_binding(), att)
+    assert data == b"PNG-bytes"
+    # 确认只调用了一次资源下载
+    resource_calls = [c for c in calls if "/resources/" in c[0]]
+    assert len(resource_calls) == 1
+
+
+def test_download_media_missing_params_is_permanent_error() -> None:
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(lambda *_args: None))
+    from app.channels.adapters.base import ChannelInboundAttachment
+
+    att = ChannelInboundAttachment(
+        media_id="img_v3_001",
+        kind="image",
+        download_params={"file_key": "img_v3_001"},  # 缺 type 和 message_id
+    )
+    with pytest.raises(FeishuPermanentError, match="参数缺失"):
+        adapter.download_media(_binding(), att)
+
+
+def test_download_media_refreshes_token_on_401() -> None:
+    tokens = iter(["token-old", "token-new"])
+    resource_count = 0
+
+    def handler(url, kwargs):
+        if "/auth/" in url:
+            return _response(
+                200,
+                {"code": 0, "tenant_access_token": next(tokens), "expire": 7200},
+                url,
+            )
+        nonlocal resource_count
+        resource_count += 1
+        if resource_count == 1:
+            assert kwargs["headers"]["Authorization"] == "Bearer token-old"
+            return _binary_response(401, b"", url)
+        assert kwargs["headers"]["Authorization"] == "Bearer token-new"
+        return _binary_response(200, b"PNG-bytes", url)
+
+    def factory():
+        return FakeClient(handler)
+
+    adapter = FeishuAdapter(client_factory=factory)
+    from app.channels.adapters.base import ChannelInboundAttachment
+
+    att = ChannelInboundAttachment(
+        media_id="img_v3_001",
+        kind="image",
+        download_params={
+            "file_key": "img_v3_001",
+            "type": "image",
+            "message_id": "om_msg",
+        },
+    )
+    data = adapter.download_media(_binding(), att)
+    assert data == b"PNG-bytes"
+    assert resource_count == 2
+
+
+def test_download_media_5xx_is_transient() -> None:
+    def handler(url, _kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        return _binary_response(503, b"", url)
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    from app.channels.adapters.base import ChannelInboundAttachment
+
+    att = ChannelInboundAttachment(
+        media_id="img_v3_001",
+        kind="image",
+        download_params={
+            "file_key": "img_v3_001",
+            "type": "image",
+            "message_id": "om_msg",
+        },
+    )
+    with pytest.raises(FeishuTransientError, match="暂时不可用"):
+        adapter.download_media(_binding(), att)
+
+
+def _group_post_event(content: dict, mentions: list | None = None) -> object:
+    """构造飞书群聊 post(富文本)消息 event。"""
+    message = SimpleNamespace(
+        message_id="om_post",
+        chat_id="oc_group",
+        chat_type="group",
+        message_type="post",
+        content=json.dumps(content),
+        mentions=mentions or [],
+        thread_id="",
+        root_id="",
+    )
+    return SimpleNamespace(
+        header=SimpleNamespace(app_id="cli_app", tenant_key="tenant_key"),
+        event=SimpleNamespace(
+            message=message,
+            sender=SimpleNamespace(
+                sender_id=SimpleNamespace(open_id="ou_sender"),
+                sender_type="user",
+            ),
+        ),
+    )
+
+
+def test_normalize_post_message_extracts_image_and_text() -> None:
+    """群聊 post 消息(图片+@机器人+文本)应提取图片附件和文本,不再被丢弃。"""
+    from app.channels.adapters.base import ChannelInboundAttachment
+
+    content = {
+        "zh_cn": {
+            "title": "",
+            "content": [
+                [{"tag": "img", "image_key": "img_v3_post_1"}],
+                [
+                    {"tag": "at", "user_id": "ou_bot"},
+                    {"tag": "text", "text": " 看这张图"},
+                ],
+            ],
+        }
+    }
+    mentions = [
+        SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot"),
+            key="@_user_1",
+            mentioned_type="bot",
+        )
+    ]
+    event = _group_post_event(content, mentions=mentions)
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, target = result
+    assert inbound.is_group is True
+    assert len(inbound.attachments) == 1
+    att = inbound.attachments[0]
+    assert isinstance(att, ChannelInboundAttachment)
+    assert att.media_id == "img_v3_post_1"
+    assert att.kind == "image"
+    assert att.download_params == {
+        "file_key": "img_v3_post_1",
+        "type": "image",
+        "message_id": "om_post",
+    }
+    assert inbound.text == "看这张图"
+    assert target["receive_id_type"] == "chat_id"
+    assert target["receive_id"] == "oc_group"
+
+
+def test_normalize_post_message_only_image_without_mention_is_accepted() -> None:
+    """群聊 post 消息仅含图片且未 @机器人,应被接受(image 消息天然不携带 mentions)。"""
+    content = {
+        "zh_cn": {
+            "content": [[{"tag": "img", "image_key": "img_v3_post_2"}]],
+        }
+    }
+    event = _group_post_event(content)
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert inbound.is_group is True
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].media_id == "img_v3_post_2"
+    assert inbound.text == ""
+
+
+def test_normalize_post_message_multiple_images() -> None:
+    """post 消息含多张图片时应全部提取。"""
+    content = {
+        "zh_cn": {
+            "content": [
+                [
+                    {"tag": "img", "image_key": "img_v3_multi_1"},
+                    {"tag": "img", "image_key": "img_v3_multi_2"},
+                ],
+                [{"tag": "text", "text": "两张图"}],
+            ],
+        }
+    }
+    mentions = [
+        SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot"),
+            key="@_user_1",
+            mentioned_type="bot",
+        )
+    ]
+    event = _group_post_event(content, mentions=mentions)
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert len(inbound.attachments) == 2
+    assert inbound.attachments[0].media_id == "img_v3_multi_1"
+    assert inbound.attachments[1].media_id == "img_v3_multi_2"
+    assert inbound.text == "两张图"
+
+
+def test_normalize_post_message_without_image_or_text_returns_none() -> None:
+    """post 消息既无图片也无文本时返回 None。"""
+    content = {
+        "zh_cn": {
+            "content": [[{"tag": "at", "user_id": "ou_bot"}]],
+        }
+    }
+    mentions = [
+        SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot"),
+            key="@_user_1",
+            mentioned_type="bot",
+        )
+    ]
+    event = _group_post_event(content, mentions=mentions)
+    assert _normalize_event(event, bot_open_id="ou_bot") is None
+
+
+def test_normalize_post_message_en_us_locale() -> None:
+    """post 消息使用 en_us locale 也应正确解析。"""
+    content = {
+        "en_us": {
+            "content": [
+                [{"tag": "img", "image_key": "img_v3_en"}],
+                [{"tag": "text", "text": "check this"}],
+            ],
+        }
+    }
+    mentions = [
+        SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot"),
+            key="@_user_1",
+            mentioned_type="bot",
+        )
+    ]
+    event = _group_post_event(content, mentions=mentions)
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].media_id == "img_v3_en"
+    assert inbound.text == "check this"
+
+
+def test_normalize_post_message_without_locale_wrapper() -> None:
+    """post 消息 content 不带 locale 包裹(zh_cn/en_us)时也应正确解析。
+
+    部分飞书客户端在群聊中发送图片+@机器人时,content 结构为:
+    {"title":"","content":[[...]],"content_v2":[[...]]}
+    没有 zh_cn 外层包裹。
+    """
+    content = {
+        "title": "",
+        "content": [
+            [{"tag": "img", "image_key": "img_v3_nolocale"}],
+            [
+                {"tag": "at", "user_id": "@_user_1", "user_name": "StaffDeck渠道接入测试机器人"},
+                {"tag": "text", "text": " 查询假期余额"},
+            ],
+        ],
+        "content_v2": [
+            [{"tag": "img", "image_key": "img_v3_nolocale"}],
+            [
+                {"tag": "at", "user_id": "@_user_1"},
+                {"tag": "text", "text": " 查询假期余额"},
+            ],
+        ],
+    }
+    mentions = [
+        SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot"),
+            key="@_user_1",
+            mentioned_type="bot",
+        )
+    ]
+    event = _group_post_event(content, mentions=mentions)
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].media_id == "img_v3_nolocale"
+    assert inbound.text == "查询假期余额"

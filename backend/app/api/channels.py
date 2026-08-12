@@ -35,6 +35,7 @@ from app.channels.schema import (
     ChannelBindingAgentsUpdate,
     ChannelBindingCreate,
     ChannelBindingRead,
+    ChannelConversationAttachmentRead,
     ChannelConversationMessageRead,
     ChannelConversationPage,
     ChannelConversationRead,
@@ -1331,6 +1332,17 @@ def list_channel_conversation_messages(
             role=row.role,
             content=row.content,
             created_at=row.created_at.isoformat(),
+            attachments=[
+                ChannelConversationAttachmentRead(
+                    id=item.get("id"),
+                    filename=item.get("filename"),
+                    content_type=item.get("content_type"),
+                    size=item.get("size"),
+                    kind=item.get("kind"),
+                )
+                for item in ((row.metadata_json or {}).get("attachments") or [])
+            ]
+            or None,
         )
         for row in rows
     ]

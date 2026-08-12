@@ -1,11 +1,71 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+import httpx
 
 from app.db.models import ChannelBinding
 
 CHANNEL_TEXT_LIMIT = 2000
+
+
+def stream_download_with_limit(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+    max_bytes: int = 0,
+) -> tuple[int, bytes]:
+    """流式下载,超限时立即中止。
+
+    返回 (status_code, body_bytes)。
+    max_bytes > 0 时,Content-Length 超限或累计读取超限均抛 ValueError。
+
+    注意: 当 url 自带 query string(如 OSS 签名 URL)时,不要传 params,
+    否则 httpx 会重新编码 URL 导致签名失效。
+    """
+    kwargs: dict[str, Any] = {}
+    if headers:
+        kwargs["headers"] = headers
+    if params:
+        kwargs["params"] = params
+    if json_body is not None:
+        kwargs["json"] = json_body
+    with client.stream(method, url, **kwargs) as response:
+        if response.status_code >= 400:
+            return response.status_code, response.read()
+        if max_bytes > 0:
+            content_length = response.headers.get("content-length")
+            if content_length and int(content_length) > max_bytes:
+                raise ValueError(f"下载内容超过上限 {max_bytes} bytes (Content-Length={content_length})")
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if max_bytes > 0 and total > max_bytes:
+                raise ValueError(f"下载内容超过上限 {max_bytes} bytes (已读取 {total})")
+            chunks.append(chunk)
+        return response.status_code, b"".join(chunks)
+
+
+@dataclass
+class ChannelInboundAttachment:
+    """渠道入站附件的内存传递结构(不落库,与 ChannelInbound 同生命周期)。
+
+    各适配器在 normalize 阶段填充,attachment_bridge 通过 download_media
+    获取原始字节后交给 stage_chat_attachment 暂存。
+    """
+
+    media_id: str
+    kind: str  # "image" | "file"
+    filename: str = ""
+    content_type: str = ""
+    size: int = 0
+    download_params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -27,6 +87,9 @@ class ChannelInbound:
     sender_name: str = ""
     # 渠道账号作用域:wechat 置空;wecom 为 corp_id/bot_id/binding.id(intake 以绑定配置为准重算)
     account_scope: str = ""
+    # 入站附件列表(图片/文件);空列表表示纯文本消息。
+    # 不落库,仅在 intake 调用 attachment_bridge 时使用。
+    attachments: list[ChannelInboundAttachment] = field(default_factory=list)
 
     @property
     def conv_key(self) -> str:

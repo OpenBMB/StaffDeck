@@ -1012,6 +1012,74 @@ def test_list_channel_conversation_messages_order_and_404() -> None:
     assert missing.status_code == 404
 
 
+def test_list_channel_conversation_messages_includes_attachments() -> None:
+    """metadata_json 中存储的 attachments 应回填到响应里。"""
+    from datetime import datetime
+
+    from app.db.models import ChatSession, Message
+
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    with Session(engine) as db:
+        db.add(
+            ChatSession(
+                id="s_att",
+                tenant_id="tenant_demo",
+                user_id="u_wx1",
+                agent_id="agent_1",
+                channel="wechat",
+                external_conv_id="wechat_p2p_u1",
+                channel_binding_id=binding_id,
+            )
+        )
+        db.add(
+            Message(
+                id="m_att",
+                tenant_id="tenant_demo",
+                session_id="s_att",
+                role="user",
+                content="看这张图",
+                created_at=datetime(2026, 7, 18, 9, 0, 0),
+                metadata_json={
+                    "attachments": [
+                        {
+                            "id": "file_abc",
+                            "filename": "photo.png",
+                            "content_type": "image/png",
+                            "size": 1024,
+                            "kind": "image",
+                            # 内部/大体量字段不应回传给渠道管理页面
+                            "data_url": "data:image/png;base64,iVBORw0KGgo=",
+                            "sandbox_path": "/sandbox/attachments/photo.png",
+                            "sha256": "abc123",
+                            "text": "secret",
+                        }
+                    ]
+                },
+            )
+        )
+        db.commit()
+
+    client = _make_client(engine)
+    response = client.get(
+        f"/api/enterprise/channels/{binding_id}/conversations/s_att/messages?tenant_id=tenant_demo",
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["attachments"] == [
+        {
+            "id": "file_abc",
+            "filename": "photo.png",
+            "content_type": "image/png",
+            "size": 1024,
+            "kind": "image",
+        }
+    ]
+
+
 def test_channel_conversations_require_manager() -> None:
     engine = _test_engine()
     users = _seed_users(engine)
