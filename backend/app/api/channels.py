@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 import threading
 import time
 from datetime import timedelta
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import Response as FastAPIResponse
@@ -1399,8 +1401,16 @@ def get_channel_conversation_attachment(
     )
     if data is None:
         raise HTTPException(status_code=404, detail="Attachment content not found")
+    filename = attachment.filename or "attachment"
+    ascii_filename = re.sub(r"[^\x20-\x7e]", "_", filename).replace('"', "'")
+    encoded_filename = quote(filename, safe="")
     return FastAPIResponse(
         content=data,
         media_type=attachment.content_type or "application/octet-stream",
-        headers={"Content-Disposition": f'inline; filename="{attachment.filename}"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_filename}"; '
+                f"filename*=UTF-8''{encoded_filename}"
+            )
+        },
     )

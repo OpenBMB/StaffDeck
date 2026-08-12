@@ -5,7 +5,9 @@ import base64
 import json
 import logging
 import os
+import shutil
 import ssl
+import subprocess
 import threading
 import time
 from datetime import timedelta
@@ -50,6 +52,8 @@ RECONCILE_SECONDS = 30.0
 RECOVERY_COOLDOWN_SECONDS = 3600.0
 # 连续恢复失败达上限才判真过期(expired + 清游标 + 线程退出)
 RECOVERY_MAX_FAILURES = 5
+WECHAT_MEDIA_DOWNLOAD_ATTEMPTS = 4
+WECHAT_CURL_DOWNLOAD_ATTEMPTS = 6
 
 # 腾讯官方接入域名:业务请求携带 bot_token,redirect/baseurl 必须限制在官方域内
 WECHAT_ALLOWED_HOSTS = ("ilinkai.weixin.qq.com",)
@@ -57,7 +61,7 @@ WECHAT_ALLOWED_HOSTS = ("ilinkai.weixin.qq.com",)
 
 async def _download_wechat_cdn_limited(url: str) -> tuple[bytes, str]:
     ssl_context = ssl.create_default_context(cafile=certifi.where())
-    for attempt in range(2):
+    for attempt in range(WECHAT_MEDIA_DOWNLOAD_ATTEMPTS):
         try:
             timeout = aiohttp.ClientTimeout(total=15.0)
             connector = aiohttp.TCPConnector(ssl=ssl_context)
@@ -79,10 +83,75 @@ async def _download_wechat_cdn_limited(url: str) -> tuple[bytes, str]:
                         )
                     chunks.append(chunk)
                 return b"".join(chunks), response.headers.get("content-type", "")
-        except (TimeoutError, aiohttp.ClientConnectionError):
-            if attempt == 1:
+        except (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientPayloadError):
+            if attempt == WECHAT_MEDIA_DOWNLOAD_ATTEMPTS - 1:
                 raise
+            # 微信 CDN occasionally rejects a TLS handshake; retry with a new
+            # session/connection before dropping the channel attachment.
+            await asyncio.sleep(0.5 * (attempt + 1))
     raise RuntimeError("微信媒体下载失败")
+
+
+async def _download_wechat_cdn_httpx(url: str) -> tuple[bytes, str]:
+    """Fallback for CDN nodes that reject aiohttp's TLS handshake."""
+    async with httpx.AsyncClient(
+        verify=certifi.where(),
+        http2=False,
+        timeout=15.0,
+    ) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        ensure_channel_media_size(len(response.content), encrypted=True)
+        return response.content, response.headers.get("content-type", "")
+
+
+async def _download_wechat_cdn_curl(url: str) -> tuple[bytes, str]:
+    """Use the system TLS stack for CDN nodes incompatible with Python TLS."""
+    curl = shutil.which("curl")
+    if not curl:
+        raise RuntimeError("微信媒体下载失败: curl 不可用")
+
+    def run() -> bytes:
+        command = [
+            curl,
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--location",
+            "--http1.1",
+            "--user-agent",
+            "Mozilla/5.0",
+            "--max-time",
+            "30",
+            "--connect-timeout",
+            "10",
+            "--ignore-content-length",
+            url,
+        ]
+        last_error = ""
+        for attempt in range(WECHAT_CURL_DOWNLOAD_ATTEMPTS):
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+            )
+            # 微信 CDN sometimes advertises a stale Content-Length. curl
+            # returns 18 or 28 after receiving the complete encrypted payload;
+            # let AES/expected_size validation decide whether it is usable.
+            if result.returncode == 0 or (
+                result.returncode in {18, 28} and result.stdout
+            ):
+                return result.stdout
+            last_error = result.stderr.decode("utf-8", errors="replace")[:200]
+            if attempt < WECHAT_CURL_DOWNLOAD_ATTEMPTS - 1:
+                time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError(
+            f"微信媒体下载失败: curl exit={result.returncode} {last_error}"
+        )
+
+    data = await asyncio.to_thread(run)
+    ensure_channel_media_size(len(data), encrypted=True)
+    return data, ""
 
 
 def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -> bytes:
@@ -386,7 +455,24 @@ class WeChatClient:
         parsed = urlparse(full_url)
         if parsed.scheme != "https" or not validate_wechat_host(parsed.hostname or ""):
             raise WeChatApiError(-1, "微信媒体 URL 域名不受信任")
-        raw, content_type = asyncio.run(_download_wechat_cdn_limited(urlunparse(parsed)))
+        download_url = urlunparse(parsed)
+        try:
+            raw, content_type = asyncio.run(_download_wechat_cdn_limited(download_url))
+        except (TimeoutError, aiohttp.ClientError, OSError) as exc:
+            logger.warning(
+                "微信 CDN aiohttp 下载失败，切换 httpx: host=%s error=%s",
+                parsed.hostname,
+                type(exc).__name__,
+            )
+            try:
+                raw, content_type = asyncio.run(_download_wechat_cdn_httpx(download_url))
+            except (TimeoutError, httpx.HTTPError, OSError) as httpx_exc:
+                logger.warning(
+                    "微信 CDN httpx 下载失败，切换系统 curl: host=%s error=%s",
+                    parsed.hostname,
+                    type(httpx_exc).__name__,
+                )
+                raw, content_type = asyncio.run(_download_wechat_cdn_curl(download_url))
         if "application/json" not in content_type.lower():
             return decrypt_wechat_media(
                 raw,

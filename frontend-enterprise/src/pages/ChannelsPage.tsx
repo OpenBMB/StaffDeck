@@ -146,11 +146,15 @@ function ChannelAttachmentView({
       type="button"
       className="text-left text-[12px] text-[#3b63c8] underline"
       onClick={() => void api.blob(path).then((blob) => {
+        const objectUrl = URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
+        link.href = objectUrl;
         link.download = attachment.filename;
+        link.style.display = 'none';
+        document.body.appendChild(link);
         link.click();
-        URL.revokeObjectURL(link.href);
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
       })}
     >
       {attachment.filename}
