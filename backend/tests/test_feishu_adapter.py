@@ -742,3 +742,201 @@ def test_download_media_5xx_is_transient() -> None:
     )
     with pytest.raises(FeishuTransientError, match="暂时不可用"):
         adapter.download_media(_binding(), att)
+
+
+def _group_post_event(content: dict, mentions: list | None = None) -> object:
+    """构造飞书群聊 post(富文本)消息 event。"""
+    message = SimpleNamespace(
+        message_id="om_post",
+        chat_id="oc_group",
+        chat_type="group",
+        message_type="post",
+        content=json.dumps(content),
+        mentions=mentions or [],
+        thread_id="",
+        root_id="",
+    )
+    return SimpleNamespace(
+        header=SimpleNamespace(app_id="cli_app", tenant_key="tenant_key"),
+        event=SimpleNamespace(
+            message=message,
+            sender=SimpleNamespace(
+                sender_id=SimpleNamespace(open_id="ou_sender"),
+                sender_type="user",
+            ),
+        ),
+    )
+
+
+def test_normalize_post_message_extracts_image_and_text() -> None:
+    """群聊 post 消息(图片+@机器人+文本)应提取图片附件和文本,不再被丢弃。"""
+    from app.channels.adapters.base import ChannelInboundAttachment
+
+    content = {
+        "zh_cn": {
+            "title": "",
+            "content": [
+                [{"tag": "img", "image_key": "img_v3_post_1"}],
+                [
+                    {"tag": "at", "user_id": "ou_bot"},
+                    {"tag": "text", "text": " 看这张图"},
+                ],
+            ],
+        }
+    }
+    mentions = [
+        SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot"),
+            key="@_user_1",
+            mentioned_type="bot",
+        )
+    ]
+    event = _group_post_event(content, mentions=mentions)
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, target = result
+    assert inbound.is_group is True
+    assert len(inbound.attachments) == 1
+    att = inbound.attachments[0]
+    assert isinstance(att, ChannelInboundAttachment)
+    assert att.media_id == "img_v3_post_1"
+    assert att.kind == "image"
+    assert att.download_params == {
+        "file_key": "img_v3_post_1",
+        "type": "image",
+        "message_id": "om_post",
+    }
+    assert inbound.text == "看这张图"
+    assert target["receive_id_type"] == "chat_id"
+    assert target["receive_id"] == "oc_group"
+
+
+def test_normalize_post_message_only_image_without_mention_is_accepted() -> None:
+    """群聊 post 消息仅含图片且未 @机器人,应被接受(image 消息天然不携带 mentions)。"""
+    content = {
+        "zh_cn": {
+            "content": [[{"tag": "img", "image_key": "img_v3_post_2"}]],
+        }
+    }
+    event = _group_post_event(content)
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert inbound.is_group is True
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].media_id == "img_v3_post_2"
+    assert inbound.text == ""
+
+
+def test_normalize_post_message_multiple_images() -> None:
+    """post 消息含多张图片时应全部提取。"""
+    content = {
+        "zh_cn": {
+            "content": [
+                [
+                    {"tag": "img", "image_key": "img_v3_multi_1"},
+                    {"tag": "img", "image_key": "img_v3_multi_2"},
+                ],
+                [{"tag": "text", "text": "两张图"}],
+            ],
+        }
+    }
+    mentions = [
+        SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot"),
+            key="@_user_1",
+            mentioned_type="bot",
+        )
+    ]
+    event = _group_post_event(content, mentions=mentions)
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert len(inbound.attachments) == 2
+    assert inbound.attachments[0].media_id == "img_v3_multi_1"
+    assert inbound.attachments[1].media_id == "img_v3_multi_2"
+    assert inbound.text == "两张图"
+
+
+def test_normalize_post_message_without_image_or_text_returns_none() -> None:
+    """post 消息既无图片也无文本时返回 None。"""
+    content = {
+        "zh_cn": {
+            "content": [[{"tag": "at", "user_id": "ou_bot"}]],
+        }
+    }
+    mentions = [
+        SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot"),
+            key="@_user_1",
+            mentioned_type="bot",
+        )
+    ]
+    event = _group_post_event(content, mentions=mentions)
+    assert _normalize_event(event, bot_open_id="ou_bot") is None
+
+
+def test_normalize_post_message_en_us_locale() -> None:
+    """post 消息使用 en_us locale 也应正确解析。"""
+    content = {
+        "en_us": {
+            "content": [
+                [{"tag": "img", "image_key": "img_v3_en"}],
+                [{"tag": "text", "text": "check this"}],
+            ],
+        }
+    }
+    mentions = [
+        SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot"),
+            key="@_user_1",
+            mentioned_type="bot",
+        )
+    ]
+    event = _group_post_event(content, mentions=mentions)
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].media_id == "img_v3_en"
+    assert inbound.text == "check this"
+
+
+def test_normalize_post_message_without_locale_wrapper() -> None:
+    """post 消息 content 不带 locale 包裹(zh_cn/en_us)时也应正确解析。
+
+    部分飞书客户端在群聊中发送图片+@机器人时,content 结构为:
+    {"title":"","content":[[...]],"content_v2":[[...]]}
+    没有 zh_cn 外层包裹。
+    """
+    content = {
+        "title": "",
+        "content": [
+            [{"tag": "img", "image_key": "img_v3_nolocale"}],
+            [
+                {"tag": "at", "user_id": "@_user_1", "user_name": "StaffDeck渠道接入测试机器人"},
+                {"tag": "text", "text": " 查询假期余额"},
+            ],
+        ],
+        "content_v2": [
+            [{"tag": "img", "image_key": "img_v3_nolocale"}],
+            [
+                {"tag": "at", "user_id": "@_user_1"},
+                {"tag": "text", "text": " 查询假期余额"},
+            ],
+        ],
+    }
+    mentions = [
+        SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot"),
+            key="@_user_1",
+            mentioned_type="bot",
+        )
+    ]
+    event = _group_post_event(content, mentions=mentions)
+    result = _normalize_event(event, bot_open_id="ou_bot")
+    assert result is not None
+    inbound, _target = result
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].media_id == "img_v3_nolocale"
+    assert inbound.text == "查询假期余额"

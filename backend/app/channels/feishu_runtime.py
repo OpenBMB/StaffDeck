@@ -27,6 +27,15 @@ def _text_content(message) -> str:
     return str(parsed.get("text") or "").strip() if isinstance(parsed, dict) else ""
 
 
+def _post_text_content(message) -> str:
+    """从 post(富文本)消息中提取纯文本,拼接所有 tag=="text" 节点的 text 字段。"""
+    parts: list[str] = []
+    for node in _parse_post_content(message):
+        if str(node.get("tag") or "").strip().lower() == "text":
+            parts.append(str(node.get("text") or ""))
+    return " ".join(part for part in (s.strip() for s in parts) if part)
+
+
 def _image_file_content(message) -> dict[str, str]:
     """从 message.content JSON 中提取 image_key/file_key。
 
@@ -42,51 +51,111 @@ def _image_file_content(message) -> dict[str, str]:
     return parsed
 
 
+def _parse_post_content(message) -> list[dict]:
+    """解析 post(富文本)消息的 content,返回扁平化的内容节点列表。
+
+    飞书 post 消息 content 标准结构形如:
+    {"zh_cn": {"title": "...", "content": [[{"tag": "img", ...}, ...]]}}
+    但部分客户端(如群聊图片+@)会发送不带 locale 包裹的结构:
+    {"title": "...", "content": [[...]], "content_v2": [[...]]}
+    本函数同时兼容两种结构,优先查找 locale 包裹,找不到则在顶层查找 content。
+    """
+    try:
+        parsed = json.loads(str(message.content or "{}"))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    locale_block = None
+    for key in ("zh_cn", "en_us", "ja_jp", "ko_kr"):
+        block = parsed.get(key)
+        if isinstance(block, dict):
+            locale_block = block
+            break
+    content_rows = None
+    if locale_block is not None:
+        content_rows = locale_block.get("content")
+    elif "content" in parsed:
+        content_rows = parsed.get("content")
+    if not isinstance(content_rows, list):
+        return []
+    nodes: list[dict] = []
+    for row in content_rows:
+        if not isinstance(row, list):
+            continue
+        for node in row:
+            if isinstance(node, dict):
+                nodes.append(node)
+    return nodes
+
+
 def _extract_feishu_attachments(message) -> list[ChannelInboundAttachment]:
     """从飞书 message 提取图片/文件附件。
 
     image 消息使用 image_key,file 消息使用 file_key + file_name。
+    post(富文本)消息从 content 二维数组中提取 tag=="img" 的 image_key。
     message_id 写入 download_params,供 download_media 拼接资源下载 URL。
     """
     message_type = str(message.message_type or "").strip().lower()
-    content = _image_file_content(message)
-    if not content:
-        return []
     message_id = str(message.message_id or "").strip()
     attachments: list[ChannelInboundAttachment] = []
-    if message_type == "image":
-        image_key = str(content.get("image_key") or "").strip()
-        if image_key:
-            attachments.append(
-                ChannelInboundAttachment(
-                    media_id=image_key,
-                    kind="image",
-                    filename=image_key,
-                    content_type="",
-                    download_params={
-                        "file_key": image_key,
-                        "type": "image",
-                        "message_id": message_id,
-                    },
+
+    if message_type in {"image", "file"}:
+        content = _image_file_content(message)
+        if not content:
+            return []
+        if message_type == "image":
+            image_key = str(content.get("image_key") or "").strip()
+            if image_key:
+                attachments.append(
+                    ChannelInboundAttachment(
+                        media_id=image_key,
+                        kind="image",
+                        filename=image_key,
+                        content_type="",
+                        download_params={
+                            "file_key": image_key,
+                            "type": "image",
+                            "message_id": message_id,
+                        },
+                    )
                 )
-            )
-    elif message_type == "file":
-        file_key = str(content.get("file_key") or "").strip()
-        file_name = str(content.get("file_name") or "").strip()
-        if file_key:
-            attachments.append(
-                ChannelInboundAttachment(
-                    media_id=file_key,
-                    kind="file",
-                    filename=file_name or file_key,
-                    content_type="",
-                    download_params={
-                        "file_key": file_key,
-                        "type": "file",
-                        "message_id": message_id,
-                    },
+        else:
+            file_key = str(content.get("file_key") or "").strip()
+            file_name = str(content.get("file_name") or "").strip()
+            if file_key:
+                attachments.append(
+                    ChannelInboundAttachment(
+                        media_id=file_key,
+                        kind="file",
+                        filename=file_name or file_key,
+                        content_type="",
+                        download_params={
+                            "file_key": file_key,
+                            "type": "file",
+                            "message_id": message_id,
+                        },
+                    )
                 )
-            )
+    elif message_type == "post":
+        for node in _parse_post_content(message):
+            tag = str(node.get("tag") or "").strip().lower()
+            if tag == "img":
+                image_key = str(node.get("image_key") or "").strip()
+                if image_key:
+                    attachments.append(
+                        ChannelInboundAttachment(
+                            media_id=image_key,
+                            kind="image",
+                            filename=image_key,
+                            content_type="",
+                            download_params={
+                                "file_key": image_key,
+                                "type": "image",
+                                "message_id": message_id,
+                            },
+                        )
+                    )
     return attachments
 
 
@@ -106,9 +175,9 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
     chat_id = str(message.chat_id or "").strip()
     chat_type = str(message.chat_type or "").strip().lower()
     message_type = str(message.message_type or "").strip().lower()
-    # 放宽 message_type 过滤:允许 text / image / file
+    # 放宽 message_type 过滤:允许 text / image / file / post
     if (
-        message_type not in {"text", "image", "file"}
+        message_type not in {"text", "image", "file", "post"}
         or not app_id
         or not tenant_key
         or not message_id
@@ -121,10 +190,12 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
     # 提取图片/文件附件(image/file 消息)
     attachments = _extract_feishu_attachments(message)
 
-    # 文本只在 text 类型时提取
+    # 文本在 text / post 类型时提取
     text = ""
     if message_type == "text":
         text = _text_content(message)
+    elif message_type == "post":
+        text = _post_text_content(message)
     if not text and not attachments:
         return None
 
