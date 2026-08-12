@@ -69,6 +69,7 @@ import AppHeader from '@/components/AppHeader';
 import { CapabilityScopeBadge } from '@/components/CapabilityScopeControl';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
 import { cn } from '@/lib/utils';
+import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
 import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
 import type { EnterpriseAuthUser } from '../auth';
 import {
@@ -483,7 +484,6 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
     content: '请粘贴原始技能说明，或点击右侧某一块后告诉我需要怎样改写。',
   },
 ];
-const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const DISTILL_REWRITE_MODEL_STORAGE_KEY = 'skill-distill-rewrite-model';
 
 type DistillCacheSnapshot = {
@@ -568,7 +568,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   const skillId = searchParams.get('skill_id');
   const mode = searchParams.get('mode') || '';
   const workspaceId = searchParams.get('workspace_id') || '';
-  const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [selectedAgentId, setSelectedAgentId] = useState(readEmployeeScope);
   const activeAgentId = searchParams.get('agent_id') || selectedAgentId;
   const agentQuery = activeAgentId ? `&agent_id=${encodeURIComponent(activeAgentId)}` : '';
   const agentSearchParam = activeAgentId ? `agent_id=${encodeURIComponent(activeAgentId)}` : '';
@@ -633,8 +633,8 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
-      const agentId = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
-      setSelectedAgentId(agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setSelectedAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);

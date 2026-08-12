@@ -56,6 +56,9 @@ import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
 import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
+import TeamChatPage from "./pages/TeamChatPage";
+import TeamDetailPage from "./pages/TeamDetailPage";
+import TeamsPage from "./pages/TeamsPage";
 import {
   ScheduledTaskEditPage,
   ScheduledTaskNewPage,
@@ -87,7 +90,10 @@ import { notify } from "@/components/ui/app-toast";
 import {
   emitAgentScopeChange,
   ENTERPRISE_AGENT_STORAGE_KEY,
+  isTeamScope,
   persistSharedAgentScope,
+  teamIdFromScope,
+  toTeamScope,
 } from "@/lib/agent-scope-storage";
 import { cn } from "@/lib/utils";
 import {
@@ -96,7 +102,7 @@ import {
   DIALOG_FOOTER_CLASS,
   DIALOG_PRIMARY_BUTTON_CLASS,
 } from "@/lib/enterprise-ui";
-import type { AgentProfileRead, ModelConfigRead } from "./types";
+import type { AgentProfileRead, ModelConfigRead, TeamRead } from "./types";
 import { useI18n } from "./i18n";
 
 const ENTERPRISE_SIDEBAR_STORAGE_KEY = "ultrarag_enterprise_sidebar_expanded";
@@ -133,6 +139,7 @@ function Shell({
   const { t } = useI18n();
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
+  const [scopeTeams, setScopeTeams] = useState<TeamRead[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState(
     () => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || "",
   );
@@ -160,7 +167,9 @@ function Shell({
             ? "/enterprise/general-skills"
             : location.pathname.startsWith("/enterprise/tools")
               ? "/enterprise/tools"
-              : location.pathname.startsWith("/enterprise/scheduled-tasks")
+              : location.pathname.startsWith("/enterprise/teams")
+                ? "/enterprise/teams"
+                : location.pathname.startsWith("/enterprise/scheduled-tasks")
                 ? "/enterprise/scheduled-tasks"
                 : isDistillRoute
                   ? "/enterprise/skills"
@@ -183,6 +192,7 @@ function Shell({
 
   useEffect(() => {
     loadAgents();
+    loadTeams();
   }, []);
 
   const loadModelConfigs = useCallback(() => {
@@ -249,7 +259,7 @@ function Shell({
         (event as CustomEvent<{ agentId?: string }>).detail?.agentId ||
         window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) ||
         "";
-      if (nextAgentId) {
+      if (nextAgentId && !isTeamScope(nextAgentId)) {
         persistSharedAgentScope(nextAgentId, auth.user.id);
         const knownSelectableAgent = agents.some(
           (item) => item.id === nextAgentId && canUseAgentScope(item),
@@ -279,6 +289,13 @@ function Shell({
       );
   }, []);
 
+  function loadTeams() {
+    return api
+      .get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${TENANT_ID}`)
+      .then((rows) => setScopeTeams(rows))
+      .catch(() => setScopeTeams([]));
+  }
+
   function loadAgents(preferredAgentId = "") {
     return api
       .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
@@ -286,6 +303,8 @@ function Shell({
         setAgents(rows);
         const selectableRows = rows.filter((item) => canUseAgentScope(item));
         setSelectedAgentId((current) => {
+          // A team scope is not part of the employee roster; keep it untouched.
+          if (isTeamScope(current)) return current;
           const requestedAgentId = preferredAgentId || current;
           if (
             requestedAgentId &&
@@ -323,6 +342,23 @@ function Shell({
     setSelectedAgentId(agentId);
     persistSharedAgentScope(agentId, auth.user.id);
     emitAgentScopeChange(agentId);
+  }
+
+  async function selectTeamScope(teamId: string) {
+    const scope = toTeamScope(teamId);
+    try {
+      const result = await api.post<{ session_id: string }>(
+        `/api/enterprise/teams/${teamId}/tl/session`,
+        { tenant_id: TENANT_ID },
+      );
+      if (!result.session_id) throw new Error("发起对话失败");
+      setSelectedAgentId(scope);
+      persistSharedAgentScope(scope, auth.user.id);
+      emitAgentScopeChange(scope);
+      navigate(`/workspace/chat/${result.session_id}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : "发起对话失败");
+    }
   }
 
   function handleSidebarOpenChange(open: boolean) {
@@ -375,7 +411,7 @@ function Shell({
   function openCreateAgentModal() {
     setAgentForm({
       ...EMPTY_AGENT_FORM,
-      copyFromAgentId: selectedAgentId || sourceAgents[0]?.id || "",
+      copyFromAgentId: (isTeamScope(selectedAgentId) ? "" : selectedAgentId) || sourceAgents[0]?.id || "",
     });
     setAgentCreateOpen(true);
   }
@@ -467,8 +503,15 @@ function Shell({
         isAdmin={isAdmin}
         sidebarAgent={sidebarAgent}
         scopeAgents={scopeAgents}
+        scopeTeams={scopeTeams}
         selectedAgentId={selectedAgentId}
         onSelectAgent={(agentId) => {
+          const teamId = teamIdFromScope(agentId);
+          if (teamId) {
+            // 选择团队 = 开聊：tl/session 是 get-or-create，重复点击会回到同一会话。
+            void selectTeamScope(teamId);
+            return;
+          }
           if (agentId !== selectedAgentId) changeAgentScope(agentId);
           navigate(EnterpriseRoute.Dashboard);
         }}
@@ -565,6 +608,36 @@ function Shell({
                     currentUser={auth.user}
                     isAdmin={isAdmin}
                     onCreateAgent={openCreateAgentModal}
+                    onLogout={onLogout}
+                  />
+                }
+              />
+              <Route
+                path="/enterprise/teams"
+                element={
+                  <TeamsPage
+                    currentUser={auth.user}
+                    isAdmin={isAdmin}
+                    onLogout={onLogout}
+                  />
+                }
+              />
+              <Route
+                path="/enterprise/teams/:teamId/chat"
+                element={
+                  <TeamChatPage
+                    currentUser={auth.user}
+                    isAdmin={isAdmin}
+                    onLogout={onLogout}
+                  />
+                }
+              />
+              <Route
+                path="/enterprise/teams/:teamId"
+                element={
+                  <TeamDetailPage
+                    currentUser={auth.user}
+                    isAdmin={isAdmin}
                     onLogout={onLogout}
                   />
                 }

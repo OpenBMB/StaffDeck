@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { notify } from '@/components/ui/app-toast';
 
 import AppHeader from '@/components/AppHeader';
@@ -40,6 +41,7 @@ import type {
   ChannelIdentityBindingRead,
   ChannelMetaRead,
   PagedResponse,
+  TeamRead,
 } from '../types';
 import WechatSetup from './channels/WechatSetup';
 import WecomSetup from './channels/WecomSetup';
@@ -166,7 +168,11 @@ export default function ChannelsPage({
   const [createOpen, setCreateOpen] = useState(false);
   const [createStep, setCreateStep] = useState<'channel' | 'agent'>('channel');
   const [createChannel, setCreateChannel] = useState('wechat');
+  const [createTarget, setCreateTarget] = useState<'agent' | 'team'>('agent');
   const [createAgentId, setCreateAgentId] = useState('');
+  const [createTeamId, setCreateTeamId] = useState('');
+  const [teams, setTeams] = useState<TeamRead[]>([]);
+  const [teamsLoading, setTeamsLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [unbindOpen, setUnbindOpen] = useState(false);
   const [unbinding, setUnbinding] = useState(false);
@@ -187,6 +193,7 @@ export default function ChannelsPage({
   const [unbindingIdentity, setUnbindingIdentity] = useState(false);
 
   const binding = bindings.find((item) => item.id === selectedId) || null;
+  const navigate = useNavigate();
   const channelIdentities = identityBindings.filter((item) => item.channel === binding?.channel);
   const bindCodeChannelName = binding
     ? channelName(binding.channel)
@@ -219,6 +226,7 @@ export default function ChannelsPage({
     void load();
     void loadIdentityBindings();
     void loadChannelMetas();
+    void loadTeams();
   }, []);
 
   useEffect(() => {
@@ -369,6 +377,29 @@ export default function ChannelsPage({
     }
   }
 
+  async function loadTeams() {
+    setTeamsLoading(true);
+    try {
+      const rows = await api.get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${TENANT_ID}`);
+      setTeams(rows);
+    } catch {
+      // 团队列表仅用于绑定对象选择与名称映射，失败不影响主流程
+      setTeams([]);
+    } finally {
+      setTeamsLoading(false);
+    }
+  }
+
+  function teamNameFor(item: ChannelBindingRead): string {
+    if (!item.team_id) return '';
+    return item.team_name || teams.find((team) => team.id === item.team_id)?.name || '团队';
+  }
+
+  function teamLeaderName(teamId: string): string {
+    const team = teams.find((item) => item.id === teamId);
+    return team?.members.find((member) => member.role === 'leader')?.agent_name || '未设置';
+  }
+
   async function loadAgentCandidates() {
     setCandidatesLoading(true);
     try {
@@ -389,23 +420,30 @@ export default function ChannelsPage({
   function openCreate() {
     setCreateStep('channel');
     setCreateChannel(channelMetas[0]?.channel || 'wechat');
+    setCreateTarget('agent');
     setCreateAgentId('');
+    setCreateTeamId('');
     setCreateOpen(true);
     void loadAgentCandidates();
+    void loadTeams();
   }
 
   async function createBinding() {
-    if (!createAgentId || creating) return;
+    const agentId = createTarget === 'agent' ? createAgentId : '';
+    const teamId = createTarget === 'team' ? createTeamId : '';
+    if ((!agentId && !teamId) || creating) return;
     setCreating(true);
     try {
       const created = await api.post<ChannelBindingRead>('/api/enterprise/channels', {
         tenant_id: TENANT_ID,
-        agent_id: createAgentId,
+        // agent_id 与 team_id 互斥，后端二选一
+        ...(agentId ? { agent_id: agentId } : { team_id: teamId }),
         channel: createChannel,
       });
       notify.success('渠道接入创建成功');
       setCreateOpen(false);
       setCreateAgentId('');
+      setCreateTeamId('');
       await load();
       setSelectedId(created.id);
     } catch (error) {
@@ -661,8 +699,12 @@ export default function ChannelsPage({
                   <span>{formatTime(item.created_at)}</span>
                 </div>
                 <div className="flex flex-wrap items-center gap-[6px]">
-                  <span className="text-[12px] text-[#858b9c]">可调度员工</span>
-                  {(item.agents || []).length === 0 ? (
+                  <span className="text-[12px] text-[#858b9c]">
+                    {item.team_id ? '绑定团队' : '可调度员工'}
+                  </span>
+                  {item.team_id ? (
+                    <StatusBadge tone="blue">{`团队 · ${teamNameFor(item)}`}</StatusBadge>
+                  ) : (item.agents || []).length === 0 ? (
                     <span className="text-[12px] text-[#858b9c]">暂无可调度员工</span>
                   ) : (
                     (item.agents || []).map((agent) => (
@@ -830,7 +872,7 @@ export default function ChannelsPage({
             <IconAccount className="size-[14px] shrink-0" />
             <span className="text-[14px] font-normal leading-none">可调度员工</span>
           </div>
-          {!agentEditing && (
+          {!agentEditing && !binding.team_id && (
             <UIButton variant="outline" onClick={openAgentEdit} className={OUTLINE_BUTTON_CLASS}>
               编辑
             </UIButton>
@@ -839,7 +881,13 @@ export default function ChannelsPage({
         <p className="mb-[16px] px-[12px] text-[12px] text-[#858b9c]">
           挂载后，该渠道的所有用户均可与这些员工对话。
         </p>
-        {agentEditing ? (
+        {binding.team_id ? (
+          <div className="flex flex-wrap items-center gap-[8px] rounded-[14px] border border-[#eef0f4] p-[16px]">
+            <span className="text-[13px] text-[#18181a]">
+              {`团队：${teamNameFor(binding)}（TL：${teamLeaderName(binding.team_id)}）`}
+            </span>
+          </div>
+        ) : agentEditing ? (
           <div className="flex flex-col gap-[12px] rounded-[14px] border border-[#eef0f4] p-[16px]">
             {candidatesLoading ? (
               <span className="py-[12px] text-center text-[12px] text-[#858b9c]">加载中…</span>
@@ -1131,9 +1179,7 @@ export default function ChannelsPage({
           className="flex max-h-[calc(100dvh-4rem)] w-[calc(100%-2rem)] flex-col gap-[16px] overflow-hidden rounded-[14px] px-[20px] py-[16px] sm:max-w-[480px]"
         >
           <DialogTitle className="text-[14px] font-normal leading-none text-[#757f9c]">
-            {createStep === 'channel'
-              ? '选择渠道'
-              : `选择${getChannelPresentation(createChannel, metaFor(createChannel)?.name).name}默认员工`}
+            {createStep === 'channel' ? '选择渠道' : '选择绑定对象'}
           </DialogTitle>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {createStep === 'channel' ? (
@@ -1173,26 +1219,96 @@ export default function ChannelsPage({
                   ))}
                 </div>
               )
-            ) : candidatesLoading ? (
-              <div className="py-[24px] text-center text-[12px] text-[#858b9c]">加载中…</div>
-            ) : agentCandidates.length === 0 ? (
-              <div className="py-[24px] text-center text-[12px] text-[#858b9c]">暂无可用员工</div>
             ) : (
-              <RadioGroup
-                value={createAgentId}
-                onValueChange={setCreateAgentId}
-                className="grid gap-[10px]"
-              >
-                {agentCandidates.map((agent) => (
-                  <div
-                    key={agent.id}
-                    className="flex items-center gap-[8px] text-[13px] text-[#18181a]"
-                  >
-                    <RadioGroupItem value={agent.id} />
-                    <span className="min-w-0 flex-1 truncate">{employeeDisplayName(agent)}</span>
+              <div className="flex flex-col gap-[12px]">
+                <div className="flex rounded-[10px] bg-[#f2f3f7] p-[4px]">
+                  {(
+                    [
+                      { key: 'agent', label: '数字员工' },
+                      { key: 'team', label: '团队' },
+                    ] as const
+                  ).map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setCreateTarget(option.key)}
+                      className={cn(
+                        'flex-1 rounded-[8px] py-[6px] text-[12px] transition-colors',
+                        createTarget === option.key
+                          ? 'bg-white font-medium text-[#18181a]'
+                          : 'text-[#858b9c] hover:text-[#18181a]',
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                {createTarget === 'agent' ? (
+                  candidatesLoading ? (
+                    <div className="py-[24px] text-center text-[12px] text-[#858b9c]">加载中…</div>
+                  ) : agentCandidates.length === 0 ? (
+                    <div className="py-[24px] text-center text-[12px] text-[#858b9c]">
+                      暂无可用员工
+                    </div>
+                  ) : (
+                    <RadioGroup
+                      value={createAgentId}
+                      onValueChange={setCreateAgentId}
+                      className="grid gap-[10px]"
+                    >
+                      {agentCandidates.map((agent) => (
+                        <div
+                          key={agent.id}
+                          className="flex items-center gap-[8px] text-[13px] text-[#18181a]"
+                        >
+                          <RadioGroupItem value={agent.id} />
+                          <span className="min-w-0 flex-1 truncate">
+                            {employeeDisplayName(agent)}
+                          </span>
+                        </div>
+                      ))}
+                    </RadioGroup>
+                  )
+                ) : teamsLoading ? (
+                  <div className="py-[24px] text-center text-[12px] text-[#858b9c]">加载中…</div>
+                ) : teams.length === 0 ? (
+                  <div className="flex flex-col items-center gap-[12px] py-[24px] text-[12px] text-[#858b9c]">
+                    <span>暂无可用团队</span>
+                    <UIButton
+                      variant="outline"
+                      onClick={() => {
+                        setCreateOpen(false);
+                        navigate('/enterprise/teams');
+                      }}
+                      className={OUTLINE_BUTTON_CLASS}
+                    >
+                      去创建团队
+                    </UIButton>
                   </div>
-                ))}
-              </RadioGroup>
+                ) : (
+                  <RadioGroup
+                    value={createTeamId}
+                    onValueChange={setCreateTeamId}
+                    className="grid gap-[10px]"
+                  >
+                    {teams.map((team) => (
+                      <div
+                        key={team.id}
+                        className="flex items-center gap-[8px] text-[13px] text-[#18181a]"
+                      >
+                        <RadioGroupItem value={team.id} />
+                        <span className="min-w-0 flex-1 truncate">{team.name}</span>
+                        <span className="shrink-0 text-[12px] text-[#858b9c]">
+                          {`TL：${team.members.find((member) => member.role === 'leader')?.agent_name || '未设置'}`}
+                        </span>
+                        <span className="shrink-0 text-[12px] text-[#858b9c]">
+                          {`${team.members.length} 名成员`}
+                        </span>
+                      </div>
+                    ))}
+                  </RadioGroup>
+                )}
+              </div>
             )}
           </div>
           <div className="flex justify-end gap-[8px]">
@@ -1215,7 +1331,9 @@ export default function ChannelsPage({
             {createStep === 'agent' && (
               <UIButton
                 onClick={() => void createBinding()}
-                disabled={!createAgentId || creating}
+                disabled={
+                  (createTarget === 'agent' ? !createAgentId : !createTeamId) || creating
+                }
                 className={PRIMARY_BUTTON_CLASS}
               >
                 {`创建${getChannelPresentation(createChannel, metaFor(createChannel)?.name).name}接入`}

@@ -22,7 +22,13 @@ import {
   type StreamEvent,
 } from '@/api/client';
 import { clearEnterpriseAuthSession, getEnterpriseAuthSession } from '@/auth';
-import { emitAgentScopeChange, persistSharedAgentScope } from '@/lib/agent-scope-storage';
+import {
+  emitAgentScopeChange,
+  isTeamScope,
+  persistSharedAgentScope,
+  teamIdFromScope,
+  toTeamScope,
+} from '@/lib/agent-scope-storage';
 import { getClientTimeZone } from '@/lib/timezone';
 import {
   agentResourceCount,
@@ -45,6 +51,7 @@ import type {
   ModelConfigRead,
   ScheduledTaskDraftRead,
   ScheduledTaskRead,
+  TeamRead,
   TurnTraceRead,
   UIConfigRead,
 } from '@/types';
@@ -315,6 +322,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const [sessionReadTimes, setSessionReadTimes] = useState<Record<string, string>>(() => loadSessionReadTimes(userId));
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
+  const [teams, setTeams] = useState<TeamRead[]>([]);
+  const [teamEmptyStats, setTeamEmptyStats] = useState<{ tasks: number; blackboard: number }>({ tasks: 0, blackboard: 0 });
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(SELECTED_AGENT_STORAGE_KEY) || '');
   const [sessionAgentFilter, setSessionAgentFilter] = useState(() => (
     window.localStorage.getItem(sessionFilterStorageKey(userId))
@@ -528,6 +537,10 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const sessionAgent = currentSession?.agent_id
     ? agents.find((agent) => agent.id === currentSession.agent_id) || null
     : null;
+  // 团队会话（team_id 非空）时，ChatEmptyState 改渲染团队名片
+  const displayedTeam = currentSession?.team_id
+    ? teams.find((team) => team.id === currentSession.team_id) || null
+    : null;
   const displayedAgent = invalidDraftAgentId || draftAgentLoading ? null : (sessionAgent || draftAgent || defaultAgent);
   const displayedProfile = displayedAgent ? employeeProfile(displayedAgent) : null;
   const emptyProfileTags = displayedProfile?.workStyles.length
@@ -550,11 +563,15 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const sessionFilterOptions = useMemo(() => {
     return buildSessionFilterOptions(availableAgents, sessions, activeDraftAgentId);
   }, [activeDraftAgentId, availableAgents, sessions]);
-  const visibleSidebarSessions = useMemo(() => (
-    sessionAgentFilter === 'all'
+  const visibleSidebarSessions = useMemo(() => {
+    const filterTeamId = teamIdFromScope(sessionAgentFilter);
+    if (filterTeamId) {
+      return sessions.filter((session) => session.team_id === filterTeamId);
+    }
+    return sessionAgentFilter === 'all'
       ? sessions
-      : sessions.filter((session) => session.agent_id === sessionAgentFilter)
-  ), [sessionAgentFilter, sessions]);
+      : sessions.filter((session) => session.agent_id === sessionAgentFilter);
+  }, [sessionAgentFilter, sessions]);
   const enabledModelConfigs = useMemo(() => modelConfigs.filter((item) => item.enabled), [modelConfigs]);
   const selectedModelConfig = (
     enabledModelConfigs.find((item) => item.id === selectedModelConfigId)
@@ -642,6 +659,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       const rows = await api.get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`);
       setAgents(rows);
       setSelectedAgentId((current) => {
+        // A team scope is not part of the employee roster; keep it untouched.
+        if (isTeamScope(current)) return current;
         const employeeRows = visibleChatEmployees(rows, auth?.user);
         if (preferredAgentId && employeeRows.some((item) => item.id === preferredAgentId)) return preferredAgentId;
         if (current && employeeRows.some((item) => item.id === current)) return current;
@@ -658,6 +677,49 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   useEffect(() => {
     void loadAgents();
   }, [loadAgents]);
+
+  // 团队花名册：用于侧栏团队会话行标明 TL 身份
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${tenantId}`)
+      .then((rows) => {
+        if (!cancelled) setTeams(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setTeams([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenantId]);
+
+  // 团队名片统计：任务数 + 黑板条目数，随当前会话 team_id 加载；失败静默为 0
+  const displayedTeamId = currentSession?.team_id || '';
+  useEffect(() => {
+    if (!displayedTeamId) {
+      setTeamEmptyStats({ tasks: 0, blackboard: 0 });
+      return;
+    }
+    let cancelled = false;
+    const fetchCount = async (path: string) => {
+      try {
+        const rows = await api.get<unknown[]>(`${path}?tenant_id=${tenantId}`);
+        return Array.isArray(rows) ? rows.length : 0;
+      } catch {
+        return 0;
+      }
+    };
+    void Promise.all([
+      fetchCount(`/api/enterprise/teams/${displayedTeamId}/tasks`),
+      fetchCount(`/api/enterprise/teams/${displayedTeamId}/blackboard`),
+    ]).then(([taskCount, blackboardCount]) => {
+      if (!cancelled) setTeamEmptyStats({ tasks: taskCount, blackboard: blackboardCount });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [displayedTeamId, tenantId]);
 
   useEffect(() => {
     const onAgentRefresh = () => {
@@ -704,6 +766,18 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
   }, [userId]);
+
+  // 进入团队会话（如画廊团队卡片点开即聊）时，把共享作用域同步为 team:{team_id}，
+  // 让管理端导航栏的"当前员工"切换器跟随显示当前团队。
+  useEffect(() => {
+    const teamId = currentSession?.team_id;
+    if (!teamId) return;
+    const scope = toTeamScope(teamId);
+    if (selectedAgentId === scope) return;
+    setSelectedAgentId(scope);
+    persistSharedAgentScope(scope, userId);
+    emitAgentScopeChange(scope);
+  }, [currentSession?.team_id, selectedAgentId, userId]);
 
   useEffect(() => {
     if (!auth) {
@@ -1067,6 +1141,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
 
   useEffect(() => {
     if (!agentsLoaded || sessionsLoading || !sessionsInitializedRef.current) return;
+    // 团队作用域不在员工过滤项里，但它是合法的会话过滤值，不能重置。
+    if (isTeamScope(sessionAgentFilter)) return;
     if (!sessionFilterOptions.some((item) => item.value === sessionAgentFilter)) {
       persistChatSessionAgentFilter('all');
     }
@@ -3332,6 +3408,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     sessionsLoading,
     visibleSidebarSessions,
     agents,
+    teams,
     sessionId,
     sessionReadTimes,
     sessionAgentFilter,
@@ -3341,6 +3418,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     activeConversationId,
     displayedAgent,
     displayedProfile,
+    displayedTeam,
+    teamEmptyStats,
     currentSession,
     emptyProfileTags,
     emptyRoleSummary,

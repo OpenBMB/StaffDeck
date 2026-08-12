@@ -1,8 +1,10 @@
 import { useMemo } from 'react';
 import {
+  Badge,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@/components/ui';
 import {
@@ -18,14 +20,16 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { ComponentType, SVGProps } from 'react';
 import { cn } from '@/lib/utils';
+import { teamIdFromScope, toTeamScope } from '@/lib/agent-scope-storage';
 import EmployeeAvatar from './EmployeeAvatar';
 import BrandLogo from './BrandLogo';
 import StaffdeckIcon from './StaffdeckIcon';
 import { employeeDisplayNameWithCreator, employeeProfile, staffdeckDisplayText } from '../employee';
 import { EnterpriseRoute } from '../enums/routes';
-import type { AgentProfileRead, ChatSession } from '../types';
+import type { AgentProfileRead, ChatSession, TeamRead } from '../types';
 import IconPlatform from '../assets/icons/nav-platform.svg?react';
 import IconAgents from '../assets/icons/nav-agents.svg?react';
+import IconTeams from '../assets/icons/nav-teams.svg?react';
 import IconFile from '../assets/icons/profile-file.svg?react';
 import IconAlarm from '../assets/icons/profile-alarm.svg?react';
 import IconHistory from '../assets/icons/profile-history.svg?react';
@@ -60,6 +64,7 @@ type NavItem = {
 const PRIMARY_NAV: NavItem[] = [
   { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform },
   { route: EnterpriseRoute.Agents, label: '我的数字员工', Icon: IconAgents },
+  { route: EnterpriseRoute.Teams, label: '我的团队', Icon: IconTeams },
   { route: EnterpriseRoute.Channels, label: '渠道接入', Icon: IconGlobe },
 ];
 
@@ -94,6 +99,7 @@ export type AppSidebarManagementProps = {
   isAdmin: boolean;
   sidebarAgent?: AgentProfileRead;
   scopeAgents: AgentProfileRead[];
+  scopeTeams?: TeamRead[];
   selectedAgentId: string;
   onSelectAgent: (agentId: string) => void;
   onOpenChat: () => void;
@@ -110,6 +116,8 @@ export type AppSidebarChatProps = {
   sessionsLoading?: boolean;
   /** Full agent roster, used to resolve per-session avatars/roles. */
   agents: AgentProfileRead[];
+  /** Team roster, used to mark the team leader (TL) in team session rows. */
+  scopeTeams?: TeamRead[];
   activeSessionId?: string;
   sessionFilter: string;
   onSessionFilterChange: (value: string) => void;
@@ -207,18 +215,61 @@ function GroupLabel({ children }: { children: string }) {
   );
 }
 
+function TeamScopeItems({
+  scopeTeams,
+  selectedAgentId,
+  onSelectAgent,
+}: Pick<AppSidebarManagementProps, 'selectedAgentId' | 'onSelectAgent'> & { scopeTeams: TeamRead[] }) {
+  if (scopeTeams.length === 0) return null;
+  return (
+    <>
+      <DropdownMenuLabel className="px-[8px] pt-[6px] pb-[2px] text-[10px] leading-none text-[#464c5e]">
+        团队
+      </DropdownMenuLabel>
+      {scopeTeams.map((team) => (
+        <DropdownMenuItem
+          key={team.id}
+          data-active={toTeamScope(team.id) === selectedAgentId}
+          onSelect={() => onSelectAgent(toTeamScope(team.id))}
+          className="shrink-0 gap-2 rounded-[14px] cursor-pointer focus:bg-[#F6F6F6] focus:[&_strong]:text-foreground! data-[active=true]:bg-[#F6F6F6] data-[active=true]:[&_strong]:text-foreground!"
+        >
+          <span className="grid size-[28px] shrink-0 place-items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-sidebar-foreground">
+            <IconTeams className="size-[16px]" />
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col">
+            <strong className="truncate text-[12px] font-medium">{team.name}</strong>
+          </span>
+          <Badge
+            variant="secondary"
+            className="ml-auto shrink-0 rounded-full bg-[#e8f0ff] text-[10px] font-normal text-[#1a71ff]"
+          >
+            团队
+          </Badge>
+        </DropdownMenuItem>
+      ))}
+    </>
+  );
+}
+
 function AgentSwitcher({
   sidebarAgent,
   scopeAgents,
+  scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
-}: Pick<AppSidebarManagementProps, 'sidebarAgent' | 'scopeAgents' | 'selectedAgentId' | 'onSelectAgent'>) {
+}: Pick<AppSidebarManagementProps, 'sidebarAgent' | 'scopeAgents' | 'scopeTeams' | 'selectedAgentId' | 'onSelectAgent'>) {
   const employeeAgents = scopeAgents.filter((agent) => !agent.is_overall);
   const currentAgent = sidebarAgent && !sidebarAgent.is_overall ? sidebarAgent : undefined;
-  const caption = currentAgent ? '当前员工' : '未选择';
-  const nameLabel = currentAgent
-    ? employeeDisplayNameWithCreator(currentAgent)
-    : '-';
+  const selectedTeamId = teamIdFromScope(selectedAgentId);
+  const currentTeam = selectedTeamId
+    ? scopeTeams.find((team) => team.id === selectedTeamId)
+    : undefined;
+  const caption = selectedTeamId ? '当前团队' : currentAgent ? '当前员工' : '未选择';
+  const nameLabel = selectedTeamId
+    ? currentTeam?.name || '团队'
+    : currentAgent
+      ? employeeDisplayNameWithCreator(currentAgent)
+      : '-';
 
   return (
     <DropdownMenu>
@@ -240,7 +291,7 @@ function AgentSwitcher({
             <div className="w-[60px] h-[30px] relative">
               <div className="absolute inset-0 flex items-end justify-center">
                 <span className="flex w-[60px] h-[71px] items-center justify-center rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white text-sidebar-foreground">
-                  <IconAdd className="size-[20px]" />
+                  {selectedTeamId ? <IconTeams className="size-[20px]" /> : <IconAdd className="size-[20px]" />}
                 </span>
               </div>
             </div>
@@ -276,6 +327,11 @@ function AgentSwitcher({
             </span>
           </DropdownMenuItem>
         ))}
+        <TeamScopeItems
+          scopeTeams={scopeTeams}
+          selectedAgentId={selectedAgentId}
+          onSelectAgent={onSelectAgent}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -370,14 +426,16 @@ function CollapsedNavButton({
 function CollapsedAgentSwitcher({
   sidebarAgent,
   scopeAgents,
+  scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
   nameLabel,
-}: Pick<AppSidebarManagementProps, 'sidebarAgent' | 'scopeAgents' | 'selectedAgentId' | 'onSelectAgent'> & {
+}: Pick<AppSidebarManagementProps, 'sidebarAgent' | 'scopeAgents' | 'scopeTeams' | 'selectedAgentId' | 'onSelectAgent'> & {
   nameLabel: string;
 }) {
   const employeeAgents = scopeAgents.filter((agent) => !agent.is_overall);
   const currentAgent = sidebarAgent && !sidebarAgent.is_overall ? sidebarAgent : undefined;
+  const selectedTeamId = teamIdFromScope(selectedAgentId);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -390,7 +448,7 @@ function CollapsedAgentSwitcher({
             <EmployeeAvatar agent={currentAgent} width={32} height={38} radius={8} />
           ) : (
             <span className="flex h-[38px] w-[32px] items-center justify-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-sidebar-foreground">
-              <IconAdd className="size-[16px]" />
+              {selectedTeamId ? <IconTeams className="size-[16px]" /> : <IconAdd className="size-[16px]" />}
             </span>
           )}
           <span className="w-[34px] text-center text-[10px] font-medium leading-tight wrap-break-word text-[#18181a]">
@@ -417,6 +475,11 @@ function CollapsedAgentSwitcher({
             </span>
           </DropdownMenuItem>
         ))}
+        <TeamScopeItems
+          scopeTeams={scopeTeams}
+          selectedAgentId={selectedAgentId}
+          onSelectAgent={onSelectAgent}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -428,6 +491,7 @@ function CollapsedSidebar({
   isAdmin,
   sidebarAgent,
   scopeAgents,
+  scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
   onOpenChat,
@@ -435,13 +499,19 @@ function CollapsedSidebar({
   modelSetupAttention,
 }: Pick<
   AppSidebarManagementProps,
-  'selected' | 'onNavigate' | 'isAdmin' | 'sidebarAgent' | 'scopeAgents' | 'selectedAgentId' | 'onSelectAgent' | 'onOpenChat' | 'modelSetupAttention'
+  'selected' | 'onNavigate' | 'isAdmin' | 'sidebarAgent' | 'scopeAgents' | 'scopeTeams' | 'selectedAgentId' | 'onSelectAgent' | 'onOpenChat' | 'modelSetupAttention'
 > & { onToggle: () => void }) {
-  const nameLabel = sidebarAgent
-    ? sidebarAgent.is_overall
-      ? '未选择'
-      : employeeDisplayNameWithCreator(sidebarAgent)
-    : '未选择';
+  const selectedTeamId = teamIdFromScope(selectedAgentId);
+  const selectedTeam = selectedTeamId
+    ? scopeTeams.find((team) => team.id === selectedTeamId)
+    : undefined;
+  const nameLabel = selectedTeamId
+    ? selectedTeam?.name || '团队'
+    : sidebarAgent
+      ? sidebarAgent.is_overall
+        ? '未选择'
+        : employeeDisplayNameWithCreator(sidebarAgent)
+      : '未选择';
   const primaryItems = primaryNavItems(isAdmin);
 
   return (
@@ -487,6 +557,7 @@ function CollapsedSidebar({
           <CollapsedAgentSwitcher
             sidebarAgent={sidebarAgent}
             scopeAgents={scopeAgents}
+            scopeTeams={scopeTeams}
             selectedAgentId={selectedAgentId}
             onSelectAgent={onSelectAgent}
             nameLabel={nameLabel}
@@ -549,6 +620,7 @@ function ManagementSidebar({
   isAdmin,
   sidebarAgent,
   scopeAgents,
+  scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
   onOpenChat,
@@ -567,6 +639,7 @@ function ManagementSidebar({
           isAdmin={isAdmin}
           sidebarAgent={sidebarAgent}
           scopeAgents={scopeAgents}
+          scopeTeams={scopeTeams}
           selectedAgentId={selectedAgentId}
           onSelectAgent={onSelectAgent}
           onOpenChat={onOpenChat}
@@ -624,6 +697,7 @@ function ManagementSidebar({
           <AgentSwitcher
             sidebarAgent={sidebarAgent}
             scopeAgents={scopeAgents}
+            scopeTeams={scopeTeams}
             selectedAgentId={selectedAgentId}
             onSelectAgent={onSelectAgent}
           />
@@ -829,6 +903,7 @@ function ChatSessionRow({
   agent,
   active,
   unread,
+  isTeamLeader = false,
   onOpenSession,
   onRenameSession,
   onDeleteSession,
@@ -837,6 +912,7 @@ function ChatSessionRow({
   agent: AgentProfileRead | null;
   active: boolean;
   unread: boolean;
+  isTeamLeader?: boolean;
   onOpenSession: (id: string) => void;
   onRenameSession: (session: ChatSession) => void;
   onDeleteSession: (session: ChatSession) => void;
@@ -862,16 +938,35 @@ function ChatSessionRow({
           : 'border-[0.5px] border-transparent hover:bg-[#f4f5f7]',
       )}
     >
-      <span className="inline-grid size-[42px] shrink-0 place-items-center overflow-hidden rounded-[12px] bg-[#f1f2f5] text-[#464c5e]">
-        {agent ? (
-          <EmployeeAvatar agent={agent} size={42} radius={12} />
-        ) : (
-          <IconChatBubble className="size-[20px]!" />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-grid size-[42px] shrink-0 place-items-center overflow-hidden rounded-[12px] bg-[#f1f2f5] text-[#464c5e]">
+            {agent ? (
+              <EmployeeAvatar agent={agent} size={42} radius={12} />
+            ) : (
+              <IconChatBubble className="size-[20px]!" />
+            )}
+          </span>
+        </TooltipTrigger>
+        {agent && (
+          <TooltipContent side="right" align="center">
+            {agent.name}
+          </TooltipContent>
         )}
-      </span>
+      </Tooltip>
       <span className="flex min-w-0 flex-1 flex-col justify-between self-stretch py-[3px]">
-        <span className="truncate text-[14px] leading-none text-[#464c5e] capitalize" title={title}>
-          {title}
+        <span className="flex min-w-0 items-center gap-[4px]">
+          <span className="truncate text-[14px] leading-none text-[#464c5e] capitalize" title={title}>
+            {title}
+          </span>
+          {isTeamLeader && (
+            <span
+              aria-label="团队 TL"
+              className="inline-flex h-[16px] shrink-0 items-center rounded-full bg-[#fff3d6] px-[5px] text-[10px] font-medium leading-none text-[#a16a00]"
+            >
+              TL
+            </span>
+          )}
         </span>
         <span className="truncate text-[12px] leading-none text-[#757f9c]" title={subtitle}>
           {subtitle}
@@ -1088,7 +1183,7 @@ function CollapsedChatSidebar({
                       </button>
                     </TooltipTrigger>
                     <TooltipContent side="right" align="center">
-                      {title}
+                      {agent ? `${agent.name} · ${title}` : title}
                     </TooltipContent>
                   </Tooltip>
                 );
@@ -1121,6 +1216,7 @@ function ChatSidebarVariant({
   sessions,
   sessionsLoading = false,
   agents,
+  scopeTeams = [],
   activeSessionId,
   sessionFilter,
   onSessionFilterChange,
@@ -1139,6 +1235,12 @@ function ChatSidebarVariant({
   const { toggleSidebar, state } = useSidebar();
   const collapsed = state === 'collapsed';
   const showSkeleton = sessionsLoading && sessions.length === 0;
+  // team_id → TL agent_id：用于在团队会话行上标明 TL 身份
+  const teamLeaderByTeam = new Map<string, string>();
+  for (const team of scopeTeams) {
+    const leader = (team.members || []).find((member) => member.role === 'leader');
+    if (leader) teamLeaderByTeam.set(team.id, leader.agent_id);
+  }
 
   if (collapsed) {
     return (
@@ -1238,6 +1340,9 @@ function ChatSidebarVariant({
                     agent={sessionAgentFor(session, agents)}
                     active={session.id === activeSessionId}
                     unread={isSessionUnread(session)}
+                    isTeamLeader={Boolean(
+                      session.team_id && teamLeaderByTeam.get(session.team_id) === session.agent_id,
+                    )}
                     onOpenSession={onOpenSession}
                     onRenameSession={onRenameSession}
                     onDeleteSession={onDeleteSession}

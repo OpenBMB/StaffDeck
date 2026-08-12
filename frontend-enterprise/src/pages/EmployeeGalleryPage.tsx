@@ -14,6 +14,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
+import TeamCard, { teamLeader } from '../components/TeamCard';
 import {
   canManageEmployeeAgent,
   employeeDisplayName,
@@ -22,11 +23,11 @@ import {
   isMyEmployeeAgent,
   visibleEmployeeAgents,
 } from '../employee';
-import type { AgentProfileRead } from '../types';
+import type { AgentProfileRead, TeamRead } from '../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
-type GalleryScope = 'all' | 'mine' | 'gallery';
+type GalleryScope = 'all' | 'mine' | 'teams' | 'gallery';
 
 export default function EmployeeGalleryPage({
   currentUser,
@@ -40,12 +41,14 @@ export default function EmployeeGalleryPage({
   onLogout?: () => void;
 }) {
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
+  const [teams, setTeams] = useState<TeamRead[]>([]);
   const [loading, setLoading] = useState(false);
   const [avatarAgent, setAvatarAgent] = useState<AgentProfileRead | null>(null);
   const [profileAgent, setProfileAgent] = useState<AgentProfileRead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentProfileRead | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [startingAgentId, setStartingAgentId] = useState<string | null>(null);
+  const [startingTeamId, setStartingTeamId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [scope, setScope] = useState<GalleryScope>('all');
   const navigate = useNavigate();
@@ -62,13 +65,24 @@ export default function EmployeeGalleryPage({
     }
   }
 
+  async function loadTeams() {
+    try {
+      const rows = await api.get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${TENANT_ID}`);
+      setTeams(rows);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '加载团队失败');
+    }
+  }
+
   useEffect(() => {
     void load();
+    void loadTeams();
   }, []);
 
   // Keep these tabs aligned with the rest of the app:
   // - 所有员工: employees the current user can access and chat with
   // - 我的数字员工: employees the current user can manage/edit
+  // - 我的团队: teams owned by the current user
   // - 数字员工广场: public employees not already listed as mine
   const availableAgents = useMemo(
     () => visibleEmployeeAgents(agents, currentUser, { activeOnly: true }),
@@ -103,6 +117,22 @@ export default function EmployeeGalleryPage({
     ].some((value) => value.toLowerCase().includes(keyword));
   });
 
+  // 与「我的数字员工」语义对齐：优先展示当前用户拥有的团队；
+  // 没有用户信息时（如未登录预览）回退为全部团队。
+  const myTeams = useMemo(
+    () => (currentUser ? teams.filter((team) => team.owner_user_id === currentUser.id) : teams),
+    [teams, currentUser],
+  );
+  const filteredTeams = myTeams.filter((team) => {
+    const keyword = searchTerm.trim().toLowerCase();
+    if (!keyword) return true;
+    return [
+      team.name,
+      team.description || '',
+      teamLeader(team)?.agent_name || '',
+    ].some((value) => value.toLowerCase().includes(keyword));
+  });
+
   async function startEmployeeChat(row: AgentProfileRead) {
     if (startingAgentId) return;
     setStartingAgentId(row.id);
@@ -116,6 +146,22 @@ export default function EmployeeGalleryPage({
       notify.error(error instanceof Error ? error.message : '发起对话失败');
     } finally {
       setStartingAgentId(null);
+    }
+  }
+
+  async function startTeamChat(team: TeamRead) {
+    if (startingTeamId) return;
+    setStartingTeamId(team.id);
+    try {
+      const result = await api.post<{ session_id: string }>(
+        `/api/enterprise/teams/${team.id}/tl/session`,
+        { tenant_id: TENANT_ID },
+      );
+      navigate(`/workspace/chat/${result.session_id}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '发起团队对话失败');
+    } finally {
+      setStartingTeamId(null);
     }
   }
 
@@ -193,6 +239,7 @@ export default function EmployeeGalleryPage({
   const galleryTabs: UnderlineTabItem<GalleryScope>[] = [
     { value: 'all', label: '所有员工' },
     { value: 'mine', label: '我的数字员工' },
+    { value: 'teams', label: '我的团队' },
     { value: 'gallery', label: '数字员工广场' },
   ];
 
@@ -201,6 +248,10 @@ export default function EmployeeGalleryPage({
   const emptyDescription = hasSearchTerm
     ? '换个关键词，或切换员工分类再试试'
     : '当前分类还没有可用员工';
+  const teamsEmptyText = hasSearchTerm ? '没有匹配的团队' : '暂无团队';
+  const teamsEmptyDescription = hasSearchTerm
+    ? '换个关键词再试试'
+    : '当前还没有属于你的团队';
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
@@ -234,27 +285,46 @@ export default function EmployeeGalleryPage({
         tabClassName="max-[560px]:min-h-[54px] max-[560px]:w-auto max-[560px]:flex-1 max-[560px]:px-[6px] max-[560px]:text-[12px] max-[560px]:leading-[16px]"
       />
 
-      <div className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
-        {filteredEmployees.map((employee) => (
-          <EmployeeCard
-            key={employee.id}
-            employee={employee}
-            busy={startingAgentId === employee.id}
-            canManage={canManageEmployeeAgent(employee, currentUser)}
-            showMenu={false}
-            onOpen={() => void startEmployeeChat(employee)}
-            onStatus={(status) => void updateStatus(employee, status)}
-            onGallery={(published) => void updateGalleryState(employee, published)}
-            onDelete={() => setDeleteTarget(employee)}
-            onAvatar={() => setAvatarAgent(employee)}
-            onEdit={() => setProfileAgent(employee)}
-            onChat={() => void startEmployeeChat(employee)}
-          />
-        ))}
-        {!filteredEmployees.length && (
-          <EmployeeGalleryEmptyState title={emptyText} description={emptyDescription} />
-        )}
-      </div>
+      {scope === 'teams' ? (
+        <section aria-label="团队">
+          <div className="grid grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
+            {filteredTeams.map((team) => (
+              <TeamCard
+                key={team.id}
+                team={team}
+                agents={agents}
+                busy={startingTeamId === team.id}
+                onOpen={() => void startTeamChat(team)}
+              />
+            ))}
+            {!filteredTeams.length && (
+              <EmployeeGalleryEmptyState title={teamsEmptyText} description={teamsEmptyDescription} />
+            )}
+          </div>
+        </section>
+      ) : (
+        <div className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
+          {filteredEmployees.map((employee) => (
+            <EmployeeCard
+              key={employee.id}
+              employee={employee}
+              busy={startingAgentId === employee.id}
+              canManage={canManageEmployeeAgent(employee, currentUser)}
+              showMenu={false}
+              onOpen={() => void startEmployeeChat(employee)}
+              onStatus={(status) => void updateStatus(employee, status)}
+              onGallery={(published) => void updateGalleryState(employee, published)}
+              onDelete={() => setDeleteTarget(employee)}
+              onAvatar={() => setAvatarAgent(employee)}
+              onEdit={() => setProfileAgent(employee)}
+              onChat={() => void startEmployeeChat(employee)}
+            />
+          ))}
+          {!filteredEmployees.length && (
+            <EmployeeGalleryEmptyState title={emptyText} description={emptyDescription} />
+          )}
+        </div>
+      )}
 
       <EmployeeAvatarEditor
         agent={avatarAgent}
