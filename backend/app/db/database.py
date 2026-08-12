@@ -224,6 +224,30 @@ def _migrate_sqlite_skill_schema() -> None:
                 )
             )
 
+        if "mcp_servers" in tables:
+            mcp_server_columns = {
+                column["name"] for column in inspector.get_columns("mcp_servers")
+            }
+            if "apps_mode" not in mcp_server_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE mcp_servers ADD COLUMN apps_mode "
+                        "VARCHAR NOT NULL DEFAULT 'disabled'"
+                    )
+                )
+            if "negotiated_capabilities_json" not in mcp_server_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE mcp_servers ADD COLUMN negotiated_capabilities_json JSON"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "UPDATE mcp_servers SET negotiated_capabilities_json = '{}' "
+                        "WHERE negotiated_capabilities_json IS NULL"
+                    )
+                )
+
         if "agent_profiles" in tables:
             agent_columns = {
                 column["name"] for column in inspector.get_columns("agent_profiles")

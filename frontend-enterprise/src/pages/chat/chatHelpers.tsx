@@ -1473,8 +1473,28 @@ export function harnessEventTraceLine(
     }
     return null;
   }
+  if (eventName === 'harness_mcp_app_view') {
+    const mcpApp = isPlainRecord(data.mcp_app)
+      ? data.mcp_app as TraceLine['mcpApp']
+      : undefined;
+    if (!mcpApp) return null;
+    const appToolName = typeof data.tool_name === 'string' ? data.tool_name : mcpApp.tool_name;
+    return {
+      id: `harness_mcp_app_${frameId}_${appToolName || 'view'}`,
+      kind: 'tool',
+      text: appToolName ? `展示 MCP App ${appToolName}` : '展示 MCP App',
+      detail: '隔离视图；加载失败时保留文本结果',
+      mcpApp,
+      state: 'completed',
+      icon: 'tool',
+    };
+  }
   if (eventName === 'harness_tool_completed') {
     const success = data.success === true;
+    const result = isPlainRecord(data.result) ? data.result : {};
+    const mcpApp = isPlainRecord(result.mcp_app)
+      ? result.mcp_app as TraceLine['mcpApp']
+      : undefined;
     const error = isPlainRecord(data.error) ? data.error : {};
     const detail = [
       typeof error.code === 'string' ? error.code : '',
@@ -1492,6 +1512,7 @@ export function harnessEventTraceLine(
       outputLanguage: output ? tracePayloadLanguage(output) : undefined,
       outputTitle: output ? '查看能力结果' : undefined,
       collapsible: Boolean(output),
+      mcpApp,
       state: success ? 'completed' : 'failed',
       icon: 'tool',
     };

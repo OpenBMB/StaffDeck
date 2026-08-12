@@ -74,6 +74,7 @@ import type {
   MCPServerConnection,
   MCPDiscoverResponse,
   MCPSyncResponse,
+  MCPAppsMode,
   MCPTransport,
   MCPDiscoveredTool,
 } from '../types';
@@ -571,6 +572,18 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       title: '连接方式',
       width: 140,
       render: (row) => <StatusBadge tone="gray">{transportLabel(row.connection.transport)}</StatusBadge>,
+    },
+    {
+      key: 'apps_mode',
+      title: 'MCP Apps',
+      width: 112,
+      render: (row) => (
+        <StatusBadge tone={row.apps_mode === 'auto' ? 'blue' : 'gray'}>
+          {row.apps_mode === 'auto'
+            ? row.apps_negotiated ? '已协商' : '待协商'
+            : '未启用'}
+        </StatusBadge>
+      ),
     },
     {
       key: 'capability_scope',
@@ -1312,6 +1325,7 @@ type McpFormValues = {
   args: string;
   env: string;
   cwd: string;
+  apps_mode: MCPAppsMode;
   capability_scope: CapabilityScope;
   enabled: boolean;
 };
@@ -1328,6 +1342,7 @@ const MCP_FORM_INITIAL_VALUES: McpFormValues = {
   args: '',
   env: '{}',
   cwd: '',
+  apps_mode: 'disabled',
   capability_scope: 'general',
   enabled: true,
 };
@@ -1417,6 +1432,7 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
         description: values.description,
         bucket: values.bucket || 'MCP 工具',
         connection,
+        apps_mode: values.apps_mode,
         capability_scope: values.capability_scope,
         enabled: values.enabled,
       },
@@ -1457,10 +1473,12 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
         ? await api.post<MCPDiscoverResponse>(`/api/enterprise/mcp-servers/${server.id}/discover`, {
             tenant_id: TENANT_ID,
             connection: built.connection,
+            apps_mode: values.apps_mode,
           })
         : await api.post<MCPDiscoverResponse>('/api/enterprise/mcp-servers/discover', {
             tenant_id: TENANT_ID,
             connection: built.connection,
+            apps_mode: values.apps_mode,
           });
       if (!response.success) {
         notify.error(response.error?.message || '发现工具失败');
@@ -1553,6 +1571,16 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
       ),
     },
     {
+      key: 'app',
+      title: 'MCP App',
+      width: 116,
+      render: (row) => row.app ? (
+        <StatusBadge tone="blue">{row.app.visibility.includes('model') ? '模型 + App' : '仅 App'}</StatusBadge>
+      ) : (
+        <span className="text-[#a1a6b3]">—</span>
+      ),
+    },
+    {
       key: 'imported',
       title: '状态',
       width: 96,
@@ -1631,6 +1659,19 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
               onChange={(value) => setField('capability_scope', value)}
               resourceType="tool"
             />
+
+            <div className="flex items-center justify-between rounded-[12px] border border-[#eceef1] bg-[#fafbfc] px-[14px] py-[12px]">
+              <div className="flex flex-col gap-[2px] pr-[16px]">
+                <span className={FIELD_LABEL_CLASS}>MCP Apps</span>
+                <span className={HINT_CLASS}>
+                  开启后协商 io.modelcontextprotocol/ui；资源或渲染失败时自动回退现有文本结果。
+                </span>
+              </div>
+              <Switch
+                checked={values.apps_mode === 'auto'}
+                onCheckedChange={(next) => setField('apps_mode', next ? 'auto' : 'disabled')}
+              />
+            </div>
 
             <Field label="连接方式" hint={transportOption?.hint}>
               <UISelect
@@ -2227,6 +2268,7 @@ function serverToFormValues(row: MCPServerRead): McpFormValues {
     args: (connection.args || []).join('\n'),
     env: JSON.stringify(connection.env || {}, null, 2),
     cwd: connection.cwd || '',
+    apps_mode: row.apps_mode || 'disabled',
     capability_scope: normalizeCapabilityScope(row.capability_scope),
     enabled: row.enabled,
   };

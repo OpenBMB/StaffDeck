@@ -21,7 +21,15 @@ from app.agents.branching import (
 from app.config import get_settings
 from app.capability_scope import normalize_capability_scope
 from app.db import get_session
-from app.db.models import AgentProfile, AgentResourceBinding, MCPServer, Tool, User, utc_now
+from app.db.models import (
+    AgentEvent,
+    AgentProfile,
+    AgentResourceBinding,
+    MCPServer,
+    Tool,
+    User,
+    utc_now,
+)
 from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.permissions import (
     ensure_agent_scope_manager,
@@ -32,8 +40,18 @@ from app.security.permissions import (
 from app.security.tenant import ensure_tenant
 from app.tools import ToolExecutor
 from app.tools.http_request import prepare_get_request
-from app.tools.mcp_client import MCPClientError, execute_mcp_tool, list_mcp_tools
+from app.tools.mcp_client import (
+    MCP_APP_MIME_TYPE,
+    MCP_APPS_EXTENSION_ID,
+    MCPClientError,
+    discover_mcp_server,
+    execute_mcp_tool,
+    read_mcp_resource,
+)
 from app.tools.tool_schema import (
+    MCPAppResourceRead,
+    MCPAppToolCallRequest,
+    MCPAppToolCallResponse,
     MCPDiscoverRequest,
     MCPDiscoverResponse,
     MCPDiscoveredTool,
@@ -623,6 +641,12 @@ def _connection_to_client_config(connection: MCPServerConnection) -> dict[str, A
     return config
 
 
+def _server_client_config(row: MCPServer) -> dict[str, Any]:
+    config = _connection_to_client_config(_server_connection(row))
+    config["apps_mode"] = row.apps_mode or "disabled"
+    return config
+
+
 def mcp_server_read(row: MCPServer, db: Session) -> MCPServerRead:
     tool_count = len(db.exec(select(Tool.id).where(Tool.mcp_server_id == row.id)).all())
     return MCPServerRead(
@@ -633,6 +657,9 @@ def mcp_server_read(row: MCPServer, db: Session) -> MCPServerRead:
         description=row.description,
         bucket=row.bucket or "MCP 工具",
         connection=_server_connection(row),
+        apps_mode=row.apps_mode or "disabled",
+        apps_negotiated=_apps_negotiated(row.negotiated_capabilities_json or {}),
+        negotiated_capabilities=dict(row.negotiated_capabilities_json or {}),
         capability_scope=normalize_capability_scope(row.capability_scope),
         enabled=row.enabled,
         last_synced_at=row.last_synced_at.isoformat() if row.last_synced_at else None,
@@ -698,6 +725,8 @@ def create_mcp_server(
         args_json=conn.args,
         env_json=conn.env,
         cwd=conn.cwd,
+        apps_mode=request.apps_mode,
+        negotiated_capabilities_json={},
         capability_scope=request.capability_scope,
         enabled=request.enabled,
     )
@@ -715,6 +744,107 @@ def get_mcp_server(
 ) -> MCPServerRead:
     row = _get_mcp_server(db, tenant_id, server_id)
     return mcp_server_read(row, db)
+
+
+@mcp_router.get("/{server_id}/app-resource", response_model=MCPAppResourceRead)
+def get_mcp_app_resource(
+    server_id: str,
+    tenant_id: str = Query(...),
+    uri: str = Query(...),
+    agent_id: str | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> MCPAppResourceRead:
+    ensure_current_user_tenant(tenant_id, current_user)
+    server = _get_mcp_server(db, tenant_id, server_id)
+    if server.apps_mode != "auto":
+        raise HTTPException(status_code=404, detail="MCP Apps is not enabled for this server")
+    tool = _app_tool_for_uri(db, server, uri)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="MCP App resource is not declared by a tool")
+    _ensure_tool_visible(db, tenant_id, tool, agent_id)
+    try:
+        result = read_mcp_resource(
+            _server_client_config(server),
+            uri,
+            timeout_seconds=get_settings().tool_timeout_seconds,
+        )
+        content, meta = _extract_app_resource(result, uri)
+    except MCPClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return MCPAppResourceRead(
+        server_id=server.id,
+        uri=uri,
+        mime_type=MCP_APP_MIME_TYPE,
+        text=content,
+        meta=meta,
+    )
+
+
+@mcp_router.post("/{server_id}/app-call", response_model=MCPAppToolCallResponse)
+def call_mcp_app_tool(
+    server_id: str,
+    request: MCPAppToolCallRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> MCPAppToolCallResponse:
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    server = _get_mcp_server(db, request.tenant_id, server_id)
+    if server.apps_mode != "auto":
+        raise HTTPException(status_code=404, detail="MCP Apps is not enabled for this server")
+    tool = _app_tool_by_name(db, server, request.tool_name)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="MCP App tool not found")
+    _ensure_tool_visible(db, request.tenant_id, tool, request.agent_id)
+    config = dict(tool.config_json or {})
+    app = config.get("mcp_apps") if isinstance(config.get("mcp_apps"), dict) else {}
+    visibility = app.get("visibility") if isinstance(app.get("visibility"), list) else []
+    if "app" not in visibility:
+        raise HTTPException(status_code=403, detail="Tool is not available to MCP Apps")
+    if normalize_capability_scope(tool.capability_scope) == "sop_specific":
+        if not request.active_skill_id or request.active_skill_id not in tool.allowed_skills_json:
+            raise HTTPException(
+                status_code=403,
+                detail="SOP-specific tool is not authorized by the active SOP",
+            )
+    annotations = (
+        config.get("mcp_annotations")
+        if isinstance(config.get("mcp_annotations"), dict)
+        else {}
+    )
+    read_only = annotations.get("readOnlyHint") is True
+    if not read_only and not request.confirm_side_effect:
+        return MCPAppToolCallResponse(success=False, requires_confirmation=True)
+    result = ToolExecutor(db).execute(
+        request.tenant_id,
+        ToolCall(name=tool.name, arguments=request.arguments),
+        active_skill_id=request.active_skill_id,
+        agent_id=request.agent_id,
+        session_id=request.session_id,
+    )
+    if result.mcp_app is not None:
+        # Nested App views are not rendered inside another App. Keep the tool
+        # result and metadata, but avoid recursively embedding an iframe.
+        result.mcp_app = None
+    if request.session_id:
+        db.add(
+            AgentEvent(
+                tenant_id=request.tenant_id,
+                session_id=request.session_id,
+                event_type="mcp_app_tool_called",
+                payload_json={
+                    "server_id": server.id,
+                    "tool_id": tool.id,
+                    "tool_name": tool.name,
+                    "read_only": read_only,
+                    "confirmed": bool(request.confirm_side_effect),
+                    "success": result.success,
+                    "error_code": result.error.code if result.error else None,
+                },
+            )
+        )
+        db.commit()
+    return MCPAppToolCallResponse(success=result.success, result=result)
 
 
 @mcp_router.put("/{server_id}", response_model=MCPServerRead)
@@ -738,6 +868,9 @@ def update_mcp_server(
     row.args_json = conn.args
     row.env_json = conn.env
     row.cwd = conn.cwd
+    if row.apps_mode != request.apps_mode:
+        row.negotiated_capabilities_json = {}
+    row.apps_mode = request.apps_mode
     if request.capability_scope is not None:
         row.capability_scope = request.capability_scope
         _update_inherited_mcp_tool_scopes(db, row)
@@ -788,7 +921,7 @@ def discover_mcp_tools_adhoc(
             success=False,
             error=ToolError(code="MISSING_CONNECTION", message="缺少 MCP 连接配置。"),
         )
-    return _discover_response(request.connection)
+    return _discover_response(request.connection, apps_mode=request.apps_mode)
 
 
 @mcp_router.post("/{server_id}/discover", response_model=MCPDiscoverResponse)
@@ -802,9 +935,13 @@ def discover_mcp_tools(
     row = _get_mcp_server(db, request.tenant_id, server_id)
     ensure_open_gallery_admin(request.tenant_id, current_user)
     connection = request.connection or _server_connection(row)
-    response = _discover_response(connection)
+    response = _discover_response(
+        connection,
+        apps_mode=request.apps_mode if request.connection is not None else row.apps_mode,
+    )
     if response.success:
         row.discovered_tools_json = [tool.model_dump() for tool in response.tools]
+        row.negotiated_capabilities_json = dict(response.server_capabilities)
         row.updated_at = utc_now()
         db.add(row)
         db.commit()
@@ -833,11 +970,12 @@ def sync_mcp_tools(
     row = _get_mcp_server(db, request.tenant_id, server_id)
     ensure_open_gallery_admin(request.tenant_id, current_user)
     connection = _server_connection(row)
-    discovery = _discover_response(connection)
+    discovery = _discover_response(connection, apps_mode=row.apps_mode)
     if not discovery.success:
         return MCPSyncResponse(success=False, error=discovery.error)
 
     row.discovered_tools_json = [tool.model_dump() for tool in discovery.tools]
+    row.negotiated_capabilities_json = dict(discovery.server_capabilities)
     row.last_synced_at = utc_now()
     row.updated_at = utc_now()
 
@@ -865,7 +1003,7 @@ def sync_mcp_tools(
                 url=f"mcp://{row.name}/{tool.name}",
                 headers_json={},
                 auth_json={},
-                config_json={"tool": tool.name},
+                config_json=_synced_mcp_tool_config(tool),
                 input_schema=tool.input_schema or {},
                 output_schema=tool.output_schema or {},
                 allowed_skills_json=[],
@@ -884,7 +1022,10 @@ def sync_mcp_tools(
             current.description = tool.description or current.description
             current.input_schema = tool.input_schema or current.input_schema
             current.output_schema = tool.output_schema or current.output_schema
-            current_config = {**(current.config_json or {}), "tool": tool.name}
+            current_config = {
+                **(current.config_json or {}),
+                **_synced_mcp_tool_config(tool),
+            }
             if scope_override is not None:
                 current.capability_scope = scope_override
                 current.capability_scope_inherited = False
@@ -932,10 +1073,18 @@ def sync_mcp_tools(
     return MCPSyncResponse(success=True, imported=imported, updated=updated, removed=[])
 
 
-def _discover_response(connection: MCPServerConnection) -> MCPDiscoverResponse:
+def _discover_response(
+    connection: MCPServerConnection,
+    *,
+    apps_mode: str = "disabled",
+) -> MCPDiscoverResponse:
     config = _connection_to_client_config(connection)
+    config["apps_mode"] = apps_mode
     try:
-        tools = list_mcp_tools(config, timeout_seconds=get_settings().tool_timeout_seconds)
+        discovery = discover_mcp_server(
+            config,
+            timeout_seconds=get_settings().tool_timeout_seconds,
+        )
     except MCPClientError as exc:
         return MCPDiscoverResponse(
             success=False,
@@ -948,17 +1097,104 @@ def _discover_response(connection: MCPServerConnection) -> MCPDiscoverResponse:
         )
     return MCPDiscoverResponse(
         success=True,
+        server_capabilities=discovery.get("server_capabilities", {}),
+        server_info=discovery.get("server_info", {}),
         tools=[
             MCPDiscoveredTool(
                 name=item.get("name", ""),
+                title=item.get("title", ""),
                 description=item.get("description", ""),
                 input_schema=item.get("input_schema", {}),
                 output_schema=item.get("output_schema", {}),
+                annotations=item.get("annotations", {}),
+                meta=item.get("meta", {}),
+                app=item.get("app"),
             )
-            for item in tools
+            for item in discovery.get("tools", [])
             if item.get("name")
         ],
     )
+
+
+def _synced_mcp_tool_config(tool: MCPDiscoveredTool) -> dict[str, Any]:
+    config: dict[str, Any] = {"tool": tool.name}
+    if tool.annotations:
+        config["mcp_annotations"] = dict(tool.annotations)
+    if tool.app:
+        config["mcp_apps"] = dict(tool.app)
+    return config
+
+
+def _apps_negotiated(capabilities: dict[str, Any]) -> bool:
+    extensions = capabilities.get("extensions")
+    return isinstance(extensions, dict) and MCP_APPS_EXTENSION_ID in extensions
+
+
+def _app_tool_for_uri(db: Session, server: MCPServer, uri: str) -> Tool | None:
+    for tool in db.exec(select(Tool).where(Tool.mcp_server_id == server.id)).all():
+        app = (tool.config_json or {}).get("mcp_apps")
+        if isinstance(app, dict) and str(app.get("resource_uri") or "") == uri:
+            visibility = app.get("visibility")
+            if not isinstance(visibility, list) or "app" in visibility:
+                return tool
+    return None
+
+
+def _app_tool_by_name(db: Session, server: MCPServer, name: str) -> Tool | None:
+    normalized = str(name or "").strip()
+    for tool in db.exec(select(Tool).where(Tool.mcp_server_id == server.id)).all():
+        leaf = str((tool.config_json or {}).get("tool") or "").strip()
+        if normalized in {tool.name, leaf}:
+            return tool
+    return None
+
+
+def _extract_app_resource(result: dict[str, Any], uri: str) -> tuple[str, dict[str, Any]]:
+    contents = result.get("contents")
+    if not isinstance(contents, list):
+        raise MCPClientError("MCP resources/read 未返回 contents。")
+    for item in contents:
+        if not isinstance(item, dict) or str(item.get("uri") or "") != uri:
+            continue
+        mime_type = str(item.get("mimeType") or item.get("mime_type") or "").lower()
+        if mime_type != MCP_APP_MIME_TYPE:
+            raise MCPClientError(
+                f"MCP App 资源 MIME 不受支持：{mime_type or '<empty>'}"
+            )
+        text_value = item.get("text")
+        if not isinstance(text_value, str):
+            raise MCPClientError("MCP App 资源必须以 UTF-8 text 返回。")
+        if len(text_value.encode("utf-8")) > 2 * 1024 * 1024:
+            raise MCPClientError("MCP App 资源超过 2 MiB 安全限制。")
+        meta = item.get("_meta") if isinstance(item.get("_meta"), dict) else {}
+        return text_value, _safe_app_resource_meta(meta)
+    raise MCPClientError("MCP resources/read 未返回所请求的 App 资源。")
+
+
+def _safe_app_resource_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    ui = meta.get("ui") if isinstance(meta.get("ui"), dict) else {}
+    csp = ui.get("csp") if isinstance(ui.get("csp"), dict) else {}
+    raw_permissions = ui.get("permissions")
+    permissions = raw_permissions if isinstance(raw_permissions, list) else []
+    if isinstance(raw_permissions, dict):
+        permissions = [
+            key
+            for key, enabled in raw_permissions.items()
+            if enabled is True
+        ]
+    safe_csp: dict[str, list[str]] = {}
+    for key in ("connectDomains", "resourceDomains", "frameDomains"):
+        values = csp.get(key)
+        if isinstance(values, list):
+            safe_csp[key] = [str(value) for value in values if str(value).startswith("https://")]
+    return {
+        "ui": {
+            "csp": safe_csp,
+            "permissions": [
+                str(value) for value in permissions if str(value) in {"clipboard-write"}
+            ],
+        }
+    }
 
 
 def _server_tools_by_leaf_name(db: Session, server_id: str) -> dict[str, Tool]:

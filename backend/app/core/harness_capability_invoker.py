@@ -981,11 +981,37 @@ class HarnessCapabilityInvoker:
             ToolCall(name=source_tool_name, arguments=resolved_arguments),
             active_skill_id=self.active_skill_id,
             agent_id=self.agent_id,
+            session_id=self.session.id,
             timeout_seconds_override=self._remaining_step_seconds(),
         )
         payload = result.model_dump(mode="json")
+        # MCP Apps payloads belong to the host UI, not to the isolated model
+        # transcript. Emit a dedicated trace event so the frontend receives
+        # the complete descriptor while the model only receives tool data.
+        app_descriptor = payload.pop("mcp_app", None)
+        payload.pop("mcp_metadata", None)
         if payload.get("success") is not True:
             return payload
+        payload = self._persist_large_json_result(payload, call_id=call_id)
+        if isinstance(app_descriptor, dict) and payload.get("success") is True:
+            app_descriptor["initial_result"] = payload.get("data")
+            self._emit_trace(
+                "harness_mcp_app_view",
+                {
+                    "tool_name": name,
+                    "mcp_app": app_descriptor,
+                },
+            )
+        return payload
+
+    def _persist_large_json_result(
+        self,
+        payload: dict[str, Any],
+        *,
+        call_id: str,
+    ) -> dict[str, Any]:
+        """Keep large knowledge/tool JSON out of the isolated model transcript."""
+
         data = payload.get("data")
         if not isinstance(data, (dict, list)):
             return payload

@@ -25,6 +25,10 @@ class MCPClientError(RuntimeError):
     pass
 
 
+MCP_APPS_EXTENSION_ID = "io.modelcontextprotocol/ui"
+MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
+
+
 # --------------------------------------------------------------------------- #
 # Transport 归一化
 # --------------------------------------------------------------------------- #
@@ -66,22 +70,51 @@ def execute_mcp_tool(
     tool_name 若显式传入则优先使用，否则回退到 config 里的 tool 字段
     （兼容历史「一个 config 一个 tool」的形态）。
     """
+    return execute_mcp_tool_result(
+        config,
+        arguments,
+        timeout_seconds=timeout_seconds,
+        tool_name=tool_name,
+    )["data"]
+
+
+def execute_mcp_tool_result(
+    config: dict[str, Any],
+    arguments: dict[str, Any],
+    timeout_seconds: float = 10,
+    tool_name: str | None = None,
+) -> dict[str, Any]:
+    """Call an MCP tool while preserving Apps and structured-result metadata.
+
+    ``execute_mcp_tool`` remains the compatibility entry point and still returns
+    only the previously extracted payload. Apps-aware callers use this envelope.
+    """
+
     normalized = dict(config or {})
     transport = normalize_transport(normalized)
     name = _resolve_tool_name(normalized, tool_name)
-
     if transport == "builtin":
         try:
-            return execute_builtin_mcp({**normalized, "tool": name}, arguments)
+            data = execute_builtin_mcp({**normalized, "tool": name}, arguments)
         except BuiltinMCPError as exc:
             raise MCPClientError(str(exc)) from exc
+        return {
+            "data": data,
+            "content": [],
+            "structured_content": None,
+            "meta": {},
+            "is_error": False,
+        }
+    session: _MCPSession
     if transport == "stdio":
-        return _StdioSession(normalized, timeout_seconds).call_tool(name, arguments)
-    if transport in {"http", "streamable_http"}:
-        return _HttpSession(normalized, timeout_seconds).call_tool(name, arguments)
-    if transport == "sse":
-        return _SseSession(normalized, timeout_seconds).call_tool(name, arguments)
-    raise MCPClientError(f"不支持的 MCP transport：{transport or '<empty>'}")
+        session = _StdioSession(normalized, timeout_seconds)
+    elif transport in {"http", "streamable_http"}:
+        session = _HttpSession(normalized, timeout_seconds)
+    elif transport == "sse":
+        session = _SseSession(normalized, timeout_seconds)
+    else:
+        raise MCPClientError(f"不支持的 MCP transport：{transport or '<empty>'}")
+    return session.call_tool_envelope(name, arguments)
 
 
 def list_mcp_tools(
@@ -93,6 +126,15 @@ def list_mcp_tools(
     返回标准化后的工具定义列表，每项包含 name / description /
     input_schema / output_schema（若 server 提供）。
     """
+    return discover_mcp_server(config, timeout_seconds=timeout_seconds)["tools"]
+
+
+def discover_mcp_server(
+    config: dict[str, Any],
+    timeout_seconds: float = 10,
+) -> dict[str, Any]:
+    """Discover tools and retain the server initialize response capabilities."""
+
     normalized = dict(config or {})
     transport = normalize_transport(normalized)
 
@@ -102,15 +144,51 @@ def list_mcp_tools(
         except BuiltinMCPError as exc:
             raise MCPClientError(str(exc)) from exc
     elif transport == "stdio":
-        raw = _StdioSession(normalized, timeout_seconds).list_tools()
+        session = _StdioSession(normalized, timeout_seconds)
+        raw, initialize_result = session.list_tools_with_capabilities()
     elif transport in {"http", "streamable_http"}:
-        raw = _HttpSession(normalized, timeout_seconds).list_tools()
+        session = _HttpSession(normalized, timeout_seconds)
+        raw, initialize_result = session.list_tools_with_capabilities()
     elif transport == "sse":
-        raw = _SseSession(normalized, timeout_seconds).list_tools()
+        session = _SseSession(normalized, timeout_seconds)
+        raw, initialize_result = session.list_tools_with_capabilities()
     else:
         raise MCPClientError(f"不支持的 MCP transport：{transport or '<empty>'}")
+    if transport == "builtin":
+        initialize_result = {}
+    return {
+        "tools": [_normalize_tool_definition(item) for item in raw if isinstance(item, dict)],
+        "server_capabilities": (
+            initialize_result.get("capabilities", {})
+            if isinstance(initialize_result, dict)
+            else {}
+        ),
+        "server_info": (
+            initialize_result.get("serverInfo", {})
+            if isinstance(initialize_result, dict)
+            else {}
+        ),
+    }
 
-    return [_normalize_tool_definition(item) for item in raw if isinstance(item, dict)]
+
+def read_mcp_resource(
+    config: dict[str, Any],
+    uri: str,
+    timeout_seconds: float = 10,
+) -> dict[str, Any]:
+    normalized = dict(config or {})
+    transport = normalize_transport(normalized)
+    if transport == "builtin":
+        raise MCPClientError("内置演示 MCP 不提供 App 资源。")
+    if transport == "stdio":
+        session: _MCPSession = _StdioSession(normalized, timeout_seconds)
+    elif transport in {"http", "streamable_http"}:
+        session = _HttpSession(normalized, timeout_seconds)
+    elif transport == "sse":
+        session = _SseSession(normalized, timeout_seconds)
+    else:
+        raise MCPClientError(f"不支持的 MCP transport：{transport or '<empty>'}")
+    return session.read_resource(uri)
 
 
 def _resolve_tool_name(config: dict[str, Any], override: str | None) -> str:
@@ -123,11 +201,32 @@ def _resolve_tool_name(config: dict[str, Any], override: str | None) -> str:
 def _normalize_tool_definition(item: dict[str, Any]) -> dict[str, Any]:
     input_schema = item.get("inputSchema") or item.get("input_schema") or {}
     output_schema = item.get("outputSchema") or item.get("output_schema") or {}
+    meta = item.get("_meta") if isinstance(item.get("_meta"), dict) else {}
+    ui = meta.get("ui") if isinstance(meta.get("ui"), dict) else {}
+    resource_uri = str(
+        ui.get("resourceUri") or meta.get("ui/resourceUri") or ""
+    ).strip()
+    visibility = ui.get("visibility") or meta.get("ui/visibility") or ["model", "app"]
+    if not isinstance(visibility, list):
+        visibility = ["model", "app"]
     return {
         "name": str(item.get("name") or "").strip(),
+        "title": str(item.get("title") or "").strip(),
         "description": str(item.get("description") or "").strip(),
         "input_schema": input_schema if isinstance(input_schema, dict) else {},
         "output_schema": output_schema if isinstance(output_schema, dict) else {},
+        "annotations": item.get("annotations") if isinstance(item.get("annotations"), dict) else {},
+        "meta": dict(meta),
+        "app": (
+            {
+                "resource_uri": resource_uri,
+                "visibility": [
+                    value for value in (str(item).strip() for item in visibility) if value
+                ],
+            }
+            if resource_uri
+            else None
+        ),
     }
 
 
@@ -144,25 +243,42 @@ class _MCPSession:
     def __init__(self, config: dict[str, Any], timeout_seconds: float) -> None:
         self.config = config
         self.timeout_seconds = timeout_seconds
+        self.initialize_result: dict[str, Any] = {}
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        return self.call_tool_envelope(name, arguments)["data"]
+
+    def call_tool_envelope(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         with self:
             self._initialize()
             result = self._request(
                 "tools/call",
                 {"name": name, "arguments": arguments},
             )
-            return _extract_tool_result(result)
+            return _tool_result_envelope(result)
 
     def list_tools(self) -> list[dict[str, Any]]:
+        tools, _ = self.list_tools_with_capabilities()
+        return tools
+
+    def list_tools_with_capabilities(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         with self:
             self._initialize()
             result = self._request("tools/list", {})
             tools = result.get("tools") if isinstance(result, dict) else None
-            return tools if isinstance(tools, list) else []
+            return tools if isinstance(tools, list) else [], dict(self.initialize_result)
+
+    def read_resource(self, uri: str) -> dict[str, Any]:
+        with self:
+            self._initialize()
+            result = self._request("resources/read", {"uri": uri})
+            if not isinstance(result, dict):
+                raise MCPClientError("MCP resources/read 返回内容不是 object。")
+            return result
 
     def _initialize(self) -> None:
-        self._request("initialize", _initialize_params())
+        result = self._request("initialize", _initialize_params(self.config))
+        self.initialize_result = dict(result) if isinstance(result, dict) else {}
         self._notify("notifications/initialized", {})
 
     # 子类实现 ---------------------------------------------------------------
@@ -633,10 +749,13 @@ def _last_sse_json(text: str) -> Any:
 # 共享工具函数
 # --------------------------------------------------------------------------- #
 
-def _initialize_params() -> dict[str, Any]:
+def _initialize_params(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    capabilities: dict[str, Any] = {}
+    if str((config or {}).get("apps_mode") or "disabled") == "auto":
+        capabilities["extensions"] = {MCP_APPS_EXTENSION_ID: {}}
     return {
         "protocolVersion": "2024-11-05",
-        "capabilities": {},
+        "capabilities": capabilities,
         "clientInfo": {"name": "StaffDeck", "version": "0.1.0"},
     }
 
@@ -720,13 +839,32 @@ def _raise_json_rpc_error(payload: dict[str, Any]) -> None:
 
 
 def _extract_tool_result(result: Any) -> Any:
+    return _tool_result_envelope(result)["data"]
+
+
+def _tool_result_envelope(result: Any) -> dict[str, Any]:
     if not isinstance(result, dict):
-        return result
+        return {
+            "data": result,
+            "content": [],
+            "structured_content": None,
+            "meta": {},
+            "is_error": False,
+        }
     if result.get("isError"):
         raise MCPClientError(_content_text(result.get("content")) or "MCP tool returned isError=true。")
     content = result.get("content")
+    structured_content = result.get("structuredContent")
+    meta = result.get("_meta") if isinstance(result.get("_meta"), dict) else {}
     if not isinstance(content, list):
-        return result
+        data = structured_content if structured_content is not None else result
+        return {
+            "data": data,
+            "content": [],
+            "structured_content": structured_content,
+            "meta": dict(meta),
+            "is_error": False,
+        }
     extracted: list[Any] = []
     for item in content:
         if not isinstance(item, dict):
@@ -737,9 +875,19 @@ def _extract_tool_result(result: Any) -> Any:
             extracted.append(_parse_text_content(text))
         else:
             extracted.append(item)
-    if len(extracted) == 1:
-        return extracted[0]
-    return extracted
+    if structured_content is not None:
+        data = structured_content
+    elif len(extracted) == 1:
+        data = extracted[0]
+    else:
+        data = extracted
+    return {
+        "data": data,
+        "content": content,
+        "structured_content": structured_content,
+        "meta": dict(meta),
+        "is_error": False,
+    }
 
 
 def _parse_text_content(text: str) -> Any:

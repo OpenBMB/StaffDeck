@@ -1920,6 +1920,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       item.event === 'task_frame_started'
       || item.event === 'task_frame_finished'
       || item.event === 'harness_action_created'
+      || item.event === 'harness_mcp_app_view'
       || item.event === 'harness_tool_completed'
       || item.event === 'harness_step_timeout'
     ) {

@@ -15,8 +15,8 @@ from app.config import get_settings
 from app.db.models import MCPServer, Tool
 from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
 from app.tools.http_request import prepare_get_request
-from app.tools.mcp_client import MCPClientError, execute_mcp_tool
-from app.tools.tool_schema import ToolCall, ToolError, ToolResult
+from app.tools.mcp_client import MCPClientError, execute_mcp_tool, execute_mcp_tool_result
+from app.tools.tool_schema import MCPAppDescriptor, ToolCall, ToolError, ToolResult
 
 
 SECRET_PATTERN = re.compile(r"\$\{secret\.([A-Z0-9_]+)\}")
@@ -38,6 +38,7 @@ class ToolExecutor:
         tool_call: ToolCall,
         active_skill_id: str | None = None,
         agent_id: str | None = None,
+        session_id: str | None = None,
         timeout_seconds_override: float | None = None,
     ) -> ToolResult:
         with self.db.no_autoflush:
@@ -64,6 +65,9 @@ class ToolExecutor:
             return self._execute_mcp_tool(
                 tool,
                 tool_call.arguments,
+                agent_id=agent_id,
+                session_id=session_id,
+                active_skill_id=active_skill_id,
                 timeout_seconds_override=timeout_seconds_override,
             )
         if (tool.tool_type or "http") != "http":
@@ -117,6 +121,9 @@ class ToolExecutor:
         tool: Tool,
         arguments: dict[str, Any],
         *,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        active_skill_id: str | None = None,
         timeout_seconds_override: float | None = None,
     ) -> ToolResult:
         try:
@@ -125,13 +132,57 @@ class ToolExecutor:
                 tool,
                 timeout_seconds_override=timeout_seconds_override,
             )
-            data = execute_mcp_tool(
-                config,
-                arguments,
-                timeout_seconds=policy.timeout_seconds,
-                tool_name=tool_name,
+            if config.get("apps_mode") == "auto":
+                envelope = execute_mcp_tool_result(
+                    config,
+                    arguments,
+                    timeout_seconds=policy.timeout_seconds,
+                    tool_name=tool_name,
+                )
+            else:
+                envelope = {
+                    "data": execute_mcp_tool(
+                        config,
+                        arguments,
+                        timeout_seconds=policy.timeout_seconds,
+                        tool_name=tool_name,
+                    ),
+                    "meta": {},
+                }
+            app_config = (tool.config_json or {}).get("mcp_apps")
+            app_descriptor: MCPAppDescriptor | None = None
+            if isinstance(app_config, dict) and config.get("apps_mode") == "auto":
+                resource_uri = str(app_config.get("resource_uri") or "").strip()
+                visibility = app_config.get("visibility")
+                if not isinstance(visibility, list):
+                    visibility = ["model", "app"]
+                if resource_uri and "app" in visibility:
+                    app_descriptor = MCPAppDescriptor(
+                        server_id=str(tool.mcp_server_id),
+                        resource_uri=resource_uri,
+                        tool_name=tool.name,
+                        visibility=[str(value) for value in visibility],
+                        tenant_id=tool.tenant_id,
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        active_skill_id=active_skill_id,
+                        initial_result=envelope.get("data"),
+                        initial_meta=(
+                            envelope.get("meta")
+                            if isinstance(envelope.get("meta"), dict)
+                            else {}
+                        ),
+                    )
+            return ToolResult(
+                tool_name=tool.name,
+                success=True,
+                data=envelope.get("data"),
+                error=None,
+                mcp_app=app_descriptor,
+                mcp_metadata=(
+                    envelope.get("meta") if isinstance(envelope.get("meta"), dict) else {}
+                ),
             )
-            return ToolResult(tool_name=tool.name, success=True, data=data, error=None)
         except MCPClientError as exc:
             return self._error(tool.name, "MCP_ERROR", str(exc))
         except Exception as exc:
@@ -186,6 +237,7 @@ class ToolExecutor:
                 config["cwd"] = server.cwd
         elif transport == "builtin":
             config["server"] = "builtin.demo"
+        config["apps_mode"] = server.apps_mode or "disabled"
         return config
 
     def _response_data(self, response: httpx.Response) -> Any:

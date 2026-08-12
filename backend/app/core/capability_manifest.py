@@ -144,6 +144,13 @@ class CapabilityManifestBuilder:
         visible_tools = visible_tool_rows(self.db, tenant_id, agent_id, include_inactive=False)
         tool_by_ref = {ref: row for row in visible_tools for ref in (row.id, row.name)}
         for row in visible_tools:
+            app_config = (row.config_json or {}).get("mcp_apps")
+            if isinstance(app_config, dict):
+                visibility = app_config.get("visibility")
+                if isinstance(visibility, list) and "model" not in visibility:
+                    # App-only controls stay callable from their isolated view but are not
+                    # advertised to the conversation model.
+                    continue
             scope = _scope(row)
             if scope is None:
                 unavailable.append(

@@ -33,6 +33,7 @@ import {
 } from '../chatPageStyles';
 import { traceLineIconName, traceSummaryIconName } from '../chatHelpers';
 import type { CotTraceIconName, TraceLine } from '../chatTypes';
+import MCPAppView from './MCPAppView';
 
 const COT_ICON_MAP: Record<CotTraceIconName, ComponentType<SVGProps<SVGSVGElement>>> = {
   advance: IconCotAdvance,
@@ -119,6 +120,7 @@ export default function ExecutionRecord({
                     <CodeBlock className={CHAT_TRACE_CODE_BLOCK_CLASS} code={line.output} language={line.outputLanguage || 'text'} />
                   </details>
                 )}
+                {line.mcpApp && <MCPAppView descriptor={line.mcpApp} />}
               </span>
             </div>
           ))}

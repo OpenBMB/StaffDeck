@@ -2795,6 +2795,19 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
                 "state": "completed",
             }
         return None
+    if event_type == "harness_mcp_app_view":
+        mcp_app = payload.get("mcp_app") if isinstance(payload.get("mcp_app"), dict) else None
+        if mcp_app is None:
+            return None
+        app_tool_name = str(payload.get("tool_name") or mcp_app.get("tool_name") or "").strip()
+        return {
+            "id": f"harness_mcp_app_{frame_id}_{event.id}",
+            "kind": "tool",
+            "text": f"展示 MCP App {app_tool_name}" if app_tool_name else "展示 MCP App",
+            "detail": "隔离视图；加载失败时保留文本结果",
+            "mcpApp": mcp_app,
+            "state": "completed",
+        }
     if event_type == "harness_tool_completed":
         success = bool(payload.get("success"))
         error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
@@ -3068,6 +3081,7 @@ def _event_trace_line(
         "task_frame_started",
         "task_frame_finished",
         "harness_action_created",
+        "harness_mcp_app_view",
         "harness_tool_completed",
         "harness_step_timeout",
     }:
