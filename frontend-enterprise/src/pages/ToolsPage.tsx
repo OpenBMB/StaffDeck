@@ -1660,17 +1660,38 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
               resourceType="tool"
             />
 
-            <div className="flex items-center justify-between rounded-[12px] border border-[#eceef1] bg-[#fafbfc] px-[14px] py-[12px]">
-              <div className="flex flex-col gap-[2px] pr-[16px]">
-                <span className={FIELD_LABEL_CLASS}>MCP Apps</span>
-                <span className={HINT_CLASS}>
-                  开启后协商 io.modelcontextprotocol/ui；资源或渲染失败时自动回退现有文本结果。
-                </span>
+            <div
+              className={cn(
+                'rounded-[14px] border px-[16px] py-[14px] transition-colors',
+                values.apps_mode === 'auto'
+                  ? 'border-[#b9ded4] bg-[#f1faf7]'
+                  : 'border-[#e5e7eb] bg-[#fafbfc]',
+              )}
+            >
+              <div className="flex items-center justify-between gap-[18px]">
+                <div className="flex min-w-0 flex-col gap-[4px]">
+                  <div className="flex flex-wrap items-center gap-[8px]">
+                    <span className={FIELD_LABEL_CLASS}>MCP Apps 扩展协议</span>
+                    <StatusBadge tone={values.apps_mode === 'auto' ? 'green' : 'gray'}>
+                      {values.apps_mode === 'auto' ? '已开启' : '未开启'}
+                    </StatusBadge>
+                  </div>
+                  <span className={HINT_CLASS}>
+                    开启后协商 io.modelcontextprotocol/ui，并允许渲染 MCP App；单个 App 资源最大 10 MiB。
+                    加载失败时仍自动回退为现有文本结果。
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-center gap-[10px]">
+                  <span className="text-[12px] font-medium text-[#667085]">
+                    {values.apps_mode === 'auto' ? '开启' : '关闭'}
+                  </span>
+                  <Switch
+                    aria-label="开启 MCP Apps 扩展协议"
+                    checked={values.apps_mode === 'auto'}
+                    onCheckedChange={(next) => setField('apps_mode', next ? 'auto' : 'disabled')}
+                  />
+                </div>
               </div>
-              <Switch
-                checked={values.apps_mode === 'auto'}
-                onCheckedChange={(next) => setField('apps_mode', next ? 'auto' : 'disabled')}
-              />
             </div>
 
             <Field label="连接方式" hint={transportOption?.hint}>

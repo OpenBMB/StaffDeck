@@ -7,6 +7,8 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.tools import (
+    MCP_APP_RESOURCE_MAX_BYTES,
+    _extract_app_resource,
     create_mcp_server,
     call_mcp_app_tool,
     delete_mcp_server,
@@ -19,7 +21,12 @@ from app.api.tools import (
 from app.db.models import MCPServer, Tenant, Tool, User
 from app.db.models import AgentProfile, AgentResourceBinding
 from app.tools.tool_executor import ToolExecutor
-from app.tools.mcp_client import discover_mcp_server, execute_mcp_tool_result, read_mcp_resource
+from app.tools.mcp_client import (
+    MCPClientError,
+    discover_mcp_server,
+    execute_mcp_tool_result,
+    read_mcp_resource,
+)
 from app.tools.tool_schema import (
     MCPDiscoverRequest,
     MCPAppToolCallRequest,
@@ -118,6 +125,38 @@ def test_mcp_apps_capability_is_not_advertised_when_disabled() -> None:
     )
 
     assert discovery["server_capabilities"]["extensions"] == {}
+
+
+def test_mcp_app_resource_limit_is_ten_mib() -> None:
+    assert MCP_APP_RESOURCE_MAX_BYTES == 10 * 1024 * 1024
+    accepted = "x" * (2 * 1024 * 1024 + 1)
+    text, _meta = _extract_app_resource(
+        {
+            "contents": [
+                {
+                    "uri": "ui://staffdeck/large-card",
+                    "mimeType": "text/html;profile=mcp-app",
+                    "text": accepted,
+                }
+            ]
+        },
+        "ui://staffdeck/large-card",
+    )
+    assert text == accepted
+
+    with pytest.raises(MCPClientError, match="10 MiB"):
+        _extract_app_resource(
+            {
+                "contents": [
+                    {
+                        "uri": "ui://staffdeck/too-large",
+                        "mimeType": "text/html;profile=mcp-app",
+                        "text": "x" * (MCP_APP_RESOURCE_MAX_BYTES + 1),
+                    }
+                ]
+            },
+            "ui://staffdeck/too-large",
+        )
 
 
 def test_synced_mcp_app_renders_and_calls_read_only_tool() -> None:

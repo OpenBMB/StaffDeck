@@ -76,6 +76,7 @@ from app.tools.tool_schema import (
 
 router = APIRouter(prefix="/api/enterprise/tools", tags=["enterprise:tools"])
 mcp_router = APIRouter(prefix="/api/enterprise/mcp-servers", tags=["enterprise:mcp-servers"])
+MCP_APP_RESOURCE_MAX_BYTES = 10 * 1024 * 1024
 
 
 def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
@@ -1164,8 +1165,8 @@ def _extract_app_resource(result: dict[str, Any], uri: str) -> tuple[str, dict[s
         text_value = item.get("text")
         if not isinstance(text_value, str):
             raise MCPClientError("MCP App 资源必须以 UTF-8 text 返回。")
-        if len(text_value.encode("utf-8")) > 2 * 1024 * 1024:
-            raise MCPClientError("MCP App 资源超过 2 MiB 安全限制。")
+        if len(text_value.encode("utf-8")) > MCP_APP_RESOURCE_MAX_BYTES:
+            raise MCPClientError("MCP App 资源超过 10 MiB 安全限制。")
         meta = item.get("_meta") if isinstance(item.get("_meta"), dict) else {}
         return text_value, _safe_app_resource_meta(meta)
     raise MCPClientError("MCP resources/read 未返回所请求的 App 资源。")
