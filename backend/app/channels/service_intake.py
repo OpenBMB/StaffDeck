@@ -4,7 +4,6 @@ import logging
 import os
 import threading
 import time
-from datetime import timedelta
 
 from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
@@ -49,14 +48,13 @@ from app.db.models import (
     new_id,
     utc_now,
 )
-from app.session.session_schema import ChatAttachmentRead, ChatTurnRequest
+from app.session.session_schema import ChatTurnRequest
 
 logger = logging.getLogger(__name__)
 
 ERROR_NOTICE_TEXT = "处理出错，请稍后再试。"
 INTERRUPTED_NOTICE_TEXT = "上一条消息处理中断，请重新发送。"
 _DEDUP_LOOKBACK = 50
-_SPLIT_ATTACHMENT_TEXT_WINDOW = timedelta(minutes=5)
 _processor_run_pid: int | None = None
 _processor_run_id: str | None = None
 _processor_run_guard = threading.Lock()
@@ -513,45 +511,6 @@ def _message_text(binding: ChannelBinding, inbound: ChannelInbound) -> str:
         from_user_id=inbound.from_user_id,
     )[1]
     return f"[发送者: {sender_label}]\n{text}"
-
-
-def _recent_split_file_attachments(
-    db: Session,
-    binding: ChannelBinding,
-    inbound: ChannelInbound,
-    session_id: str,
-) -> list[ChatAttachmentRead]:
-    """Carry a preceding WeCom-only file message into its following text turn."""
-    if binding.channel != "wecom" or inbound.is_group or not inbound.text.strip():
-        return []
-    previous = db.exec(
-        select(Message)
-        .where(
-            Message.tenant_id == binding.tenant_id,
-            Message.session_id == session_id,
-            Message.role == "user",
-        )
-        .order_by(Message.created_at.desc())
-        .limit(1)
-    ).first()
-    if (
-        previous is None
-        or previous.content.strip()
-        or utc_now() - previous.created_at > _SPLIT_ATTACHMENT_TEXT_WINDOW
-    ):
-        return []
-    raw_attachments = (previous.metadata_json or {}).get("attachments")
-    if not isinstance(raw_attachments, list):
-        return []
-    results: list[ChatAttachmentRead] = []
-    for raw in raw_attachments:
-        if not isinstance(raw, dict) or raw.get("kind") == "image":
-            continue
-        try:
-            results.append(ChatAttachmentRead.model_validate(raw))
-        except ValueError:
-            continue
-    return results
 
 
 def _run_bind_command(

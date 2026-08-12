@@ -30,7 +30,11 @@ from app.channels.adapters.base import (
     split_channel_text,
 )
 from app.channels.crypto import decrypt_channel_secret
-from app.channels.media import MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES, ensure_channel_media_size
+from app.channels.media import (
+    MAX_CHANNEL_MEDIA_BYTES,
+    MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES,
+    ensure_channel_media_size,
+)
 from app.config import get_settings
 from app.db import engine
 from app.db.models import ChannelBinding, utc_now
@@ -98,11 +102,17 @@ async def _download_wechat_cdn_httpx(url: str) -> tuple[bytes, str]:
         verify=certifi.where(),
         http2=False,
         timeout=15.0,
-    ) as client:
-        response = await client.get(url)
+    ) as client, client.stream("GET", url) as response:
         response.raise_for_status()
-        ensure_channel_media_size(len(response.content), encrypted=True)
-        return response.content, response.headers.get("content-type", "")
+        content_type = response.headers.get("content-type", "")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes(64 * 1024):
+            total += len(chunk)
+            if total > MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES:
+                raise ValueError("微信媒体密文超过大小上限")
+            chunks.append(chunk)
+        return b"".join(chunks), content_type
 
 
 async def _download_wechat_cdn_curl(url: str) -> tuple[bytes, str]:
@@ -130,23 +140,37 @@ async def _download_wechat_cdn_curl(url: str) -> tuple[bytes, str]:
         ]
         last_error = ""
         for attempt in range(WECHAT_CURL_DOWNLOAD_ATTEMPTS):
-            result = subprocess.run(
+            process = subprocess.Popen(
                 command,
-                check=False,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
+            chunks: list[bytes] = []
+            total = 0
+            assert process.stdout is not None
+            while True:
+                chunk = process.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES:
+                    process.kill()
+                    process.wait()
+                    raise ValueError("微信媒体密文超过大小上限")
+                chunks.append(chunk)
+            stderr = process.stderr.read() if process.stderr else b""
+            return_code = process.wait()
             # 微信 CDN sometimes advertises a stale Content-Length. curl
             # returns 18 or 28 after receiving the complete encrypted payload;
             # let AES/expected_size validation decide whether it is usable.
-            if result.returncode == 0 or (
-                result.returncode in {18, 28} and result.stdout
-            ):
-                return result.stdout
-            last_error = result.stderr.decode("utf-8", errors="replace")[:200]
+            data = b"".join(chunks)
+            if return_code == 0 or (return_code in {18, 28} and data):
+                return data
+            last_error = stderr.decode("utf-8", errors="replace")[:200]
             if attempt < WECHAT_CURL_DOWNLOAD_ATTEMPTS - 1:
                 time.sleep(0.5 * (attempt + 1))
         raise RuntimeError(
-            f"微信媒体下载失败: curl exit={result.returncode} {last_error}"
+            f"微信媒体下载失败: curl exit={return_code} {last_error}"
         )
 
     data = await asyncio.to_thread(run)
@@ -422,7 +446,8 @@ class WeChatClient:
         resp.raise_for_status()
 
     def download_media(self, context_token: str, media_id: str) -> bytes:
-        response = self._client.post(
+        request = self._client.build_request(
+            "POST",
             f"{self.base_url}/ilink/bot/downloadmedia",
             headers=self._business_headers(),
             json={
@@ -430,13 +455,32 @@ class WeChatClient:
                 "media_id": media_id,
                 "base_info": self._base_info(),
             },
-            timeout=15.0,
         )
-        response.raise_for_status()
-        if "application/json" not in response.headers.get("content-type", "").lower():
-            return response.content
+        response = self._client.send(request, stream=True)
         try:
-            data = response.json()
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            if "application/json" not in content_type.lower():
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in response.iter_bytes(64 * 1024):
+                    total += len(chunk)
+                    if total > MAX_CHANNEL_MEDIA_BYTES:
+                        raise ValueError("微信媒体超过大小上限")
+                    chunks.append(chunk)
+                return b"".join(chunks)
+            chunks = []
+            total = 0
+            for chunk in response.iter_bytes(64 * 1024):
+                total += len(chunk)
+                if total > MAX_CHANNEL_MEDIA_BYTES:
+                    raise ValueError("微信媒体响应超过大小上限")
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+        finally:
+            response.close()
+        try:
+            data = json.loads(raw)
         except ValueError as exc:
             raise WeChatApiError(-1, "下载响应格式无效") from exc
         errcode = int(data.get("errcode") or data.get("ret") or 0)

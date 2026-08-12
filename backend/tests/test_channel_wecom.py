@@ -174,6 +174,40 @@ def test_normalize_mixed_frame_extracts_text_and_image() -> None:
     assert inbound.attachments[0].kind == "image"
 
 
+def test_url_download_uses_content_disposition_filename(monkeypatch) -> None:
+    import app.channels
+    import app.channels.adapters.wecom as wecom_module
+    from app.channels.adapters.base import ChannelInboundAttachment
+
+    attachment = ChannelInboundAttachment(
+        media_id="https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/file",
+        kind="file",
+        filename="message-id",
+        download_params={
+            "url": "https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/file",
+            "aes_key": "key",
+        },
+    )
+    binding = ChannelBinding(tenant_id="tenant", agent_id="agent", channel="wecom")
+    manager = SimpleNamespace(get_stream=lambda _binding_id: (object(), object()))
+
+    def run_coroutine_threadsafe(coroutine, _loop):
+        coroutine.close()
+        return SimpleNamespace(result=lambda timeout: (b"# document", "项目文档.md"))
+
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: manager)
+    monkeypatch.setattr(
+        wecom_module.asyncio,
+        "run_coroutine_threadsafe",
+        run_coroutine_threadsafe,
+    )
+
+    data = WeComAdapter().download_media(binding, attachment)
+
+    assert data == b"# document"
+    assert attachment.filename == "项目文档.md"
+
+
 def test_file_message_with_image_bytes_is_promoted_to_image(monkeypatch) -> None:
     import app.channels.adapters.base as base_module
     import app.channels.attachment_bridge as bridge_module

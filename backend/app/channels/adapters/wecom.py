@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import queue
 import re
@@ -768,25 +769,42 @@ class WeComAdapter:
                 ),
                 loop,
             )
-            data, _content_disposition = future.result(timeout=15.0)
+            data, downloaded_filename = future.result(timeout=15.0)
+            if downloaded_filename:
+                attachment.filename = downloaded_filename
             return data
         provider = self._get_token_provider()
         token = provider.get(binding)
         for attempt in range(2):
             try:
-                with httpx.Client(timeout=15.0) as client:
-                    response = client.get(
-                        f"{WECOM_API_BASE}/media/get",
-                        params={"access_token": token, "media_id": attachment.media_id},
-                    )
+                with httpx.Client(timeout=15.0) as client, client.stream(
+                    "GET",
+                    f"{WECOM_API_BASE}/media/get",
+                    params={"access_token": token, "media_id": attachment.media_id},
+                ) as response:
+                    response.raise_for_status()
+                    content_type = response.headers.get("content-type", "")
+                    if "application/json" not in content_type.lower():
+                        chunks: list[bytes] = []
+                        total = 0
+                        for chunk in response.iter_bytes(64 * 1024):
+                            total += len(chunk)
+                            if total > MAX_CHANNEL_MEDIA_BYTES:
+                                raise ValueError("企微附件超过大小上限")
+                            chunks.append(chunk)
+                        return b"".join(chunks)
+                    chunks = []
+                    total = 0
+                    for chunk in response.iter_bytes(64 * 1024):
+                        total += len(chunk)
+                        if total > MAX_CHANNEL_MEDIA_BYTES:
+                            raise ValueError("企微媒体响应超过大小上限")
+                        chunks.append(chunk)
+                    raw = b"".join(chunks)
             except httpx.HTTPError as exc:
                 raise WeComTokenError("企微媒体下载请求失败") from exc
-            if response.status_code != 200:
-                raise WeComTokenError(f"企微 media/get 失败: status={response.status_code}")
-            if "application/json" not in response.headers.get("content-type", "").lower():
-                return response.content
             try:
-                data = response.json()
+                data = json.loads(raw)
             except ValueError as exc:
                 raise WeComTokenError("企微 media/get 响应格式无效") from exc
             errcode = int(data.get("errcode") or 0)
