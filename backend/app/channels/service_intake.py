@@ -44,6 +44,7 @@ from app.db.models import (
     ChatSession,
     MemoryRecord,
     Message,
+    Team,
     User,
     new_id,
     utc_now,
@@ -831,6 +832,9 @@ def process_inbound(
         if command:
             if command.kind in {"bind", "unbind"}:
                 reply = _run_bind_command(db, binding, inbound, command)
+            elif binding.team_id:
+                # 团队绑定:消息直路由团队 TL,员工列表/切换等指令无意义
+                reply = "该渠道已接入团队，消息由团队 TL 统一接收，员工切换类指令不可用。"
             else:
                 reply = run_command(db, binding, inbound.external_conv_id, command)
             _stage_notice(
@@ -872,15 +876,63 @@ def process_inbound(
             db.add(event)
             db.commit()
             return False
-        current_agent_id, pointer_reset = resolve_current_agent(db, binding, inbound.external_conv_id)
-        pre_route_agent_id = current_agent_id
-        # 智能前台:LLM 意图分类自动分发(开关/挂载数/粘性保护由 maybe_auto_route 把关,异常全部回退当前)
-        route_decision = maybe_auto_route(db, binding, current_agent_id, inbound.external_conv_id, inbound.text)
-        if route_decision and route_decision.switched:
-            current_agent_id = route_decision.agent_id
-        chat_session = find_or_create_channel_session(
-            db, binding, user, current_agent_id, inbound.external_conv_id, inbound.text
-        )
+        team: Team | None = None
+        team_leader_agent_id: str | None = None
+        if binding.team_id:
+            # 团队绑定:跳过路由指针/自动分发,消息直路由团队现任 TL(换帅自动跟随)
+            from app.teams.service import get_team_leader
+
+            team_row = db.get(Team, binding.team_id)
+            if team_row and team_row.tenant_id == binding.tenant_id and team_row.status == "active":
+                team = team_row
+            team_notice: str | None = None
+            if team is None:
+                team_notice = "该渠道绑定的团队已解散或停用，请联系管理员调整渠道绑定。"
+            else:
+                leader = get_team_leader(db, team.id)
+                if leader is None:
+                    team_notice = f"团队「{team.name}」暂未设置 TL，请先在 StaffDeck 网页端设置 TL 后再试。"
+                else:
+                    team_leader_agent_id = leader.agent_id
+            if team_notice is not None:
+                _stage_notice(
+                    db,
+                    binding,
+                    inbound.external_conv_id,
+                    target,
+                    team_notice,
+                    final_for_event=True,
+                )
+                event.status = "done"
+                event.processed_at = utc_now()
+                event.updated_at = utc_now()
+                db.add(event)
+                db.commit()
+                return False
+        if team is not None:
+            current_agent_id = team_leader_agent_id
+            pointer_reset = False
+            route_decision = None
+            chat_session = find_or_create_channel_session(
+                db,
+                binding,
+                user,
+                current_agent_id,
+                inbound.external_conv_id,
+                inbound.text,
+                team_id=team.id,
+                team_title=f"团队 {team.name} · TL 对话",
+            )
+        else:
+            current_agent_id, pointer_reset = resolve_current_agent(db, binding, inbound.external_conv_id)
+            pre_route_agent_id = current_agent_id
+            # 智能前台:LLM 意图分类自动分发(开关/挂载数/粘性保护由 maybe_auto_route 把关,异常全部回退当前)
+            route_decision = maybe_auto_route(db, binding, current_agent_id, inbound.external_conv_id, inbound.text)
+            if route_decision and route_decision.switched:
+                current_agent_id = route_decision.agent_id
+            chat_session = find_or_create_channel_session(
+                db, binding, user, current_agent_id, inbound.external_conv_id, inbound.text
+            )
         # 群聊回复投递到群会话，私聊投递到发言人
         chat_session.channel_target_json = target
         db.add(chat_session)
@@ -919,6 +971,7 @@ def process_inbound(
         session_id = chat_session.id
         event_id = event.id
         user_id = user.id
+        turn_team_id = team.id if team is not None else None
 
     with _session_lock(session_id):
         with Session(use_engine) as db:
@@ -947,19 +1000,31 @@ def process_inbound(
                         inbound.event_id,
                     )
 
+            # 团队绑定:重新挂到当前会话(跨 Session 边界只带 id)
+            team = db.get(Team, turn_team_id) if turn_team_id else None
+            user_message = _message_text(binding, inbound)
+            message = user_message
+            interaction_mode = "normal"
+            if team is not None:
+                # 注入团队上下文(花名册/未闭环任务/黑板/派任务格式),与主聊天端 TL 会话同语义
+                from app.teams.wakeup import build_tl_chat_message
+
+                message = build_tl_chat_message(db, team, user_message)
+                interaction_mode = "team_tl"
             request = ChatTurnRequest(
                 tenant_id=binding.tenant_id,
                 session_id=session_id,
                 agent_id=current_agent_id,
                 user_id=user_id,
-                message=_message_text(binding, inbound),
+                message=message,
                 channel=binding.channel,
                 client_turn_id=inbound.event_id,
                 attachments=attachments,
+                interaction_mode=interaction_mode,
             )
             _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 1, db_engine=use_engine)
             try:
-                AgentLoop(db).handle_turn(request)
+                response = AgentLoop(db).handle_turn(request)
             except Exception as exc:
                 logger.exception("渠道入站处理失败 binding=%s event=%s", binding.id, inbound.event_id)
                 db.rollback()
@@ -981,6 +1046,25 @@ def process_inbound(
             event.updated_at = utc_now()
             db.add(event)
             db.commit()
+            if team is not None:
+                # TL 回复后处理:解析派任务块并创建任务(与主聊天端同语义);
+                # 后处理失败不影响本轮回复
+                from app.teams.wakeup import process_tl_reply
+
+                try:
+                    turn_user = db.get(User, user_id)
+                    if turn_user is not None:
+                        process_tl_reply(
+                            db,
+                            team=team,
+                            session=chat_session,
+                            user=turn_user,
+                            user_message=user_message,
+                            reply=(response.reply if response else "") or "",
+                            client_turn_id=inbound.event_id,
+                        )
+                except Exception:
+                    logger.exception("渠道团队 TL 回复后处理失败 binding=%s", binding.id)
             return True
 
 

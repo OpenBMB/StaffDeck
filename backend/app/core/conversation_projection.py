@@ -92,8 +92,8 @@ class ConversationProjection:
         metadata: dict[str, Any] = {}
         if request.client_turn_id:
             metadata["client_turn_id"] = request.client_turn_id
-        if request.interaction_mode == "scheduled_task":
-            metadata["interaction_mode"] = "scheduled_task"
+        if request.interaction_mode != "normal":
+            metadata["interaction_mode"] = request.interaction_mode
         if request.model_config_id:
             metadata["model_config_id"] = request.model_config_id
         if request.attachments:

@@ -210,7 +210,7 @@ class ChatTurnRequest(BaseModel):
     message: str
     attachments: list["ChatAttachmentRead"] = Field(default_factory=list)
     channel: str = "web"
-    interaction_mode: Literal["normal", "scheduled_task"] = "normal"
+    interaction_mode: Literal["normal", "scheduled_task", "team_task", "team_tl"] = "normal"
     client_timezone: Optional[str] = None
     debug: bool = False
 
@@ -264,6 +264,8 @@ class ChatSessionRead(BaseModel):
     summary: Optional[str]
     last_agent_question: Optional[str]
     is_scheduled: bool = False
+    team_id: Optional[str] = None
+    team_name: Optional[str] = None
     created_at: str
     updated_at: str
 

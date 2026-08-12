@@ -1423,6 +1423,7 @@ class AgentLoop:
         chat_session.updated_at = utc_now()
         self.db.add(chat_session)
 
+    @staticmethod
     def _fallback_session_title_from_message(message: str) -> str:
         return ConversationProjection.fallback_session_title(message)
 

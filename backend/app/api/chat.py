@@ -43,6 +43,7 @@ from app.db.models import (
     ScheduledTaskRun,
     Skill,
     SkillFeedback,
+    Team,
     User,
     new_id,
     utc_now,
@@ -82,6 +83,8 @@ from app.session.session_schema import (
     MessageFeedbackRequest,
     MessageRead,
 )
+from app.teams.service import get_team_leader
+from app.teams.wakeup import build_tl_chat_message, process_tl_reply
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -175,7 +178,9 @@ class HumanHandoffReplyRequest(BaseModel):
     reply: str
 
 
-def session_read(row: ChatSession, *, is_scheduled: bool = False) -> ChatSessionRead:
+def session_read(
+    row: ChatSession, *, is_scheduled: bool = False, team_name: str | None = None
+) -> ChatSessionRead:
     return ChatSessionRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -188,6 +193,8 @@ def session_read(row: ChatSession, *, is_scheduled: bool = False) -> ChatSession
         summary=row.summary,
         last_agent_question=row.last_agent_question,
         is_scheduled=is_scheduled,
+        team_id=row.team_id,
+        team_name=team_name,
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
@@ -985,14 +992,25 @@ def chat_turn(
     _ensure_request_tenant(request.tenant_id, current_user)
     request = request.model_copy(update={"user_id": current_user.id})
     request = _validate_chat_turn_attachments(request)
+    team_tl_team: Team | None = None
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
         request = _bind_request_to_session_agent(db, request, chat_session, current_user)
+        team_tl_team = _team_tl_session_team(db, chat_session)
     else:
         _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user)
     ensure_tenant(db, request.tenant_id)
     if not request.message.strip() and not request.attachments:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+    original_message = request.message
+    if team_tl_team is not None:
+        # 团队 TL 会话:注入团队上下文(花名册/未闭环任务/黑板/派任务格式)后再走正常引擎
+        request = request.model_copy(
+            update={
+                "message": build_tl_chat_message(db, team_tl_team, original_message),
+                "interaction_mode": "team_tl",
+            }
+        )
     if request.session_id:
         scheduled_response = _maybe_handle_scheduled_task_request(db, request, chat_session)
         if scheduled_response:
@@ -1001,6 +1019,21 @@ def chat_turn(
             return response
     response = AgentLoop(db).handle_turn(request)
     _schedule_session_title_summary(request.tenant_id, request.user_id, response.session_id, request.agent_id)
+    if team_tl_team is not None:
+        # TL 回复后处理:解析派任务块并创建任务(与 tl_chat 端点同语义);
+        # 后处理失败不影响本轮回复
+        try:
+            process_tl_reply(
+                db,
+                team=team_tl_team,
+                session=chat_session,
+                user=current_user,
+                user_message=original_message,
+                reply=response.reply or "",
+                client_turn_id=request.client_turn_id,
+            )
+        except Exception:
+            logger.exception("team TL reply post-processing failed")
     if request.interaction_mode == "scheduled_task" and request.agent_id:
         draft = detect_scheduled_task_draft(
             db,
@@ -1026,13 +1059,25 @@ def chat_stream(
     request = request.model_copy(update={"user_id": current_user.id})
     request = _validate_chat_turn_attachments(request)
     ensure_tenant(db, request.tenant_id)
+    team_tl_team_id: str | None = None
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
         request = _bind_request_to_session_agent(db, request, chat_session, current_user)
+        team_tl_team = _team_tl_session_team(db, chat_session)
+        team_tl_team_id = team_tl_team.id if team_tl_team is not None else None
     else:
         _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user)
     if not request.message.strip() and not request.attachments:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+    original_message = request.message
+    if team_tl_team_id is not None:
+        # 团队 TL 会话:注入团队上下文(花名册/未闭环任务/黑板/派任务格式)后再走正常引擎
+        request = request.model_copy(
+            update={
+                "message": build_tl_chat_message(db, db.get(Team, team_tl_team_id), original_message),
+                "interaction_mode": "team_tl",
+            }
+        )
 
     relay_ready = threading.Event()
     worker_done = threading.Event()
@@ -1199,6 +1244,27 @@ def chat_stream(
                             event_source_session_id,
                             request.agent_id,
                         )
+                        if team_tl_team_id is not None:
+                            # 团队 TL 会话:complete 后做派任务后处理(与 tl_chat 端点同语义);
+                            # 后处理失败不影响本轮回复
+                            try:
+                                tl_team = worker_db.get(Team, team_tl_team_id)
+                                tl_session = worker_db.get(
+                                    ChatSession, event_source_session_id or request.session_id or ""
+                                )
+                                tl_user = worker_db.get(User, request.user_id) if request.user_id else None
+                                if tl_team is not None and tl_session is not None and tl_user is not None:
+                                    process_tl_reply(
+                                        worker_db,
+                                        team=tl_team,
+                                        session=tl_session,
+                                        user=tl_user,
+                                        user_message=original_message,
+                                        reply=str(data.get("reply") or ""),
+                                        client_turn_id=request.client_turn_id,
+                                    )
+                            except Exception:
+                                logger.exception("team TL reply post-processing failed")
                         if event_source_session_id:
                             summary_payload = _session_title_summary_payload(worker_db, request.tenant_id, event_source_session_id)
                             if summary_payload:
@@ -1834,7 +1900,19 @@ def list_chat_sessions(
         ).all()
         if session_id
     }
-    return [session_read(row, is_scheduled=row.id in scheduled_session_ids) for row in rows]
+    team_ids = {row.team_id for row in rows if row.team_id}
+    team_names = {
+        team.id: team.name
+        for team in db.exec(select(Team).where(Team.id.in_(team_ids))).all()
+    } if team_ids else {}
+    return [
+        session_read(
+            row,
+            is_scheduled=row.id in scheduled_session_ids,
+            team_name=team_names.get(row.team_id) if row.team_id else None,
+        )
+        for row in rows
+    ]
 
 
 @router.put("/sessions/{session_id}", response_model=ChatSessionRead)
@@ -1858,7 +1936,8 @@ def rename_chat_session(
             ScheduledTaskRun.session_id == row.id,
         )
     ).first() is not None
-    return session_read(row, is_scheduled=is_scheduled)
+    team = db.get(Team, row.team_id) if row.team_id else None
+    return session_read(row, is_scheduled=is_scheduled, team_name=team.name if team else None)
 
 
 @router.delete("/sessions/{session_id}")
@@ -2413,9 +2492,33 @@ def _bind_request_to_session_agent(
 def _ensure_chat_session_available(db: Session, tenant_id: str, user_id: str, session_id: str) -> ChatSession:
     ensure_tenant(db, tenant_id)
     row = db.get(ChatSession, session_id)
-    if not row or row.tenant_id != tenant_id or row.user_id != user_id:
+    if not row or row.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    # 团队会话(team_id 非空)对本租户成员开放发言(如 TL 工作台聊天室);
+    # 普通会话仍仅创建者可见
+    if row.user_id != user_id and not row.team_id:
         raise HTTPException(status_code=404, detail="Session not found")
     return row
+
+
+def _team_tl_session_team(db: Session, chat_session: ChatSession) -> Team | None:
+    """识别团队 TL 会话:session 挂 team_id 且绑定 agent 是该团队现任 TL。
+
+    非 TL 的团队会话(任务执行/竞标等)不对人直接聊,返回 None(不注入、不后处理)。
+    """
+    if not chat_session.team_id or not chat_session.agent_id:
+        return None
+    # 团队会话全量绑定 team_id 后,任务验收/竞标打分等会话同样挂在 TL 名下;
+    # 只有「TL 对话」标题的会话才按人对 TL 聊天处理(与 team-threads 列表同判据)
+    if "TL 对话" not in (chat_session.title or ""):
+        return None
+    team = db.get(Team, chat_session.team_id)
+    if team is None or team.tenant_id != chat_session.tenant_id or team.status != "active":
+        return None
+    leader = get_team_leader(db, team.id)
+    if leader is None or leader.agent_id != chat_session.agent_id:
+        return None
+    return team
 
 
 def _get_feedback_target_message(db: Session, tenant_id: str, user_id: str, message_id: str) -> Message:
