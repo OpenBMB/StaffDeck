@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import uuid
@@ -354,6 +355,15 @@ class ToolExecutor:
                 password = self._resolve_secret(str(basic["password"]))
                 credentials = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
                 resolved["Authorization"] = f"Basic {credentials}"
+        elif auth_type not in {"bearer", "basic"}:
+            # Auth JSON is also allowed as a literal header map for integrations
+            # that use custom schemes (for example X-API-Key or a vendor token).
+            for key, value in auth.items():
+                if key == "type" or value is None:
+                    continue
+                if isinstance(value, (dict, list)):
+                    value = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                resolved[str(key)] = self._resolve_secret(str(value))
         return resolved
 
     def _request_headers(self, url: str, headers: dict[str, str]) -> dict[str, str]:
