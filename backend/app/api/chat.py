@@ -21,8 +21,8 @@ from starlette.background import BackgroundTask
 from app.agents.branching import model_for_agent, visible_published_skills
 from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
-from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.cancellation import cancel_chat_turn
+from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.harness_session_cleanup import (
     harness_task_workspace_path,
     remove_harness_session_workspace,
@@ -49,6 +49,11 @@ from app.db.models import (
     utc_now,
 )
 from app.feedback import enqueue_feedback_analysis
+from app.harness import (
+    HarnessArtifactAccessError,
+    normalize_harness_artifact_path,
+    open_harness_artifact,
+)
 from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT, compact_knowledge_citation_labels
 from app.llm import LLMClient, LLMError
 from app.observability.spans import (
@@ -57,16 +62,11 @@ from app.observability.spans import (
     reset_span_sink,
     set_span_sink,
 )
+from app.scheduled_tasks.schema import ScheduledTaskDraftRead
+from app.scheduled_tasks.service import DEFAULT_TASK_TIME, detect_scheduled_task_draft
 from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
-from app.harness import (
-    HarnessArtifactAccessError,
-    normalize_harness_artifact_path,
-    open_harness_artifact,
-)
-from app.scheduled_tasks.schema import ScheduledTaskDraftRead
-from app.scheduled_tasks.service import DEFAULT_TASK_TIME, detect_scheduled_task_draft
 from app.session.attachments import (
     parse_chat_attachment,
     validate_chat_turn_attachments,
@@ -995,6 +995,7 @@ def chat_turn(
     team_tl_team: Team | None = None
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
+        _ensure_team_session_human_writable(chat_session)
         request = _bind_request_to_session_agent(db, request, chat_session, current_user)
         team_tl_team = _team_tl_session_team(db, chat_session)
     else:
@@ -1062,6 +1063,7 @@ def chat_stream(
     team_tl_team_id: str | None = None
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
+        _ensure_team_session_human_writable(chat_session)
         request = _bind_request_to_session_agent(db, request, chat_session, current_user)
         team_tl_team = _team_tl_session_team(db, chat_session)
         team_tl_team_id = team_tl_team.id if team_tl_team is not None else None
@@ -2501,6 +2503,16 @@ def _ensure_chat_session_available(db: Session, tenant_id: str, user_id: str, se
     return row
 
 
+def _ensure_team_session_human_writable(chat_session: ChatSession) -> None:
+    """团队内部会话(任务执行/竞标/验收)仅可查看,不允许人工 /turn、/stream 写入。
+
+    判据与 _team_tl_session_team 一致:只有「TL 对话」标题的团队会话才对人类开放发言,
+    其余团队会话由唤醒机制自主驱动,人工写入会污染任务历史并绕过 Agent 权限校验。
+    """
+    if chat_session.team_id and "TL 对话" not in (chat_session.title or ""):
+        raise HTTPException(status_code=403, detail="Team execution sessions are read-only")
+
+
 def _team_tl_session_team(db: Session, chat_session: ChatSession) -> Team | None:
     """识别团队 TL 会话:session 挂 team_id 且绑定 agent 是该团队现任 TL。
 
@@ -3450,9 +3462,7 @@ def _event_trace_line(
                 label = "等待SOP"
             elif runtime_decision in {"start_skill", "start_new_task"}:
                 label = "选择SOP"
-            elif runtime_decision == "suspend_current_and_start_new_skill":
-                label = "切换SOP"
-            elif (
+            elif runtime_decision == "suspend_current_and_start_new_skill" or (
                 runtime_decision
                 in {"answer_related_question_then_resume", "answer_chitchat_then_resume"}
                 and from_skill_id

@@ -355,11 +355,13 @@ def test_team_threads_aggregates_tl_chat_and_tasks() -> None:
         tl_session = ChatSession(
             id=new_id("session"), tenant_id="tenant_demo", user_id="user_admin",
             agent_id="agent_tl", title=f"团队 {team.name} · TL 对话", status="active",
+            team_id=team.id,
         )
         # 非 TL 对话标题的同 agent 会话不入选
         other_session = ChatSession(
             id=new_id("session"), tenant_id="tenant_demo", user_id="user_admin",
             agent_id="agent_tl", title="日常闲聊", status="active",
+            team_id=team.id,
         )
         task_session = ChatSession(
             id=new_id("session"), tenant_id="tenant_demo", user_id="user_admin",

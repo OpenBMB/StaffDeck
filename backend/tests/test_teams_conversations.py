@@ -29,6 +29,7 @@ from app.core import AgentLoop
 from app.db.models import ChatSession, Message, TeamTask, TeamWakeEvent
 from app.session.session_schema import ChatTurnRequest, ChatTurnResponse, SessionPublic
 from app.teams import wakeup
+from app.teams.schema import TeamTLChatRequest
 from app.teams.service import add_member, create_team
 from app.teams.wakeup import claim_wake_event, enqueue_wake_event
 
@@ -404,3 +405,109 @@ def test_chat_turn_allows_tenant_member_on_team_session(monkeypatch: pytest.Monk
                 db,
             )
         assert exc_info.value.status_code == 404
+
+
+# ---------- 团队会话写入权限与共享 TL 隔离 ----------
+
+
+def test_chat_turn_and_stream_reject_non_tl_team_sessions() -> None:
+    """任务执行/竞标/验收会话仅可查看:人工 /turn、/stream 一律 403,TL 对话不受影响。"""
+    with _test_session() as db:
+        team = _seed_team(db)
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        sessions = [
+            _make_session(
+                db, session_id="sess_ro_task", team_id=team.id, agent_id="agent_worker",
+                title="团队任务:写方案", created_at=base,
+            ),
+            _make_session(
+                db, session_id="sess_ro_review", team_id=team.id, agent_id="agent_tl",
+                title="团队任务验收:写方案", created_at=base,
+            ),
+            _make_session(
+                db, session_id="sess_ro_bid", team_id=team.id, agent_id="agent_worker",
+                title="团队竞标:写方案", created_at=base,
+            ),
+        ]
+        db.commit()
+
+        for session in sessions:
+            with pytest.raises(HTTPException) as exc_info:
+                chat_api.chat_turn(
+                    ChatTurnRequest(
+                        tenant_id="tenant_demo",
+                        session_id=session.id,
+                        client_turn_id=f"ct_ro_{session.id}",
+                        message="插一句话",
+                    ),
+                    _member_user(),
+                    db,
+                )
+            assert exc_info.value.status_code == 403
+            with pytest.raises(HTTPException) as exc_info:
+                chat_api.chat_stream(
+                    ChatTurnRequest(
+                        tenant_id="tenant_demo",
+                        session_id=session.id,
+                        client_turn_id=f"cs_ro_{session.id}",
+                        message="插一句话",
+                    ),
+                    _member_user(),
+                    db,
+                )
+            assert exc_info.value.status_code == 403
+
+
+def test_tl_chat_rejects_session_from_other_team_with_shared_tl() -> None:
+    """共享 TL 场景:不能把 A 团队的 TL 会话传给 B 团队的 /tl/chat。"""
+    with _test_session() as db:
+        team_a = _seed_team(db)
+        team_b = create_team(
+            db, tenant_id="tenant_demo", name="共享TL团队B",
+            description=None, owner_user_id="user_admin",
+        )
+        add_member(db, team_b, agent_id="agent_tl", role="leader")
+        session_a = _make_session(
+            db, session_id="sess_tl_a", team_id=team_a.id, agent_id="agent_tl",
+            title=f"团队 {team_a.name} · TL 对话", created_at=datetime(2026, 1, 1),
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            teams_api.tl_chat_endpoint(
+                team_b.id,
+                TeamTLChatRequest(
+                    tenant_id="tenant_demo",
+                    message="给 B 团队派个任务",
+                    session_id=session_a.id,
+                ),
+                db,
+                _admin_user(),
+            )
+        assert exc_info.value.status_code == 404
+
+
+def test_team_threads_scope_tl_sessions_by_team_with_shared_tl() -> None:
+    """共享 TL 场景:统一线程列表按 team_id 归属,同一会话不会以两个团队名重复出现。"""
+    with _test_session() as db:
+        team_a = _seed_team(db)
+        team_b = create_team(
+            db, tenant_id="tenant_demo", name="共享TL团队B",
+            description=None, owner_user_id="user_admin",
+        )
+        add_member(db, team_b, agent_id="agent_tl", role="leader")
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        session_a = _make_session(
+            db, session_id="sess_thread_a", team_id=team_a.id, agent_id="agent_tl",
+            title=f"团队 {team_a.name} · TL 对话", created_at=base,
+        )
+        session_b = _make_session(
+            db, session_id="sess_thread_b", team_id=team_b.id, agent_id="agent_tl",
+            title=f"团队 {team_b.name} · TL 对话", created_at=base,
+        )
+        db.commit()
+
+        threads = teams_api.list_team_threads("tenant_demo", db, _member_user())
+        tl_threads = [item for item in threads if item.kind == "tl_chat"]
+        by_session = {item.session_id: item.team_id for item in tl_threads}
+        assert by_session == {session_a.id: team_a.id, session_b.id: team_b.id}

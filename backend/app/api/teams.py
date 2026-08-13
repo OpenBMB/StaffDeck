@@ -366,10 +366,14 @@ def tl_chat_endpoint(
         raise HTTPException(status_code=400, detail="Team leader agent is unavailable")
     if request.session_id:
         session = db.get(ChatSession, request.session_id)
+        # 同一 Agent 可同时担任多个团队的 TL,必须同时校验 team_id 与「TL 对话」类型,
+        # 否则会把 A 团队的会话写进 B 团队的上下文(任务/审计串线)
         if (
             session is None
             or session.tenant_id != team.tenant_id
+            or session.team_id != team.id
             or session.agent_id != tl_agent.id
+            or "TL 对话" not in (session.title or "")
         ):
             raise HTTPException(status_code=404, detail="TL chat session not found")
     else:
@@ -1082,6 +1086,7 @@ def list_team_threads(
             tl_sessions = db.exec(
                 select(ChatSession).where(
                     ChatSession.tenant_id == tenant_id,
+                    ChatSession.team_id == team.id,
                     ChatSession.agent_id == leader.agent_id,
                     ChatSession.title.like("%TL 对话%"),
                 )
