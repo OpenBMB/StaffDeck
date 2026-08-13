@@ -2,10 +2,9 @@ import type { ReactNode } from 'react';
 
 import { Sheet, SheetContent } from '@/components/ui';
 import { cn } from '@/lib/utils';
-import { XIcon } from 'lucide-react';
+import { Ban, XIcon } from 'lucide-react';
 
 import IconChevronDown from '../../assets/icons/chevron-down.svg?react';
-import IconTrash from '../../assets/icons/trash.svg?react';
 import EmployeeAvatar from '../EmployeeAvatar';
 import type { AgentProfileRead } from '../../types';
 
@@ -23,13 +22,13 @@ export type PlatformEmployeeDrawerProps = {
   stats: PlatformStat[];
   online?: boolean;
   canManage?: boolean;
-  deleting?: boolean;
+  unpublishing?: boolean;
   hasPrev?: boolean;
   hasNext?: boolean;
   onClose: () => void;
   onPrev?: () => void;
   onNext?: () => void;
-  onDelete?: () => void;
+  onUnpublish?: () => void;
   onUse: () => void;
 };
 
@@ -78,13 +77,13 @@ export default function PlatformEmployeeDrawer({
   stats,
   online = true,
   canManage = false,
-  deleting = false,
+  unpublishing = false,
   hasPrev = false,
   hasNext = false,
   onClose,
   onPrev,
   onNext,
-  onDelete,
+  onUnpublish,
   onUse,
 }: PlatformEmployeeDrawerProps) {
   return (
@@ -210,15 +209,15 @@ export default function PlatformEmployeeDrawer({
         <DrawerDivider />
 
         <div className="flex shrink-0 justify-end gap-[10px]">
-          {canManage && onDelete && (
+          {canManage && onUnpublish && (
             <button
               type="button"
-              disabled={deleting}
-              onClick={onDelete}
-              className="inline-flex h-[34px] w-[80px] items-center justify-center gap-[4px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white text-[12px] text-[#757f9c] transition-colors hover:border-[#d20b0b] hover:text-[#d20b0b] disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={unpublishing}
+              onClick={onUnpublish}
+              className="inline-flex h-[34px] w-[112px] items-center justify-center gap-[4px] rounded-[10px] border-[0.5px] border-[#efc2c2] bg-white text-[12px] text-[#b42318] transition-colors hover:border-[#d20b0b] hover:bg-[#fff7f7] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <IconTrash className="size-[14px]" />
-              删除
+              <Ban className="size-[14px]" strokeWidth={1.8} />
+              从广场下线
             </button>
           )}
           <button

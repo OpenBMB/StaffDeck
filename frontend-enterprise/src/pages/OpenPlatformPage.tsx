@@ -389,26 +389,26 @@ export default function OpenPlatformPage({
     setDeletingItemKey(key);
     try {
       if (platformKind === 'agents' && item.agent) {
-        const metadata = { ...(item.agent.metadata || {}) };
-        metadata.published_to_gallery = false;
-        delete metadata.gallery_published_at;
-        delete metadata.gallery_published_by;
-        await api.put<AgentProfileRead>(`/api/enterprise/agents/${item.agent.id}`, {
-          tenant_id: TENANT_ID,
-          metadata,
-        });
+        await api.post<AgentProfileRead>(
+          `/api/enterprise/agents/${encodeURIComponent(item.agent.id)}/gallery:unpublish?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+          {},
+        );
         window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
       } else {
         await api.delete(platformDeleteUrl(platformKind, item));
       }
-      notify.success('已从广场移除');
+      notify.success(platformKind === 'agents' ? '员工已从广场下线' : '已从广场移除');
       setDetailItem((current) => (
         current && current.kind === platformKind && current.item.id === item.id ? null : current
       ));
       setConfirmTarget(null);
       await loadPlatformData();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '删除失败');
+      notify.error(error instanceof Error
+        ? error.message
+        : platformKind === 'agents'
+          ? '员工广场下线失败'
+          : '删除失败');
     } finally {
       setDeletingItemKey('');
     }
@@ -449,13 +449,13 @@ export default function OpenPlatformPage({
           stats={employeeStats(item.agent)}
           online={item.agent.status === 'active'}
           canManage={canManagePlatform}
-          deleting={deletingItemKey === deleteKey}
+          unpublishing={deletingItemKey === deleteKey}
           hasPrev={drawerIndex > 0}
           hasNext={drawerIndex >= 0 && drawerIndex < drawerItems.length - 1}
           onClose={() => setDetailItem(null)}
           onPrev={() => navigateDetailItem(-1)}
           onNext={() => navigateDetailItem(1)}
-          onDelete={() => setConfirmTarget({ kind: detailItem.kind, item })}
+          onUnpublish={() => setConfirmTarget({ kind: detailItem.kind, item })}
           onUse={() => {
             setDetailItem(null);
             void usePlatformItem(detailItem.kind, item.id);
@@ -500,10 +500,15 @@ export default function OpenPlatformPage({
       <ConfirmDialog
         open={Boolean(confirmTarget)}
         onOpenChange={(next) => { if (!next) setConfirmTarget(null); }}
-        title={confirmTarget && config ? `删除${config.metricLabel}「${confirmTarget.item.title}」？` : ''}
+        title={confirmTarget && config
+          ? confirmTarget.kind === 'agents'
+            ? `从广场下线员工「${confirmTarget.item.title}」？`
+            : `删除${config.metricLabel}「${confirmTarget.item.title}」？`
+          : ''}
         description={confirmTarget?.kind === 'agents'
-          ? '删除后该数字员工会从广场和员工列表移除，相关资源绑定也会一并清理。'
+          ? '下线后该员工不再出现在开放广场，也不能被新用户添加；员工本体及其资源、已有使用记录都会保留。'
           : '删除后该广场内容会从开放平台移除，已复制到员工侧的引用可能不再可同步。'}
+        confirmText={confirmTarget?.kind === 'agents' ? '确认下线' : '删除'}
         loading={Boolean(confirmTarget) && deletingItemKey === (confirmTarget ? platformItemDeleteKey(confirmTarget.kind, confirmTarget.item) : '')}
         onConfirm={() => void runDelete()}
       />
@@ -540,6 +545,11 @@ export default function OpenPlatformPage({
             navigate('/enterprise/general-skills/new?scope=gallery');
           } : undefined}
           onOpenItem={(item) => setDetailItem({ kind: selectedKind, item })}
+          canManage={canManagePlatform && selectedKind === 'agents'}
+          unpublishingItemId={deletingItemKey.startsWith('agents:')
+            ? deletingItemKey.slice('agents:'.length)
+            : undefined}
+          onUnpublishItem={(item) => setConfirmTarget({ kind: 'agents', item })}
           onLogout={onLogout}
           userName={currentUser?.username}
         />
@@ -594,6 +604,10 @@ export default function OpenPlatformPage({
                     description={item.description}
                     stats={employeeStats(item.agent)}
                     onOpen={() => setDetailItem({ kind: platform.kind, item })}
+                    onUnpublish={canManagePlatform
+                      ? () => setConfirmTarget({ kind: platform.kind, item })
+                      : undefined}
+                    unpublishing={deletingItemKey === platformItemDeleteKey(platform.kind, item)}
                   />
                 ) : (
                   <PlatformResourceCard

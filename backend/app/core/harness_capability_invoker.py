@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from app.capabilities.local_general_skill import (
     package_from_row,
@@ -113,11 +113,12 @@ class HarnessCapabilityInvoker:
         self.step_deadline_monotonic = step_deadline_monotonic
         self.run_id = str(run_id or new_id("hrun"))
         self.workspace_root = _workspace_root(
-            tenant_id, session.id, task_frame_id
+            tenant_id, session.id, task_frame_id, db=self.db
         )
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         self._workspace_snapshot = snapshot_harness_workspace(self.workspace_root)
         ui_config = self.db.get(UIConfig, tenant_id)
+        sandbox_enabled = bool(getattr(ui_config, "sandbox_enabled", False))
         sandbox_mode = parse_network_policy(
             getattr(ui_config, "sandbox_network_mode", None) if ui_config else None
         )
@@ -134,11 +135,13 @@ class HarnessCapabilityInvoker:
             task_frame_id=task_frame_id,
             tenant_id=tenant_id,
             workspace_root=self.workspace_root,
+            sandbox_enabled=sandbox_enabled,
             sandbox_network_mode=sandbox_mode,
             sandbox_allowed_domains=sandbox_domains,
         )
         self._sandbox_network_mode = sandbox_mode
         self._sandbox_allowed_domains = sandbox_domains
+        self._sandbox_enabled = sandbox_enabled
         self._descriptors = {
             item.name: item
             for item in manifest.available
@@ -233,6 +236,7 @@ class HarnessCapabilityInvoker:
                         current_descriptor.metadata,
                     ),
                     arguments,
+                    call_id=call_id,
                 )
             elif descriptor.kind == "tool":
                 result = self._invoke_external_tool(
@@ -664,9 +668,12 @@ class HarnessCapabilityInvoker:
                 is_cancelled=self.is_cancelled,
                 sandbox_network_mode=self._sandbox_network_mode,
                 sandbox_allowed_domains=self._sandbox_allowed_domains,
+                sandbox_enabled=self._sandbox_enabled,
             )
             runner = GeneralSkillRunner()
             supported = inspect.signature(runner.run).parameters
+            if "sandbox_enabled" not in supported:
+                run_kwargs.pop("sandbox_enabled", None)
             if "sandbox_network_mode" not in supported:
                 if self._sandbox_network_mode != "all":
                     raise HarnessExecutionError(
@@ -882,7 +889,11 @@ class HarnessCapabilityInvoker:
             self.trace_sink(event_type, payload)
 
     def _search_knowledge(
-        self, metadata: dict[str, Any], arguments: dict[str, Any]
+        self,
+        metadata: dict[str, Any],
+        arguments: dict[str, Any],
+        *,
+        call_id: str,
     ) -> dict[str, Any]:
         query = str(arguments.get("query") or "").strip()
         if not query:
@@ -928,11 +939,12 @@ class HarnessCapabilityInvoker:
             self.model_config,
         )
         payload = response.model_dump(mode="json")
-        return {
+        result = {
             "success": True,
             "data": payload,
             "citations": knowledge_citations_from_results([payload]),
         }
+        return self._persist_large_json_result(result, call_id=call_id)
 
     def _invoke_external_tool(
         self,
@@ -981,11 +993,37 @@ class HarnessCapabilityInvoker:
             ToolCall(name=source_tool_name, arguments=resolved_arguments),
             active_skill_id=self.active_skill_id,
             agent_id=self.agent_id,
+            session_id=self.session.id,
             timeout_seconds_override=self._remaining_step_seconds(),
         )
         payload = result.model_dump(mode="json")
+        # MCP Apps payloads belong to the host UI, not to the isolated model
+        # transcript. Emit a dedicated trace event so the frontend receives
+        # the complete descriptor while the model only receives tool data.
+        app_descriptor = payload.pop("mcp_app", None)
+        payload.pop("mcp_metadata", None)
         if payload.get("success") is not True:
             return payload
+        payload = self._persist_large_json_result(payload, call_id=call_id)
+        if isinstance(app_descriptor, dict) and payload.get("success") is True:
+            app_descriptor["initial_result"] = payload.get("data")
+            self._emit_trace(
+                "harness_mcp_app_view",
+                {
+                    "tool_name": name,
+                    "mcp_app": app_descriptor,
+                },
+            )
+        return payload
+
+    def _persist_large_json_result(
+        self,
+        payload: dict[str, Any],
+        *,
+        call_id: str,
+    ) -> dict[str, Any]:
+        """Keep large knowledge/tool JSON out of the isolated model transcript."""
+
         data = payload.get("data")
         if not isinstance(data, (dict, list)):
             return payload
@@ -1015,7 +1053,7 @@ class HarnessCapabilityInvoker:
         if not stored.success:
             return _failure(
                 "TOOL_RESULT_PERSIST_FAILED",
-                "外部工具已返回结果，但完整 JSON 无法写入当前 TaskFrame 沙箱。",
+                "能力已返回结果，但完整 JSON 无法写入当前 TaskFrame 沙箱。",
                 cause={
                     "code": (
                         stored.error.code
@@ -1031,12 +1069,16 @@ class HarnessCapabilityInvoker:
             )
         stored_data = dict(stored.data or {})
         relative_path = str(stored_data.get("path") or "").strip()
-        payload["data"] = {
+        reference = {
             "kind": _SANDBOX_JSON_FILE_KIND,
             "sandbox_path": _sandbox_path(relative_path),
             "size": stored_data.get("size"),
             "sha256": stored_data.get("sha256"),
         }
+        payload["data"] = reference
+        app_descriptor = payload.get("mcp_app")
+        if isinstance(app_descriptor, dict):
+            app_descriptor["initial_result"] = dict(reference)
         return payload
 
     def _resolve_json_tool_result_references(
@@ -1156,12 +1198,13 @@ class HarnessCapabilityInvoker:
 
 
 def _workspace_root(
-    tenant_id: str, session_id: str, task_frame_id: str
+    tenant_id: str, session_id: str, task_frame_id: str, *, db: Session | None = None
 ) -> Path:
     return harness_task_workspace_path(
         tenant_id=tenant_id,
         session_id=session_id,
         task_frame_id=task_frame_id,
+        db=db,
     )
 
 

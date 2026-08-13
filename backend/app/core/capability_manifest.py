@@ -26,6 +26,7 @@ from app.db.models import (
     MCPServer,
     Skill,
     Tool,
+    UIConfig,
 )
 from app.harness import build_file_tool_registry, register_command_tools
 from app.harness.sandbox import available_backend
@@ -60,6 +61,8 @@ class CapabilityManifestBuilder:
         unavailable: list[CapabilityDescriptor] = []
 
         available.extend(_internal_capability_descriptors())
+        ui_config = self.db.get(UIConfig, tenant_id)
+        sandbox_enabled = bool(getattr(ui_config, "sandbox_enabled", False))
 
         builtin_registry = build_file_tool_registry()
         register_command_tools(builtin_registry)
@@ -77,7 +80,17 @@ class CapabilityManifestBuilder:
                     metadata={
                         "provider": ("builtin.command" if is_command else "builtin.fs"),
                         "side_effect": spec.side_effect,
-                        **({"sandbox": available_backend() or "unavailable"} if is_command else {}),
+                        **(
+                            {
+                                "sandbox": (
+                                    available_backend() or "unavailable"
+                                    if sandbox_enabled
+                                    else "disabled_by_admin"
+                                )
+                            }
+                            if is_command
+                            else {}
+                        ),
                     },
                 )
             )
@@ -130,6 +143,7 @@ class CapabilityManifestBuilder:
                     },
                     metadata={
                         "slug": row.slug,
+                        "display_name": row.name,
                         "content_digest": general_skill_snapshot_digest(row),
                         "package_digest": package_from_row(row).digest,
                         "execution_policy": "inspect_then_decide",
@@ -144,6 +158,13 @@ class CapabilityManifestBuilder:
         visible_tools = visible_tool_rows(self.db, tenant_id, agent_id, include_inactive=False)
         tool_by_ref = {ref: row for row in visible_tools for ref in (row.id, row.name)}
         for row in visible_tools:
+            app_config = (row.config_json or {}).get("mcp_apps")
+            if isinstance(app_config, dict):
+                visibility = app_config.get("visibility")
+                if isinstance(visibility, list) and "model" not in visibility:
+                    # App-only controls stay callable from their isolated view but are not
+                    # advertised to the conversation model.
+                    continue
             scope = _scope(row)
             if scope is None:
                 unavailable.append(
@@ -186,6 +207,7 @@ class CapabilityManifestBuilder:
                         "tool_type": row.tool_type,
                         "method": row.method,
                         "source_tool_name": row.name,
+                        "display_name": row.display_name or row.name,
                         "content_digest": tool_snapshot_digest(self.db, row),
                         "sop_explicitly_allowed": explicitly_allowed,
                     },

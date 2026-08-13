@@ -353,12 +353,16 @@ export type UIConfigRead = {
   show_tool_trace: boolean;
   reflection_max_rounds: number;
   agent_loop_max_actions: number;
+  sandbox_enabled: boolean;
+  harness_storage_path: string;
+  effective_harness_storage_path: string;
+  restart_scheduled?: boolean;
   sandbox_network_mode: 'all' | 'allowlist' | 'deny';
   sandbox_allowed_domains: string[];
   sandbox_backend?: string | null;
   sandbox_setup_required?: boolean;
   sandbox_setup_instructions?: string | null;
-  sandbox_status?: 'ready' | 'unavailable' | 'degraded';
+  sandbox_status?: 'ready' | 'unavailable' | 'degraded' | 'disabled';
   sandbox_status_code?: string | null;
   sandbox_status_message?: string | null;
   sandbox_status_remediation?: string | null;
@@ -407,6 +411,7 @@ export type ToolRead = {
 };
 
 export type MCPTransport = 'stdio' | 'streamable_http' | 'sse' | 'builtin';
+export type MCPAppsMode = 'disabled' | 'auto';
 
 export type MCPServerConnection = {
   transport: MCPTransport;
@@ -426,6 +431,9 @@ export type MCPServerRead = {
   description?: string;
   bucket: string;
   connection: MCPServerConnection;
+  apps_mode: MCPAppsMode;
+  apps_negotiated: boolean;
+  negotiated_capabilities: Record<string, unknown>;
   capability_scope?: CapabilityScope;
   enabled: boolean;
   last_synced_at?: string | null;
@@ -436,9 +444,13 @@ export type MCPServerRead = {
 
 export type MCPDiscoveredTool = {
   name: string;
+  title: string;
   description: string;
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
+  annotations: Record<string, unknown>;
+  meta: Record<string, unknown>;
+  app?: { resource_uri: string; visibility: string[] } | null;
   imported: boolean;
   tool_id?: string | null;
   enabled?: boolean | null;
@@ -448,6 +460,8 @@ export type MCPDiscoveredTool = {
 export type MCPDiscoverResponse = {
   success: boolean;
   tools: MCPDiscoveredTool[];
+  server_capabilities: Record<string, unknown>;
+  server_info: Record<string, unknown>;
   error?: { code: string; message: string } | null;
 };
 
@@ -549,6 +563,14 @@ export type ChatAttachmentRead = {
   sha256?: string | null;
   python_summary?: string | null;
   error?: string | null;
+};
+
+export type ChatSlashCommand = {
+  kind: 'sop' | 'skill' | 'tool';
+  target: string;
+  label: string;
+  description: string;
+  command: string;
 };
 
 export type KnowledgeCitation = {

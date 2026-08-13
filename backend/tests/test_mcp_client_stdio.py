@@ -224,9 +224,13 @@ def test_stdio_real_node_process_round_trip() -> None:
     assert tools == [
         {
             "name": "windows_echo",
+            "title": "",
             "description": "Windows 中文回声",
             "input_schema": {},
             "output_schema": {},
+            "annotations": {},
+            "meta": {},
+            "app": None,
         }
     ]
 

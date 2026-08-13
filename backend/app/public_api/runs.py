@@ -61,6 +61,8 @@ _TRACE_EVENT_MAP = {
     "capability_search_completed": "run.capability.search",
     "capability_described": "run.capability.described",
     "harness_tool_completed": "run.capability.completed",
+    "harness_action_created": "run.action.started",
+    "harness_action_failed": "run.action.failed",
     "harness_step_timeout": "run.sop.step.timeout",
     "knowledge_result": "run.citation",
     "tool_result": "run.tool.completed",
@@ -70,6 +72,7 @@ _TRACE_EVENT_MAP = {
     "general_skill_run_finished": "run.skill.completed",
     "agent_loop_continued": "run.loop.continued",
     "agent_loop_completed": "run.loop.completed",
+    "error_occurred": "run.failed",
     "human_handoff_created": "handoff.created",
 }
 _SENSITIVE_KEYS = {
@@ -307,11 +310,29 @@ def _relay_agent_events(
     for event in rows:
         public_type = _TRACE_EVENT_MAP.get(event.event_type)
         if public_type:
+            event_data = _redact(dict(event.payload_json or {}))
+            if public_type == "run.output.completed":
+                assistant = db.exec(
+                    select(Message)
+                    .where(
+                        Message.tenant_id == job.tenant_id,
+                        Message.session_id == session_id,
+                        Message.role == "assistant",
+                    )
+                    .order_by(Message.created_at.desc())
+                ).first()
+                citations = (
+                    list((assistant.metadata_json or {}).get("knowledge_citations") or [])
+                    if assistant
+                    else []
+                )
+                if citations:
+                    event_data["citations"] = _redact(citations)
             update_job(
                 db,
                 job,
                 event_type=public_type,
-                event_data=_redact(dict(event.payload_json or {})),
+                event_data=event_data,
             )
         cursor = (event.created_at, event.id)
     return cursor
@@ -502,6 +523,7 @@ def download_run_artifact(
                 tenant_id=row.tenant_id,
                 session_id=row.session_id,
                 task_frame_id=task_frame_id,
+                db=db,
             ),
             normalized,
         )

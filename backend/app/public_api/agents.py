@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from sqlmodel import Session, select
 
 from app.agents.schema import (
-    AgentModelBindingInput,
     AgentModelsUpdateRequest,
     AgentProfileCreateRequest,
     AgentProfileUpdateRequest,
@@ -15,7 +14,7 @@ from app.api import agents as internal_agents
 from app.agents.branching import visible_skill
 from app.core.capability_manifest import CapabilityManifestBuilder
 from app.db import get_session
-from app.db.models import AgentModelBinding, AgentProfile, ModelConfig
+from app.db.models import AgentProfile, ModelConfig
 from app.public_api.auth import (
     PublicPrincipal,
     enforce_agent_access,
@@ -207,19 +206,19 @@ def get_agent_models(
     agent = db.get(AgentProfile, agent_id)
     if not agent or agent.tenant_id != principal.tenant_id:
         raise PublicAPIError(404, "AGENT_NOT_FOUND", "Agent not found.")
-    rows = db.exec(
-        select(AgentModelBinding)
-        .where(
-            AgentModelBinding.tenant_id == principal.tenant_id,
-            AgentModelBinding.agent_id == agent_id,
+    default = db.exec(
+        select(ModelConfig).where(
+            ModelConfig.tenant_id == principal.tenant_id,
+            ModelConfig.is_default == True,  # noqa: E712
+            ModelConfig.enabled == True,  # noqa: E712
         )
-        .order_by(AgentModelBinding.role)
-    ).all()
+    ).first()
     return {
-        "data": [
-            {"role": row.role, "model_config_id": row.model_config_id}
-            for row in rows
-        ]
+        "data": (
+            [{"role": "default", "model_config_id": default.id, "effective": False}]
+            if default
+            else []
+        )
     }
 
 
@@ -231,24 +230,13 @@ def update_agent_models(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id, write=True)
-    for binding in body.bindings:
-        model = db.get(ModelConfig, binding.model_config_id)
-        if (
-            not model
-            or model.tenant_id != principal.tenant_id
-            or not model.enabled
-            or model.trust_status != "verified"
-        ):
-            raise PublicAPIError(
-                400,
-                "MODEL_NOT_VERIFIED",
-                f"Model {binding.model_config_id} is unavailable or unverified.",
-            )
+    # Retained as a compatibility reset endpoint. Per-employee model bindings are no longer
+    # accepted; the internal service removes any legacy rows and the agent inherits the default.
     internal_agents.update_agent_models(
         agent_id,
         AgentModelsUpdateRequest(
             tenant_id=principal.tenant_id,
-            bindings=[AgentModelBindingInput(**item.model_dump()) for item in body.bindings],
+            bindings=[],
         ),
         db,
         principal.actor_user,

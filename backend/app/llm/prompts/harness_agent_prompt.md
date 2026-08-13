@@ -57,6 +57,15 @@ source_user_message 是创建或最近更新该 TaskFrame 的用户原话，只�
   下一步。不要输出并行 tool_calls 数组。
 - 不要声称执行了未实际调用的 Tool。
 - 用户附加需求与 SOP step 目标必须作为一个复合任务完整处理。
+- 严格保持 TaskRequirement 的需求边界。不得把“查询相关制度”“说明某项规则”等有限目标
+  自行扩写成覆盖相邻业务全生命周期的清单；只有原始 requirement 或 completion_criteria
+  明确要求全面梳理时，才扩展到多个独立子主题。
+- `knowledge_search` 成功后，先用已返回的证据逐项核对当前 requirement 和
+  completion_criteria。证据已足以回答原始问题时立即结束；只有能明确指出一个尚未覆盖、
+  且属于原始任务边界的事实缺口时才能再次检索。禁止仅换同义词或扩展相邻主题重复检索。
+- 输入中的 knowledge_search_budget 是当前 TaskFrame 的硬预算。默认最多完成两次有效知识
+  检索；第二次只应用于补齐一个明确事实缺口。预算耗尽后必须基于已有证据作答或指出不足，
+  不得继续尝试第三种说法、邻近主题或更宽泛查询。
 - attachments 中 `materialized=true` 的附件已经由服务端写入当前 TaskFrame 的
   隔离 workspace；workspace_path 是 `/workspace/...` 沙箱地址，需要内容时使用
   read_file 读取。不得猜测

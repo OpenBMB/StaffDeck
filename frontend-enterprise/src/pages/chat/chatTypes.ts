@@ -36,6 +36,20 @@ export type TraceTool = {
 
 export type CotTraceIconName = 'advance' | 'execute' | 'generated' | 'judge' | 'loading' | 'select' | 'tool';
 
+export type MCPAppViewDescriptor = {
+  server_id: string;
+  resource_uri: string;
+  tool_name: string;
+  visibility: string[];
+  mime_type: string;
+  tenant_id?: string | null;
+  agent_id?: string | null;
+  session_id?: string | null;
+  active_skill_id?: string | null;
+  initial_result?: unknown;
+  initial_meta?: Record<string, unknown>;
+};
+
 export type TraceLine = {
   id: string;
   kind: 'thinking' | 'decision' | 'skill' | 'tool' | 'code' | 'knowledge';
@@ -51,6 +65,7 @@ export type TraceLine = {
   icon?: CotTraceIconName;
   placeholder?: boolean;
   provisional?: boolean;
+  mcpApp?: MCPAppViewDescriptor;
 };
 
 export type TurnTrace = {

@@ -235,6 +235,17 @@ describe('chat history consumer contract', () => {
         data: { structured_result: { temperature: 29 } },
       },
     });
+    const appView = harnessEventTraceLine('harness_mcp_app_view', {
+      task_frame_id: 'task-weather',
+      tool_name: 'weather.card',
+      mcp_app: {
+        server_id: 'server-weather',
+        resource_uri: 'ui://weather/card',
+        tool_name: 'weather.card',
+        visibility: ['model', 'app'],
+        mime_type: 'text/html;profile=mcp-app',
+      },
+    });
     const finished = harnessEventTraceLine('task_frame_finished', {
       task_frame_id: 'task-weather',
       status: 'completed',
@@ -259,6 +270,12 @@ describe('chat history consumer contract', () => {
       outputTitle: '查看能力结果',
     });
     expect(completed?.output).toContain('"temperature": 29');
+    expect(appView).toMatchObject({
+      id: 'harness_mcp_app_task-weather_weather.card',
+      text: '展示 MCP App weather.card',
+      state: 'completed',
+      mcpApp: { resource_uri: 'ui://weather/card' },
+    });
     expect(finished).toMatchObject({
       id: 'harness_frame_task-weather',
       text: '任务执行完成',

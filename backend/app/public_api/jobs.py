@@ -13,7 +13,16 @@ from sqlmodel import Session, select
 from app.async_jobs import enqueue_async_job
 from app.config import get_settings
 from app.db import engine, get_session
-from app.db.models import APIIdempotencyRecord, APIJob, APIJobEvent, WebhookDelivery, utc_now
+from app.db.models import (
+    APIIdempotencyRecord,
+    APIJob,
+    APIJobEvent,
+    AgentEvent,
+    ChatSession,
+    WebhookDelivery,
+    new_id,
+    utc_now,
+)
 from app.public_api.auth import PublicPrincipal, get_public_principal
 from app.public_api.errors import PublicAPIError
 from app.public_api.schemas import JobRead
@@ -148,6 +157,116 @@ def update_job(
     _commit_and_dispatch(db)
 
 
+def _run_turn_id(db: Session, job: APIJob) -> str:
+    rows = db.exec(
+        select(AgentEvent)
+        .where(
+            AgentEvent.tenant_id == job.tenant_id,
+            AgentEvent.session_id == job.session_id,
+        )
+        .order_by(AgentEvent.created_at.desc(), AgentEvent.id.desc())
+        .limit(200)
+    ).all()
+    for row in rows:
+        payload = dict(row.payload_json or {})
+        if str(payload.get("client_turn_id") or "") != job.id:
+            continue
+        return str(payload.get("user_message_id") or payload.get("turn_id") or job.id)
+    return job.id
+
+
+def _finalize_run_session(
+    db: Session,
+    job: APIJob,
+    *,
+    terminal_status: str,
+    error: dict[str, Any] | None = None,
+) -> None:
+    if job.kind != "run" or not job.session_id:
+        return
+    chat_session = db.get(ChatSession, job.session_id)
+    if not chat_session or chat_session.tenant_id != job.tenant_id:
+        return
+    now = utc_now()
+    if chat_session.status in {"running", "executing"}:
+        chat_session.status = "active"
+        chat_session.updated_at = now
+        db.add(chat_session)
+    if terminal_status == "succeeded":
+        return
+    event_type = "stream_cancelled" if terminal_status == "cancelled" else "stream_interrupted"
+    existing = db.exec(
+        select(AgentEvent)
+        .where(
+            AgentEvent.tenant_id == job.tenant_id,
+            AgentEvent.session_id == job.session_id,
+            AgentEvent.event_type == event_type,
+        )
+        .order_by(AgentEvent.created_at.desc(), AgentEvent.id.desc())
+        .limit(100)
+    ).all()
+    if any(str((row.payload_json or {}).get("job_id") or "") == job.id for row in existing):
+        return
+    error_payload = dict(error or {})
+    turn_id = _run_turn_id(db, job)
+    db.add(
+        AgentEvent(
+            id=new_id("evt"),
+            tenant_id=job.tenant_id,
+            session_id=job.session_id,
+            event_type=event_type,
+            payload_json={
+                "job_id": job.id,
+                "client_turn_id": job.id,
+                "turn_id": turn_id,
+                "user_message_id": turn_id,
+                "status": terminal_status,
+                "code": str(error_payload.get("code") or "RUN_CANCELLED"),
+                "message": str(error_payload.get("message") or "Run cancelled."),
+            },
+            created_at=now,
+        )
+    )
+
+
+def _reconcile_terminal_run_sessions(db: Session) -> None:
+    active_session_ids = {
+        session_id
+        for session_id in db.exec(
+            select(APIJob.session_id).where(
+                APIJob.kind == "run",
+                APIJob.status.in_(["queued", "running"]),  # type: ignore[attr-defined]
+                APIJob.session_id.is_not(None),
+            )
+        ).all()
+        if session_id
+    }
+    terminal_jobs = db.exec(
+        select(APIJob)
+        .where(
+            APIJob.kind == "run",
+            APIJob.status.in_(["succeeded", "failed", "cancelled"]),  # type: ignore[attr-defined]
+            APIJob.session_id.is_not(None),
+        )
+        .order_by(APIJob.updated_at.desc())
+    ).all()
+    reconciled: set[str] = set()
+    for job in terminal_jobs:
+        session_id = str(job.session_id or "")
+        if not session_id or session_id in active_session_ids or session_id in reconciled:
+            continue
+        chat_session = db.get(ChatSession, session_id)
+        if not chat_session or chat_session.status not in {"running", "executing"}:
+            continue
+        reconciled.add(session_id)
+        _finalize_run_session(
+            db,
+            job,
+            terminal_status=job.status,
+            error=dict(job.error_json or {}),
+        )
+
+
 def run_job(job_id: str) -> None:
     with Session(engine) as db:
         job = db.get(APIJob, job_id)
@@ -159,6 +278,12 @@ def run_job(job_id: str) -> None:
             job.stage = "failed"
             job.error_json = {"code": "JOB_HANDLER_MISSING", "message": job.kind}
             job.finished_at = utc_now()
+            _finalize_run_session(
+                db,
+                job,
+                terminal_status="failed",
+                error=dict(job.error_json),
+            )
             emit_job_event(db, job, "job.failed", dict(job.error_json))
             _commit_and_dispatch(db)
             return
@@ -179,8 +304,11 @@ def run_job(job_id: str) -> None:
             job.status = "succeeded"
             job.stage = "completed"
             job.progress = 1.0
+            job.error_json = {}
+            job.retryable = False
             job.finished_at = utc_now()
             job.updated_at = utc_now()
+            _finalize_run_session(db, job, terminal_status="succeeded")
             emit_job_event(db, job, f"{job.kind}.succeeded", {"job_id": job.id})
             _commit_and_dispatch(db)
         except JobCancelled:
@@ -188,6 +316,7 @@ def run_job(job_id: str) -> None:
             job.stage = "cancelled"
             job.finished_at = utc_now()
             job.updated_at = utc_now()
+            _finalize_run_session(db, job, terminal_status="cancelled")
             emit_job_event(db, job, f"{job.kind}.cancelled", {"job_id": job.id})
             _commit_and_dispatch(db)
         except Exception as exc:  # noqa: BLE001 - persisted public job boundary.
@@ -204,6 +333,12 @@ def run_job(job_id: str) -> None:
             }
             job.finished_at = utc_now()
             job.updated_at = utc_now()
+            _finalize_run_session(
+                db,
+                job,
+                terminal_status="failed",
+                error=dict(job.error_json),
+            )
             emit_job_event(db, job, f"{job.kind}.failed", dict(job.error_json))
             _commit_and_dispatch(db)
 
@@ -350,8 +485,15 @@ def recover_public_jobs() -> None:
             }
             job.finished_at = utc_now()
             job.updated_at = utc_now()
+            _finalize_run_session(
+                db,
+                job,
+                terminal_status="failed",
+                error=dict(job.error_json),
+            )
             db.add(job)
             emit_job_event(db, job, f"{job.kind}.failed", dict(job.error_json))
+        _reconcile_terminal_run_sessions(db)
         queued = db.exec(select(APIJob).where(APIJob.status == "queued")).all()
         _commit_and_dispatch(db)
     for job in queued:

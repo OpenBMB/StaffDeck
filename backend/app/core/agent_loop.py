@@ -33,6 +33,7 @@ from app.core.response_generator import (
     model_failure_suggestion,
 )
 from app.core.skill_runtime import SkillRuntime
+from app.core.slash_commands import SlashCommandError
 from app.db.models import (
     AgentProfile,
     ChatSession,
@@ -60,6 +61,7 @@ from app.memory.service import MemoryService
 from app.observability import EventLog
 from app.observability.spans import llm_operation
 from app.session.helpers import public_session
+from app.session.origin import PILOTDECK_GROUP_CHAT_CHANNEL
 from app.session.session_schema import (
     ChatTurnRequest,
     ChatTurnResponse,
@@ -177,7 +179,7 @@ class AgentLoop:
                 step_result=step_result,
                 session_state=public_session(chat_session),
             )
-        except AgentLoopPreconditionError as exc:
+        except (AgentLoopPreconditionError, SlashCommandError) as exc:
             chat_session = engine.session
             engine.mark_interrupted(exc.code, exc.message)
             chat_session = chat_session or self._get_or_create_session(request)
@@ -938,6 +940,11 @@ class AgentLoop:
                 tenant_id=request.tenant_id,
                 user_id=request.user_id,
                 agent_id=request.agent_id,
+                channel=(
+                    PILOTDECK_GROUP_CHAT_CHANNEL
+                    if request.channel == PILOTDECK_GROUP_CHAT_CHANNEL
+                    else None
+                ),
             )
             self.db.add(chat_session)
             self.db.flush()

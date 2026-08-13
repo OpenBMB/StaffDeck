@@ -35,6 +35,7 @@ from app.public_api import create_public_api_app
 from app.public_api.jobs import cleanup_public_api_records, recover_public_jobs
 from app.public_api.webhooks import enqueue_due_webhook_deliveries
 from app.public_api.maintenance import start_public_api_maintenance, stop_public_api_maintenance
+from app.runtime_lock import acquire_runtime_instance_lock, release_runtime_instance_lock
 from app.version import app_version
 
 settings = get_settings()
@@ -58,24 +59,32 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup() -> None:
-    init_db()
-    with Session(engine) as db:
-        seed_demo_data(db)
-    start_background_worker()
-    start_channel_services()
-    if settings.public_api_enabled:
-        recover_public_jobs()
-        cleanup_public_api_records()
-        enqueue_due_webhook_deliveries()
-        start_public_api_maintenance()
+    acquire_runtime_instance_lock()
+    try:
+        init_db()
+        with Session(engine) as db:
+            seed_demo_data(db)
+        start_background_worker()
+        start_channel_services()
+        if settings.public_api_enabled:
+            recover_public_jobs()
+            cleanup_public_api_records()
+            enqueue_due_webhook_deliveries()
+            start_public_api_maintenance()
+    except Exception:
+        release_runtime_instance_lock()
+        raise
 
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
-    stop_public_api_maintenance()
-    stop_channel_services()
-    stop_background_worker()
-    shutdown_async_jobs()
+    try:
+        stop_public_api_maintenance()
+        stop_channel_services()
+        stop_background_worker()
+        shutdown_async_jobs()
+    finally:
+        release_runtime_instance_lock()
 
 
 @app.get("/api/health", tags=["health"])

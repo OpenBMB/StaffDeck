@@ -581,8 +581,10 @@ class UIConfig(SQLModel, table=True):
     show_tool_trace: bool = True
     reflection_max_rounds: int = 1
     agent_loop_max_actions: int = 32
+    sandbox_enabled: bool = False
     sandbox_network_mode: str = Field(default="all")
     sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    harness_storage_path: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -698,6 +700,12 @@ class MCPServer(SQLModel, table=True):
     args_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     env_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     cwd: Optional[str] = None
+    # MCP Apps is opt-in so legacy standard MCP servers retain identical behavior.
+    apps_mode: str = Field(default="disabled", index=True)
+    negotiated_capabilities_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+    )
     # 最近一次发现的原始工具定义（预览/审计用）
     discovered_tools_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     last_synced_at: Optional[datetime] = None

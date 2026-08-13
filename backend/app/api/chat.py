@@ -18,15 +18,17 @@ from sqlalchemy import or_
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
-from app.agents.branching import model_for_agent
+from app.agents.branching import model_for_agent, visible_published_skills
 from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
+from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.cancellation import cancel_chat_turn
 from app.core.harness_session_cleanup import (
     harness_task_workspace_path,
     remove_harness_session_workspace,
     stage_harness_session_record_deletion,
 )
+from app.core.slash_commands import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
 from app.db.models import (
     AgentEvent,
@@ -69,6 +71,7 @@ from app.session.attachments import (
     validate_chat_turn_attachments,
 )
 from app.session.helpers import public_session
+from app.session.origin import pilotdeck_origin_session_ids
 from app.session.session_schema import (
     ChatAttachmentRead,
     ChatSessionCreateRequest,
@@ -912,6 +915,30 @@ def _validate_chat_turn_attachments(
     return request.model_copy(update={"attachments": attachments})
 
 
+@router.get("/slash-commands", response_model=list[SlashCommandRead])
+def list_slash_commands(
+    tenant_id: str = Query(...),
+    agent_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[SlashCommandRead]:
+    _ensure_request_tenant(tenant_id, current_user)
+    agent = _ensure_chat_agent_available(
+        db,
+        tenant_id,
+        agent_id,
+        current_user,
+    )
+    skills = visible_published_skills(db, tenant_id, agent.id)
+    manifest = CapabilityManifestBuilder(db).build(
+        tenant_id,
+        agent.id,
+        None,
+        None,
+    )
+    return slash_command_catalog(skills, manifest)
+
+
 @router.post("/attachments", response_model=list[ChatAttachmentRead])
 async def upload_chat_attachments(
     tenant_id: str = Query(...),
@@ -933,7 +960,10 @@ async def upload_chat_attachments(
         if len(data) > MAX_CHAT_ATTACHMENT_BYTES:
             raise HTTPException(status_code=413, detail=f"{file.filename or '文件'} 超过上传大小限制")
         attachment = parse_chat_attachment(
-            file.filename or "uploaded-file", file.content_type, data
+            file.filename or "uploaded-file",
+            file.content_type,
+            data,
+            extract_text=False,
         )
         parsed.append(
             stage_chat_attachment(
@@ -1786,6 +1816,12 @@ def list_chat_sessions(
         .where(ChatSession.tenant_id == tenant_id, ChatSession.user_id == current_user.id)
         .order_by(ChatSession.updated_at.desc())
     ).all()
+    hidden_session_ids = pilotdeck_origin_session_ids(
+        db,
+        tenant_id,
+        (row.id for row in rows),
+    )
+    rows = [row for row in rows if row.id not in hidden_session_ids]
     _cleanup_stale_completed_sessions(db, tenant_id, rows)
     scheduled_session_ids = {
         session_id
@@ -1865,6 +1901,7 @@ def delete_chat_session(
         remove_harness_session_workspace(
             tenant_id=tenant_id,
             session_id=session_id,
+            db=db,
         )
     except OSError:
         logger.warning(
@@ -1944,6 +1981,7 @@ def download_harness_artifact(
                 tenant_id=tenant_id,
                 session_id=session_id,
                 task_frame_id=task_frame_id,
+                db=db,
             ),
             path,
         )
@@ -2014,24 +2052,31 @@ def list_human_handoffs(
 ) -> list[HumanHandoffRead]:
     _ensure_request_tenant(tenant_id, current_user)
     ensure_tenant(db, tenant_id)
-    stmt = select(HumanHandoffRequest).where(HumanHandoffRequest.tenant_id == tenant_id)
+    conditions = [HumanHandoffRequest.tenant_id == tenant_id]
     if status != "all":
-        stmt = stmt.where(HumanHandoffRequest.status == status)
+        conditions.append(HumanHandoffRequest.status == status)
     if not is_admin_user(current_user):
         if status == "pending":
-            stmt = stmt.where(
+            conditions.append(
                 or_(
                     HumanHandoffRequest.assignee_user_id == current_user.id,
                     HumanHandoffRequest.assignee_user_id.is_(None),
                 )
             )
         else:
-            stmt = stmt.where(
+            conditions.append(
                 or_(
                     HumanHandoffRequest.assignee_user_id == current_user.id,
                     HumanHandoffRequest.requester_user_id == current_user.id,
                 )
             )
+    candidate_session_ids = db.exec(
+        select(HumanHandoffRequest.session_id).where(*conditions)
+    ).all()
+    hidden_session_ids = pilotdeck_origin_session_ids(db, tenant_id, candidate_session_ids)
+    stmt = select(HumanHandoffRequest).where(*conditions)
+    if hidden_session_ids:
+        stmt = stmt.where(HumanHandoffRequest.session_id.notin_(hidden_session_ids))
     rows = db.exec(stmt.order_by(HumanHandoffRequest.updated_at.desc()).limit(200)).all()
     return [human_handoff_read(row) for row in rows]
 
@@ -2795,6 +2840,19 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
                 "state": "completed",
             }
         return None
+    if event_type == "harness_mcp_app_view":
+        mcp_app = payload.get("mcp_app") if isinstance(payload.get("mcp_app"), dict) else None
+        if mcp_app is None:
+            return None
+        app_tool_name = str(payload.get("tool_name") or mcp_app.get("tool_name") or "").strip()
+        return {
+            "id": f"harness_mcp_app_{frame_id}_{event.id}",
+            "kind": "tool",
+            "text": f"展示 MCP App {app_tool_name}" if app_tool_name else "展示 MCP App",
+            "detail": "隔离视图；加载失败时保留文本结果",
+            "mcpApp": mcp_app,
+            "state": "completed",
+        }
     if event_type == "harness_tool_completed":
         success = bool(payload.get("success"))
         error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
@@ -2806,7 +2864,14 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
             )
             if part
         )
-        output = _trace_payload_text(payload.get("result"))
+        result_payload = payload.get("result")
+        output = _trace_payload_text(result_payload)
+        mcp_app = (
+            result_payload.get("mcp_app")
+            if isinstance(result_payload, dict)
+            and isinstance(result_payload.get("mcp_app"), dict)
+            else None
+        )
         return {
             "id": f"harness_action_{frame_id}_{iteration or event.id}",
             "kind": "tool",
@@ -2824,6 +2889,7 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
             "outputLanguage": _trace_payload_language(output) if output else None,
             "outputTitle": "查看能力结果" if output else None,
             "collapsible": bool(output),
+            "mcpApp": mcp_app,
             "state": "completed" if success else "failed",
         }
     if event_type == "harness_step_timeout":
@@ -3068,6 +3134,7 @@ def _event_trace_line(
         "task_frame_started",
         "task_frame_finished",
         "harness_action_created",
+        "harness_mcp_app_view",
         "harness_tool_completed",
         "harness_step_timeout",
     }:

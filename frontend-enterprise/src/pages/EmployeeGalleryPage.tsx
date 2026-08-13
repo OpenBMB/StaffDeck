@@ -136,12 +136,16 @@ export default function EmployeeGalleryPage({
 
   async function updateGalleryState(row: AgentProfileRead, published: boolean) {
     try {
-      const metadata = {
+      const metadata: Record<string, unknown> = {
         ...(row.metadata || {}),
         published_to_gallery: published,
         gallery_published_at: published ? new Date().toISOString() : undefined,
         gallery_published_by: published ? currentUser?.username : undefined,
       };
+      if (published) {
+        delete metadata.gallery_unpublished_at;
+        delete metadata.gallery_unpublished_by;
+      }
       await api.put<AgentProfileRead>(`/api/enterprise/agents/${row.id}`, {
         tenant_id: TENANT_ID,
         metadata,

@@ -7,18 +7,29 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.tools import (
+    MCP_APP_RESOURCE_MAX_BYTES,
+    _extract_app_resource,
     create_mcp_server,
+    call_mcp_app_tool,
     delete_mcp_server,
     discover_mcp_tools,
     discover_mcp_tools_adhoc,
+    get_mcp_app_resource,
     list_tools,
     sync_mcp_tools,
 )
 from app.db.models import MCPServer, Tenant, Tool, User
 from app.db.models import AgentProfile, AgentResourceBinding
 from app.tools.tool_executor import ToolExecutor
+from app.tools.mcp_client import (
+    MCPClientError,
+    discover_mcp_server,
+    execute_mcp_tool_result,
+    read_mcp_resource,
+)
 from app.tools.tool_schema import (
     MCPDiscoverRequest,
+    MCPAppToolCallRequest,
     MCPServerConnection,
     MCPServerCreateRequest,
     MCPSyncRequest,
@@ -76,6 +87,296 @@ def test_discover_stdio_mcp_server_lists_tools() -> None:
         assert response.success is True
         names = {tool.name for tool in response.tools}
         assert {"echo", "sum", "product_lookup"} <= names
+
+
+def test_mcp_apps_negotiation_preserves_metadata_and_resource() -> None:
+    config = {
+        "transport": "stdio",
+        "command": sys.executable,
+        "args": [str(_mock_mcp_apps_server_path())],
+        "apps_mode": "auto",
+    }
+
+    discovery = discover_mcp_server(config)
+    tool = discovery["tools"][0]
+    assert "io.modelcontextprotocol/ui" in discovery["server_capabilities"]["extensions"]
+    assert tool["app"] == {
+        "resource_uri": "ui://staffdeck/demo-card",
+        "visibility": ["model", "app"],
+    }
+    assert tool["annotations"]["readOnlyHint"] is True
+
+    result = execute_mcp_tool_result(config, {"message": "hello"}, tool_name="render_card")
+    assert result["data"] == {"message": "hello"}
+    assert result["meta"] == {"ui": {"render": True}}
+
+    resource = read_mcp_resource(config, "ui://staffdeck/demo-card")
+    assert resource["contents"][0]["mimeType"] == "text/html;profile=mcp-app"
+
+
+def test_mcp_apps_capability_is_not_advertised_when_disabled() -> None:
+    discovery = discover_mcp_server(
+        {
+            "transport": "stdio",
+            "command": sys.executable,
+            "args": [str(_mock_mcp_apps_server_path())],
+            "apps_mode": "disabled",
+        }
+    )
+
+    assert discovery["server_capabilities"]["extensions"] == {}
+
+
+def test_mcp_app_resource_limit_is_ten_mib() -> None:
+    assert MCP_APP_RESOURCE_MAX_BYTES == 10 * 1024 * 1024
+    accepted = "x" * (2 * 1024 * 1024 + 1)
+    text, _meta = _extract_app_resource(
+        {
+            "contents": [
+                {
+                    "uri": "ui://staffdeck/large-card",
+                    "mimeType": "text/html;profile=mcp-app",
+                    "text": accepted,
+                }
+            ]
+        },
+        "ui://staffdeck/large-card",
+    )
+    assert text == accepted
+
+    with pytest.raises(MCPClientError, match="10 MiB"):
+        _extract_app_resource(
+            {
+                "contents": [
+                    {
+                        "uri": "ui://staffdeck/too-large",
+                        "mimeType": "text/html;profile=mcp-app",
+                        "text": "x" * (MCP_APP_RESOURCE_MAX_BYTES + 1),
+                    }
+                ]
+            },
+            "ui://staffdeck/too-large",
+        )
+
+
+def test_synced_mcp_app_renders_and_calls_read_only_tool() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_overall",
+                tenant_id="tenant_demo",
+                name="整体智能体",
+                is_overall=True,
+            )
+        )
+        db.commit()
+        server = create_mcp_server(
+            MCPServerCreateRequest(
+                tenant_id="tenant_demo",
+                name="apps_demo",
+                connection=MCPServerConnection(
+                    transport="stdio",
+                    command=sys.executable,
+                    args=[str(_mock_mcp_apps_server_path())],
+                ),
+                apps_mode="auto",
+            ),
+            db,
+            _admin_user(),
+        )
+        discovery = discover_mcp_tools(
+            server.id,
+            MCPDiscoverRequest(tenant_id="tenant_demo"),
+            db,
+            _admin_user(),
+        )
+        assert discovery.success is True
+        assert discovery.tools[0].app is not None
+        sync_mcp_tools(
+            server.id,
+            MCPSyncRequest(tenant_id="tenant_demo", tool_names=["render_card"]),
+            db,
+            current_user=_admin_user(),
+        )
+
+        result = ToolExecutor(db).execute(
+            "tenant_demo",
+            ToolCall(name="apps_demo.render_card", arguments={"message": "hello"}),
+            agent_id="agent_overall",
+            session_id="session_demo",
+        )
+        assert result.success is True
+        assert result.mcp_app is not None
+        assert result.mcp_app.resource_uri == "ui://staffdeck/demo-card"
+        assert result.mcp_metadata == {"ui": {"render": True}}
+
+        resource = get_mcp_app_resource(
+            server.id,
+            "tenant_demo",
+            "ui://staffdeck/demo-card",
+            "agent_overall",
+            db,
+            _admin_user(),
+        )
+        assert "Demo App" in resource.text
+        assert resource.meta["ui"]["permissions"] == ["clipboard-write"]
+
+        app_call = call_mcp_app_tool(
+            server.id,
+            MCPAppToolCallRequest(
+                tenant_id="tenant_demo",
+                tool_name="render_card",
+                arguments={"message": "from app"},
+                agent_id="agent_overall",
+            ),
+            db,
+            _admin_user(),
+        )
+        assert app_call.success is True
+        assert app_call.result is not None
+        assert app_call.result.data == {"message": "from app"}
+        assert app_call.result.mcp_app is None
+
+
+def test_mcp_app_side_effect_call_requires_confirmation() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_overall",
+                tenant_id="tenant_demo",
+                name="整体智能体",
+                is_overall=True,
+            )
+        )
+        server = MCPServer(
+            id="server_apps_write",
+            tenant_id="tenant_demo",
+            name="apps_write",
+            transport="stdio",
+            command=sys.executable,
+            args_json=[str(_mock_mcp_apps_server_path())],
+            apps_mode="auto",
+            enabled=True,
+        )
+        db.add(server)
+        tool = Tool(
+            id="tool_apps_write",
+            tenant_id="tenant_demo",
+            name="apps_write.render_card",
+            display_name="render_card",
+            tool_type="mcp",
+            method="POST",
+            url="mcp://apps_write/render_card",
+            mcp_server_id=server.id,
+            config_json={
+                "tool": "render_card",
+                "mcp_apps": {
+                    "resource_uri": "ui://staffdeck/demo-card",
+                    "visibility": ["model", "app"],
+                },
+                "mcp_annotations": {},
+            },
+            enabled=True,
+        )
+        db.add(tool)
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_overall",
+                resource_type="tool",
+                resource_id=tool.id,
+                status="active",
+            )
+        )
+        db.commit()
+
+        response = call_mcp_app_tool(
+            server.id,
+            MCPAppToolCallRequest(
+                tenant_id="tenant_demo",
+                tool_name="render_card",
+                arguments={"message": "write"},
+                agent_id="agent_overall",
+            ),
+            db,
+            _admin_user(),
+        )
+
+        assert response.success is False
+        assert response.requires_confirmation is True
+
+
+def test_mcp_app_sop_specific_call_requires_active_sop() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_overall",
+                tenant_id="tenant_demo",
+                name="整体智能体",
+                is_overall=True,
+            )
+        )
+        server = MCPServer(
+            id="server_apps_sop",
+            tenant_id="tenant_demo",
+            name="apps_sop",
+            transport="stdio",
+            command=sys.executable,
+            args_json=[str(_mock_mcp_apps_server_path())],
+            apps_mode="auto",
+            enabled=True,
+        )
+        db.add(server)
+        tool = Tool(
+            id="tool_apps_sop",
+            tenant_id="tenant_demo",
+            name="apps_sop.render_card",
+            display_name="render_card",
+            tool_type="mcp",
+            method="POST",
+            url="mcp://apps_sop/render_card",
+            mcp_server_id=server.id,
+            config_json={
+                "tool": "render_card",
+                "mcp_apps": {
+                    "resource_uri": "ui://staffdeck/demo-card",
+                    "visibility": ["model", "app"],
+                },
+                "mcp_annotations": {"readOnlyHint": True},
+            },
+            capability_scope="sop_specific",
+            allowed_skills_json=["skill_allowed"],
+            enabled=True,
+        )
+        db.add(tool)
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_overall",
+                resource_type="tool",
+                resource_id=tool.id,
+                status="active",
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            call_mcp_app_tool(
+                server.id,
+                MCPAppToolCallRequest(
+                    tenant_id="tenant_demo",
+                    tool_name="render_card",
+                    arguments={"message": "read"},
+                    agent_id="agent_overall",
+                ),
+                db,
+                _admin_user(),
+            )
+
+        assert exc_info.value.status_code == 403
 
 
 def test_sync_mcp_tools_imports_tools_and_executes() -> None:
@@ -462,6 +763,10 @@ def test_delete_mcp_server_in_employee_scope_without_tools_returns_404() -> None
 
 def _mock_mcp_server_path() -> Path:
     return Path(__file__).resolve().parents[1] / "mock_servers" / "mcp_stdio_server.py"
+
+
+def _mock_mcp_apps_server_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "mock_servers" / "mcp_apps_stdio_server.py"
 
 
 def _test_session():

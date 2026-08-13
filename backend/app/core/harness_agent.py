@@ -25,6 +25,7 @@ from app.session.slot_policy import strip_router_generated_message_slots
 
 
 PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "harness_agent_prompt.md"
+MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK = 2
 ToolInvoker = Callable[[str, dict[str, Any]], dict[str, Any]]
 TraceSink = Callable[[str, dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
@@ -71,6 +72,7 @@ class HarnessTaskAgent:
         evidence_results: list[dict[str, Any]] = []
         capability_results: list[dict[str, Any]] = []
         satisfied_required_knowledge_ids: set[str] = set()
+        successful_knowledge_searches = 0
         artifacts: list[dict[str, Any]] = []
         allowed_names = requirement.capability_manifest.allowed_names()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
@@ -99,6 +101,15 @@ class HarnessTaskAgent:
                 "harness_transcript": transcript,
                 "iteration": iteration,
                 "remaining_actions": max_actions - iteration + 1,
+                "knowledge_search_budget": {
+                    "maximum_successful_calls": MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK,
+                    "successful_calls": successful_knowledge_searches,
+                    "remaining_successful_calls": max(
+                        0,
+                        MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK
+                        - successful_knowledge_searches,
+                    ),
+                },
             }
             if attachment_context is not None:
                 payload["conversation_context"] = attachment_context
@@ -230,20 +241,36 @@ class HarnessTaskAgent:
                 )
                 continue
 
-            try:
-                _raise_if_cancelled(is_cancelled)
-                result = invoke_tool(tool_name, dict(action.arguments or {}))
-                _raise_if_cancelled(is_cancelled)
-            except (HarnessExecutionCancelled, HarnessExecutionFenced):
-                raise
-            except Exception as exc:
+            if (
+                tool_name == "knowledge_search"
+                and successful_knowledge_searches
+                >= MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK
+            ):
                 result = {
                     "success": False,
                     "error": {
-                        "code": "HARNESS_TOOL_ERROR",
-                        "message": str(exc),
+                        "code": "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED",
+                        "message": (
+                            "当前 TaskFrame 已完成两次有效知识检索。请使用已有证据完成"
+                            "原始需求；不要扩展相邻主题或继续改写同义查询。"
+                        ),
                     },
                 }
+            else:
+                try:
+                    _raise_if_cancelled(is_cancelled)
+                    result = invoke_tool(tool_name, dict(action.arguments or {}))
+                    _raise_if_cancelled(is_cancelled)
+                except (HarnessExecutionCancelled, HarnessExecutionFenced):
+                    raise
+                except Exception as exc:
+                    result = {
+                        "success": False,
+                        "error": {
+                            "code": "HARNESS_TOOL_ERROR",
+                            "message": str(exc),
+                        },
+                    }
             bounded_result = _bounded_capability_result(tool_name, result)
             transcript.extend(
                 [
@@ -281,6 +308,8 @@ class HarnessTaskAgent:
             allowed_names.update(activated_names)
             _extend_dict_list(artifacts, result.get("artifacts"))
             if tool_name == "knowledge_search" and bool(result.get("success")):
+                if _has_usable_knowledge_evidence(result):
+                    successful_knowledge_searches += 1
                 requested_knowledge_ids = _string_list(
                     (action.arguments or {}).get("knowledge_base_ids")
                 )
@@ -292,9 +321,8 @@ class HarnessTaskAgent:
                 and bool(result.get("success"))
                 and isinstance(result.get("data"), dict)
             ):
-                citations.clear()
                 _extend_dict_list(citations, result.get("citations"))
-                evidence_results[:] = [dict(result["data"])]
+                evidence_results.append(dict(result["data"]))
             else:
                 _extend_dict_list(citations, result.get("citations"))
             if trace_sink:
@@ -374,6 +402,17 @@ def _missing_required_capabilities(
         if knowledge_base_id not in satisfied_required_knowledge_ids:
             missing.append(f"knowledge_search:{knowledge_base_id}")
     return missing
+
+
+def _has_usable_knowledge_evidence(result: dict[str, Any]) -> bool:
+    citations = result.get("citations")
+    if isinstance(citations, list) and any(isinstance(item, dict) for item in citations):
+        return True
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return False
+    evidence = data.get("evidence_pack")
+    return isinstance(evidence, list) and any(isinstance(item, dict) for item in evidence)
 
 
 def _finish_result(
@@ -497,6 +536,8 @@ def _bounded_capability_result(
         "data": result.get("data"),
         "error": result.get("error"),
     }
+    if isinstance(result.get("mcp_app"), dict):
+        payload["mcp_app"] = result["mcp_app"]
     serialized = json.dumps(
         payload,
         ensure_ascii=False,
@@ -505,13 +546,16 @@ def _bounded_capability_result(
     )
     if len(serialized) <= max_chars:
         return payload
-    return {
+    truncated = {
         "tool_name": tool_name,
         "success": bool(result.get("success")),
         "truncated": True,
         "preview": serialized[:max_chars],
         "error": result.get("error"),
     }
+    if isinstance(result.get("mcp_app"), dict):
+        truncated["mcp_app"] = result["mcp_app"]
+    return truncated
 
 
 def _string_list(value: object) -> list[str]:

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { SkillCard } from '../types';
 import {
+  normalizeSkillFlowWheelDelta,
+  reanchorSkillFlowConnection,
   skillNodeFlowPosition,
   withSkillNodeFlowPosition,
   withoutSkillEdgeAt,
@@ -52,5 +54,39 @@ describe('skill flow editor model', () => {
       { source_node_id: 'node3', next_node_id: 'node6', priority: 1 },
     ]);
     expect(original.edges).toHaveLength(2);
+  });
+
+  it('normalizes wheel units before panning the infinite canvas', () => {
+    expect(normalizeSkillFlowWheelDelta(3, 0, 900)).toBe(3);
+    expect(normalizeSkillFlowWheelDelta(3, 1, 900)).toBe(48);
+    expect(normalizeSkillFlowWheelDelta(1, 2, 900)).toBe(900);
+  });
+
+  it('reanchors an active connection after the canvas viewport changes', () => {
+    const connection = {
+      sourceNodeId: 'node1',
+      targetNodeId: 'node6',
+      startX: 120,
+      startY: 240,
+      currentX: 460,
+      currentY: 620,
+    };
+
+    expect(reanchorSkillFlowConnection(
+      connection,
+      { x: 180, y: 280 },
+      { x: 520, y: 700 },
+    )).toEqual({
+      ...connection,
+      startX: 180,
+      startY: 280,
+      currentX: 520,
+      currentY: 700,
+    });
+    expect(reanchorSkillFlowConnection(connection, { x: 160, y: 260 })).toEqual({
+      ...connection,
+      startX: 160,
+      startY: 260,
+    });
   });
 });

@@ -32,6 +32,8 @@ import {
   CHAT_MESSAGE_ITEM_CLASS,
   CHAT_MESSAGE_MODE_CHIP_CLASS,
   CHAT_PLAIN_ANSWER_CLASS,
+  CHAT_SLASH_COMMAND_MESSAGE_CLASS,
+  CHAT_SLASH_COMMAND_REQUEST_CLASS,
   CHAT_QUEUED_BUBBLE_CLASS,
   CHAT_QUEUED_DELETE_BTN_CLASS,
   CHAT_QUEUED_MESSAGE_ITEM_CLASS,
@@ -51,6 +53,8 @@ import type { UseChatSession } from '../useChatSession';
 import ExecutionRecord from './ExecutionRecord';
 import HarnessArtifactDownloads from './HarnessArtifactDownloads';
 import ScheduledDraftCard from './ScheduledDraftCard';
+import SlashCommandChip from './SlashCommandChip';
+import { slashCommandMessage } from '../slashCommands';
 
 export type MessageRender = {
   traceTurnId: string;
@@ -99,6 +103,9 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
     statusOnly,
   } = render;
   const queuedMessage = item.role === 'user' && item.metadata?.queued === true;
+  const sentSlashCommand = item.role === 'user'
+    ? slashCommandMessage(visibleContent, chat.slashCommands)
+    : null;
 
   return (
     <div className={cn(CHAT_MESSAGE_ITEM_CLASS, queuedMessage && CHAT_QUEUED_MESSAGE_ITEM_CLASS)}>
@@ -138,14 +145,29 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
                 <MarkdownMessage content={visibleContent} />
               </div>
             ) : (
-              <div className={CHAT_PLAIN_ANSWER_CLASS}>
+              <div className={cn(
+                CHAT_PLAIN_ANSWER_CLASS,
+                sentSlashCommand && CHAT_SLASH_COMMAND_MESSAGE_CLASS,
+              )}
+              >
                 {scheduledTaskPrompt && (
                   <span className={CHAT_MESSAGE_MODE_CHIP_CLASS}>
                     <StaffdeckIcon name="clock" size={13} />
                     定时任务
                   </span>
                 )}
-                <span data-i18n-ignore>{visibleContent}</span>
+                {sentSlashCommand ? (
+                  <>
+                    <SlashCommandChip command={sentSlashCommand.command} />
+                    {sentSlashCommand.requestText && (
+                      <span className={CHAT_SLASH_COMMAND_REQUEST_CLASS} data-i18n-ignore>
+                        {sentSlashCommand.requestText}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span data-i18n-ignore>{visibleContent}</span>
+                )}
               </div>
             )
           ) : null}

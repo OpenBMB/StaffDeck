@@ -17,7 +17,7 @@ class ToolCreateRequest(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
     bucket: str = "未分桶"
-    tool_type: Literal["http", "mcp"] = "http"
+    tool_type: Literal["http", "a2a", "mcp"] = "http"
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
@@ -80,11 +80,27 @@ class ToolError(BaseModel):
     message: str
 
 
+class MCPAppDescriptor(BaseModel):
+    server_id: str
+    resource_uri: str
+    tool_name: str
+    visibility: list[str] = Field(default_factory=lambda: ["model", "app"])
+    mime_type: str = "text/html;profile=mcp-app"
+    tenant_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    session_id: Optional[str] = None
+    active_skill_id: Optional[str] = None
+    initial_result: Optional[Any] = None
+    initial_meta: dict[str, Any] = Field(default_factory=dict)
+
+
 class ToolResult(BaseModel):
     tool_name: str
     success: bool
     data: Optional[Any] = None
     error: Optional[ToolError] = None
+    mcp_app: Optional[MCPAppDescriptor] = None
+    mcp_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolTestRequest(BaseModel):
@@ -98,7 +114,7 @@ class ToolProbeRequest(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
     bucket: str = "技能自发现工具"
-    tool_type: Literal["http", "mcp"] = "http"
+    tool_type: Literal["http", "a2a", "mcp"] = "http"
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
@@ -119,6 +135,7 @@ class ToolProbeResponse(BaseModel):
 
 
 MCPTransport = Literal["stdio", "streamable_http", "sse", "builtin"]
+MCPAppsMode = Literal["disabled", "auto"]
 
 
 class MCPServerConnection(BaseModel):
@@ -140,6 +157,7 @@ class MCPServerCreateRequest(BaseModel):
     description: Optional[str] = None
     bucket: str = "MCP 工具"
     connection: MCPServerConnection = Field(default_factory=MCPServerConnection)
+    apps_mode: MCPAppsMode = "disabled"
     capability_scope: CapabilityScope = "general"
     enabled: bool = True
 
@@ -150,9 +168,13 @@ class MCPServerUpdateRequest(MCPServerCreateRequest):
 
 class MCPDiscoveredTool(BaseModel):
     name: str
+    title: str = ""
     description: str = ""
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
+    annotations: dict[str, Any] = Field(default_factory=dict)
+    meta: dict[str, Any] = Field(default_factory=dict)
+    app: Optional[dict[str, Any]] = None
     # 该工具是否已同步为 Tool 行
     imported: bool = False
     tool_id: Optional[str] = None
@@ -168,6 +190,9 @@ class MCPServerRead(BaseModel):
     description: Optional[str] = None
     bucket: str
     connection: MCPServerConnection
+    apps_mode: MCPAppsMode = "disabled"
+    apps_negotiated: bool = False
+    negotiated_capabilities: dict[str, Any] = Field(default_factory=dict)
     capability_scope: CapabilityScope
     enabled: bool
     last_synced_at: Optional[str] = None
@@ -180,11 +205,39 @@ class MCPDiscoverRequest(BaseModel):
     tenant_id: str
     # 未保存前用连接配置直接探测；已保存则可只传 server_id
     connection: Optional[MCPServerConnection] = None
+    apps_mode: MCPAppsMode = "disabled"
 
 
 class MCPDiscoverResponse(BaseModel):
     success: bool
     tools: list[MCPDiscoveredTool] = Field(default_factory=list)
+    server_capabilities: dict[str, Any] = Field(default_factory=dict)
+    server_info: dict[str, Any] = Field(default_factory=dict)
+    error: Optional[ToolError] = None
+
+
+class MCPAppResourceRead(BaseModel):
+    server_id: str
+    uri: str
+    mime_type: str
+    text: str
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class MCPAppToolCallRequest(BaseModel):
+    tenant_id: str
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    agent_id: Optional[str] = None
+    session_id: Optional[str] = None
+    active_skill_id: Optional[str] = None
+    confirm_side_effect: bool = False
+
+
+class MCPAppToolCallResponse(BaseModel):
+    success: bool
+    result: Optional[ToolResult] = None
+    requires_confirmation: bool = False
     error: Optional[ToolError] = None
 
 

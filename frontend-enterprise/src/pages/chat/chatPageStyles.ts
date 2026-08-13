@@ -68,6 +68,10 @@ export function chatBubbleClass(role: 'user' | 'assistant' | 'system' | 'tool', 
 
 // User plain answer + scheduled chip
 export const CHAT_PLAIN_ANSWER_CLASS = 'flex flex-col items-end gap-[6px] whitespace-pre-wrap';
+export const CHAT_SLASH_COMMAND_MESSAGE_CLASS =
+  'flex-row flex-wrap items-center justify-end gap-x-[9px] gap-y-[6px] whitespace-normal';
+export const CHAT_SLASH_COMMAND_REQUEST_CLASS =
+  'min-w-0 whitespace-pre-wrap text-[14px] leading-[1.7] text-[#18181a]';
 export const CHAT_MESSAGE_MODE_CHIP_CLASS =
   'inline-flex items-center gap-[4px] rounded-full bg-[#eef0f4] px-[9px] py-[2px] text-[11px] font-medium text-[#464c5e]';
 export const CHAT_QUEUED_STATUS_ROW_CLASS = 'mt-[5px] flex justify-end pr-[2px]';
@@ -206,7 +210,20 @@ export const CHAT_COMPOSER_FORM_DRAG_CLASS = 'border-dashed border-[#0b6cf5] bg-
 export const CHAT_COMPOSER_DROP_HINT_CLASS =
   'pointer-events-none absolute inset-0 z-[2] grid place-items-center rounded-[14px] bg-white/85 text-[14px] font-medium text-[#18181a] backdrop-blur-sm';
 export const CHAT_COMPOSER_TEXTAREA_CLASS =
-  'min-h-[48px] max-h-[200px] w-full resize-none border-0 bg-transparent px-[4px] py-[2px] text-[14px] leading-[1.7] text-[#18181a] shadow-none outline-none placeholder:text-[#b3b8c4] focus-visible:ring-0';
+  'min-h-[48px] min-w-0 max-h-[200px] w-full flex-1 resize-none border-0 bg-transparent px-[4px] py-[2px] text-[14px] leading-[1.7] text-[#18181a] shadow-none outline-none placeholder:text-[#b3b8c4] focus-visible:ring-0';
+export const CHAT_COMPOSER_TEXTAREA_WITH_COMMAND_CLASS =
+  'min-h-[32px] py-[4px] leading-[24px]';
+export const CHAT_COMPOSER_INPUT_ROW_CLASS = 'flex min-w-0 items-start gap-[8px]';
+export const CHAT_COMPOSER_COMMAND_CHIP_CLASS =
+  'group/command inline-flex h-[32px] max-w-[min(300px,100%)] shrink-0 items-center gap-[7px] rounded-[9px] border border-[#dfe4ec] bg-[#f7f8fa] py-[4px] pl-[6px] pr-[5px] text-[#464c5e] shadow-[0_1px_2px_rgba(24,24,26,0.04)] transition-colors hover:border-[#cdd3de] hover:bg-[#f3f5f8]';
+export const CHAT_COMPOSER_COMMAND_ICON_CLASS =
+  'inline-grid size-[22px] shrink-0 place-items-center rounded-[6px] bg-white text-[#5f687b] shadow-[inset_0_0_0_1px_rgba(227,231,241,0.92)]';
+export const CHAT_COMPOSER_COMMAND_LABEL_CLASS =
+  'min-w-0 truncate text-[12px] font-medium text-[#2f3440]';
+export const CHAT_COMPOSER_COMMAND_KIND_CLASS =
+  'shrink-0 rounded-full bg-[#e9edf2] px-[6px] py-px text-[9px] font-medium leading-[1.4] text-[#687184]';
+export const CHAT_COMPOSER_COMMAND_REMOVE_CLASS =
+  'inline-grid size-[18px] shrink-0 place-items-center rounded-full border-0 bg-transparent p-0 text-[15px] leading-none text-[#9aa1af] transition-colors hover:bg-[#18181a] hover:text-white focus-visible:bg-[#18181a] focus-visible:text-white focus-visible:outline-none';
 export const CHAT_COMPOSER_ATTACHMENTS_CLASS = 'flex flex-wrap gap-[8px]';
 export const CHAT_COMPOSER_ATTACHMENT_CHIP_CLASS =
   'inline-flex max-w-[240px] items-center gap-[7px] rounded-[10px] border border-[#e3e7f1] bg-[#fafbfc] py-[5px] pl-[7px] pr-[6px] text-[12px] text-[#464c5e]';

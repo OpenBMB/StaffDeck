@@ -47,6 +47,9 @@ class HarnessToolContext:
     task_frame_id: str | None = None
     tenant_id: str | None = None
     limits: HarnessLimits = field(default_factory=HarnessLimits)
+    # Internal/direct callers preserve the fail-closed historical behavior.
+    # Tenant runtime code always passes the administrator's explicit setting.
+    sandbox_enabled: bool = True
     sandbox_network_mode: Literal["all", "allowlist", "deny"] = "all"
     sandbox_allowed_domains: tuple[str, ...] = ()
 

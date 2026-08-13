@@ -1,12 +1,16 @@
+import asyncio
 import logging
 import os
 from pathlib import Path
 
 import httpx
+import websockets
+from fastapi import HTTPException
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app import paths
 from app.main import app
@@ -30,6 +34,31 @@ SITE_CHAT_UPSTREAM = os.getenv(
     "STAFFDECK_SITE_CHAT_UPSTREAM",
     "http://127.0.0.1:10187",
 ).rstrip("/")
+PILOTDECK_UPSTREAM = os.getenv("STAFFDECK_PILOTDECK_UPSTREAM", "").rstrip("/")
+PILOTDECK_PUBLIC_URL = os.getenv("STAFFDECK_PILOTDECK_PUBLIC_URL", "").rstrip("/")
+PILOTDECK_PUBLIC_HOSTS = {
+    item.strip().lower()
+    for item in os.getenv("STAFFDECK_PILOTDECK_PUBLIC_HOSTS", "").split(",")
+    if item.strip()
+}
+LLM_RELAY_UPSTREAM = os.getenv("STAFFDECK_LLM_RELAY_UPSTREAM", "").rstrip("/")
+ANTHROPIC_RELAY_UPSTREAM = os.getenv(
+    "STAFFDECK_ANTHROPIC_RELAY_UPSTREAM", ""
+).rstrip("/")
+LLM_RELAY_MAX_BODY_BYTES = int(
+    os.getenv("STAFFDECK_LLM_RELAY_MAX_BODY_BYTES", str(32 * 1024 * 1024))
+)
+LLM_RELAY_REQUEST_HEADERS = {
+    "accept",
+    "anthropic-beta",
+    "anthropic-version",
+    "api-key",
+    "authorization",
+    "content-type",
+    "user-agent",
+    "x-api-key",
+    "x-request-id",
+}
 HOP_BY_HOP_HEADERS = {
     "connection",
     "content-length",
@@ -49,6 +78,186 @@ FRONTEND_CONTENT_TYPES = {
     ".svg": "image/svg+xml",
     ".wasm": "application/wasm",
 }
+
+
+def _request_host_without_port(host: str) -> str:
+    value = host.strip().lower()
+    if value.startswith("["):
+        return value.split("]", 1)[0].lstrip("[")
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+def _is_pilotdeck_request(host: str) -> bool:
+    return bool(
+        PILOTDECK_UPSTREAM
+        and PILOTDECK_PUBLIC_HOSTS
+        and _request_host_without_port(host) in PILOTDECK_PUBLIC_HOSTS
+    )
+
+
+def _pilotdeck_proxy_path(host: str, path: str) -> str | None:
+    """Return the upstream path for either the virtual host or /pilotdeck prefix."""
+    if _is_pilotdeck_request(host):
+        return path
+    if not PILOTDECK_UPSTREAM:
+        return None
+    if path == "/pilotdeck" or path == "/pilotdeck/":
+        return "/"
+    if path.startswith("/pilotdeck/"):
+        return path.removeprefix("/pilotdeck")
+    return None
+
+
+def _pilotdeck_target_url(path: str, query: str = "", *, websocket: bool = False) -> str:
+    upstream = PILOTDECK_UPSTREAM
+    if websocket:
+        if upstream.startswith("https://"):
+            upstream = f"wss://{upstream.removeprefix('https://')}"
+        elif upstream.startswith("http://"):
+            upstream = f"ws://{upstream.removeprefix('http://')}"
+    target = f"{upstream}{path}"
+    return f"{target}?{query}" if query else target
+
+
+def _pilotdeck_proxy_timeout() -> httpx.Timeout:
+    """Keep streamed responses open while bounding connect, write, and pool waits."""
+    return httpx.Timeout(connect=10.0, read=None, write=600.0, pool=10.0)
+
+
+@app.middleware("http")
+async def pilotdeck_host_proxy(request: Request, call_next):  # noqa: ANN001
+    """Route the PilotDeck virtual host or /pilotdeck prefix through this process."""
+    upstream_path = _pilotdeck_proxy_path(
+        request.headers.get("host", ""),
+        request.url.path,
+    )
+    if upstream_path is None:
+        return await call_next(request)
+
+    request_headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "host"
+    }
+    request_headers["x-forwarded-host"] = request.headers.get("host", "")
+    request_headers["x-forwarded-proto"] = request.url.scheme
+    if request.client:
+        request_headers["x-forwarded-for"] = request.client.host
+
+    client = httpx.AsyncClient(timeout=_pilotdeck_proxy_timeout())
+    upstream_request = client.build_request(
+        request.method,
+        _pilotdeck_target_url(upstream_path, request.url.query),
+        headers=request_headers,
+        content=request.stream(),
+    )
+    try:
+        upstream_response = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail="PilotDeck upstream unavailable") from exc
+
+    response_headers = {
+        key: value
+        for key, value in upstream_response.headers.items()
+        if key.lower() not in HOP_BY_HOP_HEADERS
+    }
+    location = response_headers.get("location")
+    if location and PILOTDECK_PUBLIC_URL and location.startswith(PILOTDECK_UPSTREAM):
+        response_headers["location"] = f"{PILOTDECK_PUBLIC_URL}{location[len(PILOTDECK_UPSTREAM):]}"
+    response_headers["x-accel-buffering"] = "no"
+
+    async def stream_body():
+        try:
+            async for chunk in upstream_response.aiter_raw():
+                yield chunk
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        stream_body(),
+        status_code=upstream_response.status_code,
+        headers=response_headers,
+    )
+
+
+@app.websocket("/{pilotdeck_path:path}")
+async def pilotdeck_websocket_proxy(websocket: WebSocket, pilotdeck_path: str) -> None:
+    """Relay PilotDeck chat and shell sockets selected by Host or path prefix."""
+    public_path = f"/{pilotdeck_path}"
+    upstream_path = _pilotdeck_proxy_path(
+        websocket.headers.get("host", ""),
+        public_path,
+    )
+    if upstream_path is None:
+        await websocket.close(code=4404)
+        return
+
+    await websocket.accept()
+    upstream_headers = {
+        key: value
+        for key, value in websocket.headers.items()
+        if key.lower()
+        not in {
+            *HOP_BY_HOP_HEADERS,
+            "host",
+            "sec-websocket-accept",
+            "sec-websocket-extensions",
+            "sec-websocket-key",
+            "sec-websocket-protocol",
+            "sec-websocket-version",
+        }
+    }
+    origin = upstream_headers.get("origin")
+    if origin:
+        upstream_headers["origin"] = PILOTDECK_UPSTREAM
+    target = _pilotdeck_target_url(
+        upstream_path,
+        websocket.scope.get("query_string", b"").decode("ascii"),
+        websocket=True,
+    )
+    try:
+        async with websockets.connect(
+            target,
+            additional_headers=upstream_headers,
+            open_timeout=10,
+            close_timeout=5,
+            max_size=None,
+        ) as upstream:
+            async def client_to_upstream() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    if message.get("text") is not None:
+                        await upstream.send(message["text"])
+                    elif message.get("bytes") is not None:
+                        await upstream.send(message["bytes"])
+
+            async def upstream_to_client() -> None:
+                async for message in upstream:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            tasks = {
+                asyncio.create_task(client_to_upstream()),
+                asyncio.create_task(upstream_to_client()),
+            }
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*done, *pending, return_exceptions=True)
+    except (WebSocketDisconnect, websockets.ConnectionClosed):
+        pass
+    except Exception:
+        logger.exception("PilotDeck WebSocket proxy failed path=%s", public_path)
+        try:
+            await websocket.close(code=4502)
+        except RuntimeError:
+            pass
 
 
 class FrontendStaticFiles(StaticFiles):
@@ -139,6 +348,99 @@ async def site_chat_proxy(site_path: str, request: Request) -> StreamingResponse
         headers=response_headers,
     )
 
+
+@app.post(
+    "/llm/v1/chat/completions",
+    include_in_schema=False,
+)
+async def llm_chat_completions_relay(request: Request) -> StreamingResponse:
+    """Relay one OpenAI-compatible endpoint without exposing an arbitrary proxy."""
+    return await _relay_llm_request(
+        request,
+        upstream=LLM_RELAY_UPSTREAM,
+        upstream_path="/llm/v1/chat/completions",
+    )
+
+
+@app.post(
+    "/llm/v1/messages",
+    include_in_schema=False,
+)
+async def anthropic_messages_relay(request: Request) -> StreamingResponse:
+    """Relay the fixed Anthropic-compatible messages endpoint."""
+    return await _relay_llm_request(
+        request,
+        upstream=ANTHROPIC_RELAY_UPSTREAM,
+        upstream_path="/llm/v1/messages",
+    )
+
+
+async def _relay_llm_request(
+    request: Request,
+    *,
+    upstream: str,
+    upstream_path: str,
+) -> StreamingResponse:
+    if not upstream:
+        raise HTTPException(status_code=404, detail="LLM relay is not enabled")
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > LLM_RELAY_MAX_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="Request body is too large")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length") from exc
+
+    body = await request.body()
+    if len(body) > LLM_RELAY_MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request body is too large")
+
+    target_url = f"{upstream}{upstream_path}"
+    if request.url.query:
+        target_url = f"{target_url}?{request.url.query}"
+    request_headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() in LLM_RELAY_REQUEST_HEADERS
+    }
+
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=10.0, read=None, write=60.0, pool=10.0)
+    )
+    upstream_request = client.build_request(
+        "POST",
+        target_url,
+        headers=request_headers,
+        content=body,
+    )
+    try:
+        upstream_response = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail="LLM relay upstream unavailable") from exc
+
+    response_headers = {
+        key: value
+        for key, value in upstream_response.headers.items()
+        if key.lower() not in HOP_BY_HOP_HEADERS
+    }
+    response_headers["x-accel-buffering"] = "no"
+
+    async def stream_body():
+        try:
+            async for chunk in upstream_response.aiter_raw():
+                yield chunk
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        stream_body(),
+        status_code=upstream_response.status_code,
+        headers=response_headers,
+    )
+
 app.mount(
     "/assets",
     FrontendStaticFiles(directory=ENTERPRISE_DIST / "assets", check_dir=False),
@@ -164,6 +466,14 @@ app.mount(
 @app.get("/", include_in_schema=False)
 def root_redirect() -> RedirectResponse:
     return RedirectResponse(url="/chat/")
+
+
+@app.get("/pilotdeck", include_in_schema=False)
+@app.get("/pilotdeck/", include_in_schema=False)
+def pilotdeck_redirect() -> RedirectResponse:
+    if not PILOTDECK_PUBLIC_URL:
+        raise HTTPException(status_code=404, detail="PilotDeck is not enabled")
+    return RedirectResponse(url=f"{PILOTDECK_PUBLIC_URL}/")
 
 
 @app.get("/favicon.ico", include_in_schema=False)
