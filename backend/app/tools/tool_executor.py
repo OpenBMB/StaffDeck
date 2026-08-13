@@ -366,20 +366,31 @@ class ToolExecutor:
                 resolved[str(key)] = self._resolve_secret(str(value))
         return resolved
 
-    def _request_headers(self, url: str, headers: dict[str, str]) -> dict[str, str]:
-        if not self._is_internal_mock_url(url):
+    def _request_headers(
+        self,
+        url: str,
+        headers: dict[str, str],
+        *,
+        normalized_tool_base_url: str | None = None,
+    ) -> dict[str, str]:
+        if not self._is_internal_mock_url(url, normalized_tool_base_url=normalized_tool_base_url):
             return headers
         resolved = dict(headers)
         resolved[INTERNAL_SERVICE_HEADER] = internal_service_token()
         return resolved
 
-    def _is_internal_mock_url(self, url: str) -> bool:
+    def _is_internal_mock_url(
+        self,
+        url: str,
+        *,
+        normalized_tool_base_url: str | None = None,
+    ) -> bool:
         target = urlsplit(url)
         if not target.path.startswith("/api/mock/"):
             return False
         if not target.scheme and not target.netloc:
             return True
-        configured = urlsplit(self.settings.normalized_tool_base_url)
+        configured = urlsplit(normalized_tool_base_url or self.settings.normalized_tool_base_url)
         return (
             target.scheme.lower(),
             target.hostname,

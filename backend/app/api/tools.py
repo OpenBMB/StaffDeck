@@ -272,8 +272,13 @@ def probe_tool(
             ),
             error=result.error,
         )
-    headers = ToolExecutor(db)._resolve_headers(request.headers, request.auth)  # noqa: SLF001
     url = _normalize_probe_url(request.url)
+    executor = ToolExecutor(db)
+    headers = executor._request_headers(
+        url,
+        executor._resolve_headers(request.headers, request.auth),
+        normalized_tool_base_url=get_settings().normalized_tool_base_url,
+    )
     timeout_seconds = _probe_timeout_seconds(request)
     try:
         with httpx.Client(timeout=timeout_seconds) as client:
