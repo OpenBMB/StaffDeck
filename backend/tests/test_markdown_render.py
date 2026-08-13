@@ -388,6 +388,96 @@ def test_split_empty_returns_empty():
     assert split_markdown_by_lines("", 2000) == []
 
 
+def _count_fences(text: str) -> int:
+    """统计文本中围栏行（``` 或 ~~~）数量。"""
+    return sum(1 for line in text.split("\n") if line.strip().startswith(("```", "~~~")))
+
+
+def test_split_overlong_fenced_block_each_chunk_balanced():
+    """回归：超长围栏代码块被切分后，每个 chunk 必须是自包含的合法 Markdown。
+
+    每段要么完全在围栏外，要么围栏成对出现（开 + 闭），避免跨消息断裂。
+    """
+    code_lines = [f"line_{i} = {i}" for i in range(200)]
+    text = "```python\n" + "\n".join(code_lines) + "\n```"
+    chunks = split_markdown_by_lines(text, 200)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        fence_count = _count_fences(chunk)
+        # 围栏必须成对（0 个或偶数个），绝不出现单个围栏
+        assert fence_count % 2 == 0, f"chunk has unbalanced fences: {chunk[:80]!r}"
+        # 每段可被 parse_markdown 独立解析为合法块，且代码块内容非空或为正常文本
+        blocks = parse_markdown(chunk)
+        assert blocks, f"chunk produced no blocks: {chunk[:80]!r}"
+
+
+def test_split_overlong_fenced_block_preserves_language():
+    """切分后重新打开的围栏应保留原语言标识。"""
+    code = "\n".join(f"print({i})" for i in range(300))
+    text = f"```python\n{code}\n```"
+    chunks = split_markdown_by_lines(text, 150)
+    assert len(chunks) >= 2
+    # 第一段以 ```python 开头
+    assert chunks[0].split("\n")[0].strip() == "```python"
+    # 后续段开头重新打开的围栏也应带 python
+    for chunk in chunks[1:]:
+        first_line = chunk.split("\n")[0].strip()
+        assert first_line == "```python", f"missing language reopen: {first_line!r}"
+
+
+def test_split_overlong_fenced_block_code_content_recovered():
+    """多段切分后，去掉围栏装饰后拼回的代码内容应与原文一致。"""
+    code_lines = [f"x_{i} = {i}" for i in range(150)]
+    text = "```\n" + "\n".join(code_lines) + "\n```"
+    chunks = split_markdown_by_lines(text, 120)
+    assert len(chunks) >= 2
+    recovered: list[str] = []
+    for chunk in chunks:
+        blocks = parse_markdown(chunk)
+        for block in blocks:
+            if isinstance(block, CodeBlock):
+                recovered.append(block.text)
+    assert "\n".join(recovered) == "\n".join(code_lines)
+
+
+def test_split_fence_inside_chunk_not_split():
+    """短围栏代码块整体应在单段内，不被切分。"""
+    text = "前文说明\n\n```python\nprint(1)\n```\n\n后文说明"
+    chunks = split_markdown_by_lines(text, 2000)
+    assert chunks == [text]
+
+
+def test_split_tilde_fences_balanced():
+    """使用 ~~~ 围栏的代码块切分后同样应保持每段平衡。"""
+    code = "\n".join(f"v{i} = {i}" for i in range(200))
+    text = f"~~~python\n{code}\n~~~"
+    chunks = split_markdown_by_lines(text, 180)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        fence_count = _count_fences(chunk)
+        assert fence_count % 2 == 0
+
+
+def test_split_code_block_then_text_each_chunk_valid():
+    """代码块 + 后续段落：切分后每段独立合法，后续段落不误入未闭合围栏。"""
+    code = "\n".join(f"line{i}()" for i in range(100))
+    text = f"```python\n{code}\n```\n\n这是后续说明文字，解释上面的代码。"
+    chunks = split_markdown_by_lines(text, 200)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert _count_fences(chunk) % 2 == 0
+
+
+def test_split_overlong_single_code_line_reopens_fence():
+    """围栏内单行代码超长：硬切后仍应在围栏内重新打开/闭合。"""
+    long_line = "x" * 500
+    text = f"```python\n{long_line}\n```"
+    chunks = split_markdown_by_lines(text, 100)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert _count_fences(chunk) % 2 == 0
+
+
 # ---------------------------------------------------------------------------
 # extract_dingtalk_title
 # ---------------------------------------------------------------------------

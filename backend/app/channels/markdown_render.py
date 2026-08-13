@@ -531,11 +531,32 @@ def _split_paragraph_newlines(tags: list[dict]) -> list[dict]:
     return out if out else [{"tag": "text", "text": "", "un_escape": False}]
 
 
-def split_markdown_by_lines(text: str, limit: int) -> list[str]:
-    """按行边界切分 markdown，避免把代码块/列表/粗体切成两半。
+def _detect_fence(line: str) -> tuple[str, str] | None:
+    """若 line 是围栏起始/闭合行，返回 (fence_marker, language)；否则返回 None。
 
-    用于富文本路径的分块：优先在空行处切分，其次在普通行边界，单行超限时硬切该行。
-    与 split_channel_text 不同，此函数保证不在行中间断开（除非单行超长）。
+    language 仅在起始行有意义，闭合行时为空字符串。
+    """
+    match = _FENCE_RE.match(line)
+    if not match:
+        return None
+    return match.group(1), match.group(2) or ""
+
+
+def _is_fence_close(line: str, fence_marker: str) -> bool:
+    """判断 line 是否是对应围栏的闭合行。"""
+    fence_char = re.escape(fence_marker[0])
+    return bool(re.match(rf"^\s*{fence_char}{{3,}}\s*$", line))
+
+
+def split_markdown_by_lines(text: str, limit: int) -> list[str]:
+    """按行边界切分 markdown，保证不破坏围栏代码块。
+
+    用于富文本路径的分块：优先在空行处切分，其次在普通行边界。
+    关键约束：当切分点落在围栏代码块内部时，会在前一段末尾补上闭合围栏、
+    在后一段开头重新打开同语言的围栏，使每个 chunk 都是合法且自包含的 Markdown，
+    飞书 parse_markdown 与钉钉 ensure_code_fences 均可独立正确处理。
+
+    单行超限时硬切该行（此时围栏已在行外，不会出现半截围栏问题）。
     """
     if not text:
         return []
@@ -545,33 +566,75 @@ def split_markdown_by_lines(text: str, limit: int) -> list[str]:
     chunks: list[str] = []
     current_lines: list[str] = []
     current_len = 0
+    # 当前处于围栏代码块内时的状态：None 表示不在代码块内
+    fence_state: tuple[str, str] | None = None  # (fence_marker, language)
+
+    def _flush() -> None:
+        nonlocal current_lines, current_len
+        if not current_lines:
+            return
+        chunk_lines = list(current_lines)
+        # 若切分时处于围栏代码块内部，补上闭合围栏使本段自包含
+        if fence_state is not None:
+            chunk_lines.append(fence_state[0])
+        chunks.append("\n".join(chunk_lines).rstrip("\n"))
+        current_lines = []
+        current_len = 0
+
     for line in lines:
         line_with_newline = line + "\n"
         line_len = len(line_with_newline)
+
+        # 检测围栏状态变化（在长度判断之前，确保 fence_state 准确）
+        if fence_state is None:
+            fence_open = _detect_fence(line)
+        else:
+            fence_open = None
+
+        # 单行超长：先 flush 已累积内容，再硬切该行。
+        # 注意：若该行是围栏起始行本身超长，不会发生（围栏行很短）；
+        # 若是代码块内的一行超长，flush 会闭合围栏，然后硬切该代码行。
         if line_len > limit:
-            # 当前行超长：先 flush 已累积的，再硬切该行
-            if current_lines:
-                chunks.append("\n".join(current_lines).rstrip("\n"))
-                current_lines = []
-                current_len = 0
-            # 硬切超长行
+            _flush()
             remaining = line
             while len(remaining) > limit:
                 chunks.append(remaining[:limit])
                 remaining = remaining[limit:]
             if remaining:
-                current_lines = [remaining]
-                current_len = len(remaining) + 1
+                # 残余行作为新一段的开头；若仍在围栏内，先重新打开围栏
+                if fence_state is not None:
+                    fence_marker, lang = fence_state
+                    reopen = f"{fence_marker}{lang}" if lang else fence_marker
+                    current_lines = [reopen, remaining]
+                    current_len = len(current_lines[0]) + 1 + len(remaining) + 1
+                else:
+                    current_lines = [remaining]
+                    current_len = len(remaining) + 1
+            # 围栏状态不因普通代码行变化
             continue
+
         if current_len + line_len > limit:
-            chunks.append("\n".join(current_lines).rstrip("\n"))
-            current_lines = [line]
-            current_len = line_len
+            _flush()
+            # 新段开头：若仍处于围栏代码块内，重新打开围栏
+            if fence_state is not None:
+                fence_marker, lang = fence_state
+                open_fence = f"{fence_marker}{lang}" if lang else fence_marker
+                current_lines = [open_fence, line]
+                current_len = len(open_fence) + 1 + line_len
+            else:
+                current_lines = [line]
+                current_len = line_len
         else:
             current_lines.append(line)
             current_len += line_len
-    if current_lines:
-        chunks.append("\n".join(current_lines).rstrip("\n"))
+
+        # 更新围栏状态
+        if fence_open is not None:
+            fence_state = fence_open
+        elif fence_state is not None and _is_fence_close(line, fence_state[0]):
+            fence_state = None
+
+    _flush()
     return [c for c in chunks if c]
 
 

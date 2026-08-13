@@ -1085,3 +1085,36 @@ def test_rich_create_message_uses_receive_id() -> None:
     assert send[1]["json"]["receive_id"] == "ou_user"
     assert send[1]["json"]["msg_type"] == "post"
 
+
+def test_rich_overlong_fenced_code_block_each_chunk_has_code_block() -> None:
+    """回归 P1：超长围栏代码块切分后，每个发送 chunk 应含闭合的 code_block tag。
+
+    避免围栏跨消息断裂导致代码块被当普通文本渲染。
+    """
+    calls = []
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(_rich_handler(calls)))
+    code_lines = [f"line_{i} = {i}" for i in range(300)]
+    text = "```python\n" + "\n".join(code_lines) + "\n```"
+    adapter.send(
+        _binding(),
+        {"message_id": "om_source"},
+        text,
+        idempotency_key="rich-long-code",
+    )
+    assert len(calls) >= 2
+    all_code_texts: list[str] = []
+    for _url, kwargs in calls:
+        assert kwargs["json"]["msg_type"] == "post"
+        content = json.loads(kwargs["json"]["content"])
+        rows = content["zh_cn"]["content"]
+        flat_tags = [tag for row in rows for tag in row]
+        assert any(tag.get("tag") == "code_block" for tag in flat_tags), (
+            "chunk missing code_block tag after split"
+        )
+        for tag in flat_tags:
+            if tag.get("tag") == "code_block":
+                all_code_texts.append(tag["text"])
+    recovered = "\n".join(all_code_texts)
+    assert "line_0 = 0" in recovered
+    assert "line_299 = 299" in recovered
+

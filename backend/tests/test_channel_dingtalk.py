@@ -852,3 +852,23 @@ def test_dingtalk_markdown_5xx_is_transient():
     with pytest.raises(DingTalkTransientError):
         adapter.send(_send_binding(), _send_target(), "**x**", idempotency_key="d10")
 
+
+def test_dingtalk_overlong_fenced_code_block_chunks_are_balanced():
+    """回归 P1：超长围栏代码块切分后，每个发送 chunk 必须围栏平衡（合法 Markdown）。"""
+    client = _WebhookClient()
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    code_lines = [f"line_{i} = {i}" for i in range(300)]
+    text = "```python\n" + "\n".join(code_lines) + "\n```"
+    adapter.send(_send_binding(), _send_target(), text, idempotency_key="d-long-code")
+    assert len(client.calls) >= 2
+    for call in client.calls:
+        body = call["body"]
+        assert body["msgtype"] == "markdown"
+        md_text = body["markdown"]["text"]
+        fence_count = sum(
+            1 for line in md_text.split("\n") if line.strip().startswith("```")
+        )
+        assert fence_count % 2 == 0, "fenced code block split across messages is unbalanced"
+        assert len(md_text) <= DINGTALK_TEXT_LIMIT
+
+
