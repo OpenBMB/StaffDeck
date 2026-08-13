@@ -21,11 +21,10 @@ from app.channels.adapters.base import (
 )
 from app.channels.attachment_bridge import (
     MAX_CHANNEL_MEDIA_BYTES,
-    _detect_image_type,
-    _resolve_content_type,
     inbound_attachments_to_chat,
 )
 from app.channels.crypto import encrypt_channel_secret
+from app.channels.media import detect_image_media_type, filename_with_extension
 from app.db.models import ChannelBinding
 from app.session.session_schema import ChatAttachmentRead
 
@@ -157,7 +156,8 @@ def test_bridge_returns_empty_when_adapter_has_no_download_media() -> None:
 
 def test_bridge_downloads_and_stages_attachments() -> None:
     """完整链路:download_media -> parse_chat_attachment -> stage_chat_attachment。"""
-    fake_adapter = _FakeAdapter(b"PNG-data")
+    image = b"\x89PNG\r\n\x1a\nimage-data"
+    fake_adapter = _FakeAdapter(image)
     previous = get_channel_adapter("feishu")
     register_channel_adapter("feishu", fake_adapter)
     try:
@@ -198,7 +198,7 @@ def test_bridge_downloads_and_stages_attachments() -> None:
         assert len(fake_adapter.download_calls) == 1
         assert fake_adapter.download_calls[0][1].media_id == "img_v3_001"
         # parse_chat_attachment 收到原始字节和文件名
-        mock_parse.assert_called_once_with("img_v3_001.jpg", "image/jpeg", b"PNG-data")
+        mock_parse.assert_called_once_with("img_v3_001.png", "image/png", image)
         # stage_chat_attachment 收到 attachment + 字节 + tenant/user
         mock_stage.assert_called_once()
         stage_kwargs = mock_stage.call_args.kwargs
@@ -247,7 +247,7 @@ def test_bridge_skips_oversized_attachment() -> None:
 
 def test_bridge_continues_on_single_attachment_failure() -> None:
     """单个附件下载异常不影响其他附件。"""
-    good = b"PNG-data"
+    good = b"\x89PNG\r\n\x1a\nimage-data"
     call_count = {"n": 0}
 
     class MixedAdapter:
@@ -319,47 +319,33 @@ def test_bridge_passes_empty_content_type_as_none() -> None:
         register_channel_adapter("feishu", previous)
 
 
-def test_detect_image_type_recognizes_common_formats() -> None:
+def test_detect_image_media_type_recognizes_common_formats() -> None:
     """magic bytes 签名能识别 PNG/JPEG/GIF/WebP/BMP。"""
-    assert _detect_image_type(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20) == ("image/png", ".png")
-    assert _detect_image_type(b"\xff\xd8\xff\xe0" + b"\x00" * 20) == ("image/jpeg", ".jpg")
-    assert _detect_image_type(b"GIF89a" + b"\x00" * 20) == ("image/gif", ".gif")
-    assert _detect_image_type(b"RIFF" + b"\x00" * 4 + b"WEBP" + b"\x00" * 20) == ("image/webp", ".webp")
-    assert _detect_image_type(b"BM" + b"\x00" * 20) == ("image/bmp", ".bmp")
+    assert detect_image_media_type(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20) == (
+        "image/png",
+        ".png",
+    )
+    assert detect_image_media_type(b"\xff\xd8\xff\xe0data\xff\xd9") == (
+        "image/jpeg",
+        ".jpg",
+    )
+    assert detect_image_media_type(b"GIF89a" + b"\x00" * 20) == ("image/gif", ".gif")
+    assert detect_image_media_type(
+        b"RIFF" + b"\x00" * 4 + b"WEBP" + b"\x00" * 20
+    ) == ("image/webp", ".webp")
+    assert detect_image_media_type(b"BM" + b"\x00" * 20) == ("image/bmp", ".bmp")
 
 
-def test_detect_image_type_rejects_non_image_data() -> None:
+def test_detect_image_media_type_rejects_non_image_data() -> None:
     """非图片字节或太短的数据返回 None。"""
-    assert _detect_image_type(b"") is None
-    assert _detect_image_type(b"short") is None
-    assert _detect_image_type(b"RIFF" + b"\x00" * 4 + b"XXXX" + b"\x00" * 20) is None
+    assert detect_image_media_type(b"") is None
+    assert detect_image_media_type(b"short") is None
+    assert detect_image_media_type(b"RIFF" + b"\x00" * 4 + b"XXXX" + b"\x00" * 20) is None
 
 
-def test_resolve_content_type_overrides_with_magic_bytes() -> None:
-    """下载后用 magic bytes 覆盖渠道侧空的 content_type 和 filename。"""
-    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
-    ct, fn = _resolve_content_type("", "img_v3_001", png)
-    assert ct == "image/png"
-    assert fn == "img_v3_001.png"
-
-
-def test_resolve_content_type_preserves_existing_filename_extension() -> None:
-    """filename 已含正确扩展名时不重复追加。"""
-    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
-    ct, fn = _resolve_content_type("", "photo.png", png)
-    assert ct == "image/png"
-    assert fn == "photo.png"
-
-
-def test_resolve_content_type_passes_through_non_image() -> None:
-    """非图片文件保留渠道侧 content_type,空则返回 None。"""
-    ct, fn = _resolve_content_type("", "report.pdf", b"%PDF-1.4")
-    assert ct is None
-    assert fn == "report.pdf"
-
-    ct, fn = _resolve_content_type("application/pdf", "report.pdf", b"%PDF-1.4")
-    assert ct == "application/pdf"
-    assert fn == "report.pdf"
+def test_filename_with_extension_replaces_or_adds_extension() -> None:
+    assert filename_with_extension("img_v3_001", ".png") == "img_v3_001.png"
+    assert filename_with_extension("photo.jpg", ".png") == "photo.png"
 
 
 def test_stream_download_with_limit_enforces_content_length() -> None:

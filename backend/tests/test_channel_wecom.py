@@ -211,6 +211,8 @@ def test_url_download_uses_content_disposition_filename(monkeypatch) -> None:
 def test_file_message_with_image_bytes_is_promoted_to_image(monkeypatch) -> None:
     import app.channels.adapters.base as base_module
     import app.channels.attachment_bridge as bridge_module
+    import app.session.attachment_store as attachment_store_module
+    import app.session.attachments as attachments_module
     from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
     from app.session.session_schema import ChatAttachmentRead
 
@@ -233,7 +235,9 @@ def test_file_message_with_image_bytes_is_promoted_to_image(monkeypatch) -> None
         attachments=[descriptor],
     )
     binding = ChannelBinding(tenant_id="tenant", agent_id="agent", channel="wecom")
-    adapter = SimpleNamespace(download_media=lambda _binding, _descriptor: b"\x89PNG\r\n\x1a\ndata")
+    adapter = SimpleNamespace(
+        download_media=lambda _binding, _descriptor, **_kwargs: b"\x89PNG\r\n\x1a\ndata"
+    )
     captured = {}
 
     def parse(filename, content_type, data):
@@ -247,9 +251,9 @@ def test_file_message_with_image_bytes_is_promoted_to_image(monkeypatch) -> None
         )
 
     monkeypatch.setattr(base_module, "get_channel_adapter", lambda _channel: adapter)
-    monkeypatch.setattr(bridge_module, "parse_chat_attachment", parse)
+    monkeypatch.setattr(attachments_module, "parse_chat_attachment", parse)
     monkeypatch.setattr(
-        bridge_module,
+        attachment_store_module,
         "stage_chat_attachment",
         lambda attachment, *_args, **_kwargs: attachment,
     )
