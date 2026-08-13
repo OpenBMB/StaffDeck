@@ -17,7 +17,7 @@ class ToolCreateRequest(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
     bucket: str = "未分桶"
-    tool_type: Literal["http", "mcp"] = "http"
+    tool_type: Literal["http", "a2a", "mcp"] = "http"
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
@@ -114,7 +114,7 @@ class ToolProbeRequest(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
     bucket: str = "技能自发现工具"
-    tool_type: Literal["http", "mcp"] = "http"
+    tool_type: Literal["http", "a2a", "mcp"] = "http"
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
     url: str
     headers: dict[str, str] = Field(default_factory=dict)

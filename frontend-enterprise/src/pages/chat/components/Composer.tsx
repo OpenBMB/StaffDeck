@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import EmployeeAvatar from '@/components/EmployeeAvatar';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
@@ -13,6 +13,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/h
 import { employeeDisplayName } from '@/employee';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
+import type { ChatSlashCommand } from '@/types';
 
 import {
   CHAT_COMPOSER_ACTIONS_ROW_CLASS,
@@ -31,12 +32,14 @@ import {
   CHAT_COMPOSER_FORM_DRAG_CLASS,
   CHAT_COMPOSER_HINT_CLASS,
   CHAT_COMPOSER_INTENT_CHIP_CLASS,
+  CHAT_COMPOSER_INPUT_ROW_CLASS,
   CHAT_COMPOSER_MODEL_BTN_CLASS,
   CHAT_COMPOSER_PLUS_BTN_CLASS,
   CHAT_COMPOSER_SEND_BTN_CLASS,
   CHAT_COMPOSER_STAGE_CLASS,
   CHAT_COMPOSER_STOP_BTN_CLASS,
   CHAT_COMPOSER_TEXTAREA_CLASS,
+  CHAT_COMPOSER_TEXTAREA_WITH_COMMAND_CLASS,
   CHAT_INPUT_SHELL_CLASS,
   CHAT_MENU_CONTENT_CLASS,
   CHAT_MENU_ITEM_CLASS,
@@ -46,13 +49,24 @@ import {
   CHAT_MODEL_MENU_NAME_CLASS,
 } from '../chatPageStyles';
 import { attachmentTypeLabel, modelDetailText, modelDisplayName } from '../chatHelpers';
+import {
+  matchingSlashCommands,
+  selectedSlashCommandText,
+  slashCommandComposerText,
+  slashCommandInput,
+  slashCommandKindLabel,
+  slashCommandQuery,
+  slashMenuScrollTop,
+} from '../slashCommands';
 import type { UseChatSession } from '../useChatSession';
+import SlashCommandChip from './SlashCommandChip';
 
 export default function Composer({ chat }: { chat: UseChatSession }) {
   const { t } = useI18n();
   const {
     input,
     setInput,
+    slashCommands,
     composerAttachments,
     composerDragActive,
     composerPlusOpen,
@@ -92,7 +106,19 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
   } = chat;
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const slashMenuRef = useRef<HTMLDivElement>(null);
   const [scheduleIntentHovered, setScheduleIntentHovered] = useState(false);
+  const [slashSelectionIndex, setSlashSelectionIndex] = useState(0);
+  const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
+  const [activeSlashCommand, setActiveSlashCommand] = useState<ChatSlashCommand | null>(null);
+  const slashMatches = useMemo(
+    () => matchingSlashCommands(input, slashCommands),
+    [input, slashCommands],
+  );
+  const slashMenuOpen = Boolean(
+    !slashMenuDismissed && slashCommandQuery(input) && slashMatches.length,
+  );
+  const composerText = slashCommandComposerText(input, activeSlashCommand);
 
   useEffect(() => {
     const element = textareaRef.current;
@@ -106,6 +132,49 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
       setScheduleIntentHovered(false);
     }
   }, [composerIntent]);
+
+  useEffect(() => {
+    setSlashSelectionIndex(0);
+    setSlashMenuDismissed(false);
+  }, [input]);
+
+  useEffect(() => {
+    if (!activeSlashCommand) return;
+    if (!input.startsWith(selectedSlashCommandText(activeSlashCommand))) {
+      setActiveSlashCommand(null);
+    }
+  }, [activeSlashCommand, input]);
+
+  useEffect(() => {
+    if (!slashMenuOpen) return;
+    const menu = slashMenuRef.current;
+    const selected = menu?.querySelector<HTMLElement>(
+      `[data-slash-command-index="${slashSelectionIndex}"]`,
+    );
+    if (!menu || !selected) return;
+    menu.scrollTop = slashMenuScrollTop(
+      menu.scrollTop,
+      menu.clientHeight,
+      selected.offsetTop,
+      selected.offsetHeight,
+    );
+  }, [slashMatches.length, slashMenuOpen, slashSelectionIndex]);
+
+  const selectSlashCommand = (index: number) => {
+    const command = slashMatches[index];
+    if (!command) return;
+    setActiveSlashCommand(command);
+    setInput(slashCommandInput(command, ''));
+    setSlashMenuDismissed(true);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const removeActiveSlashCommand = () => {
+    if (!activeSlashCommand) return;
+    setActiveSlashCommand(null);
+    setInput(composerText);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  };
 
   const hasSendContent = Boolean(input.trim() || readyComposerAttachments.length > 0);
   const sendDisabled = !hasSendContent || uploadingComposerAttachment;
@@ -270,30 +339,123 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
             </div>
           )}
 
-          <textarea
-            ref={textareaRef}
-            className={CHAT_COMPOSER_TEXTAREA_CLASS}
-            value={input}
-            rows={2}
-            placeholder={t('输入消息，按 Enter 发送...')}
-            onChange={(event) => setInput(event.target.value)}
-            onPaste={handleComposerPaste}
-            onCompositionStart={() => setIsComposing(true)}
-            onCompositionEnd={() => window.setTimeout(() => setIsComposing(false), 0)}
-            onKeyDown={(event) => {
-              const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
-              if (
-                event.key === 'Enter'
-                && !event.shiftKey
-                && !isComposing
-                && !nativeEvent.isComposing
-                && nativeEvent.keyCode !== 229
-              ) {
-                event.preventDefault();
-                void send();
-              }
-            }}
-          />
+          {slashMenuOpen && (
+            <div
+              ref={slashMenuRef}
+              className="absolute bottom-[calc(100%+8px)] left-0 z-30 grid max-h-[320px] w-full overflow-y-auto rounded-[14px] border border-[#e3e7f1] bg-white p-[6px] shadow-[0_18px_42px_rgba(24,24,26,0.16)]"
+              role="listbox"
+              aria-label={t('可用斜杠指令')}
+            >
+              {slashMatches.map((command, index) => (
+                <button
+                  key={`${command.kind}:${command.target}`}
+                  type="button"
+                  role="option"
+                  data-slash-command-index={index}
+                  aria-selected={index === slashSelectionIndex}
+                  className={cn(
+                    'flex min-w-0 items-center gap-[10px] rounded-[10px] px-[10px] py-[9px] text-left transition-colors',
+                    index === slashSelectionIndex ? 'bg-[#f3f5f8]' : 'hover:bg-[#f7f8fa]',
+                  )}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setSlashSelectionIndex(index)}
+                  onClick={() => selectSlashCommand(index)}
+                >
+                  <span className="inline-grid size-[30px] shrink-0 place-items-center rounded-[9px] bg-[#eef1f5] text-[#5f687b]">
+                    <StaffdeckIcon
+                      name={command.kind === 'sop' ? 'branch' : command.kind === 'skill' ? 'spark' : 'tool'}
+                      size={15}
+                    />
+                  </span>
+                  <span className="grid min-w-0 flex-1 gap-[2px]">
+                    <span className="flex min-w-0 items-center gap-[7px]">
+                      <strong className="truncate text-[13px] font-medium text-[#18181a]">{command.label}</strong>
+                      <span className="shrink-0 rounded-full bg-[#edf0f4] px-[7px] py-[2px] text-[10px] text-[#687184]">
+                        {slashCommandKindLabel(command.kind)}
+                      </span>
+                    </span>
+                    <span className="truncate text-[11px] text-[#858b9c]">
+                      {command.description || command.command}
+                    </span>
+                  </span>
+                  <code className="shrink-0 text-[11px] text-[#858b9c]">{command.command}</code>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className={CHAT_COMPOSER_INPUT_ROW_CLASS}>
+            {activeSlashCommand && (
+              <SlashCommandChip
+                command={activeSlashCommand}
+                onRemove={removeActiveSlashCommand}
+                removeLabel={`${t('移除命令')} ${activeSlashCommand.label}`}
+              />
+            )}
+            <textarea
+              ref={textareaRef}
+              className={cn(
+                CHAT_COMPOSER_TEXTAREA_CLASS,
+                activeSlashCommand && CHAT_COMPOSER_TEXTAREA_WITH_COMMAND_CLASS,
+              )}
+              value={composerText}
+              rows={activeSlashCommand ? 1 : 2}
+              placeholder={t('输入消息，按 Enter 发送...')}
+              onChange={(event) => {
+                setInput(activeSlashCommand
+                  ? slashCommandInput(activeSlashCommand, event.target.value)
+                  : event.target.value);
+              }}
+              onPaste={handleComposerPaste}
+              onCompositionStart={() => setIsComposing(true)}
+              onCompositionEnd={() => window.setTimeout(() => setIsComposing(false), 0)}
+              onKeyDown={(event) => {
+                if (
+                  activeSlashCommand
+                  && event.key === 'Backspace'
+                  && event.currentTarget.selectionStart === 0
+                  && event.currentTarget.selectionEnd === 0
+                ) {
+                  event.preventDefault();
+                  removeActiveSlashCommand();
+                  return;
+                }
+                if (slashMenuOpen && event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setSlashSelectionIndex((current) => (current + 1) % slashMatches.length);
+                  return;
+                }
+                if (slashMenuOpen && event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setSlashSelectionIndex((current) => (
+                    (current - 1 + slashMatches.length) % slashMatches.length
+                  ));
+                  return;
+                }
+                if (slashMenuOpen && event.key === 'Escape') {
+                  event.preventDefault();
+                  setSlashMenuDismissed(true);
+                  return;
+                }
+                if (slashMenuOpen && event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  selectSlashCommand(slashSelectionIndex);
+                  return;
+                }
+                const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
+                if (
+                  event.key === 'Enter'
+                  && !event.shiftKey
+                  && !isComposing
+                  && !nativeEvent.isComposing
+                  && nativeEvent.keyCode !== 229
+                ) {
+                  event.preventDefault();
+                  void send();
+                }
+              }}
+            />
+          </div>
 
           <div className={cn('flex items-center justify-between gap-[10px]', !composerActive && 'opacity-95')}>
             <div className={CHAT_COMPOSER_CONTEXT_ROW_CLASS}>

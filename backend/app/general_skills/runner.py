@@ -225,6 +225,7 @@ class GeneralSkillRunner:
         is_cancelled: CancellationCheck | None = None,
         sandbox_network_mode: str = "all",
         sandbox_allowed_domains: tuple[str, ...] = (),
+        sandbox_enabled: bool = True,
     ) -> GeneralSkillRunResponse:
         trace: list[dict[str, Any]] = []
         max_attempts = max(1, min(max_attempts, GENERAL_SKILL_MAX_ATTEMPTS))
@@ -271,6 +272,7 @@ class GeneralSkillRunner:
                 "is_cancelled": is_cancelled,
                 "sandbox_network_mode": sandbox_network_mode,
                 "sandbox_allowed_domains": sandbox_allowed_domains,
+                "sandbox_enabled": sandbox_enabled,
             }
             execute_kwargs = {
                 key: value for key, value in optional_controls.items() if key in supported
@@ -652,6 +654,7 @@ class GeneralSkillRunner:
         is_cancelled: CancellationCheck | None = None,
         sandbox_network_mode: str | None = None,
         sandbox_allowed_domains: tuple[str, ...] | None = None,
+        sandbox_enabled: bool = True,
     ) -> tuple[str, str, dict[str, Any]]:
         sandbox_network_mode = sandbox_network_mode or "all"
         sandbox_allowed_domains = sandbox_allowed_domains or ()
@@ -754,6 +757,7 @@ class GeneralSkillRunner:
                 env_path_keys=("SKILL_WORKSPACE", "ARTIFACT_DIR"),
                 network_mode=sandbox_network_mode,
                 allowed_domains=sandbox_allowed_domains,
+                sandbox_enabled=sandbox_enabled,
                 is_cancelled=is_cancelled,
             )
         except HarnessExecutionError as exc:

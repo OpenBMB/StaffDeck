@@ -26,6 +26,7 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
+    ExternalSessionBinding,
     HarnessInvocationRecord,
     HarnessRunRecord,
     HarnessSessionLeaseRecord,
@@ -152,6 +153,38 @@ def test_member_only_sees_own_sessions() -> None:
         # 无 agent_id 时 admin 也只看自己
         admin_rows = list_sessions("tenant_demo", agent_id=None, current_user=users["admin"], db=db)
         assert admin_rows == []
+
+
+def test_enterprise_logs_keep_pilotdeck_sessions_visible() -> None:
+    with _test_session() as db:
+        users = _seed(db)
+        db.add(
+            ChatSession(
+                id="session_pilotdeck_log",
+                tenant_id="tenant_demo",
+                user_id=users["member"].id,
+                agent_id="agent_emp",
+                title="PilotDeck 内部协作",
+                channel="public_api",
+            )
+        )
+        db.add(
+            ExternalSessionBinding(
+                tenant_id="tenant_demo",
+                credential_id="credential_pilotdeck",
+                agent_id="agent_emp",
+                external_session_id="pilotdeck-log-room",
+                session_id="session_pilotdeck_log",
+                metadata_json={"channel": "pilotdeck_group_chat"},
+            )
+        )
+        db.commit()
+
+        rows = list_sessions(
+            "tenant_demo", agent_id="agent_emp", current_user=users["member"], db=db
+        )
+
+        assert {row["id"] for row in rows} == {"session_member", "session_pilotdeck_log"}
 
 
 def test_overall_agent_never_opens_to_non_admin() -> None:

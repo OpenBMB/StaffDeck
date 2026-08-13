@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response
+import json
+
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlmodel import Session
 
 from app.api import agents as internal_agents
@@ -9,6 +11,7 @@ from app.db import get_session
 from app.public_api.auth import PublicPrincipal, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.idempotency import replay_idempotent_response, store_idempotent_response
+from app.public_api.utils import decode_cursor, encode_cursor
 
 
 router = APIRouter(prefix="/gallery/agents", tags=["gallery"])
@@ -47,12 +50,47 @@ def _gallery_agents(db: Session, principal: PublicPrincipal) -> list[AgentProfil
 
 @router.get("", response_model=dict)
 def list_gallery_agents(
+    query: str | None = Query(default=None, max_length=200),
+    cursor: str | None = Query(default=None, max_length=500),
+    limit: int = Query(default=20, ge=1, le=100),
     principal: PublicPrincipal = Depends(require_scopes("gallery:read")),
     db: Session = Depends(get_session),
 ) -> dict:
+    rows = sorted(
+        _gallery_agents(db, principal),
+        key=lambda row: (str(row.created_at), row.id),
+        reverse=True,
+    )
+    normalized_query = (query or "").strip().casefold()
+    if normalized_query:
+        rows = [
+            row
+            for row in rows
+            if normalized_query
+            in json.dumps(_payload(row), ensure_ascii=False, default=str).casefold()
+        ]
+
+    decoded_cursor = decode_cursor(cursor)
+    if cursor and decoded_cursor is None:
+        raise PublicAPIError(400, "INVALID_CURSOR", "Gallery cursor is invalid.")
+    if decoded_cursor:
+        rows = [
+            row
+            for row in rows
+            if (str(row.created_at), row.id) < decoded_cursor
+        ]
+
+    page = rows[: limit + 1]
+    has_more = len(page) > limit
+    page = page[:limit]
+    next_cursor = (
+        encode_cursor(page[-1].created_at, page[-1].id)
+        if has_more and page
+        else None
+    )
     return {
-        "data": [_payload(row) for row in _gallery_agents(db, principal)],
-        "next_cursor": None,
+        "data": [_payload(row) for row in page],
+        "next_cursor": next_cursor,
     }
 
 

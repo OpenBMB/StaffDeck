@@ -71,6 +71,7 @@ from app.db.models import (
 )
 from app.general_skills.schema import GeneralSkillRunResponse
 from app.harness.errors import HarnessExecutionError
+from app.knowledge.schema import KnowledgeSearchResponse
 from app.scheduled_tasks.service import (
     _finish_task_schedule,
     _scheduled_harness_outcome,
@@ -1397,6 +1398,132 @@ def test_large_external_json_result_uses_sandbox_reference_and_auto_resolves(
     assert artifacts == []
 
 
+def test_mcp_app_descriptor_is_host_only_and_emitted_as_trace(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    app_tool = Tool(
+        id="tool-mcp-app",
+        tenant_id="tenant-demo",
+        name="apps.render",
+        method="POST",
+        url="mcp://apps/render",
+    )
+    app_descriptor = {
+        "server_id": "server-apps",
+        "resource_uri": "ui://staffdeck/card",
+        "tool_name": app_tool.name,
+        "visibility": ["model", "app"],
+        "mime_type": "text/html;profile=mcp-app",
+        "initial_result": {"old": True},
+        "initial_meta": {"ui": {"render": True}},
+    }
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=True,
+            data={"message": "hello"},
+            mcp_app=app_descriptor,
+            mcp_metadata={"ui": {"hidden": True}},
+        )
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    trace_events: list[tuple[str, dict[str, object]]] = []
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(app_tool)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-mcp-app",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+            trace_sink=lambda event_type, payload: trace_events.append((event_type, payload)),
+        )
+        result = invoker._invoke_external_tool(
+            app_tool.id,
+            {
+                "source_tool_name": app_tool.name,
+                "content_digest": tool_snapshot_digest(db, app_tool),
+            },
+            app_tool.name,
+            {},
+            call_id="hcall-mcp-app",
+        )
+
+    assert result == {
+        "tool_name": app_tool.name,
+        "success": True,
+        "data": {"message": "hello"},
+        "error": None,
+    }
+    assert trace_events[0][0] == "harness_mcp_app_view"
+    trace_descriptor = trace_events[0][1]["mcp_app"]
+    assert isinstance(trace_descriptor, dict)
+    assert trace_descriptor["initial_result"] == {"message": "hello"}
+    assert trace_descriptor["initial_meta"] == {"ui": {"render": True}}
+
+
+def test_knowledge_search_large_json_result_uses_internal_sandbox_reference(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    large_payload = [
+        {"id": index, "content": "policy-" + ("x" * 80)}
+        for index in range(50)
+    ]
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.KnowledgeService.search",
+        lambda *_args, **_kwargs: KnowledgeSearchResponse(
+            selected_concepts=large_payload,
+        ),
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-large-knowledge",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        result = invoker._search_knowledge(
+            {"allowed_knowledge_base_ids": ["kb-policy"]},
+            {"query": "报销制度"},
+            call_id="hcall-knowledge",
+        )
+        reference = result["data"]
+        read_result = invoker._invoke_file(
+            "read_file",
+            {"path": reference["sandbox_path"]},
+            call_id="hcall-read-knowledge",
+        )
+        artifacts = invoker.discover_artifacts()
+
+    assert result["success"] is True
+    assert reference["kind"] == "sandbox_json_file"
+    assert reference["sandbox_path"] == (
+        "/workspace/.harness/tool-results/hcall-knowledge.json"
+    )
+    assert json.loads(read_result["data"]["content"])["selected_concepts"] == large_payload
+    assert artifacts == []
+
+
 def test_external_idempotency_key_is_stable_per_task_not_entire_session(
     tmp_path,
     monkeypatch,
@@ -2075,6 +2202,12 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
         "harness_transcript",
         "iteration",
         "remaining_actions",
+        "knowledge_search_budget",
+    }
+    assert payloads[0]["knowledge_search_budget"] == {
+        "maximum_successful_calls": 2,
+        "successful_calls": 0,
+        "remaining_successful_calls": 2,
     }
     assert payloads[0]["harness_transcript"] == []
     second_transcript = payloads[1]["harness_transcript"]
@@ -2288,7 +2421,7 @@ def test_harness_agent_keeps_knowledge_results_and_citations_linked(
     assert second.citations[0]["label"] == "[1]"
 
 
-def test_harness_agent_keeps_only_latest_successful_knowledge_search(
+def test_harness_agent_limits_successful_knowledge_searches_to_two(
     monkeypatch,
 ) -> None:
     actions = iter(
@@ -2302,6 +2435,11 @@ def test_harness_agent_keeps_only_latest_successful_knowledge_search(
                 "action": "tool",
                 "tool_name": "knowledge_search",
                 "arguments": {"query": "最新制度"},
+            },
+            {
+                "action": "tool",
+                "tool_name": "knowledge_search",
+                "arguments": {"query": "制度全文"},
             },
             {
                 "action": "finish",
@@ -2368,12 +2506,22 @@ def test_harness_agent_keeps_only_latest_successful_knowledge_search(
         ),
         _model_config(),
         invoke_tool,
-        max_actions=3,
+        max_actions=4,
     )
 
-    assert result.evidence_results[0]["query"] == {"query": "最新制度"}
-    assert result.citations[0]["source_path"] == "latest.pdf"
-    assert all(item["source_path"] != "old.pdf" for item in result.citations)
+    assert [item["query"] for item in result.evidence_results] == [
+        {"query": "旧制度"},
+        {"query": "最新制度"},
+    ]
+    assert {item["source_path"] for item in result.citations} == {
+        "old.pdf",
+        "latest.pdf",
+    }
+    assert len(result.capability_results) == 3
+    assert result.capability_results[-1]["success"] is False
+    assert result.capability_results[-1]["error"]["code"] == (
+        "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED"
+    )
 
 
 def test_harness_agent_projects_only_validated_current_turn_images(

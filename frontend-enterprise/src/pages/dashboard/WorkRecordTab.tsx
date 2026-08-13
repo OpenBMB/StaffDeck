@@ -29,12 +29,6 @@ import type {
   ToolRead,
 } from '../../types';
 
-export type ReplyStats = {
-  total: number;
-  today: number;
-  byDay: Record<string, number>;
-};
-
 const TIMELINE_MODES = [
   { key: 'day', label: 'Day' },
   { key: 'week', label: 'Week' },
@@ -67,8 +61,9 @@ export type WorkRecordTabProps = {
   activeTools: ToolRead[];
   activeScheduledTasks: ScheduledTaskRead[];
   employeeSessions: EnterpriseChatSessionRead[];
-  replyStats: ReplyStats;
+  conversationCount: number;
   activityEvents: AgentWorkRecordEventRead[];
+  feedbackCount: number;
   positiveRate: number;
   negativeRate: number;
 };
@@ -91,8 +86,9 @@ export default function WorkRecordTab({
   activeTools,
   activeScheduledTasks,
   employeeSessions,
-  replyStats,
+  conversationCount,
   activityEvents,
+  feedbackCount,
   positiveRate,
   negativeRate,
 }: WorkRecordTabProps) {
@@ -151,7 +147,7 @@ export default function WorkRecordTab({
       route: `/enterprise/feedback?agent_id=${encodeURIComponent(selectedAgent.id)}`,
       title: '对话日志',
       tone: 'logs',
-      count: replyStats.total,
+      count: conversationCount,
       body: staffdeckDisplayText(employeeSessions[0]?.summary || employeeSessions[0]?.last_agent_question || '暂无对话任务'),
       icon: <IconProfileCalendar className={capabilityGlyphClass} />,
       dark: true,
@@ -164,8 +160,8 @@ export default function WorkRecordTab({
   return (
     <section className="relative flex w-full min-w-0 max-w-full mt-[-2px] flex-col gap-[24px] overflow-hidden rounded-[18px] shadow-[0_20px_42px_rgba(21,26,38,0.045)] bg-white p-[14px] *:min-w-0 min-[521px]:p-[18px] in-data-[theme=dark]:border-[#343741] in-data-[theme=dark]:bg-[#202126] in-data-[theme=dark]:text-[#f0f2f6]">
       <div className="flex w-full items-stretch gap-[16px]">
-        <ClickableMetric label="今日对话" value={replyStats.today} onClick={goToLogs} />
-        <ClickableMetric label="累计对话" value={replyStats.total} onClick={goToLogs} />
+        <ClickableMetric label="对话次数" value={conversationCount} onClick={goToLogs} />
+        <ClickableMetric label="反馈次数" value={feedbackCount} onClick={goToLogs} />
         <ClickableMetric label="好评率" value={positiveRate} suffix="%" tone="positive" onClick={goToLogs} />
         <ClickableMetric label="差评率" value={negativeRate} suffix="%" tone="negative" onClick={goToLogs} />
       </div>

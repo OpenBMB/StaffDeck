@@ -23,6 +23,7 @@ from app.db.models import (
 from app.channels.adapters.base import channel_reaction_token
 from app.channels.service_durable_inbox import reaction_target
 from app.channels.service_identity import external_account_scope
+from app.session.origin import PILOTDECK_GROUP_CHAT_CHANNEL
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ _delivery_thread: threading.Thread | None = None
 _reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
 _FEISHU_DEDUP_RECOVERY_SECONDS = 55 * 60
-_NON_DELIVERY_CHANNELS = {"public_api"}
+_NON_DELIVERY_CHANNELS = {"public_api", PILOTDECK_GROUP_CHAT_CHANNEL}
 
 
 def _stage_failed_delivery(

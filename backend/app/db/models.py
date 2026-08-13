@@ -581,8 +581,10 @@ class UIConfig(SQLModel, table=True):
     show_tool_trace: bool = True
     reflection_max_rounds: int = 1
     agent_loop_max_actions: int = 32
+    sandbox_enabled: bool = False
     sandbox_network_mode: str = Field(default="all")
     sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    harness_storage_path: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

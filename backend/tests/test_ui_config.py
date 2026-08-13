@@ -5,8 +5,11 @@ from pydantic import ValidationError
 
 from app.api import ui_config as ui_config_module
 from app.api.ui_config import UIConfigUpdateRequest, ui_config_read
+from app.api.ui_config import update_enterprise_ui_config
 from app.core.agent_loop import AgentLoop
-from app.db.models import UIConfig
+from app.db.models import Tenant, UIConfig, User
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 from app.harness.sandbox import SandboxDiagnostics
 
 
@@ -45,6 +48,7 @@ def test_ui_config_read_fails_closed_for_unknown_network_policy(
     )
     row = UIConfig(
         tenant_id="tenant_demo",
+        sandbox_enabled=True,
         sandbox_network_mode="legacy",
         sandbox_allowed_domains=[" api.example.com ", "", "*.example.org"],
     )
@@ -78,8 +82,60 @@ def test_windows_setup_prompt_is_based_on_backend_host(
         lambda: "node srt-cli.js windows-install",
     )
 
-    result = ui_config_read(UIConfig(tenant_id="tenant_demo"))
+    result = ui_config_read(UIConfig(tenant_id="tenant_demo", sandbox_enabled=True))
 
     assert result.sandbox_setup_required is True
     assert "PowerShell 或 CMD" in (result.sandbox_setup_instructions or "")
     assert "node srt-cli.js windows-install" in (result.sandbox_setup_instructions or "")
+
+
+def test_sandbox_is_disabled_by_default_without_running_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ui_config_module,
+        "diagnostics",
+        lambda: pytest.fail("disabled sandbox must not be probed"),
+    )
+
+    result = ui_config_read(UIConfig(tenant_id="tenant_demo"))
+
+    assert result.sandbox_enabled is False
+    assert result.sandbox_status == "disabled"
+    assert result.sandbox_backend == "disabled"
+
+
+def test_sandbox_toggle_schedules_application_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    scheduled: list[bool] = []
+    monkeypatch.setattr(ui_config_module, "_schedule_application_restart", lambda: scheduled.append(True))
+    monkeypatch.setattr(
+        ui_config_module,
+        "diagnostics",
+        lambda: SandboxDiagnostics(status="ready", code=None, message="ok", backend="srt"),
+    )
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+        admin = User(
+            id="user_admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            password_hash="unused",
+            role="admin",
+        )
+        result = update_enterprise_ui_config(
+            UIConfigUpdateRequest(tenant_id="tenant_demo", sandbox_enabled=True),
+            db,
+            admin,
+        )
+
+    assert result.restart_scheduled is True
+    assert scheduled == [True]

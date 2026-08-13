@@ -23,6 +23,7 @@ import {
 import { Maximize2, Minimize2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -289,9 +290,12 @@ import {
 } from './distillPageStyles';
 import { buildDistillFailure, type DistillFailure } from './distillFailure';
 import {
+  normalizeSkillFlowWheelDelta,
+  reanchorSkillFlowConnection,
   skillNodeFlowPosition,
   withSkillNodeFlowPosition,
   withoutSkillEdgeAt,
+  type SkillFlowConnectionPreview,
   type SkillFlowPosition,
 } from './skillFlowModel';
 import { api, ApiError, streamGet, streamPost, TENANT_ID } from '../api/client';
@@ -2923,11 +2927,14 @@ function SourceInput({
 function AutoGrowTextarea({
   className,
   minRows = 1,
+  maxRows,
   value,
+  style,
   ...rest
 }: {
   className?: string;
   minRows?: number;
+  maxRows?: number;
   value?: string;
   placeholder?: string;
   disabled?: boolean;
@@ -2936,17 +2943,46 @@ function AutoGrowTextarea({
   onChange?: ChangeEventHandler<HTMLTextAreaElement>;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
+  const [autoSize, setAutoSize] = useState<{ height: number; overflowY: 'auto' | 'hidden' } | null>(null);
+  useLayoutEffect(() => {
     const el = ref.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  }, [value]);
+    if (!el) return undefined;
+    const resize = () => {
+      const computed = window.getComputedStyle(el);
+      const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
+      const verticalPadding = (Number.parseFloat(computed.paddingTop) || 0)
+        + (Number.parseFloat(computed.paddingBottom) || 0);
+      const verticalBorder = (Number.parseFloat(computed.borderTopWidth) || 0)
+        + (Number.parseFloat(computed.borderBottomWidth) || 0);
+      const minHeight = lineHeight * minRows + verticalPadding + verticalBorder;
+      const maxHeight = maxRows
+        ? lineHeight * Math.max(minRows, maxRows) + verticalPadding + verticalBorder
+        : Number.POSITIVE_INFINITY;
+      const nextHeight = Math.max(minHeight, Math.min(el.scrollHeight, maxHeight));
+      const nextOverflowY = maxRows || el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+      setAutoSize((current) => (
+        current?.height === nextHeight && current.overflowY === nextOverflowY
+          ? current
+          : { height: nextHeight, overflowY: nextOverflowY }
+      ));
+    };
+    resize();
+    let previousWidth = el.clientWidth;
+    const observer = new ResizeObserver((entries) => {
+      const nextWidth = entries[0]?.contentRect.width ?? el.clientWidth;
+      if (Math.abs(nextWidth - previousWidth) < 0.5) return;
+      previousWidth = nextWidth;
+      resize();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [maxRows, minRows, value]);
   return (
     <Textarea
       ref={ref}
       rows={minRows}
       value={value}
+      style={{ ...style, height: autoSize?.height, overflowY: autoSize?.overflowY }}
       className={cn(SOURCE_INPUT_CLASS, className)}
       {...rest}
     />
@@ -3514,7 +3550,7 @@ function SkillSource({
             <EditableSourceListLine label={fieldLabel('user_utterance_examples')} values={skill.user_utterance_examples} onChange={(value) => editBasic('user_utterance_examples', value)} />
             <EditableSourceListLine label={fieldLabel('goal')} values={skill.goal} onChange={(value) => editBasic('goal', value)} />
             <EditableSourceListLine label={fieldLabel('required_info')} values={skill.required_info} onChange={(value) => editBasic('required_info', value)} />
-            <EditableSourceListLine label={fieldLabel('response_rules')} values={skill.response_rules} onChange={(value) => editBasic('response_rules', value)} />
+            <EditableSourceListLine label={fieldLabel('response_rules')} values={skill.response_rules} minRows={5} maxRows={14} onChange={(value) => editBasic('response_rules', value)} />
           </div>
         </div>
       </SelectableTarget>
@@ -3701,15 +3737,9 @@ function SkillFlow({
   const [flowViewportWidth, setFlowViewportWidth] = useState(0);
   const [armedConnectionSourceId, setArmedConnectionSourceId] = useState('');
   const [selectedEdgeId, setSelectedEdgeId] = useState('');
+  const [hoveredEdgeId, setHoveredEdgeId] = useState('');
   const [nodePositionOverrides, setNodePositionOverrides] = useState<Record<string, SkillFlowPosition>>({});
-  const [connectionDrag, setConnectionDrag] = useState<{
-    sourceNodeId: string;
-    targetNodeId: string;
-    startX: number;
-    startY: number;
-    currentX: number;
-    currentY: number;
-  } | null>(null);
+  const [connectionDrag, setConnectionDrag] = useState<SkillFlowConnectionPreview | null>(null);
   const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
   const connectionPointerRef = useRef<{ sourceNodeId: string; startX: number; startY: number } | null>(null);
   const connectionDragRef = useRef<typeof connectionDrag>(null);
@@ -3722,6 +3752,7 @@ function SkillFlow({
     startX: number;
     startY: number;
     moved: boolean;
+    captureTarget: HTMLDivElement;
   } | null>(null);
   const suppressNodeClickRef = useRef('');
   const panStateRef = useRef<{
@@ -3953,8 +3984,8 @@ function SkillFlow({
       startX: node.x,
       startY: node.y,
       moved: false,
+      captureTarget: event.currentTarget,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
   };
   const handleNodePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = nodeDragRef.current;
@@ -3962,6 +3993,9 @@ function SkillFlow({
     const deltaX = (event.clientX - drag.pointerX) / flowZoom;
     const deltaY = (event.clientY - drag.pointerY) / flowZoom;
     if (!drag.moved && Math.hypot(deltaX, deltaY) < 4) return;
+    if (!drag.moved && !drag.captureTarget.hasPointerCapture(drag.pointerId)) {
+      drag.captureTarget.setPointerCapture(drag.pointerId);
+    }
     drag.moved = true;
     const position = {
       x: Math.max(32, drag.startX + deltaX),
@@ -3974,6 +4008,9 @@ function SkillFlow({
     const drag = nodeDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     nodeDragRef.current = null;
+    if (drag.captureTarget.hasPointerCapture(drag.pointerId)) {
+      drag.captureTarget.releasePointerCapture(drag.pointerId);
+    }
     if (!drag.moved) return;
     const position = {
       x: Math.max(32, drag.startX + (event.clientX - drag.pointerX) / flowZoom),
@@ -4135,7 +4172,7 @@ function SkillFlow({
   const handlePanPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!isFullscreen || connectionDrag || event.button !== 0) return;
     const target = event.target as HTMLElement;
-    if (target.closest('[data-flow-node-id], button, input, textarea, select, [role="button"], [role="combobox"]')) return;
+    if (target.closest('[data-flow-node-id], [data-flow-edge-hit], button, input, textarea, select, [role="button"], [role="combobox"]')) return;
     panStateRef.current = {
       pointerId: event.pointerId,
       x: event.clientX,
@@ -4158,9 +4195,51 @@ function SkillFlow({
     panStateRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
+  const scheduleConnectionPreviewReanchor = () => {
+    const pending = connectionPointerRef.current;
+    if (!pending) return;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const latestPending = connectionPointerRef.current;
+        if (!latestPending) return;
+        const container = containerRef.current;
+        const nodeElements = container?.querySelectorAll<HTMLElement>('[data-flow-node-id]');
+        const findNode = (nodeId: string) => Array.from(nodeElements || [])
+          .find((node) => node.dataset.flowNodeId === nodeId);
+        const sourceHandle = findNode(latestPending.sourceNodeId)
+          ?.querySelector<HTMLElement>('[data-flow-connect-handle]');
+        const sourceRect = sourceHandle?.getBoundingClientRect();
+        if (!sourceRect) return;
+        const sourcePoint = {
+          x: sourceRect.left + sourceRect.width / 2,
+          y: sourceRect.top + sourceRect.height / 2,
+        };
+        connectionPointerRef.current = {
+          ...latestPending,
+          startX: sourcePoint.x,
+          startY: sourcePoint.y,
+        };
+        const current = connectionDragRef.current;
+        if (!current) return;
+        const targetRect = current.targetNodeId
+          ? findNode(current.targetNodeId)?.getBoundingClientRect()
+          : null;
+        const next = reanchorSkillFlowConnection(
+          current,
+          sourcePoint,
+          targetRect
+            ? { x: targetRect.left + targetRect.width / 2, y: targetRect.top - 2 }
+            : undefined,
+        );
+        connectionDragRef.current = next;
+        setConnectionDrag(next);
+      });
+    });
+  };
   const handleCanvasWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     if (!isFullscreen) return;
     event.preventDefault();
+    event.stopPropagation();
     if (event.ctrlKey || event.metaKey) {
       const rect = event.currentTarget.getBoundingClientRect();
       const pointerX = event.clientX - rect.left;
@@ -4175,13 +4254,17 @@ function SkillFlow({
         x: pointerX - graphX * nextZoom,
         y: pointerY - graphY * nextZoom,
       });
+      scheduleConnectionPreviewReanchor();
       return;
     }
+    const deltaX = normalizeSkillFlowWheelDelta(event.deltaX, event.deltaMode, event.currentTarget.clientWidth);
+    const deltaY = normalizeSkillFlowWheelDelta(event.deltaY, event.deltaMode, event.currentTarget.clientHeight);
     setFlowPreset(null);
     setFlowPan((current) => ({
-      x: current.x - event.deltaX,
-      y: current.y - event.deltaY,
+      x: current.x - deltaX,
+      y: current.y - deltaY,
     }));
+    scheduleConnectionPreviewReanchor();
   };
   useEffect(() => {
     const container = containerRef.current;
@@ -4269,6 +4352,10 @@ function SkillFlow({
         handleNodePointerMove(event);
       }}
       onPointerUp={(event) => {
+        handleConnectionPointerUp(event);
+        finishNodeDrag(event);
+      }}
+      onPointerCancel={(event) => {
         handleConnectionPointerUp(event);
         finishNodeDrag(event);
       }}
@@ -4390,7 +4477,7 @@ function SkillFlow({
               width={graphLayout.width}
               height={graphLayout.height}
               viewBox={`0 0 ${graphLayout.width} ${graphLayout.height}`}
-              aria-hidden="true"
+              aria-label="SOP 流程连线"
             >
               <defs>
                 <marker id="skill-flow-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -4403,10 +4490,12 @@ function SkillFlow({
                     className={cn(
                       FLOW_EDGE_PATH_CLASS,
                       'pointer-events-none',
+                      hoveredEdgeId === edge.id && 'stroke-[#4f817c]! [stroke-width:2.15] opacity-100',
                       selectedEdgeId === edge.id && 'stroke-[#04756f]! [stroke-width:2.5] opacity-100',
                     )}
                     d={edge.path}
                     markerEnd="url(#skill-flow-arrow)"
+                    aria-hidden="true"
                   >
                     <title>{edge.title}</title>
                   </path>
@@ -4414,11 +4503,27 @@ function SkillFlow({
                     <path
                       d={edge.path}
                       fill="none"
-                      stroke="transparent"
-                      strokeWidth="18"
+                      stroke="rgba(4, 117, 111, 0.001)"
+                      strokeWidth="28"
+                      vectorEffect="non-scaling-stroke"
+                      pointerEvents="stroke"
+                      data-flow-edge-hit={edge.id}
                       className="cursor-pointer [pointer-events:stroke]"
+                      role="button"
+                      tabIndex={0}
                       aria-label={`选择流转 ${edge.title}`}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onPointerEnter={() => setHoveredEdgeId(edge.id)}
+                      onPointerLeave={() => setHoveredEdgeId((current) => current === edge.id ? '' : current)}
+                      onFocus={() => setHoveredEdgeId(edge.id)}
+                      onBlur={() => setHoveredEdgeId((current) => current === edge.id ? '' : current)}
                       onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedEdgeId(edge.id);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
                         event.stopPropagation();
                         setSelectedEdgeId(edge.id);
                       }}
@@ -4431,12 +4536,28 @@ function SkillFlow({
               <div
                 className={cn(
                   flowEdgeLabelClass(edge.labelTone || edge.kind),
-                  edge.kind === 'edge' && 'group/flow-edge pointer-events-auto! flex cursor-pointer items-center gap-[5px]',
+                  edge.kind === 'edge' && 'pointer-events-auto! flex cursor-pointer items-center gap-[5px] overflow-visible!',
                   selectedEdgeId === edge.id && 'border-[#04756f]! bg-[#f3fbf8]! text-[#075f59]!',
                 )}
                 key={`${edge.id}_label`}
-                style={{ left: edge.labelX, top: edge.labelY }}
+                data-flow-edge-label={edge.id}
+                style={{
+                  left: edge.labelX,
+                  top: edge.labelY,
+                  ...(isFullscreen
+                    ? {
+                        transform: `translate(-50%, -50%) scale(${1 / flowZoom})`,
+                        transformOrigin: 'center',
+                      }
+                    : {}),
+                }}
                 title={edge.title}
+                onPointerEnter={() => setHoveredEdgeId(edge.id)}
+                onPointerLeave={() => setHoveredEdgeId((current) => current === edge.id ? '' : current)}
+                onFocusCapture={() => setHoveredEdgeId(edge.id)}
+                onBlurCapture={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) setHoveredEdgeId('');
+                }}
               >
                 {edge.kind === 'edge' ? (
                   <button
@@ -4454,8 +4575,9 @@ function SkillFlow({
                   <button
                     type="button"
                     className={cn(
-                      'grid size-[17px] shrink-0 place-items-center rounded-full border-0 bg-transparent p-0 text-[13px] leading-none text-[#858b9c] opacity-0 transition-opacity hover:bg-[#fee2e2] hover:text-[#b42318] focus-visible:opacity-100 focus-visible:outline-none group-hover/flow-edge:opacity-100',
-                      selectedEdgeId === edge.id && 'opacity-100',
+                      'pointer-events-none grid size-[18px] shrink-0 place-items-center rounded-full border border-transparent bg-transparent p-0 text-[15px] leading-none text-[#858b9c] opacity-0 transition-[opacity,background,color,border-color] hover:border-[#fecaca] hover:bg-[#fee2e2] hover:text-[#b42318] focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none',
+                      (hoveredEdgeId === edge.id || selectedEdgeId === edge.id)
+                        && 'pointer-events-auto opacity-100',
                     )}
                     aria-label={`删除流转 ${edge.title}`}
                     title="删除这条流转规则"
@@ -4532,6 +4654,7 @@ function SkillFlow({
                   textDiffs={textDiffs}
                   toolDescriptions={toolDescriptions}
                   toolStatuses={toolStatuses}
+                  selected={selectedNodeId === item.nodeId}
                   connecting={connectionDrag?.sourceNodeId === item.nodeId || armedConnectionSourceId === item.nodeId}
                   dropTarget={connectionDrag?.targetNodeId === item.nodeId}
                   connectHandleScale={Math.min(2.4, 1 / flowZoom)}
@@ -4673,7 +4796,7 @@ function SkillFlowBasicInspector({
           </FlowInspectorSection>
           <FlowInspectorSection title="输入与回复约束" description="列出完成流程所需的信息和最终回复规则。">
             <EditableSourceListLine label={fieldLabel('required_info')} values={skill.required_info} onChange={(value) => onEditBasic('required_info', value)} />
-            <EditableSourceListLine label={fieldLabel('response_rules')} values={skill.response_rules} onChange={(value) => onEditBasic('response_rules', value)} />
+            <EditableSourceListLine label={fieldLabel('response_rules')} values={skill.response_rules} minRows={5} maxRows={14} onChange={(value) => onEditBasic('response_rules', value)} />
           </FlowInspectorSection>
         </div>
       </div>
@@ -4781,6 +4904,7 @@ function SkillFlowNodeCard({
   textDiffs,
   toolDescriptions,
   toolStatuses,
+  selected,
   connecting,
   dropTarget,
   connectHandleScale,
@@ -4801,6 +4925,7 @@ function SkillFlowNodeCard({
   textDiffs: TextDiffAnimation[];
   toolDescriptions: ToolDescriptionMap;
   toolStatuses: ToolStatusMap;
+  selected: boolean;
   connecting: boolean;
   dropTarget: boolean;
   connectHandleScale: number;
@@ -4821,6 +4946,7 @@ function SkillFlowNodeCard({
         className={cn(
           distillFlowNodeClass(path, false, selectedPaths, highlightedPaths, updatingPaths, dirtyPaths),
           'cursor-grab! active:cursor-grabbing!',
+          selected && 'border-[#04756f]! shadow-[0_0_0_3px_rgba(4,117,111,0.10),0_12px_30px_rgba(4,117,111,0.08)]',
           dropTarget && 'border-[#04756f]! shadow-[0_0_0_4px_rgba(4,117,111,0.12),0_12px_30px_rgba(4,117,111,0.10)]',
         )}
         target={{ path, label: `节点 ${index + 1}：${step.name || nodeId}` }}
@@ -4860,6 +4986,7 @@ function SkillFlowNodeCard({
       {showConnectHandle && (
         <button
           type="button"
+          data-flow-connect-handle
           className={cn(FLOW_NODE_CONNECT_HANDLE_CLASS, connecting && FLOW_NODE_CONNECT_HANDLE_ACTIVE_CLASS)}
           style={{ transform: `translateX(-50%) scale(${connectHandleScale})` }}
           aria-label={`从「${String(step.name || nodeId)}」拖线连接节点`}
@@ -5943,10 +6070,14 @@ function EditableSourceNumberLine({
 function EditableSourceListLine({
   label,
   values,
+  minRows = 1,
+  maxRows,
   onChange,
 }: {
   label: string;
   values: string[];
+  minRows?: number;
+  maxRows?: number;
   onChange: (value: string) => void;
 }) {
   return (
@@ -5958,7 +6089,8 @@ function EditableSourceListLine({
             className={SOURCE_EDIT_INPUT_CLASS}
             value={values.join('\n')}
             style={sourceInputStyle(values.join('\n'), true)}
-            minRows={1}
+            minRows={minRows}
+            maxRows={maxRows}
             onChange={(event) => onChange(event.target.value)}
           />
         </EditableSourceField>
@@ -7342,7 +7474,7 @@ function normalizeToolSuggestions(value: unknown): ToolSuggestionItem[] {
       display_name: typeof item.display_name === 'string' ? item.display_name : undefined,
       description: typeof item.description === 'string' ? item.description : undefined,
       bucket: typeof item.bucket === 'string' && item.bucket.trim() ? item.bucket.trim() : '技能自发现工具',
-      tool_type: item.tool_type === 'mcp' ? 'mcp' : 'http',
+      tool_type: item.tool_type === 'mcp' ? 'mcp' : item.tool_type === 'a2a' ? 'a2a' : 'http',
       method: typeof item.method === 'string' ? item.method : 'POST',
       url: typeof item.url === 'string' ? item.url : '',
       mcp_config: isRecord(item.mcp_config) ? item.mcp_config : {},
@@ -7919,7 +8051,7 @@ function toolPayloadFromSuggestion(suggestion: ToolSuggestionItem, skillId?: str
     url: suggestion.url || `/api/mock/${suggestion.name.replace(/\./g, '/')}`,
     headers: {},
     auth: {},
-    mcp_config: suggestion.tool_type === 'mcp' ? suggestion.mcp_config || {} : {},
+    mcp_config: suggestion.tool_type === 'mcp' || suggestion.tool_type === 'a2a' ? suggestion.mcp_config || {} : {},
     input_schema: suggestion.input_schema || {},
     output_schema: outputSchema,
     execution_policy: { timeout_seconds: 8 },
@@ -7944,7 +8076,7 @@ function toolReadFromSuggestion(suggestion: ToolSuggestionItem, skillId?: string
     url: suggestion.url || `/api/mock/${suggestion.name.replace(/\./g, '/')}`,
     headers: {},
     auth: {},
-    mcp_config: suggestion.tool_type === 'mcp' ? suggestion.mcp_config || {} : {},
+    mcp_config: suggestion.tool_type === 'mcp' || suggestion.tool_type === 'a2a' ? suggestion.mcp_config || {} : {},
     input_schema: suggestion.input_schema || {},
     output_schema: outputSchema,
     execution_policy: { timeout_seconds: 8 },

@@ -87,7 +87,7 @@ type ToolPageProps = {
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const TOOL_PAGE_SIZE = 10;
 const TOOL_FORM_INITIAL_VALUES = {
-  tool_type: 'http',
+  tool_type: 'http' as 'http' | 'a2a' | 'mcp',
   method: 'POST',
   enabled: true,
   bucket: '未分桶',
@@ -503,7 +503,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       title: '类型',
       width: 90,
       render: (row) => (
-        <StatusBadge tone={row.tool_type === 'mcp' ? 'blue' : 'gray'}>{row.tool_type === 'mcp' ? 'MCP' : 'HTTP'}</StatusBadge>
+        <StatusBadge tone={row.tool_type === 'mcp' || row.tool_type === 'a2a' ? 'blue' : 'gray'}>{row.tool_type === 'mcp' ? 'MCP' : row.tool_type === 'a2a' ? 'A2A' : 'HTTP'}</StatusBadge>
       ),
     },
     {
@@ -659,7 +659,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       </div>
       <div className="mt-[8px] flex flex-wrap items-center gap-[6px]">
         <StatusBadge tone="gray">{row.bucket || '未分桶'}</StatusBadge>
-        <StatusBadge tone={row.tool_type === 'mcp' ? 'blue' : 'gray'}>{row.tool_type === 'mcp' ? 'MCP' : 'HTTP'}</StatusBadge>
+        <StatusBadge tone={row.tool_type === 'mcp' || row.tool_type === 'a2a' ? 'blue' : 'gray'}>{row.tool_type === 'mcp' ? 'MCP' : row.tool_type === 'a2a' ? 'A2A' : 'HTTP'}</StatusBadge>
         <CapabilityScopeBadge value={row.capability_scope} />
         <StatusBadge tone={row.enabled ? 'green' : 'gray'}>{row.enabled ? '已启用' : '已停用'}</StatusBadge>
       </div>
@@ -965,10 +965,11 @@ export function McpServerEditPage(props: ToolPageProps = {}) {
  * 新建工具时顶部的类型切换条：HTTP 工具 / MCP 服务器。
  * 点击即跳转到对应的新建页，体验上像同一个「新建工具」流程里的分支。
  */
-function ToolTypeSwitcher({ active }: { active: 'http' | 'mcp' }) {
+function ToolTypeSwitcher({ active, onProtocolChange }: { active: 'http' | 'a2a' | 'mcp'; onProtocolChange?: (protocol: 'http' | 'a2a') => void }) {
   const navigate = useNavigate();
-  const options: { value: 'http' | 'mcp'; label: string; hint: string; to: string }[] = [
+  const options: { value: 'http' | 'a2a' | 'mcp'; label: string; hint: string; to: string }[] = [
     { value: 'http', label: 'HTTP 工具', hint: '配置单个 HTTP 接口作为工具', to: '/enterprise/tools/new' },
+    { value: 'a2a', label: 'A2A Agent', hint: '通过 A2A SendMessage 调用远程智能体', to: '/enterprise/tools/new' },
     { value: 'mcp', label: 'MCP 服务器', hint: '连接 MCP Server，自动发现并同步其工具集', to: '/enterprise/tools/mcp/new' },
   ];
   return (
@@ -982,7 +983,9 @@ function ToolTypeSwitcher({ active }: { active: 'http' | 'mcp' }) {
               key={option.value}
               type="button"
               onClick={() => {
-                if (!isActive) navigate(option.to);
+                if (option.value === 'mcp') navigate(option.to);
+                else if (onProtocolChange) onProtocolChange(option.value);
+                else navigate(`${option.to}?type=${option.value}`);
               }}
               className={cn(
                 'relative flex min-w-[200px] flex-1 items-start gap-[10px] rounded-[12px] border px-[16px] py-[12px] text-left transition-all',
@@ -1027,8 +1030,10 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
   const [loading, setLoading] = useState(false);
   const [bucketOptions, setBucketOptions] = useState<{ value: string; label: string }[]>([{ value: '未分桶', label: '未分桶' }]);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { toolId } = useParams();
   const isEdit = mode === 'edit';
+  const requestedToolType = searchParams.get('type') === 'a2a' ? 'a2a' : 'http';
 
   const setField = <K extends keyof ToolFormValues>(name: K, value: ToolFormValues[K]) =>
     setValues((prev) => ({ ...prev, [name]: value }));
@@ -1039,7 +1044,7 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
 
   useEffect(() => {
     if (!isEdit) {
-      setValues({ ...TOOL_FORM_INITIAL_VALUES });
+      setValues({ ...TOOL_FORM_INITIAL_VALUES, tool_type: requestedToolType });
       setTool(null);
       return;
     }
@@ -1054,7 +1059,7 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
       })
       .catch((error) => notify.error(error instanceof Error ? error.message : '加载工具失败'))
       .finally(() => setLoading(false));
-  }, [isEdit, toolId]);
+  }, [isEdit, requestedToolType, toolId]);
 
   async function save() {
     if (!String(values.name || '').trim()) {
@@ -1117,7 +1122,7 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
           保存
         </UIButton>
       </div>
-      {!isEdit && <ToolTypeSwitcher active="http" />}
+      {!isEdit && <ToolTypeSwitcher active={values.tool_type} onProtocolChange={(protocol) => setValues((previous) => ({ ...previous, tool_type: protocol, method: 'POST' }))} />}
       <div className="grid grid-cols-1 items-start gap-[20px] xl:grid-cols-2">
         <SectionCard title="工具定义" loading={loading && isEdit && !tool}>
           <ToolFormFields values={values} setField={setField} bucketOptions={bucketOptions} lockName={isEdit} />
@@ -1257,7 +1262,7 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
                     {tool.description || '暂无描述'}
                   </p>
                   <div className="flex flex-wrap items-center gap-[6px]">
-                    <StatusBadge tone={tool.tool_type === 'mcp' ? 'blue' : 'gray'}>{toolTypeLabel(tool)}</StatusBadge>
+                    <StatusBadge tone={tool.tool_type === 'mcp' || tool.tool_type === 'a2a' ? 'blue' : 'gray'}>{toolTypeLabel(tool)}</StatusBadge>
                     <CapabilityScopeBadge value={tool.capability_scope} />
                     <StatusBadge tone={tool.enabled ? 'green' : 'gray'}>{tool.enabled ? '已启用' : '已停用'}</StatusBadge>
                     <StatusBadge tone="gray">{tool.method}</StatusBadge>
@@ -1895,8 +1900,13 @@ function ToolFormFields({
         />
       </Field>
 
-      <div className="grid grid-cols-1 gap-[16px] sm:grid-cols-[140px_minmax(0,1fr)]">
-        <Field label="HTTP Method">
+      <div
+        className={cn(
+          'grid grid-cols-1 gap-[16px]',
+          values.tool_type === 'http' && 'sm:grid-cols-[140px_minmax(0,1fr)]',
+        )}
+      >
+        {values.tool_type === 'http' && <Field label="HTTP Method">
           <UISelect value={values.method} onValueChange={(value) => setField('method', value)}>
             <SelectTrigger className={cn(SELECT_TRIGGER_CLASS, 'w-full')}>
               <SelectValue />
@@ -1907,16 +1917,20 @@ function ToolFormFields({
               ))}
             </SelectContent>
           </UISelect>
-        </Field>
-        <Field label="URL" htmlFor="tool-url">
+        </Field>}
+        <Field label={values.tool_type === 'a2a' ? 'A2A Endpoint URL' : 'URL'} htmlFor="tool-url">
           <Input
             id="tool-url"
-            placeholder="/api/mock/order/query"
+            placeholder={values.tool_type === 'a2a' ? 'https://agent.example.com/a2a' : '/api/mock/order/query'}
             value={values.url || ''}
             onChange={(event) => setField('url', event.target.value)}
           />
         </Field>
       </div>
+
+      {values.tool_type === 'a2a' && <Field label="A2A 配置 JSON" htmlFor="tool-a2a-config" hint='可配置 a2a_version 与 accepted_output_modes；默认使用 JSON-RPC 2.0 SendMessage。'>
+        <Textarea id="tool-a2a-config" rows={4} className={MONO_INPUT_CLASS} value={values.mcp_config} onChange={(event) => setField('mcp_config', event.target.value)} placeholder={'{\n  "a2a_version": "1.0",\n  "accepted_output_modes": ["text/plain", "application/json"]\n}'} />
+      </Field>}
 
       <Field
         label="调用超时上限（秒）"
@@ -2201,7 +2215,7 @@ function toolToFormValues(row: ToolRead): ToolFormValues {
     ...TOOL_FORM_INITIAL_VALUES,
     ...row,
     bucket: row.bucket || '未分桶',
-    tool_type: row.tool_type || 'http',
+    tool_type: row.tool_type === 'mcp' || row.tool_type === 'a2a' ? row.tool_type : 'http',
     headers: JSON.stringify(row.headers || {}, null, 2),
     auth: JSON.stringify(row.auth || {}, null, 2),
     mcp_config: JSON.stringify(row.mcp_config || {}, null, 2),
@@ -2226,7 +2240,7 @@ function buildToolPayload(values: ToolFormValues) {
       url: String(values.url || '').trim(),
       headers: parseJson(values.headers, {}),
       auth: parseJson(values.auth, {}),
-      mcp_config: values.tool_type === 'mcp' ? parseJson(values.mcp_config, {}) : {},
+      mcp_config: values.tool_type === 'mcp' || values.tool_type === 'a2a' ? parseJson(values.mcp_config, {}) : {},
       execution_policy: {
         timeout_seconds: Math.max(1, Math.min(300, Number(values.timeout_seconds) || 8)),
       },
@@ -2237,7 +2251,7 @@ function buildToolPayload(values: ToolFormValues) {
       enabled: values.enabled,
     };
   } catch {
-    notify.error('JSON 配置格式不正确，请检查 Headers、Auth、Schema 或 MCP Config');
+    notify.error('JSON 配置格式不正确，请检查 Headers、Auth、Schema 或协议配置');
     return null;
   }
 }
@@ -2272,7 +2286,7 @@ function schemaPropertyCount(schema: Record<string, unknown>): string {
 }
 
 function toolTypeLabel(tool: ToolRead): string {
-  return tool.tool_type === 'mcp' ? 'MCP 服务' : 'HTTP 接口';
+  return tool.tool_type === 'mcp' ? 'MCP 服务' : tool.tool_type === 'a2a' ? 'A2A Agent' : 'HTTP 接口';
 }
 
 function serverToFormValues(row: MCPServerRead): McpFormValues {

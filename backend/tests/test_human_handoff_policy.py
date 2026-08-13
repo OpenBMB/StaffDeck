@@ -5,7 +5,18 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.api.chat as chat_api
 from app.core.agent_loop import AgentLoop
-from app.db.models import AgentEvent, AgentProfile, ChatSession, HumanHandoffRequest, Message, Skill, Tenant, User, utc_now
+from app.db.models import (
+    AgentEvent,
+    AgentProfile,
+    ChatSession,
+    ExternalSessionBinding,
+    HumanHandoffRequest,
+    Message,
+    Skill,
+    Tenant,
+    User,
+    utc_now,
+)
 from app.session.slot_policy import strip_router_generated_message_slots
 from app.session.session_schema import ChatTurnRequest, RouterDecision, StepAgentResult
 
@@ -425,6 +436,67 @@ def test_handoff_list_filters_by_status_and_user_then_reply_restores_session(mon
         assert len(events) == 1
         assert events[0].payload_json["handoff_id"] == "handoff_assigned"
         assert resumed == ["handoff_assigned"]
+
+
+def test_handoff_list_hides_pilotdeck_sessions_but_keeps_the_records() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        admin, user, _other = _seed_handoff_users(db)
+        db.add_all(
+            [
+                ChatSession(
+                    id="session_visible_handoff",
+                    tenant_id="tenant_demo",
+                    user_id=user.id,
+                    agent_id="agent_demo",
+                    status="handoff",
+                ),
+                ChatSession(
+                    id="session_pilotdeck_handoff",
+                    tenant_id="tenant_demo",
+                    user_id=user.id,
+                    agent_id="agent_demo",
+                    channel="public_api",
+                    status="handoff",
+                ),
+                HumanHandoffRequest(
+                    id="handoff_visible",
+                    tenant_id="tenant_demo",
+                    session_id="session_visible_handoff",
+                    agent_id="agent_demo",
+                    requester_user_id=user.id,
+                    pending_question="需要人工处理",
+                    status="pending",
+                ),
+                HumanHandoffRequest(
+                    id="handoff_pilotdeck",
+                    tenant_id="tenant_demo",
+                    session_id="session_pilotdeck_handoff",
+                    agent_id="agent_demo",
+                    requester_user_id=user.id,
+                    pending_question="PilotDeck 内部协作",
+                    status="pending",
+                ),
+            ]
+        )
+        db.add(
+            ExternalSessionBinding(
+                tenant_id="tenant_demo",
+                credential_id="credential_pilotdeck",
+                agent_id="agent_demo",
+                external_session_id="pilotdeck-handoff-room",
+                session_id="session_pilotdeck_handoff",
+                metadata_json={"channel": "pilotdeck_group_chat"},
+            )
+        )
+        db.commit()
+
+        rows = chat_api.list_human_handoffs(
+            "tenant_demo", "pending", current_user=admin, db=db
+        )
+
+        assert [row.id for row in rows] == ["handoff_visible"]
+        assert db.get(HumanHandoffRequest, "handoff_pilotdeck") is not None
 
 
 def test_handoff_assignee_can_read_original_session_without_owner_permissions():

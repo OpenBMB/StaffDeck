@@ -30,6 +30,15 @@ from app.core.harness_session_lease import (
     HarnessSessionLeaseToken,
 )
 from app.core.harness_turn_store import HarnessTurnStore
+from app.core.slash_commands import (
+    SlashCommandError,
+    SlashCommandSelection,
+    build_slash_turn_plan,
+    force_capability_for_requirement,
+    parse_slash_command,
+    resolve_capability,
+    slash_command_message,
+)
 from app.core.task_frame_store import (
     TaskFrameClaimConflict,
     TaskFrameStore,
@@ -82,6 +91,7 @@ class HarnessV2Engine:
         self.active_frame_lease_owner: str | None = None
         self.active_frame_attempt_no: int | None = None
         self.active_run_id: str | None = None
+        self.slash_command: SlashCommandSelection | None = None
         self._session_lock: Any | None = None
         self._session_lock_id: str | None = None
 
@@ -134,6 +144,20 @@ class HarnessV2Engine:
             },
         )
 
+        self.slash_command = parse_slash_command(request.message)
+        if self.slash_command and request.interaction_mode == "scheduled_task":
+            raise SlashCommandError(
+                "SLASH_COMMAND_MODE_CONFLICT",
+                "斜杠能力指令不能与定时任务创建模式同时使用。",
+            )
+        execution_request = (
+            request.model_copy(
+                update={"message": slash_command_message(self.slash_command)}
+            )
+            if self.slash_command
+            else request
+        )
+
         model_config = self.owner._get_request_model(request, session.agent_id)
         if model_config is None:
             raise RuntimeError("没有默认模型配置。")
@@ -169,15 +193,33 @@ class HarnessV2Engine:
         )
 
         self._renew_session_lease()
-        plan = self.planner.plan(
-            request.message,
-            session,
-            skills,
-            model_config,
-            deepcopy(conversation_context),
-            memory_context,
-            self.store.planner_state(session),
-        )
+        planner_state = self.store.planner_state(session)
+        if self.slash_command:
+            if self.slash_command.kind in {"skill", "tool"}:
+                direct_manifest = self.manifests.build(
+                    request.tenant_id,
+                    session.agent_id,
+                    None,
+                    None,
+                )
+                resolve_capability(self.slash_command, direct_manifest)
+            plan = build_slash_turn_plan(
+                self.slash_command,
+                execution_request.message,
+                session,
+                skills,
+                planner_state,
+            )
+        else:
+            plan = self.planner.plan(
+                execution_request.message,
+                session,
+                skills,
+                model_config,
+                deepcopy(conversation_context),
+                memory_context,
+                planner_state,
+            )
         self._renew_session_lease()
         self._raise_if_cancelled(request, session)
         router_decision = turn_plan_router_decision(plan)
@@ -334,7 +376,7 @@ class HarnessV2Engine:
 
             last_skill = active_skill or last_skill
             combined, step_result = self._run_frame(
-                request,
+                execution_request,
                 session,
                 row,
                 frame,
@@ -403,7 +445,7 @@ class HarnessV2Engine:
         ) or last_skill
         self._renew_session_lease()
         reply = self.owner.response_generator.generate(
-            request.message,
+            execution_request.message,
             session,
             response_skill,
             router_decision,
@@ -428,19 +470,23 @@ class HarnessV2Engine:
             assistant_metadata["knowledge_citations"] = citations
         if artifacts:
             assistant_metadata["harness_artifacts"] = artifacts
+        if self.slash_command:
+            assistant_metadata["slash_command"] = self.slash_command.model_dump(
+                mode="json"
+            )
         reply = self.owner._finalize_turn(
             session,
             request.tenant_id,
             reply,
             last_step_result,
-            request.message,
+            execution_request.message,
             user_message_id=user_message.id,
             assistant_metadata_override=assistant_metadata,
         )
         self.db.commit()
         self.db.refresh(session)
         self.owner._enqueue_memory_capture(
-            request,
+            execution_request,
             session,
             last_step_result,
             None,
@@ -520,6 +566,7 @@ class HarnessV2Engine:
             session_id=session.id,
             task_frame_id=row.task_id,
             user_id=request.user_id or "",
+            db=self.db,
         )
         image_payloads = validated_task_image_payloads(request.attachments)
         step_timeout_seconds = (
@@ -574,8 +621,24 @@ class HarnessV2Engine:
                     *[_prior_result(item) for item in results],
                 ],
                 attachment_descriptors,
-                source_user_message=_source_user_message(self.db, row),
+                source_user_message=(
+                    request.message
+                    if row.source_turn_id == self.user_message_id
+                    else _source_user_message(self.db, row)
+                ),
             )
+            if (
+                self.slash_command
+                and self.slash_command.kind in {"skill", "tool"}
+                and frame.kind == "conversation"
+                and row.source_turn_id == self.user_message_id
+            ):
+                forced = resolve_capability(self.slash_command, manifest)
+                force_capability_for_requirement(
+                    requirement,
+                    model_manifest,
+                    forced,
+                )
             self.store.save_requirement(
                 row,
                 requirement.model_dump(mode="json"),

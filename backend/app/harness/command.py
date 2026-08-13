@@ -256,11 +256,13 @@ def exec_command(
     context: HarnessToolContext,
     arguments: BaseModel,
 ) -> dict[str, Any]:
-    """Execute one bounded platform-shell program in a fail-closed OS sandbox.
+    """Execute one bounded platform-shell program in the TaskFrame workspace.
 
     The model supplies only the shell program. Every process argument that
     creates the sandbox is trusted and passed separately to ``subprocess``.
-    There is deliberately no unsandboxed fallback.
+    An administrator decides whether the extra OS sandbox is enabled. When it
+    is disabled, the process still receives bounded time/output and a dedicated
+    workspace, but runs directly on the host.
     """
 
     args = _as_exec_arguments(arguments)
@@ -270,7 +272,7 @@ def exec_command(
     else:
         _validate_command(command)
     workspace = _prepare_workspace(context)
-    backend = available_backend()
+    backend = available_backend() if context.sandbox_enabled else "unsandboxed"
     # Keep the existing Bubblewrap seam patchable for unit tests and Linux
     # deployments where the executable is provisioned outside PATH lookup.
     if backend is None:
@@ -405,6 +407,7 @@ def run_sandboxed_process(
     output_limit: int = _DEFAULT_OUTPUT_BYTES,
     network_mode: str = "all",
     allowed_domains: tuple[str, ...] = (),
+    sandbox_enabled: bool = True,
     env: dict[str, str] | None = None,
     env_path_keys: tuple[str, ...] = (),
     is_cancelled: Callable[[], bool] | None = None,
@@ -422,7 +425,7 @@ def run_sandboxed_process(
     # ``argv`` is assembled by the trusted runner, not supplied by the model.
     # Runtime interpreters and materialized scripts are intentionally absolute
     # paths; shell command validation belongs to ``exec_command`` only.
-    backend = available_backend()
+    backend = available_backend() if sandbox_enabled else "unsandboxed"
     if backend is None:
         try:
             _bubblewrap_executable()

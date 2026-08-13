@@ -38,8 +38,10 @@ from app.public_api.credential_profiles import (
     USER_FULL_ACCESS_SCOPES,
 )
 from app.public_api.app import create_public_api_app
+from app.public_api import jobs as public_jobs
 from app.public_api.json_patch import JSONPatchError, apply_json_patch
 from app.public_api.runs import execute_run
+from app.public_api.jobs import recover_public_jobs, register_job_handler, run_job
 from app.security.auth import create_access_token
 from app.session.helpers import public_session
 from app.session.session_schema import ChatTurnResponse
@@ -270,6 +272,186 @@ def test_streaming_run_endpoint_emits_reply_deltas(monkeypatch) -> None:
     assert "event: run.output.delta" in response.text
     assert '"content": "流式答复"' in response.text
     assert "event: run.output.completed" in response.text
+
+
+def test_public_run_trace_maps_harness_actions_and_failures() -> None:
+    from app.public_api.runs import _TRACE_EVENT_MAP
+
+    assert _TRACE_EVENT_MAP["harness_action_created"] == "run.action.started"
+    assert _TRACE_EVENT_MAP["harness_action_failed"] == "run.action.failed"
+    assert _TRACE_EVENT_MAP["error_occurred"] == "run.failed"
+
+
+def test_successful_job_clears_stale_restart_error(monkeypatch) -> None:
+    _client_value, engine, _token = _client(monkeypatch)
+    with Session(engine) as db:
+        client = APIClient(
+            id="client_recovered",
+            tenant_id="tenant_api",
+            name="recovered-client",
+            scopes_json=["runs:*"],
+            created_by_user_id="user_api_admin",
+        )
+        credential = APICredential(
+            id="credential_recovered",
+            tenant_id="tenant_api",
+            client_id=client.id,
+            name="runtime",
+            key_prefix="sd_live_recovered",
+            key_digest="digest",
+            scopes_json=["runs:create", "runs:read"],
+        )
+        job = APIJob(
+            id="apijob_recovered",
+            tenant_id="tenant_api",
+            credential_id=credential.id,
+            agent_id="agent_api",
+            kind="test.recovered",
+            status="running",
+            stage="interrupted",
+            retryable=True,
+            error_json={"code": "SERVICE_RESTARTED"},
+        )
+        db.add(client)
+        db.add(credential)
+        db.add(job)
+        db.commit()
+
+    register_job_handler("test.recovered")(lambda _db, _job: {"ok": True})
+    monkeypatch.setattr("app.public_api.jobs.engine", engine)
+    run_job("apijob_recovered")
+
+    with Session(engine) as db:
+        completed = db.get(APIJob, "apijob_recovered")
+        assert completed is not None
+        assert completed.status == "succeeded"
+        assert completed.stage == "completed"
+        assert completed.error_json == {}
+        assert completed.retryable is False
+
+
+def test_failed_run_job_releases_session_and_emits_terminal_event(monkeypatch) -> None:
+    _client_value, engine, _token = _client(monkeypatch)
+    with Session(engine) as db:
+        api_client = APIClient(
+            id="client_failed_run",
+            tenant_id="tenant_api",
+            name="failed-run-client",
+            scopes_json=["runs:*"],
+            created_by_user_id="user_api_admin",
+        )
+        credential = APICredential(
+            id="credential_failed_run",
+            tenant_id="tenant_api",
+            client_id=api_client.id,
+            name="runtime",
+            key_prefix="sd_live_failed_run",
+            key_digest="digest",
+            scopes_json=["runs:create", "runs:read"],
+        )
+        chat_session = ChatSession(
+            id="session_failed_run",
+            tenant_id="tenant_api",
+            user_id="user_api_admin",
+            agent_id="agent_api",
+            status="running",
+        )
+        job = APIJob(
+            id="apijob_failed_run",
+            tenant_id="tenant_api",
+            credential_id=credential.id,
+            agent_id="agent_api",
+            kind="run",
+            status="queued",
+            session_id=chat_session.id,
+        )
+        db.add(api_client)
+        db.add(credential)
+        db.add(chat_session)
+        db.add(job)
+        db.commit()
+
+    def fail_run(_db, _job):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setitem(public_jobs._handlers, "run", fail_run)
+    monkeypatch.setattr("app.public_api.jobs.engine", engine)
+    run_job("apijob_failed_run")
+
+    with Session(engine) as db:
+        failed = db.get(APIJob, "apijob_failed_run")
+        chat_session = db.get(ChatSession, "session_failed_run")
+        event = db.exec(
+            select(AgentEvent).where(
+                AgentEvent.session_id == "session_failed_run",
+                AgentEvent.event_type == "stream_interrupted",
+            )
+        ).one()
+        assert failed is not None and failed.status == "failed"
+        assert chat_session is not None and chat_session.status == "active"
+        assert event.payload_json["job_id"] == "apijob_failed_run"
+        assert event.payload_json["code"] == "JOB_EXECUTION_FAILED"
+
+
+def test_recovery_repairs_terminal_run_session(monkeypatch) -> None:
+    _client_value, engine, _token = _client(monkeypatch)
+    with Session(engine) as db:
+        api_client = APIClient(
+            id="client_reconcile_run",
+            tenant_id="tenant_api",
+            name="reconcile-run-client",
+            scopes_json=["runs:*"],
+            created_by_user_id="user_api_admin",
+        )
+        credential = APICredential(
+            id="credential_reconcile_run",
+            tenant_id="tenant_api",
+            client_id=api_client.id,
+            name="runtime",
+            key_prefix="sd_live_reconcile_run",
+            key_digest="digest",
+            scopes_json=["runs:create", "runs:read"],
+        )
+        chat_session = ChatSession(
+            id="session_reconcile_run",
+            tenant_id="tenant_api",
+            user_id="user_api_admin",
+            agent_id="agent_api",
+            status="running",
+        )
+        job = APIJob(
+            id="apijob_reconcile_run",
+            tenant_id="tenant_api",
+            credential_id=credential.id,
+            agent_id="agent_api",
+            kind="run",
+            status="failed",
+            stage="interrupted",
+            session_id=chat_session.id,
+            error_json={
+                "code": "SERVICE_RESTARTED",
+                "message": "The service restarted while the job was running.",
+            },
+        )
+        db.add(api_client)
+        db.add(credential)
+        db.add(chat_session)
+        db.add(job)
+        db.commit()
+
+    monkeypatch.setattr("app.public_api.jobs.engine", engine)
+    recover_public_jobs()
+
+    with Session(engine) as db:
+        chat_session = db.get(ChatSession, "session_reconcile_run")
+        event = db.exec(
+            select(AgentEvent).where(
+                AgentEvent.session_id == "session_reconcile_run",
+                AgentEvent.event_type == "stream_interrupted",
+            )
+        ).one()
+        assert chat_session is not None and chat_session.status == "active"
+        assert event.payload_json["code"] == "SERVICE_RESTARTED"
 
 
 def test_sop_changes_remain_isolated_until_publish(monkeypatch) -> None:
@@ -528,6 +710,12 @@ def test_run_handler_relays_live_public_trace_and_returns_citations(monkeypatch)
     assert "system_prompt" not in plan_event.data_json
     output_event = next(event for event in public_events if event.event_type == "run.output.delta")
     assert output_event.data_json["content"] == "制度答复 [1]"
+    completed_event = next(
+        event for event in public_events if event.event_type == "run.output.completed"
+    )
+    assert completed_event.data_json["citations"] == [
+        {"label": "[1]", "document_id": "doc_1"}
+    ]
 
 
 def test_employee_settings_manage_runtime_keys(monkeypatch) -> None:
@@ -692,7 +880,6 @@ def test_account_master_key_follows_user_visible_agents(monkeypatch) -> None:
     )
     assert forbidden.status_code == 403
     assert forbidden.json()["code"] == "AGENT_MANAGE_FORBIDDEN"
-
     # Visibility is evaluated on every request, not frozen into the key.
     with Session(engine) as db:
         private = db.get(AgentProfile, "agent_private")
@@ -718,6 +905,91 @@ def test_account_master_key_follows_user_visible_agents(monkeypatch) -> None:
             created.id, member, db
         )
         assert revoked.status == "revoked"
+
+
+def test_gallery_directory_supports_search_and_cursor_pagination(monkeypatch) -> None:
+    client, engine, _admin_token = _client(monkeypatch)
+    with Session(engine) as db:
+        admin = db.get(User, "user_api_admin")
+        assert admin is not None
+        db.add_all(
+            [
+                AgentProfile(
+                    id="gallery_hr",
+                    tenant_id="tenant_api",
+                    name="人事助手",
+                    description="查询员工休假与薪酬制度",
+                    status="active",
+                    is_overall=False,
+                    metadata_json={
+                        "owner_user_id": admin.id,
+                        "published_to_gallery": True,
+                        "expertise_tags": ["年假", "薪酬"],
+                    },
+                ),
+                AgentProfile(
+                    id="gallery_legal",
+                    tenant_id="tenant_api",
+                    name="法务助手",
+                    description="处理合同、用印和合规问题",
+                    status="active",
+                    is_overall=False,
+                    metadata_json={
+                        "owner_user_id": admin.id,
+                        "published_to_gallery": True,
+                        "expertise_tags": ["合同", "用印"],
+                    },
+                ),
+                AgentProfile(
+                    id="gallery_finance",
+                    tenant_id="tenant_api",
+                    name="财务助手",
+                    description="处理报销与预算问题",
+                    status="active",
+                    is_overall=False,
+                    metadata_json={
+                        "owner_user_id": admin.id,
+                        "published_to_gallery": True,
+                        "expertise_tags": ["报销", "预算"],
+                    },
+                ),
+            ]
+        )
+        db.commit()
+        created = create_account_api_credential(
+            AccountAPICredentialCreateRequest(name="目录分页密钥"),
+            admin,
+            db,
+        )
+
+    auth = {"Authorization": f"Bearer {created.api_key}"}
+    first = client.get("/gallery/agents?limit=2", headers=auth)
+    assert first.status_code == 200, first.text
+    assert len(first.json()["data"]) == 2
+    assert first.json()["next_cursor"]
+
+    second = client.get(
+        "/gallery/agents",
+        headers=auth,
+        params={"limit": 2, "cursor": first.json()["next_cursor"]},
+    )
+    assert second.status_code == 200, second.text
+    first_ids = {row["id"] for row in first.json()["data"]}
+    second_ids = {row["id"] for row in second.json()["data"]}
+    assert first_ids.isdisjoint(second_ids)
+    assert first_ids | second_ids == {"gallery_hr", "gallery_legal", "gallery_finance"}
+
+    searched = client.get(
+        "/gallery/agents",
+        headers=auth,
+        params={"query": "用印", "limit": 20},
+    )
+    assert searched.status_code == 200, searched.text
+    assert [row["id"] for row in searched.json()["data"]] == ["gallery_legal"]
+
+    invalid = client.get("/gallery/agents?cursor=not-a-cursor", headers=auth)
+    assert invalid.status_code == 400
+    assert invalid.json()["code"] == "INVALID_CURSOR"
 
 
 def test_admin_account_master_key_sees_all_visible_tenant_agents(monkeypatch) -> None:

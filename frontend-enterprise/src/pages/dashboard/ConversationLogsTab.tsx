@@ -57,6 +57,7 @@ import {
   type ConversationLogFilter,
   type ConversationLogRow,
 } from './conversationLogFilters';
+import { employeeDashboardMetrics } from './employeeDashboardMetrics';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const FEEDBACK_PAGE_SIZE = 10;
@@ -162,6 +163,7 @@ export default function ConversationLogsTab() {
         upFeedback: upBySession.get(session.id),
       }));
   }, [agentId, downRows, sessions, upRows]);
+  const dashboardMetrics = employeeDashboardMetrics(rows, summary);
 
   const agentsById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
 
@@ -521,8 +523,8 @@ export default function ConversationLogsTab() {
         <div className="flex flex-wrap items-stretch gap-[20px]" aria-label="对话反馈统计">
           <StatCard value={rows.length} label="对话" />
           <StatCard value={summary?.total_feedback ?? 0} label="反馈" />
-          <StatCard value={summary?.up_count ?? 0} label="好评" tone="green" />
-          <StatCard value={summary?.down_count ?? 0} label="差评" tone="red" />
+          <StatCard value={`${dashboardMetrics.positiveRate}%`} label="好评率" tone="green" />
+          <StatCard value={`${dashboardMetrics.negativeRate}%`} label="差评率" tone="red" />
         </div>
 
         {summary && (summary.summary || summary.bucket_counts.length > 0) && (

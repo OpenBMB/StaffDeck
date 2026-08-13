@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Iterable
+from typing import Any
 
 from sqlmodel import Session, select
 
 from app.db.models import (
     AgentKnowledgeBranch,
-    AgentModelBinding,
     AgentProfile,
     AgentResourceBinding,
     AgentSkillBranch,
@@ -982,21 +981,12 @@ def rollback_knowledge_branch(
 def model_for_agent(
     db: Session, tenant_id: str, agent_id: str | None, role: str = "default"
 ) -> ResolvedModelConfig | None:
-    agent = get_agent(db, tenant_id, agent_id)
-    roles: Iterable[str] = (role, "default") if role != "default" else ("default",)
-    if agent:
-        for candidate_role in roles:
-            binding = db.exec(
-                select(AgentModelBinding).where(
-                    AgentModelBinding.tenant_id == tenant_id,
-                    AgentModelBinding.agent_id == agent.id,
-                    AgentModelBinding.role == candidate_role,
-                )
-            ).first()
-            if binding:
-                model = db.get(ModelConfig, binding.model_config_id)
-                if model and model.enabled:
-                    return _runtime_model(db, tenant_id, model)
+    """Resolve every employee task through the tenant's enabled default model.
+
+    ``agent_id`` and ``role`` remain in the signature for call-site compatibility. Employee-level
+    model bindings are intentionally no longer part of runtime model selection.
+    """
+    _ = agent_id, role
     model = db.exec(
         select(ModelConfig).where(
             ModelConfig.tenant_id == tenant_id,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -70,6 +71,12 @@ class ToolExecutor:
                 active_skill_id=active_skill_id,
                 timeout_seconds_override=timeout_seconds_override,
             )
+        if (tool.tool_type or "http") == "a2a":
+            return self._execute_a2a_tool(
+                tool,
+                tool_call.arguments,
+                timeout_seconds_override=timeout_seconds_override,
+            )
         if (tool.tool_type or "http") != "http":
             return self._error(
                 tool.name, "UNSUPPORTED_TOOL_TYPE", f"不支持的工具类型：{tool.tool_type}"
@@ -115,6 +122,91 @@ class ToolExecutor:
             )
         except Exception as exc:
             return self._error(tool.name, "EXECUTION_ERROR", str(exc))
+
+    def _execute_a2a_tool(
+        self,
+        tool: Tool,
+        arguments: dict[str, Any],
+        *,
+        timeout_seconds_override: float | None = None,
+    ) -> ToolResult:
+        """Invoke an A2A agent through the JSON-RPC 2.0 SendMessage method."""
+
+        policy = self._execution_policy(tool, timeout_seconds_override=timeout_seconds_override)
+        config = tool.config_json if isinstance(tool.config_json, dict) else {}
+        headers = self._request_headers(
+            tool.url,
+            self._resolve_headers(tool.headers_json or {}, tool.auth_json or {}),
+        )
+        headers.setdefault("Content-Type", "application/json")
+        a2a_version = str(config.get("a2a_version") or "1.0").strip()
+        if a2a_version:
+            headers.setdefault("A2A-Version", a2a_version)
+        message = arguments.get("message")
+        if not isinstance(message, dict):
+            text_value = arguments.get("text") or arguments.get("query")
+            part = (
+                {"text": str(text_value)}
+                if text_value is not None
+                else {"text": self._json_text(arguments)}
+            )
+            message = {
+                "messageId": uuid.uuid4().hex,
+                "role": "ROLE_USER",
+                "parts": [part],
+            }
+        else:
+            message = dict(message)
+            message.setdefault("messageId", uuid.uuid4().hex)
+            message.setdefault("role", "ROLE_USER")
+        output_modes = config.get("accepted_output_modes")
+        if not isinstance(output_modes, list) or not output_modes:
+            output_modes = ["text/plain", "application/json"]
+        payload = {
+            "jsonrpc": "2.0",
+            "id": uuid.uuid4().hex,
+            "method": "SendMessage",
+            "params": {
+                "message": message,
+                "configuration": {
+                    "acceptedOutputModes": [str(item) for item in output_modes],
+                },
+            },
+        }
+        try:
+            with httpx.Client(timeout=policy.timeout_seconds) as client:
+                response = client.post(tool.url, headers=headers, json=payload)
+                response.raise_for_status()
+            data = self._response_data(response)
+            if isinstance(data, dict) and isinstance(data.get("error"), dict):
+                error = data["error"]
+                return self._error(
+                    tool.name,
+                    "A2A_ERROR",
+                    str(error.get("message") or "A2A Agent 返回错误。"),
+                )
+            result = data.get("result") if isinstance(data, dict) and "result" in data else data
+            return ToolResult(tool_name=tool.name, success=True, data=result, error=None)
+        except httpx.TimeoutException:
+            return self._error(
+                tool.name,
+                "TIMEOUT",
+                f"A2A 调用超过 {policy.timeout_seconds:g} 秒未返回。",
+            )
+        except httpx.HTTPStatusError as exc:
+            return self._error(
+                tool.name,
+                "A2A_HTTP_ERROR",
+                f"A2A Agent 返回异常状态码：{exc.response.status_code}",
+            )
+        except Exception as exc:
+            return self._error(tool.name, "A2A_EXECUTION_ERROR", str(exc))
+
+    @staticmethod
+    def _json_text(value: dict[str, Any]) -> str:
+        import json
+
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
     def _execute_mcp_tool(
         self,

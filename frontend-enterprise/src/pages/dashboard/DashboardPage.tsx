@@ -21,7 +21,7 @@ import ScheduledTasksTab from './ScheduledTasksTab';
 import MemoriesTab from './MemoriesTab';
 import ConversationLogsTab from './ConversationLogsTab';
 import WorkRecordTab from './WorkRecordTab';
-import type { ReplyStats } from './WorkRecordTab';
+import { employeeDashboardMetrics } from './employeeDashboardMetrics';
 import {
   agentResourceCount,
   canManageEmployeeAgent,
@@ -69,7 +69,6 @@ export default function DashboardPage({
   const [sessions, setSessions] = useState<EnterpriseChatSessionRead[]>([]);
   const [feedbackSummary, setFeedbackSummary] = useState<FeedbackSummaryRead | null>(null);
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskRead[]>([]);
-  const [replyStats, setReplyStats] = useState<ReplyStats>({ total: 0, today: 0, byDay: {} });
   const [activityEvents, setActivityEvents] = useState<AgentWorkRecordEventRead[]>([]);
   const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
@@ -85,6 +84,9 @@ export default function DashboardPage({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let switchingAgent = false;
+    setLoaded(false);
     Promise.all([
       api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
       api.get<SkillRead[]>(`/api/enterprise/skills?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
@@ -92,23 +94,17 @@ export default function DashboardPage({
       api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       api.get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}`),
       api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
-      api.get<EnterpriseChatSessionRead[]>(`/api/enterprise/sessions?tenant_id=${TENANT_ID}`),
+      api.get<EnterpriseChatSessionRead[]>(`/api/enterprise/sessions?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       api.get<FeedbackSummaryRead>(`/api/enterprise/feedback/summary?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       api.get<ScheduledTaskRead[]>(`/api/enterprise/scheduled-tasks?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
     ])
       .then(([agentRows, skillRows, generalSkillRows, kbRows, modelRows, toolRows, sessionRows, feedbackRows, taskRows]) => {
+        if (cancelled) return;
         const visibleAgents = agentRows.filter((item) => canSelectCurrentEmployeeAgent(item, currentUser, {
           activeOnly: true,
         }));
         setAgents(visibleAgents);
-        setSkills(skillRows);
-        setGeneralSkills(generalSkillRows);
-        setKnowledgeBases(kbRows);
         setModels(modelRows);
-        setTools(toolRows);
-        setSessions(sessionRows);
-        setFeedbackSummary(feedbackRows);
-        setScheduledTasks(taskRows.filter((item) => item.status !== 'archived'));
         if (!agentId || !visibleAgents.some((item) => item.id === agentId)) {
           const manageableAgents = visibleAgents.filter((item) => canManageEmployeeAgent(item, currentUser));
           const next = isAdmin
@@ -117,14 +113,29 @@ export default function DashboardPage({
               || preferredEmployeeAgent(visibleAgents)?.id
               || '';
           if (next) {
+            switchingAgent = true;
             window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, next);
             window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: next } }));
             setAgentId(next);
+            return;
           }
         }
+        setSkills(skillRows);
+        setGeneralSkills(generalSkillRows);
+        setKnowledgeBases(kbRows);
+        setTools(toolRows);
+        setSessions(sessionRows);
+        setFeedbackSummary(feedbackRows);
+        setScheduledTasks(taskRows.filter((item) => item.status !== 'archived'));
+        setLoaded(true);
       })
       .catch((error) => notify.error(error instanceof Error ? error.message : '加载数字员工档案失败'))
-      .finally(() => setLoaded(true));
+      .finally(() => {
+        if (!cancelled && !switchingAgent) setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [agentId, currentUser, isAdmin]);
 
   const selectedAgent = agents.find((item) => item.id === agentId)
@@ -138,7 +149,6 @@ export default function DashboardPage({
     let cancelled = false;
     async function loadWorkRecord() {
       if (!selectedAgent || selectedAgent.is_overall) {
-        setReplyStats({ total: 0, today: 0, byDay: {} });
         setActivityEvents([]);
         return;
       }
@@ -148,15 +158,9 @@ export default function DashboardPage({
           `/api/enterprise/agents/${encodeURIComponent(selectedAgent.id)}/work-record?tenant_id=${TENANT_ID}&timezone=${encodeURIComponent(timezone)}`,
         );
         if (cancelled) return;
-        setReplyStats({
-          total: workRecord.reply_stats.total,
-          today: workRecord.reply_stats.today,
-          byDay: workRecord.reply_stats.by_day,
-        });
         setActivityEvents(workRecord.events);
       } catch (error) {
         if (cancelled) return;
-        setReplyStats({ total: 0, today: 0, byDay: {} });
         setActivityEvents([]);
         notify.error(error instanceof Error ? error.message : '加载员工工作记录失败');
       }
@@ -247,9 +251,7 @@ export default function DashboardPage({
   const selectedSkillCount = agentResourceCount(selectedAgent, 'skill');
   const employeeScheduledTasks = scheduledTasks.filter((item) => item.agent_id === selectedAgent.id && item.status !== 'archived');
   const activeScheduledTasks = employeeScheduledTasks.filter((item) => item.status === 'active');
-  const totalFeedback = positiveFeedback + negativeFeedback;
-  const positiveRate = totalFeedback ? Math.round((positiveFeedback / totalFeedback) * 100) : 0;
-  const negativeRate = totalFeedback ? Math.round((negativeFeedback / totalFeedback) * 100) : 0;
+  const dashboardMetrics = employeeDashboardMetrics(employeeSessions, feedbackSummary);
   const systemPromptSummary = typeof selectedAgent.metadata?.system_prompt_summary === 'string'
     ? selectedAgent.metadata.system_prompt_summary
     : '';
@@ -374,10 +376,11 @@ export default function DashboardPage({
           activeTools={activeTools}
           activeScheduledTasks={activeScheduledTasks}
           employeeSessions={employeeSessions}
-          replyStats={replyStats}
+          conversationCount={dashboardMetrics.conversationCount}
           activityEvents={activityEvents}
-          positiveRate={positiveRate}
-          negativeRate={negativeRate}
+          feedbackCount={dashboardMetrics.feedbackCount}
+          positiveRate={dashboardMetrics.positiveRate}
+          negativeRate={dashboardMetrics.negativeRate}
         />
       )}
       {profileTab === 'scheduled' && <ScheduledTasksTab />}

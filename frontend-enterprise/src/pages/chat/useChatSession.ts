@@ -35,6 +35,7 @@ import { useI18n } from '@/i18n';
 import type {
   AgentProfileRead,
   ChatAttachmentRead,
+  ChatSlashCommand,
   ChatMessage,
   ChatSession,
   ChatSessionEventRead,
@@ -328,6 +329,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const [modelConfigsLoadError, setModelConfigsLoadError] = useState('');
   const [modelSetupOpen, setModelSetupOpen] = useState(false);
   const [input, setInput] = useState('');
+  const [slashCommands, setSlashCommands] = useState<ChatSlashCommand[]>([]);
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [composerPlusOpen, setComposerPlusOpen] = useState(false);
@@ -368,6 +370,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     show_tool_trace: true,
     reflection_max_rounds: 1,
     agent_loop_max_actions: 32,
+    sandbox_enabled: false,
+    harness_storage_path: '',
+    effective_harness_storage_path: '',
     sandbox_network_mode: 'all',
     sandbox_allowed_domains: [],
     updated_at: '',
@@ -384,6 +389,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const turnTraceRef = useRef(new Map<string, TurnTrace>());
   const locallyCancelledSessionIdsRef = useRef(new Set<string>());
   const scheduledEventIdsRef = useRef(new Set<string>());
+  const scheduledEventPollsRef = useRef(new Map<string, Promise<void>>());
   const knownSessionIdsRef = useRef(new Set<string>());
   const optimisticSessionIdsRef = useRef(new Set<string>());
   const pendingPromotedSessionIdRef = useRef<string | null>(null);
@@ -561,6 +567,27 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const modelSetupNoticeText = canConfigureModels
     ? t('还没有可用模型配置，发送消息前请先完成模型配置。')
     : t('系统管理员尚未配置可用模型，暂时无法发送消息。请联系管理员完成模型配置。');
+
+  useEffect(() => {
+    if (!auth || !displayedAgent?.id) {
+      setSlashCommands([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .get<ChatSlashCommand[]>(
+        `/api/chat/slash-commands?tenant_id=${encodeURIComponent(tenantId)}&agent_id=${encodeURIComponent(displayedAgent.id)}`,
+      )
+      .then((rows) => {
+        if (!cancelled) setSlashCommands(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setSlashCommands([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth, displayedAgent?.id, tenantId]);
 
   const changeModelConfig = useCallback((value: string) => {
     setSelectedModelConfigId(value);
@@ -857,6 +884,16 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const clearStreamSlot = useCallback((id: string, removeStreamingMessage = false) => {
     const stream = getStreamSlot(id);
     const clearingTurnId = stream.turnId || stream.cancelledTurnId || undefined;
+    const streamChanged = Boolean(
+      stream.timer
+      || stream.loading
+      || stream.phase
+      || stream.accumulated
+      || stream.turnId
+      || stream.abortController
+      || stream.relayRecoveryStartedAt
+      || stream.relayRecoveryTurnId
+    );
     if (stream.timer) {
       window.clearTimeout(stream.timer);
       stream.timer = null;
@@ -883,7 +920,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         notifyStore();
       }
     }
-    notifyStream();
+    if (streamChanged) notifyStream();
   }, [getSlot, getStreamSlot, notifyStore, notifyStream]);
 
   const rekeyTurnTrace = useCallback((fromTurnId: string, toTurnId: string) => {
@@ -2468,7 +2505,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
 
   const pollScheduledSessionEvents = useCallback((id: string) => {
     if (locallyCancelledSessionIdsRef.current.has(id)) return Promise.resolve();
-    return api
+    const inFlight = scheduledEventPollsRef.current.get(id);
+    if (inFlight) return inFlight;
+    const request = api
       .get<ChatSessionEventRead[]>(`/api/chat/sessions/${id}/events?tenant_id=${tenantId}`)
       .then((events) => {
         const traceEvents = events.filter((event) => Boolean(eventTraceTurnId(event)));
@@ -2602,7 +2641,14 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         if (isAuthError(error)) {
           redirectToLogin();
         }
+      })
+      .finally(() => {
+        if (scheduledEventPollsRef.current.get(id) === request) {
+          scheduledEventPollsRef.current.delete(id);
+        }
       });
+    scheduledEventPollsRef.current.set(id, request);
+    return request;
   }, [
     appendRealtime,
     clearStreamSlot,
@@ -2723,7 +2769,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       const isLiveSseSession = (id: string) => Boolean(streamRef.current.get(id)?.abortController);
       sessions.forEach((session) => {
         const looksRunning = session.status === 'running' || session.status === 'executing';
-        if (looksRunning && !isLiveSseSession(session.id)) ids.add(session.id);
+        const updatedAt = parseMessageTime(session.updated_at);
+        const recentlyUpdated = updatedAt > 0 && Date.now() - updatedAt <= RUNNING_EVENT_RECOVERY_WINDOW_MS;
+        if (looksRunning && recentlyUpdated && !isLiveSseSession(session.id)) ids.add(session.id);
       });
       streamRef.current.forEach((slot, id) => {
         if (slot.loading && !slot.abortController && !isDraftConversationKey(id)) ids.add(id);
@@ -2735,7 +2783,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     pollBackgroundSessions();
     const timer = window.setInterval(pollBackgroundSessions, STREAM_RELAY_RECOVERY_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [auth, pollScheduledSessionEvents, sessionId, sessions, streamTick]);
+  }, [auth, pollScheduledSessionEvents, sessionId, sessions]);
 
   const executePreparedTurn = useCallback(async (
     prepared: PreparedChatTurn,
@@ -3319,6 +3367,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     // composer
     input,
     setInput,
+    slashCommands,
     composerAttachments,
     composerDragActive,
     composerPlusOpen,

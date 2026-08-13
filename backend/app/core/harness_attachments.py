@@ -6,6 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
+from sqlmodel import Session
 
 from app.core.harness_session_cleanup import (
     harness_path_segment,
@@ -47,6 +48,7 @@ def materialize_task_attachments(
     session_id: str,
     task_frame_id: str,
     user_id: str = "",
+    db: Session | None = None,
 ) -> list[dict[str, Any]]:
     if not attachments:
         return []
@@ -54,6 +56,7 @@ def materialize_task_attachments(
         tenant_id=tenant_id,
         session_id=session_id,
         task_frame_id=task_frame_id,
+        db=db,
     )
     context = HarnessToolContext(
         run_id=f"attachments-{harness_path_segment(task_frame_id)}",

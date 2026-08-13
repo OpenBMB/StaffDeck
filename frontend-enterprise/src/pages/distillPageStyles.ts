@@ -231,7 +231,7 @@ export const SOURCE_TITLE_INPUT_CLASS =
 export const SOURCE_STEP_TITLE_EDIT_CLASS =
   'inline-grid w-full max-w-full min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-[6px] text-[15px] font-semibold [&>span:first-child]:whitespace-nowrap [&>span:first-child]:text-[#18181a]';
 export const SOURCE_EDIT_INPUT_CLASS =
-  'box-border min-w-0 max-w-full resize-none overflow-x-hidden overflow-y-hidden! rounded-[6px] border-transparent bg-transparent px-[6px] py-[2px] leading-[1.65] wrap-anywhere shadow-none field-sizing-fixed hover:border-[#eceef1] hover:bg-white focus-visible:border-[#eceef1] focus-visible:bg-white focus-visible:ring-0';
+  'box-border min-w-0 max-w-full resize-none overflow-x-hidden overflow-y-hidden rounded-[6px] border-transparent bg-transparent px-[6px] py-[2px] leading-[1.65] wrap-anywhere shadow-none field-sizing-fixed hover:border-[#eceef1] hover:bg-white focus-visible:border-[#eceef1] focus-visible:bg-white focus-visible:ring-0';
 
 export const SOURCE_COLLAPSIBLE_EDITOR_CLASS = 'grid min-w-0 w-full max-w-full gap-[8px]';
 export const SOURCE_COLLAPSIBLE_HEAD_CLASS =
@@ -352,7 +352,7 @@ export const FLOW_EDGES_CLASS = 'pointer-events-none absolute top-0 left-0 z-[2]
 export const FLOW_EDGE_PATH_CLASS =
   'fill-none stroke-[#718683] [stroke-width:1.65] [vector-effect:non-scaling-stroke] [stroke-linecap:round] [stroke-linejoin:round] opacity-72';
 export const FLOW_EDGE_LABEL_BASE_CLASS =
-  'pointer-events-none absolute z-[4] max-w-[176px] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border border-[#d7cbbb] bg-[#fffdf8]/98 px-[9px] py-[4px] text-[11px] leading-[1.35] text-ellipsis whitespace-nowrap text-[#5f574b] shadow-[0_8px_18px_rgba(38,32,23,0.1)]';
+  'pointer-events-none absolute z-[4] max-w-[176px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#d7cbbb] bg-[#fffdf8]/98 px-[9px] py-[4px] text-[11px] leading-[1.35] text-ellipsis whitespace-nowrap text-[#5f574b] shadow-[0_8px_18px_rgba(38,32,23,0.1)]';
 export const FLOW_ROOT_POSITION_CLASS = 'absolute z-[6]';
 export const FLOW_NODE_POSITION_CLASS = 'absolute z-[7] cursor-grab touch-none active:cursor-grabbing';
 export const FLOW_NODE_SHELL_CLASS =

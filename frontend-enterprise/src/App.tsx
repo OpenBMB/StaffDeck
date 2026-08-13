@@ -701,7 +701,7 @@ function Shell({
                 path="/enterprise/runtime-settings"
                 element={
                   isAdmin ? (
-                    <RuntimeSettingsPage />
+                    <RuntimeSettingsPage currentUser={auth.user} />
                   ) : (
                     <Navigate to={EnterpriseRoute.Gallery} replace />
                   )

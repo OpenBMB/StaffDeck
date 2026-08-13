@@ -1,0 +1,68 @@
+// @vitest-environment jsdom
+
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+
+import type { ChatMessage, ChatSlashCommand } from '@/types';
+
+import type { UseChatSession } from '../useChatSession';
+import MessageBubble, { type MessageRender } from './MessageBubble';
+
+const weatherCommand: ChatSlashCommand = {
+  kind: 'skill',
+  target: 'weather',
+  label: 'weather',
+  description: '查询天气',
+  command: '/skill weather',
+};
+
+function renderSlashMessage(content: string, slashCommands: ChatSlashCommand[] = [weatherCommand]) {
+  const item: ChatMessage = {
+    id: 'message-1',
+    role: 'user',
+    content,
+    created_at: '2026-08-09T00:00:00Z',
+  };
+  const messageRender: MessageRender = {
+    traceTurnId: 'turn-1',
+    summary: null,
+    details: [],
+    expanded: false,
+    showInlineTrace: false,
+    visibleContent: content,
+    citations: [],
+    scheduledDraft: null,
+    scheduledTaskPrompt: false,
+    attachments: [],
+    harnessArtifacts: [],
+    statusOnly: false,
+  };
+  const chat = {
+    slashCommands,
+    toggleTrace: vi.fn(),
+    rateMessage: vi.fn(),
+    setActiveCitation: vi.fn(),
+    confirmScheduledTask: vi.fn(),
+    dismissScheduledTaskDraft: vi.fn(),
+    removeQueuedTurn: vi.fn(),
+    tenantId: 'tenant_demo',
+    activeConversationId: 'session-1',
+  } as unknown as UseChatSession;
+  return render(<MessageBubble chat={chat} item={item} render={messageRender} />);
+}
+
+describe('MessageBubble slash command card', () => {
+  it('renders a sent slash command as a card beside its request text', () => {
+    renderSlashMessage('/skill weather 北京天气如何');
+
+    expect(screen.getByRole('group', { name: '技能 weather' })).toBeTruthy();
+    expect(screen.getByText('北京天气如何')).toBeTruthy();
+    expect(screen.queryByText('/skill weather 北京天气如何')).toBeNull();
+  });
+
+  it('keeps the card when the referenced resource is no longer listed', () => {
+    renderSlashMessage('/skill archived_weather 北京天气如何', []);
+
+    expect(screen.getByRole('group', { name: '技能 archived_weather' })).toBeTruthy();
+  });
+});

@@ -25,6 +25,9 @@
   SOP frame 的 requirements；真正独立且不属于任何 SOP 的要求可建立兄弟
   conversation frame。
 - requirements 是简短、可执行、可验证的目标列表，不是能力名称或实施方案。
+- 需求边界以用户原话为准。一个有限问题原则上保持为一个 requirement；不得为了显得完整而
+  自动补充用户未要求的流程阶段、相邻政策、例外清单或“全面介绍”维度。只有用户明确要求
+  全面、完整或逐项覆盖时，才拆成多个相互独立的 requirement。
 - 仅 Router/Planner 可改变 SOP 或 TaskFrame 顺序；后续 Harness 不得重新路由。
 - `slot_hints` 只允许稳定结构化字段，禁止 `message_content`，禁止复制整段原文。
 - 所有容器字段都不得输出 `null`：空 `slot_hints` 使用 `{}`，空 `task_frames`、

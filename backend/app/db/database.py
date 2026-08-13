@@ -273,6 +273,13 @@ def _migrate_sqlite_skill_schema() -> None:
                         "INTEGER NOT NULL DEFAULT 32"
                     )
                 )
+            if "sandbox_enabled" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN sandbox_enabled "
+                        "BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                )
             if "sandbox_network_mode" not in ui_columns:
                 conn.execute(
                     text(
@@ -286,6 +293,10 @@ def _migrate_sqlite_skill_schema() -> None:
                         "ALTER TABLE ui_configs ADD COLUMN sandbox_allowed_domains "
                         "JSON NOT NULL DEFAULT '[]'"
                     )
+                )
+            if "harness_storage_path" not in ui_columns:
+                conn.execute(
+                    text("ALTER TABLE ui_configs ADD COLUMN harness_storage_path VARCHAR")
                 )
 
         if "skill_feedback" in tables:
@@ -2439,49 +2450,10 @@ def _seed_agent_branch_state(conn, inspector, tables: set[str]) -> None:
             for row in rows:
                 _seed_agent_knowledge_branch(conn, agent_id, row)
 
-    if "agent_model_bindings" in tables and "model_configs" in tables:
-        default_models = conn.execute(
-            text("SELECT tenant_id, id FROM model_configs WHERE is_default = 1 AND enabled = 1")
-        ).mappings().all()
-        model_by_tenant = {str(row["tenant_id"]): str(row["id"]) for row in default_models}
-        agents = conn.execute(
-            text("SELECT id, tenant_id FROM agent_profiles WHERE status != 'archived'")
-        ).mappings().all()
-        for agent in agents:
-            tenant_id = str(agent["tenant_id"])
-            model_id = model_by_tenant.get(tenant_id)
-            if not model_id:
-                continue
-            existing = conn.execute(
-                text(
-                    """
-                    SELECT id FROM agent_model_bindings
-                    WHERE tenant_id = :tenant_id AND agent_id = :agent_id AND role = 'default'
-                    """
-                ),
-                {"tenant_id": tenant_id, "agent_id": agent["id"]},
-            ).first()
-            if existing:
-                continue
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO agent_model_bindings (
-                        id, tenant_id, agent_id, role, model_config_id, created_at, updated_at
-                    )
-                    VALUES (
-                        :id, :tenant_id, :agent_id, 'default', :model_config_id,
-                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                    )
-                    """
-                ),
-                {
-                    "id": _agent_model_binding_id(str(agent["id"]), "default"),
-                    "tenant_id": tenant_id,
-                    "agent_id": agent["id"],
-                    "model_config_id": model_id,
-                },
-            )
+    if "agent_model_bindings" in tables:
+        # Employee-level model selection has been retired. Clearing legacy rows during startup
+        # prevents older databases or clients from silently pinning employees to stale models.
+        conn.execute(text("DELETE FROM agent_model_bindings"))
 
 
 def _normalize_agent_branch_rows(conn, tables: set[str]) -> None:
@@ -2698,10 +2670,6 @@ def _agent_knowledge_branch_id(agent_id: str, knowledge_base_id: str) -> str:
 def _agent_resource_binding_id(tenant_id: str, agent_id: str, resource_type: str, resource_id: str) -> str:
     key = f"{tenant_id}:{agent_id}:{resource_type}:{resource_id}"
     return f"agentres_{hashlib.sha1(key.encode('utf-8')).hexdigest()[:16]}"
-
-
-def _agent_model_binding_id(agent_id: str, role: str) -> str:
-    return f"agentmodel_{agent_id}_{role}"
 
 
 def get_session() -> Generator[Session, None, None]:

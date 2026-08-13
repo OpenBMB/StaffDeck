@@ -403,6 +403,37 @@ def update_agent(
     return agent_read(row, _bindings_by_agent(db, request.tenant_id).get(row.id, []))
 
 
+@enterprise_router.post("/{agent_id}/gallery:unpublish", response_model=AgentProfileRead)
+def unpublish_agent_from_gallery(
+    agent_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> AgentProfileRead:
+    """Remove an employee from the open gallery without deleting the employee itself."""
+    _ensure_admin_user(tenant_id, current_user)
+    row = _get_agent(db, tenant_id, agent_id)
+    if row.is_overall:
+        raise HTTPException(status_code=400, detail="Overall agent cannot be unpublished")
+
+    metadata = dict(row.metadata_json or {})
+    if metadata.get("published_to_gallery") is not True:
+        return agent_read(row, _bindings_by_agent(db, tenant_id).get(row.id, []))
+
+    now = utc_now()
+    metadata["published_to_gallery"] = False
+    metadata["gallery_unpublished_at"] = now.isoformat()
+    metadata["gallery_unpublished_by"] = current_user.username
+    metadata.pop("gallery_published_at", None)
+    metadata.pop("gallery_published_by", None)
+    row.metadata_json = metadata
+    row.updated_at = now
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return agent_read(row, _bindings_by_agent(db, tenant_id).get(row.id, []))
+
+
 @enterprise_router.delete("/{agent_id}")
 def delete_agent(
     agent_id: str,
@@ -696,39 +727,9 @@ def update_agent_models(
     current_user: User = Depends(get_current_user),
 ) -> dict[str, object]:
     _ensure_can_manage_agent(_get_agent(db, request.tenant_id, agent_id), current_user)
-    for item in request.bindings:
-        if item.role != "default":
-            continue
-        existing = db.exec(
-            select(AgentModelBinding).where(
-                AgentModelBinding.tenant_id == request.tenant_id,
-                AgentModelBinding.agent_id == agent_id,
-                AgentModelBinding.role == item.role,
-            )
-        ).first()
-        if existing:
-            existing.model_config_id = item.model_config_id
-            existing.updated_at = utc_now()
-            db.add(existing)
-            continue
-        db.add(
-            AgentModelBinding(
-                tenant_id=request.tenant_id,
-                agent_id=agent_id,
-                role=item.role,
-                model_config_id=item.model_config_id,
-            )
-        )
-    if not any(item.role == "default" for item in request.bindings):
-        existing_default = db.exec(
-            select(AgentModelBinding).where(
-                AgentModelBinding.tenant_id == request.tenant_id,
-                AgentModelBinding.agent_id == agent_id,
-                AgentModelBinding.role == "default",
-            )
-        ).first()
-        if existing_default:
-            db.delete(existing_default)
+    # Employee-specific model selection has been retired. Keep this endpoint as a backwards-
+    # compatible reset operation so older clients cannot recreate legacy bindings.
+    _delete_agent_model_bindings(db, request.tenant_id, agent_id)
     db.commit()
     return {"status": "updated", "agent_id": agent_id}
 
@@ -742,12 +743,6 @@ def get_agent_models(
 ) -> list[dict[str, object]]:
     agent = _get_agent(db, tenant_id, agent_id)
     _ensure_can_access_agent(agent, current_user)
-    rows = db.exec(
-        select(AgentModelBinding).where(
-            AgentModelBinding.tenant_id == tenant_id,
-            AgentModelBinding.agent_id == agent_id,
-        )
-    ).all()
     default = db.exec(
         select(ModelConfig).where(
             ModelConfig.tenant_id == tenant_id,
@@ -755,10 +750,9 @@ def get_agent_models(
             ModelConfig.enabled == True,  # noqa: E712
         )
     ).first()
-    result = [{"role": row.role, "model_config_id": row.model_config_id, "effective": True} for row in rows]
-    if not any(row["role"] == "default" for row in result) and default:
-        result.append({"role": "default", "model_config_id": default.id, "effective": False})
-    return result
+    if default is None:
+        return []
+    return [{"role": "default", "model_config_id": default.id, "effective": False}]
 
 
 @chat_router.get("", response_model=list[AgentProfileRead])
@@ -1577,21 +1571,20 @@ def _resource_display_id(resource_type: str, resolved: AgentResource) -> str:
 def _copy_agent_models_from_source(
     db: Session, tenant_id: str, source: AgentProfile, target: AgentProfile
 ) -> None:
+    # Model bindings are intentionally not copied. Every employee inherits the tenant default.
+    _ = source
+    _delete_agent_model_bindings(db, tenant_id, target.id)
+
+
+def _delete_agent_model_bindings(db: Session, tenant_id: str, agent_id: str) -> None:
     bindings = db.exec(
         select(AgentModelBinding).where(
             AgentModelBinding.tenant_id == tenant_id,
-            AgentModelBinding.agent_id == source.id,
+            AgentModelBinding.agent_id == agent_id,
         )
     ).all()
     for binding in bindings:
-        db.add(
-            AgentModelBinding(
-                tenant_id=tenant_id,
-                agent_id=target.id,
-                role=binding.role,
-                model_config_id=binding.model_config_id,
-            )
-        )
+        db.delete(binding)
 
 
 def _copy_skill_branch(

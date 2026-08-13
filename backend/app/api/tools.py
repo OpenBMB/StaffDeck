@@ -243,6 +243,35 @@ def probe_tool(
             inferred_output_schema=_infer_json_schema(data),
             error=None,
         )
+    if request.tool_type == "a2a":
+        tool = Tool(
+            tenant_id=request.tenant_id,
+            name=request.name or "a2a_probe",
+            display_name=request.display_name,
+            description=request.description,
+            bucket=request.bucket,
+            tool_type="a2a",
+            method="POST",
+            url=_normalize_probe_url(request.url),
+            headers_json=request.headers,
+            auth_json=request.auth,
+            config_json=_tool_config(request.mcp_config, request.execution_policy),
+            input_schema=request.input_schema,
+            output_schema=request.output_schema,
+        )
+        result = ToolExecutor(db)._execute_a2a_tool(  # noqa: SLF001
+            tool,
+            request.sample_arguments,
+        )
+        return ToolProbeResponse(
+            success=result.success,
+            status_code=200 if result.success else 400,
+            data_preview=result.data,
+            inferred_output_schema=(
+                _infer_json_schema(result.data) if result.success else {}
+            ),
+            error=result.error,
+        )
     headers = ToolExecutor(db)._resolve_headers(request.headers, request.auth)  # noqa: SLF001
     url = _normalize_probe_url(request.url)
     timeout_seconds = _probe_timeout_seconds(request)

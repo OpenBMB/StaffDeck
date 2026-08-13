@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import inspect
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.agents.branching import ensure_open_gallery_binding, ensure_private_resource_binding
+from app.agents.branching import (
+    ensure_open_gallery_binding,
+    ensure_private_resource_binding,
+    model_for_agent,
+)
 from app.agents.schema import (
+    AgentModelBindingInput,
+    AgentModelsUpdateRequest,
     AgentProfileCreateRequest,
     AgentProfileUpdateRequest,
     AgentResourceBindingInput,
@@ -15,24 +22,30 @@ from app.agents.schema import (
 from app.api.agents import (
     create_agent,
     delete_agent,
+    get_agent_models,
     list_agents,
     list_chat_agents,
+    unpublish_agent_from_gallery,
     update_agent,
+    update_agent_models,
     update_agent_resources,
     use_chat_agent,
 )
 from app.api.general_skills import import_general_skill
 from app.api.tools import create_tool, update_tool
 from app.db.models import (
+    AgentModelBinding,
     AgentProfile,
     AgentResourceBinding,
     AgentUsage,
     ChatSession,
     GeneralSkill,
+    ModelConfig,
     Tenant,
     Tool,
     User,
 )
+from app.db.database import _seed_agent_branch_state
 from app.general_skills.schema import GeneralSkillImportRequest
 from app.security.permissions import (
     ensure_agent_scope_manager,
@@ -114,6 +127,131 @@ def test_non_admin_cannot_manage_overall_agent() -> None:
             current_user=admin,
         )
         assert updated.description == "管理员可以维护整体员工"
+
+
+def test_agents_always_inherit_tenant_default_model_and_legacy_bindings_are_removed() -> None:
+    with _test_session() as db:
+        owner, _other, admin = _seed_users(db)
+        agent = AgentProfile(
+            id="agent_default_model",
+            tenant_id="tenant_demo",
+            name="默认模型员工",
+            is_overall=False,
+            metadata_json={"owner_user_id": owner.id, "owner_username": owner.username},
+        )
+        tenant_default = ModelConfig(
+            id="model_tenant_default",
+            tenant_id="tenant_demo",
+            name="租户默认模型",
+            api_key_encrypted="encrypted-default",
+            model="default-model",
+            is_default=True,
+            enabled=True,
+        )
+        legacy_model = ModelConfig(
+            id="model_legacy_binding",
+            tenant_id="tenant_demo",
+            name="旧员工绑定模型",
+            api_key_encrypted="encrypted-legacy",
+            model="legacy-model",
+            enabled=True,
+        )
+        legacy_binding = AgentModelBinding(
+            id="binding_legacy_model",
+            tenant_id="tenant_demo",
+            agent_id=agent.id,
+            role="default",
+            model_config_id=legacy_model.id,
+        )
+        db.add(agent)
+        db.add(tenant_default)
+        db.add(legacy_model)
+        db.add(legacy_binding)
+        db.commit()
+
+        resolved = model_for_agent(db, "tenant_demo", agent.id)
+        assert resolved is not None
+        assert resolved.id == tenant_default.id
+
+        rows = get_agent_models(
+            agent.id,
+            tenant_id="tenant_demo",
+            db=db,
+            current_user=admin,
+        )
+        assert rows == [
+            {
+                "role": "default",
+                "model_config_id": tenant_default.id,
+                "effective": False,
+            }
+        ]
+
+        update_agent_models(
+            agent.id,
+            AgentModelsUpdateRequest(
+                tenant_id="tenant_demo",
+                bindings=[
+                    AgentModelBindingInput(
+                        role="default",
+                        model_config_id=legacy_model.id,
+                    )
+                ],
+            ),
+            db=db,
+            current_user=admin,
+        )
+        assert db.exec(
+            select(AgentModelBinding).where(
+                AgentModelBinding.tenant_id == "tenant_demo",
+                AgentModelBinding.agent_id == agent.id,
+            )
+        ).all() == []
+
+
+def test_startup_seed_removes_legacy_agent_model_bindings() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_startup_cleanup",
+                tenant_id="tenant_demo",
+                name="启动清理员工",
+            )
+        )
+        db.add(
+            ModelConfig(
+                id="model_startup_default",
+                tenant_id="tenant_demo",
+                name="默认模型",
+                api_key_encrypted="encrypted-default",
+                model="default-model",
+                is_default=True,
+            )
+        )
+        db.add(
+            AgentModelBinding(
+                id="binding_startup_cleanup",
+                tenant_id="tenant_demo",
+                agent_id="agent_startup_cleanup",
+                role="default",
+                model_config_id="model_startup_default",
+            )
+        )
+        db.commit()
+
+    table_names = set(inspect(engine).get_table_names())
+    with engine.begin() as conn:
+        _seed_agent_branch_state(conn, inspect(engine), table_names)
+
+    with Session(engine) as db:
+        assert db.exec(select(AgentModelBinding)).all() == []
 
 
 def test_resource_binding_requires_agent_manager() -> None:
@@ -260,6 +398,74 @@ def test_gallery_agent_is_visible_but_not_manageable_by_non_owner() -> None:
             )
         assert create_error.value.status_code == 403
         assert db.exec(select(Tool).where(Tool.name == "blocked_gallery_tool")).first() is None
+
+
+def test_only_admin_can_unpublish_gallery_agent_without_deleting_it() -> None:
+    with _test_session() as db:
+        owner, other, admin = _seed_users(db)
+        gallery_agent = AgentProfile(
+            id="agent_gallery_governance",
+            tenant_id="tenant_demo",
+            name="待治理广场员工",
+            is_overall=False,
+            metadata_json={
+                "published_to_gallery": True,
+                "gallery_published_at": "2026-08-08T08:00:00+00:00",
+                "gallery_published_by": other.username,
+                "owner_user_id": other.id,
+                "owner_username": other.username,
+            },
+        )
+        binding = AgentResourceBinding(
+            id="binding_gallery_governance",
+            tenant_id="tenant_demo",
+            agent_id=gallery_agent.id,
+            resource_type="tool",
+            resource_id="tool_governance",
+            status="active",
+        )
+        db.add(gallery_agent)
+        db.add(binding)
+        db.commit()
+
+        with pytest.raises(HTTPException) as member_error:
+            unpublish_agent_from_gallery(
+                gallery_agent.id,
+                tenant_id="tenant_demo",
+                db=db,
+                current_user=owner,
+            )
+        assert member_error.value.status_code == 403
+
+        unpublished = unpublish_agent_from_gallery(
+            gallery_agent.id,
+            tenant_id="tenant_demo",
+            db=db,
+            current_user=admin,
+        )
+        assert unpublished.status == "active"
+        assert unpublished.metadata["published_to_gallery"] is False
+        assert unpublished.metadata["gallery_unpublished_by"] == admin.username
+        assert "gallery_published_at" not in unpublished.metadata
+        assert "gallery_published_by" not in unpublished.metadata
+        assert db.get(AgentProfile, gallery_agent.id) is not None
+        assert db.get(AgentResourceBinding, binding.id) is not None
+        assert gallery_agent.id not in {
+            row.id for row in list_agents("tenant_demo", db=db, current_user=owner)
+        }
+        assert gallery_agent.id in {
+            row.id for row in list_agents("tenant_demo", db=db, current_user=other)
+        }
+
+        repeated = unpublish_agent_from_gallery(
+            gallery_agent.id,
+            tenant_id="tenant_demo",
+            db=db,
+            current_user=admin,
+        )
+        assert repeated.metadata["gallery_unpublished_at"] == unpublished.metadata[
+            "gallery_unpublished_at"
+        ]
 
 
 def test_agent_ownership_uses_immutable_user_id_not_username_metadata() -> None:

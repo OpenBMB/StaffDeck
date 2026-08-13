@@ -26,7 +26,19 @@ OPERATION_MAX_OUTPUT_TOKENS: dict[str, int] = {
     "feedback.analyze": 1024,
 }
 
+# Control-plane routers already have deterministic fallbacks. Retrying an empty
+# reasoning-only response delays the real work without improving routing.
+OPERATION_EMPTY_RESPONSE_RETRIES: dict[str, int] = {
+    "knowledge.document_route": 0,
+    "knowledge.bucket_route": 0,
+}
+
 def operation_output_tokens(operation: str, configured_tokens: int) -> int:
     configured = max(1, int(configured_tokens or 1))
     limit = OPERATION_MAX_OUTPUT_TOKENS.get(operation)
     return configured if limit is None else min(configured, limit)
+
+
+def operation_empty_response_retries(operation: str, default_retries: int) -> int:
+    configured = OPERATION_EMPTY_RESPONSE_RETRIES.get(operation)
+    return max(0, int(default_retries if configured is None else configured))

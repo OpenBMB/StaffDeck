@@ -62,6 +62,9 @@ export type PlatformKindDetailViewProps = {
   onRefresh: () => void;
   onCreate?: () => void;
   onOpenItem: (item: PlatformDetailItem) => void;
+  canManage?: boolean;
+  unpublishingItemId?: string;
+  onUnpublishItem?: (item: PlatformDetailItem) => void;
   onLogout?: () => void;
   userName?: string;
 };
@@ -101,6 +104,9 @@ export default function PlatformKindDetailView({
   onRefresh,
   onCreate,
   onOpenItem,
+  canManage = false,
+  unpublishingItemId,
+  onUnpublishItem,
   onLogout,
   userName,
 }: PlatformKindDetailViewProps) {
@@ -214,6 +220,8 @@ export default function PlatformKindDetailView({
                   description={item.description}
                   stats={employeeStats(item.agent)}
                   onOpen={() => onOpenItem(item)}
+                  onUnpublish={canManage && onUnpublishItem ? () => onUnpublishItem(item) : undefined}
+                  unpublishing={unpublishingItemId === item.id}
                 />
               ))}
             </div>

@@ -353,12 +353,16 @@ export type UIConfigRead = {
   show_tool_trace: boolean;
   reflection_max_rounds: number;
   agent_loop_max_actions: number;
+  sandbox_enabled: boolean;
+  harness_storage_path: string;
+  effective_harness_storage_path: string;
+  restart_scheduled?: boolean;
   sandbox_network_mode: 'all' | 'allowlist' | 'deny';
   sandbox_allowed_domains: string[];
   sandbox_backend?: string | null;
   sandbox_setup_required?: boolean;
   sandbox_setup_instructions?: string | null;
-  sandbox_status?: 'ready' | 'unavailable' | 'degraded';
+  sandbox_status?: 'ready' | 'unavailable' | 'degraded' | 'disabled';
   sandbox_status_code?: string | null;
   sandbox_status_message?: string | null;
   sandbox_status_remediation?: string | null;

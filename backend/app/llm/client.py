@@ -17,7 +17,10 @@ from anthropic import Anthropic
 from app.config import get_settings
 from app.db.models import ModelConfig
 from app.llm.model_protocols import ModelApiProtocol
-from app.llm.output_policy import operation_output_tokens
+from app.llm.output_policy import (
+    operation_empty_response_retries,
+    operation_output_tokens,
+)
 from app.llm.protocol_drivers import (
     AnthropicMessagesDriver,
     CancellationToken,
@@ -195,8 +198,10 @@ class LLMClient:
         response_format: dict[str, str] | None = None,
         cancellation: CancellationToken | None = None,
     ) -> str:
-        max_output_tokens = operation_output_tokens(
-            current_llm_operation(), self.max_output_tokens
+        operation = current_llm_operation()
+        max_output_tokens = operation_output_tokens(operation, self.max_output_tokens)
+        empty_response_retries = operation_empty_response_retries(
+            operation, EMPTY_RESPONSE_RETRIES
         )
         context_messages, serialized = _prepare_user_input(user_payload)
         request_messages = _request_messages(system_prompt, context_messages, serialized)
@@ -229,7 +234,7 @@ class LLMClient:
             )
             empty_diagnostics: list[str] = []
             current_max_tokens = max_output_tokens
-            for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
+            for attempt in range(empty_response_retries + 1):
                 request["max_tokens"] = current_max_tokens
                 span = start_llm_call(
                     model=self.model,
@@ -238,7 +243,7 @@ class LLMClient:
                     stream=False,
                     attempt=attempt + 1,
                     retry_count=attempt,
-                    max_attempts=EMPTY_RESPONSE_RETRIES + 1,
+                    max_attempts=empty_response_retries + 1,
                     max_output_tokens=current_max_tokens,
                     thinking_mode=getattr(self, "thinking_mode", "") or "provider_default",
                     **request_shape,
@@ -288,7 +293,7 @@ class LLMClient:
                     and metrics.get("reasoning_chars", 0) > 0
                 ):
                     current_max_tokens = _escalate_reasoning_token_budget(current_max_tokens)
-                if attempt >= EMPTY_RESPONSE_RETRIES:
+                if attempt >= empty_response_retries:
                     raise LLMError(_empty_response_detail(self, empty_diagnostics))
         except Exception as exc:
             if isinstance(exc, LLMError):
@@ -304,8 +309,10 @@ class LLMClient:
         user_payload: dict[str, Any] | str,
         cancellation: CancellationToken | None = None,
     ) -> Iterator[str]:
-        max_output_tokens = operation_output_tokens(
-            current_llm_operation(), self.max_output_tokens
+        operation = current_llm_operation()
+        max_output_tokens = operation_output_tokens(operation, self.max_output_tokens)
+        empty_response_retries = operation_empty_response_retries(
+            operation, EMPTY_RESPONSE_RETRIES
         )
         context_messages, serialized = _prepare_user_input(user_payload)
         request_messages = _request_messages(system_prompt, context_messages, serialized)
@@ -322,7 +329,7 @@ class LLMClient:
         try:
             empty_diagnostics: list[str] = []
             current_max_tokens = max_output_tokens
-            for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
+            for attempt in range(empty_response_retries + 1):
                 span = start_llm_call(
                     model=self.model,
                     endpoint=_endpoint_label(getattr(self, "base_url", "")),
@@ -330,7 +337,7 @@ class LLMClient:
                     stream=True,
                     attempt=attempt + 1,
                     retry_count=attempt,
-                    max_attempts=EMPTY_RESPONSE_RETRIES + 1,
+                    max_attempts=empty_response_retries + 1,
                     max_output_tokens=current_max_tokens,
                     thinking_mode=getattr(self, "thinking_mode", "") or "provider_default",
                     **request_shape,
@@ -1109,7 +1116,7 @@ def _stream_empty_diagnostic(
 
 
 def _empty_response_detail(client: Any, diagnostics: list[str]) -> str:
-    attempts = EMPTY_RESPONSE_RETRIES + 1
+    attempts = max(1, len(diagnostics))
     model = _safe_fragment(getattr(client, "model", None), 80) or "unknown"
     endpoint = _endpoint_label(getattr(client, "base_url", None))
     response_details = " | ".join(diagnostics)

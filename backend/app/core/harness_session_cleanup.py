@@ -14,6 +14,7 @@ from app.db.models import (
     HarnessSessionLeaseRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
+    UIConfig,
     utc_now,
 )
 
@@ -177,11 +178,23 @@ def harness_path_segment(value: str) -> str:
     return f"{prefix}-{suffix}"
 
 
-def harness_session_workspace_path(*, tenant_id: str, session_id: str) -> Path:
-    data_root = paths.user_data_dir().resolve()
+def harness_storage_root(*, tenant_id: str, db: Session | None = None) -> Path:
+    """Resolve the administrator-selected root for new non-sandboxed workspaces."""
+
+    default_root = paths.user_data_dir().resolve() / "harness_workspaces"
+    if db is not None:
+        row = db.get(UIConfig, tenant_id)
+        configured = str(getattr(row, "harness_storage_path", "") or "").strip()
+        if row is not None and not bool(getattr(row, "sandbox_enabled", False)) and configured:
+            return Path(configured).expanduser().resolve()
+    return default_root
+
+
+def harness_session_workspace_path(
+    *, tenant_id: str, session_id: str, db: Session | None = None
+) -> Path:
     return (
-        data_root
-        / "harness_workspaces"
+        harness_storage_root(tenant_id=tenant_id, db=db)
         / harness_path_segment(tenant_id)
         / harness_path_segment(session_id)
     )
@@ -192,10 +205,12 @@ def harness_task_workspace_path(
     tenant_id: str,
     session_id: str,
     task_frame_id: str,
+    db: Session | None = None,
 ) -> Path:
     session_path = harness_session_workspace_path(
         tenant_id=tenant_id,
         session_id=session_id,
+        db=db,
     )
     task_path = session_path / harness_path_segment(task_frame_id)
     for parent in (
@@ -211,7 +226,9 @@ def harness_task_workspace_path(
     return task_path
 
 
-def remove_harness_session_workspace(*, tenant_id: str, session_id: str) -> bool:
+def remove_harness_session_workspace(
+    *, tenant_id: str, session_id: str, db: Session | None = None
+) -> bool:
     """Remove only one exact tenant/session Harness workspace.
 
     Parent symlinks are rejected so cleanup can never traverse a redirected
@@ -222,6 +239,7 @@ def remove_harness_session_workspace(*, tenant_id: str, session_id: str) -> bool
     session_path = harness_session_workspace_path(
         tenant_id=tenant_id,
         session_id=session_id,
+        db=db,
     )
     harness_root = session_path.parents[1]
     tenant_path = session_path.parent

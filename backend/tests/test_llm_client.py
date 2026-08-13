@@ -2,7 +2,10 @@ import pytest
 
 from app.llm.client import LLMClient, LLMError, _thinking_mode_for_model
 from app.llm.protocol_drivers import ChatCompletionsDriver, ProtocolCallError
-from app.llm.output_policy import operation_output_tokens
+from app.llm.output_policy import (
+    operation_empty_response_retries,
+    operation_output_tokens,
+)
 from app.llm.stage_protocol import TURN_STAGE_MESSAGES_KEY, stage_payload
 from app.llm.schemas import ModelConfigCreateRequest
 from app.observability.spans import bind_span_sink, llm_operation
@@ -348,6 +351,26 @@ def test_generate_text_retries_empty_response():
 
     assert client.generate_text("system prompt", {"hello": "world"}) == "ok"
     assert len(client.client.chat.completions.calls) == 3
+
+
+def test_knowledge_router_uses_lexical_fallback_after_first_empty_response():
+    client = object.__new__(LLMClient)
+    client.client = _FakeOpenAIClient()
+    client.model = "demo-model"
+    client.base_url = "https://example.test/v1"
+    client.temperature = 0.2
+    client.max_output_tokens = 256
+    client.client.chat.completions.create = lambda **kwargs: (  # noqa: E731
+        client.client.chat.completions.calls.append(kwargs)
+        or _completion_with_content("")
+    )
+
+    with llm_operation("knowledge.bucket_route"):
+        with pytest.raises(LLMError) as error:
+            client.generate_text("system prompt", {"query": "制度"})
+
+    assert len(client.client.chat.completions.calls) == 1
+    assert "after 1 attempts" in str(error.value)
 
 
 def test_generate_text_records_each_empty_response_retry():
@@ -966,6 +989,11 @@ def test_internal_json_operation_caps_output_without_mutating_system_prompt():
 
 def test_internal_output_budget_never_increases_smaller_model_config():
     assert operation_output_tokens("router.scene", 256) == 256
+
+
+def test_knowledge_router_does_not_retry_empty_control_plane_responses():
+    assert operation_empty_response_retries("knowledge.bucket_route", 2) == 0
+    assert operation_empty_response_retries("response.generate", 2) == 2
 
 
 def test_user_visible_response_caps_output_budget_at_4096():
