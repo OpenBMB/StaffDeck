@@ -9,12 +9,20 @@ from typing import Any, Callable
 import httpx
 
 from app.channels.adapters.base import (
+    CHANNEL_TEXT_LIMIT,
     ChannelInboundAttachment,
     register_channel_adapter,
     split_channel_text,
     stream_download_with_limit,
 )
 from app.channels.crypto import decrypt_channel_secret
+from app.channels.markdown_render import (
+    has_markdown,
+    parse_markdown,
+    render_feishu_post,
+    split_markdown_by_lines,
+)
+from app.config import get_settings
 from app.db.models import ChannelBinding
 
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
@@ -405,12 +413,28 @@ class FeishuAdapter:
         receive_id_type = str(target.get("receive_id_type") or "").strip()
         if not message_id and (not receive_id or not receive_id_type):
             raise FeishuPermanentError("飞书投递目标无效")
-        for index, chunk in enumerate(split_channel_text(text)):
-            body: dict[str, Any] = {
-                "msg_type": "text",
-                "content": json.dumps({"text": chunk}, ensure_ascii=False),
-                "uuid": self._uuid(key, index),
-            }
+        rich_enabled = bool(get_settings().channel_rich_render_enabled)
+        use_rich = rich_enabled and has_markdown(text)
+        if use_rich:
+            chunks = split_markdown_by_lines(text, CHANNEL_TEXT_LIMIT)
+            if not chunks:
+                chunks = [text]
+        else:
+            chunks = split_channel_text(text)
+        for index, chunk in enumerate(chunks):
+            if use_rich:
+                post_content = render_feishu_post(parse_markdown(chunk))
+                body: dict[str, Any] = {
+                    "msg_type": "post",
+                    "content": json.dumps(post_content, ensure_ascii=False),
+                    "uuid": self._uuid(key, index),
+                }
+            else:
+                body = {
+                    "msg_type": "text",
+                    "content": json.dumps({"text": chunk}, ensure_ascii=False),
+                    "uuid": self._uuid(key, index),
+                }
             if message_id:
                 body["reply_in_thread"] = bool(target.get("reply_in_thread"))
                 self._post(

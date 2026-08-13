@@ -1,0 +1,457 @@
+from __future__ import annotations
+
+import signal
+
+from app.channels.markdown_render import (
+    CodeBlock,
+    Heading,
+    ListItem,
+    Paragraph,
+    Quote,
+    TableBlock,
+    ThematicBreak,
+    ensure_code_fences,
+    extract_dingtalk_title,
+    has_markdown,
+    parse_markdown,
+    render_feishu_post,
+    split_markdown_by_lines,
+)
+
+# ---------------------------------------------------------------------------
+# has_markdown
+# ---------------------------------------------------------------------------
+
+
+def test_has_markdown_detects_common_syntax():
+    assert has_markdown("# 标题")
+    assert has_markdown("**bold**")
+    assert has_markdown("`code`")
+    assert has_markdown("[link](http://x)")
+    assert has_markdown("- 列表项")
+    assert has_markdown("1. 有序项")
+    assert has_markdown("> 引用")
+    assert has_markdown("```\ncode\n```")
+    assert has_markdown("---")
+
+
+def test_has_markdown_false_for_plain_text():
+    assert not has_markdown("hello world")
+    assert not has_markdown("a * b = c")
+    assert not has_markdown("file_name_with_underscores")
+    assert not has_markdown("普通中文回复")
+    assert not has_markdown("")
+    # 单星号装饰不构成斜体语法（已被 _ITALIC_RE 排除检测），但 * 列表项会命中
+    assert not has_markdown("价格 * 3 = 9")
+    # 破折号不是分隔线（少于3个）
+    assert not has_markdown("a - b")
+
+
+# ---------------------------------------------------------------------------
+# parse_markdown
+# ---------------------------------------------------------------------------
+
+
+def test_parse_heading():
+    blocks = parse_markdown("## 标题二")
+    assert len(blocks) == 1
+    assert isinstance(blocks[0], Heading)
+    assert blocks[0].level == 2
+    assert blocks[0].spans[0].text == "标题二"
+
+
+def test_parse_bold_and_italic():
+    blocks = parse_markdown("**粗** 和 *斜*")
+    para = blocks[0]
+    assert isinstance(para, Paragraph)
+    texts = [(s.text, set(s.styles)) for s in para.spans]
+    assert ("粗", {"bold"}) in texts
+    assert ("斜", {"italic"}) in texts
+
+
+def test_parse_inline_code():
+    blocks = parse_markdown("用 `printf` 输出")
+    spans = blocks[0].spans
+    code_span = next(s for s in spans if "code" in s.styles)
+    assert code_span.text == "printf"
+
+
+def test_parse_multiple_inline_code_no_infinite_loop():
+    """Regression: multiple inline code segments caused an infinite loop because
+    the code-placeholder regex searched text[pos:] but used the relative match.end()
+    as the absolute pos, never advancing past the second placeholder."""
+    def _handler(signum, frame):
+        raise TimeoutError("parse_markdown did not complete in time")
+
+    signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(5)
+    try:
+        blocks = parse_markdown("a `b` c `d` e")
+    finally:
+        signal.alarm(0)
+    spans = blocks[0].spans
+    code_spans = [s for s in spans if "code" in s.styles]
+    assert len(code_spans) == 2
+    assert code_spans[0].text == "b"
+    assert code_spans[1].text == "d"
+
+
+def test_parse_code_in_bold_not_reparsed():
+    blocks = parse_markdown("**`x`**")
+    spans = blocks[0].spans
+    # 粗体包裹，内部代码不应被二次拆为 code span，而是粗体文本
+    assert any(set(s.styles) == {"bold"} and s.text == "`x`" or s.text == "x"
+               for s in spans)
+
+
+def test_parse_fenced_code_block_with_language():
+    blocks = parse_markdown("```python\nprint(1)\nprint(2)\n```")
+    assert len(blocks) == 1
+    assert isinstance(blocks[0], CodeBlock)
+    assert blocks[0].language == "python"
+    assert blocks[0].text == "print(1)\nprint(2)"
+
+
+def test_parse_fenced_code_block_no_language():
+    blocks = parse_markdown("```\nraw\n```")
+    assert isinstance(blocks[0], CodeBlock)
+    assert blocks[0].language == ""
+    assert blocks[0].text == "raw"
+
+
+def test_parse_unclosed_fence_does_not_raise():
+    blocks = parse_markdown("```\nunclosed code")
+    assert isinstance(blocks[0], CodeBlock)
+    assert "unclosed code" in blocks[0].text
+
+
+def test_parse_indented_code_block():
+    blocks = parse_markdown("    print(1)\n    print(2)")
+    assert isinstance(blocks[0], CodeBlock)
+    assert blocks[0].text == "print(1)\nprint(2)"
+
+
+def test_parse_indented_code_block_with_blank_lines():
+    text = "    def f():\n        return 1\n\n    print(f())"
+    blocks = parse_markdown(text)
+    assert len(blocks) == 1
+    assert isinstance(blocks[0], CodeBlock)
+    assert "return 1" in blocks[0].text
+    assert "print(f())" in blocks[0].text
+
+
+def test_parse_indented_code_block_double_blank_merges():
+    text = "    line1\n\n\n    line2"
+    blocks = parse_markdown(text)
+    assert len(blocks) == 1
+    assert isinstance(blocks[0], CodeBlock)
+    assert blocks[0].text == "line1\n\n\nline2"
+
+
+def test_parse_indented_code_block_followed_by_paragraph():
+    text = "    code line\n\nparagraph text"
+    blocks = parse_markdown(text)
+    assert isinstance(blocks[0], CodeBlock)
+    assert blocks[0].text == "code line"
+    assert isinstance(blocks[1], Paragraph)
+    assert blocks[1].spans[0].text == "paragraph text"
+
+
+def test_parse_indented_code_block_after_paragraph():
+    text = "intro text\n\n    code here"
+    blocks = parse_markdown(text)
+    assert isinstance(blocks[0], Paragraph)
+    assert blocks[0].spans[0].text == "intro text"
+    assert isinstance(blocks[1], CodeBlock)
+    assert blocks[1].text == "code here"
+
+
+def test_parse_toplevel_code_block_def():
+    text = "def f():\n    return 1"
+    blocks = parse_markdown(text)
+    assert isinstance(blocks[0], CodeBlock)
+    assert "def f():" in blocks[0].text
+    assert "return 1" in blocks[0].text
+
+
+def test_parse_toplevel_code_block_with_following_paragraph():
+    text = "def f():\n    return 1\n\n这是说明文字。"
+    blocks = parse_markdown(text)
+    assert isinstance(blocks[0], CodeBlock)
+    assert "def f():" in blocks[0].text
+    assert isinstance(blocks[1], Paragraph)
+    assert blocks[1].spans[0].text == "这是说明文字。"
+
+
+def test_parse_toplevel_code_block_includes_assignment_and_print():
+    text = (
+        "def f():\n"
+        "    return 1\n"
+        "\n"
+        "result = f()\n"
+        "print(result)\n"
+        "# output: 1\n"
+        "\n"
+        "说明文字。"
+    )
+    blocks = parse_markdown(text)
+    assert isinstance(blocks[0], CodeBlock)
+    assert "def f():" in blocks[0].text
+    assert "result = f()" in blocks[0].text
+    assert "print(result)" in blocks[0].text
+    assert "# output: 1" in blocks[0].text
+    assert isinstance(blocks[1], Paragraph)
+    assert blocks[1].spans[0].text == "说明文字。"
+
+
+def test_parse_toplevel_code_block_hash_comment_not_heading():
+    text = "def f():\n    return 1\n\n# [1, 2, 3]\n\n说明。"
+    blocks = parse_markdown(text)
+    assert isinstance(blocks[0], CodeBlock)
+    assert "# [1, 2, 3]" in blocks[0].text
+    assert not any(isinstance(b, Heading) for b in blocks)
+
+
+def test_parse_link():
+    blocks = parse_markdown("[StaffDeck](https://staffdeck.ai)")
+    spans = blocks[0].spans
+    link = next(s for s in spans if s.href)
+    assert link.text == "StaffDeck"
+    assert link.href == "https://staffdeck.ai"
+
+
+def test_parse_unordered_list():
+    blocks = parse_markdown("- 项一\n- 项二")
+    assert all(isinstance(b, ListItem) for b in blocks)
+    assert blocks[0].ordered is False
+    assert blocks[0].spans[0].text == "项一"
+    assert blocks[1].spans[0].text == "项二"
+
+
+def test_parse_ordered_list_keeps_index():
+    blocks = parse_markdown("1. 第一\n2. 第二")
+    assert blocks[0].ordered is True
+    assert blocks[0].index == 1
+    assert blocks[1].index == 2
+
+
+def test_parse_quote():
+    blocks = parse_markdown("> 引用一\n> 引用二")
+    assert len(blocks) == 1
+    assert isinstance(blocks[0], Quote)
+    assert "引用一" in blocks[0].spans[0].text
+    assert "引用二" in blocks[0].spans[0].text
+
+
+def test_parse_thematic_break():
+    blocks = parse_markdown("---")
+    assert isinstance(blocks[0], ThematicBreak)
+
+
+def test_parse_table_degrades_to_text():
+    md = "| a | b |\n|---|---|\n| 1 | 2 |"
+    blocks = parse_markdown(md)
+    assert len(blocks) == 1
+    assert isinstance(blocks[0], TableBlock)
+    assert len(blocks[0].lines) == 3
+
+
+def test_parse_html_tags_treated_as_text():
+    blocks = parse_markdown("<script>alert(1)</script>")
+    para = blocks[0]
+    assert isinstance(para, Paragraph)
+    assert "<script>" in para.spans[0].text
+
+
+def test_parse_mixed_blocks():
+    md = "# 标题\n\n正文 **粗**\n\n```\ncode\n```\n\n- 项"
+    blocks = parse_markdown(md)
+    assert isinstance(blocks[0], Heading)
+    assert isinstance(blocks[1], Paragraph)
+    assert isinstance(blocks[2], CodeBlock)
+    assert isinstance(blocks[3], ListItem)
+
+
+def test_parse_empty_returns_empty():
+    assert parse_markdown("") == []
+
+
+def test_bold_italic_combined():
+    blocks = parse_markdown("**_粗斜_**")
+    spans = blocks[0].spans
+    assert any(set(s.styles) == {"bold", "italic"} for s in spans)
+
+
+# ---------------------------------------------------------------------------
+# render_feishu_post
+# ---------------------------------------------------------------------------
+
+
+def test_render_post_heading_bold_style():
+    blocks = parse_markdown("## 标题")
+    post = render_feishu_post(blocks)
+    assert post["zh_cn"]["title"] == ""
+    row = post["zh_cn"]["content"][0]
+    assert row[0]["tag"] == "text"
+    assert "bold" in (row[0].get("style") or [])
+
+
+def test_render_post_link_tag():
+    blocks = parse_markdown("[点这里](https://x.com)")
+    post = render_feishu_post(blocks)
+    tag = post["zh_cn"]["content"][0][0]
+    assert tag["tag"] == "a"
+    assert tag["text"] == "点这里"
+    assert tag["href"] == "https://x.com"
+
+
+def test_render_post_code_block_tag():
+    blocks = parse_markdown("```js\nfoo()\n```")
+    post = render_feishu_post(blocks)
+    tag = post["zh_cn"]["content"][0][0]
+    assert tag["tag"] == "code_block"
+    assert tag["language"] == "js"
+    assert tag["text"] == "foo()"
+
+
+def test_render_post_bold_style_flag():
+    blocks = parse_markdown("**粗体**")
+    post = render_feishu_post(blocks)
+    tag = post["zh_cn"]["content"][0][0]
+    assert tag["style"] == ["bold"]
+
+
+def test_render_post_list_item_prefix():
+    blocks = parse_markdown("- 项")
+    post = render_feishu_post(blocks)
+    tag = post["zh_cn"]["content"][0][0]
+    assert tag["text"].startswith("• ")
+    assert "项" in tag["text"]
+
+
+def test_render_post_ordered_list_prefix():
+    blocks = parse_markdown("3. 第三")
+    post = render_feishu_post(blocks)
+    tag = post["zh_cn"]["content"][0][0]
+    assert tag["text"].startswith("3. ")
+
+
+def test_render_post_quote_prefix():
+    blocks = parse_markdown("> 引用")
+    post = render_feishu_post(blocks)
+    tag = post["zh_cn"]["content"][0][0]
+    assert "引用" in tag["text"]
+
+
+def test_render_post_script_stays_text():
+    blocks = parse_markdown("<script>x</script>")
+    post = render_feishu_post(blocks)
+    tag = post["zh_cn"]["content"][0][0]
+    assert tag["tag"] == "text"
+    assert "<script>" in tag["text"]
+
+
+# ---------------------------------------------------------------------------
+# split_markdown_by_lines
+# ---------------------------------------------------------------------------
+
+
+def test_split_short_text_single_chunk():
+    assert split_markdown_by_lines("短文本", 2000) == ["短文本"]
+
+
+def test_split_on_line_boundary():
+    text = "第一行\n第二行\n第三行"
+    chunks = split_markdown_by_lines(text, 10)
+    assert len(chunks) >= 2
+    # 任何 chunk 不应把一行切成两半
+    for chunk in chunks:
+        assert chunk in text or chunk == text
+
+
+def test_split_preserves_code_block_integrity():
+    text = "```\nline1\nline2\n```"
+    chunks = split_markdown_by_lines(text, 20)
+    # 围栏代码块不应被切断到把 ``` 和内容分到不同块
+    joined = "\n".join(chunks)
+    assert "```" in joined
+
+
+def test_split_hard_cuts_overlong_line():
+    text = "x" * 50
+    chunks = split_markdown_by_lines(text, 20)
+    assert all(len(c) <= 20 for c in chunks)
+    assert "".join(chunks) == text
+
+
+def test_split_empty_returns_empty():
+    assert split_markdown_by_lines("", 2000) == []
+
+
+# ---------------------------------------------------------------------------
+# extract_dingtalk_title
+# ---------------------------------------------------------------------------
+
+
+def test_title_from_heading():
+    assert extract_dingtalk_title("# 周报标题") == "周报标题"
+
+
+def test_title_from_first_line_when_no_heading():
+    assert extract_dingtalk_title("这是首行内容\n第二行") == "这是首行内容"
+
+
+def test_title_default_for_empty():
+    assert extract_dingtalk_title("") == "消息"
+    assert extract_dingtalk_title("   ") == "消息"
+
+
+def test_title_truncated_to_max_length():
+    long = "# " + "字" * 30
+    assert len(extract_dingtalk_title(long, max_length=20)) == 20
+
+
+def test_title_skips_blank_lines_to_first_non_empty():
+    assert extract_dingtalk_title("\n\n实际首行") == "实际首行"
+
+
+def test_title_heading_takes_priority_over_first_line():
+    assert extract_dingtalk_title("首行\n# 标题优先") == "标题优先"
+
+
+def test_ensure_code_fences_toplevel_def():
+    text = "说明：\n\ndef f():\n    return 1\n\n后续。"
+    result = ensure_code_fences(text)
+    assert "```" in result
+    assert result.index("```") < result.index("def f():")
+    assert result.rindex("```") > result.index("return 1")
+
+
+def test_ensure_code_fences_no_duplicate_for_fenced():
+    text = "```python\ndef f():\n    return 1\n```\n\n后续。"
+    result = ensure_code_fences(text)
+    assert result.count("```") == 2  # 只有一对围栏
+
+
+def test_ensure_code_fences_plain_text_unchanged():
+    text = "这是纯文本，没有代码。"
+    assert ensure_code_fences(text) == text
+
+
+def test_ensure_code_fences_preserves_paragraphs_outside():
+    text = (
+        "# 标题\n\n"
+        "说明文字。\n\n"
+        "def f():\n    return 1\n\n"
+        "print(f())\n\n"
+        "后续说明。\n"
+    )
+    result = ensure_code_fences(text)
+    lines = result.split("\n")
+    # 围栏应在 def 之前、print(f()) 之后
+    fence_positions = [i for i, l in enumerate(lines) if l.strip() == "```"]
+    assert len(fence_positions) == 2
+    def_pos = next(i for i, l in enumerate(lines) if l.startswith("def"))
+    print_pos = next(i for i, l in enumerate(lines) if l.startswith("print"))
+    assert fence_positions[0] < def_pos
+    assert fence_positions[1] > print_pos
