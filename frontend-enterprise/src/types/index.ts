@@ -905,11 +905,20 @@ export type ChannelConversationRead = {
   updated_at: string;
 };
 
+export type ChannelConversationAttachmentRead = {
+  id?: string;
+  filename?: string;
+  content_type?: string;
+  size?: number;
+  kind?: string;
+};
+
 export type ChannelConversationMessageRead = {
   id: string;
   role: string;
   content: string;
   created_at: string;
+  attachments?: ChannelConversationAttachmentRead[];
 };
 
 export type ChannelBindCodeRead = {

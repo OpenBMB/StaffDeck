@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 from sqlmodel import Session
@@ -147,11 +147,26 @@ class ChannelConversationRead(BaseModel):
     updated_at: str
 
 
+class ChannelConversationAttachmentRead(BaseModel):
+    """会话消息附件的精简元数据视图。
+
+    仅暴露展示所需的字段，避免把 data_url(base64)、sandbox_path 等
+    内部字段或大体量内容塞进会话列表响应。
+    """
+
+    id: Optional[str] = None
+    filename: Optional[str] = None
+    content_type: Optional[str] = None
+    size: Optional[int] = None
+    kind: Optional[str] = None
+
+
 class ChannelConversationMessageRead(BaseModel):
     id: str
     role: str
     content: str
     created_at: str
+    attachments: list[ChannelConversationAttachmentRead] | None = None
 
 
 class ChannelConversationPage(BaseModel):
