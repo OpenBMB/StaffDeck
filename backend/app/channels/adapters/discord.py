@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -172,10 +173,18 @@ class DiscordAdapter(ChannelAdapter):
         }
         try:
             with self._client_factory() as client:
-                for chunk in split_channel_text(text, CHANNEL_TEXT_LIMIT):
+                for index, chunk in enumerate(split_channel_text(text, CHANNEL_TEXT_LIMIT)):
+                    payload: dict[str, Any] = {"content": chunk}
+                    if idempotency_key:
+                        # Discord nonce 限 25 字符;按 idempotency_key+分片序号稳定派生,
+                        # 重试时同一分片得到相同 nonce,避免分片中断后重发产生重复消息
+                        digest = hashlib.sha256(
+                            f"{idempotency_key}:{index}".encode("utf-8")
+                        ).hexdigest()
+                        payload["nonce"] = digest[:24]
                     response = client.post(
                         DISCORD_MESSAGE_API.format(channel_id=channel_id),
-                        json={"content": chunk},
+                        json=payload,
                         headers=headers,
                     )
                     if response.status_code in (401, 403):

@@ -1294,6 +1294,44 @@ def test_notify_uses_identity_basics_without_session() -> None:
         assert alerts[0].session_id.startswith("alert:")
 
 
+def test_notify_skips_discord_creator_without_session() -> None:
+    """discord 无会话时创建者告警应跳过:缺 channel_id 的 fallback target 必然永久失败。"""
+    from app.channels.service_outbox import notify_binding_creator
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_dc", tenant_id="tenant_demo", username="creator", password_hash="x"))
+        binding = ChannelBinding(
+            id="chan_dc",
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="discord",
+            status="active",
+            connected=True,
+            credentials_enc=encrypt_channel_secret("tok"),
+            config_json={"bot_id": "bot-1"},
+            created_by_user_id="user_dc",
+        )
+        db.add(binding)
+        db.flush()
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="discord",
+                external_account_scope="",
+                external_user_id="discord_user_1",
+                staffdeck_user_id="user_dc",
+                display_name="创建者",
+            )
+        )
+        db.commit()
+
+        notify_binding_creator(db, db.get(ChannelBinding, "chan_dc"), "测试告警")
+        # 无会话 → 不构造必败 delivery(缺 channel_id)
+        assert db.exec(select(ChannelDelivery)).all() == []
+
+
 # ---------- sending 重置陈旧阈值 ----------
 
 

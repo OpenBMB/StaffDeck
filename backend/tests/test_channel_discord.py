@@ -175,7 +175,8 @@ def test_discord_send_posts_to_channel_with_bot_auth():
     call = client.calls[0]
     assert call["url"] == f"{DISCORD_API_BASE}/channels/channel-1/messages"
     assert call["headers"]["Authorization"] == "Bot secret"
-    assert call["body"] == {"content": "hello"}
+    assert call["body"]["content"] == "hello"
+    assert call["body"].get("nonce")  # idempotency_key 映射为 nonce
 
 
 def test_discord_send_splits_long_text():
@@ -234,6 +235,58 @@ def test_discord_send_rejects_missing_channel():
     adapter = DiscordAdapter()
     with pytest.raises(DiscordPermanentError):
         adapter.send(_binding(), {}, "hello")
+
+
+def test_discord_send_maps_idempotency_key_to_nonce():
+    """idempotency_key 应映射为 Discord nonce（≤25 字符、分片间稳定可复现），防止分片重试重复消息。"""
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, json=None, headers=None, **_kwargs):
+            self.calls.append(json)
+            return _Response(200)
+
+    client = Client()
+    adapter = DiscordAdapter(client_factory=lambda: client)
+    adapter.send(
+        _binding(),
+        {"channel_id": "channel-1"},
+        "hello",
+        idempotency_key="chdeliv_testkey1234567890",
+    )
+    assert len(client.calls) == 1
+    nonce = client.calls[0].get("nonce")
+    assert nonce, "send 应把 idempotency_key 映射为 nonce"
+    assert len(nonce) <= 25
+    # 同一 idempotency_key 重复调用应产生相同的 nonce（重试可复现）
+    client2 = Client()
+    adapter2 = DiscordAdapter(client_factory=lambda: client2)
+    adapter2.send(
+        _binding(),
+        {"channel_id": "channel-1"},
+        "hello",
+        idempotency_key="chdeliv_testkey1234567890",
+    )
+    assert client2.calls[0].get("nonce") == nonce
+    # 分片文本:每片 nonce 不同但可复现
+    client3 = Client()
+    adapter3 = DiscordAdapter(client_factory=lambda: client3)
+    adapter3.send(
+        _binding(),
+        {"channel_id": "channel-1"},
+        "x" * 2500,
+        idempotency_key="chdeliv_testkey1234567890",
+    )
+    assert len(client3.calls) == 2
+    assert client3.calls[0]["nonce"] != client3.calls[1]["nonce"]
 
 
 def test_validate_discord_credentials_ok():
