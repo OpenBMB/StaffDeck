@@ -1516,3 +1516,83 @@ def test_discord_session_stages_delivery_without_context_token() -> None:
         assert delivery.kind == "reply"
         assert delivery.last_error is None
         assert delivery.target_json["channel_id"] == "1503739992722378835"
+
+
+def test_discord_daemon_delivers_via_real_adapter_send() -> None:
+    """discord binding → delivery daemon → 真实 DiscordAdapter.send 集成路径。
+
+    回归防线：修复前 stage 误判 delivery_target_missing，本条验证完整投递链路
+    （真实 adapter 走 discord REST POST，而非 FakeAdapter）。
+    """
+    import httpx
+
+    from app.channels.adapters.discord import DISCORD_MESSAGE_API, DiscordAdapter
+    from app.channels.service_discord_inbox import discord_account_key
+
+    engine = _test_engine()
+
+    class _RecordingClient(httpx.Client):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.posted: list[tuple[str, dict, dict]] = []
+
+        def post(self, url: str, *, json=None, headers=None, **kwargs):  # noqa: D102
+            self.posted.append((url, json or {}, dict(headers or {})))
+            return _FakeResponse(200, {"id": "msg-ok"})
+
+    class _FakeResponse:
+        def __init__(self, status_code: int, payload: dict) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    client = _RecordingClient()
+    adapter = DiscordAdapter(client_factory=lambda: client)
+    register_channel_adapter("discord", adapter)
+
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        binding.credentials_enc = encrypt_channel_secret("secret-token")
+        binding.config_json = {"bot_id": "bot-1", "bot_name": "StaffDeck Bot"}
+        binding.external_account_key = discord_account_key("bot-1")
+        chat_session = ChatSession(
+            id="session_discord_int",
+            tenant_id=binding.tenant_id,
+            user_id="user_1",
+            agent_id=binding.agent_id,
+            channel="discord",
+            external_conv_id="discord_p2p_u1",
+            channel_target_json={
+                "to_user_id": "1503739991854026902",
+                "channel_id": "1503739992722378835",
+                "guild_id": "1503739991854026902",
+                "message_id": "1535173171014275072",
+            },
+            channel_binding_id=binding.id,
+            channel_account_key=binding.external_account_key,
+        )
+        message = _assistant_message(chat_session.id, "msg_discord_int", "你好，我是 StaffDeck")
+        db.add(chat_session)
+        db.add(message)
+        db.commit()
+
+        stage_channel_delivery(db, chat_session, message)
+        db.commit()
+        delivery_id = db.exec(select(ChannelDelivery)).one().id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "delivered"
+        assert delivery.attempts == 1
+        assert delivery.last_error is None
+
+    expected_url = DISCORD_MESSAGE_API.format(channel_id="1503739992722378835")
+    assert len(client.posted) == 1
+    url, body, headers = client.posted[0]
+    assert url == expected_url
+    assert body["content"] == "你好，我是 StaffDeck"
+    assert headers["Authorization"] == "Bot secret-token"
