@@ -1478,3 +1478,41 @@ def test_notify_identity_fallback_skips_when_scope_missing() -> None:
 
         notify_binding_creator(db, db.get(ChannelBinding, binding_b.id), "测试告警")
         assert db.exec(select(ChannelDelivery)).all() == []
+
+
+def test_discord_session_stages_delivery_without_context_token() -> None:
+    """Discord target 无 context_token(仅 channel_id)，stage 不得报 delivery_target_missing。"""
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        chat_session = ChatSession(
+            id="session_discord",
+            tenant_id=binding.tenant_id,
+            user_id="user_1",
+            agent_id=binding.agent_id,
+            channel="discord",
+            external_conv_id="discord_p2p_1503739991854026902",
+            channel_target_json={
+                "to_user_id": "1503739991854026902",
+                "channel_id": "1503739992722378835",
+                "guild_id": "1503739991854026902",
+                "message_id": "1535173171014275072",
+            },
+            channel_binding_id=binding.id,
+            channel_account_key=binding.external_account_key,
+        )
+        message = _assistant_message(chat_session.id, "msg_discord", "你好，我是 StaffDeck")
+        db.add(chat_session)
+        db.add(message)
+        db.commit()
+
+        stage_channel_delivery(db, chat_session, message)
+        db.commit()
+
+        deliveries = db.exec(select(ChannelDelivery)).all()
+        assert len(deliveries) == 1
+        delivery = deliveries[0]
+        assert delivery.status == "pending"
+        assert delivery.kind == "reply"
+        assert delivery.last_error is None
+        assert delivery.target_json["channel_id"] == "1503739992722378835"
