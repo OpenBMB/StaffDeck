@@ -112,17 +112,6 @@ def _credential(binding: ChannelBinding) -> tuple[str, str]:
     return bot_id, token
 
 
-def _classify_http_error(exc: Exception, *, permanent_codes: frozenset[int]) -> DiscordSendError:
-    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
-        return DiscordTransientError(str(exc))
-    if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-        if status in permanent_codes:
-            return DiscordPermanentError(f"Discord 接口拒绝请求 (HTTP {status})")
-        return DiscordTransientError(f"Discord 接口暂不可用 (HTTP {status})")
-    return DiscordTransientError(str(exc))
-
-
 def validate_discord_credentials(bot_token: str, *, client_factory: Callable[[], httpx.Client] | None = None) -> dict[str, str] | None:
     """调用 Discord 官方接口校验 Bot Token,返回 {bot_id, bot_name}。
 
@@ -323,9 +312,28 @@ class DiscordStreamManager:
         async def mark_connected(connected: bool) -> None:
             await asyncio.to_thread(self._set_connected, binding_id, handler.expected_revision, connected)
 
-        try:
+        register_event = getattr(client, "event", None)
+        if callable(register_event):
+            async def _on_ready() -> None:
+                await mark_connected(True)
+
+            register_event(_on_ready)
+        else:
             await mark_connected(True)
-            await client.start(token)
+
+        try:
+            start_task = asyncio.create_task(client.start(token))
+            stop_task = asyncio.create_task(asyncio.to_thread(stop.wait))
+            done, _ = await asyncio.wait(
+                {start_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop.is_set():
+                try:
+                    await client.close()
+                except Exception:
+                    logger.exception("关闭 discord 客户端失败 binding=%s", binding_id)
+            await start_task
         except Exception:
             logger.exception("discord 网关异常退出 binding=%s", binding_id)
         finally:
@@ -405,12 +413,16 @@ class DiscordStreamManager:
                 logger.exception("discord reconcile 循环异常")
 
     def start(self) -> None:
-        self._reconcile_thread = threading.Thread(
-            target=self._reconcile_loop,
-            name="staffdeck-discord-reconcile",
-            daemon=True,
-        )
-        self._reconcile_thread.start()
+        with self._lock:
+            if self._reconcile_thread is not None and self._reconcile_thread.is_alive():
+                return
+            self._reconcile_stop.clear()
+            self._reconcile_thread = threading.Thread(
+                target=self._reconcile_loop,
+                name="staffdeck-discord-reconcile",
+                daemon=True,
+            )
+            self._reconcile_thread.start()
 
     def stop(self, *, timeout_seconds: float = 5.0) -> bool:
         self._reconcile_stop.set()

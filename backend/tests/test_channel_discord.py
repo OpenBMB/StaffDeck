@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
+
 import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -8,6 +12,7 @@ from app.channels.adapters.discord import (
     DISCORD_API_BASE,
     DiscordAdapter,
     DiscordPermanentError,
+    DiscordStreamManager,
     DiscordTransientError,
     normalize_discord_message,
     validate_discord_credentials,
@@ -317,3 +322,96 @@ def test_stage_discord_inbound_fence_rejections():
         bot_id="bot-1", inbound=inbound,
     )
     assert wrong_revision.disposition is StageDisposition.SECURITY_DROP
+
+
+class _FakeDiscordClient:
+    """最小 discord.Client 替身:start() 阻塞直到 close(),支持挂载 on_ready。"""
+
+    def __init__(self):
+        self._closed = threading.Event()
+        self._handlers = {}
+        self.on_ready_fired = threading.Event()
+
+    def event(self, coro):
+        self._handlers[coro.__name__.lstrip("_")] = coro
+        return coro
+
+    async def start(self, token: str) -> None:
+        if "on_ready" in self._handlers:
+            await self._handlers["on_ready"]()
+            self.on_ready_fired.set()
+        await asyncio.to_thread(self._closed.wait)
+
+    async def close(self) -> None:
+        self._closed.set()
+
+
+def _stream_manager(db_engine):
+    clients = []
+
+    def factory(token, on_message):
+        client = _FakeDiscordClient()
+        clients.append(client)
+        return client
+
+    manager = DiscordStreamManager(db_engine=db_engine, client_factory=factory)
+    manager._test_clients = clients
+    return manager
+
+
+def _wait_until(predicate, timeout_seconds: float = 3.0) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def test_discord_stream_manager_stop_terminates_gateway_thread():
+    db_engine = _engine()
+    with Session(db_engine) as db:
+        db.add(Tenant(id="tenant-1", name="Tenant"))
+        db.add(_binding(id="chan-1"))
+        db.commit()
+
+    manager = _stream_manager(db_engine)
+    manager.ensure_binding("chan-1")
+    assert _wait_until(lambda: bool(manager._test_clients))
+    assert manager._threads["chan-1"].is_alive()
+
+    manager.stop_binding("chan-1")
+    assert manager.wait_binding_stopped("chan-1", timeout_seconds=3.0)
+    assert manager._test_clients[0]._closed.is_set()
+    assert "chan-1" not in manager._threads
+
+
+def test_discord_stream_manager_connected_only_after_ready():
+    db_engine = _engine()
+    with Session(db_engine) as db:
+        db.add(Tenant(id="tenant-1", name="Tenant"))
+        db.add(_binding(id="chan-1"))
+        db.commit()
+
+    manager = _stream_manager(db_engine)
+    manager.ensure_binding("chan-1")
+    assert _wait_until(lambda: bool(manager._test_clients))
+    assert _wait_until(lambda: manager._test_clients[0].on_ready_fired.is_set())
+    with Session(db_engine) as db:
+        binding = db.get(ChannelBinding, "chan-1")
+        assert binding.connected is True
+
+    manager.stop_binding("chan-1")
+    assert manager.wait_binding_stopped("chan-1", timeout_seconds=3.0)
+    with Session(db_engine) as db:
+        binding = db.get(ChannelBinding, "chan-1")
+        assert binding.connected is False
+
+
+def test_discord_stream_manager_start_is_idempotent():
+    manager = _stream_manager(_engine())
+    manager.start()
+    first = manager._reconcile_thread
+    manager.start()
+    assert manager._reconcile_thread is first
+    manager.stop(timeout_seconds=2.0)
