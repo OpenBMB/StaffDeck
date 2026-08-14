@@ -855,17 +855,16 @@ class WeComTokenError(RuntimeError):
 
 
 class WeComTokenProvider:
-    """Cache enterprise access tokens for the configured corp and revision."""
+    """Cache enterprise access tokens for each binding and configuration revision."""
 
     def __init__(self, *, client_factory: Callable[[], httpx.Client] | None = None):
         self._client_factory = client_factory or (lambda: httpx.Client(timeout=10.0))
-        self._cache: dict[str, tuple[str, float]] = {}
+        self._cache: dict[tuple[str, int], tuple[str, float]] = {}
         self._lock = threading.Lock()
 
     @staticmethod
-    def _key(binding: ChannelBinding) -> str:
-        config = dict(binding.config_json or {})
-        return f"{config.get('corp_id', '')}:{binding.config_revision}"
+    def _key(binding: ChannelBinding) -> tuple[str, int]:
+        return binding.id, binding.config_revision
 
     def get(self, binding: ChannelBinding, *, force_refresh: bool = False) -> str:
         key = self._key(binding)
@@ -887,7 +886,7 @@ class WeComTokenProvider:
                 data = response.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise WeComTokenError("企微 token 请求失败") from exc
-        if response.status_code >= 400 or int(data.get("errcode") or -1) != 0:
+        if response.status_code >= 400 or int(data.get("errcode", -1)) != 0:
             raise WeComTokenError(
                 f"企微 token 请求失败: errcode={data.get('errcode')} msg={data.get('errmsg')}"
             )

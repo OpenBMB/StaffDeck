@@ -94,6 +94,58 @@ def _load_binding(engine, binding_id: str) -> ChannelBinding:
         return binding
 
 
+def test_access_tokens_are_cached_per_binding_and_revision() -> None:
+    calls: list[str] = []
+
+    class TokenClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, _url, *, params):
+            secret = params["corpsecret"]
+            calls.append(secret)
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "errcode": 0,
+                    "access_token": f"token-{secret}",
+                    "expires_in": 7200,
+                },
+            )
+
+    provider = WeComTokenProvider(client_factory=TokenClient)
+    first = ChannelBinding(
+        id="chan-first",
+        tenant_id="tenant",
+        agent_id="agent",
+        channel="wecom",
+        config_json={"corp_id": "same-corp", "bot_id": "bot-first"},
+        credentials_enc=encrypt_channel_secret("secret-first"),
+        config_revision=1,
+    )
+    second = ChannelBinding(
+        id="chan-second",
+        tenant_id="tenant",
+        agent_id="agent",
+        channel="wecom",
+        config_json={"corp_id": "same-corp", "bot_id": "bot-second"},
+        credentials_enc=encrypt_channel_secret("secret-second"),
+        config_revision=1,
+    )
+
+    assert provider.get(first) == "token-secret-first"
+    assert provider.get(first) == "token-secret-first"
+    assert provider.get(second) == "token-secret-second"
+    assert calls == ["secret-first", "secret-second"]
+
+    first.config_revision = 2
+    assert provider.get(first) == "token-secret-first"
+    assert calls == ["secret-first", "secret-second", "secret-first"]
+
+
 # ---------- 帧归一化 ----------
 
 

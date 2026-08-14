@@ -768,7 +768,7 @@ def normalize_wechat_message(msg: dict[str, Any], *, ilink_bot_id: str = "") -> 
     text = extract_message_text(msg)
     attachments = extract_message_attachments(msg)
     items = msg.get("item_list")
-    if isinstance(items, list):
+    if isinstance(items, list) and logger.isEnabledFor(logging.DEBUG):
         nested_keys = []
         for item in items:
             if not isinstance(item, dict):
@@ -790,7 +790,7 @@ def normalize_wechat_message(msg: dict[str, Any], *, ilink_bot_id: str = "") -> 
                             key: type(value).__name__ for key, value in media.items()
                         }
                     nested_keys.append(entry)
-        logger.warning(
+        logger.debug(
             "微信入站消息附件诊断 message_id=%s item_types=%s item_keys=%s "
             "nested_keys=%s recognized_attachments=%s has_text=%s",
             str(msg.get("message_id") or msg.get("msg_id") or "").strip(),

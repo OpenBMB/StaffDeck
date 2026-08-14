@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import threading
 import time
 
@@ -180,6 +181,13 @@ def test_normalize_image_and_file_items() -> None:
     assert file is not None
     assert file.attachments[0].media_id.endswith("/c2c/download?encrypted_query_param=encrypted&taskid=task")
     assert file.attachments[0].filename == "a.txt"
+
+
+def test_normalize_text_message_does_not_emit_attachment_warning(caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger="app.channels.adapters.wechat"):
+        assert normalize_wechat_message(_text_message()) is not None
+
+    assert "附件诊断" not in caplog.text
 
 
 def test_normalize_actual_image_media_shape() -> None:

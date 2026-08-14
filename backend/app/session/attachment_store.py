@@ -98,13 +98,19 @@ def read_staged_chat_attachment(
 
 
 def _attachment_directory(*, tenant_id: str, user_id: str, attachment_id: str) -> Path:
-    root = paths.user_data_dir().resolve() / "harness_uploads"
-    return (
+    data_root = paths.user_data_dir().resolve()
+    root = (data_root / "harness_uploads").resolve()
+    if not root.is_relative_to(data_root):
+        raise ValueError("attachment storage root escapes user data directory")
+    directory = (
         root
         / harness_path_segment(tenant_id)
         / harness_path_segment(user_id)
         / harness_path_segment(attachment_id)
-    )
+    ).resolve()
+    if not directory.is_relative_to(root):
+        raise ValueError("attachment path escapes storage root")
+    return directory
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
