@@ -105,6 +105,11 @@ class DingTalkCredentialsRequest(BaseModel):
     client_secret: str
 
 
+class DiscordCredentialsRequest(BaseModel):
+    tenant_id: str
+    bot_token: str
+
+
 class ChannelCredentialFieldRead(BaseModel):
     key: str
     label: str
