@@ -172,7 +172,7 @@ def claim_staged_inbound(event_id: str, *, db_engine=None) -> bool:
             update(ChannelInboundEvent)
             .where(
                 ChannelInboundEvent.id == event_id,
-                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
+                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk", "discord"}),
                 ChannelInboundEvent.status == "received",
             )
             .values(
@@ -452,6 +452,8 @@ def _stage_notice(
 def _valid_notice_target(channel: str, target: dict) -> bool:
     if channel == "feishu":
         return bool(target.get("message_id") or target.get("receive_id"))
+    if channel == "discord":
+        return bool(target.get("channel_id"))
     return bool(target.get("to_user_id") and target.get("context_token"))
 
 
@@ -1002,7 +1004,7 @@ def process_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
                 update(ChannelInboundEvent)
                 .where(
                     ChannelInboundEvent.id == event_pk,
-                    ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
+                    ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk", "discord"}),
                     ChannelInboundEvent.status == "processing",
                     ChannelInboundEvent.processor_run_id == current_processor_run_id(),
                 )
@@ -1098,7 +1100,7 @@ def run_staged_inbound_daemon(
                 event_ids = db.exec(
                     select(ChannelInboundEvent.id)
                     .where(
-                        ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
+                        ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk", "discord"}),
                         ChannelInboundEvent.status == "received",
                     )
                     .order_by(ChannelInboundEvent.created_at)
@@ -1196,6 +1198,17 @@ def _decode_and_validate_staged_event(
         ):
             raise ValueError("replay_account_mismatch")
         return inbound
+    if event.channel == "discord":
+        from app.channels.service_discord_inbox import (
+            decode_replay_envelope,
+            discord_account_key,
+        )
+
+        inbound = decode_replay_envelope(payload)
+        bot_id = str((account or {}).get("bot_id") or "").strip()
+        if not bot_id or binding.external_account_key != discord_account_key(bot_id):
+            raise ValueError("replay_account_mismatch")
+        return inbound
     raise ValueError("unsupported_envelope_channel")
 
 
@@ -1245,7 +1258,7 @@ def _recover_stale_durable_event(event_pk: str, *, db_engine=None) -> bool:
             update(ChannelInboundEvent)
             .where(
                 ChannelInboundEvent.id == event_pk,
-                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
+                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk", "discord"}),
                 ChannelInboundEvent.status == "processing",
                 or_(
                     ChannelInboundEvent.processor_run_id.is_(None),
@@ -1287,11 +1300,11 @@ def sweep_stale_inbound_events(*, db_engine=None) -> int:
             binding = db.get(ChannelBinding, binding_id)
             if not binding:
                 continue
-            if channel not in {"feishu", "wecom", "dingtalk"} and binding.status != "active":
+            if channel not in {"feishu", "wecom", "dingtalk", "discord"} and binding.status != "active":
                 continue
             db.expunge(binding)
         try:
-            if channel in {"feishu", "wecom", "dingtalk"}:
+            if channel in {"feishu", "wecom", "dingtalk", "discord"}:
                 if _recover_stale_durable_event(event_pk, db_engine=use_engine):
                     taken += 1
                 continue

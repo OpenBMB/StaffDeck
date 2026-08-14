@@ -120,7 +120,7 @@ def _patch_binding_config_key(
     if result.rowcount != 1:
         raise HTTPException(status_code=404, detail="渠道绑定不存在")
 
-SUPPORTED_CHANNELS = {"wechat", "wecom", "feishu", "dingtalk"}
+SUPPORTED_CHANNELS = {"wechat", "wecom", "feishu", "dingtalk", "discord"}
 INGRESS_QUIESCE_TIMEOUT_SECONDS = 5.0
 
 # 渠道描述:前端接入页据此渲染渠道卡片与凭证表单,新渠道只加条目不动页面骨架
@@ -166,6 +166,15 @@ CHANNEL_META = [
         "credential_fields": [
             {"key": "client_id", "label": "Client ID", "placeholder": "钉钉开放平台获取", "secret": False},
             {"key": "client_secret", "label": "Client Secret", "placeholder": None, "secret": True},
+        ],
+        "capabilities": [],
+    },
+    {
+        "channel": "discord",
+        "name": "Discord",
+        "setup": "credentials",
+        "credential_fields": [
+            {"key": "bot_token", "label": "Bot Token", "placeholder": "Discord Developer Portal 获取", "secret": True},
         ],
         "capabilities": [],
     },

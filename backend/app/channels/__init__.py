@@ -17,6 +17,7 @@ _wechat_poll_manager = None
 _wecom_stream_manager = None
 _feishu_process_manager = None
 _dingtalk_stream_manager = None
+_discord_stream_manager = None
 _binding_lifecycle_locks: dict[str, threading.RLock] = {}
 _binding_lifecycle_locks_guard = threading.Lock()
 _connector_lock_file: IO[bytes] | None = None
@@ -126,6 +127,15 @@ def get_dingtalk_stream_manager():
     return _dingtalk_stream_manager
 
 
+def get_discord_stream_manager():
+    global _discord_stream_manager
+    if _discord_stream_manager is None:
+        from app.channels.adapters.discord import DiscordStreamManager
+
+        _discord_stream_manager = DiscordStreamManager()
+    return _discord_stream_manager
+
+
 def channel_services_enabled() -> bool:
     # staffdeck_role 预留角色拆分：all=单体全量，connector=仅渠道连接器
     return get_settings().staffdeck_role in {"all", "connector"}
@@ -135,6 +145,7 @@ def _ensure_adapters_registered() -> None:
     # 各适配器模块导入即自注册(模块级 register_channel_adapter)
     import app.channels.adapters.feishu  # noqa: F401
     import app.channels.adapters.dingtalk  # noqa: F401
+    import app.channels.adapters.discord  # noqa: F401
     import app.channels.adapters.wechat  # noqa: F401
     import app.channels.adapters.wecom  # noqa: F401
 
@@ -167,6 +178,8 @@ def _ingress_manager(channel: str):
         return get_feishu_process_manager()
     if channel == "dingtalk":
         return get_dingtalk_stream_manager()
+    if channel == "discord":
+        return get_discord_stream_manager()
     return None
 
 
@@ -213,6 +226,8 @@ def wait_binding_ingress_stopped(channel: str, binding_id: str, timeout_seconds:
         return get_feishu_process_manager().wait_binding_stopped(binding_id, timeout_seconds)
     if channel == "dingtalk":
         return get_dingtalk_stream_manager().wait_binding_stopped(binding_id, timeout_seconds)
+    if channel == "discord":
+        return get_discord_stream_manager().wait_binding_stopped(binding_id, timeout_seconds)
     return True
 
 
@@ -243,6 +258,7 @@ def start_channel_services() -> None:
         get_wecom_stream_manager().start()
         get_feishu_process_manager().start()
         get_dingtalk_stream_manager().start()
+        get_discord_stream_manager().start()
         start_delivery_daemon()
         start_staged_inbound_daemon()
         # 启动恢复:一次性清扫崩溃残留的 processing 入站事件(独立线程,不阻塞启动)
@@ -285,6 +301,10 @@ def stop_channel_services(timeout_seconds: float = 5.0) -> bool:
     dingtalk_stopped = dingtalk_manager is None or dingtalk_manager.stop(
         timeout_seconds=max(0.0, deadline - time.monotonic())
     )
+    discord_manager = _discord_stream_manager
+    discord_stopped = discord_manager is None or discord_manager.stop(
+        timeout_seconds=max(0.0, deadline - time.monotonic())
+    )
     sweep_thread = _intake_sweep_thread
     if sweep_thread and sweep_thread.is_alive():
         sweep_thread.join(timeout=max(0.0, deadline - time.monotonic()))
@@ -296,6 +316,7 @@ def stop_channel_services(timeout_seconds: float = 5.0) -> bool:
         and wecom_stopped
         and feishu_stopped
         and dingtalk_stopped
+        and discord_stopped
         and sweep_stopped
     )
     if stopped:
