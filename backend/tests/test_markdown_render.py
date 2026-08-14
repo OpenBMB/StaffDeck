@@ -478,6 +478,54 @@ def test_split_overlong_single_code_line_reopens_fence():
         assert _count_fences(chunk) % 2 == 0
 
 
+def test_split_overlong_single_code_line_content_recovered():
+    """围栏内单行代码超长：每个硬切片段都应被围栏包裹，内容可完整恢复。"""
+    long_line = "x" * 500
+    text = f"```python\n{long_line}\n```"
+    chunks = split_markdown_by_lines(text, 100)
+    assert len(chunks) >= 2
+    recovered: list[str] = []
+    for chunk in chunks:
+        assert _count_fences(chunk) % 2 == 0, f"unbalanced fences: {chunk[:80]!r}"
+        blocks = parse_markdown(chunk)
+        for block in blocks:
+            if isinstance(block, CodeBlock):
+                recovered.append(block.text)
+    assert "".join(recovered) == long_line, "content lost in hard-cut chunks"
+
+
+def test_split_overlong_single_code_line_no_lang_content_recovered():
+    """无语言标识的围栏内单行超长：同样应完整包裹围栏。"""
+    long_line = "z" * 300
+    text = f"```\n{long_line}\n```"
+    chunks = split_markdown_by_lines(text, 80)
+    assert len(chunks) >= 2
+    recovered: list[str] = []
+    for chunk in chunks:
+        assert _count_fences(chunk) % 2 == 0
+        blocks = parse_markdown(chunk)
+        for block in blocks:
+            if isinstance(block, CodeBlock):
+                recovered.append(block.text)
+    assert "".join(recovered) == long_line
+
+
+def test_split_overlong_single_code_line_tilde_content_recovered():
+    """~~~ 围栏内单行超长：同样应完整包裹围栏。"""
+    long_line = "y" * 300
+    text = f"~~~python\n{long_line}\n~~~"
+    chunks = split_markdown_by_lines(text, 80)
+    assert len(chunks) >= 2
+    recovered: list[str] = []
+    for chunk in chunks:
+        assert _count_fences(chunk) % 2 == 0
+        blocks = parse_markdown(chunk)
+        for block in blocks:
+            if isinstance(block, CodeBlock):
+                recovered.append(block.text)
+    assert "".join(recovered) == long_line
+
+
 # ---------------------------------------------------------------------------
 # extract_dingtalk_title
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 from datetime import UTC, datetime
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 _MIN_UPDATE_INTERVAL = 1.0
 # 单张卡片最多展示的步骤行数，超出截断尾部历史。
 _MAX_LINES = 60
+# 后台 worker 线程 join 超时（秒）：finish/abort 后等待最终卡片更新。
+_WORKER_JOIN_TIMEOUT = 8.0
 
 
 class _SinkEvent:
@@ -45,10 +48,15 @@ class FeishuTraceStreamer:
     """飞书渠道实时执行步骤卡片流式器。
 
     生命周期：
-      start()  → 创建"正在执行"卡片，保存 message_id
-      on_event → 累积 trace 行，节流 PATCH 更新卡片
-      finish() → 定格为完成状态
+      start()  → 后台创建"正在执行"卡片，保存 message_id
+      on_event → 累积 trace 行，节流后后台 PATCH 更新卡片
+      finish() → 定格为完成状态，等待后台 worker 排空
       abort()  → 异常路径定格为失败状态
+
+    所有 HTTP I/O 在后台 worker 线程执行，on_event 不阻塞调用方
+    （即 AgentLoop 主线程）。start/finish/abort 同样非阻塞，
+    finish/abort 会 join worker 最多 _WORKER_JOIN_TIMEOUT 秒以确保
+    最终卡片更新被尝试。
 
     全程 try/except 隔离：卡片创建/更新失败仅记日志，绝不抛出，不影响 turn
     成功与正文回复投递。
@@ -80,6 +88,54 @@ class FeishuTraceStreamer:
         self._dirty = False
         self._finished = False
         self._started = False
+        self._final_state: str | None = None
+        self._draining = False
+        self._card_created = False
+
+        # 后台 worker
+        self._task_queue: queue.Queue[_Task | None] = queue.Queue()
+        self._worker: threading.Thread | None = None
+        self._worker_started = False
+
+    # ---- 后台 worker ----
+
+    def _start_worker(self) -> None:
+        if self._worker_started:
+            return
+        self._worker_started = True
+        self._worker = threading.Thread(
+            target=self._worker_loop, name="feishu-trace-worker", daemon=True
+        )
+        self._worker.start()
+
+    def _worker_loop(self) -> None:
+        while True:
+            try:
+                task = self._task_queue.get(timeout=0.05)
+            except queue.Empty:
+                if self._draining:
+                    return
+                continue
+            if task is None:
+                return
+            try:
+                task.execute(self)
+            except Exception:
+                logger.exception(
+                    "飞书 trace worker 任务执行失败 binding=%s turn=%s",
+                    self._binding.id,
+                    self._turn_id,
+                )
+
+    def _stop_worker(self, *, timeout: float = _WORKER_JOIN_TIMEOUT) -> None:
+        if not self._worker_started or self._worker is None:
+            return
+        self._draining = True
+        self._worker.join(timeout=timeout)
+        self._worker_started = False
+        self._worker = None
+
+    # ---- adapter / skill names ----
 
     def _ensure_adapter(self):
         if self._adapter is not None:
@@ -98,10 +154,106 @@ class FeishuTraceStreamer:
             logger.exception("飞书 trace 流式器加载技能名称失败 tenant=%s", self._binding.tenant_id)
         return self._skill_names
 
+    # ---- 生命周期 ----
+
     def start(self) -> None:
         if self._started:
             return
         self._started = True
+        self._start_worker()
+        self._task_queue.put(_CreateCardTask())
+
+    def on_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self._finished:
+            return
+        try:
+            self._ingest_event(event_type, payload)
+            self._maybe_enqueue_patch()
+        except Exception:
+            logger.exception(
+                "飞书 trace 事件处理失败 binding=%s turn=%s event=%s",
+                self._binding.id,
+                self._turn_id,
+                event_type,
+            )
+
+    def finish(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self._final_state = "completed"
+        with self._lock:
+            for line in self._lines:
+                if line.get("state") == "running":
+                    line["state"] = "completed"
+        if self._message_id:
+            self._task_queue.put(_PatchCardTask(state="completed", force=True))
+        self._stop_worker()
+
+    def abort(self, reason: str | None = None) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self._final_state = "failed"
+        with self._lock:
+            for line in self._lines:
+                if line.get("state") == "running":
+                    line["state"] = "failed"
+        if self._message_id:
+            self._task_queue.put(_PatchCardTask(state="failed", force=True))
+        self._stop_worker()
+        logger.info(
+            "飞书 trace 流式器中止 binding=%s turn=%s reason=%s",
+            self._binding.id,
+            self._turn_id,
+            reason,
+        )
+
+    # ---- 事件处理 ----
+
+    def _ingest_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        if event_type == "router_decision_created":
+            target_skill_id = str(payload.get("target_skill_id") or "").strip()
+            if target_skill_id:
+                self._skill_hint = target_skill_id
+
+        from app.api.chat import _event_trace_lines
+
+        sink_event = _SinkEvent(event_type, payload)
+        lines = _event_trace_lines(sink_event, self._ensure_skill_names(), self._skill_hint)
+        if not lines:
+            skill_context = _skill_context_from_payload(event_type, payload, self._skill_hint)
+            if skill_context:
+                self._skill_hint = skill_context
+            return
+        with self._lock:
+            for line in lines:
+                _upsert_line(self._lines, line)
+            if len(self._lines) > _MAX_LINES:
+                self._lines = self._lines[-_MAX_LINES:]
+            self._dirty = True
+
+        skill_context = _skill_context_from_payload(event_type, payload, self._skill_hint)
+        if skill_context:
+            self._skill_hint = skill_context
+
+    def _maybe_enqueue_patch(self) -> None:
+        if not self._message_id:
+            return
+        with self._lock:
+            if not self._dirty:
+                return
+            now = time.monotonic()
+            if (now - self._last_update_at) < self._min_update_interval:
+                return
+            self._dirty = False
+            self._last_update_at = now
+            lines_snapshot = list(self._lines)
+        self._task_queue.put(_PatchCardTask(lines=lines_snapshot, state="running", force=False))
+
+    # ---- 卡片操作（在 worker 线程执行）----
+
+    def _do_create_card(self) -> None:
         try:
             adapter = self._ensure_adapter()
             card = self._render_card(state="running")
@@ -114,67 +266,38 @@ class FeishuTraceStreamer:
                 "飞书 trace 卡片创建失败 binding=%s turn=%s", self._binding.id, self._turn_id
             )
             self._message_id = None
+        finally:
+            self._card_created = True
+        # 卡片创建成功后，处理累积行或最终状态
+        if self._message_id:
+            if self._final_state is not None:
+                # finish/abort 已被调用，直接发送最终状态
+                with self._lock:
+                    lines_snapshot = list(self._lines)
+                self._task_queue.put(
+                    _PatchCardTask(lines=lines_snapshot, state=self._final_state, force=True)
+                )
+            else:
+                with self._lock:
+                    if self._dirty and self._lines:
+                        self._dirty = False
+                        self._last_update_at = time.monotonic()
+                        lines_snapshot = list(self._lines)
+                    else:
+                        lines_snapshot = None
+                if lines_snapshot is not None:
+                    self._task_queue.put(
+                        _PatchCardTask(lines=lines_snapshot, state="running", force=False)
+                    )
 
-    def on_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        if self._finished or not self._message_id:
-            return
-        try:
-            self._ingest_event(event_type, payload)
-            self._maybe_flush()
-        except Exception:
-            logger.exception(
-                "飞书 trace 事件处理失败 binding=%s turn=%s event=%s",
-                self._binding.id,
-                self._turn_id,
-                event_type,
-            )
-
-    def _ingest_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        # 维护 skill_hint（与 _build_turn_traces 同源逻辑）
-        if event_type == "router_decision_created":
-            target_skill_id = str(payload.get("target_skill_id") or "").strip()
-            if target_skill_id:
-                self._skill_hint = target_skill_id
-
-        from app.api.chat import _event_trace_lines
-
-        sink_event = _SinkEvent(event_type, payload)
-        lines = _event_trace_lines(sink_event, self._ensure_skill_names(), self._skill_hint)
-        if not lines:
-            # 更新 skill_hint（部分事件携带 skill 上下文）
-            skill_context = _skill_context_from_payload(event_type, payload, self._skill_hint)
-            if skill_context:
-                self._skill_hint = skill_context
-            return
-        with self._lock:
-            for line in lines:
-                _upsert_line(self._lines, line)
-            if len(self._lines) > _MAX_LINES:
-                self._lines = self._lines[-_MAX_LINES:]
-            self._dirty = True
-
-        # 更新 skill_hint
-        skill_context = _skill_context_from_payload(event_type, payload, self._skill_hint)
-        if skill_context:
-            self._skill_hint = skill_context
-
-    def _maybe_flush(self, *, force: bool = False) -> None:
-        with self._lock:
-            if not self._dirty and not force:
-                return
-            now = time.monotonic()
-            if not force and (now - self._last_update_at) < self._min_update_interval:
-                return
-            self._dirty = False
-            self._last_update_at = now
-            lines_snapshot = list(self._lines)
-        self._patch_card(lines_snapshot, state="running")
-
-    def _patch_card(self, lines: list[dict], *, state: str) -> None:
+    def _do_patch_card(self, lines: list[dict] | None, *, state: str, force: bool) -> None:
         if not self._message_id:
             return
         try:
             adapter = self._ensure_adapter()
+            if lines is None:
+                with self._lock:
+                    lines = list(self._lines)
             card = self._render_card(lines=lines, state=state)
             adapter.update_card(self._binding, self._message_id, card)
         except Exception:
@@ -183,39 +306,6 @@ class FeishuTraceStreamer:
                 self._binding.id,
                 self._message_id,
             )
-
-    def finish(self) -> None:
-        if self._finished:
-            return
-        self._finished = True
-        if not self._message_id:
-            return
-        with self._lock:
-            # 把仍在 running 的行标记为 completed，定格展示
-            for line in self._lines:
-                if line.get("state") == "running":
-                    line["state"] = "completed"
-            lines_snapshot = list(self._lines)
-        self._patch_card(lines_snapshot, state="completed")
-
-    def abort(self, reason: str | None = None) -> None:
-        if self._finished:
-            return
-        self._finished = True
-        if not self._message_id:
-            return
-        with self._lock:
-            for line in self._lines:
-                if line.get("state") == "running":
-                    line["state"] = "failed"
-            lines_snapshot = list(self._lines)
-        self._patch_card(lines_snapshot, state="failed")
-        logger.info(
-            "飞书 trace 流式器中止 binding=%s turn=%s reason=%s",
-            self._binding.id,
-            self._turn_id,
-            reason,
-        )
 
     # ---- 卡片渲染 ----
 
@@ -249,6 +339,33 @@ class FeishuTraceStreamer:
             },
             "elements": elements,
         }
+
+
+# ---- 后台任务 ----
+
+
+class _Task:
+    """worker 线程执行的抽象任务。"""
+
+    def execute(self, streamer: FeishuTraceStreamer) -> None:
+        raise NotImplementedError
+
+
+class _CreateCardTask(_Task):
+    def execute(self, streamer: FeishuTraceStreamer) -> None:
+        streamer._do_create_card()
+
+
+class _PatchCardTask(_Task):
+    __slots__ = ("force", "lines", "state")
+
+    def __init__(self, *, lines: list[dict] | None = None, state: str = "running", force: bool = False) -> None:
+        self.lines = lines
+        self.state = state
+        self.force = force
+
+    def execute(self, streamer: FeishuTraceStreamer) -> None:
+        streamer._do_patch_card(self.lines, state=self.state, force=self.force)
 
 
 def _line_to_card_element(line: dict) -> dict[str, Any]:

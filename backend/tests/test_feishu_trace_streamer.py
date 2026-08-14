@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 from app.channels.adapters.feishu import FeishuPermanentError
@@ -52,10 +53,28 @@ def _make_streamer(
     )
 
 
+def _wait_for_card(streamer: FeishuTraceStreamer, timeout: float = 1.0) -> None:
+    """等待后台 worker 完成卡片创建（无论成功或失败）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if streamer._card_created:
+            return
+        time.sleep(0.005)
+
+
+def _wait_for_updates(adapter: FakeAdapter, count: int, timeout: float = 2.0) -> None:
+    """等待 adapter 收到指定数量的 update 调用。"""
+    deadline = time.monotonic() + timeout
+    while len(adapter.update_calls) < count and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+
 def test_start_creates_card_and_saves_message_id() -> None:
     adapter = FakeAdapter()
     streamer = _make_streamer(adapter=adapter)
     streamer.start()
+    _wait_for_card(streamer)
+    streamer.finish()
     assert streamer._message_id == "om_card_123"
     assert len(adapter.create_calls) == 1
     call = adapter.create_calls[0]
@@ -69,8 +88,7 @@ def test_start_failure_does_not_raise_and_disables_updates() -> None:
     adapter = FakeAdapter(fail_create=True)
     streamer = _make_streamer(adapter=adapter)
     streamer.start()
-    assert streamer._message_id is None
-
+    _wait_for_card(streamer)
     streamer.on_event("step_result", {"turn_id": "turn_1", "reply": "ok"})
     streamer.finish()
     assert len(adapter.update_calls) == 0
@@ -80,7 +98,7 @@ def test_on_event_renders_line_and_patches_card() -> None:
     adapter = FakeAdapter()
     streamer = _make_streamer(adapter=adapter)
     streamer.start()
-    assert adapter.create_calls
+    _wait_for_card(streamer)
 
     streamer.on_event(
         "router_decision_created",
@@ -100,16 +118,15 @@ def test_throttle_merges_rapid_events() -> None:
     adapter = FakeAdapter()
     streamer = _make_streamer(adapter=adapter, min_update_interval=10.0)
     streamer.start()
+    _wait_for_card(streamer)
 
     streamer.on_event("router_decision_created", {"turn_id": "t1"})
     streamer.on_event("step_result", {"turn_id": "t1", "next_step_id": "s2"})
     streamer.on_event("tool_call_started", {"turn_id": "t1", "name": "lookup"})
 
-    # 高频事件被节流，3 条事件应合并为 0~1 次更新（dirty 标记保留但未到间隔）
     throttled_updates = len(adapter.update_calls)
     assert throttled_updates <= 1
 
-    # finish 强制刷新一次
     streamer.finish()
     final_updates = len(adapter.update_calls)
     assert final_updates > throttled_updates
@@ -122,15 +139,16 @@ def test_update_failure_does_not_raise() -> None:
     adapter = FakeAdapter(fail_update=True)
     streamer = _make_streamer(adapter=adapter)
     streamer.start()
+    _wait_for_card(streamer)
     streamer.on_event("router_decision_created", {"turn_id": "t1"})
     streamer.finish()
-    # 不抛异常即通过
 
 
 def test_finish_marks_running_lines_completed() -> None:
     adapter = FakeAdapter()
     streamer = _make_streamer(adapter=adapter)
     streamer.start()
+    _wait_for_card(streamer)
     streamer.on_event("tool_call_started", {"turn_id": "t1", "name": "lookup"})
     streamer.finish()
 
@@ -142,6 +160,7 @@ def test_abort_marks_failed_state() -> None:
     adapter = FakeAdapter()
     streamer = _make_streamer(adapter=adapter)
     streamer.start()
+    _wait_for_card(streamer)
     streamer.on_event("tool_call_started", {"turn_id": "t1", "name": "lookup"})
     streamer.abort("boom")
 
@@ -153,6 +172,7 @@ def test_on_event_after_finish_is_ignored() -> None:
     adapter = FakeAdapter()
     streamer = _make_streamer(adapter=adapter)
     streamer.start()
+    _wait_for_card(streamer)
     streamer.finish()
     updates_before = len(adapter.update_calls)
     streamer.on_event("step_result", {"turn_id": "t1"})
@@ -171,3 +191,34 @@ def test_is_feishu_trace_enabled() -> None:
     assert is_feishu_trace_enabled(_binding(channel="wechat")) is False
     assert is_feishu_trace_enabled(_binding(channel="feishu", config={"trace_enabled": False})) is False
     assert is_feishu_trace_enabled(None) is False
+
+
+def test_on_event_does_not_block_when_card_not_created() -> None:
+    """卡片尚未创建时 on_event 应立即返回，不阻塞 AgentLoop。"""
+    adapter = FakeAdapter()
+    streamer = _make_streamer(adapter=adapter, min_update_interval=0.0)
+    streamer.start()
+    # 不等待卡片创建——立即发送事件
+    streamer.on_event("router_decision_created", {"turn_id": "t1"})
+    streamer.on_event("step_result", {"turn_id": "t1"})
+    # finish 会 join worker，确保所有排队任务完成
+    streamer.finish()
+    assert len(adapter.create_calls) == 1
+    # 卡片创建后应有一次最终更新
+    assert len(adapter.update_calls) >= 1
+    last_card = adapter.update_calls[-1]["card"]
+    assert last_card["header"]["template"] == "green"
+
+
+def test_finish_before_card_created_still_sends_final_state() -> None:
+    """finish 在卡片创建前调用：worker 先建卡再发最终状态。"""
+    adapter = FakeAdapter()
+    streamer = _make_streamer(adapter=adapter)
+    streamer.start()
+    streamer.on_event("router_decision_created", {"turn_id": "t1"})
+    # 立即 finish，不等卡片创建
+    streamer.finish()
+    assert len(adapter.create_calls) == 1
+    assert len(adapter.update_calls) >= 1
+    last_card = adapter.update_calls[-1]["card"]
+    assert last_card["header"]["template"] == "green"

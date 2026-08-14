@@ -597,17 +597,23 @@ def split_markdown_by_lines(text: str, limit: int) -> list[str]:
         if line_len > limit:
             _flush()
             remaining = line
-            while len(remaining) > limit:
-                chunks.append(remaining[:limit])
-                remaining = remaining[limit:]
-            if remaining:
-                # 残余行作为新一段的开头；若仍在围栏内，先重新打开围栏
-                if fence_state is not None:
-                    fence_marker, lang = fence_state
-                    reopen = f"{fence_marker}{lang}" if lang else fence_marker
+            if fence_state is not None:
+                # 围栏内的超长行：每个硬切片段都需包裹围栏，确保独立可渲染为代码块
+                fence_marker, lang = fence_state
+                open_fence = f"{fence_marker}{lang}" if lang else fence_marker
+                while len(remaining) > limit:
+                    chunk_content = remaining[:limit]
+                    chunks.append(f"{open_fence}\n{chunk_content}\n{fence_marker}")
+                    remaining = remaining[limit:]
+                if remaining:
+                    reopen = open_fence
                     current_lines = [reopen, remaining]
                     current_len = len(current_lines[0]) + 1 + len(remaining) + 1
-                else:
+            else:
+                while len(remaining) > limit:
+                    chunks.append(remaining[:limit])
+                    remaining = remaining[limit:]
+                if remaining:
                     current_lines = [remaining]
                     current_len = len(remaining) + 1
             # 围栏状态不因普通代码行变化
