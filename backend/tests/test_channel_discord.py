@@ -415,3 +415,11 @@ def test_discord_stream_manager_start_is_idempotent():
     manager.start()
     assert manager._reconcile_thread is first
     manager.stop(timeout_seconds=2.0)
+
+
+def test_discord_wait_binding_stopped_accepts_positional_timeout():
+    """__init__.py wait_binding_ingress_stopped 以位置参数调用 wait_binding_stopped(binding_id, timeout_seconds)。"""
+    manager = _stream_manager(_engine())
+    # 位置参数形式（与 channels/__init__.py:230 一致）不应抛 TypeError
+    result = manager.wait_binding_stopped("chan-none", 0.1)
+    assert result is True
