@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+import hashlib
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -13,13 +14,13 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.channels.adapters.feishu import (
     FeishuAdapter,
     FeishuPermanentError,
-    FeishuTransientError,
     FeishuTokenProvider,
+    FeishuTransientError,
     validate_feishu_credentials,
 )
 from app.channels.crypto import encrypt_channel_secret
-from app.channels.service_outbox import run_delivery_daemon
 from app.channels.feishu_runtime import _build_event_dispatcher, _normalize_event
+from app.channels.service_outbox import run_delivery_daemon
 from app.db.models import ChannelBinding, ChannelDelivery, Tenant, utc_now
 
 
@@ -38,6 +39,9 @@ class FakeClient:
 
     def get(self, url, **kwargs):
         return self.handler(url, {**kwargs, "_method": "GET"})
+
+    def patch(self, url, **kwargs):
+        return self.handler(url, {**kwargs, "_method": "PATCH"})
 
     def delete(self, url, **kwargs):
         return self.handler(url, {**kwargs, "_method": "DELETE"})
@@ -1117,4 +1121,109 @@ def test_rich_overlong_fenced_code_block_each_chunk_has_code_block() -> None:
     recovered = "\n".join(all_code_texts)
     assert "line_0 = 0" in recovered
     assert "line_299 = 299" in recovered
+
+
+def test_create_card_reply_returns_message_id() -> None:
+    calls = []
+
+    def handler(url, kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        calls.append((url, kwargs))
+        return _response(
+            200,
+            {"code": 0, "data": {"message_id": "om_card_new"}},
+            url,
+        )
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    card = {"config": {}, "header": {"title": {"tag": "plain_text", "content": "test"}}, "elements": []}
+    message_id = adapter.create_card(
+        _binding(),
+        {"message_id": "om_source"},
+        card,
+        idempotency_key="card-key-1",
+    )
+    assert message_id == "om_card_new"
+    url, kwargs = calls[0]
+    assert url.endswith("/im/v1/messages/om_source/reply")
+    assert kwargs["json"]["msg_type"] == "interactive"
+    assert kwargs["json"]["uuid"] == hashlib.sha256(b"card-key-1:0").hexdigest()[:40]
+    assert json.loads(kwargs["json"]["content"]) == card
+
+
+def test_create_card_with_receive_id() -> None:
+    calls = []
+
+    def handler(url, kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        calls.append((url, kwargs))
+        return _response(200, {"code": 0, "data": {"message_id": "om_card_new"}}, url)
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    message_id = adapter.create_card(
+        _binding(),
+        {"receive_id": "ou_user", "receive_id_type": "open_id"},
+        {"elements": []},
+        idempotency_key="card-key-2",
+    )
+    assert message_id == "om_card_new"
+    url, kwargs = calls[0]
+    assert url.endswith("/im/v1/messages")
+    assert kwargs["params"] == {"receive_id_type": "open_id"}
+    assert kwargs["json"]["receive_id"] == "ou_user"
+
+
+def test_create_card_missing_idempotency_key_raises() -> None:
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(lambda *_a, **_kw: None))
+    with pytest.raises(FeishuPermanentError, match="幂等键"):
+        adapter.create_card(_binding(), {"message_id": "om"}, {}, idempotency_key="")
+
+
+def test_create_card_missing_response_message_id_raises_transient() -> None:
+    def handler(url, _kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        return _response(200, {"code": 0, "data": {}}, url)
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    with pytest.raises(FeishuTransientError, match="message_id"):
+        adapter.create_card(_binding(), {"message_id": "om"}, {}, idempotency_key="k")
+
+
+def test_update_card_sends_patch_request() -> None:
+    calls = []
+
+    def handler(url, kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        calls.append((url, kwargs))
+        return _response(200, {"code": 0}, url)
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    card = {"elements": [{"tag": "div"}]}
+    adapter.update_card(_binding(), "om_card_123", card)
+    assert len(calls) == 1
+    url, kwargs = calls[0]
+    assert url.endswith("/im/v1/messages/om_card_123")
+    assert kwargs["_method"] == "PATCH"
+    assert json.loads(kwargs["json"]["content"]) == card
+
+
+def test_update_card_missing_message_id_raises() -> None:
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(lambda *_a, **_kw: None))
+    with pytest.raises(FeishuPermanentError, match="message_id"):
+        adapter.update_card(_binding(), "", {})
+
+
+def test_update_card_429_is_transient() -> None:
+    def handler(url, _kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        return _response(429, {"code": 1}, url)
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    with pytest.raises(FeishuTransientError, match="暂时不可用"):
+        adapter.update_card(_binding(), "om_card", {})
 

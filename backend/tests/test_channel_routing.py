@@ -100,7 +100,7 @@ def _group_message(event_id: str, text: str, group_id: str = "room_123456") -> d
 class RecordingAgentLoop:
     calls: list = []
 
-    def __init__(self, db):
+    def __init__(self, db, *, event_sink=None):
         self.db = db
 
     def handle_turn(self, request):

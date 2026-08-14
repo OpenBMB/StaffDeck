@@ -94,7 +94,7 @@ def _wecom_inbound(event_id: str, text: str, *, userid: str = "zhangsan", group:
 class RecordingAgentLoop:
     calls: list = []
 
-    def __init__(self, db):
+    def __init__(self, db, *, event_sink=None):
         self.db = db
 
     def handle_turn(self, request):

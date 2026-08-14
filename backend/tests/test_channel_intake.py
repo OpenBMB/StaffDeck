@@ -90,7 +90,7 @@ class RecordingAgentLoop:
     calls: list = []
     error: Exception | None = None
 
-    def __init__(self, db):
+    def __init__(self, db, *, event_sink=None):
         self.db = db
 
     def handle_turn(self, request):

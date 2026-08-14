@@ -160,7 +160,7 @@ def _make_lazy_account(engine) -> User:
 class RecordingAgentLoop:
     calls: list = []
 
-    def __init__(self, db):
+    def __init__(self, db, *, event_sink=None):
         self.db = db
 
     def handle_turn(self, request):

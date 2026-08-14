@@ -122,9 +122,14 @@ class AgentLoopPreconditionError(Exception):
 
 
 class AgentLoop:
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> None:
         self.db = db
-        self.events = EventLog(db)
+        self.events = EventLog(db, event_sink=event_sink)
         self.runtime = SkillRuntime()
         self.response_generator = ResponseGenerator()
         self.memory = MemoryService(db)
