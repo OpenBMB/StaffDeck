@@ -24,7 +24,7 @@ import {
   employeeDisplayNameWithCreator,
   employeeProfile,
 } from '../employee';
-import { emitAgentScopeChange, persistSharedAgentScope } from '../lib/agent-scope-storage';
+import { emitAgentScopeChange, isTeamScope, persistSharedAgentScope, readEmployeeScope } from '../lib/agent-scope-storage';
 import type { AgentProfileRead } from '../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
@@ -51,7 +51,7 @@ export default function AgentsPage({
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline' | 'pending'>('all');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
-    () => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY),
+    () => readEmployeeScope() || null,
   );
   const navigate = useNavigate();
 
@@ -73,8 +73,8 @@ export default function AgentsPage({
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ agentId?: string }>).detail;
-      setSelectedAgentId(detail?.agentId ?? window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY));
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setSelectedAgentId(next && !isTeamScope(next) ? next : readEmployeeScope() || null);
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', handler);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', handler);
@@ -179,7 +179,7 @@ export default function AgentsPage({
     setDeleting(true);
     try {
       await api.delete(`/api/enterprise/agents/${row.id}?tenant_id=${TENANT_ID}`);
-      if (window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) === row.id) {
+      if (readEmployeeScope() === row.id) {
         const nextAgent = employees.find((item) => item.id !== row.id && item.status === 'active')
           || employees.find((item) => item.id !== row.id);
         if (nextAgent) {

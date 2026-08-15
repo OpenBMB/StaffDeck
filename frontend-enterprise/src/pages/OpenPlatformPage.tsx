@@ -42,6 +42,7 @@ import {
   type PlatformResourceAccent,
   type PlatformStat,
 } from '@/components/openPlatform';
+import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
@@ -189,16 +190,14 @@ export default function OpenPlatformPage({
   const [tools, setTools] = useState<ToolRead[]>([]);
   const [loading, setLoading] = useState(false);
   const [deletingItemKey, setDeletingItemKey] = useState('');
-  const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [agentId, setAgentId] = useState(readEmployeeScope);
   const [detailItem, setDetailItem] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
-      const nextAgentId = (event as CustomEvent<{ agentId?: string }>).detail?.agentId
-        || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)
-        || '';
-      setAgentId(nextAgentId);
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
