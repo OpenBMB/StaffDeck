@@ -853,6 +853,55 @@ export type ChannelBindingAgentRead = {
   sort_order: number;
 };
 
+// 能力开关：batch_send 为前端保留开关，后端 ChannelFeaturesConfig 暂不含该键
+//（批量投递门禁为后续演进），保存时从 payload 剔除
+export type ChannelFeatureFlags = {
+  slash_commands?: boolean;
+  threads?: boolean;
+  batch_send?: boolean;
+  backfill?: boolean;
+  typing?: boolean;
+  voice?: boolean;
+  rich_media?: boolean;
+};
+
+// 与后端 AllowlistConfig 对齐（扁平结构；deny 为 channel/user ID 混合列表）
+export type ChannelAllowlistConfig = {
+  mode?: 'allow_all' | 'deny_all';
+  guild_ids?: string[];
+  channel_ids?: string[];
+  role_ids?: string[];
+  user_ids?: string[];
+  deny?: string[];
+};
+
+export type ChannelBatchConfig = {
+  max_per_run?: number;
+  interval_sec?: number;
+  channel_id?: string;
+};
+
+export type ChannelBackfillConfig = {
+  enabled?: boolean;
+  limit_per_fetch?: number;
+  max_history_days?: number;
+  channel_id?: string;
+};
+
+export type ChannelBindingConfigJson = {
+  bot_id?: string | null;
+  bot_name?: string | null;
+  bound_at?: string | null;
+  client_id?: string | null;
+  corp_id?: string | null;
+  session_expired?: boolean;
+  auto_route?: boolean;
+  allowlist?: ChannelAllowlistConfig;
+  features?: ChannelFeatureFlags;
+  batch?: ChannelBatchConfig;
+  backfill?: ChannelBackfillConfig;
+};
+
 export type ChannelBindingRead = {
   id: string;
   tenant_id: string;
@@ -874,11 +923,21 @@ export type ChannelBindingRead = {
   bound_at?: string | null;
   created_by_user_id?: string | null;
   created_by_name?: string | null;
-  config_json?: Record<string, unknown>;
+  config_json?: ChannelBindingConfigJson | null;
   agents: ChannelBindingAgentRead[];
   auto_route?: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type ChannelBatchJobRead = {
+  job_id?: string;
+  status?: string;
+  progress?: number;
+  total?: number;
+  succeeded?: number;
+  failed?: number;
+  errors?: string[];
 };
 
 export type ChannelDeliveryRead = {
