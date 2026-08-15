@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
 import threading
 from datetime import timedelta
+from pathlib import PosixPath
 from typing import Any
 
 from sqlalchemy import func, or_, update
@@ -39,6 +42,73 @@ _reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
 _FEISHU_DEDUP_RECOVERY_SECONDS = 55 * 60
 _NON_DELIVERY_CHANNELS = {"public_api", PILOTDECK_GROUP_CHAT_CHANNEL}
+# harness 产物桥接为 discord 附件载荷的上限:与 DiscordAdapter._MAX_ATTACHMENT_BYTES 对齐
+_DISCORD_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+_MAX_HARNESS_ARTIFACT_FILES = 10
+
+
+def _channel_payload_from_harness_artifacts(
+    db: Session,
+    chat_session: ChatSession,
+    message: Message,
+) -> dict[str, list[dict[str, str]]] | None:
+    """把 agent 运行生成的 harness 产物桥接为 discord 的 channel_payload.files 载荷。
+
+    生成侧补齐(功能8,§4.8 D8-1):生成方未写 channel_payload 时,把
+    assistant_metadata.harness_artifacts 中的 workspace_file 转成 base64 附件,
+    使 Discord 富媒体路径(embeds/files)真正生效。任一文件超限或读取失败都
+    静默跳过——纯降级,绝不让渠道投递登记因产物问题失败。
+    """
+    artifacts = (message.metadata_json or {}).get("harness_artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        return None
+    files: list[dict[str, str]] = []
+    for entry in artifacts[:_MAX_HARNESS_ARTIFACT_FILES]:
+        if not isinstance(entry, dict) or entry.get("type") != "workspace_file":
+            continue
+        raw_path = str(entry.get("path") or "").strip()
+        task_frame_id = str(entry.get("task_frame_id") or "").strip()
+        size = entry.get("size")
+        if (
+            not raw_path
+            or not task_frame_id
+            or not isinstance(size, int)
+            or size < 0
+        ):
+            continue
+        if size > _DISCORD_MAX_ATTACHMENT_BYTES:
+            continue
+        # app.core.harness_session_cleanup 会经 app.core 触发本模块导入,
+        # 桥接是低频路径,函数内延迟导入避免模块级循环依赖。
+        from app.core.harness_session_cleanup import harness_task_workspace_path
+        from app.harness.artifacts import HarnessArtifactAccessError, open_harness_artifact
+
+        try:
+            workspace_root = harness_task_workspace_path(
+                tenant_id=chat_session.tenant_id,
+                session_id=chat_session.id,
+                task_frame_id=task_frame_id,
+                db=db,
+            )
+            opened = open_harness_artifact(workspace_root, raw_path)
+            data = b"".join(opened.iter_bytes())
+        except (HarnessArtifactAccessError, OSError):
+            logger.warning(
+                "harness 产物桥接跳过:文件不可读 path=%s frame=%s session=%s",
+                raw_path,
+                task_frame_id,
+                chat_session.id,
+            )
+            continue
+        content_type = mimetypes.guess_type(raw_path)[0] or "application/octet-stream"
+        files.append(
+            {
+                "filename": PosixPath(raw_path).name,
+                "data": base64.b64encode(data).decode("ascii"),
+                "content_type": content_type,
+            }
+        )
+    return {"files": files} if files else None
 
 
 def _stage_failed_delivery(
@@ -209,9 +279,11 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
                 error="delivery_target_missing",
             )
             return
-        # 富媒体结构化载荷(功能8,§4.8 D8-1):消息 metadata 的 channel_payload
-        # 键(embeds/files)由生成方写入,此处仅负责序列化落库;缺省保持 None。
+        # 富媒体结构化载荷(功能8,§4.8 D8-1):优先取生成方写入的 channel_payload
+        # 键(embeds/files);discord 且无显式载荷时,把 harness 产物桥接为 files。
         payload = (message.metadata_json or {}).get("channel_payload")
+        if not (isinstance(payload, dict) and payload) and binding.channel == "discord":
+            payload = _channel_payload_from_harness_artifacts(db, chat_session, message)
         payload_json = (
             json.dumps(payload, ensure_ascii=False)
             if isinstance(payload, dict) and payload
