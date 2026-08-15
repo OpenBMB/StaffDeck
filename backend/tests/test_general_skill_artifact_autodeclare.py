@@ -151,6 +151,39 @@ def test_runner_records_workspace_relative_artifact_dir(tmp_path, monkeypatch) -
     assert "artifact_dir" not in structured_no_ws
 
 
+def test_runner_artifact_dir_overrides_model_reported_value(tmp_path, monkeypatch) -> None:
+    """模型在输出 JSON 自报 artifact_dir(如共享目录 attachments)不得劫持兜底扫描目录。"""
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+
+    def fake_sandboxed_process(*_args, **kwargs):  # noqa: ANN001
+        # 模型自报共享目录,试图让兜底扫描登记别人的文件
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"success": True, "artifact_dir": "attachments"}).encode(),
+            stderr=b"",
+            timed_out=False,
+        )
+
+    monkeypatch.setattr(
+        "app.general_skills.runner.run_sandboxed_process", fake_sandboxed_process
+    )
+    skill = GeneralSkill(
+        tenant_id="tenant-demo",
+        slug="demo",
+        name="Demo",
+        skill_markdown="# Demo",
+        status="published",
+    )
+    plan = GeneralSkillExecutionPlan(runtime="python", code="print(1)")
+    workspace = tmp_path / "task-ws"
+    _, _, structured = GeneralSkillRunner()._execute_plan(
+        skill, "q", plan, "user-1", [], workspace_root=workspace
+    )
+    # 强制覆盖为本次运行的真实产物目录,模型自报值被丢弃
+    assert structured["artifact_dir"].startswith("general_skill_")
+    assert structured["artifact_dir"] != "attachments"
+
+
 def test_undeclared_artifacts_auto_registered_from_artifact_dir(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
     engine = _test_engine()
@@ -246,3 +279,23 @@ def test_auto_declare_rejects_paths_outside_workspace(tmp_path, monkeypatch) -> 
         assert invoker._auto_declare_artifacts({"artifact_dir": ""}) == []
         assert invoker._auto_declare_artifacts({}) == []
         assert invoker._auto_declare_artifacts({"artifact_dir": "not/exist"}) == []
+
+
+def test_auto_declare_filters_cache_and_intermediate_files(tmp_path, monkeypatch) -> None:
+    """缓存/中间文件(点开头、__pycache__、tmp/part/log 后缀)不登记为产出。"""
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine):
+        invoker, _skill, _descriptor = _skill_and_invoker(engine, tmp_path, monkeypatch)
+        artifact_dir = invoker.workspace_root / "general_skill_x/artifacts"
+        (artifact_dir / "__pycache__").mkdir(parents=True)
+        (artifact_dir / "report.pptx").write_bytes(b"pk")
+        (artifact_dir / "cache.tmp").write_bytes(b"t")
+        (artifact_dir / "run.log").write_bytes(b"l")
+        (artifact_dir / ".hidden").write_bytes(b"h")
+        (artifact_dir / "__pycache__" / "mod.pyc").write_bytes(b"c")
+        declared = invoker._auto_declare_artifacts(
+            {"artifact_dir": "general_skill_x/artifacts"}
+        )
+        paths = [item["path"] for item in declared]
+        assert paths == ["general_skill_x/artifacts/report.pptx"]

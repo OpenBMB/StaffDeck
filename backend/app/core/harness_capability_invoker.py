@@ -53,6 +53,7 @@ from app.harness import (
     HarnessToolCall,
     HarnessToolContext,
     build_file_tool_registry,
+    is_noise_artifact_path,
     open_harness_artifact,
     publish_changed_harness_artifacts,
     register_command_tools,
@@ -779,10 +780,12 @@ class HarnessCapabilityInvoker:
         }
 
     def _auto_declare_artifacts(self, structured: dict[str, Any]) -> list[dict[str, Any]]:
-        """未声明产物的兜底:扫描本次运行的 artifact_dir,把净新增文件自动登记为产物。
+        """未声明产物的兜底:扫描本次运行的 artifact_dir,把净产出文件自动登记为产物。
 
-        只接受 runner 写入 structured 的工作区相对 artifact_dir(我们自己注入的),
-        拒绝越出 TaskFrame 工作区的路径;每个文件仍经 open_harness_artifact 校验。
+        只接受 runner 写入 structured 的工作区相对 artifact_dir(我们强制注入的,
+        模型输出里的自报值已被覆盖);拒绝越出 TaskFrame 工作区的路径;缓存/中间
+        文件(点开头、__pycache__、*.tmp/*.part/*.log)不算产出;每个文件仍经
+        open_harness_artifact 校验。
         """
         artifact_dir = str(structured.get("artifact_dir") or "").strip()
         if not artifact_dir:
@@ -797,6 +800,8 @@ class HarnessCapabilityInvoker:
                 if not path.is_file() or path.stat().st_size == 0:
                     continue
                 relative = path.relative_to(root).as_posix()
+                if is_noise_artifact_path(relative):
+                    continue
                 declared.append({"path": f"{artifact_dir}/{relative}", "display_name": path.name})
                 if len(declared) >= 20:
                     break
