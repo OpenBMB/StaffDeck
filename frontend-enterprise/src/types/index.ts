@@ -1002,6 +1002,37 @@ export type TeamRead = {
   updated_at: string;
 };
 
+export type TeamConversationKind = 'tl_chat' | 'member_task' | 'member_bid' | 'tl_review';
+
+export type TeamConversationRead = {
+  session_id: string;
+  kind: TeamConversationKind;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  task_id?: string | null;
+  title: string;
+  preview: string;
+  updated_at: string;
+};
+
+export type TeamConversationsResponse = {
+  team_id: string;
+  team_name: string;
+  tl?: {
+    agent_id: string;
+    agent_name?: string | null;
+    session_id?: string | null;
+  } | null;
+  conversations: TeamConversationRead[];
+};
+
+export type TeamConversationMessageRead = {
+  id: string;
+  role: string;
+  content: string;
+  created_at: string;
+};
+
 export type TeamTaskEventRead = {
   id: string;
   task_id: string;

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Crown } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import {
@@ -683,7 +684,16 @@ export default function TeamDetailPage({
 
               function memberNode(member: TeamMemberRead, isLeader: boolean) {
                 return (
-                  <div className="flex w-[156px] shrink-0 flex-col items-center gap-[7px] rounded-[12px] border border-[#eef1f6] bg-white px-[12px] py-[12px]">
+                  <div className={cn(
+                    'relative flex w-[156px] shrink-0 flex-col items-center gap-[7px] rounded-[12px] border border-[#eef1f6] bg-white px-[12px] py-[12px]',
+                    isLeader && 'mt-[12px] border-[#d9e5ff] pt-[17px] shadow-[0_5px_16px_rgba(26,113,255,0.08)]',
+                  )}>
+                    {isLeader && (
+                      <span className="absolute -top-[12px] inline-flex h-[24px] items-center gap-[4px] rounded-full border border-[#cfe0ff] bg-[#f2f6ff] px-[9px] text-[11px] font-medium text-[#1a71ff] shadow-[0_2px_7px_rgba(26,113,255,0.12)]">
+                        <Crown className="size-[12px]" />
+                        项目领导
+                      </span>
+                    )}
                     <EmployeeAvatar agent={agentById.get(member.agent_id)} size={48} radius={14} />
                     <span
                       className="max-w-full truncate text-[13px] font-medium text-[#18181a]"
@@ -691,15 +701,14 @@ export default function TeamDetailPage({
                     >
                       {member.agent_name || member.agent_id}
                     </span>
-                    <Badge
-                      variant="secondary"
-                      className={cn(
-                        'shrink-0 rounded-full text-[12px] font-normal',
-                        isLeader ? 'bg-[#e8f0ff] text-[#1a71ff]' : 'bg-[#f2f3f7] text-[#858b9c]',
-                      )}
-                    >
-                      {isLeader ? '项目领导' : '成员'}
-                    </Badge>
+                    {!isLeader && (
+                      <Badge
+                        variant="secondary"
+                        className="shrink-0 rounded-full bg-[#f2f3f7] text-[12px] font-normal text-[#858b9c]"
+                      >
+                        成员
+                      </Badge>
+                    )}
                     <div className="flex min-h-[28px] w-full items-center justify-center gap-[4px]">
                       {!isLeader && (
                         <button

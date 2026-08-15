@@ -11,6 +11,7 @@ import ChatHeader from './components/ChatHeader';
 import MessageList from './components/MessageList';
 import Composer from './components/Composer';
 import ChatDialogs from './components/ChatDialogs';
+import TeamCollaborationPanel from './components/TeamCollaborationPanel';
 
 export default function ChatPage() {
   const chat = useChatSession();
@@ -57,6 +58,9 @@ export default function ChatPage() {
       />
       <main className={cn(CHAT_MAIN_CLASS, 'flex-1')}>
         <ChatHeader chat={chat} />
+        {chat.displayedTeam && (
+          <TeamCollaborationPanel team={chat.displayedTeam} agents={chat.agents} />
+        )}
         <MessageList chat={chat} />
         <Composer chat={chat} />
       </main>
