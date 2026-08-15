@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import logging
+
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine
 
