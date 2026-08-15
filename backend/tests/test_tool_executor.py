@@ -50,6 +50,24 @@ def test_explicit_authorization_header_takes_precedence_over_basic_auth():
     assert headers["Authorization"] == "Custom value"
 
 
+def test_unknown_auth_type_is_forwarded_as_literal_headers(monkeypatch):
+    monkeypatch.setenv("VENDOR_TOKEN", "token-123")
+    executor = object.__new__(ToolExecutor)
+
+    headers = executor._resolve_headers(
+        {"Content-Type": "application/json"},
+        {
+            "X-API-Key": "${secret.VENDOR_TOKEN}",
+            "X-Scope": "staff",
+            "X-Options": {"region": "cn"},
+        },
+    )
+
+    assert headers["X-API-Key"] == "token-123"
+    assert headers["X-Scope"] == "staff"
+    assert headers["X-Options"] == '{"region":"cn"}'
+
+
 def test_internal_mock_request_adds_service_token_only_for_configured_origin() -> None:
     executor = object.__new__(ToolExecutor)
     executor.settings = type(

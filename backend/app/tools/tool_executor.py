@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import uuid
@@ -354,22 +355,42 @@ class ToolExecutor:
                 password = self._resolve_secret(str(basic["password"]))
                 credentials = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
                 resolved["Authorization"] = f"Basic {credentials}"
+        elif auth_type not in {"bearer", "basic"}:
+            # Auth JSON is also allowed as a literal header map for integrations
+            # that use custom schemes (for example X-API-Key or a vendor token).
+            for key, value in auth.items():
+                if key == "type" or value is None:
+                    continue
+                if isinstance(value, (dict, list)):
+                    value = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                resolved[str(key)] = self._resolve_secret(str(value))
         return resolved
 
-    def _request_headers(self, url: str, headers: dict[str, str]) -> dict[str, str]:
-        if not self._is_internal_mock_url(url):
+    def _request_headers(
+        self,
+        url: str,
+        headers: dict[str, str],
+        *,
+        normalized_tool_base_url: str | None = None,
+    ) -> dict[str, str]:
+        if not self._is_internal_mock_url(url, normalized_tool_base_url=normalized_tool_base_url):
             return headers
         resolved = dict(headers)
         resolved[INTERNAL_SERVICE_HEADER] = internal_service_token()
         return resolved
 
-    def _is_internal_mock_url(self, url: str) -> bool:
+    def _is_internal_mock_url(
+        self,
+        url: str,
+        *,
+        normalized_tool_base_url: str | None = None,
+    ) -> bool:
         target = urlsplit(url)
         if not target.path.startswith("/api/mock/"):
             return False
         if not target.scheme and not target.netloc:
             return True
-        configured = urlsplit(self.settings.normalized_tool_base_url)
+        configured = urlsplit(normalized_tool_base_url or self.settings.normalized_tool_base_url)
         return (
             target.scheme.lower(),
             target.hostname,

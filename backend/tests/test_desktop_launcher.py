@@ -369,6 +369,95 @@ def test_macos_window_embeds_local_ui() -> None:
     assert events["centered"] is True
 
 
+def test_macos_main_menu_routes_edit_shortcuts_through_responder_chain() -> None:
+    command = 1 << 20
+    option = 1 << 19
+
+    class FakeMenuItem:
+        def __init__(self, title="", action=None, key="", separator=False):
+            self.title = title
+            self.action = action
+            self.key = key
+            self.separator = separator
+            self.target = None
+            self.modifiers = command
+            self.submenu = None
+
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        @classmethod
+        def separatorItem(cls):
+            return cls(separator=True)
+
+        def initWithTitle_action_keyEquivalent_(self, title, action, key):
+            self.title = title
+            self.action = action
+            self.key = key
+            return self
+
+        def setTarget_(self, target):
+            self.target = target
+
+        def setSubmenu_(self, submenu):
+            self.submenu = submenu
+
+        def setKeyEquivalentModifierMask_(self, modifiers):
+            self.modifiers = modifiers
+
+    class FakeMenu:
+        def __init__(self):
+            self.title = ""
+            self.items = []
+
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithTitle_(self, title):
+            self.title = title
+            return self
+
+        def addItem_(self, item):
+            self.items.append(item)
+
+    class FakeAppKit:
+        NSMenu = FakeMenu
+        NSMenuItem = FakeMenuItem
+        NSEventModifierFlagCommand = command
+        NSEventModifierFlagOption = option
+
+    delegate = object()
+    main_menu = desktop_launcher._create_macos_main_menu(FakeAppKit, delegate)
+
+    assert [item.title for item in main_menu.items] == ["StaffDeck", "编辑"]
+
+    app_items = [item for item in main_menu.items[0].submenu.items if not item.separator]
+    assert [(item.title, item.action, item.key) for item in app_items] == [
+        ("关于 StaffDeck", "showAbout:", ""),
+        ("隐藏 StaffDeck", "hide:", "h"),
+        ("隐藏其他", "hideOtherApplications:", "h"),
+        ("全部显示", "unhideAllApplications:", ""),
+        ("退出 StaffDeck", "quitStaffDeck:", "q"),
+    ]
+    assert app_items[0].target is delegate
+    assert app_items[2].modifiers == command | option
+    assert app_items[-1].target is delegate
+
+    edit_items = [item for item in main_menu.items[1].submenu.items if not item.separator]
+    assert [(item.action, item.key) for item in edit_items] == [
+        ("undo:", "z"),
+        ("redo:", "Z"),
+        ("cut:", "x"),
+        ("copy:", "c"),
+        ("paste:", "v"),
+        ("selectAll:", "a"),
+    ]
+    assert all(item.target is None for item in edit_items)
+    assert all(item.modifiers == command for item in edit_items)
+
+
 def test_frozen_server_disables_api_access_logging(monkeypatch) -> None:
     import uvicorn
 
