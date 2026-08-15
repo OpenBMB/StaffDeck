@@ -67,6 +67,16 @@ describe('MessageBubble slash command card', () => {
   });
 });
 
+describe('MessageBubble responsive sizing', () => {
+  it('keeps a short user message out of a shrink-to-fit wrapper', () => {
+    renderSlashMessage('确认', []);
+
+    const message = screen.getByText('确认');
+    const bubble = message.parentElement?.parentElement;
+    expect(bubble?.parentElement?.classList.contains('contents')).toBe(true);
+  });
+});
+
 describe('MessageBubble team group identity', () => {
   it('shows the project leader avatar and name beside assistant messages', () => {
     const item: ChatMessage = {

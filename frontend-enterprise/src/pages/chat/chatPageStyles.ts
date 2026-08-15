@@ -31,12 +31,13 @@ export const CHAT_HEADER_ACTIONS_CLASS = 'flex shrink-0 items-center gap-[6px]';
 // ---------------------------------------------------------------------------
 // Message scroller
 // ---------------------------------------------------------------------------
-export const CHAT_MESSAGES_CLASS = 'min-h-0 flex-1 overflow-y-auto px-[24px] pt-[22px] pb-[62px]';
-export const CHAT_MESSAGE_STACK_CLASS = 'mx-auto flex w-full max-w-[820px] flex-col gap-[20px]';
+export const CHAT_MESSAGES_CLASS =
+  'min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-[24px] pt-[22px] pb-[62px]';
+export const CHAT_MESSAGE_STACK_CLASS = 'mx-auto flex min-w-0 w-full max-w-[820px] flex-col gap-[20px]';
 
-export const CHAT_MESSAGE_ITEM_CLASS = 'flex min-w-0 flex-col';
+export const CHAT_MESSAGE_ITEM_CLASS = 'flex min-w-0 w-full flex-col';
 export const CHAT_QUEUED_MESSAGE_ITEM_CLASS = 'order-last';
-export const CHAT_MESSAGE_ROW_BASE_CLASS = 'flex min-w-0';
+export const CHAT_MESSAGE_ROW_BASE_CLASS = 'flex min-w-0 w-full';
 export const CHAT_MESSAGE_ROW_USER_CLASS = 'justify-end';
 export const CHAT_MESSAGE_ROW_ASSISTANT_CLASS = 'justify-start';
 export const CHAT_GROUP_MESSAGE_ROW_CLASS = 'items-start gap-[10px]';

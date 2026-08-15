@@ -129,7 +129,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
             className={CHAT_GROUP_MESSAGE_AVATAR_CLASS}
           />
         )}
-        <div className={cn(groupAssistantMessage && CHAT_GROUP_MESSAGE_CONTENT_CLASS)}>
+        <div className={groupAssistantMessage ? CHAT_GROUP_MESSAGE_CONTENT_CLASS : 'contents'}>
           {groupAssistantMessage && (
             <span className={CHAT_GROUP_MESSAGE_SENDER_CLASS} data-i18n-ignore>
               {groupSenderName}
