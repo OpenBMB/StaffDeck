@@ -2671,5 +2671,8 @@
   "行政回复：季度报告已经整理完成。": "Administration replied: The quarterly report is ready.",
   "展开行政的回复": "Expand Administration's reply",
   "收起行政的回复": "Collapse Administration's reply",
-  "@行政，请处理「季度报告」": "@Administration, please handle \"Quarterly report\""
+  "@行政，请处理「季度报告」": "@Administration, please handle \"Quarterly report\"",
+  "结束": "End",
+  "团队任务:后续任务": "Team task: Follow-up task",
+  "团队任务:中间任务": "Team task: Intermediate task"
 }

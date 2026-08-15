@@ -4,9 +4,12 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { AgentProfileRead, TeamRead } from '@/types';
+import type { AgentProfileRead, ChatMessage, TeamConversationRead, TeamRead } from '@/types';
 
-import TeamCollaborationPanel, { collaborationQuestion } from './TeamCollaborationPanel';
+import TeamCollaborationPanel, {
+  collaborationQuestion,
+  mergeTeamChatTimeline,
+} from './TeamCollaborationPanel';
 
 const agents: AgentProfileRead[] = [
   {
@@ -109,6 +112,7 @@ describe('TeamCollaborationPanel', () => {
             task_id: 'task-1',
             title: '团队任务:季度报告',
             preview: '季度报告已经整理完成。',
+            created_at: '2026-08-15T00:00:30Z',
             updated_at: '2026-08-15T00:01:00Z',
           },
         ],
@@ -148,7 +152,41 @@ describe('TeamCollaborationPanel', () => {
       task_id: 'task-1',
       title: '团队任务:季度报告',
       preview: '',
+      created_at: '2026-08-15T00:00:30Z',
       updated_at: '2026-08-15T00:01:00Z',
     })).toBe('@行政，请处理「季度报告」');
+  });
+
+  it('inserts collaboration exchanges at their original position in the chat timeline', () => {
+    const messages: ChatMessage[] = [
+      { id: 'm1', role: 'user', content: '开始', created_at: '2026-08-15T00:00:00Z' },
+      { id: 'm2', role: 'assistant', content: '结束', created_at: '2026-08-15T00:10:00Z' },
+    ];
+    const conversations: TeamConversationRead[] = [
+      {
+        session_id: 'late',
+        kind: 'member_task',
+        agent_id: 'agent-admin',
+        agent_name: '行政',
+        title: '团队任务:后续任务',
+        preview: '完成',
+        created_at: '2026-08-15T00:11:00Z',
+        updated_at: '2026-08-15T00:12:00Z',
+      },
+      {
+        session_id: 'middle',
+        kind: 'member_task',
+        agent_id: 'agent-admin',
+        agent_name: '行政',
+        title: '团队任务:中间任务',
+        preview: '完成',
+        created_at: '2026-08-15T00:05:00Z',
+        updated_at: '2026-08-15T00:06:00Z',
+      },
+    ];
+
+    expect(mergeTeamChatTimeline(messages, conversations).map((entry) => (
+      entry.kind === 'message' ? entry.message.id : entry.conversation.session_id
+    ))).toEqual(['m1', 'middle', 'm2', 'late']);
   });
 });

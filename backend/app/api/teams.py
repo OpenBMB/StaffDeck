@@ -570,6 +570,7 @@ def list_team_conversations(
                 task_id=task_by_session.get(item.id),
                 title=item.title or "",
                 preview=last.content[:80] if last else "",
+                created_at=item.created_at,
                 updated_at=last.created_at if last else item.created_at,
             )
         )

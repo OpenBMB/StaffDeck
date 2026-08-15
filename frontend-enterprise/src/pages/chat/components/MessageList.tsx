@@ -23,7 +23,10 @@ import type { UseChatSession } from '../useChatSession';
 import ChatEmptyState from './ChatEmptyState';
 import MessageBubble, { type MessageRender } from './MessageBubble';
 import ScheduledDraftCard from './ScheduledDraftCard';
-import TeamCollaborationPanel from './TeamCollaborationPanel';
+import TeamCollaborationPanel, {
+  mergeTeamChatTimeline,
+  useTeamCollaborations,
+} from './TeamCollaborationPanel';
 
 export default function MessageList({
   chat,
@@ -54,13 +57,26 @@ export default function MessageList({
     lastTurn,
   } = chat;
   const renderMessages = placeQueuedMessagesLast(displayedMessages);
+  const teamCollaborations = useTeamCollaborations(chat.displayedTeam);
+  const timelineEntries = mergeTeamChatTimeline(renderMessages, teamCollaborations);
 
   return (
     <div className={CHAT_MESSAGES_CLASS} ref={chatMessagesRef} onScroll={handleChatMessagesScroll}>
-      {renderMessages.length === 0 && (emptyState ?? <ChatEmptyState chat={chat} />)}
+      {timelineEntries.length === 0 && (emptyState ?? <ChatEmptyState chat={chat} />)}
 
       <div className={CHAT_MESSAGE_STACK_CLASS}>
-        {renderMessages.map((item, itemIndex) => {
+        {timelineEntries.map((entry) => {
+          if (entry.kind === 'collaboration') {
+            return chat.displayedTeam ? (
+              <TeamCollaborationPanel
+                key={`${entry.conversation.session_id}:collaboration`}
+                team={chat.displayedTeam}
+                agents={chat.agents}
+                conversation={entry.conversation}
+              />
+            ) : null;
+          }
+          const { message: item, messageIndex: itemIndex } = entry;
           const turnId = item.turnId || item.id;
           const fallbackTraceId = item.role === 'assistant' && item.isStreaming
             ? (currentStream.turnId || runningTurn?.turnId || '')
@@ -165,9 +181,6 @@ export default function MessageList({
 
           return <MessageBubble key={`${item.id}:message`} chat={chat} item={item} render={render} />;
         })}
-        {chat.displayedTeam && (
-          <TeamCollaborationPanel team={chat.displayedTeam} agents={chat.agents} />
-        )}
       </div>
 
       {currentScheduledDraft && !hasVisibleMessageScheduledDraft && (

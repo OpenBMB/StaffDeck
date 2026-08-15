@@ -269,6 +269,7 @@ def test_conversations_endpoint_kinds_preview_order_isolation() -> None:
         assert by_id[s_task.id].agent_name == "Worker"
         assert by_id[s_task.id].task_id == task.id
         assert by_id[s_bid.id].task_id is None
+        assert by_id[s_task.id].created_at == base
         # preview 为末条消息截取 80 字;无消息则空串
         assert by_id[s_task.id].preview == "执" * 80
         assert by_id[s_review.id].preview == ""

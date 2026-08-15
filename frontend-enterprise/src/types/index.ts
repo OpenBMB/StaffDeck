@@ -1012,6 +1012,7 @@ export type TeamConversationRead = {
   task_id?: string | null;
   title: string;
   preview: string;
+  created_at: string;
   updated_at: string;
 };
 

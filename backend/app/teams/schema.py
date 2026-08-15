@@ -256,6 +256,7 @@ class TeamConversationRead(BaseModel):
     task_id: str | None = None
     title: str
     preview: str = ""
+    created_at: datetime
     updated_at: datetime
 
 

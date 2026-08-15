@@ -7,6 +7,7 @@ import { staffdeckDisplayText } from '@/employee';
 import { cn } from '@/lib/utils';
 import type {
   AgentProfileRead,
+  ChatMessage,
   TeamConversationMessageRead,
   TeamConversationRead,
   TeamConversationsResponse,
@@ -29,14 +30,101 @@ export function collaborationQuestion(conversation: TeamConversationRead): strin
     : `@${memberName}，请处理「${title}」`;
 }
 
+function conversationTimestamp(conversation: TeamConversationRead): number {
+  const createdAt = Date.parse(conversation.created_at);
+  if (Number.isFinite(createdAt)) return createdAt;
+  const updatedAt = Date.parse(conversation.updated_at);
+  return Number.isFinite(updatedAt) ? updatedAt : Number.POSITIVE_INFINITY;
+}
+
+export type TeamChatTimelineEntry =
+  | { kind: 'message'; message: ChatMessage; messageIndex: number }
+  | { kind: 'collaboration'; conversation: TeamConversationRead };
+
+export function mergeTeamChatTimeline(
+  messages: ChatMessage[],
+  conversations: TeamConversationRead[],
+): TeamChatTimelineEntry[] {
+  const buckets = Array.from(
+    { length: messages.length + 1 },
+    () => [] as TeamConversationRead[],
+  );
+
+  [...conversations]
+    .sort((left, right) => conversationTimestamp(left) - conversationTimestamp(right))
+    .forEach((conversation) => {
+      const timestamp = conversationTimestamp(conversation);
+      const nextMessageIndex = messages.findIndex((message) => {
+        const messageTimestamp = Date.parse(message.created_at);
+        return Number.isFinite(messageTimestamp) && messageTimestamp > timestamp;
+      });
+      buckets[nextMessageIndex < 0 ? messages.length : nextMessageIndex].push(conversation);
+    });
+
+  const timeline: TeamChatTimelineEntry[] = [];
+  buckets[0].forEach((conversation) => timeline.push({ kind: 'collaboration', conversation }));
+  messages.forEach((message, messageIndex) => {
+    timeline.push({ kind: 'message', message, messageIndex });
+    buckets[messageIndex + 1].forEach((conversation) => (
+      timeline.push({ kind: 'collaboration', conversation })
+    ));
+  });
+  return timeline;
+}
+
+export function useTeamCollaborations(team?: TeamRead | null): TeamConversationRead[] {
+  const [conversations, setConversations] = useState<TeamConversationRead[]>([]);
+  const leaderAgentId = team?.members.find((member) => member.role === 'leader')?.agent_id;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!team) {
+      setConversations([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+    setConversations([]);
+    api.get<TeamConversationsResponse>(
+      `/api/enterprise/teams/${team.id}/conversations?tenant_id=${TENANT_ID}`,
+    )
+      .then((response) => {
+        if (cancelled) return;
+        const seen = new Set<string>();
+        const latest = response.conversations.filter((conversation) => {
+          if (conversation.kind !== 'member_task' && conversation.kind !== 'member_bid') return false;
+          if (conversation.agent_id === leaderAgentId) return false;
+          const key = `${conversation.agent_id || ''}:${conversation.kind}:${conversationTitle(conversation)}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }).slice(0, 4);
+        setConversations(latest.sort(
+          (left, right) => conversationTimestamp(left) - conversationTimestamp(right),
+        ));
+      })
+      .catch(() => {
+        if (!cancelled) setConversations([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [leaderAgentId, team?.id]);
+
+  return conversations;
+}
+
 export default function TeamCollaborationPanel({
   team,
   agents,
+  conversation,
 }: {
   team: TeamRead;
   agents: AgentProfileRead[];
+  conversation?: TeamConversationRead;
 }) {
-  const [conversations, setConversations] = useState<TeamConversationRead[]>([]);
+  const loadedConversations = useTeamCollaborations(conversation ? undefined : team);
+  const conversations = conversation ? [conversation] : loadedConversations;
   const [expandedSessionId, setExpandedSessionId] = useState('');
   const [messagesBySession, setMessagesBySession] = useState<Record<string, TeamConversationMessageRead[]>>({});
   const [loadingSessionId, setLoadingSessionId] = useState('');
@@ -46,31 +134,6 @@ export default function TeamCollaborationPanel({
   );
   const leaderMember = team.members.find((member) => member.role === 'leader');
   const leaderAgent = leaderMember ? agentById.get(leaderMember.agent_id) : undefined;
-
-  useEffect(() => {
-    let cancelled = false;
-    api.get<TeamConversationsResponse>(
-      `/api/enterprise/teams/${team.id}/conversations?tenant_id=${TENANT_ID}`,
-    )
-      .then((response) => {
-        if (cancelled) return;
-        const seen = new Set<string>();
-        setConversations(response.conversations.filter((conversation) => {
-          if (conversation.kind !== 'member_task' && conversation.kind !== 'member_bid') return false;
-          if (conversation.agent_id === leaderMember?.agent_id) return false;
-          const key = `${conversation.agent_id || ''}:${conversation.kind}:${conversationTitle(conversation)}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        }).slice(0, 4));
-      })
-      .catch(() => {
-        if (!cancelled) setConversations([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [leaderMember?.agent_id, team.id]);
 
   async function toggleReply(conversation: TeamConversationRead) {
     if (expandedSessionId === conversation.session_id) {
@@ -94,7 +157,7 @@ export default function TeamCollaborationPanel({
 
   if (conversations.length === 0) return null;
 
-  return conversations.map((conversation, index) => {
+  return conversations.map((conversation) => {
     const memberAgent = conversation.agent_id
       ? agentById.get(conversation.agent_id)
       : undefined;
@@ -111,14 +174,6 @@ export default function TeamCollaborationPanel({
         aria-label={`团队协作 ${memberName}`}
         className="relative flex min-w-0 flex-col gap-[10px]"
       >
-        {index === 0 && (
-          <div className="my-[2px] flex items-center gap-[10px] text-[10px] text-[#a7adbb]">
-            <span className="h-px flex-1 bg-[#eef1f6]" />
-            团队内部协作
-            <span className="h-px flex-1 bg-[#eef1f6]" />
-          </div>
-        )}
-
         <div className="flex min-w-0 items-start gap-[10px]">
           <EmployeeAvatar agent={leaderAgent} size={36} radius={10} />
           <div className="flex min-w-0 max-w-[680px] flex-1 flex-col gap-[5px]">
