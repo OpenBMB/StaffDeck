@@ -280,6 +280,7 @@ export default function SkillsPage({
       title: '操作',
       width: 70,
       align: 'right',
+      sticky: 'right',
       render: (row) => renderActions(row),
     },
   ];
