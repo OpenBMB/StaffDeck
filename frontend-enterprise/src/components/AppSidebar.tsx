@@ -749,6 +749,38 @@ function sessionSubtitleFor(session: ChatSession, _agent: AgentProfileRead | nul
   return recent ? staffdeckDisplayText(recent) : '新对话';
 }
 
+function TeamGroupAvatar({
+  team,
+  agents,
+  size = 42,
+}: {
+  team: TeamRead | null;
+  agents: AgentProfileRead[];
+  size?: number;
+}) {
+  const members = (team?.members || []).slice(0, 4);
+  const avatarSize = size >= 40 ? 17 : 14;
+  const radius = size >= 40 ? 5 : 4;
+
+  return (
+    <span
+      className="grid shrink-0 grid-cols-2 place-content-center gap-[2px] overflow-hidden rounded-[12px] border-[0.5px] border-[#dfe3ea] bg-[#eef0f4] p-[3px]"
+      style={{ width: size, height: size }}
+    >
+      {members.length > 0 ? members.map((member) => (
+        <EmployeeAvatar
+          key={member.id}
+          agent={agents.find((agent) => agent.id === member.agent_id)}
+          size={avatarSize}
+          radius={radius}
+        />
+      )) : (
+        <IconTeams className="col-span-2 m-auto size-[18px]! text-[#646b7c]" />
+      )}
+    </span>
+  );
+}
+
 function ChatSessionFilter({
   sessionFilter,
   sessionFilterOptions,
@@ -901,28 +933,33 @@ function ChatHandoffButton({
 function ChatSessionRow({
   session,
   agent,
+  team,
+  agents,
   active,
   unread,
-  isTeamLeader = false,
   onOpenSession,
   onRenameSession,
   onDeleteSession,
 }: {
   session: ChatSession;
   agent: AgentProfileRead | null;
+  team: TeamRead | null;
+  agents: AgentProfileRead[];
   active: boolean;
   unread: boolean;
-  isTeamLeader?: boolean;
   onOpenSession: (id: string) => void;
   onRenameSession: (session: ChatSession) => void;
   onDeleteSession: (session: ChatSession) => void;
 }) {
   const title = sessionTitleFor(session, agent);
   const subtitle = sessionSubtitleFor(session, agent);
-  const isProjectLeadSession = isTeamLeader || Boolean(session.team_id && /TL 对话/.test(title));
-  const displayTitle = isProjectLeadSession
-    ? title.replace(/TL 对话/g, '项目领导对话')
+  const isTeamGroup = Boolean(session.team_id);
+  const displayTitle = isTeamGroup
+    ? team?.name || session.team_name || title.replace(/^团队\s*/, '').replace(/\s*·\s*TL 对话$/, '')
     : title;
+  const displaySubtitle = isTeamGroup
+    ? team ? `${team.members.length} 位成员 · 团队群聊` : '团队群聊'
+    : subtitle;
 
   return (
     <div
@@ -944,17 +981,21 @@ function ChatSessionRow({
     >
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="inline-grid size-[42px] shrink-0 place-items-center overflow-hidden rounded-[12px] bg-[#f1f2f5] text-[#464c5e]">
-            {agent ? (
+          {isTeamGroup ? (
+            <TeamGroupAvatar team={team} agents={agents} />
+          ) : (
+            <span className="inline-grid size-[42px] shrink-0 place-items-center overflow-hidden rounded-[12px] bg-[#f1f2f5] text-[#464c5e]">
+              {agent ? (
               <EmployeeAvatar agent={agent} size={42} radius={12} />
-            ) : (
-              <IconChatBubble className="size-[20px]!" />
-            )}
-          </span>
+              ) : (
+                <IconChatBubble className="size-[20px]!" />
+              )}
+            </span>
+          )}
         </TooltipTrigger>
-        {agent && (
+        {(agent || isTeamGroup) && (
           <TooltipContent side="right" align="center">
-            {agent.name}
+            {isTeamGroup ? `${displayTitle} · 团队群聊` : agent?.name}
           </TooltipContent>
         )}
       </Tooltip>
@@ -963,23 +1004,23 @@ function ChatSessionRow({
           <span className="truncate text-[14px] leading-none text-[#464c5e] capitalize" title={displayTitle}>
             {displayTitle}
           </span>
-          {isProjectLeadSession && (
+          {isTeamGroup && (
             <span
-              aria-label="项目领导"
-              className="inline-flex h-[16px] shrink-0 items-center rounded-full bg-[#fff3d6] px-[5px] text-[10px] font-medium leading-none text-[#a16a00]"
+              aria-label="群聊"
+              className="inline-flex h-[16px] shrink-0 items-center rounded-full bg-[#e8f0ff] px-[5px] text-[10px] font-medium leading-none text-[#1a71ff]"
             >
-              项目领导
+              群聊
             </span>
           )}
         </span>
-        <span className="truncate text-[12px] leading-none text-[#757f9c]" title={subtitle}>
-          {subtitle}
+        <span className="truncate text-[12px] leading-none text-[#757f9c]" title={displaySubtitle}>
+          {displaySubtitle}
         </span>
       </span>
       {unread && (
         <span className="ml-[2px] size-[7px] shrink-0 rounded-full bg-[#f5483b]" aria-label="未读回复" />
       )}
-      <span className="ml-auto hidden shrink-0 items-center gap-[6px] group-hover/session:flex">
+      {!isTeamGroup && <span className="ml-auto hidden shrink-0 items-center gap-[6px] group-hover/session:flex">
         <button
           type="button"
           aria-label="重命名会话"
@@ -1002,7 +1043,7 @@ function ChatSessionRow({
         >
           <IconTrash className="size-[14px]!" />
         </button>
-      </span>
+      </span>}
     </div>
   );
 }
@@ -1058,6 +1099,7 @@ function CollapsedChatSidebar({
   sessions,
   sessionsLoading = false,
   agents,
+  scopeTeams = [],
   activeSessionId,
   sessionFilter,
   onSessionFilterChange,
@@ -1073,7 +1115,7 @@ function CollapsedChatSidebar({
   onToggle,
 }: Pick<
   AppSidebarChatProps,
-  'sessions' | 'sessionsLoading' | 'agents' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onNewConversation' | 'onOpenGallery' | 'galleryActive' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
+  'sessions' | 'sessionsLoading' | 'agents' | 'scopeTeams' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onNewConversation' | 'onOpenGallery' | 'galleryActive' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
 > & { onToggle: () => void }) {
   return (
     <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[20px] py-[10px]">
@@ -1162,6 +1204,9 @@ function CollapsedChatSidebar({
                 const active = session.id === activeSessionId;
                 const unread = isSessionUnread(session);
                 const title = sessionTitleFor(session, agent);
+                const team = session.team_id
+                  ? scopeTeams.find((item) => item.id === session.team_id) || null
+                  : null;
                 return (
                   <Tooltip key={session.id}>
                     <TooltipTrigger asChild>
@@ -1176,7 +1221,9 @@ function CollapsedChatSidebar({
                             : 'size-[36px] rounded-[10px] bg-[#D8D8D8] text-[#464c5e]',
                         )}
                       >
-                        {agent ? (
+                        {session.team_id ? (
+                          <TeamGroupAvatar team={team} agents={agents} size={active ? 36 : 32} />
+                        ) : agent ? (
                           <EmployeeAvatar agent={agent} size={active ? 34 : 36} radius={10} />
                         ) : (
                           <IconChatBubble className="size-[18px]!" />
@@ -1187,7 +1234,9 @@ function CollapsedChatSidebar({
                       </button>
                     </TooltipTrigger>
                     <TooltipContent side="right" align="center">
-                      {agent ? `${agent.name} · ${title}` : title}
+                      {session.team_id
+                        ? `${team?.name || session.team_name || title} · 团队群聊`
+                        : agent ? `${agent.name} · ${title}` : title}
                     </TooltipContent>
                   </Tooltip>
                 );
@@ -1239,12 +1288,7 @@ function ChatSidebarVariant({
   const { toggleSidebar, state } = useSidebar();
   const collapsed = state === 'collapsed';
   const showSkeleton = sessionsLoading && sessions.length === 0;
-  // team_id → TL agent_id：用于在团队会话行上标明 TL 身份
-  const teamLeaderByTeam = new Map<string, string>();
-  for (const team of scopeTeams) {
-    const leader = (team.members || []).find((member) => member.role === 'leader');
-    if (leader) teamLeaderByTeam.set(team.id, leader.agent_id);
-  }
+  const teamById = new Map(scopeTeams.map((team) => [team.id, team]));
 
   if (collapsed) {
     return (
@@ -1253,6 +1297,7 @@ function ChatSidebarVariant({
           sessions={sessions}
           sessionsLoading={showSkeleton}
           agents={agents}
+          scopeTeams={scopeTeams}
           activeSessionId={activeSessionId}
           sessionFilter={sessionFilter}
           onSessionFilterChange={onSessionFilterChange}
@@ -1322,7 +1367,7 @@ function ChatSidebarVariant({
                 <span>新建对话</span>
               </button>
             )}
-            <span className="text-[12px] leading-none text-[#858b9c]">员工会话</span>
+            <span className="text-[12px] leading-none text-[#858b9c]">会话</span>
           </div>
         </SidebarHeader>
 
@@ -1342,11 +1387,10 @@ function ChatSidebarVariant({
                     key={session.id}
                     session={session}
                     agent={sessionAgentFor(session, agents)}
+                    team={session.team_id ? teamById.get(session.team_id) || null : null}
+                    agents={agents}
                     active={session.id === activeSessionId}
                     unread={isSessionUnread(session)}
-                    isTeamLeader={Boolean(
-                      session.team_id && teamLeaderByTeam.get(session.team_id) === session.agent_id,
-                    )}
                     onOpenSession={onOpenSession}
                     onRenameSession={onRenameSession}
                     onDeleteSession={onDeleteSession}

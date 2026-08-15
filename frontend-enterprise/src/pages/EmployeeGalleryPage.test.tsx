@@ -92,16 +92,18 @@ describe('EmployeeGalleryPage teams tab', () => {
     expect(within(section).getByText('+1')).toBeTruthy();
   });
 
-  it('opens the team room inside the team workspace', async () => {
+  it('opens the persistent team group in the chat app', async () => {
     const user = userEvent.setup();
-    stubGalleryFetch([team]);
+    const fetchMock = stubGalleryFetch([team]);
     renderGallery();
 
     await user.click(await screen.findByRole('tab', { name: '团队对话' }));
     const section = await screen.findByRole('region', { name: '团队' });
     await user.click(within(section).getByRole('button', { name: '增长团队' }));
 
-    expect((await screen.findByTestId('location')).textContent).toBe('/enterprise/teams/team-1?view=chat');
+    expect((await screen.findByTestId('location')).textContent).toBe('/workspace/chat/session-tl-1');
+    const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+    expect(String(postCall?.[0])).toContain('/api/enterprise/teams/team-1/tl/session');
   });
 
   it('does not render the team section on employee tabs', async () => {

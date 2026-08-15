@@ -60,18 +60,20 @@ afterEach(() => {
 });
 
 describe('ChatHeader team badge', () => {
-  it('shows the team badge from team_name when present', () => {
+  it('shows the team name and group-chat badge when present', () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([team])));
     renderHeader(buildChat({ title: '计划讨论', team_id: 'team-1', team_name: '增长团队' }));
 
-    expect(screen.getByText('团队 · 增长团队')).toBeTruthy();
+    expect(screen.getByText('增长团队')).toBeTruthy();
+    expect(screen.getByText('群聊')).toBeTruthy();
   });
 
-  it('uses the project-lead label for legacy team-leader session titles', () => {
+  it('hides the legacy project-lead session title behind the group identity', () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([team])));
     renderHeader(buildChat({ title: '增长团队 · TL 对话', team_id: 'team-1', team_name: '增长团队' }));
 
-    expect(screen.getByText('增长团队 · 项目领导对话')).toBeTruthy();
+    expect(screen.getByText('增长团队')).toBeTruthy();
+    expect(screen.getByText('群聊')).toBeTruthy();
     expect(screen.queryByText('增长团队 · TL 对话')).toBeNull();
   });
 
@@ -80,7 +82,8 @@ describe('ChatHeader team badge', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderHeader(buildChat({ title: '计划讨论', team_id: 'team-1' }));
 
-    expect((await screen.findByText('团队 · 增长团队')).textContent).toBeTruthy();
+    expect((await screen.findByText('增长团队')).textContent).toBeTruthy();
+    expect(screen.getByText('群聊')).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('/api/enterprise/teams?tenant_id='),
       expect.anything(),

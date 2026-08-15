@@ -245,7 +245,7 @@ export default function TeamsPage({
 
   function openThread(thread: TeamThreadRead) {
     if (thread.kind === 'tl_chat') {
-      navigate(`${EnterpriseRoute.Teams}/${thread.team_id}?view=chat`);
+      navigate(`${EnterpriseRoute.Chat}/${thread.session_id}`);
       return;
     }
     const base = `${EnterpriseRoute.Teams}/${thread.team_id}`;

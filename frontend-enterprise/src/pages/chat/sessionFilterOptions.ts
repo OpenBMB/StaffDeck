@@ -18,7 +18,7 @@ export function buildSessionFilterOptions(
   const counts = new Map<string, number>();
   const teamCounts = new Map<string, { name: string; count: number }>();
   sessions.forEach((session) => {
-    if (session.agent_id) {
+    if (session.agent_id && !session.team_id) {
       counts.set(session.agent_id, (counts.get(session.agent_id) || 0) + 1);
     }
     if (session.team_id) {

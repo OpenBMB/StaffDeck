@@ -569,14 +569,13 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     return buildSessionFilterOptions(availableAgents, sessions, activeDraftAgentId);
   }, [activeDraftAgentId, availableAgents, sessions]);
   const visibleSidebarSessions = useMemo(() => {
-    const ordinarySessions = sessions.filter((session) => !session.team_id);
     const filterTeamId = teamIdFromScope(sessionAgentFilter);
     if (filterTeamId) {
-      return [];
+      return sessions.filter((session) => session.team_id === filterTeamId);
     }
     return sessionAgentFilter === 'all'
-      ? ordinarySessions
-      : ordinarySessions.filter((session) => session.agent_id === sessionAgentFilter);
+      ? sessions
+      : sessions.filter((session) => !session.team_id && session.agent_id === sessionAgentFilter);
   }, [sessionAgentFilter, sessions]);
   const enabledModelConfigs = useMemo(() => modelConfigs.filter((item) => item.enabled), [modelConfigs]);
   const selectedModelConfig = (
@@ -787,9 +786,13 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [currentSession?.team_id, embedded, selectedAgentId, userId]);
 
   useEffect(() => {
-    if (embedded || !currentSession?.team_id) return;
-    navigate(`/enterprise/teams/${currentSession.team_id}?view=chat`, { replace: true });
-  }, [currentSession?.team_id, embedded, navigate]);
+    if (
+      embedded
+      || !currentSession?.team_id
+      || /TL 对话/.test(currentSession.title || '')
+    ) return;
+    navigate(`/enterprise/teams/${currentSession.team_id}`, { replace: true });
+  }, [currentSession?.team_id, currentSession?.title, embedded, navigate]);
 
   useEffect(() => {
     if (!auth) {

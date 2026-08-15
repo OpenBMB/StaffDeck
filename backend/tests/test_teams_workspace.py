@@ -147,8 +147,8 @@ def test_tl_session_open_to_tenant_member_and_rejects_foreign_tenant() -> None:
 # ---------- 会话 read 带团队归属 ----------
 
 
-def test_team_session_is_directly_readable_but_excluded_from_global_list() -> None:
-    """团队群聊按团队读取，不混入普通员工会话列表。"""
+def test_global_list_contains_team_group_but_hides_internal_team_sessions() -> None:
+    """对话端同时展示单聊和团队群聊，但不暴露任务执行会话。"""
     with _test_session() as db:
         team = _seed_team(db)
         admin = _admin_user()
@@ -161,13 +161,25 @@ def test_team_session_is_directly_readable_but_excluded_from_global_list() -> No
             status="active",
         )
         db.add(plain)
+        internal = ChatSession(
+            id="session_internal_team",
+            tenant_id="tenant_demo",
+            user_id=admin.id,
+            agent_id="agent_tl",
+            title="团队竞标裁决:测试",
+            status="active",
+            team_id=team.id,
+        )
+        db.add(internal)
         db.commit()
         tl = teams_api.tl_session_endpoint(
             team.id, TeamTLSessionRequest(tenant_id="tenant_demo"), db, admin
         )
 
         reads = {item.id: item for item in chat_api.list_chat_sessions("tenant_demo", admin, db)}
-        assert tl.session_id not in reads
+        assert reads[tl.session_id].team_id == team.id
+        assert reads[tl.session_id].team_name == team.name
+        assert internal.id not in reads
         assert reads[plain.id].team_id is None
         assert reads[plain.id].team_name is None
 

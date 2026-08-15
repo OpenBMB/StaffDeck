@@ -38,7 +38,6 @@ import type {
 } from '../types';
 
 import { relativeTimeLabel, teamStatusLabel } from './TeamsPage';
-import TeamGroupChatPanel from './chat/components/TeamGroupChatPanel';
 
 const TEAM_EVENT_TYPE_LABELS: Record<string, string> = {
   task_created: '任务创建',
@@ -233,13 +232,6 @@ export default function TeamDetailPage({
     setConfigTaskTimeout(String(config.task_timeout_minutes ?? 30));
     setConfigBidRounds(String(config.bid_rebuttal_rounds ?? 1));
   }, [team]);
-
-  useEffect(() => {
-    if (!team || searchParams.get('view') !== 'chat') return;
-    window.requestAnimationFrame(() => {
-      document.getElementById('team-chat')?.scrollIntoView({ block: 'start' });
-    });
-  }, [searchParams, team]);
 
   const taskParam = searchParams.get('task');
   useEffect(() => {
@@ -846,8 +838,6 @@ export default function TeamDetailPage({
           </div>
         </section>
       </div>
-
-      {team && <TeamGroupChatPanel team={team} agents={agents} />}
 
       <section aria-label="团队黑板" className="mt-[20px] rounded-[20px] bg-white p-[20px] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
         <h2 className="mb-[12px] text-[16px] font-medium text-[#18181a]">团队黑板</h2>

@@ -137,9 +137,9 @@ afterEach(() => {
 });
 
 describe('App team scope selection', () => {
-  it('opens the team room in its management workspace when a team is selected', async () => {
+  it('opens the team group in the chat app when a team is selected', async () => {
     const user = userEvent.setup();
-    stubAppFetch();
+    const fetchMock = stubAppFetch();
     window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, 'agent-1');
     window.history.pushState({}, '', '/enterprise/agents');
     render(<I18nProvider><App /></I18nProvider>);
@@ -154,9 +154,12 @@ describe('App team scope selection', () => {
     await user.click(teamItem!);
 
     await waitFor(() => {
-      expect(window.location.pathname).toBe('/enterprise/teams/team-1');
-      expect(window.location.search).toBe('?view=chat');
+      expect(window.location.pathname).toBe('/workspace/chat/session-tl-1');
     });
+    const postCall = fetchMock.mock.calls.find(([, init]) => (
+      (init?.method || '').toUpperCase() === 'POST'
+    ));
+    expect(String(postCall?.[0])).toContain('/api/enterprise/teams/team-1/tl/session');
     expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('team:team-1');
   });
 

@@ -2,7 +2,7 @@
 
 import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import TeamChatPage from './TeamChatPage';
 
@@ -11,21 +11,32 @@ function LocationEcho() {
   return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('TeamChatPage legacy redirect', () => {
-  it('moves old links to the embedded team room without creating another session', async () => {
+  it('opens the persistent team group in the chat app', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => JSON.stringify({ session_id: 'session-team-1' }),
+    } as Response));
+    vi.stubGlobal('fetch', fetchMock);
     render(
       <MemoryRouter initialEntries={['/enterprise/teams/team-1/chat']}>
         <Routes>
           <Route path="/enterprise/teams/:teamId/chat" element={<TeamChatPage />} />
-          <Route path="/enterprise/teams/:teamId" element={<LocationEcho />} />
+          <Route path="/workspace/chat/:sessionId" element={<LocationEcho />} />
         </Routes>
       </MemoryRouter>,
     );
 
     expect((await screen.findByTestId('location')).textContent).toBe(
-      '/enterprise/teams/team-1?view=chat',
+      '/workspace/chat/session-team-1',
     );
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/teams/team-1/tl/session');
   });
 });

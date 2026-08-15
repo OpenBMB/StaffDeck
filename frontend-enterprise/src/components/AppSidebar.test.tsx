@@ -137,7 +137,7 @@ describe('AppSidebar agent switcher team group', () => {
   });
 });
 
-describe('AppSidebar chat variant team leader badge', () => {
+describe('AppSidebar chat variant group conversations', () => {
   const leaderAgent: AgentProfileRead = { ...agent, id: 'agent-tl', name: '队长' };
   const teamWithLeader: TeamRead = {
     ...team,
@@ -168,7 +168,7 @@ describe('AppSidebar chat variant team leader badge', () => {
         tenant_id: 'tenant_demo',
         agent_id: 'agent-tl',
         team_id: 'team-1',
-        title: 'TL 对话',
+        title: '团队 增长团队 · TL 对话',
         status: 'active',
         updated_at: '2026-08-01T00:00:00Z',
       },
@@ -176,8 +176,7 @@ describe('AppSidebar chat variant team leader badge', () => {
         id: 'session-member',
         tenant_id: 'tenant_demo',
         agent_id: 'agent-1',
-        team_id: 'team-1',
-        title: '团队任务：写公告',
+        title: '写公告',
         status: 'active',
         updated_at: '2026-08-01T00:00:00Z',
       },
@@ -207,34 +206,33 @@ describe('AppSidebar chat variant team leader badge', () => {
     );
   }
 
-  it('marks the project-leader session row with one clear badge', () => {
+  it('renders employee sessions and team groups as different conversation types', () => {
     renderChatSidebar();
 
-    expect(screen.getByLabelText('项目领导')).toBeTruthy();
-    expect(screen.getAllByLabelText('项目领导')).toHaveLength(1);
-    const tlRow = screen.getByText('项目领导对话').closest('[role="button"]');
-    expect(tlRow?.textContent).toContain('项目领导');
-    const memberRow = screen.getByText('团队任务：写公告').closest('[role="button"]');
-    expect(memberRow?.textContent).not.toContain('项目领导');
+    expect(screen.getByLabelText('群聊')).toBeTruthy();
+    const groupRow = screen.getByText('增长团队').closest('[role="button"]');
+    expect(groupRow?.textContent).toContain('2 位成员 · 团队群聊');
+    const employeeRow = screen.getByText('写公告').closest('[role="button"]');
+    expect(employeeRow?.textContent).not.toContain('群聊');
   });
 
-  it('keeps the project-leader label when the team roster is still loading', () => {
+  it('keeps a group label while the team roster is still loading', () => {
     renderChatSidebar([]);
 
-    expect(screen.getByText('项目领导对话')).toBeTruthy();
-    expect(screen.getByLabelText('项目领导')).toBeTruthy();
+    expect(screen.getByText('增长团队')).toBeTruthy();
+    expect(screen.getByLabelText('群聊')).toBeTruthy();
   });
 
   it('shows the employee name in a styled tooltip on avatar hover', async () => {
     const user = userEvent.setup();
     renderChatSidebar();
 
-    const tlRow = screen.getByText('项目领导对话').closest('[role="button"]');
-    const avatar = tlRow?.querySelector('span');
+    const employeeRow = screen.getByText('写公告').closest('[role="button"]');
+    const avatar = employeeRow?.querySelector('span');
     expect(avatar).toBeTruthy();
     await user.hover(avatar as Element);
 
     const tooltip = await screen.findByRole('tooltip');
-    expect(tooltip.textContent).toContain('队长');
+    expect(tooltip.textContent).toContain('小艾');
   });
 });

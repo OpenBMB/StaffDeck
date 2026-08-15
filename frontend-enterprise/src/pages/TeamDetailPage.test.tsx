@@ -10,12 +10,6 @@ import type { AgentProfileRead, TeamBlackboardEntryRead, TeamEventRead, TeamRead
 
 import TeamDetailPage from './TeamDetailPage';
 
-vi.mock('./chat/components/TeamGroupChatPanel', () => ({
-  default: ({ team: currentTeam }: { team: TeamRead }) => (
-    <section aria-label="团队群聊">{currentTeam.name} · 团队群聊</section>
-  ),
-}));
-
 const team: TeamRead = {
   id: 'team-1',
   tenant_id: 'tenant_demo',
@@ -319,13 +313,12 @@ describe('TeamDetailPage', () => {
     });
   });
 
-  it('keeps the unique team chat inside the team workspace', async () => {
+  it('keeps chat content out of the management workspace', async () => {
     stubDetailFetch();
     renderDetail();
 
-    const chat = await screen.findByLabelText('团队群聊');
-    expect(within(chat).getByText('增长团队 · 团队群聊')).toBeTruthy();
-    expect(screen.queryByText('前往项目领导对话')).toBeNull();
+    expect(await screen.findByText('增长团队')).toBeTruthy();
+    expect(screen.queryByLabelText('团队群聊')).toBeNull();
   });
 
   it('renders blackboard entries pinned first with tags and sources', async () => {

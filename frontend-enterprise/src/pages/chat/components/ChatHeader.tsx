@@ -28,13 +28,15 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
   const rawName = currentSession?.title
     ? staffdeckDisplayText(currentSession.title)
     : currentSession?.id || '新对话';
-  const name = teamId ? rawName.replace(/TL 对话/g, '项目领导对话') : rawName;
   const username = auth?.user?.username || '';
   const initial = username ? username.slice(0, 1).toUpperCase() : '--';
 
   // 团队会话徽标：read 带 team_name 直接用；缺省时用团队列表做 id→name 映射。
   const sessionTeamName = currentSession?.team_name || null;
   const [teamName, setTeamName] = useState<string | null>(sessionTeamName);
+  const name = teamId
+    ? teamName || rawName.replace(/^团队\s*/, '').replace(/\s*·\s*TL 对话$/, '')
+    : rawName;
 
   useEffect(() => {
     setTeamName(sessionTeamName);
@@ -60,10 +62,10 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
               variant="secondary"
               className="shrink-0 rounded-full bg-[#e8f0ff] text-[12px] font-normal text-[#1a71ff]"
             >
-              {teamName ? `团队 · ${teamName}` : '团队'}
+              群聊
             </Badge>
           )}
-          {currentSession && (
+          {currentSession && !teamId && (
             <button
               type="button"
               aria-label="重命名会话"

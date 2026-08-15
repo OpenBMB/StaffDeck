@@ -344,12 +344,21 @@ function Shell({
     emitAgentScopeChange(agentId);
   }
 
-  function selectTeamScope(teamId: string) {
+  async function selectTeamScope(teamId: string) {
     const scope = toTeamScope(teamId);
-    setSelectedAgentId(scope);
-    persistSharedAgentScope(scope, auth.user.id);
-    emitAgentScopeChange(scope);
-    navigate(`/enterprise/teams/${teamId}?view=chat`);
+    try {
+      const result = await api.post<{ session_id: string }>(
+        `/api/enterprise/teams/${teamId}/tl/session`,
+        { tenant_id: TENANT_ID },
+      );
+      if (!result.session_id) throw new Error("发起群聊失败");
+      setSelectedAgentId(scope);
+      persistSharedAgentScope(scope, auth.user.id);
+      emitAgentScopeChange(scope);
+      navigate(`/workspace/chat/${result.session_id}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : "发起群聊失败");
+    }
   }
 
   function handleSidebarOpenChange(open: boolean) {
@@ -499,7 +508,7 @@ function Shell({
         onSelectAgent={(agentId) => {
           const teamId = teamIdFromScope(agentId);
           if (teamId) {
-            selectTeamScope(teamId);
+            void selectTeamScope(teamId);
             return;
           }
           if (agentId !== selectedAgentId) changeAgentScope(agentId);

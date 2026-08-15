@@ -56,4 +56,17 @@ describe('chat session filter options', () => {
     expect(options).toContainEqual({ value: 'agent-draft', label: 'Draft Agent' });
     expect(options.some((option) => option.label.includes('· 0'))).toBe(false);
   });
+
+  it('counts team groups separately from the project leader employee', () => {
+    const group = {
+      ...session('session-team', 'agent-a'),
+      team_id: 'team-1',
+      team_name: '增长团队',
+    };
+
+    expect(buildSessionFilterOptions([agent('agent-a', 'Alpha')], [group])).toEqual([
+      { value: 'all', label: '全部会话 · 1' },
+      { value: 'team:team-1', label: '增长团队 · 1' },
+    ]);
+  });
 });

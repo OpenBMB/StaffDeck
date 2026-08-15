@@ -14,7 +14,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
@@ -1912,15 +1912,46 @@ def list_chat_sessions(
 ) -> list[ChatSessionRead]:
     _ensure_request_tenant(tenant_id, current_user)
     ensure_tenant(db, tenant_id)
-    rows = db.exec(
-        select(ChatSession)
-        .where(
-            ChatSession.tenant_id == tenant_id,
-            ChatSession.user_id == current_user.id,
-            ChatSession.team_id.is_(None),
+    rows = list(
+        db.exec(
+            select(ChatSession)
+            .where(
+                ChatSession.tenant_id == tenant_id,
+                or_(
+                    and_(
+                        ChatSession.user_id == current_user.id,
+                        ChatSession.team_id.is_(None),
+                    ),
+                    and_(
+                        ChatSession.team_id.is_not(None),
+                        ChatSession.title.like("%TL 对话%"),
+                    ),
+                ),
+            )
+            .order_by(ChatSession.updated_at.desc())
         )
-        .order_by(ChatSession.updated_at.desc())
-    ).all()
+        .all()
+    )
+    if not is_admin_user(current_user):
+        team_ids = {row.team_id for row in rows if row.team_id}
+        owned_team_ids = (
+            {
+                team.id
+                for team in db.exec(
+                    select(Team).where(
+                        Team.id.in_(team_ids),
+                        Team.owner_user_id == current_user.id,
+                    )
+                ).all()
+            }
+            if team_ids
+            else set()
+        )
+        rows = [
+            row
+            for row in rows
+            if not row.team_id or row.user_id == current_user.id or row.team_id in owned_team_ids
+        ]
     hidden_session_ids = pilotdeck_origin_session_ids(
         db,
         tenant_id,

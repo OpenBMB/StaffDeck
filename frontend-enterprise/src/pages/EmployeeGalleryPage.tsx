@@ -153,7 +153,12 @@ export default function EmployeeGalleryPage({
     if (startingTeamId) return;
     setStartingTeamId(team.id);
     try {
-      navigate(`/enterprise/teams/${team.id}?view=chat`);
+      const result = await api.post<{ session_id: string }>(
+        `/api/enterprise/teams/${team.id}/tl/session`,
+        { tenant_id: TENANT_ID },
+      );
+      if (!result.session_id) throw new Error('未返回团队群聊');
+      navigate(`/workspace/chat/${result.session_id}`);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '发起团队对话失败');
     } finally {

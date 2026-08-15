@@ -84,18 +84,14 @@ afterEach(() => {
 });
 
 describe('useChatSession team scope', () => {
-  it('keeps global employee scope unchanged for an embedded team room', async () => {
+  it('syncs the shared scope for an active team group', async () => {
     window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, 'agent-1');
-    stubChatFetch([employeeSession]);
-    const { result } = renderChatSession('/workspace/chat', {
-      sessionId: teamSession.id,
-      embedded: true,
-    });
+    stubChatFetch([teamSession, employeeSession]);
+    renderChatSession('/workspace/chat/session-team-1');
 
     await waitFor(() => {
-      expect(result.current.currentSession?.id).toBe(teamSession.id);
+      expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('team:team-1');
     });
-    expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('agent-1');
   });
 
   it('keeps the employee scope for regular employee sessions', async () => {
@@ -111,7 +107,7 @@ describe('useChatSession team scope', () => {
     expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('agent-1');
   });
 
-  it('never exposes team sessions in the global chat sidebar', async () => {
+  it('filters the unified session list to a selected team group', async () => {
     window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, 'team:team-1');
     stubChatFetch([teamSession, employeeSession]);
     const { result } = renderChatSession('/workspace/chat');
@@ -119,6 +115,6 @@ describe('useChatSession team scope', () => {
     await waitFor(() => {
       expect(result.current.sessionsLoading).toBe(false);
     });
-    expect(result.current.visibleSidebarSessions).toEqual([]);
+    expect(result.current.visibleSidebarSessions.map((session) => session.id)).toEqual(['session-team-1']);
   });
 });
