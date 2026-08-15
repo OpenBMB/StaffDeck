@@ -25,6 +25,7 @@ from app.knowledge.service import IngestPayload, KnowledgeService
 from app.security.auth import get_current_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
+from app.session.message_visibility import visible_message_content, visible_message_rows
 from app.session.session_schema import ChatTurnRequest
 from app.teams import service as team_service
 from app.teams.schema import (
@@ -77,7 +78,7 @@ from app.teams.service import (
     write_blackboard_entries,
 )
 from app.teams.wakeup import (
-    build_tl_chat_message,
+    build_tl_chat_context,
     enqueue_wake_event,
     process_tl_reply,
     start_bidding,
@@ -395,7 +396,8 @@ def tl_chat_endpoint(
         agent_id=tl_agent.id,
         client_turn_id=new_id("teamturn"),
         user_id=current_user.id,
-        message=build_tl_chat_message(db, team, request.message),
+        message=request.message,
+        context_injection=build_tl_chat_context(db, team, request.message),
         channel="team",
         interaction_mode="team_tl",
     )
@@ -596,9 +598,13 @@ def list_team_conversation_messages(
     rows = db.exec(
         select(Message).where(Message.session_id == session.id).order_by(Message.created_at)
     ).all()
+    rows = visible_message_rows(rows)
     return [
         TeamConversationMessageRead(
-            id=row.id, role=row.role, content=row.content, created_at=row.created_at
+            id=row.id,
+            role=row.role,
+            content=visible_message_content(row),
+            created_at=row.created_at,
         )
         for row in rows
     ]

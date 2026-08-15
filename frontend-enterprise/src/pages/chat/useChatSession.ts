@@ -1077,7 +1077,10 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     const merged = computeMergedMessages(
       getSlot(activeConversationId),
       getStreamSlot(activeConversationId).turnId,
-    ).filter((item) => item.metadata?.queued !== true);
+    ).filter((item) => (
+      item.metadata?.queued !== true
+      && item.metadata?.message_visibility !== 'internal'
+    ));
     const queued = queuedTurnsRef.current
       .filter((turn) => turn.conversationId === activeConversationId)
       .map(queuedTurnPreview);

@@ -160,12 +160,13 @@ def test_team_binding_inbound_routes_to_tl() -> None:
     assert process_inbound(binding, _p2p_message("evt_1"), db_engine=engine) is True
     assert len(RecordingAgentLoop.calls) == 1
     request = RecordingAgentLoop.calls[0]
-    # 团队分支:interaction_mode=team_tl,消息被 build_tl_chat_message 包装(含花名册)
+    # 团队分支:可见消息保持原文，花名册只进入运行时上下文。
     assert request.interaction_mode == "team_tl"
     assert request.agent_id == "agent_tl"
-    assert "团队「增长团队」的 TL" in request.message
-    assert "团队花名册:" in request.message
-    assert "人的需求:你好" in request.message
+    assert request.message == "你好"
+    assert "团队「增长团队」的 TL" in request.context_injection
+    assert "团队花名册:" in request.context_injection
+    assert request.context_injection.endswith("人的需求:")
 
     with Session(engine) as db:
         chat_session = db.get(ChatSession, request.session_id)

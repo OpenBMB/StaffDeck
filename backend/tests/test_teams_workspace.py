@@ -212,6 +212,7 @@ def test_chat_turn_team_tl_session_injects_context_and_creates_tasks(
 
         def fake_handle_turn(self, request):
             seen["message"] = request.message
+            seen["context_injection"] = request.context_injection
             seen["interaction_mode"] = request.interaction_mode
             reply = (
                 "收到,派给 Worker。\n"
@@ -239,10 +240,11 @@ def test_chat_turn_team_tl_session_injects_context_and_creates_tasks(
             db,
         )
 
-        # 消息被团队上下文包装后再走引擎
-        assert "团队花名册" in seen["message"]
-        assert "agent_worker" in seen["message"]
-        assert "人的需求:帮我调研竞品" in seen["message"]
+        # 可见消息保持原文，团队上下文通过仅供运行时使用的字段注入。
+        assert seen["message"] == "帮我调研竞品"
+        assert "团队花名册" in seen["context_injection"]
+        assert "agent_worker" in seen["context_injection"]
+        assert seen["context_injection"].endswith("人的需求:")
         assert seen["interaction_mode"] == "team_tl"
         assert response.reply.startswith("收到")
 
@@ -279,6 +281,7 @@ def test_chat_turn_plain_session_unchanged(monkeypatch: pytest.MonkeyPatch) -> N
 
         def fake_handle_turn(self, request):
             seen["message"] = request.message
+            seen["context_injection"] = request.context_injection
             seen["interaction_mode"] = request.interaction_mode
             return ChatTurnResponse(
                 reply="好的",
@@ -302,5 +305,6 @@ def test_chat_turn_plain_session_unchanged(monkeypatch: pytest.MonkeyPatch) -> N
         )
 
         assert seen["message"] == "帮我调研竞品"
+        assert seen["context_injection"] is None
         assert seen["interaction_mode"] == "normal"
         assert db.exec(select(TeamTask).where(TeamTask.team_id == team.id)).all() == []

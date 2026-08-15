@@ -61,6 +61,7 @@ from app.memory.service import MemoryService
 from app.observability import EventLog
 from app.observability.spans import llm_operation
 from app.session.helpers import public_session
+from app.session.message_visibility import visible_message_content, visible_message_rows
 from app.session.origin import PILOTDECK_GROUP_CHAT_CHANNEL
 from app.session.session_schema import (
     ChatTurnRequest,
@@ -225,6 +226,11 @@ class AgentLoop:
             step_result,
             request.message,
             user_message_id=user_message_id,
+            assistant_metadata_override=(
+                {"message_visibility": request.message_visibility}
+                if request.message_visibility != "visible"
+                else None
+            ),
         )
         self.db.commit()
         self.db.refresh(chat_session)
@@ -1141,8 +1147,15 @@ class AgentLoop:
                 .order_by(Message.created_at.asc())
             ).all()
         )
+        visible_rows = visible_message_rows(rows)
         context = build_conversation_context(
-            [self._message_context_entry(row) for row in rows],
+            [
+                ConversationProjection.message_context_entry(
+                    row,
+                    content=visible_message_content(row),
+                )
+                for row in visible_rows
+            ],
             context_state=chat_session.context_state_json,
             summary_builder=self._context_summary_builder(model_config) if model_config else None,
         )
@@ -1252,17 +1265,23 @@ class AgentLoop:
         chat_session.updated_at = utc_now()
         chat_session.status = "active"
         chat_session.summary = f"最近回复：{CANCELLED_ASSISTANT_REPLY}"
+        user_visibility = str(
+            (user_message.metadata_json or {}).get("message_visibility") or "visible"
+        )
+        cancelled_metadata = {
+            "turn_id": user_message_id,
+            "user_message_id": user_message_id,
+            "client_turn_id": normalized_client_turn_id or None,
+            "status": "cancelled",
+        }
+        if user_visibility != "visible":
+            cancelled_metadata["message_visibility"] = user_visibility
         assistant_message = self._append_message(
             tenant_id,
             chat_session.id,
             "assistant",
             CANCELLED_ASSISTANT_REPLY,
-            metadata={
-                "turn_id": user_message_id,
-                "user_message_id": user_message_id,
-                "client_turn_id": normalized_client_turn_id or None,
-                "status": "cancelled",
-            },
+            metadata=cancelled_metadata,
         )
         self.events.record(
             tenant_id,
@@ -1402,6 +1421,8 @@ class AgentLoop:
             event_payload["turn_id"] = user_message_id
         if assistant_metadata.get("knowledge_citations"):
             event_payload["knowledge_citations"] = assistant_metadata["knowledge_citations"]
+        if assistant_metadata.get("message_visibility"):
+            event_payload["message_visibility"] = assistant_metadata["message_visibility"]
         self.events.record(
             tenant_id,
             chat_session.id,

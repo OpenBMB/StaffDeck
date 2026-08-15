@@ -1003,20 +1003,21 @@ def process_inbound(
             # 团队绑定:重新挂到当前会话(跨 Session 边界只带 id)
             team = db.get(Team, turn_team_id) if turn_team_id else None
             user_message = _message_text(binding, inbound)
-            message = user_message
+            context_injection = None
             interaction_mode = "normal"
             if team is not None:
                 # 注入团队上下文(花名册/未闭环任务/黑板/派任务格式),与主聊天端 TL 会话同语义
-                from app.teams.wakeup import build_tl_chat_message
+                from app.teams.wakeup import build_tl_chat_context
 
-                message = build_tl_chat_message(db, team, user_message)
+                context_injection = build_tl_chat_context(db, team, user_message)
                 interaction_mode = "team_tl"
             request = ChatTurnRequest(
                 tenant_id=binding.tenant_id,
                 session_id=session_id,
                 agent_id=current_agent_id,
                 user_id=user_id,
-                message=message,
+                message=user_message,
+                context_injection=context_injection,
                 channel=binding.channel,
                 client_turn_id=inbound.event_id,
                 attachments=attachments,

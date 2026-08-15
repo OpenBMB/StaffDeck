@@ -323,8 +323,9 @@ def test_tl_chat_creates_tasks_and_wakes(monkeypatch: pytest.MonkeyPatch) -> Non
 
         def fake_handle_turn(self, request):
             assert request.interaction_mode == "team_tl"
-            # 团队上下文注入:花名册含成员 agent_id
-            assert "agent_worker" in request.message
+            assert request.message == "帮我调研竞品"
+            # 团队上下文仅注入运行时，不写入可见消息。
+            assert "agent_worker" in (request.context_injection or "")
             reply = (
                 "收到,派给 Worker。\n"
                 '```json\n{"team_tasks": [{"title": "竞品调研", '

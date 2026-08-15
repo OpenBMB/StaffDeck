@@ -211,6 +211,12 @@ class ChatTurnRequest(BaseModel):
     attachments: list["ChatAttachmentRead"] = Field(default_factory=list)
     channel: str = "web"
     interaction_mode: Literal["normal", "scheduled_task", "team_task", "team_tl"] = "normal"
+    # Server-only prompt prefix. It is consumed by the runtime but never persisted as
+    # the user's visible message or serialized into background-job payloads.
+    context_injection: Optional[str] = Field(default=None, exclude=True)
+    # Internal retry turns remain auditable in storage while staying out of the
+    # user-facing conversation and subsequent conversational context.
+    message_visibility: Literal["visible", "internal"] = Field(default="visible", exclude=True)
     client_timezone: Optional[str] = None
     debug: bool = False
 

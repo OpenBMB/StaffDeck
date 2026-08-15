@@ -117,8 +117,9 @@ TL_BID_JUDGE_REPAIR_MESSAGE = (
 )
 
 
-def build_tl_chat_message(db: Session, team: Team, user_message: str) -> str:
-    """TL 对话上下文注入:团队信息 + 花名册 + 未闭环任务 + 黑板 + 派任务输出格式。"""
+def build_tl_chat_context(db: Session, team: Team, user_message: str) -> str:
+    """Build server-only TL context without embedding the visible user message."""
+
     roster = team_roster_lines(db, team)
     open_tasks = open_tasks_summary(db, team)
     lines = [f"你是团队「{team.name}」的 TL(团队负责人),负责拆解需求并指派给团队成员。"]
@@ -132,9 +133,15 @@ def build_tl_chat_message(db: Session, team: Team, user_message: str) -> str:
     if blackboard:
         lines.append("团队黑板(相关工作记忆):")
         lines.extend(blackboard)
-    lines.append(f"人的需求:{user_message}")
     lines.append(TL_ASSIGNMENT_INSTRUCTION)
+    lines.append("人的需求:")
     return "\n".join(lines)
+
+
+def build_tl_chat_message(db: Session, team: Team, user_message: str) -> str:
+    """Compatibility helper returning the complete model input for a TL turn."""
+
+    return f"{build_tl_chat_context(db, team, user_message)}\n{user_message}"
 
 
 def build_member_task_message(db: Session, team: Team, task: TeamTask, *, rework: bool) -> str:
@@ -1666,7 +1673,9 @@ def process_tl_reply(
             agent_id=tl_agent.id,
             client_turn_id=new_id("teamturn"),
             user_id=user.id,
-            message=f"{build_tl_chat_message(db, team, user_message)}\n\n{TL_ASSIGNMENT_REPAIR_MESSAGE}",
+            message=TL_ASSIGNMENT_REPAIR_MESSAGE,
+            context_injection=build_tl_chat_message(db, team, user_message),
+            message_visibility="internal",
             channel="team",
             interaction_mode="team_tl",
         )

@@ -72,6 +72,11 @@ from app.session.attachments import (
     validate_chat_turn_attachments,
 )
 from app.session.helpers import public_session
+from app.session.message_visibility import (
+    internal_message_turn_ids,
+    visible_message_content,
+    visible_message_rows,
+)
 from app.session.origin import pilotdeck_origin_session_ids
 from app.session.session_schema import (
     ChatAttachmentRead,
@@ -84,7 +89,7 @@ from app.session.session_schema import (
     MessageRead,
 )
 from app.teams.service import get_team_leader
-from app.teams.wakeup import build_tl_chat_message, process_tl_reply
+from app.teams.wakeup import build_tl_chat_context, process_tl_reply
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -205,9 +210,10 @@ def message_read(
     feedback_rating: str | None = None,
     turn_id: str | None = None,
     db: Session | None = None,
+    content_override: str | None = None,
 ) -> MessageRead:
     metadata = _message_metadata_read(row, db)
-    content = row.content
+    content = row.content if content_override is None else content_override
     if row.role == "assistant":
         content, compacted_citations = compact_knowledge_citation_labels(
             content,
@@ -990,7 +996,13 @@ def chat_turn(
     db: Session = Depends(get_session),
 ) -> ChatTurnResponse:
     _ensure_request_tenant(request.tenant_id, current_user)
-    request = request.model_copy(update={"user_id": current_user.id})
+    request = request.model_copy(
+        update={
+            "user_id": current_user.id,
+            "context_injection": None,
+            "message_visibility": "visible",
+        }
+    )
     request = _validate_chat_turn_attachments(request)
     team_tl_team: Team | None = None
     if request.session_id:
@@ -1008,7 +1020,9 @@ def chat_turn(
         # 团队 TL 会话:注入团队上下文(花名册/未闭环任务/黑板/派任务格式)后再走正常引擎
         request = request.model_copy(
             update={
-                "message": build_tl_chat_message(db, team_tl_team, original_message),
+                "context_injection": build_tl_chat_context(
+                    db, team_tl_team, original_message
+                ),
                 "interaction_mode": "team_tl",
             }
         )
@@ -1057,7 +1071,13 @@ def chat_stream(
     db: Session = Depends(get_session),
 ) -> StreamingResponse:
     _ensure_request_tenant(request.tenant_id, current_user)
-    request = request.model_copy(update={"user_id": current_user.id})
+    request = request.model_copy(
+        update={
+            "user_id": current_user.id,
+            "context_injection": None,
+            "message_visibility": "visible",
+        }
+    )
     request = _validate_chat_turn_attachments(request)
     ensure_tenant(db, request.tenant_id)
     team_tl_team_id: str | None = None
@@ -1076,7 +1096,9 @@ def chat_stream(
         # 团队 TL 会话:注入团队上下文(花名册/未闭环任务/黑板/派任务格式)后再走正常引擎
         request = request.model_copy(
             update={
-                "message": build_tl_chat_message(db, db.get(Team, team_tl_team_id), original_message),
+                "context_injection": build_tl_chat_context(
+                    db, db.get(Team, team_tl_team_id), original_message
+                ),
                 "interaction_mode": "team_tl",
             }
         )
@@ -1369,6 +1391,7 @@ def chat_stream(
         deadline = time.monotonic() + STREAM_RELAY_IDLE_TIMEOUT_SECONDS
         last_heartbeat_at = time.monotonic()
         terminal_sent = False
+        internal_relay_turn_ids: set[str] = set()
         while True:
             session_id = source_session_id["value"]
             emitted = False
@@ -1376,9 +1399,19 @@ def chat_stream(
                 with Session(engine) as relay_db:
                     rows = _events_after_cursor(relay_db, request.tenant_id, session_id, initial_cursor)
                 for row in rows:
+                    payload = row.payload_json or {}
+                    row_turn_ids = {
+                        str(payload.get(key) or "").strip()
+                        for key in ("turn_id", "user_message_id", "message_id", "client_turn_id")
+                        if str(payload.get(key) or "").strip()
+                    }
+                    if payload.get("message_visibility") == "internal":
+                        internal_relay_turn_ids.update(row_turn_ids)
                     event_name, data = _relay_event_payload(row)
                     initial_cursor = (row.created_at, row.id)
                     emitted = True
+                    if row_turn_ids & internal_relay_turn_ids:
+                        continue
                     yield _sse(event_name, data, row.id)
                     if event_name in STREAM_RELAY_TERMINAL_EVENTS:
                         terminal_sent = True
@@ -2019,8 +2052,18 @@ def list_chat_messages(
         .order_by(AgentEvent.created_at)
     ).all()
     turn_ids_by_message = _message_turn_ids_from_events(events)
+    rows = visible_message_rows(rows)
     feedback_by_message = _feedback_by_message(db, tenant_id, current_user.id, [row.id for row in rows])
-    return [message_read(row, feedback_by_message.get(row.id), turn_ids_by_message.get(row.id), db) for row in rows]
+    return [
+        message_read(
+            row,
+            feedback_by_message.get(row.id),
+            turn_ids_by_message.get(row.id),
+            db,
+            content_override=visible_message_content(row),
+        )
+        for row in rows
+    ]
 
 
 @router.get("/sessions/{session_id}/artifacts/{task_frame_id}")
@@ -2112,6 +2155,13 @@ def list_chat_session_events(
 ) -> list[dict]:
     _ensure_request_tenant(tenant_id, current_user)
     _get_readable_chat_session(db, tenant_id, current_user, session_id)
+    messages = db.exec(
+        select(Message).where(
+            Message.tenant_id == tenant_id,
+            Message.session_id == session_id,
+        )
+    ).all()
+    internal_turn_ids = internal_message_turn_ids(messages)
     rows = db.exec(
         select(AgentEvent)
         .where(
@@ -2121,6 +2171,18 @@ def list_chat_session_events(
         .order_by(AgentEvent.created_at)
         .limit(500)
     ).all()
+    if internal_turn_ids:
+        rows = [
+            row
+            for row in rows
+            if str(
+                (row.payload_json or {}).get("turn_id")
+                or (row.payload_json or {}).get("user_message_id")
+                or (row.payload_json or {}).get("message_id")
+                or ""
+            ).strip()
+            not in internal_turn_ids
+        ]
     return [_normalized_session_event_payload(row) for row in rows]
 
 
@@ -2328,11 +2390,25 @@ def list_chat_session_trace(
         .where(Message.tenant_id == tenant_id, Message.session_id == session_id)
         .order_by(Message.created_at)
     ).all()
+    internal_turn_ids = internal_message_turn_ids(messages)
+    messages = visible_message_rows(messages)
     events = db.exec(
         select(AgentEvent)
         .where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == session_id)
         .order_by(AgentEvent.created_at)
     ).all()
+    if internal_turn_ids:
+        events = [
+            event
+            for event in events
+            if str(
+                (event.payload_json or {}).get("turn_id")
+                or (event.payload_json or {}).get("user_message_id")
+                or (event.payload_json or {}).get("message_id")
+                or ""
+            ).strip()
+            not in internal_turn_ids
+        ]
     skills = db.exec(select(Skill).where(Skill.tenant_id == tenant_id)).all()
     skill_names = {skill.skill_id: skill.name for skill in skills}
     return _build_turn_traces(messages, events, skill_names)

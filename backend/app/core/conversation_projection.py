@@ -15,11 +15,14 @@ from app.session.session_schema import ChatTurnRequest, RouterDecision, StepAgen
 
 class ConversationProjection:
     @staticmethod
-    def message_context_entry(row: Message) -> dict[str, Any]:
+    def message_context_entry(row: Message, *, content: str | None = None) -> dict[str, Any]:
         entry: dict[str, Any] = {
             "id": row.id,
             "role": row.role,
-            "content": message_content_with_attachment_context(row.content, row.metadata_json),
+            "content": message_content_with_attachment_context(
+                row.content if content is None else content,
+                row.metadata_json,
+            ),
             "created_at": row.created_at,
         }
         images = message_images_from_metadata(row.metadata_json)
@@ -94,6 +97,8 @@ class ConversationProjection:
             metadata["client_turn_id"] = request.client_turn_id
         if request.interaction_mode != "normal":
             metadata["interaction_mode"] = request.interaction_mode
+        if request.message_visibility != "visible":
+            metadata["message_visibility"] = request.message_visibility
         if request.model_config_id:
             metadata["model_config_id"] = request.model_config_id
         if request.attachments:
