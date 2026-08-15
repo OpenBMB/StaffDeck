@@ -2655,5 +2655,21 @@
   "团队任务:季度报告": "Team task: Quarterly report",
   "委派任务「季度报告」": "Assigned task \"Quarterly report\"",
   "季度报告已经整理完成。": "The quarterly report is ready.",
-  "你是团队「运营团队」的成员,请完成以下团队任务。 任务标题:季度报告": "You are a member of the Operations Team. Complete this team task. Task title: Quarterly report"
+  "你是团队「运营团队」的成员,请完成以下团队任务。 任务标题:季度报告": "You are a member of the Operations Team. Complete this team task. Task title: Quarterly report",
+  "@{1}，请参与「{2}」竞标": "@{1}, please bid on \"{2}\"",
+  "@{1}，请处理「{2}」": "@{1}, please handle \"{2}\"",
+  "成员已回复": "Member replied",
+  "团队协作 {1}": "Team collaboration {1}",
+  "团队内部协作": "Internal team collaboration",
+  "，请参与「{1}」竞标": ", please bid on \"{1}\"",
+  "，请处理「{1}」": ", please handle \"{1}\"",
+  "{1}{2}的回复": "{1} {2}'s reply",
+  "{1}回复：{2}": "{1} replied: {2}",
+  "暂无回复内容": "No reply content yet",
+  "@行政": "@Administration",
+  "，请处理「季度报告」": ", please handle \"Quarterly report\"",
+  "行政回复：季度报告已经整理完成。": "Administration replied: The quarterly report is ready.",
+  "展开行政的回复": "Expand Administration's reply",
+  "收起行政的回复": "Collapse Administration's reply",
+  "@行政，请处理「季度报告」": "@Administration, please handle \"Quarterly report\""
 }

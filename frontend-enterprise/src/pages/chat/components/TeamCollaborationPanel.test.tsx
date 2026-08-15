@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentProfileRead, TeamRead } from '@/types';
 
-import TeamCollaborationPanel from './TeamCollaborationPanel';
+import TeamCollaborationPanel, { collaborationQuestion } from './TeamCollaborationPanel';
 
 const agents: AgentProfileRead[] = [
   {
@@ -77,7 +77,7 @@ afterEach(() => {
 });
 
 describe('TeamCollaborationPanel', () => {
-  it('shows leader-to-member cards and summarizes injected prompts in the dialog', async () => {
+  it('renders leader mentions and expands only the member reply inline', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/messages')) {
@@ -119,14 +119,36 @@ describe('TeamCollaborationPanel', () => {
 
     render(<TeamCollaborationPanel team={team} agents={agents} />);
 
-    const card = await screen.findByRole('button', { name: /季度报告/ });
-    expect(screen.getByText('人事 → 行政')).toBeTruthy();
+    expect(await screen.findByText('@行政')).toBeTruthy();
+    expect(screen.getByText('，请处理「季度报告」')).toBeTruthy();
+    expect(screen.getByText('项目领导')).toBeTruthy();
     expect(screen.getAllByLabelText(/员工头像/).length).toBe(2);
+    expect(screen.getByText('行政回复：季度报告已经整理完成。')).toBeTruthy();
 
-    await user.click(card);
+    const reply = screen.getByRole('button', { name: '展开行政的回复' });
+    expect(reply.getAttribute('aria-expanded')).toBe('false');
 
-    expect(await screen.findByText('委派任务「季度报告」')).toBeTruthy();
-    expect(screen.getByText('季度报告已经整理完成。')).toBeTruthy();
+    await user.click(reply);
+
+    expect(await screen.findByRole('button', { name: '收起行政的回复' })).toBeTruthy();
+    expect(screen.getAllByText('季度报告已经整理完成。').length).toBe(1);
     expect(screen.queryByText(/你是团队/)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/session-task/messages'),
+      expect.any(Object),
+    );
+  });
+
+  it('formats collaboration as a direct mention from the project leader', () => {
+    expect(collaborationQuestion({
+      session_id: 'session-task',
+      kind: 'member_task',
+      agent_id: 'agent-admin',
+      agent_name: '行政',
+      task_id: 'task-1',
+      title: '团队任务:季度报告',
+      preview: '',
+      updated_at: '2026-08-15T00:01:00Z',
+    })).toBe('@行政，请处理「季度报告」');
   });
 });

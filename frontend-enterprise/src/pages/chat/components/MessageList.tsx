@@ -23,6 +23,7 @@ import type { UseChatSession } from '../useChatSession';
 import ChatEmptyState from './ChatEmptyState';
 import MessageBubble, { type MessageRender } from './MessageBubble';
 import ScheduledDraftCard from './ScheduledDraftCard';
+import TeamCollaborationPanel from './TeamCollaborationPanel';
 
 export default function MessageList({
   chat,
@@ -164,6 +165,9 @@ export default function MessageList({
 
           return <MessageBubble key={`${item.id}:message`} chat={chat} item={item} render={render} />;
         })}
+        {chat.displayedTeam && (
+          <TeamCollaborationPanel team={chat.displayedTeam} agents={chat.agents} />
+        )}
       </div>
 
       {currentScheduledDraft && !hasVisibleMessageScheduledDraft && (

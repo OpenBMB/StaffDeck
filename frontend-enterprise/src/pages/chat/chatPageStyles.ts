@@ -44,7 +44,9 @@ export const CHAT_GROUP_MESSAGE_AVATAR_CLASS =
   'mt-[2px] size-[36px] shrink-0 overflow-hidden rounded-[10px] bg-white ring-1 ring-[#e3e7f1]';
 export const CHAT_GROUP_MESSAGE_CONTENT_CLASS = 'flex min-w-0 flex-1 flex-col gap-[5px]';
 export const CHAT_GROUP_MESSAGE_SENDER_CLASS =
-  'px-[2px] text-[11px] font-medium leading-[1.4] text-[#757f9c]';
+  'inline-flex items-center gap-[6px] px-[2px] text-[11px] font-medium leading-[1.4] text-[#757f9c]';
+export const CHAT_GROUP_MESSAGE_LEADER_BADGE_CLASS =
+  'rounded-full bg-[#edf3ff] px-[6px] py-px text-[9px] font-medium leading-[1.4] text-[#1a71ff]';
 
 export const CHAT_BUBBLE_BASE_CLASS =
   'relative box-border min-w-0 max-w-[min(680px,92%)] text-[14px] leading-[1.7] wrap-anywhere text-[#18181a]';

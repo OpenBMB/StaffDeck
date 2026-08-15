@@ -118,6 +118,7 @@ describe('MessageBubble team group identity', () => {
 
     expect(screen.getByLabelText(/员工头像/)).toBeTruthy();
     expect(screen.getByText('人事')).toBeTruthy();
+    expect(screen.getByText('项目领导')).toBeTruthy();
     expect(screen.getByText('团队回复')).toBeTruthy();
   });
 });

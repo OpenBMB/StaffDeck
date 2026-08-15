@@ -33,6 +33,7 @@ import {
   CHAT_FEEDBACK_CLASS,
   CHAT_GROUP_MESSAGE_AVATAR_CLASS,
   CHAT_GROUP_MESSAGE_CONTENT_CLASS,
+  CHAT_GROUP_MESSAGE_LEADER_BADGE_CLASS,
   CHAT_GROUP_MESSAGE_ROW_CLASS,
   CHAT_GROUP_MESSAGE_SENDER_CLASS,
   CHAT_MESSAGE_ITEM_CLASS,
@@ -132,6 +133,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
           {groupAssistantMessage && (
             <span className={CHAT_GROUP_MESSAGE_SENDER_CLASS} data-i18n-ignore>
               {groupSenderName}
+              <span className={CHAT_GROUP_MESSAGE_LEADER_BADGE_CLASS}>项目领导</span>
             </span>
           )}
           <div
