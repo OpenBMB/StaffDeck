@@ -884,7 +884,7 @@ export default function ChannelsPage({
         {binding.team_id ? (
           <div className="flex flex-wrap items-center gap-[8px] rounded-[14px] border border-[#eef0f4] p-[16px]">
             <span className="text-[13px] text-[#18181a]">
-              {`团队：${teamNameFor(binding)}（TL：${teamLeaderName(binding.team_id)}）`}
+              {`团队：${teamNameFor(binding)}（项目领导：${teamLeaderName(binding.team_id)}）`}
             </span>
           </div>
         ) : agentEditing ? (
@@ -1299,7 +1299,7 @@ export default function ChannelsPage({
                         <RadioGroupItem value={team.id} />
                         <span className="min-w-0 flex-1 truncate">{team.name}</span>
                         <span className="shrink-0 text-[12px] text-[#858b9c]">
-                          {`TL：${team.members.find((member) => member.role === 'leader')?.agent_name || '未设置'}`}
+                          {`项目领导：${team.members.find((member) => member.role === 'leader')?.agent_name || '未设置'}`}
                         </span>
                         <span className="shrink-0 text-[12px] text-[#858b9c]">
                           {`${team.members.length} 名成员`}

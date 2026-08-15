@@ -75,18 +75,18 @@ afterEach(() => {
 });
 
 describe('EmployeeGalleryPage teams tab', () => {
-  it('renders team cards with member count, TL and avatar stack under the teams tab', async () => {
+  it('renders team chat cards with member count, project leader and avatar stack', async () => {
     const user = userEvent.setup();
     stubGalleryFetch([team]);
     renderGallery();
 
-    await user.click(await screen.findByRole('tab', { name: '我的团队' }));
+    await user.click(await screen.findByRole('tab', { name: '团队对话' }));
 
     const section = await screen.findByRole('region', { name: '团队' });
     expect(within(section).getByText('增长团队')).toBeTruthy();
     expect(within(section).getByText('负责增长实验与内容投放')).toBeTruthy();
     expect(within(section).getByText('4 名成员')).toBeTruthy();
-    expect(within(section).getByText('TL：小艾')).toBeTruthy();
+    expect(within(section).getByText('项目领导：小艾')).toBeTruthy();
     // 前 3 个成员头像叠放，其余折叠为 +N
     expect(within(section).getByText('+1')).toBeTruthy();
   });
@@ -96,7 +96,7 @@ describe('EmployeeGalleryPage teams tab', () => {
     const fetchMock = stubGalleryFetch([team]);
     renderGallery();
 
-    await user.click(await screen.findByRole('tab', { name: '我的团队' }));
+    await user.click(await screen.findByRole('tab', { name: '团队对话' }));
     const section = await screen.findByRole('region', { name: '团队' });
     await user.click(within(section).getByRole('button', { name: '增长团队' }));
 
@@ -127,7 +127,7 @@ describe('EmployeeGalleryPage teams tab', () => {
     stubGalleryFetch([]);
     renderGallery();
 
-    await user.click(await screen.findByRole('tab', { name: '我的团队' }));
+    await user.click(await screen.findByRole('tab', { name: '团队对话' }));
 
     expect(await screen.findByText('暂无团队')).toBeTruthy();
   });

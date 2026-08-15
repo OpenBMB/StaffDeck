@@ -624,13 +624,7 @@ function Shell({
               />
               <Route
                 path="/enterprise/teams/:teamId/chat"
-                element={
-                  <TeamChatPage
-                    currentUser={auth.user}
-                    isAdmin={isAdmin}
-                    onLogout={onLogout}
-                  />
-                }
+                element={<TeamChatPage />}
               />
               <Route
                 path="/enterprise/teams/:teamId"

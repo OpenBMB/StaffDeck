@@ -161,7 +161,7 @@ describe('AppSidebar chat variant team leader badge', () => {
     ],
   };
 
-  function renderChatSidebar() {
+  function renderChatSidebar(scopeTeams: TeamRead[] = [teamWithLeader]) {
     const sessions = [
       {
         id: 'session-tl',
@@ -190,7 +190,7 @@ describe('AppSidebar chat variant team leader badge', () => {
               variant="chat"
               sessions={sessions}
               agents={[agent, leaderAgent]}
-              scopeTeams={[teamWithLeader]}
+              scopeTeams={scopeTeams}
               sessionFilter="all"
               onSessionFilterChange={() => {}}
               sessionFilterOptions={[{ value: 'all', label: '全部员工 · 2' }]}
@@ -207,22 +207,29 @@ describe('AppSidebar chat variant team leader badge', () => {
     );
   }
 
-  it('marks the team leader session row with a TL badge only', () => {
+  it('marks the project-leader session row with one clear badge', () => {
     renderChatSidebar();
 
-    expect(screen.getByLabelText('团队 TL')).toBeTruthy();
-    expect(screen.getAllByLabelText('团队 TL')).toHaveLength(1);
-    const tlRow = screen.getByText('TL 对话').closest('[role="button"]');
-    expect(tlRow?.textContent).toContain('TL');
+    expect(screen.getByLabelText('项目领导')).toBeTruthy();
+    expect(screen.getAllByLabelText('项目领导')).toHaveLength(1);
+    const tlRow = screen.getByText('项目领导对话').closest('[role="button"]');
+    expect(tlRow?.textContent).toContain('项目领导');
     const memberRow = screen.getByText('团队任务：写公告').closest('[role="button"]');
-    expect(memberRow?.textContent).not.toContain('TL');
+    expect(memberRow?.textContent).not.toContain('项目领导');
+  });
+
+  it('keeps the project-leader label when the team roster is still loading', () => {
+    renderChatSidebar([]);
+
+    expect(screen.getByText('项目领导对话')).toBeTruthy();
+    expect(screen.getByLabelText('项目领导')).toBeTruthy();
   });
 
   it('shows the employee name in a styled tooltip on avatar hover', async () => {
     const user = userEvent.setup();
     renderChatSidebar();
 
-    const tlRow = screen.getByText('TL 对话').closest('[role="button"]');
+    const tlRow = screen.getByText('项目领导对话').closest('[role="button"]');
     const avatar = tlRow?.querySelector('span');
     expect(avatar).toBeTruthy();
     await user.hover(avatar as Element);

@@ -90,10 +90,10 @@ function TeamEmptyCard({ chat }: { chat: UseChatSession }) {
   const teamName = displayedTeam?.name || currentSession?.team_name || '';
   const agentById = (agentId: string) => agents.find((agent) => agent.id === agentId) || null;
   const summary = displayedTeam?.description?.trim()
-    || `团队由 ${members.length} 名成员组成，TL 是 ${leader?.agent_name || '未设置'}`;
+    || `团队由 ${members.length} 名成员组成，项目领导是 ${leader?.agent_name || '未设置'}`;
   const memberTags = members.slice(0, 5).map((member) => (
     member.role === 'leader'
-      ? `${member.agent_name || '未设置'} · TL`
+      ? `${member.agent_name || '未设置'} · 项目领导`
       : member.agent_name || '未设置'
   ));
   const stats = [

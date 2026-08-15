@@ -67,6 +67,14 @@ describe('ChatHeader team badge', () => {
     expect(screen.getByText('团队 · 增长团队')).toBeTruthy();
   });
 
+  it('uses the project-lead label for legacy team-leader session titles', () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([team])));
+    renderHeader(buildChat({ title: '增长团队 · TL 对话', team_id: 'team-1', team_name: '增长团队' }));
+
+    expect(screen.getByText('增长团队 · 项目领导对话')).toBeTruthy();
+    expect(screen.queryByText('增长团队 · TL 对话')).toBeNull();
+  });
+
   it('resolves the team name from the teams list when team_name is missing', async () => {
     const fetchMock = vi.fn(async () => jsonResponse([team]));
     vi.stubGlobal('fetch', fetchMock);

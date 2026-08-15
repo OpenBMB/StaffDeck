@@ -52,12 +52,12 @@ const TEAM_EVENT_TYPE_LABELS: Record<string, string> = {
   bid_skipped: '跳过竞标',
   bid_failed: '竞标失败',
   bid_award_unparsed: '定标解析失败',
-  tl_review_skipped: 'TL 免验收',
-  tl_review_unparsed: 'TL 验收解析失败',
-  tl_review_repair_failed: 'TL 验收修复失败',
-  tl_review_approve: 'TL 验收通过',
-  tl_review_rework: 'TL 退回重做',
-  tl_review_escalate: 'TL 升级',
+  tl_review_skipped: '项目领导免验收',
+  tl_review_unparsed: '项目领导验收解析失败',
+  tl_review_repair_failed: '项目领导验收修复失败',
+  tl_review_approve: '项目领导验收通过',
+  tl_review_rework: '项目领导退回重做',
+  tl_review_escalate: '项目领导升级',
   review_override_approve: '人工改判通过',
   review_override_rework: '人工改判退回',
   review_override_escalate: '人工改判升级',
@@ -144,6 +144,7 @@ export default function TeamDetailPage({
   const [loading, setLoading] = useState(false);
   const [addAgentId, setAddAgentId] = useState('');
   const [addingMember, setAddingMember] = useState(false);
+  const [openingLeaderChat, setOpeningLeaderChat] = useState(false);
   const [activeTask, setActiveTask] = useState<TeamTaskRead | null>(null);
   const [overrideComment, setOverrideComment] = useState('');
   const [overriding, setOverriding] = useState(false);
@@ -300,16 +301,28 @@ export default function TeamDetailPage({
         tenant_id: TENANT_ID,
         agent_id: agentId,
       });
-      notify.success('已更换团队 TL');
+      notify.success('已更换项目领导');
       await loadTeam();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '更换 TL 失败');
+      notify.error(error instanceof Error ? error.message : '更换项目领导失败');
     }
   }
 
-  function openTlSession() {
-    // TL 会话的创建在新页面内按需触发（tl.session_id 为空时先建会话再进入）
-    navigate(`/enterprise/teams/${teamId}/chat`);
+  async function openLeaderChat() {
+    if (openingLeaderChat) return;
+    setOpeningLeaderChat(true);
+    try {
+      const result = await api.post<{ session_id: string }>(
+        `/api/enterprise/teams/${teamId}/tl/session`,
+        { tenant_id: TENANT_ID },
+      );
+      if (!result.session_id) throw new Error('未返回团队会话');
+      navigate(`${EnterpriseRoute.Chat}/${result.session_id}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '打开项目领导对话失败');
+    } finally {
+      setOpeningLeaderChat(false);
+    }
   }
 
   async function createTask() {
@@ -426,7 +439,7 @@ export default function TeamDetailPage({
 
   function boardSourceLabel(entry: TeamBlackboardEntryRead): string {
     if (entry.source_type === 'human') return '人';
-    if (entry.source_type === 'leader') return 'TL';
+    if (entry.source_type === 'leader') return '项目领导';
     if (entry.source_agent_id) {
       return memberNameByAgentId.get(entry.source_agent_id) || entry.source_agent_id;
     }
@@ -456,7 +469,7 @@ export default function TeamDetailPage({
     }
     if (event.actor_type === 'user') return '用户';
     if (event.actor_type === 'system') return '系统';
-    if (event.actor_type === 'tl') return 'TL';
+    if (event.actor_type === 'tl') return '项目领导';
     return event.actor_type;
   }
 
@@ -703,7 +716,7 @@ export default function TeamDetailPage({
                         isLeader ? 'bg-[#e8f0ff] text-[#1a71ff]' : 'bg-[#f2f3f7] text-[#858b9c]',
                       )}
                     >
-                      {isLeader ? 'TL' : '成员'}
+                      {isLeader ? '项目领导' : '成员'}
                     </Badge>
                     <div className="flex items-center gap-[2px]">
                       {!isLeader && (
@@ -712,7 +725,7 @@ export default function TeamDetailPage({
                           onClick={() => void promoteLeader(member.agent_id)}
                           className="rounded-[8px] px-[6px] py-[4px] text-[12px] text-[#464c5e] transition-colors hover:bg-[#f6f6f6]"
                         >
-                          设为 TL
+                          设为项目领导
                         </button>
                       )}
                       <button
@@ -791,18 +804,19 @@ export default function TeamDetailPage({
           </div>
         </section>
 
-        <section aria-label="TL 对话" className="flex flex-col rounded-[20px] bg-white p-[20px] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
-          <h2 className="mb-[12px] text-[16px] font-medium text-[#18181a]">TL 对话</h2>
+        <section aria-label="项目领导对话" className="flex flex-col rounded-[20px] bg-white p-[20px] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
+          <h2 className="mb-[12px] text-[16px] font-medium text-[#18181a]">项目领导对话</h2>
           <div className="flex min-h-[240px] flex-1 flex-col items-center justify-center gap-[12px] rounded-[12px] bg-[#f8f9fb] p-[24px] text-center">
             <p className="max-w-[360px] text-[13px] leading-[20px] text-[#464c5e]">
-              向 TL 描述目标，TL 会拆解并派发任务。对话在团队专属聊天室中进行，可查看完整的执行过程与产出。
+              向项目领导描述目标，由项目领导拆解并派发任务。对话将在对话端进行，可查看完整的执行过程与产出。
             </p>
             <Button
               type="button"
-              onClick={openTlSession}
+              disabled={openingLeaderChat}
+              onClick={() => void openLeaderChat()}
               className="h-[36px] rounded-[10px] bg-[#18181a] px-[16px] text-[14px] font-normal text-white hover:bg-[#303030]"
             >
-              打开 TL 对话
+              {openingLeaderChat ? '正在前往对话端…' : '前往项目领导对话'}
             </Button>
           </div>
         </section>

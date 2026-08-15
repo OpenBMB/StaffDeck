@@ -275,7 +275,7 @@ describe('TeamDetailPage', () => {
 
     const members = screen.getByLabelText('成员管理');
     expect(within(members).getByText('小艾')).toBeTruthy();
-    expect(within(members).getByText('TL')).toBeTruthy();
+    expect(within(members).getByText('项目领导')).toBeTruthy();
     expect(within(members).getByText('小北')).toBeTruthy();
 
     const board = screen.getByLabelText('任务看板');
@@ -313,20 +313,19 @@ describe('TeamDetailPage', () => {
     });
   });
 
-  it('navigates to the team chat room from the entry card', async () => {
+  it('creates the team session and opens it in the chat app', async () => {
     const user = userEvent.setup();
     const fetchMock = stubDetailFetch();
     renderDetail();
 
-    const chat = await screen.findByLabelText('TL 对话');
-    await user.click(within(chat).getByRole('button', { name: '打开 TL 对话' }));
+    const chat = await screen.findByLabelText('项目领导对话');
+    await user.click(within(chat).getByRole('button', { name: '前往项目领导对话' }));
 
-    expect((await screen.findByTestId('location')).textContent).toBe('/enterprise/teams/team-1/chat');
-    // TL 会话创建逻辑已移至团队聊天室页面，这里不应再调用 tl/session
+    expect((await screen.findByTestId('location')).textContent).toBe('/workspace/chat/session-1');
     const sessionCall = fetchMock.mock.calls.find(([input]) =>
       String(input).includes('/teams/team-1/tl/session'),
     );
-    expect(sessionCall).toBeUndefined();
+    expect(sessionCall).toBeTruthy();
   });
 
   it('renders blackboard entries pinned first with tags and sources', async () => {
@@ -350,7 +349,7 @@ describe('TeamDetailPage', () => {
     const plain = within(board).getByText('member note');
     expect(pinned.compareDocumentPosition(plain) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(board).getByText('okr')).toBeTruthy();
-    expect(within(board).getByText((content) => content.startsWith('TL'))).toBeTruthy();
+    expect(within(board).getByText((content) => content.startsWith('项目领导'))).toBeTruthy();
     expect(within(board).getByText((content) => content.startsWith('小北'))).toBeTruthy();
     expect(within(board).getByText(/关联任务：写周报/)).toBeTruthy();
     expect(within(board).getAllByText('置顶').length).toBeGreaterThan(0);
@@ -696,8 +695,8 @@ describe('TeamDetailPage', () => {
     const activity = await screen.findByLabelText('团队动态');
     // 同任务事件聚合到一张分组卡片下
     expect(await within(activity).findByText('提交报告')).toBeTruthy();
-    expect(within(activity).getByText('TL 退回重做')).toBeTruthy();
-    expect(within(activity).getByText('TL 免验收')).toBeTruthy();
+    expect(within(activity).getByText('项目领导退回重做')).toBeTruthy();
+    expect(within(activity).getByText('项目领导免验收')).toBeTruthy();
     expect(within(activity).getByText('其他')).toBeTruthy();
     // 组间按最新事件倒序：投放分析 > 其他 > 写周报
     const headerNewest = within(activity).getByRole('button', { name: '投放分析' });
@@ -799,8 +798,8 @@ describe('TeamDetailPage', () => {
     const members = screen.getByLabelText('成员管理');
     await within(members).findByText('小艾');
     expect(within(members).getAllByLabelText(/员工头像/).length).toBe(2);
-    expect(within(members).getByText('TL')).toBeTruthy();
+    expect(within(members).getByText('项目领导')).toBeTruthy();
     expect(within(members).getByText('成员')).toBeTruthy();
-    expect(within(members).getByRole('button', { name: '设为 TL' })).toBeTruthy();
+    expect(within(members).getByRole('button', { name: '设为项目领导' })).toBeTruthy();
   });
 });

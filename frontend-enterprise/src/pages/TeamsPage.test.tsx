@@ -55,7 +55,7 @@ afterEach(() => {
 });
 
 describe('TeamsPage', () => {
-  it('renders the team list with member count and TL name', async () => {
+  it('renders the team management list with member count and project leader', async () => {
     const fetchMock = vi.fn(async () => jsonResponse([team]));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -70,7 +70,7 @@ describe('TeamsPage', () => {
     expect(await screen.findByText('增长团队')).toBeTruthy();
     expect(screen.getByText('负责增长实验')).toBeTruthy();
     expect(screen.getAllByText('2 名成员').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('TL：小艾')).toBeTruthy();
+    expect(screen.getByText('项目领导：小艾')).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('/api/enterprise/teams?tenant_id='),
       expect.anything(),
@@ -172,6 +172,7 @@ function renderTeamsWithRoutes() {
         <Routes>
           <Route path="/enterprise/teams" element={<TeamsPage />} />
           <Route path="/enterprise/teams/:teamId" element={<LocationEcho />} />
+          <Route path="/workspace/chat/:sessionId" element={<LocationEcho />} />
         </Routes>
       </MemoryRouter>
     </I18nProvider>,
@@ -196,7 +197,7 @@ describe('TeamsPage team activity', () => {
     const activity = await screen.findByLabelText('团队动态');
     // 团队节点只出现一次，线程按任务分组收拢在节点下（默认展开最新团队）
     expect(within(activity).getAllByText('增长团队').length).toBe(1);
-    expect(within(activity).getByText('TL 对话')).toBeTruthy();
+    expect(within(activity).getByText('项目领导对话')).toBeTruthy();
     expect(within(activity).getByText('planning chat')).toBeTruthy();
     expect(within(activity).getAllByText('写周报').length).toBeGreaterThanOrEqual(1);
     expect(within(activity).getByText('进行中')).toBeTruthy();
@@ -229,7 +230,7 @@ describe('TeamsPage team activity', () => {
     );
   });
 
-  it('navigates to the team detail without a task param for TL chats', async () => {
+  it('opens project-leader conversations in the chat app', async () => {
     const user = userEvent.setup();
     stubThreadsFetch();
     renderTeamsWithRoutes();
@@ -237,7 +238,7 @@ describe('TeamsPage team activity', () => {
     const activity = await screen.findByLabelText('团队动态');
     await user.click(within(activity).getByRole('button', { name: /planning chat/ }));
 
-    expect((await screen.findByTestId('location')).textContent).toBe('/enterprise/teams/team-1');
+    expect((await screen.findByTestId('location')).textContent).toBe('/workspace/chat/session-1');
   });
 });
 

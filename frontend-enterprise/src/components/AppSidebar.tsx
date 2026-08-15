@@ -919,6 +919,10 @@ function ChatSessionRow({
 }) {
   const title = sessionTitleFor(session, agent);
   const subtitle = sessionSubtitleFor(session, agent);
+  const isProjectLeadSession = isTeamLeader || Boolean(session.team_id && /TL 对话/.test(title));
+  const displayTitle = isProjectLeadSession
+    ? title.replace(/TL 对话/g, '项目领导对话')
+    : title;
 
   return (
     <div
@@ -956,15 +960,15 @@ function ChatSessionRow({
       </Tooltip>
       <span className="flex min-w-0 flex-1 flex-col justify-between self-stretch py-[3px]">
         <span className="flex min-w-0 items-center gap-[4px]">
-          <span className="truncate text-[14px] leading-none text-[#464c5e] capitalize" title={title}>
-            {title}
+          <span className="truncate text-[14px] leading-none text-[#464c5e] capitalize" title={displayTitle}>
+            {displayTitle}
           </span>
-          {isTeamLeader && (
+          {isProjectLeadSession && (
             <span
-              aria-label="团队 TL"
+              aria-label="项目领导"
               className="inline-flex h-[16px] shrink-0 items-center rounded-full bg-[#fff3d6] px-[5px] text-[10px] font-medium leading-none text-[#a16a00]"
             >
-              TL
+              项目领导
             </span>
           )}
         </span>

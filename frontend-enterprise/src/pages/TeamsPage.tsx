@@ -202,7 +202,7 @@ export default function TeamsPage({
               : 'shrink-0 rounded-full bg-[#f2f3f7] text-[12px] font-normal text-[#464c5e]'
           }
         >
-          {thread.kind === 'tl_chat' ? 'TL 对话' : '任务'}
+          {thread.kind === 'tl_chat' ? '项目领导对话' : '任务'}
         </Badge>
         <span className="min-w-0 flex-1 truncate text-[13px] text-[#18181a]" title={thread.title}>
           {thread.title}
@@ -244,6 +244,10 @@ export default function TeamsPage({
   }
 
   function openThread(thread: TeamThreadRead) {
+    if (thread.kind === 'tl_chat') {
+      navigate(`${EnterpriseRoute.Chat}/${thread.session_id}`);
+      return;
+    }
     const base = `${EnterpriseRoute.Teams}/${thread.team_id}`;
     navigate(thread.task_id ? `${base}?task=${thread.task_id}` : base);
   }
@@ -294,8 +298,8 @@ export default function TeamsPage({
       <AppHeader
         onLogout={onLogout}
         userName={currentUser?.username}
-        title="团队"
-        description="组建多 Agent 团队，由 TL 拆解并派发任务"
+        title="我的团队"
+        description="在管理端组建团队、设置项目领导并跟踪任务"
       />
 
       {(() => {
@@ -368,7 +372,7 @@ export default function TeamsPage({
               }}
               className="group cursor-pointer rounded-[20px] bg-white p-[20px] shadow-[0_0_6px_rgba(0,0,0,0.05)] transition-all duration-200 hover:-translate-y-[2px] hover:shadow-[0_18px_36px_-12px_rgba(70,76,94,0.28)] active:translate-y-0 active:scale-[0.99]"
             >
-              {/* 成员合影：TL 居大带标记，悬浮时成员扇形散开 */}
+              {/* 成员合影：项目领导居大带标记，悬浮时成员扇形散开 */}
               <div className="flex items-end justify-between">
                 <div className="flex items-end">
                   {stacked.map((member, index) => {
@@ -383,7 +387,7 @@ export default function TeamsPage({
                           <EmployeeAvatar agent={memberAgent} size={isLeader ? 64 : 44} />
                           {isLeader && (
                             <span className="absolute bottom-[2px] right-[2px] inline-flex h-[18px] items-center rounded-full bg-[#fff3d6] px-[5px] text-[10px] font-medium leading-none text-[#a16a00] ring-2 ring-white">
-                              TL
+                              项目领导
                             </span>
                           )}
                         </span>
@@ -428,7 +432,7 @@ export default function TeamsPage({
                 </div>
                 <div className="flex items-center justify-between border-t border-[#f2f4f8] pt-[10px]">
                   <span className="min-w-0 truncate text-[12px] text-[#757f9c]">
-                    {`TL：${leader?.agent_name || '未设置'}`}
+                    {`项目领导：${leader?.agent_name || '未设置'}`}
                   </span>
                   <button
                     type="button"

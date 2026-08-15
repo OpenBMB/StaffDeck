@@ -176,7 +176,7 @@ describe('ChannelsPage', () => {
 
     await user.click(screen.getByRole('button', { name: '团队' }));
     await screen.findByText('增长团队');
-    expect(screen.getByText('TL：小艾')).toBeTruthy();
+    expect(screen.getByText('项目领导：小艾')).toBeTruthy();
     expect(screen.getByText('2 名成员')).toBeTruthy();
     await user.click(screen.getAllByRole('radio')[0]);
     await user.click(screen.getByRole('button', { name: '创建微信接入' }));
@@ -199,7 +199,7 @@ describe('ChannelsPage', () => {
     await user.click(screen.getByRole('button', { name: /团队 · 增长团队/ }));
 
     const section = await screen.findByRole('region', { name: '可调度员工' });
-    expect(await within(section).findByText('团队：增长团队（TL：小艾）')).toBeTruthy();
+    expect(await within(section).findByText('团队：增长团队（项目领导：小艾）')).toBeTruthy();
     expect(within(section).queryByRole('button', { name: '编辑' })).toBeNull();
     expect(within(section).queryByRole('radio')).toBeNull();
   });

@@ -239,7 +239,7 @@ export default function EmployeeGalleryPage({
   const galleryTabs: UnderlineTabItem<GalleryScope>[] = [
     { value: 'all', label: '所有员工' },
     { value: 'mine', label: '我的数字员工' },
-    { value: 'teams', label: '我的团队' },
+    { value: 'teams', label: '团队对话' },
     { value: 'gallery', label: '数字员工广场' },
   ];
 
@@ -251,7 +251,7 @@ export default function EmployeeGalleryPage({
   const teamsEmptyText = hasSearchTerm ? '没有匹配的团队' : '暂无团队';
   const teamsEmptyDescription = hasSearchTerm
     ? '换个关键词再试试'
-    : '当前还没有属于你的团队';
+    : '请先在管理端创建团队并设置项目领导';
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>

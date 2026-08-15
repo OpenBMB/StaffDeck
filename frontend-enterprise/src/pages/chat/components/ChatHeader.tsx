@@ -24,12 +24,15 @@ import type { UseChatSession } from '../useChatSession';
 
 export default function ChatHeader({ chat }: { chat: UseChatSession }) {
   const { auth, currentSession, openRename, logout } = chat;
-  const name = currentSession?.title ? staffdeckDisplayText(currentSession.title) : currentSession?.id || '新对话';
+  const teamId = currentSession?.team_id || null;
+  const rawName = currentSession?.title
+    ? staffdeckDisplayText(currentSession.title)
+    : currentSession?.id || '新对话';
+  const name = teamId ? rawName.replace(/TL 对话/g, '项目领导对话') : rawName;
   const username = auth?.user?.username || '';
   const initial = username ? username.slice(0, 1).toUpperCase() : '--';
 
   // 团队会话徽标：read 带 team_name 直接用；缺省时用团队列表做 id→name 映射。
-  const teamId = currentSession?.team_id || null;
   const sessionTeamName = currentSession?.team_name || null;
   const [teamName, setTeamName] = useState<string | null>(sessionTeamName);
 

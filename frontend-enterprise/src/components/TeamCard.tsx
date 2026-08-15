@@ -58,7 +58,7 @@ export default function TeamCard({ team, agents, busy = false, onOpen }: TeamCar
           {leader && (
             <EmployeeAvatar agent={agentById(leader.agent_id)} size={20} className="shrink-0" />
           )}
-          <span className="truncate">{`TL：${leader?.agent_name || '未设置'}`}</span>
+          <span className="truncate">{`项目领导：${leader?.agent_name || '未设置'}`}</span>
         </span>
         <span className="flex shrink-0 items-center">
           {stacked.map((member) => (
