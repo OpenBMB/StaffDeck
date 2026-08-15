@@ -792,6 +792,9 @@ describe('TeamDetailPage', () => {
     expect(within(members).getAllByLabelText(/员工头像/).length).toBe(2);
     expect(within(members).getByText('项目领导')).toBeTruthy();
     expect(within(members).getByText('成员')).toBeTruthy();
-    expect(within(members).getByRole('button', { name: '设为项目领导' })).toBeTruthy();
+    const promoteButton = within(members).getByRole('button', { name: '设为项目领导' });
+    const removeButton = within(members).getByRole('button', { name: '移除成员 小北' });
+    expect(promoteButton.className).toContain('whitespace-nowrap');
+    expect(removeButton.className).toContain('whitespace-nowrap');
   });
 });

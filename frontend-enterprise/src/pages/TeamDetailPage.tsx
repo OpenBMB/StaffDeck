@@ -683,7 +683,7 @@ export default function TeamDetailPage({
 
               function memberNode(member: TeamMemberRead, isLeader: boolean) {
                 return (
-                  <div className="flex w-[132px] shrink-0 flex-col items-center gap-[6px] rounded-[12px] border border-[#eef1f6] bg-white px-[10px] py-[10px]">
+                  <div className="flex w-[156px] shrink-0 flex-col items-center gap-[7px] rounded-[12px] border border-[#eef1f6] bg-white px-[12px] py-[12px]">
                     <EmployeeAvatar agent={agentById.get(member.agent_id)} size={48} radius={14} />
                     <span
                       className="max-w-full truncate text-[13px] font-medium text-[#18181a]"
@@ -700,12 +700,12 @@ export default function TeamDetailPage({
                     >
                       {isLeader ? '项目领导' : '成员'}
                     </Badge>
-                    <div className="flex items-center gap-[2px]">
+                    <div className="flex min-h-[28px] w-full items-center justify-center gap-[4px]">
                       {!isLeader && (
                         <button
                           type="button"
                           onClick={() => void promoteLeader(member.agent_id)}
-                          className="rounded-[8px] px-[6px] py-[4px] text-[12px] text-[#464c5e] transition-colors hover:bg-[#f6f6f6]"
+                          className="shrink-0 whitespace-nowrap rounded-[8px] px-[6px] py-[4px] text-[12px] text-[#464c5e] transition-colors hover:bg-[#f6f6f6]"
                         >
                           设为项目领导
                         </button>
@@ -714,7 +714,7 @@ export default function TeamDetailPage({
                         type="button"
                         aria-label={`移除成员 ${member.agent_name || member.agent_id}`}
                         onClick={() => void removeMember(member.agent_id)}
-                        className="rounded-[8px] px-[6px] py-[4px] text-[12px] text-[#858b9c] transition-colors hover:bg-[#fce7e7] hover:text-[#f5483b]"
+                        className="shrink-0 whitespace-nowrap rounded-[8px] px-[6px] py-[4px] text-[12px] text-[#858b9c] transition-colors hover:bg-[#fce7e7] hover:text-[#f5483b]"
                       >
                         移除
                       </button>
