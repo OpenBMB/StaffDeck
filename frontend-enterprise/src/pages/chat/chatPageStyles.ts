@@ -39,6 +39,12 @@ export const CHAT_QUEUED_MESSAGE_ITEM_CLASS = 'order-last';
 export const CHAT_MESSAGE_ROW_BASE_CLASS = 'flex min-w-0';
 export const CHAT_MESSAGE_ROW_USER_CLASS = 'justify-end';
 export const CHAT_MESSAGE_ROW_ASSISTANT_CLASS = 'justify-start';
+export const CHAT_GROUP_MESSAGE_ROW_CLASS = 'items-start gap-[10px]';
+export const CHAT_GROUP_MESSAGE_AVATAR_CLASS =
+  'mt-[2px] size-[36px] shrink-0 overflow-hidden rounded-[10px] bg-white ring-1 ring-[#e3e7f1]';
+export const CHAT_GROUP_MESSAGE_CONTENT_CLASS = 'flex min-w-0 flex-1 flex-col gap-[5px]';
+export const CHAT_GROUP_MESSAGE_SENDER_CLASS =
+  'px-[2px] text-[11px] font-medium leading-[1.4] text-[#757f9c]';
 
 export const CHAT_BUBBLE_BASE_CLASS =
   'relative box-border min-w-0 max-w-[min(680px,92%)] text-[14px] leading-[1.7] wrap-anywhere text-[#18181a]';
