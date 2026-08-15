@@ -905,6 +905,12 @@ class ChannelInboundEvent(SQLModel, table=True):
     # 收到确认标记的句柄；最终回复送达后据此异步撤回。飞书存远端 reaction_id；
     # 钉钉 emotion 接口不返回 ID，存本地哨兵值表示"已挂上待撤回"。
     reaction_id: Optional[str] = Field(default=None, index=True)
+    # Discord 线程 ID:线程内消息的会话锚点(信封 v2,功能2用)
+    thread_id: Optional[str] = None
+    # 群聊中被 @ 的用户 ID 列表(JSON 数组字符串,信封 v2,功能1用)
+    mention_user_ids: Optional[str] = None
+    # 原生斜杠命令名(信封 v2,功能1用);文本指令走 content,不填此字段
+    command: Optional[str] = None
     # received/processing/done/failed
     status: str = Field(default="received", index=True)
     # 创建/接管该事件的进程启动代次；当前代次仍在运行时禁止按墙钟误接管。
@@ -928,6 +934,14 @@ class ChannelDelivery(SQLModel, table=True):
     # reply/error_notice
     kind: str = Field(default="reply", index=True)
     text: str
+    # 富媒体结构化载荷(embeds/files)的 JSON 字符串,功能8用
+    payload_json: Optional[str] = None
+    # Discord 线程/子频道 ID,功能2用
+    thread_id: Optional[str] = None
+    # 批处理作业 ID,功能3用
+    batch_id: Optional[str] = None
+    # 投递类别:不填视为 "text";"voice" 表示语音投递,功能7用
+    delivery_kind: Optional[str] = None
     # pending/sending/delivered/failed
     status: str = Field(default="pending", index=True)
     attempts: int = 0
