@@ -46,19 +46,20 @@ def parse_command(text: str) -> ChannelCommand | None:
         return None
     body = stripped[1:].strip()
     lowered = body.lower()
-    if lowered in {"员工", "list"}:
+    if lowered in {"员工", "list", "employee"}:
         return ChannelCommand(kind="list")
-    if lowered in {"当前", "目前"}:
+    if lowered in {"当前", "目前", "current"}:
         return ChannelCommand(kind="current")
-    if lowered in {"帮助", "?", "？"}:
+    if lowered in {"帮助", "?", "？", "help"}:
         return ChannelCommand(kind="help")
     if lowered in {"解绑", "unbind"}:
         return ChannelCommand(kind="unbind")
     for prefix in ("绑定", "bind"):
         if lowered.startswith(prefix):
             return ChannelCommand(kind="bind", query=body[len(prefix):].strip())
-    if lowered.startswith("切换"):
-        return ChannelCommand(kind="switch", query=body[len("切换"):].strip())
+    if lowered.startswith("切换") or lowered.startswith("switch"):
+        prefix_len = len("切换") if lowered.startswith("切换") else len("switch")
+        return ChannelCommand(kind="switch", query=body[prefix_len:].strip())
     if body and " " not in body and "\n" not in body:
         # /<名字> 直达
         return ChannelCommand(kind="switch", query=body)

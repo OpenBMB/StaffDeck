@@ -33,6 +33,7 @@ from app.channels.service_routing import (
     run_command,
 )
 from app.channels.service_session import find_or_create_channel_session
+from app.channels.typing_manager import begin_typing, end_typing
 from app.config import get_settings
 from app.db import engine
 from app.db.models import (
@@ -960,6 +961,8 @@ def process_inbound(
                 attachments=attachments,
             )
             _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 1, db_engine=use_engine)
+            # 周期性 typing:begin 内部做能力门禁,仅 Discord 等声明 TYPING 的渠道生效
+            begin_typing(binding, target)
             try:
                 AgentLoop(db).handle_turn(request)
             except Exception as exc:
@@ -977,6 +980,7 @@ def process_inbound(
                 db.commit()
                 return False
             finally:
+                end_typing(binding, target)
                 _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 2, db_engine=use_engine)
             event.status = "done"
             event.processed_at = utc_now()

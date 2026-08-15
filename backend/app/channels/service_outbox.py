@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import timedelta
+from typing import Any
 
 from sqlalchemy import func, or_, update
 from sqlmodel import Session, select
@@ -207,6 +209,14 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
                 error="delivery_target_missing",
             )
             return
+        # 富媒体结构化载荷(功能8,§4.8 D8-1):消息 metadata 的 channel_payload
+        # 键(embeds/files)由生成方写入,此处仅负责序列化落库;缺省保持 None。
+        payload = (message.metadata_json or {}).get("channel_payload")
+        payload_json = (
+            json.dumps(payload, ensure_ascii=False)
+            if isinstance(payload, dict) and payload
+            else None
+        )
         db.add(
             ChannelDelivery(
                 tenant_id=chat_session.tenant_id,
@@ -216,6 +226,7 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
                 target_json=target,
                 kind="reply",
                 text=message.content,
+                payload_json=payload_json,
                 status="pending",
                 next_attempt_at=utc_now(),
                 idempotency_key=message.id,
@@ -473,7 +484,16 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     try:
         adapter = get_channel_adapter(binding.channel)
         target = dict(delivery.target_json or {})
-        if delivery.kind == "reaction_add":
+        if delivery.delivery_kind == "voice":
+            send_voice = getattr(adapter, "send_voice", None)
+            if not callable(send_voice):
+                raise RuntimeError("渠道适配器不支持语音投递")
+            voice_payload = json.loads(delivery.payload_json) if delivery.payload_json else None
+            audio = dict((voice_payload or {}).get("audio") or {})
+            if not audio:
+                raise RuntimeError("语音投递缺少 audio 载荷")
+            send_voice(binding, target, audio)
+        elif delivery.kind == "reaction_add":
             add_reaction = getattr(adapter, "add_reaction", None)
             if not callable(add_reaction):
                 raise RuntimeError("渠道适配器不支持 reaction")
@@ -506,12 +526,12 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
                 reaction_event.updated_at = utc_now()
                 db.add(reaction_event)
         else:
-            adapter.send(
-                binding,
-                target,
-                delivery.text,
-                idempotency_key=delivery.idempotency_key,
-            )
+            send_kwargs: dict[str, Any] = {"idempotency_key": delivery.idempotency_key}
+            if delivery.payload_json and binding.channel == "discord":
+                # 仅 DiscordAdapter.send 声明 payload_json 命名参数(功能8富媒体);
+                # 存量渠道签名无此参数,条件传递保持零影响
+                send_kwargs["payload_json"] = delivery.payload_json
+            adapter.send(binding, target, delivery.text, **send_kwargs)
     except Exception as exc:
         delivery.last_error = str(exc)[:500]
         retryable = bool(getattr(exc, "retryable", True))

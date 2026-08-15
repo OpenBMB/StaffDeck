@@ -1,3 +1,4 @@
+import json
 import threading
 from datetime import timedelta
 
@@ -34,6 +35,7 @@ class FakeAdapter:
         self.fail_times = fail_times
         self.sent: list[tuple[str, dict, str]] = []
         self.dedupe_keys: list[str | None] = []
+        self.payloads: list[str | None] = []
 
     def send(
         self,
@@ -42,12 +44,14 @@ class FakeAdapter:
         text: str,
         *,
         idempotency_key: str | None = None,
+        payload_json: str | None = None,
     ) -> None:
         self.dedupe_keys.append(idempotency_key)
         if self.fail_times > 0:
             self.fail_times -= 1
             raise RuntimeError("模拟发送失败")
         self.sent.append((binding.id, target, text))
+        self.payloads.append(payload_json)
 
 
 class FakeFeishuAdapter(FakeAdapter):
@@ -368,6 +372,159 @@ def test_daemon_delivers_pending() -> None:
         assert delivery.delivered_at is not None
         assert delivery.attempts == 1
     assert adapter.sent == [(binding_id, {"to_user_id": "u1", "context_token": "ctx"}, "回复内容")]
+
+
+# ---------- P1-1:payload_json 从 stage 到 send 的传递(功能8富媒体) ----------
+
+
+def _discord_channel_session(binding: ChannelBinding) -> ChatSession:
+    return ChatSession(
+        id="session_discord",
+        tenant_id=binding.tenant_id,
+        user_id="user_1",
+        agent_id=binding.agent_id,
+        channel=binding.channel,
+        external_conv_id="discord_p2p_duser",
+        channel_target_json={"channel_id": "channel-1"},
+        channel_binding_id=binding.id,
+        channel_account_key=binding.external_account_key,
+    )
+
+
+def test_stage_stores_payload_json_from_message_metadata() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        chat_session = _discord_channel_session(binding)
+        message = _assistant_message(chat_session.id, "msg_rich", content="卡片")
+        message.metadata_json = {"channel_payload": {"embeds": [{"title": "标题"}]}}
+        db.add(chat_session)
+        db.add(message)
+        db.commit()
+
+        stage_channel_delivery(db, chat_session, message)
+        db.commit()
+
+        delivery = db.exec(select(ChannelDelivery)).one()
+        assert delivery.payload_json == json.dumps(
+            {"embeds": [{"title": "标题"}]}, ensure_ascii=False
+        )
+
+
+def test_daemon_passes_payload_json_to_discord_adapter(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "discord", adapter)
+    payload = json.dumps({"embeds": [{"title": "标题"}]}, ensure_ascii=False)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        delivery = _make_delivery(
+            db, binding, payload_json=payload, target_json={"channel_id": "channel-1"}
+        )
+        delivery_id = delivery.id
+        binding_id = binding.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.payloads == [payload]
+    assert adapter.sent[0][0] == binding_id
+
+
+def test_daemon_does_not_pass_payload_json_to_legacy_channels(monkeypatch) -> None:
+    class _LegacyAdapter(FakeAdapter):
+        def send(
+            self,
+            binding: ChannelBinding,
+            target: dict,
+            text: str,
+            *,
+            idempotency_key: str | None = None,
+        ) -> None:
+            super().send(binding, target, text, idempotency_key=idempotency_key)
+
+    engine = _test_engine()
+    adapter = _LegacyAdapter()
+    register_channel_adapter("fake", adapter)
+    payload = json.dumps({"embeds": [{"title": "标题"}]}, ensure_ascii=False)
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        delivery = _make_delivery(db, binding, payload_json=payload)
+        delivery_id = delivery.id
+        binding_id = binding.id
+
+    # 存量渠道 send 签名无 payload_json 参数:若 outbox 误传会 TypeError 导致投递失败
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.sent == [(binding_id, {"to_user_id": "u1", "context_token": "ctx"}, "回复内容")]
+
+
+# ---------- P1-3:voice 投递分派(功能7) ----------
+
+
+class _VoiceAdapter(FakeAdapter):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.voice_calls: list[tuple[str, dict, dict]] = []
+
+    def send_voice(self, binding: ChannelBinding, target: dict, audio: dict) -> None:
+        self.voice_calls.append((binding.id, dict(target), dict(audio)))
+
+
+def test_daemon_dispatches_voice_delivery_to_send_voice(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = _VoiceAdapter()
+    monkeypatch.setitem(adapter_registry._adapters, "discord", adapter)
+    payload = json.dumps(
+        {"audio": {"type": "file", "file_ref": "/tmp/clip.mp3"}}, ensure_ascii=False
+    )
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        delivery = _make_delivery(
+            db,
+            binding,
+            payload_json=payload,
+            delivery_kind="voice",
+            text="",
+            target_json={"voice_channel_id": "123"},
+        )
+        delivery_id = delivery.id
+        binding_id = binding.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.voice_calls == [
+        (binding_id, {"voice_channel_id": "123"}, {"type": "file", "file_ref": "/tmp/clip.mp3"})
+    ]
+    assert adapter.sent == []
+
+
+def test_daemon_fails_voice_delivery_for_channel_without_send_voice(monkeypatch) -> None:
+    engine = _test_engine()
+    adapter = FakeAdapter()
+    register_channel_adapter("fake", adapter)
+    settings = get_settings().model_copy(update={"channel_delivery_max_attempts": 1})
+    monkeypatch.setattr("app.channels.service_outbox.get_settings", lambda: settings)
+    payload = json.dumps(
+        {"audio": {"type": "file", "file_ref": "/tmp/clip.mp3"}}, ensure_ascii=False
+    )
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        delivery = _make_delivery(db, binding, payload_json=payload, delivery_kind="voice", text="")
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "failed"
+        assert "不支持语音投递" in (delivery.last_error or "")
+    assert adapter.sent == []
 
 
 def test_daemon_rejects_reply_when_session_account_does_not_match_binding() -> None:

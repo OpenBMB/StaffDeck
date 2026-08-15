@@ -52,7 +52,7 @@ class DiscordEventHandler:
         channel = getattr(message, "channel", None)
         guild = getattr(message, "guild", None)
         mentions = getattr(message, "mentions", None) or []
-        return {
+        raw: dict[str, Any] = {
             "id": str(getattr(message, "id", "") or ""),
             "channel_id": str(getattr(channel, "id", "") or ""),
             "guild_id": str(getattr(guild, "id", "") or "") if guild else "",
@@ -63,3 +63,25 @@ class DiscordEventHandler:
             "bot_user_id": self.bot_id,
             "is_group": guild is not None,
         }
+        channel_type = getattr(channel, "type", None)
+        if channel_type is not None and str(getattr(channel_type, "name", "")) in {
+            "public_thread",
+            "private_thread",
+            "news_thread",
+        }:
+            raw["is_thread"] = True
+            raw["thread_id"] = str(getattr(channel, "id", "") or "")
+            raw["parent_id"] = str(getattr(channel, "parent_id", "") or "")
+        attachments = getattr(message, "attachments", None) or []
+        raw["attachments"] = [
+            {
+                "id": str(getattr(att, "id", "") or ""),
+                "filename": str(getattr(att, "filename", "") or ""),
+                "content_type": str(getattr(att, "content_type", "") or ""),
+                "size": int(getattr(att, "size", 0) or 0),
+                "url": str(getattr(att, "url", "") or ""),
+            }
+            for att in attachments
+            if getattr(att, "url", "")
+        ]
+        return raw

@@ -168,6 +168,18 @@ def test_parse_command_switch() -> None:
     assert empty.kind == "switch" and empty.query == ""
 
 
+def test_parse_command_english_aliases() -> None:
+    """原生斜杠命令回调序列化成文本后的英文形式兼容(功能1)。"""
+    assert parse_command("/employee").kind == "list"
+    assert parse_command("/EMPLOYEE").kind == "list"
+    assert parse_command("/current").kind == "current"
+    assert parse_command("/help").kind == "help"
+    assert parse_command("/switch 财务").kind == "switch"
+    assert parse_command("/switch 财务").query == "财务"
+    assert parse_command("/switch").kind == "switch"
+    assert parse_command("/switch").query == ""
+
+
 def test_parse_command_unknown_slash_goes_help() -> None:
     assert parse_command("/foo bar").kind == "help"
     assert parse_command("/").kind == "help"

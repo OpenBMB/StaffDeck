@@ -5,7 +5,8 @@ import logging
 import secrets
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import case, text, update
@@ -32,8 +33,14 @@ from app.channels.adapters.feishu import (
     validate_feishu_credentials,
 )
 from app.channels.adapters.wechat import WeChatClient, sanitize_wechat_baseurl, validate_wechat_host
+from app.channels.batch_service import batch_service
 from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.channels.schema import (
+    BackfillJobRead,
+    BackfillRequest,
+    BatchJobRead,
+    BatchSendRequest,
+    BatchSubmitRead,
     ChannelBindCodeRead,
     ChannelBindingAgentRead,
     ChannelBindingAgentsUpdate,
@@ -181,7 +188,15 @@ CHANNEL_META = [
         "credential_fields": [
             {"key": "bot_token", "label": "Bot Token", "placeholder": "Discord Developer Portal 获取", "secret": True},
         ],
-        "capabilities": [],
+        "capabilities": [
+            "slash_commands",
+            "threads",
+            "batch_send",
+            "backfill",
+            "typing",
+            "voice",
+            "rich_media",
+        ],
     },
 ]
 
@@ -482,7 +497,12 @@ def update_channel_binding_agents(
     ensure_current_user_tenant(tenant_id, current_user)
     binding = _get_binding(db, tenant_id, binding_id)
     _ensure_binding_manager(db, tenant_id, binding, current_user)
-    if request.agents is None and request.auto_route is None:
+    if (
+        request.agents is None
+        and request.auto_route is None
+        and request.allowlist is None
+        and request.features is None
+    ):
         raise HTTPException(status_code=400, detail="无有效更新内容")
     default_agent_id: str | None = None
     if request.agents is not None:
@@ -530,6 +550,20 @@ def update_channel_binding_agents(
                 "auto_route",
                 request.auto_route,
             )
+            db.commit()
+        if request.allowlist is not None or request.features is not None:
+            # 配置结构化段(allowlist/features)变更 → config_revision+=1,
+            # _reconcile_loop 按 revision 条件 5s 内重建线程/刷新 fence 缓存
+            binding = _get_binding(db, tenant_id, binding_id)
+            config = dict(binding.config_json or {})
+            if request.allowlist is not None:
+                config["allowlist"] = request.allowlist.model_dump()
+            if request.features is not None:
+                config["features"] = request.features.model_dump()
+            binding.config_json = config
+            binding.config_revision += 1
+            binding.updated_at = utc_now()
+            db.add(binding)
             db.commit()
         binding = _get_binding(db, tenant_id, binding_id)
         db.refresh(binding)
@@ -1175,6 +1209,149 @@ def save_discord_credentials(
     return channel_binding_read(db, binding)
 
 
+def _batch_target_for(binding: ChannelBinding, channel_id: str, thread_id: str | None) -> dict[str, Any]:
+    """构造批量投递目标:channel_id 定位 REST 出站,thread_id 走线程(功能2)。"""
+    target: dict[str, Any] = {
+        "to_user_id": "",
+        "channel_id": channel_id,
+        "guild_id": str((binding.config_json or {}).get("guild_id") or ""),
+    }
+    if thread_id:
+        target["thread_id"] = thread_id
+    return target
+
+
+def _binding_channel_id(binding: ChannelBinding, config_key: str) -> str:
+    """批量/回填默认目标频道:请求显式传入优先,否则回退 config_json 段。"""
+    config = binding.config_json or {}
+    section = config.get(config_key)
+    if isinstance(section, dict):
+        return str(section.get("channel_id") or "").strip()
+    return ""
+
+
+@router.post("/{binding_id}/batch", response_model=BatchSubmitRead)
+def submit_channel_batch(
+    binding_id: str,
+    request: BatchSendRequest,
+    tenant_id: str = Query(...),
+    channel_id: str | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> BatchSubmitRead:
+    """提交批量投递作业(功能3):items 逐条限流整形发送,返回 job_id 供进度轮询。"""
+    ensure_current_user_tenant(tenant_id, current_user)
+    binding = _get_binding(db, tenant_id, binding_id)
+    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    target_channel_id = (channel_id or "").strip() or _binding_channel_id(binding, "batch")
+    if not target_channel_id:
+        raise HTTPException(status_code=400, detail="缺少目标频道 ID(channel_id 或 config_json.batch.channel_id)")
+    target = _batch_target_for(binding, target_channel_id, request.thread_id)
+    job_id = batch_service.submit_batch(
+        binding,
+        tenant_id,
+        target,
+        [item if isinstance(item, str) else item.model_dump() for item in request.items],
+        thread_id=request.thread_id,
+        client_batch_id=request.client_batch_id,
+    )
+    job = batch_service.get_batch(job_id)
+    return BatchSubmitRead(job_id=job_id, status=job.status if job else "pending")
+
+
+@router.get("/{binding_id}/batch/{job_id}", response_model=BatchJobRead)
+def get_channel_batch_job(
+    binding_id: str,
+    job_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> BatchJobRead:
+    """查询批量作业进度(功能3):status/progress/succeeded/failed/errors。"""
+    ensure_current_user_tenant(tenant_id, current_user)
+    binding = _get_binding(db, tenant_id, binding_id)
+    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    job = batch_service.get_batch(job_id)
+    if job is None or job.binding_id != binding_id:
+        raise HTTPException(status_code=404, detail="批量作业不存在")
+    return BatchJobRead(
+        job_id=job.job_id,
+        status=job.status,
+        progress=job.progress,
+        total=len(job.items),
+        succeeded=job.succeeded,
+        failed=job.failed,
+        errors=list(job.errors),
+    )
+
+
+@router.post("/{binding_id}/backfill", response_model=BackfillJobRead)
+def submit_channel_backfill(
+    binding_id: str,
+    request: BackfillRequest,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> BackfillJobRead:
+    """手动触发历史回填(功能4):拉取频道历史写入 backfilled 事件,不触发 agent。
+
+    自动回填(绑定激活时按 config_json.features.backfill 触发)为后续演进,
+    首版仅提供管理员手动触发端点。
+    """
+    ensure_current_user_tenant(tenant_id, current_user)
+    binding = _get_binding(db, tenant_id, binding_id)
+    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    if binding.channel != "discord":
+        raise HTTPException(status_code=400, detail="该绑定不是 Discord 渠道")
+    target_channel_id = (request.channel_id or "").strip() or _binding_channel_id(binding, "backfill")
+    if not target_channel_id:
+        raise HTTPException(status_code=400, detail="缺少目标频道 ID(channel_id 或 config_json.backfill.channel_id)")
+    config = binding.config_json or {}
+    backfill_config = config.get("backfill")
+    limit = request.limit or (
+        int(backfill_config.get("limit_per_fetch", 100)) if isinstance(backfill_config, dict) else 100
+    )
+    job_id = batch_service.submit_backfill(
+        binding,
+        channel_id=target_channel_id,
+        limit=min(limit, 100),
+        after=request.after,
+        before=request.before,
+    )
+    job = batch_service.get_backfill(job_id)
+    return BackfillJobRead(
+        job_id=job_id,
+        status=job.status if job else "pending",
+        written=job.written if job else 0,
+        duplicates=job.duplicates if job else 0,
+        errors=list(job.errors) if job else [],
+    )
+
+
+@router.get("/{binding_id}/backfill/{job_id}", response_model=BackfillJobRead)
+def get_channel_backfill_job(
+    binding_id: str,
+    job_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> BackfillJobRead:
+    """查询回填作业进度(功能4)。"""
+    ensure_current_user_tenant(tenant_id, current_user)
+    binding = _get_binding(db, tenant_id, binding_id)
+    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    job = batch_service.get_backfill(job_id)
+    if job is None or job.binding_id != binding_id:
+        raise HTTPException(status_code=404, detail="回填作业不存在")
+    return BackfillJobRead(
+        job_id=job.job_id,
+        status=job.status,
+        written=job.written,
+        duplicates=job.duplicates,
+        errors=list(job.errors),
+    )
+
+
 @router.get("/delivery-audit", response_model=ChannelDeliveryPage)
 def list_tenant_delivery_audit(
     tenant_id: str = Query(...),
@@ -1410,13 +1587,13 @@ def list_channel_conversation_messages(
     session_ids = {row.id for row in _binding_channel_sessions(db, binding)}
     if session_id not in session_ids:
         raise HTTPException(status_code=404, detail="Channel conversation not found")
+    chat_session = db.get(ChatSession, session_id)
     rows = db.exec(
         select(Message)
         .where(Message.session_id == session_id)
         .order_by(Message.created_at)
-        .limit(200)
     ).all()
-    return [
+    items = [
         ChannelConversationMessageRead(
             id=row.id,
             role=row.role,
@@ -1436,3 +1613,101 @@ def list_channel_conversation_messages(
         )
         for row in rows
     ]
+    # §4.4 回填可见性:合并同频道的 backfilled 入站事件(历史消息不触发 agent,
+    # 不在 Message 表),按真实消息时间与对话消息统一排序。
+    if chat_session is not None:
+        items.extend(_backfilled_conversation_messages(db, binding, chat_session))
+    items.sort(key=lambda item: _message_sort_key(item.created_at))
+    return items[:200]
+
+
+def _backfill_channel_key(external_conv_id: str | None) -> str | None:
+    """从会话 external_conv_id 反推回填频道键。
+
+    Discord 群聊会话形如 `discord_group_{conv_key}`,conv_key 与回填事件
+    target_json 的 guild_id/channel_id 对应;私聊与未知格式返回 None(不合并)。
+    """
+    marker = "_group_"
+    if not external_conv_id:
+        return None
+    index = external_conv_id.rfind(marker)
+    if index == -1:
+        return None
+    return external_conv_id[index + len(marker):] or None
+
+
+def _backfill_event_matches_channel(event: ChannelInboundEvent, channel_key: str) -> bool:
+    target = event.target_json
+    if not isinstance(target, dict):
+        return False
+    return channel_key in {
+        str(target.get("channel_id") or ""),
+        str(target.get("guild_id") or ""),
+    }
+
+
+def _message_sort_key(created_at: str) -> datetime:
+    """对话消息与回填消息的统一排序键;时间戳不可解析时兜底到最早。
+
+    Message.created_at(naive UTC)与回填事件里的 Discord ISO 时间戳(带 +00:00
+    偏移)混排,统一补 UTC 时区后再比较。
+    """
+    try:
+        parsed = datetime.fromisoformat(created_at)
+    except (TypeError, ValueError):
+        return datetime.min
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _backfilled_conversation_messages(
+    db: Session,
+    binding: ChannelBinding,
+    chat_session: ChatSession,
+) -> list[ChannelConversationMessageRead]:
+    """会话同频道的 backfilled 事件 → web 消息视图(方案 A,§4.4)。"""
+    channel_key = _backfill_channel_key(chat_session.external_conv_id)
+    if channel_key is None:
+        return []
+    events = db.exec(
+        select(ChannelInboundEvent).where(
+            ChannelInboundEvent.binding_id == binding.id,
+            ChannelInboundEvent.status == "backfilled",
+        )
+    ).all()
+    bot_id = str((binding.config_json or {}).get("bot_id") or "")
+    result: list[ChannelConversationMessageRead] = []
+    for event in events:
+        if not _backfill_event_matches_channel(event, channel_key):
+            continue
+        message = event.payload_json.get("message") or {}
+        if not isinstance(message, dict):
+            continue
+        content = str(message.get("content") or "").strip()
+        author_id = str(message.get("author_id") or "")
+        role = "assistant" if author_id and author_id == bot_id else "user"
+        created_at = str(message.get("created_at") or "").strip()
+        if not created_at:
+            created_at = event.created_at.isoformat()
+        result.append(
+            ChannelConversationMessageRead(
+                id=str(event.event_id or event.id),
+                role=role,
+                content=content,
+                created_at=created_at,
+                attachments=[
+                    ChannelConversationAttachmentRead(
+                        id=item.get("id"),
+                        filename=item.get("filename"),
+                        content_type=item.get("content_type"),
+                        size=item.get("size"),
+                        kind=item.get("kind"),
+                    )
+                    for item in (message.get("attachments") or [])
+                    if isinstance(item, dict)
+                ]
+                or None,
+            )
+        )
+    return result
