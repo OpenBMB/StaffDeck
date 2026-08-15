@@ -437,13 +437,13 @@ def tl_session_endpoint(
     tl_agent = db.get(AgentProfile, leader.agent_id)
     if tl_agent is None or tl_agent.tenant_id != team.tenant_id or tl_agent.status != "active":
         raise HTTPException(status_code=400, detail="Team leader agent is unavailable")
-    # 团队内 TL 名下的会话还有任务验收/竞标打分/竞标裁决,只有「TL 对话」标题的才是人对 TL 的聊天会话
+    # 每个团队只有一个人类群聊。项目领导变更时沿用同一会话并更新承接 Agent，
+    # 避免把同一团队拆成多个与普通单聊冲突的会话。
     session = db.exec(
         select(ChatSession)
         .where(
             ChatSession.tenant_id == team.tenant_id,
             ChatSession.team_id == team.id,
-            ChatSession.agent_id == tl_agent.id,
             ChatSession.title.like("%TL 对话%"),
         )
         .order_by(ChatSession.created_at)
@@ -458,6 +458,12 @@ def tl_session_endpoint(
             status="active",
             team_id=team.id,
         )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+    elif session.agent_id != tl_agent.id:
+        session.agent_id = tl_agent.id
+        session.updated_at = utc_now()
         db.add(session)
         db.commit()
         db.refresh(session)
@@ -485,14 +491,13 @@ def _conversation_kind(session: ChatSession) -> TeamConversationKind:
     return "tl_chat"
 
 
-def _tl_conversation_session(db: Session, team: Team, leader_agent_id: str) -> ChatSession | None:
+def _tl_conversation_session(db: Session, team: Team) -> ChatSession | None:
     """已有 TL 对话会话(与 tl/session 端点同判据:「TL 对话」标题,取最早一个)。"""
     return db.exec(
         select(ChatSession)
         .where(
             ChatSession.tenant_id == team.tenant_id,
             ChatSession.team_id == team.id,
-            ChatSession.agent_id == leader_agent_id,
             ChatSession.title.like("%TL 对话%"),
         )
         .order_by(ChatSession.created_at)
@@ -514,7 +519,7 @@ def list_team_conversations(
     tl: TeamConversationTLRead | None = None
     if leader is not None:
         tl_agent = db.get(AgentProfile, leader.agent_id)
-        tl_session = _tl_conversation_session(db, team, leader.agent_id)
+        tl_session = _tl_conversation_session(db, team)
         tl = TeamConversationTLRead(
             agent_id=leader.agent_id,
             agent_name=tl_agent.name if tl_agent else None,

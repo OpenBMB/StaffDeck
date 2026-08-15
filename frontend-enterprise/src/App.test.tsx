@@ -84,6 +84,10 @@ function stubAppFetch() {
     }
     if (url.includes('/api/auth/me')) return jsonResponse(authUser);
     if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+    if (/\/api\/enterprise\/teams\/team-1\/(tasks|blackboard|events)/.test(url)) {
+      return jsonResponse([]);
+    }
+    if (url.includes('/api/enterprise/teams/team-1')) return jsonResponse(team);
     if (url.includes('/api/enterprise/teams')) return jsonResponse([team]);
     if (url.includes('/api/enterprise/model-configs')) return jsonResponse([modelConfig]);
     if (url.includes('/api/chat/')) return jsonResponse([]);
@@ -133,9 +137,9 @@ afterEach(() => {
 });
 
 describe('App team scope selection', () => {
-  it('creates the TL session and navigates to the chat when a team is selected', async () => {
+  it('opens the team room in its management workspace when a team is selected', async () => {
     const user = userEvent.setup();
-    const fetchMock = stubAppFetch();
+    stubAppFetch();
     window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, 'agent-1');
     window.history.pushState({}, '', '/enterprise/agents');
     render(<I18nProvider><App /></I18nProvider>);
@@ -150,15 +154,9 @@ describe('App team scope selection', () => {
     await user.click(teamItem!);
 
     await waitFor(() => {
-      expect(window.location.pathname).toBe('/workspace/chat/session-tl-1');
+      expect(window.location.pathname).toBe('/enterprise/teams/team-1');
+      expect(window.location.search).toBe('?view=chat');
     });
-    const postCall = fetchMock.mock.calls.find(([, init]) => (
-      (init?.method || '').toUpperCase() === 'POST'
-    ));
-    expect(postCall).toBeTruthy();
-    expect(String(postCall?.[0])).toContain('/api/enterprise/teams/team-1/tl/session');
-    const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
-    expect(body.tenant_id).toBeTruthy();
     expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('team:team-1');
   });
 

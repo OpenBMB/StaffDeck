@@ -24,7 +24,13 @@ import ChatEmptyState from './ChatEmptyState';
 import MessageBubble, { type MessageRender } from './MessageBubble';
 import ScheduledDraftCard from './ScheduledDraftCard';
 
-export default function MessageList({ chat }: { chat: UseChatSession }) {
+export default function MessageList({
+  chat,
+  emptyState,
+}: {
+  chat: UseChatSession;
+  emptyState?: ReactNode;
+}) {
   const {
     displayedMessages,
     turnTraceRef,
@@ -50,7 +56,7 @@ export default function MessageList({ chat }: { chat: UseChatSession }) {
 
   return (
     <div className={CHAT_MESSAGES_CLASS} ref={chatMessagesRef} onScroll={handleChatMessagesScroll}>
-      {renderMessages.length === 0 && <ChatEmptyState chat={chat} />}
+      {renderMessages.length === 0 && (emptyState ?? <ChatEmptyState chat={chat} />)}
 
       <div className={CHAT_MESSAGE_STACK_CLASS}>
         {renderMessages.map((item, itemIndex) => {
@@ -177,3 +183,4 @@ export default function MessageList({ chat }: { chat: UseChatSession }) {
     </div>
   );
 }
+import type { ReactNode } from 'react';

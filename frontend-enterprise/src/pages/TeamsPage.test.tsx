@@ -230,7 +230,7 @@ describe('TeamsPage team activity', () => {
     );
   });
 
-  it('opens project-leader conversations in the chat app', async () => {
+  it('opens project-leader conversations inside the team workspace', async () => {
     const user = userEvent.setup();
     stubThreadsFetch();
     renderTeamsWithRoutes();
@@ -238,7 +238,7 @@ describe('TeamsPage team activity', () => {
     const activity = await screen.findByLabelText('团队动态');
     await user.click(within(activity).getByRole('button', { name: /planning chat/ }));
 
-    expect((await screen.findByTestId('location')).textContent).toBe('/workspace/chat/session-1');
+    expect((await screen.findByTestId('location')).textContent).toBe('/enterprise/teams/team-1?view=chat');
   });
 });
 

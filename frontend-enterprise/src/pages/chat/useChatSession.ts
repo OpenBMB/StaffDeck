@@ -303,12 +303,17 @@ export type UseChatSessionOptions = {
    * `window.location.href = '/'`.
    */
   anonymous?: boolean;
+  /** Use a concrete session outside the workspace chat route (for example a team room). */
+  sessionId?: string;
+  /** Keep navigation and shared employee scope owned by the embedding page. */
+  embedded?: boolean;
 };
 
 export function useChatSession(options: UseChatSessionOptions = {}) {
-  const { anonymous = false } = options;
+  const { anonymous = false, embedded = false } = options;
   const { t } = useI18n();
-  const { sessionId, draftAgentId } = useParams<{ sessionId?: string; draftAgentId?: string }>();
+  const { sessionId: routeSessionId, draftAgentId } = useParams<{ sessionId?: string; draftAgentId?: string }>();
+  const sessionId = options.sessionId || routeSessionId;
   const navigate = useNavigate();
   const [auth] = useState(() => getEnterpriseAuthSession());
   const tenantId = auth?.user.tenant_id || TENANT_ID;
@@ -564,13 +569,14 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     return buildSessionFilterOptions(availableAgents, sessions, activeDraftAgentId);
   }, [activeDraftAgentId, availableAgents, sessions]);
   const visibleSidebarSessions = useMemo(() => {
+    const ordinarySessions = sessions.filter((session) => !session.team_id);
     const filterTeamId = teamIdFromScope(sessionAgentFilter);
     if (filterTeamId) {
-      return sessions.filter((session) => session.team_id === filterTeamId);
+      return [];
     }
     return sessionAgentFilter === 'all'
-      ? sessions
-      : sessions.filter((session) => session.agent_id === sessionAgentFilter);
+      ? ordinarySessions
+      : ordinarySessions.filter((session) => session.agent_id === sessionAgentFilter);
   }, [sessionAgentFilter, sessions]);
   const enabledModelConfigs = useMemo(() => modelConfigs.filter((item) => item.enabled), [modelConfigs]);
   const selectedModelConfig = (
@@ -770,6 +776,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   // 进入团队会话（如画廊团队卡片点开即聊）时，把共享作用域同步为 team:{team_id}，
   // 让管理端导航栏的"当前员工"切换器跟随显示当前团队。
   useEffect(() => {
+    if (embedded) return;
     const teamId = currentSession?.team_id;
     if (!teamId) return;
     const scope = toTeamScope(teamId);
@@ -777,7 +784,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     setSelectedAgentId(scope);
     persistSharedAgentScope(scope, userId);
     emitAgentScopeChange(scope);
-  }, [currentSession?.team_id, selectedAgentId, userId]);
+  }, [currentSession?.team_id, embedded, selectedAgentId, userId]);
+
+  useEffect(() => {
+    if (embedded || !currentSession?.team_id) return;
+    navigate(`/enterprise/teams/${currentSession.team_id}?view=chat`, { replace: true });
+  }, [currentSession?.team_id, embedded, navigate]);
 
   useEffect(() => {
     if (!auth) {
@@ -1164,9 +1176,17 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   ));
 
   const loadSessions = useCallback(() => {
-    api
-      .get<ChatSession[]>(`/api/chat/sessions?tenant_id=${tenantId}`)
-      .then((rows) => {
+    const listed = api.get<ChatSession[]>(`/api/chat/sessions?tenant_id=${tenantId}`);
+    const selected = sessionId
+      ? api
+        .get<ChatSession>(`/api/chat/sessions/${sessionId}?tenant_id=${tenantId}`)
+        .catch(() => null)
+      : Promise.resolve(null);
+    Promise.all([listed, selected])
+      .then(([listedRows, selectedRow]) => {
+        const rows = selectedRow && !listedRows.some((row) => row.id === selectedRow.id)
+          ? [...listedRows, selectedRow]
+          : listedRows;
         const previousIds = new Set(knownSessionIdsRef.current);
         const initialized = sessionsInitializedRef.current;
         if (!initialized) {
@@ -1196,7 +1216,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
           && isScheduledSession(row)
           && !autoOpenedSessionIdsRef.current.has(row.id)
         ));
-        if (!newScheduledSession) return;
+        if (!newScheduledSession || embedded) return;
         autoOpenedSessionIdsRef.current.add(newScheduledSession.id);
         if (!input.trim()) {
           getSlot(newScheduledSession.id);
@@ -1209,16 +1229,16 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       .finally(() => {
         setSessionsLoading(false);
       });
-  }, [getSlot, input, navigate, notifyRequestError, tenantId, userId]);
+  }, [embedded, getSlot, input, navigate, notifyRequestError, sessionId, tenantId, userId]);
 
   const handleMissingSession = useCallback((id: string) => {
     forgetMissingSession(id);
     loadSessions();
-    if (sessionId === id) {
+    if (sessionId === id && !embedded) {
       pendingPromotedSessionIdRef.current = null;
       navigate('/workspace/gallery', { replace: true });
     }
-  }, [forgetMissingSession, loadSessions, navigate, sessionId]);
+  }, [embedded, forgetMissingSession, loadSessions, navigate, sessionId]);
 
   const loadMessages = useCallback((id: string) => {
     return api

@@ -344,21 +344,12 @@ function Shell({
     emitAgentScopeChange(agentId);
   }
 
-  async function selectTeamScope(teamId: string) {
+  function selectTeamScope(teamId: string) {
     const scope = toTeamScope(teamId);
-    try {
-      const result = await api.post<{ session_id: string }>(
-        `/api/enterprise/teams/${teamId}/tl/session`,
-        { tenant_id: TENANT_ID },
-      );
-      if (!result.session_id) throw new Error("发起对话失败");
-      setSelectedAgentId(scope);
-      persistSharedAgentScope(scope, auth.user.id);
-      emitAgentScopeChange(scope);
-      navigate(`/workspace/chat/${result.session_id}`);
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : "发起对话失败");
-    }
+    setSelectedAgentId(scope);
+    persistSharedAgentScope(scope, auth.user.id);
+    emitAgentScopeChange(scope);
+    navigate(`/enterprise/teams/${teamId}?view=chat`);
   }
 
   function handleSidebarOpenChange(open: boolean) {
@@ -508,8 +499,7 @@ function Shell({
         onSelectAgent={(agentId) => {
           const teamId = teamIdFromScope(agentId);
           if (teamId) {
-            // 选择团队 = 开聊：tl/session 是 get-or-create，重复点击会回到同一会话。
-            void selectTeamScope(teamId);
+            selectTeamScope(teamId);
             return;
           }
           if (agentId !== selectedAgentId) changeAgentScope(agentId);

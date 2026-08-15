@@ -1914,7 +1914,11 @@ def list_chat_sessions(
     ensure_tenant(db, tenant_id)
     rows = db.exec(
         select(ChatSession)
-        .where(ChatSession.tenant_id == tenant_id, ChatSession.user_id == current_user.id)
+        .where(
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.user_id == current_user.id,
+            ChatSession.team_id.is_(None),
+        )
         .order_by(ChatSession.updated_at.desc())
     ).all()
     hidden_session_ids = pilotdeck_origin_session_ids(
@@ -1948,6 +1952,20 @@ def list_chat_sessions(
         )
         for row in rows
     ]
+
+
+@router.get("/sessions/{session_id}", response_model=ChatSessionRead)
+def get_chat_session(
+    session_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> ChatSessionRead:
+    """Read one conversation without adding team sessions to the global list."""
+    _ensure_request_tenant(tenant_id, current_user)
+    row = _get_readable_chat_session(db, tenant_id, current_user, session_id)
+    team = db.get(Team, row.team_id) if row.team_id else None
+    return session_read(row, team_name=team.name if team else None)
 
 
 @router.put("/sessions/{session_id}", response_model=ChatSessionRead)
@@ -2458,6 +2476,12 @@ def _get_readable_chat_session(db: Session, tenant_id: str, current_user: User, 
         raise HTTPException(status_code=404, detail="Session not found")
     if row.user_id == current_user.id:
         return row
+    if row.team_id:
+        team = db.get(Team, row.team_id)
+        if team and team.tenant_id == tenant_id and (
+            current_user.role == "admin" or team.owner_user_id == current_user.id
+        ):
+            return row
     if _user_can_read_handoff_session(db, tenant_id, current_user, session_id):
         return row
     raise HTTPException(status_code=404, detail="Session not found")

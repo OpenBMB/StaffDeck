@@ -53,7 +53,7 @@ function stubGalleryFetch(teams: TeamRead[]) {
 
 function LocationEcho() {
   const location = useLocation();
-  return <div data-testid="location">{location.pathname}</div>;
+  return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
 }
 
 function renderGallery() {
@@ -63,6 +63,7 @@ function renderGallery() {
         <Routes>
           <Route path="/workspace/gallery" element={<EmployeeGalleryPage />} />
           <Route path="/workspace/chat/:sessionId" element={<LocationEcho />} />
+          <Route path="/enterprise/teams/:teamId" element={<LocationEcho />} />
         </Routes>
       </MemoryRouter>
     </I18nProvider>,
@@ -91,23 +92,16 @@ describe('EmployeeGalleryPage teams tab', () => {
     expect(within(section).getByText('+1')).toBeTruthy();
   });
 
-  it('creates the TL session on click and navigates to the chat', async () => {
+  it('opens the team room inside the team workspace', async () => {
     const user = userEvent.setup();
-    const fetchMock = stubGalleryFetch([team]);
+    stubGalleryFetch([team]);
     renderGallery();
 
     await user.click(await screen.findByRole('tab', { name: '团队对话' }));
     const section = await screen.findByRole('region', { name: '团队' });
     await user.click(within(section).getByRole('button', { name: '增长团队' }));
 
-    expect((await screen.findByTestId('location')).textContent).toBe('/workspace/chat/session-tl-1');
-    await waitFor(() => {
-      const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
-      expect(postCall).toBeTruthy();
-      expect(String(postCall?.[0])).toContain('/api/enterprise/teams/team-1/tl/session');
-      const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
-      expect(body.tenant_id).toBeTruthy();
-    });
+    expect((await screen.findByTestId('location')).textContent).toBe('/enterprise/teams/team-1?view=chat');
   });
 
   it('does not render the team section on employee tabs', async () => {

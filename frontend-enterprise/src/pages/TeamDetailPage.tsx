@@ -38,6 +38,7 @@ import type {
 } from '../types';
 
 import { relativeTimeLabel, teamStatusLabel } from './TeamsPage';
+import TeamGroupChatPanel from './chat/components/TeamGroupChatPanel';
 
 const TEAM_EVENT_TYPE_LABELS: Record<string, string> = {
   task_created: '任务创建',
@@ -144,7 +145,6 @@ export default function TeamDetailPage({
   const [loading, setLoading] = useState(false);
   const [addAgentId, setAddAgentId] = useState('');
   const [addingMember, setAddingMember] = useState(false);
-  const [openingLeaderChat, setOpeningLeaderChat] = useState(false);
   const [activeTask, setActiveTask] = useState<TeamTaskRead | null>(null);
   const [overrideComment, setOverrideComment] = useState('');
   const [overriding, setOverriding] = useState(false);
@@ -234,6 +234,13 @@ export default function TeamDetailPage({
     setConfigBidRounds(String(config.bid_rebuttal_rounds ?? 1));
   }, [team]);
 
+  useEffect(() => {
+    if (!team || searchParams.get('view') !== 'chat') return;
+    window.requestAnimationFrame(() => {
+      document.getElementById('team-chat')?.scrollIntoView({ block: 'start' });
+    });
+  }, [searchParams, team]);
+
   const taskParam = searchParams.get('task');
   useEffect(() => {
     if (!taskParam || openedTaskParamRef.current === taskParam) return;
@@ -305,23 +312,6 @@ export default function TeamDetailPage({
       await loadTeam();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '更换项目领导失败');
-    }
-  }
-
-  async function openLeaderChat() {
-    if (openingLeaderChat) return;
-    setOpeningLeaderChat(true);
-    try {
-      const result = await api.post<{ session_id: string }>(
-        `/api/enterprise/teams/${teamId}/tl/session`,
-        { tenant_id: TENANT_ID },
-      );
-      if (!result.session_id) throw new Error('未返回团队会话');
-      navigate(`${EnterpriseRoute.Chat}/${result.session_id}`);
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '打开项目领导对话失败');
-    } finally {
-      setOpeningLeaderChat(false);
     }
   }
 
@@ -804,23 +794,6 @@ export default function TeamDetailPage({
           </div>
         </section>
 
-        <section aria-label="项目领导对话" className="flex flex-col rounded-[20px] bg-white p-[20px] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
-          <h2 className="mb-[12px] text-[16px] font-medium text-[#18181a]">项目领导对话</h2>
-          <div className="flex min-h-[240px] flex-1 flex-col items-center justify-center gap-[12px] rounded-[12px] bg-[#f8f9fb] p-[24px] text-center">
-            <p className="max-w-[360px] text-[13px] leading-[20px] text-[#464c5e]">
-              向项目领导描述目标，由项目领导拆解并派发任务。对话将在对话端进行，可查看完整的执行过程与产出。
-            </p>
-            <Button
-              type="button"
-              disabled={openingLeaderChat}
-              onClick={() => void openLeaderChat()}
-              className="h-[36px] rounded-[10px] bg-[#18181a] px-[16px] text-[14px] font-normal text-white hover:bg-[#303030]"
-            >
-              {openingLeaderChat ? '正在前往对话端…' : '前往项目领导对话'}
-            </Button>
-          </div>
-        </section>
-
         <section aria-label="团队设置" className="rounded-[20px] bg-white p-[20px] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
           <h2 className="mb-[12px] text-[16px] font-medium text-[#18181a]">团队设置</h2>
           <div className="grid grid-cols-1 gap-[12px] sm:grid-cols-3">
@@ -873,6 +846,8 @@ export default function TeamDetailPage({
           </div>
         </section>
       </div>
+
+      {team && <TeamGroupChatPanel team={team} agents={agents} />}
 
       <section aria-label="团队黑板" className="mt-[20px] rounded-[20px] bg-white p-[20px] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
         <h2 className="mb-[12px] text-[16px] font-medium text-[#18181a]">团队黑板</h2>
@@ -1094,13 +1069,9 @@ export default function TeamDetailPage({
                 )}
                 <span>{`优先级：${taskPriorityLabel(activeTask.priority)}`}</span>
                 {activeTask.session_id && (
-                  <button
-                    type="button"
-                    onClick={() => navigate(`${EnterpriseRoute.Chat}/${activeTask.session_id}`)}
-                    className="text-[12px] text-[#1a71ff] transition-colors hover:underline"
-                  >
-                    查看执行会话
-                  </button>
+                  <span className="rounded-full bg-[#f2f3f7] px-[8px] py-[3px] text-[11px] text-[#646b7c]">
+                    内部执行记录已归档
+                  </span>
                 )}
               </div>
 

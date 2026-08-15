@@ -19,7 +19,7 @@ from app.db import database
 from app.db.models import ChatSession, TeamTask, TeamWakeEvent, User
 from app.session.session_schema import ChatTurnRequest, ChatTurnResponse, SessionPublic
 from app.teams.schema import TeamTLChatRequest, TeamTLSessionRequest
-from app.teams.service import create_team
+from app.teams.service import create_team, set_leader
 
 # ---------- sessions.team_id 迁移 ----------
 
@@ -82,6 +82,25 @@ def test_tl_session_get_or_create_idempotent() -> None:
         assert len(sessions) == 1
 
 
+def test_tl_session_survives_leader_change_without_creating_another_room() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        admin = _admin_user()
+        first = teams_api.tl_session_endpoint(
+            team.id, TeamTLSessionRequest(tenant_id="tenant_demo"), db, admin
+        )
+
+        set_leader(db, team, "agent_worker")
+        second = teams_api.tl_session_endpoint(
+            team.id, TeamTLSessionRequest(tenant_id="tenant_demo"), db, admin
+        )
+
+        assert second.session_id == first.session_id
+        session = db.get(ChatSession, first.session_id)
+        assert session is not None
+        assert session.agent_id == "agent_worker"
+
+
 def test_tl_session_requires_leader() -> None:
     with _test_session() as db:
         _seed_team(db)  # 种子租户/员工
@@ -128,8 +147,8 @@ def test_tl_session_open_to_tenant_member_and_rejects_foreign_tenant() -> None:
 # ---------- 会话 read 带团队归属 ----------
 
 
-def test_session_read_carries_team_id_and_name() -> None:
-    """团队 TL 会话 read 带 team_id/team_name;普通会话两者均为 None。"""
+def test_team_session_is_directly_readable_but_excluded_from_global_list() -> None:
+    """团队群聊按团队读取，不混入普通员工会话列表。"""
     with _test_session() as db:
         team = _seed_team(db)
         admin = _admin_user()
@@ -148,10 +167,13 @@ def test_session_read_carries_team_id_and_name() -> None:
         )
 
         reads = {item.id: item for item in chat_api.list_chat_sessions("tenant_demo", admin, db)}
-        assert reads[tl.session_id].team_id == team.id
-        assert reads[tl.session_id].team_name == team.name
+        assert tl.session_id not in reads
         assert reads[plain.id].team_id is None
         assert reads[plain.id].team_name is None
+
+        team_read = chat_api.get_chat_session(tl.session_id, "tenant_demo", admin, db)
+        assert team_read.team_id == team.id
+        assert team_read.team_name == team.name
 
 
 def test_tl_chat_session_carries_team_id(monkeypatch: pytest.MonkeyPatch) -> None:

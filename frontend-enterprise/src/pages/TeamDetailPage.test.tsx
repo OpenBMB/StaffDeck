@@ -10,6 +10,12 @@ import type { AgentProfileRead, TeamBlackboardEntryRead, TeamEventRead, TeamRead
 
 import TeamDetailPage from './TeamDetailPage';
 
+vi.mock('./chat/components/TeamGroupChatPanel', () => ({
+  default: ({ team: currentTeam }: { team: TeamRead }) => (
+    <section aria-label="团队群聊">{currentTeam.name} · 团队群聊</section>
+  ),
+}));
+
 const team: TeamRead = {
   id: 'team-1',
   tenant_id: 'tenant_demo',
@@ -313,19 +319,13 @@ describe('TeamDetailPage', () => {
     });
   });
 
-  it('creates the team session and opens it in the chat app', async () => {
-    const user = userEvent.setup();
-    const fetchMock = stubDetailFetch();
+  it('keeps the unique team chat inside the team workspace', async () => {
+    stubDetailFetch();
     renderDetail();
 
-    const chat = await screen.findByLabelText('项目领导对话');
-    await user.click(within(chat).getByRole('button', { name: '前往项目领导对话' }));
-
-    expect((await screen.findByTestId('location')).textContent).toBe('/workspace/chat/session-1');
-    const sessionCall = fetchMock.mock.calls.find(([input]) =>
-      String(input).includes('/teams/team-1/tl/session'),
-    );
-    expect(sessionCall).toBeTruthy();
+    const chat = await screen.findByLabelText('团队群聊');
+    expect(within(chat).getByText('增长团队 · 团队群聊')).toBeTruthy();
+    expect(screen.queryByText('前往项目领导对话')).toBeNull();
   });
 
   it('renders blackboard entries pinned first with tags and sources', async () => {
@@ -756,7 +756,7 @@ describe('TeamDetailPage', () => {
     expect(within(dialog).queryByLabelText('验收结论')).toBeNull();
   });
 
-  it('navigates to the execution session from the task detail', async () => {
+  it('keeps internal execution records inside the task detail', async () => {
     const user = userEvent.setup();
     stubDetailFetch({
       taskDetails: {
@@ -768,9 +768,8 @@ describe('TeamDetailPage', () => {
     const board = screen.getByLabelText('任务看板');
     await user.click(await within(board).findByText('写周报'));
     const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: '查看执行会话' }));
-
-    expect((await screen.findByTestId('location')).textContent).toBe('/workspace/chat/session-exec-1');
+    expect(within(dialog).getByText('内部执行记录已归档')).toBeTruthy();
+    expect(within(dialog).queryByRole('button', { name: '查看执行会话' })).toBeNull();
   });
 
   it('shows creation timestamps on kanban cards sorted newest first', async () => {
