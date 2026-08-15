@@ -200,6 +200,82 @@ def _find_active_binding_for_agent(db: Session, chat_session: ChatSession) -> Ch
     return None
 
 
+def _valid_delivery_target(channel: str, target: dict) -> bool:
+    """按渠道校验投递目标是否足以发出一条消息。"""
+    if channel == "feishu":
+        return bool(target.get("message_id") or target.get("receive_id"))
+    if channel == "discord":
+        return bool(target.get("channel_id"))
+    return bool(target.get("to_user_id") and target.get("context_token"))
+
+
+def stage_user_message_mirror(
+    db: Session,
+    chat_session: ChatSession,
+    message: Message,
+    *,
+    web_origin: bool,
+) -> None:
+    """把 Web 端提问镜像登记为渠道 outbox 投递（随主事务提交，不单独 commit）。
+
+    与 stage_channel_delivery 的区别：
+    - 仅 web_origin=True（Web 来源提问）时登记，渠道自身入站一律跳过，避免回声；
+    - 仅在会话已完整锚定渠道（binding + account_key + target）时登记，纯 Web
+      会话无锚定自然跳过；
+    - 任何校验失败都静默跳过并只记日志，绝不让镜像影响 Web 主流程；
+    - 投递目标直接取会话锚定（channel_target_json），不走 feishu 事件上下文
+      推导（Web 提问没有对应 ChannelInboundEvent）。
+    投递端无需改动：kind=user_mirror 走 _deliver_one_locked 的通用发送分支，
+    且不会被误判为最终回复（is_final 只认 reply/error_notice）。
+    """
+    if not web_origin:
+        return
+    try:
+        channel = str(getattr(chat_session, "channel", None) or "").strip()
+        if not channel or channel in _NON_DELIVERY_CHANNELS:
+            return
+        text = str(message.content or "").strip()
+        if not text:
+            return
+        binding_id = str(getattr(chat_session, "channel_binding_id", None) or "").strip()
+        account_key = str(getattr(chat_session, "channel_account_key", None) or "").strip()
+        target = dict(chat_session.channel_target_json or {})
+        if not binding_id or not account_key or not target:
+            return
+        binding = db.get(ChannelBinding, binding_id)
+        if (
+            not binding
+            or binding.status != "active"
+            or binding.tenant_id != chat_session.tenant_id
+            or binding.channel != channel
+            or account_key != binding.external_account_key
+        ):
+            return
+        if not _valid_delivery_target(channel, target):
+            return
+        existing = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.idempotency_key == message.id)
+        ).first()
+        if existing:
+            return
+        db.add(
+            ChannelDelivery(
+                tenant_id=chat_session.tenant_id,
+                binding_id=binding.id,
+                session_id=chat_session.id,
+                message_id=message.id,
+                target_json=target,
+                kind="user_mirror",
+                text=text,
+                status="pending",
+                next_attempt_at=utc_now(),
+                idempotency_key=message.id,
+            )
+        )
+    except Exception:
+        logger.exception("用户消息镜像登记失败 session=%s", getattr(chat_session, "id", None))
+
+
 def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Message) -> None:
     """把 assistant 回复登记为渠道 outbox 投递（随主事务提交，不单独 commit）。
 
@@ -263,13 +339,7 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
         ).first()
         if existing:
             return
-        if binding.channel == "feishu":
-            valid_target = bool(target.get("message_id") or target.get("receive_id"))
-        elif binding.channel == "discord":
-            valid_target = bool(target.get("channel_id"))
-        else:
-            valid_target = bool(target.get("to_user_id") and target.get("context_token"))
-        if not valid_target:
+        if not _valid_delivery_target(binding.channel, target):
             _stage_failed_delivery(
                 db,
                 chat_session,

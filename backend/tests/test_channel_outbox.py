@@ -14,6 +14,7 @@ from app.channels.service_outbox import (
     run_delivery_daemon,
     run_reaction_delivery_daemon,
     stage_channel_delivery,
+    stage_user_message_mirror,
 )
 from app.config import get_settings
 from app.channels.crypto import encrypt_channel_secret
@@ -1791,3 +1792,151 @@ def test_discord_daemon_delivers_via_real_adapter_send() -> None:
     assert url == expected_url
     assert body["content"] == "你好，我是 StaffDeck"
     assert headers["Authorization"] == "Bot secret-token"
+
+
+# ---------- user_mirror:Web 提问镜像到锚定渠道 ----------
+
+
+def _user_message(session_id: str, message_id: str, content: str = "Web 提问") -> Message:
+    return Message(
+        id=message_id,
+        tenant_id="tenant_demo",
+        session_id=session_id,
+        role="user",
+        content=content,
+    )
+
+
+def test_web_user_message_mirror_staged() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        chat_session = _discord_channel_session(binding)
+        message = _user_message(chat_session.id, "msg_web_q")
+        db.add(chat_session)
+        db.add(message)
+        db.commit()
+
+        stage_user_message_mirror(db, chat_session, message, web_origin=True)
+        db.commit()
+
+        deliveries = db.exec(select(ChannelDelivery)).all()
+        assert len(deliveries) == 1
+        delivery = deliveries[0]
+        assert delivery.binding_id == binding.id
+        assert delivery.session_id == chat_session.id
+        assert delivery.message_id == "msg_web_q"
+        assert delivery.idempotency_key == "msg_web_q"
+        assert delivery.kind == "user_mirror"
+        assert delivery.status == "pending"
+        assert delivery.text == "Web 提问"
+        assert delivery.target_json == {"channel_id": "channel-1"}
+
+
+def test_user_mirror_skipped_when_not_web_origin() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        chat_session = _discord_channel_session(binding)
+        message = _user_message(chat_session.id, "msg_chan_q")
+        db.add(chat_session)
+        db.add(message)
+        db.commit()
+
+        # 渠道自身入站(Discord 提问)不镜像,避免回声
+        stage_user_message_mirror(db, chat_session, message, web_origin=False)
+        db.commit()
+
+        assert db.exec(select(ChannelDelivery)).all() == []
+
+
+def test_user_mirror_skipped_without_channel_anchor() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        web_session = ChatSession(id="session_web", tenant_id="tenant_demo", agent_id="agent_1")
+        message = _user_message(web_session.id, "msg_web_plain")
+        db.add(web_session)
+        db.add(message)
+        db.commit()
+
+        stage_user_message_mirror(db, web_session, message, web_origin=True)
+        db.commit()
+
+        assert db.exec(select(ChannelDelivery)).all() == []
+
+
+def test_user_mirror_idempotent_per_message() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        chat_session = _discord_channel_session(binding)
+        message = _user_message(chat_session.id, "msg_web_q2")
+        db.add(chat_session)
+        db.add(message)
+        db.commit()
+
+        stage_user_message_mirror(db, chat_session, message, web_origin=True)
+        stage_user_message_mirror(db, chat_session, message, web_origin=True)
+        db.commit()
+
+        assert len(db.exec(select(ChannelDelivery)).all()) == 1
+
+
+def test_user_mirror_skipped_when_binding_inactive() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord", status="inactive")
+        chat_session = _discord_channel_session(binding)
+        message = _user_message(chat_session.id, "msg_web_q3")
+        db.add(chat_session)
+        db.add(message)
+        db.commit()
+
+        stage_user_message_mirror(db, chat_session, message, web_origin=True)
+        db.commit()
+
+        assert db.exec(select(ChannelDelivery)).all() == []
+
+
+def test_user_mirror_skipped_for_empty_content() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        chat_session = _discord_channel_session(binding)
+        message = _user_message(chat_session.id, "msg_web_q4", content="  ")
+        db.add(chat_session)
+        db.add(message)
+        db.commit()
+
+        stage_user_message_mirror(db, chat_session, message, web_origin=True)
+        db.commit()
+
+        assert db.exec(select(ChannelDelivery)).all() == []
+
+
+def test_user_mirror_delivered_via_daemon() -> None:
+    engine = _test_engine()
+    adapter = FakeAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        binding_id = binding.id
+        chat_session = _discord_channel_session(binding)
+        message = _user_message(chat_session.id, "msg_web_q5", "Web 端提问镜像")
+        db.add(chat_session)
+        db.add(message)
+        db.commit()
+
+        stage_user_message_mirror(db, chat_session, message, web_origin=True)
+        db.commit()
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        delivery = db.exec(select(ChannelDelivery)).one()
+        assert delivery.status == "delivered"
+        assert delivery.attempts == 1
+    assert adapter.sent == [
+        (binding_id, {"channel_id": "channel-1"}, "Web 端提问镜像")
+    ]
