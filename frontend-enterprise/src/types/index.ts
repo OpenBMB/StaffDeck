@@ -11,6 +11,7 @@ export type SkillCapabilityRefs = {
 
 export type SkillGraphNode = Record<string, unknown> & {
   capability_refs?: SkillCapabilityRefs;
+  sub_sop_id?: string | null;
 };
 
 export type SkillCard = {
@@ -19,6 +20,7 @@ export type SkillCard = {
   version: string;
   business_domain?: string;
   description: string;
+  capability_scope?: CapabilityScope;
   step_timeout_seconds?: number | null;
   trigger_intents: string[];
   user_utterance_examples: string[];
@@ -756,6 +758,7 @@ export type TraceLineRead = {
   collapsible?: boolean | null;
   duration_ms?: number | null;
   model_duration_ms?: number | null;
+  model_names?: string[] | null;
 };
 
 export type TurnTraceRead = {
@@ -767,6 +770,7 @@ export type TurnTraceRead = {
   duration_ms?: number | null;
   model_duration_ms?: number | null;
   model_call_count?: number | null;
+  model_names?: string[] | null;
 };
 
 export type TraceSummary = {

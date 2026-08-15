@@ -240,7 +240,11 @@ def _resolve_upload_knowledge_base(
     current_user: object | None = None,
     creator_metadata: dict[str, Any] | None = None,
 ) -> KnowledgeBase:
-    agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
+    agent = (
+        ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
+        if agent_id
+        else None
+    )
     if request.knowledge_base_id:
         knowledge_base = db.get(KnowledgeBase, request.knowledge_base_id)
         if (
@@ -453,9 +457,56 @@ def update_document(
     request: KnowledgeDocumentUpdateRequest,
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    agent_id: str | None = Query(None),
 ) -> KnowledgeDocumentRead:
-    row = _get_document(db, request.tenant_id, document_id)
-    _ensure_open_gallery_knowledge_admin(db, request.tenant_id, row.knowledge_base_id, current_user)
+    source_row = _get_document(db, request.tenant_id, document_id)
+    if request.expected_updated_at and source_row.updated_at.isoformat() != request.expected_updated_at:
+        raise HTTPException(
+            status_code=409,
+            detail="文档已被其他人修改，请刷新后再保存。",
+        )
+    resolved_agent_id = agent_id if isinstance(agent_id, str) and agent_id else None
+    agent = (
+        ensure_agent_scope_manager(
+            db,
+            request.tenant_id,
+            resolved_agent_id,
+            current_user,
+        )
+        if resolved_agent_id
+        else None
+    )
+    if agent and not agent.is_overall:
+        version = knowledge_version_for_upload(
+            db,
+            request.tenant_id,
+            source_row.knowledge_base_id,
+            agent.id,
+            metadata_json=user_creator_metadata(current_user),
+        )
+        db.commit()
+        row = _document_for_version(db, source_row, version.id)
+    else:
+        _ensure_open_gallery_knowledge_admin(
+            db,
+            request.tenant_id,
+            source_row.knowledge_base_id,
+            current_user,
+        )
+        row = source_row
+
+    if request.content_md is not None:
+        try:
+            row = KnowledgeService(db).replace_document_content(
+                row,
+                request.content_md,
+                title=request.title,
+                status=request.status,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return document_read(row)
+
     metadata = dict(row.metadata_json or {})
     if request.metadata is not None:
         metadata = metadata_preserving_creator(row.metadata_json, request.metadata)
@@ -475,6 +526,30 @@ def update_document(
     db.refresh(row)
     _refresh_document_okf_concepts(db, row)
     return document_read(row)
+
+
+def _document_for_version(
+    db: Session,
+    source: KnowledgeDocument,
+    version_id: str,
+) -> KnowledgeDocument:
+    if source.knowledge_base_version_id == version_id:
+        return source
+    rows = db.exec(
+        select(KnowledgeDocument)
+        .where(
+            KnowledgeDocument.tenant_id == source.tenant_id,
+            KnowledgeDocument.knowledge_base_id == source.knowledge_base_id,
+            KnowledgeDocument.knowledge_base_version_id == version_id,
+            KnowledgeDocument.filename == source.filename,
+            KnowledgeDocument.file_type == source.file_type,
+        )
+        .order_by(KnowledgeDocument.created_at.asc())
+    ).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Knowledge document branch copy not found")
+    exact = [row for row in rows if row.title == source.title and row.created_at == source.created_at]
+    return exact[0] if exact else rows[0]
 
 
 @router.get(

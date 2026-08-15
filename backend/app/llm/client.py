@@ -172,6 +172,7 @@ class LLMClient:
         self.api_protocol = protocol
         self.api_key = api_key
         self.model = model_config.model
+        self.model_config_name = str(getattr(model_config, "name", "") or "").strip()
         self.temperature = model_config.temperature
         self.max_output_tokens = model_config.max_output_tokens
         legacy_extra_body = getattr(model_config, "legacy_extra_body", {})
@@ -238,6 +239,7 @@ class LLMClient:
                 request["max_tokens"] = current_max_tokens
                 span = start_llm_call(
                     model=self.model,
+                    model_name=self.model_config_name or self.model,
                     endpoint=_endpoint_label(getattr(self, "base_url", "")),
                     request_kind=self._protocol_driver().request_kind,
                     stream=False,
@@ -332,6 +334,7 @@ class LLMClient:
             for attempt in range(empty_response_retries + 1):
                 span = start_llm_call(
                     model=self.model,
+                    model_name=self.model_config_name or self.model,
                     endpoint=_endpoint_label(getattr(self, "base_url", "")),
                     request_kind=self._protocol_driver().request_kind,
                     stream=True,

@@ -235,6 +235,118 @@ class KnowledgeService:
         self.db.refresh(job)
         return job
 
+    def replace_document_content(
+        self,
+        document: KnowledgeDocument,
+        content_md: str,
+        *,
+        title: str | None = None,
+        status: str | None = None,
+    ) -> KnowledgeDocument:
+        """Replace editable source text and rebuild every derived knowledge layer."""
+        normalized_text = _normalize_text(content_md)
+        if not normalized_text:
+            raise KnowledgeParseError("文档正文不能为空。")
+
+        resolved_title = (title or document.title or Path(document.filename).stem).strip()
+        section_nodes = _build_section_nodes(normalized_text)
+        document_card = _build_document_card(
+            title=resolved_title,
+            filename=document.filename,
+            file_type=document.file_type,
+            text=normalized_text,
+            section_nodes=section_nodes,
+        )
+        metadata = dict(document.metadata_json or {})
+        metadata.update(
+            {
+                "ingest_schema_version": KNOWLEDGE_INGEST_SCHEMA_VERSION,
+                "raw_text": normalized_text,
+                "char_count": len(normalized_text),
+                "document_card": document_card,
+                "section_tree": section_nodes,
+                "section_stats": {
+                    "section_count": len(section_nodes),
+                    "paragraph_count": len(_paragraph_blocks(normalized_text)),
+                },
+                "online_edited_at": utc_now().isoformat(),
+            }
+        )
+        document.title = resolved_title
+        document.status = status or "ready"
+        document.error = None
+        document.metadata_json = metadata
+        document.updated_at = utc_now()
+        self.db.add(document)
+        self.db.commit()
+        self.db.refresh(document)
+
+        buckets = self._build_buckets(
+            document.tenant_id,
+            document.knowledge_base_id,
+            document,
+            normalized_text,
+            section_nodes,
+            document_card,
+            None,
+            use_llm=False,
+        )
+        chunk_count = self._build_chunks(
+            document.tenant_id,
+            document.knowledge_base_id,
+            document,
+            buckets,
+            section_nodes,
+            None,
+        )
+        self.db.exec(
+            delete(KnowledgeConcept).where(
+                KnowledgeConcept.tenant_id == document.tenant_id,
+                KnowledgeConcept.knowledge_base_id == document.knowledge_base_id,
+                KnowledgeConcept.knowledge_base_version_id
+                == document.knowledge_base_version_id,
+                KnowledgeConcept.document_id == document.id,
+            )
+        )
+        self.db.commit()
+        concept_rows = upsert_concepts(
+            self.db,
+            document.tenant_id,
+            document.knowledge_base_id,
+            document.knowledge_base_version_id,
+            build_okf_for_document(document, section_nodes, buckets),
+        )
+
+        document.bucket_count = len(buckets)
+        document.chunk_count = chunk_count
+        document.metadata_json = {
+            **(document.metadata_json or {}),
+            "chunk_stats": {
+                "total_chunks": chunk_count,
+                "chunk_count": chunk_count,
+                "target_chars": EVIDENCE_CHUNK_CHARS,
+                "section_target_chars": SECTION_TARGET_CHARS,
+            },
+            "bucket_quality": [
+                {
+                    "bucket_id": bucket.id,
+                    "title": bucket.title,
+                    "quality": (bucket.metadata_json or {}).get("quality", {}),
+                }
+                for bucket in buckets
+            ],
+            "okf": {
+                "version": "0.1",
+                "concept_count": len(concept_rows),
+                "concept_types": sorted({row.concept_type for row in concept_rows}),
+            },
+        }
+        document.updated_at = utc_now()
+        self.db.add(document)
+        self.db.commit()
+        self.db.refresh(document)
+        return document
+
     def cancel_ingest_job(self, job_id: str, tenant_id: str) -> KnowledgeIngestJob | None:
         job = self.db.get(KnowledgeIngestJob, job_id)
         if not job or job.tenant_id != tenant_id:
@@ -789,11 +901,17 @@ class KnowledgeService:
         text: str,
         section_nodes: list[dict[str, Any]],
         document_card: dict[str, Any],
-        job: KnowledgeIngestJob,
+        job: KnowledgeIngestJob | None,
+        *,
+        use_llm: bool = True,
     ) -> list[KnowledgeBucket]:
         model_config = self._default_model_config(tenant_id)
         structure_buckets = _structure_bucket_specs(section_nodes)
-        llm_buckets = self._bucket_with_llm(section_nodes, model_config) if model_config else []
+        llm_buckets = (
+            self._bucket_with_llm(section_nodes, model_config)
+            if use_llm and model_config
+            else []
+        )
         self._raise_if_ingest_cancelled(job)
         bucket_specs = _unique_bucket_specs(structure_buckets + _normalize_llm_bucket_specs(llm_buckets, section_nodes))
         if not bucket_specs:
@@ -854,7 +972,7 @@ class KnowledgeService:
         document: KnowledgeDocument,
         buckets: list[KnowledgeBucket],
         section_nodes: list[dict[str, Any]],
-        job: KnowledgeIngestJob,
+        job: KnowledgeIngestJob | None,
     ) -> int:
         count = 0
         chunk_ids_by_bucket: dict[str, list[str]] = {}
@@ -1305,7 +1423,9 @@ class KnowledgeService:
         self.db.commit()
         self.db.refresh(job)
 
-    def _raise_if_ingest_cancelled(self, job: KnowledgeIngestJob) -> None:
+    def _raise_if_ingest_cancelled(self, job: KnowledgeIngestJob | None) -> None:
+        if job is None:
+            return
         self.db.refresh(job)
         if job.status in CANCELLING_INGEST_STATUSES:
             raise KnowledgeIngestCancelled("入库任务已取消")

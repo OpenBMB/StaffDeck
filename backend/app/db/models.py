@@ -1228,6 +1228,39 @@ class SkillFeedback(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class EvolutionProposal(SQLModel, table=True):
+    __tablename__ = "evolution_proposals"
+
+    id: str = Field(default_factory=lambda: new_id("evo"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    resource_type: str = Field(index=True)
+    resource_id: str = Field(index=True)
+    resource_key: str = Field(index=True)
+    resource_name: str
+    base_version: Optional[str] = Field(default=None, index=True)
+    status: str = Field(default="ready_for_review", index=True)
+    trigger_type: str = Field(default="feedback", index=True)
+    risk_level: str = Field(default="medium", index=True)
+    hypothesis: str = ""
+    rationale: str = ""
+    expected_outcome: str = ""
+    source_feedback_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    evidence_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    candidate_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    diff_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    evaluation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    published_snapshot_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    error: Optional[str] = None
+    created_by_user_id: str = Field(index=True)
+    reviewed_by_user_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    reviewed_at: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+    rolled_back_at: Optional[datetime] = None
+
+
 class AgentEvent(SQLModel, table=True):
     __tablename__ = "agent_events"
 

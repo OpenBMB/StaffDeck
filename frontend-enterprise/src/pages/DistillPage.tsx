@@ -66,7 +66,11 @@ import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import AppHeader from '@/components/AppHeader';
-import { CapabilityScopeBadge } from '@/components/CapabilityScopeControl';
+import {
+  CapabilityScopeBadge,
+  CapabilityScopeControl,
+  normalizeCapabilityScope,
+} from '@/components/CapabilityScopeControl';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
 import { cn } from '@/lib/utils';
 import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
@@ -398,7 +402,7 @@ const NODE_TYPE_OPTIONS: SelectOption[] = [
   { value: 'knowledge_query', label: '检索知识' },
   { value: 'response', label: '回复用户' },
   { value: 'handoff', label: '转人工' },
-  { value: 'subflow', label: '子流程' },
+  { value: 'subflow', label: '调用子 SOP' },
 ];
 
 const BASE_ACTION_OPTIONS: SelectOption[] = [
@@ -612,6 +616,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   const [probeArgsText, setProbeArgsText] = useState('');
   const [tools, setTools] = useState<ToolRead[]>([]);
   const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
+  const [sopSkills, setSopSkills] = useState<SkillRead[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [selectedRewriteModelId, setSelectedRewriteModelId] = useState(
@@ -828,10 +833,14 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
       api
         .get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentQuery}`)
         .catch(() => [] as KnowledgeBaseRead[]),
-    ]).then(([toolRows, skillRows, knowledgeRows]) => {
+      api
+        .get<SkillRead[]>(`/api/enterprise/skills?tenant_id=${TENANT_ID}${agentQuery}`)
+        .catch(() => [] as SkillRead[]),
+    ]).then(([toolRows, skillRows, knowledgeRows, sopRows]) => {
       setTools(toolRows);
       setGeneralSkills(skillRows);
       setKnowledgeBases(knowledgeRows);
+      setSopSkills(sopRows);
     });
   }, [agentQuery]);
 
@@ -2602,6 +2611,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
               toolDescriptions={toolDescriptions}
               toolStatuses={toolStatuses}
               generalSkills={generalSkills}
+              sopSkills={sopSkills}
               tools={tools}
               knowledgeBases={knowledgeBases}
               containerRef={sourceScrollRef}
@@ -2621,6 +2631,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
                 toolDescriptions={toolDescriptions}
                 toolStatuses={toolStatuses}
                 generalSkills={generalSkills}
+                sopSkills={sopSkills}
                 tools={tools}
                 knowledgeBases={knowledgeBases}
                 containerRef={sourceScrollRef}
@@ -3144,6 +3155,7 @@ function SkillSource({
   toolDescriptions,
   toolStatuses,
   generalSkills,
+  sopSkills,
   tools,
   knowledgeBases,
   containerRef,
@@ -3160,6 +3172,7 @@ function SkillSource({
   toolDescriptions: ToolDescriptionMap;
   toolStatuses: ToolStatusMap;
   generalSkills: GeneralSkillRead[];
+  sopSkills: SkillRead[];
   tools: ToolRead[];
   knowledgeBases: KnowledgeBaseRead[];
   containerRef: RefObject<HTMLDivElement>;
@@ -3179,6 +3192,8 @@ function SkillSource({
       next[field] = Array.isArray(value) ? value : splitEditableList(String(value ?? ''));
     } else if (field === 'step_timeout_seconds') {
       next.step_timeout_seconds = typeof value === 'number' ? value : null;
+    } else if (field === 'capability_scope') {
+      next.capability_scope = normalizeCapabilityScope(value);
     } else if (field === 'skill_id' || field === 'name' || field === 'version' || field === 'business_domain' || field === 'description') {
       next[field] = String(value);
     }
@@ -3516,6 +3531,12 @@ function SkillSource({
     capabilityScope: item.capability_scope,
     unavailableReason: item.status === 'active' || item.status === 'published' ? undefined : '知识库已下线',
   }));
+  const sopOptions: SelectOption[] = sopSkills
+    .filter((item) => item.status === 'published' && item.skill_id !== skill.skill_id)
+    .map((item) => ({
+      value: item.skill_id,
+      label: `${item.name} · ${item.skill_id}`,
+    }));
 
   return (
     <div className={SOURCE_MD_CLASS} ref={containerRef}>
@@ -3538,6 +3559,12 @@ function SkillSource({
             <EditableSourceTextLine label={fieldLabel('version')} value={skill.version} onChange={(value) => editBasic('version', value)} />
             <EditableSourceTextLine label={fieldLabel('business_domain')} value={skill.business_domain || ''} onChange={(value) => editBasic('business_domain', value)} />
             <EditableSourceTextLine label={fieldLabel('description')} value={skill.description || ''} multiline onChange={(value) => editBasic('description', value)} />
+            <CapabilityScopeControl
+              compact
+              resourceType="sop"
+              value={normalizeCapabilityScope(skill.capability_scope)}
+              onChange={(value) => editBasic('capability_scope', value)}
+            />
             <EditableSourceNumberLine
               label={fieldLabel('step_timeout_seconds')}
               value={skill.step_timeout_seconds}
@@ -3610,6 +3637,14 @@ function SkillSource({
                       options={NODE_TYPE_OPTIONS}
                       onChange={(value) => editStep(index, 'type', value)}
                     />
+                    {String(step.type || '') === 'subflow' && (
+                      <EditableSourceSelectLine
+                        label="调用子 SOP"
+                        value={String(step.sub_sop_id || '')}
+                        options={sopOptions}
+                        onChange={(value) => editStep(index, 'sub_sop_id', value)}
+                      />
+                    )}
                     <SourceReadonlyLine label="节点状态" value={nodeState} />
                     <EditableSourceTextLine
                       label={fieldLabel('instruction')}
@@ -3698,6 +3733,7 @@ function SkillFlow({
   toolDescriptions,
   toolStatuses,
   generalSkills,
+  sopSkills,
   tools,
   knowledgeBases,
   containerRef,
@@ -3717,6 +3753,7 @@ function SkillFlow({
   toolDescriptions: ToolDescriptionMap;
   toolStatuses: ToolStatusMap;
   generalSkills: GeneralSkillRead[];
+  sopSkills: SkillRead[];
   tools: ToolRead[];
   knowledgeBases: KnowledgeBaseRead[];
   containerRef: RefObject<HTMLDivElement>;
@@ -3808,6 +3845,12 @@ function SkillFlow({
     capabilityScope: item.capability_scope,
     unavailableReason: item.status === 'active' || item.status === 'published' ? undefined : '知识库已下线',
   }));
+  const sopOptions: SelectOption[] = sopSkills
+    .filter((item) => item.status === 'published' && item.skill_id !== skill.skill_id)
+    .map((item) => ({
+      value: item.skill_id,
+      label: `${item.name} · ${item.skill_id}`,
+    }));
 
   const editFlowNode = (
     index: number,
@@ -3882,6 +3925,8 @@ function SkillFlow({
       next[field] = Array.isArray(value) ? value : splitEditableList(String(value ?? ''));
     } else if (field === 'step_timeout_seconds') {
       next.step_timeout_seconds = typeof value === 'number' ? value : null;
+    } else if (field === 'capability_scope') {
+      next.capability_scope = normalizeCapabilityScope(value);
     } else if (field === 'skill_id' || field === 'name' || field === 'version' || field === 'business_domain' || field === 'description') {
       next[field] = String(value);
     }
@@ -4699,6 +4744,7 @@ function SkillFlow({
             generalSkillOptions={generalSkillOptions}
             toolOptions={toolOptions}
             knowledgeBaseOptions={knowledgeBaseOptions}
+            sopOptions={sopOptions}
             onEditNode={editFlowNode}
             onAddEdge={addFlowEdge}
             onUpdateEdge={updateFlowEdge}
@@ -4787,6 +4833,12 @@ function SkillFlowBasicInspector({
               placeholder="不单独限制"
               onChange={(value) => onEditBasic('step_timeout_seconds', value)}
             />
+            <CapabilityScopeControl
+              compact
+              resourceType="sop"
+              value={normalizeCapabilityScope(skill.capability_scope)}
+              onChange={(value) => onEditBasic('capability_scope', value)}
+            />
           </FlowInspectorSection>
           <FlowInspectorSection title="触发与目标" description="说明何时进入流程，以及模型需要完成什么。">
             <EditableSourceTextLine label={fieldLabel('description')} value={skill.description || ''} multiline onChange={(value) => onEditBasic('description', value)} />
@@ -4818,6 +4870,7 @@ function SkillFlowInspector({
   generalSkillOptions,
   toolOptions,
   knowledgeBaseOptions,
+  sopOptions,
   onEditNode,
   onAddEdge,
   onUpdateEdge,
@@ -4836,6 +4889,7 @@ function SkillFlowInspector({
   generalSkillOptions: CapabilityReferenceOption[];
   toolOptions: CapabilityReferenceOption[];
   knowledgeBaseOptions: CapabilityReferenceOption[];
+  sopOptions: SelectOption[];
   onEditNode: (index: number, field: string, value: string | string[] | boolean | Record<string, unknown>) => void;
   onAddEdge: (index: number) => void;
   onUpdateEdge: (index: number, edgeIndex: number, patch: Record<string, unknown>) => void;
@@ -4869,6 +4923,14 @@ function SkillFlowInspector({
             <EditableSourceTextLine label="节点名称" value={String(node.name || '')} onChange={(value) => onEditNode(nodeIndex, 'name', value)} />
             <EditableSourceTextLine label={fieldLabel('step_id')} value={nodeId} onChange={(value) => onEditNode(nodeIndex, 'step_id', value)} />
             <EditableSourceSelectLine label={fieldLabel('type')} value={String(node.type || 'collect_info')} options={NODE_TYPE_OPTIONS} onChange={(value) => onEditNode(nodeIndex, 'type', value)} />
+            {String(node.type || '') === 'subflow' && (
+              <EditableSourceSelectLine
+                label="调用子 SOP"
+                value={String(node.sub_sop_id || '')}
+                options={sopOptions}
+                onChange={(value) => onEditNode(nodeIndex, 'sub_sop_id', value)}
+              />
+            )}
             <SourceReadonlyLine label="节点状态" value={nodeState} />
             <EditableSourceTextLine label={fieldLabel('instruction')} value={String(node.instruction || '')} multiline onChange={(value) => onEditNode(nodeIndex, 'instruction', value)} />
           </FlowInspectorSection>
@@ -5065,6 +5127,7 @@ function skillGraphSteps(skill: SkillCard): Array<Record<string, unknown>> {
         knowledge_scope: isRecord(node.knowledge_scope) ? node.knowledge_scope : {},
         retry_policy: isRecord(node.retry_policy) ? node.retry_policy : {},
         metadata: isRecord(node.metadata) ? node.metadata : {},
+        sub_sop_id: stringValue(node.sub_sop_id, ''),
       };
     });
   }
@@ -6984,6 +7047,7 @@ function createStreamingDraftSeed(payload: { title: string; raw_content: string 
     version: '1.0.0',
     business_domain: '',
     description: payload.raw_content.slice(0, 120),
+    capability_scope: 'general',
     trigger_intents: [],
     user_utterance_examples: [],
     goal: [],
@@ -7043,6 +7107,7 @@ function parseCompleteStreamSkill(streamText: string): SkillCard | null {
       version: stringValue(draft.version, '1.0.0'),
       business_domain: stringValue(draft.business_domain, ''),
       description: stringValue(draft.description, ''),
+      capability_scope: normalizeCapabilityScope(draft.capability_scope),
       step_timeout_seconds:
         typeof draft.step_timeout_seconds === 'number'
           ? draft.step_timeout_seconds
@@ -7111,6 +7176,7 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
   const name = extractJsonStringField(fragment, 'name') || '';
   const instruction = extractJsonStringField(fragment, 'instruction') || '';
   const condition = extractJsonStringField(fragment, 'condition') || '';
+  const subSopId = extractJsonStringField(fragment, 'sub_sop_id') || '';
   const expectedUserInfo = extractJsonStringArrayField(fragment, 'expected_user_info') || [];
   const allowedActions = extractJsonStringArrayField(fragment, 'allowed_actions') || [];
   const generalSkillIds = extractJsonStringArrayField(fragment, 'general_skill_ids') || [];
@@ -7138,6 +7204,7 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
     instruction,
     optional: false,
     condition,
+    sub_sop_id: subSopId,
     expected_user_info: expectedUserInfo,
     allowed_actions: allowedActions,
     capability_refs: {
@@ -7170,6 +7237,7 @@ function normalizeNodePreview(node: Record<string, unknown>, index = 0): Record<
     knowledge_scope: isRecord(node.knowledge_scope) ? node.knowledge_scope : {},
     retry_policy: isRecord(node.retry_policy) ? node.retry_policy : {},
     metadata: isRecord(node.metadata) ? node.metadata : {},
+    sub_sop_id: stringValue(node.sub_sop_id, ''),
   };
 }
 
@@ -7804,6 +7872,7 @@ function blankSkillForAnimation(skill: SkillCard): SkillCard {
   blank.version = '';
   blank.business_domain = '';
   blank.description = '';
+  blank.capability_scope = 'general';
   blank.trigger_intents = [];
   blank.user_utterance_examples = [];
   blank.goal = [];
@@ -7814,6 +7883,7 @@ function blankSkillForAnimation(skill: SkillCard): SkillCard {
     type: String(step.type || 'collect_info'),
     name: '',
     instruction: '',
+    sub_sop_id: '',
     optional: Boolean(step.optional),
     condition: '',
     expected_user_info: [],
@@ -8101,6 +8171,7 @@ function fieldLabel(field: string): string {
     version: '版本',
     business_domain: '业务域',
     description: '描述',
+    capability_scope: '使用范围',
     step_timeout_seconds: '单步运行上限（秒）',
     trigger_intents: '触发意图',
     user_utterance_examples: '示例话术',
@@ -8116,6 +8187,7 @@ function fieldLabel(field: string): string {
     general_skill_ids: 'SOP 技能',
     tool_ids: 'SOP 工具',
     knowledge_base_ids: 'SOP 知识库',
+    sub_sop_id: '调用子 SOP',
   };
   return labels[field] || field;
 }

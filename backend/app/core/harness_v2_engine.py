@@ -66,6 +66,7 @@ from app.session.session_schema import (
     StepAgentResult,
     TurnPlan,
 )
+from app.skills.nesting import discoverable_sops, expand_visible_sops
 
 
 class HarnessV2Engine:
@@ -161,9 +162,11 @@ class HarnessV2Engine:
         model_config = self.owner._get_request_model(request, session.agent_id)
         if model_config is None:
             raise RuntimeError("没有默认模型配置。")
-        skills = self.owner._list_published_skills(
+        source_skills = self.owner._list_published_skills(
             request.tenant_id, session.agent_id
         )
+        skills = expand_visible_sops(source_skills)
+        routing_skills = discoverable_sops(skills)
         self.owner._drop_unavailable_skill_state(
             request.tenant_id, session, skills
         )
@@ -207,14 +210,14 @@ class HarnessV2Engine:
                 self.slash_command,
                 execution_request.message,
                 session,
-                skills,
+                routing_skills,
                 planner_state,
             )
         else:
             plan = self.planner.plan(
                 execution_request.message,
                 session,
-                skills,
+                routing_skills,
                 model_config,
                 deepcopy(conversation_context),
                 memory_context,
@@ -440,9 +443,13 @@ class HarnessV2Engine:
         ):
             payload["knowledge_citations"] = list(result.citations)
 
-        response_skill = self.owner._get_active_skill(
+        # ``last_skill`` is the execution-expanded parent graph. Prefer it so a
+        # nested SOP's response rules remain available after the child graph
+        # reaches a terminal node. Falling back to the stored row is only
+        # needed for turns that did not execute a TaskFrame.
+        response_skill = last_skill or self.owner._get_active_skill(
             request.tenant_id, session.active_skill_id, session.agent_id
-        ) or last_skill
+        )
         self._renew_session_lease()
         reply = self.owner.response_generator.generate(
             execution_request.message,
