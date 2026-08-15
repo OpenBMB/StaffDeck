@@ -1,4 +1,4 @@
-import cytoscape, { type Core, type ElementDefinition, type LayoutOptions } from 'cytoscape';
+import cytoscape, { type Core, type EdgeSingular, type ElementDefinition, type EventObject, type LayoutOptions, type NodeSingular } from 'cytoscape';
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -569,8 +569,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, {
       minZoom: 0.2,
       maxZoom: 3,
     });
-    cy.on('tap', 'node', (event) => onSelectNode(event.target.id()));
-    cy.on('tap', (event) => {
+    cy.on('tap', 'node', (event: EventObject) => onSelectNode(String(event.target.id())));
+    cy.on('tap', (event: EventObject) => {
       if (event.target === cy) onSelectNode(null);
     });
     cy.on('zoom', () => updateSemanticLabels(cy));
@@ -594,14 +594,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, {
     if (!cy) return;
     cy.elements().removeClass('is-dimmed is-related is-selected');
     const selected = selectedNodeId ? cy.getElementById(selectedNodeId) : cy.collection();
-    const matchingNodes = cy.nodes().filter((node) => {
+    const matchingNodes = cy.nodes().filter((node: NodeSingular) => {
       const graphNode = model.nodeById.get(node.id());
       if (!graphNode) return false;
       const matchesType = selectedTypes.length === 0 || selectedTypes.includes(graphNode.concept.concept_type);
       return matchesType && knowledgeConceptMatches(graphNode.concept, query);
     });
     cy.nodes().difference(matchingNodes).addClass('is-dimmed');
-    cy.edges().forEach((edge) => {
+    cy.edges().forEach((edge: EdgeSingular) => {
       if (edge.source().hasClass('is-dimmed') || edge.target().hasClass('is-dimmed')) edge.addClass('is-dimmed');
     });
     if (selected.length) {
@@ -829,7 +829,7 @@ function layoutOptions(layout: GraphLayout, animate: boolean): LayoutOptions {
 
 function updateSemanticLabels(cy: Core) {
   const lowZoom = cy.zoom() < 0.72;
-  cy.nodes().forEach((node) => {
+  cy.nodes().forEach((node: NodeSingular) => {
     const keepLabel = !lowZoom || Boolean(node.data('hub')) || node.hasClass('is-selected');
     node.toggleClass('label-hidden', !keepLabel);
   });
