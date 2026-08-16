@@ -27,8 +27,9 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         '/api': {
+          // keep the original Host header: OIDC redirect_uri is derived from it
+          // (changeOrigin would rewrite Host to the proxy target and break SSO)
           target: env.VITE_PROXY_TARGET || 'http://localhost:8000',
-          changeOrigin: true,
         },
       },
     },
