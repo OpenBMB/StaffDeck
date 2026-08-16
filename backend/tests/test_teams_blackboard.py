@@ -364,6 +364,22 @@ def test_blackboard_injection_absent_when_empty() -> None:
         assert "团队黑板(相关工作记忆)" not in build_tl_review_message(db, team, task)
 
 
+def test_member_rework_message_treats_user_input_as_an_answer() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        task = _make_task(db, team, status="rework")
+        task.review_json = {
+            "comment": "工号 001，需要 A4 纸 2 包。",
+            "input_provided_at": "2026-08-16T00:00:00Z",
+        }
+
+        message = build_member_task_message(db, team, task, rework=True)
+
+        assert "用户已回答你上一次提出的补充问题" in message
+        assert "用户补充:工号 001，需要 A4 纸 2 包。" in message
+        assert "退回意见" not in message
+
+
 def test_blackboard_topk_pinned_first_and_archived_excluded() -> None:
     with _test_session() as db:
         team = _seed_team(db)

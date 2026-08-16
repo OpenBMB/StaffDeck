@@ -15,6 +15,7 @@ from app.teams.schema import (
     TeamCreateRequest,
     TeamLeaderUpdateRequest,
     TeamMemberAddRequest,
+    TeamTaskResumeRequest,
     TeamTLChatRequest,
     TeamUpdateRequest,
 )
@@ -576,6 +577,81 @@ def test_override_requires_manager() -> None:
                 db, _admin_user_other(),
             )
         assert exc_info.value.status_code == 403
+
+
+def test_resume_needs_input_task_with_user_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        task = _make_task(db, team, status="escalated")
+        task.report_json = {
+            "needs_input": True,
+            "full_reply": "请提供员工工号和物品清单。",
+        }
+        db.add(task)
+        db.commit()
+        started = _stub_start_wakeup(monkeypatch)
+
+        result = teams_api.resume_team_task(
+            team.id,
+            task.id,
+            TeamTaskResumeRequest(
+                tenant_id="tenant_demo",
+                answer="工号 001，需要 A4 纸 2 包。",
+            ),
+            db,
+            _admin_user(),
+        )
+
+        assert result.status == "rework"
+        assert result.report["needs_input"] is False
+        assert result.review["comment"] == "工号 001，需要 A4 纸 2 包。"
+        assert result.events[-1].event_type == "task_input_provided"
+        wakes = db.exec(
+            select(TeamWakeEvent).where(TeamWakeEvent.trigger_type == "task_rework")
+        ).all()
+        assert len(wakes) == 1
+        assert wakes[0].payload_json["task_id"] == task.id
+        assert started == [wakes[0].id]
+
+
+def test_resume_rejects_task_not_waiting_for_input() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        task = _make_task(db, team, status="escalated")
+
+        with pytest.raises(HTTPException) as exc_info:
+            teams_api.resume_team_task(
+                team.id,
+                task.id,
+                TeamTaskResumeRequest(tenant_id="tenant_demo", answer="补充信息"),
+                db,
+                _admin_user(),
+            )
+
+        assert exc_info.value.status_code == 409
+
+
+def test_resume_allows_the_user_who_requested_the_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        task = _make_task(db, team, status="escalated")
+        task.created_by_user_id = "user_member"
+        task.report_json = {"needs_input": True, "full_reply": "请补充信息。"}
+        db.add(task)
+        db.commit()
+        _stub_start_wakeup(monkeypatch)
+
+        result = teams_api.resume_team_task(
+            team.id,
+            task.id,
+            TeamTaskResumeRequest(tenant_id="tenant_demo", answer="补充信息"),
+            db,
+            _member_user(),
+        )
+
+        assert result.status == "rework"
 
 
 # ---------- 唤醒事件原子认领 ----------

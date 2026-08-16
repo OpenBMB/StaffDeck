@@ -173,11 +173,18 @@ class HarnessV2Engine:
         source_skills = self.owner._list_published_skills(
             request.tenant_id, session.agent_id
         )
-        skills = expand_visible_sops(source_skills)
-        routing_skills = discoverable_sops(skills)
-        self.owner._drop_unavailable_skill_state(
-            request.tenant_id, session, skills
-        )
+        # A team TL session is a group-chat orchestration surface, not the
+        # leader employee's personal working session. Hide personal SOPs from
+        # this turn without mutating or cancelling their durable state.
+        if request.interaction_mode == "team_tl":
+            skills = []
+            routing_skills = []
+        else:
+            skills = expand_visible_sops(source_skills)
+            routing_skills = discoverable_sops(skills)
+            self.owner._drop_unavailable_skill_state(
+                request.tenant_id, session, skills
+            )
         memory_context = [
             memory_read(row)
             for row in self.owner.memory.context_memories(
@@ -455,8 +462,10 @@ class HarnessV2Engine:
         # nested SOP's response rules remain available after the child graph
         # reaches a terminal node. Falling back to the stored row is only
         # needed for turns that did not execute a TaskFrame.
-        response_skill = last_skill or self.owner._get_active_skill(
-            request.tenant_id, session.active_skill_id, session.agent_id
+        response_skill = None if request.interaction_mode == "team_tl" else (
+            last_skill or self.owner._get_active_skill(
+                request.tenant_id, session.active_skill_id, session.agent_id
+            )
         )
         self._renew_session_lease()
         reply = self.owner.response_generator.generate(
