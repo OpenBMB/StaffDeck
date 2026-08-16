@@ -47,6 +47,9 @@ import WechatSetup from './channels/WechatSetup';
 import WecomSetup from './channels/WecomSetup';
 import FeishuSetup from './channels/FeishuSetup';
 import DingTalkSetup from './channels/DingTalkSetup';
+import DiscordSetup from './channels/DiscordSetup';
+import DiscordFeatureConfig from './channels/DiscordFeatureConfig';
+import ChannelMessageAttachments from './channels/ChannelMessageAttachments';
 import { getChannelPresentation } from './channelPresentation';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { formatTime, type BadgeTone } from './scheduled-tasks/shared';
@@ -793,6 +796,14 @@ export default function ChannelsPage({
               setBindings((current) => current.map((item) => (item.id === updated.id ? updated : item)))
             }
           />
+        ) : binding.channel === 'discord' ? (
+          <DiscordSetup
+            key={binding.id}
+            binding={binding}
+            onChanged={(updated) =>
+              setBindings((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+            }
+          />
         ) : setupKindFor(binding.channel) === 'credentials' ? (
           <WecomSetup
             key={binding.id}
@@ -821,6 +832,17 @@ export default function ChannelsPage({
           />
         </div>
       </div>
+
+      {binding.channel === 'discord' && (
+        <DiscordFeatureConfig
+          key={binding.id}
+          binding={binding}
+          meta={metaFor('discord')}
+          onChanged={(updated) =>
+            setBindings((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+          }
+        />
+      )}
 
       <section aria-label={activeChannel ? `${activeChannel.name}身份绑定` : '身份绑定'}>
         <div className="mb-[16px] flex items-center gap-[6px] px-[12px] text-[#757f9c]">
@@ -1017,6 +1039,7 @@ export default function ChannelsPage({
                       <span className="wrap-break-word rounded-[10px] bg-[#f6f6f6] px-[12px] py-[8px] text-[13px] leading-[1.6] text-[#18181a]">
                         {shown.content}
                       </span>
+                      <ChannelMessageAttachments message={msg} />
                     </div>
                   );
                 })}

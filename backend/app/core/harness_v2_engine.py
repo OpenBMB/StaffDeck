@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
+import logging
 import time
 from typing import Any
 
@@ -67,6 +68,8 @@ from app.session.session_schema import (
     TurnPlan,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class HarnessV2Engine:
     """Outer planner + durable TaskFrame scheduler + isolated Harness runs."""
@@ -126,6 +129,8 @@ class HarnessV2Engine:
             self.turn_record,
             user_message.id,
         )
+        if request.channel == "web":
+            self._maybe_stage_user_message_mirror(session, user_message)
         bind_turn = getattr(self.events, "bind_turn", None)
         if callable(bind_turn):
             bind_turn(user_message.id, request.client_turn_id)
@@ -522,6 +527,28 @@ class HarnessV2Engine:
         )
         self.turn_store.complete(self.turn_record, response)
         return response
+
+    def _maybe_stage_user_message_mirror(
+        self,
+        session: ChatSession,
+        message: Message,
+    ) -> None:
+        """Web 端提问镜像到会话锚定的渠道（如 Discord），保持跨端上下文连续。
+
+        仅由 run() 在 request.channel == "web" 时调用；延迟导入避免与
+        channels 模块的潜在依赖环。镜像登记失败绝不影响 Web 主流程。
+        """
+        try:
+            from app.channels.service_outbox import stage_user_message_mirror
+
+            stage_user_message_mirror(
+                self.db,
+                session,
+                message,
+                web_origin=True,
+            )
+        except Exception:
+            logger.exception("用户消息镜像登记失败 session=%s", session.id)
 
     def close(self) -> None:
         session_id = str(self._session_lock_id or "")

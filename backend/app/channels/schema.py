@@ -1,11 +1,72 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session
 
 from app.db.models import ChannelBinding, ChannelDelivery, Team, User
+
+
+def _validate_allowlist_id(value: str) -> str:
+    """白名单 ID 宽松校验:Discord snowflake 为数字字符串,允许非空即可。
+
+    首版不做严格格式约束,便于粘贴 guild/channel/role/user ID;
+    非法值由渠道侧 fence 判定时自然不匹配,不会产生错误放行。
+    """
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("白名单 ID 不能为空")
+    return stripped
+
+
+class AllowlistConfig(BaseModel):
+    """权限白名单配置(功能5,§4.5):入站侧访问控制,出站投递不拦截。
+
+    mode=allow_all 时 allow 列表为空即放行、非空则仅列表内放行(黑名单增强);
+    mode=deny_all 时仅 allow 列表内放行(白名单严格模式);deny 永远优先。
+    """
+
+    mode: Literal["allow_all", "deny_all"] = "allow_all"
+    guild_ids: list[str] = Field(default_factory=list)
+    channel_ids: list[str] = Field(default_factory=list)
+    role_ids: list[str] = Field(default_factory=list)
+    user_ids: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "guild_ids", "channel_ids", "role_ids", "user_ids", "deny"
+    )
+    @classmethod
+    def _validate_ids(cls, values: list[str]) -> list[str]:
+        return [_validate_allowlist_id(value) for value in values]
+
+
+class ChannelFeaturesConfig(BaseModel):
+    """能力开关(§3.1 features):运行时门禁的显式开关,与适配器能力声明正交。"""
+
+    slash_commands: bool = True
+    threads: bool = True
+    # 自动建线程默认关闭,保存存量行为(未开启时不在新会话自动建线程)
+    auto_thread: bool = False
+    typing: bool = True
+    voice: bool = False
+    rich_media: bool = True
+    backfill: bool = True
+
+
+class ChannelBatchConfig(BaseModel):
+    """批处理队列参数(§3.1 batch,功能3):限流整形与单次作业上限。"""
+
+    max_per_run: int = Field(default=20, ge=1)
+    interval_sec: float = Field(default=1.0, gt=0)
+
+
+class ChannelBackfillConfig(BaseModel):
+    """回填参数(§3.1 backfill,功能4):单次拉取上限与历史窗口。"""
+
+    limit_per_fetch: int = Field(default=100, ge=1, le=100)
+    max_history_days: int = Field(default=7, ge=1)
 
 
 class ChannelBindingCreate(BaseModel):
@@ -32,6 +93,10 @@ class ChannelBindingAgentsUpdate(BaseModel):
     agents: Optional[list[ChannelBindingAgentInput]] = None
     # 智能分发开关:不传不动,传则写 config_json.auto_route
     auto_route: Optional[bool] = None
+    # 权限白名单(功能5):不传不动,传则写 config_json.allowlist 且 config_revision+=1
+    allowlist: Optional[AllowlistConfig] = None
+    # 能力开关(§3.1 features):不传不动,传则写 config_json.features 且 config_revision+=1
+    features: Optional[ChannelFeaturesConfig] = None
 
 
 class ChannelBindingRead(BaseModel):
@@ -62,6 +127,7 @@ class ChannelBindingRead(BaseModel):
     created_by_name: Optional[str] = None
     agents: list[ChannelBindingAgentRead] = []
     auto_route: bool = True
+    config_json: Optional[dict] = None
     created_at: str
     updated_at: str
 
@@ -110,6 +176,11 @@ class DingTalkCredentialsRequest(BaseModel):
     client_secret: str
 
 
+class DiscordCredentialsRequest(BaseModel):
+    tenant_id: str
+    bot_token: str
+
+
 class ChannelCredentialFieldRead(BaseModel):
     key: str
     label: str
@@ -133,6 +204,10 @@ class ChannelDeliveryRead(BaseModel):
     message_id: Optional[str] = None
     kind: str
     text: str
+    payload_json: Optional[str] = None
+    thread_id: Optional[str] = None
+    batch_id: Optional[str] = None
+    delivery_kind: Optional[str] = None
     status: str
     attempts: int
     last_error: Optional[str] = None
@@ -201,6 +276,72 @@ class ChannelDeliveryDayPage(BaseModel):
     limit: int
 
 
+# ---------- 批处理作业(功能3,§4.3) ----------
+
+
+class BatchSendItem(BaseModel):
+    """批量投递单条消息:纯文本(content)或富媒体载荷(embeds/files 非空)。"""
+
+    content: str = ""
+    embeds: list[dict[str, Any]] = Field(default_factory=list)
+    files: list[dict[str, Any]] = Field(default_factory=list)
+
+    @property
+    def is_rich(self) -> bool:
+        return bool(self.embeds or self.files)
+
+
+class BatchSendRequest(BaseModel):
+    """POST /batch 请求体:items 兼容纯文本列表或结构化载荷列表。"""
+
+    items: list[Union[str, BatchSendItem]]
+    thread_id: Optional[str] = None
+    # 客户端幂等 ID:重复提交返回既有作业
+    client_batch_id: Optional[str] = None
+
+    @field_validator("items")
+    @classmethod
+    def _validate_items(cls, items: list[Union[str, BatchSendItem]]) -> list[Union[str, BatchSendItem]]:
+        if not items:
+            raise ValueError("items 不能为空")
+        return items
+
+
+class BatchJobRead(BaseModel):
+    """批量作业查询视图(内存首版,无 DB 持久化)。"""
+
+    job_id: str
+    status: str
+    progress: int
+    total: int
+    succeeded: int
+    failed: int
+    errors: list[str] = []
+
+
+class BatchSubmitRead(BaseModel):
+    job_id: str
+    status: str
+
+
+# ---------- 历史回填(功能4,§4.4) ----------
+
+
+class BackfillRequest(BaseModel):
+    channel_id: Optional[str] = None
+    limit: Optional[int] = Field(default=None, ge=1, le=100)
+    after: Optional[str] = None
+    before: Optional[str] = None
+
+
+class BackfillJobRead(BaseModel):
+    job_id: str
+    status: str
+    written: int = 0
+    duplicates: int = 0
+    errors: list[str] = []
+
+
 def channel_binding_agents_read(db: Session, binding: ChannelBinding) -> list[ChannelBindingAgentRead]:
     """挂载员工列表(含存量绑定 legacy 回退),join agent_profiles 取名称。"""
     from app.channels.service_routing import agent_names, mounted_agents
@@ -259,6 +400,7 @@ def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBinding
         created_by_name=channel_binding_creator_name(db, binding),
         agents=channel_binding_agents_read(db, binding),
         auto_route=(binding.config_json or {}).get("auto_route") is not False,
+        config_json=binding.config_json,
         created_at=binding.created_at.isoformat(),
         updated_at=binding.updated_at.isoformat(),
     )
@@ -272,6 +414,10 @@ def channel_delivery_read(delivery: ChannelDelivery) -> ChannelDeliveryRead:
         message_id=delivery.message_id,
         kind=delivery.kind,
         text=delivery.text,
+        payload_json=delivery.payload_json,
+        thread_id=delivery.thread_id,
+        batch_id=delivery.batch_id,
+        delivery_kind=delivery.delivery_kind,
         status=delivery.status,
         attempts=delivery.attempts,
         last_error=delivery.last_error,

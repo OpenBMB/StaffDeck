@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Protocol
 
 import httpx
@@ -154,6 +155,28 @@ class ChannelReactionAdapter(Protocol):
     ) -> None: ...
 
 
+class ChannelCapability(StrEnum):
+    """渠道能力枚举:8 项 Discord 功能扩展的运行时能力声明。"""
+
+    SLASH_COMMANDS = "slash_commands"  # 原生斜杠命令
+    THREADS = "threads"  # 线程
+    BATCH_SEND = "batch_send"  # 批量投递
+    BACKFILL = "backfill"  # 历史回填
+    TYPING = "typing"  # typing indicator
+    VOICE = "voice"  # 语音
+    RICH_MEDIA = "rich_media"  # embeds/附件
+
+
+class ChannelCapabilityAdapter(Protocol):
+    """可选混入:声明该渠道支持的能力集合。
+
+    与 ChannelReactionAdapter 一样是可选协议;未实现此协议的渠道
+    自动视为无任何扩展能力,所有门禁降级跳过。
+    """
+
+    def channel_capabilities(self) -> set[ChannelCapability]: ...
+
+
 _adapters: dict[str, ChannelAdapter] = {}
 
 
@@ -182,6 +205,72 @@ def channel_reaction_token(channel: str) -> str | None:
         return None
     token = str(getattr(adapter, "reaction_token", "") or "").strip()
     return token or None
+
+
+def channel_capabilities_of(adapter: object) -> set[ChannelCapability]:
+    """安全获取适配器的能力声明集合。
+
+    实现了 ChannelCapabilityAdapter 协议(有可调用的 channel_capabilities
+    方法)时返回其声明集合,否则返回空集。存量渠道(微信/企微/飞书/钉钉)
+    未实现该协议,自动降级为无能力,保证向后兼容。
+    """
+    capabilities = getattr(adapter, "channel_capabilities", None)
+    if not callable(capabilities):
+        return set()
+    declared = capabilities()
+    if not isinstance(declared, set):
+        return set()
+    return set(declared)
+
+
+def evaluate_allowlist(message_ctx: dict[str, Any], allowlist: dict[str, Any] | None) -> bool:
+    """入站白名单判定:True 放行,False 拒绝(功能5)。
+
+    allowlist schema(§3.1/§4.5):
+      {mode: "allow_all"|"deny_all"(缺省 allow_all),
+       guild_ids/channel_ids/role_ids/user_ids: [str],
+       deny: [str]}(条目支持 "dimension:id" 前缀,纯 id 匹配任意维度)
+    判定序:deny 命中→拒绝;deny_all 且 allow 未命中→拒绝;allow_all 且 allow
+    非空未命中→拒绝;其余放行。role_ids 需要 members intent,首版(P2)不参与。
+    """
+    if not isinstance(allowlist, dict) or not allowlist:
+        return True
+    mode = str(allowlist.get("mode") or "").strip() or "allow_all"
+    if mode not in ("allow_all", "deny_all"):
+        mode = "allow_all"
+    guild_id = str(message_ctx.get("guild_id") or "").strip()
+    channel_id = str(message_ctx.get("channel_id") or "").strip()
+    author_id = str(message_ctx.get("author_id") or "").strip()
+    for entry in allowlist.get("deny") or []:
+        token = str(entry).strip()
+        if not token:
+            continue
+        if ":" in token:
+            dimension, _, value = token.partition(":")
+            value = value.strip()
+            if not value or dimension not in {"guild", "channel", "user"}:
+                continue
+            if dimension == "guild" and value == guild_id:
+                return False
+            if dimension == "channel" and value == channel_id:
+                return False
+            if dimension == "user" and value == author_id:
+                return False
+        elif token in (guild_id, channel_id, author_id):
+            return False
+    allow_guilds = _allowlist_ids(allowlist, "guild_ids")
+    allow_channels = _allowlist_ids(allowlist, "channel_ids")
+    allow_users = _allowlist_ids(allowlist, "user_ids")
+    allow_hit = guild_id in allow_guilds or channel_id in allow_channels or author_id in allow_users
+    if mode == "deny_all":
+        return allow_hit
+    if not allow_guilds and not allow_channels and not allow_users:
+        return True
+    return allow_hit
+
+
+def _allowlist_ids(allowlist: dict[str, Any], key: str) -> set[str]:
+    return {str(value).strip() for value in (allowlist.get(key) or []) if str(value).strip()}
 
 
 def split_channel_text(text: str, limit: int = CHANNEL_TEXT_LIMIT) -> list[str]:

@@ -49,6 +49,7 @@ _CHANNEL_SCOPE_REBUILD_MIGRATION_ID = "20260719_channel_scope_rebuild"
 _CHANNEL_BINDINGS_MULTI_MIGRATION_ID = "20260721_channel_bindings_multi"
 _CHANNEL_ACCOUNT_KEY_MIGRATION_ID = "20260723_channel_account_key_v1"
 _FEISHU_CHANNEL_SCHEMA_MIGRATION_ID = "20260724_feishu_channel_schema_v1"
+_CHANNEL_ENVELOPE_V2_MIGRATION_ID = "20260815_channel_envelope_v2"
 _CAPABILITY_SCOPE_TABLES = (
     "general_skills",
     "tools",
@@ -99,6 +100,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_channel_bind_code_constraints(conn, tables)
         _migrate_capability_scope_schema(conn, inspector, tables)
         _migrate_harness_v2_schema(conn, inspector, tables)
+        _migrate_channel_envelope_v2_schema(conn, tables)
 
         if "users" in tables:
             user_columns = {column["name"] for column in inspector.get_columns("users")}
@@ -1077,6 +1079,48 @@ def _migrate_feishu_channel_schema(conn, tables: set[str]) -> None:
             "INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"
         ),
         {"id": _FEISHU_CHANNEL_SCHEMA_MIGRATION_ID},
+    )
+
+
+def _migrate_channel_envelope_v2_schema(conn, tables: set[str]) -> None:
+    """Add the v2 envelope columns for threads / slash commands / batch / voice / rich media.
+
+    Column presence is authoritative so an interrupted or manually modified
+    database is repaired on the next startup (idempotent ALTER TABLE ADD COLUMN).
+    """
+    required_tables = {"channel_inbound_events", "channel_deliveries"}
+    if not required_tables <= tables:
+        return
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    inbound_columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(channel_inbound_events)"))
+    }
+    for column in ("thread_id", "mention_user_ids", "command"):
+        if column not in inbound_columns:
+            conn.execute(
+                text(f"ALTER TABLE channel_inbound_events ADD COLUMN {column} VARCHAR")
+            )
+    delivery_columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(channel_deliveries)"))
+    }
+    for column in ("payload_json", "thread_id", "batch_id", "delivery_kind"):
+        if column not in delivery_columns:
+            conn.execute(
+                text(f"ALTER TABLE channel_deliveries ADD COLUMN {column} VARCHAR")
+            )
+    conn.execute(
+        text("INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _CHANNEL_ENVELOPE_V2_MIGRATION_ID},
     )
 
 

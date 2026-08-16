@@ -35,6 +35,13 @@ const BUILT_IN_CHANNELS: Record<string, ChannelPresentation> = {
     blurb: '填入钉钉 Stream 应用凭证，通过长连接接入数字员工。',
     disconnectDescription: '断开后钉钉接入将停止服务，需要重新配置应用凭证才能恢复；对话记录保留。确定断开接入吗？',
   },
+  discord: {
+    name: 'Discord',
+    identifierLabel: 'Bot ID',
+    userLabel: 'Discord 用户',
+    blurb: '填入 Discord Bot Token，通过 Gateway 长连接接入数字员工。',
+    disconnectDescription: '断开后 Discord 接入将停止服务，需要重新配置 Bot Token 才能恢复；对话记录保留。确定断开接入吗？',
+  },
 };
 
 export function getChannelPresentation(channel: string, configuredName?: string): ChannelPresentation {

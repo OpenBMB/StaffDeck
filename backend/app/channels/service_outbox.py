@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import mimetypes
 import threading
 from datetime import timedelta
+from pathlib import PosixPath
+from typing import Any
 
 from sqlalchemy import func, or_, update
 from sqlmodel import Session, select
@@ -21,6 +26,7 @@ from app.db.models import (
     utc_now,
 )
 from app.channels.adapters.base import channel_reaction_token
+from app.channels.adapters.discord import DiscordPermanentError, DiscordTransientError
 from app.channels.service_durable_inbox import reaction_target
 from app.channels.service_identity import external_account_scope
 from app.session.origin import PILOTDECK_GROUP_CHAT_CHANNEL
@@ -37,6 +43,73 @@ _reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
 _FEISHU_DEDUP_RECOVERY_SECONDS = 55 * 60
 _NON_DELIVERY_CHANNELS = {"public_api", PILOTDECK_GROUP_CHAT_CHANNEL}
+# harness 产物桥接为 discord 附件载荷的上限:与 DiscordAdapter._MAX_ATTACHMENT_BYTES 对齐
+_DISCORD_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+_MAX_HARNESS_ARTIFACT_FILES = 10
+
+
+def _channel_payload_from_harness_artifacts(
+    db: Session,
+    chat_session: ChatSession,
+    message: Message,
+) -> dict[str, list[dict[str, str]]] | None:
+    """把 agent 运行生成的 harness 产物桥接为 discord 的 channel_payload.files 载荷。
+
+    生成侧补齐(功能8,§4.8 D8-1):生成方未写 channel_payload 时,把
+    assistant_metadata.harness_artifacts 中的 workspace_file 转成 base64 附件,
+    使 Discord 富媒体路径(embeds/files)真正生效。任一文件超限或读取失败都
+    静默跳过——纯降级,绝不让渠道投递登记因产物问题失败。
+    """
+    artifacts = (message.metadata_json or {}).get("harness_artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        return None
+    files: list[dict[str, str]] = []
+    for entry in artifacts[:_MAX_HARNESS_ARTIFACT_FILES]:
+        if not isinstance(entry, dict) or entry.get("type") != "workspace_file":
+            continue
+        raw_path = str(entry.get("path") or "").strip()
+        task_frame_id = str(entry.get("task_frame_id") or "").strip()
+        size = entry.get("size")
+        if (
+            not raw_path
+            or not task_frame_id
+            or not isinstance(size, int)
+            or size < 0
+        ):
+            continue
+        if size > _DISCORD_MAX_ATTACHMENT_BYTES:
+            continue
+        # app.core.harness_session_cleanup 会经 app.core 触发本模块导入,
+        # 桥接是低频路径,函数内延迟导入避免模块级循环依赖。
+        from app.core.harness_session_cleanup import harness_task_workspace_path
+        from app.harness.artifacts import HarnessArtifactAccessError, open_harness_artifact
+
+        try:
+            workspace_root = harness_task_workspace_path(
+                tenant_id=chat_session.tenant_id,
+                session_id=chat_session.id,
+                task_frame_id=task_frame_id,
+                db=db,
+            )
+            opened = open_harness_artifact(workspace_root, raw_path)
+            data = b"".join(opened.iter_bytes())
+        except (HarnessArtifactAccessError, OSError):
+            logger.warning(
+                "harness 产物桥接跳过:文件不可读 path=%s frame=%s session=%s",
+                raw_path,
+                task_frame_id,
+                chat_session.id,
+            )
+            continue
+        content_type = mimetypes.guess_type(raw_path)[0] or "application/octet-stream"
+        files.append(
+            {
+                "filename": PosixPath(raw_path).name,
+                "data": base64.b64encode(data).decode("ascii"),
+                "content_type": content_type,
+            }
+        )
+    return {"files": files} if files else None
 
 
 def _stage_failed_delivery(
@@ -128,6 +201,82 @@ def _find_active_binding_for_agent(db: Session, chat_session: ChatSession) -> Ch
     return None
 
 
+def _valid_delivery_target(channel: str, target: dict) -> bool:
+    """按渠道校验投递目标是否足以发出一条消息。"""
+    if channel == "feishu":
+        return bool(target.get("message_id") or target.get("receive_id"))
+    if channel == "discord":
+        return bool(target.get("channel_id"))
+    return bool(target.get("to_user_id") and target.get("context_token"))
+
+
+def stage_user_message_mirror(
+    db: Session,
+    chat_session: ChatSession,
+    message: Message,
+    *,
+    web_origin: bool,
+) -> None:
+    """把 Web 端提问镜像登记为渠道 outbox 投递（随主事务提交，不单独 commit）。
+
+    与 stage_channel_delivery 的区别：
+    - 仅 web_origin=True（Web 来源提问）时登记，渠道自身入站一律跳过，避免回声；
+    - 仅在会话已完整锚定渠道（binding + account_key + target）时登记，纯 Web
+      会话无锚定自然跳过；
+    - 任何校验失败都静默跳过并只记日志，绝不让镜像影响 Web 主流程；
+    - 投递目标直接取会话锚定（channel_target_json），不走 feishu 事件上下文
+      推导（Web 提问没有对应 ChannelInboundEvent）。
+    投递端无需改动：kind=user_mirror 走 _deliver_one_locked 的通用发送分支，
+    且不会被误判为最终回复（is_final 只认 reply/error_notice）。
+    """
+    if not web_origin:
+        return
+    try:
+        channel = str(getattr(chat_session, "channel", None) or "").strip()
+        if not channel or channel in _NON_DELIVERY_CHANNELS:
+            return
+        text = str(message.content or "").strip()
+        if not text:
+            return
+        binding_id = str(getattr(chat_session, "channel_binding_id", None) or "").strip()
+        account_key = str(getattr(chat_session, "channel_account_key", None) or "").strip()
+        target = dict(chat_session.channel_target_json or {})
+        if not binding_id or not account_key or not target:
+            return
+        binding = db.get(ChannelBinding, binding_id)
+        if (
+            not binding
+            or binding.status != "active"
+            or binding.tenant_id != chat_session.tenant_id
+            or binding.channel != channel
+            or account_key != binding.external_account_key
+        ):
+            return
+        if not _valid_delivery_target(channel, target):
+            return
+        existing = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.idempotency_key == message.id)
+        ).first()
+        if existing:
+            return
+        db.add(
+            ChannelDelivery(
+                tenant_id=chat_session.tenant_id,
+                binding_id=binding.id,
+                session_id=chat_session.id,
+                message_id=message.id,
+                target_json=target,
+                kind="user_mirror",
+                text=text,
+                status="pending",
+                next_attempt_at=utc_now(),
+                idempotency_key=message.id,
+            )
+        )
+    except Exception:
+        logger.exception("用户消息镜像登记失败 session=%s", getattr(chat_session, "id", None))
+
+
 def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Message) -> None:
     """把 assistant 回复登记为渠道 outbox 投递（随主事务提交，不单独 commit）。
 
@@ -191,11 +340,7 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
         ).first()
         if existing:
             return
-        if binding.channel == "feishu":
-            valid_target = bool(target.get("message_id") or target.get("receive_id"))
-        else:
-            valid_target = bool(target.get("to_user_id") and target.get("context_token"))
-        if not valid_target:
+        if not _valid_delivery_target(binding.channel, target):
             _stage_failed_delivery(
                 db,
                 chat_session,
@@ -205,6 +350,16 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
                 error="delivery_target_missing",
             )
             return
+        # 富媒体结构化载荷(功能8,§4.8 D8-1):优先取生成方写入的 channel_payload
+        # 键(embeds/files);discord 且无显式载荷时,把 harness 产物桥接为 files。
+        payload = (message.metadata_json or {}).get("channel_payload")
+        if not (isinstance(payload, dict) and payload) and binding.channel == "discord":
+            payload = _channel_payload_from_harness_artifacts(db, chat_session, message)
+        payload_json = (
+            json.dumps(payload, ensure_ascii=False)
+            if isinstance(payload, dict) and payload
+            else None
+        )
         db.add(
             ChannelDelivery(
                 tenant_id=chat_session.tenant_id,
@@ -214,6 +369,7 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
                 target_json=target,
                 kind="reply",
                 text=message.content,
+                payload_json=payload_json,
                 status="pending",
                 next_attempt_at=utc_now(),
                 idempotency_key=message.id,
@@ -375,6 +531,53 @@ def _event_has_delivered_response(
     return False
 
 
+def _should_auto_thread(
+    binding: ChannelBinding,
+    delivery: ChannelDelivery,
+    target: dict,
+) -> bool:
+    """判定是否应为该投递自动创建 discord 公开线程(D2-4)。
+
+    仅 discord 群聊(reply + guild_id)且特性显式开启时触发;已在线程内的会话
+    (target 带 thread_id)、语音投递、以及建线程永久失败过的会话(blocked 标记)
+    一律跳过,默认关闭保持存量行为。
+    """
+    if binding.channel != "discord":
+        return False
+    if delivery.kind != "reply":
+        return False
+    if delivery.delivery_kind == "voice":
+        return False
+    if target.get("thread_id"):
+        return False
+    if not target.get("guild_id"):
+        return False
+    if target.get("auto_thread_blocked"):
+        return False
+    features = (binding.config_json or {}).get("features") or {}
+    return features.get("auto_thread") is True
+
+
+def _thread_name_for(db: Session, delivery: ChannelDelivery) -> str:
+    """解析自动建线程的线程名:metadata.thread_name > 会话首条用户消息 > 默认值。"""
+    message = db.get(Message, delivery.message_id) if delivery.message_id else None
+    if message:
+        thread_name = str((message.metadata_json or {}).get("thread_name") or "").strip()
+        if thread_name:
+            return thread_name
+    first_user = db.exec(
+        select(Message)
+        .where(Message.session_id == delivery.session_id, Message.role == "user")
+        .order_by(Message.created_at, Message.id)
+        .limit(1)
+    ).first()
+    if first_user:
+        cleaned = " ".join(str(first_user.content or "").split())
+        if cleaned:
+            return cleaned[:40]
+    return "对话"
+
+
 def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
     from app.channels import binding_lifecycle_lock
 
@@ -471,7 +674,52 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     try:
         adapter = get_channel_adapter(binding.channel)
         target = dict(delivery.target_json or {})
-        if delivery.kind == "reaction_add":
+        if _should_auto_thread(binding, delivery, target):
+            # D2-4:建线程是外部副作用,成功立即提交 thread_id 到 target/session;
+            # 后续 send 失败重试经 refresh 读回 target_json,幂等跳过再建线程。
+            create_thread = getattr(adapter, "create_thread", None)
+            if not callable(create_thread):
+                logger.warning(
+                    "discord 适配器缺少 create_thread,自动建线程跳过 binding=%s",
+                    binding.id,
+                )
+            else:
+                try:
+                    thread_id = create_thread(binding, target, _thread_name_for(db, delivery))
+                except DiscordPermanentError:
+                    logger.warning(
+                        "discord 自动建线程永久失败,降级发主频道 binding=%s delivery=%s",
+                        binding.id,
+                        delivery.id,
+                    )
+                    blocked = dict(chat_session.channel_target_json or {})
+                    blocked["auto_thread_blocked"] = True
+                    chat_session.channel_target_json = blocked
+                    # blocked 同步写回 delivery:本投递后续重试经 refresh 读回
+                    # target_json 短路 _should_auto_thread,避免每次重试重复建线程
+                    delivery.target_json = dict(blocked)
+                    db.add(delivery)
+                    db.add(chat_session)
+                    db.commit()
+                except DiscordTransientError:
+                    raise
+                else:
+                    target["thread_id"] = thread_id
+                    delivery.target_json = dict(target)
+                    chat_session.channel_target_json = dict(target)
+                    db.add(delivery)
+                    db.add(chat_session)
+                    db.commit()
+        if delivery.delivery_kind == "voice":
+            send_voice = getattr(adapter, "send_voice", None)
+            if not callable(send_voice):
+                raise RuntimeError("渠道适配器不支持语音投递")
+            voice_payload = json.loads(delivery.payload_json) if delivery.payload_json else None
+            audio = dict((voice_payload or {}).get("audio") or {})
+            if not audio:
+                raise RuntimeError("语音投递缺少 audio 载荷")
+            send_voice(binding, target, audio)
+        elif delivery.kind == "reaction_add":
             add_reaction = getattr(adapter, "add_reaction", None)
             if not callable(add_reaction):
                 raise RuntimeError("渠道适配器不支持 reaction")
@@ -504,12 +752,12 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
                 reaction_event.updated_at = utc_now()
                 db.add(reaction_event)
         else:
-            adapter.send(
-                binding,
-                target,
-                delivery.text,
-                idempotency_key=delivery.idempotency_key,
-            )
+            send_kwargs: dict[str, Any] = {"idempotency_key": delivery.idempotency_key}
+            if delivery.payload_json and binding.channel == "discord":
+                # 仅 DiscordAdapter.send 声明 payload_json 命名参数(功能8富媒体);
+                # 存量渠道签名无此参数,条件传递保持零影响
+                send_kwargs["payload_json"] = delivery.payload_json
+            adapter.send(binding, target, delivery.text, **send_kwargs)
     except Exception as exc:
         delivery.last_error = str(exc)[:500]
         retryable = bool(getattr(exc, "retryable", True))
@@ -786,6 +1034,12 @@ def notify_binding_creator(db: Session, binding: ChannelBinding, text: str) -> N
         if chat_session and (chat_session.channel_target_json or {}).get("to_user_id"):
             target = dict(chat_session.channel_target_json)
             session_id = chat_session.id
+        elif binding.channel == "discord":
+            # discord 无 context_token 体系,fallback 缺 channel_id 必然永久失败,跳过
+            logger.info(
+                "渠道告警跳过:discord 创建者无可用会话目标 binding=%s", binding.id
+            )
+            return
         else:
             target = {"to_user_id": identity.external_user_id, "context_token": ""}
             session_id = f"alert:{identity.id}"
