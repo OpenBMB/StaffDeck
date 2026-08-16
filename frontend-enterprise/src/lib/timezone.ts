@@ -13,7 +13,10 @@ export function getClientTimeZone(): string {
 export function parseBackendDateTime(value?: string): Date {
   const text = String(value || '').trim();
   if (!text) return new Date('');
-  if (/[zZ]|[+-]\d{2}:\d{2}$/.test(text)) return new Date(text);
+  // 纯日期字符串本就被当作 UTC 解析，无需补时区后缀
+  if (!text.includes('T')) return new Date(text);
+  // 后端时间戳为 naive UTC（无 Z 后缀），缺失时按 UTC 解析而非本地时间
+  if (/([zZ]|[+-]\d{2}:\d{2})$/.test(text)) return new Date(text);
   return new Date(`${text}Z`);
 }
 

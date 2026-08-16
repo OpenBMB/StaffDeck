@@ -762,6 +762,8 @@ class ChatSession(SQLModel, table=True):
     channel_binding_id: Optional[str] = None
     # 渠道外部账号稳定键:绑定删除后仍保留,仅允许同一外部 Bot 精确认领历史会话
     channel_account_key: Optional[str] = Field(default=None, index=True)
+    # 团队会话挂接:非空表示该会话属于某团队(TL 对话/任务执行等)
+    team_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -773,6 +775,9 @@ class ChannelBinding(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     agent_id: str = Field(index=True)
     channel: str = Field(default="wechat", index=True)
+    # 团队绑定:非空表示该渠道接入某团队(与员工挂载互斥),入站消息直路由团队 TL;
+    # 存 team_id 不存 leader,换帅自动跟随
+    team_id: Optional[str] = Field(default=None, index=True)
     # pending/active/expired/disabled
     status: str = Field(default="pending", index=True)
     # Fernet 加密后的渠道凭证（如微信 bot_token），绝不回传明文
@@ -1286,3 +1291,142 @@ class MemoryRecord(SQLModel, table=True):
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class Team(SQLModel, table=True):
+    """多 Agent 团队:一名 TL(leader 角色成员)+ 若干成员(数字员工)。"""
+
+    __tablename__ = "teams"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_team_tenant_name"),)
+
+    id: str = Field(default_factory=lambda: new_id("team"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    description: Optional[str] = None
+    owner_user_id: str = Field(index=True)
+    # 预留:并发策略/竞标等团队级配置
+    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TeamMember(SQLModel, table=True):
+    __tablename__ = "team_members"
+    __table_args__ = (UniqueConstraint("team_id", "agent_id", name="uq_team_member_agent"),)
+
+    id: str = Field(default_factory=lambda: new_id("team_member"), primary_key=True)
+    team_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    # role: leader(TL,每团队至多一名)/ member
+    role: str = Field(default="member", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class TeamTask(SQLModel, table=True):
+    """团队任务:pending -> in_progress -> review -> done/rework/escalated;
+
+    rework -> in_progress 重入;pending -> bidding -> pending 为任务池竞标链路。
+    """
+
+    __tablename__ = "team_tasks"
+
+    id: str = Field(default_factory=lambda: new_id("team_task"), primary_key=True)
+    team_id: str = Field(index=True)
+    tenant_id: str = Field(index=True)
+    parent_task_id: Optional[str] = Field(default=None, index=True)
+    title: str
+    description: Optional[str] = None
+    priority: str = Field(default="normal", index=True)
+    status: str = Field(default="pending", index=True)
+    created_by_user_id: Optional[str] = Field(default=None, index=True)
+    created_by_tl: bool = False
+    assignee_agent_id: Optional[str] = Field(default=None, index=True)
+    session_id: Optional[str] = Field(default=None, index=True)
+    report_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    review_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # 乐观锁版本号,人改判/验收并发时防覆盖
+    version: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TeamTaskEvent(SQLModel, table=True):
+    """团队任务审计流水。"""
+
+    __tablename__ = "team_task_events"
+
+    id: str = Field(default_factory=lambda: new_id("team_task_event"), primary_key=True)
+    task_id: str = Field(index=True)
+    team_id: str = Field(index=True)
+    # actor_type: user / agent / system
+    actor_type: str = Field(index=True)
+    actor_id: Optional[str] = Field(default=None, index=True)
+    event_type: str = Field(index=True)
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class TeamWakeEvent(SQLModel, table=True):
+    """团队唤醒事件:任务派发/报告/退回时唤醒对应成员或 TL 的后台会话。"""
+
+    __tablename__ = "team_wake_events"
+
+    id: str = Field(default_factory=lambda: new_id("team_wake"), primary_key=True)
+    team_id: str = Field(index=True)
+    tenant_id: str = Field(index=True)
+    target_agent_id: str = Field(index=True)
+    # trigger_type: task_assigned / task_report / task_rework / tl_message 等
+    trigger_type: str = Field(index=True)
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # status: pending -> claimed -> done / failed
+    status: str = Field(default="pending", index=True)
+    error: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TeamBlackboardEntry(SQLModel, table=True):
+    """团队黑板:团队工作记忆,TL 裁决写入/人直写,按团队隔离。"""
+
+    __tablename__ = "team_blackboard_entries"
+
+    id: str = Field(default_factory=lambda: new_id("bbentry"), primary_key=True)
+    team_id: str = Field(index=True)
+    tenant_id: str = Field(index=True)
+    content: str
+    tags_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # source_type: member(TL 裁决的成员建议) / leader / human(人直写)
+    source_type: str = Field(default="human", index=True)
+    source_agent_id: Optional[str] = Field(default=None, index=True)
+    source_task_id: Optional[str] = Field(default=None, index=True)
+    # 引用回链:如 {"task_id": ..., "task_title": ...}
+    citation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # status: active / archived
+    status: str = Field(default="active", index=True)
+    pinned: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TeamTaskBid(SQLModel, table=True):
+    """团队任务竞标:候选成员的方案陈述(round=1)/反驳(round=2)及 TL 打分。"""
+
+    __tablename__ = "team_task_bids"
+    __table_args__ = (
+        UniqueConstraint("task_id", "agent_id", "round", "kind", name="uq_team_task_bid_round"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("bid"), primary_key=True)
+    task_id: str = Field(index=True)
+    team_id: str = Field(index=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    round: int = 1
+    # kind: statement(方案陈述) / rebuttal(反驳)
+    kind: str = Field(default="statement", index=True)
+    content: str
+    # TL 裁决后回写的分数与理由,未裁决前为 None
+    score: Optional[float] = None
+    score_rationale: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)

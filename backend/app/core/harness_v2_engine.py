@@ -142,6 +142,11 @@ class HarnessV2Engine:
                 "channel": request.channel,
                 "user_id": request.user_id,
                 "execution_engine": "harness_v2",
+                **(
+                    {"message_visibility": request.message_visibility}
+                    if request.message_visibility != "visible"
+                    else {}
+                ),
             },
         )
 
@@ -151,12 +156,15 @@ class HarnessV2Engine:
                 "SLASH_COMMAND_MODE_CONFLICT",
                 "斜杠能力指令不能与定时任务创建模式同时使用。",
             )
-        execution_request = (
-            request.model_copy(
-                update={"message": slash_command_message(self.slash_command)}
-            )
+        execution_message = (
+            slash_command_message(self.slash_command)
             if self.slash_command
-            else request
+            else request.message
+        )
+        if request.context_injection:
+            execution_message = f"{request.context_injection.rstrip()}\n\n{execution_message}"
+        execution_request = request.model_copy(
+            update={"message": execution_message, "context_injection": None}
         )
 
         model_config = self.owner._get_request_model(request, session.agent_id)
@@ -473,6 +481,8 @@ class HarnessV2Engine:
         }
         if request.client_turn_id:
             assistant_metadata["client_turn_id"] = request.client_turn_id
+        if request.message_visibility != "visible":
+            assistant_metadata["message_visibility"] = request.message_visibility
         if citations:
             assistant_metadata["knowledge_citations"] = citations
         if artifacts:
@@ -486,19 +496,20 @@ class HarnessV2Engine:
             request.tenant_id,
             reply,
             last_step_result,
-            execution_request.message,
+            request.message,
             user_message_id=user_message.id,
             assistant_metadata_override=assistant_metadata,
         )
         self.db.commit()
         self.db.refresh(session)
-        self.owner._enqueue_memory_capture(
-            execution_request,
-            session,
-            last_step_result,
-            None,
-            model_config,
-        )
+        if request.message_visibility == "visible":
+            self.owner._enqueue_memory_capture(
+                request,
+                session,
+                last_step_result,
+                None,
+                model_config,
+            )
         response = ChatTurnResponse(
             reply=reply,
             session_id=session.id,

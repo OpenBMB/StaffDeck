@@ -1,0 +1,192 @@
+// @vitest-environment jsdom
+
+import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import type { AgentProfileRead, ChatMessage, TeamConversationRead, TeamRead } from '@/types';
+
+import TeamCollaborationPanel, {
+  collaborationQuestion,
+  mergeTeamChatTimeline,
+} from './TeamCollaborationPanel';
+
+const agents: AgentProfileRead[] = [
+  {
+    id: 'agent-leader',
+    tenant_id: 'tenant_demo',
+    name: '人事',
+    is_overall: false,
+    status: 'active',
+    metadata: { employee_profile: { avatar_text: '人', avatar_preset: 'ops-grid' } },
+    resources: [],
+    created_at: '2026-08-15T00:00:00Z',
+    updated_at: '2026-08-15T00:00:00Z',
+  },
+  {
+    id: 'agent-admin',
+    tenant_id: 'tenant_demo',
+    name: '行政',
+    is_overall: false,
+    status: 'active',
+    metadata: { employee_profile: { avatar_text: '行', avatar_preset: 'after-sales-seal' } },
+    resources: [],
+    created_at: '2026-08-15T00:00:00Z',
+    updated_at: '2026-08-15T00:00:00Z',
+  },
+];
+
+const team: TeamRead = {
+  id: 'team-1',
+  tenant_id: 'tenant_demo',
+  name: '运营团队',
+  owner_user_id: 'user-1',
+  config: {},
+  status: 'active',
+  members: [
+    {
+      id: 'member-leader',
+      team_id: 'team-1',
+      agent_id: 'agent-leader',
+      agent_name: '人事',
+      role: 'leader',
+      created_at: '2026-08-15T00:00:00Z',
+    },
+    {
+      id: 'member-admin',
+      team_id: 'team-1',
+      agent_id: 'agent-admin',
+      agent_name: '行政',
+      role: 'member',
+      created_at: '2026-08-15T00:00:00Z',
+    },
+  ],
+  created_at: '2026-08-15T00:00:00Z',
+  updated_at: '2026-08-15T00:00:00Z',
+};
+
+function jsonResponse(body: unknown): Response {
+  return {
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    text: async () => JSON.stringify(body),
+  } as Response;
+}
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe('TeamCollaborationPanel', () => {
+  it('renders leader mentions and expands only the member reply inline', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/messages')) {
+        return jsonResponse([
+          {
+            id: 'message-1',
+            role: 'user',
+            content: '你是团队「运营团队」的成员,请完成以下团队任务。\n任务标题:季度报告',
+            created_at: '2026-08-15T00:00:00Z',
+          },
+          {
+            id: 'message-2',
+            role: 'assistant',
+            content: '季度报告已经整理完成。',
+            created_at: '2026-08-15T00:01:00Z',
+          },
+        ]);
+      }
+      return jsonResponse({
+        team_id: team.id,
+        team_name: team.name,
+        tl: { agent_id: 'agent-leader', agent_name: '人事', session_id: 'session-group' },
+        conversations: [
+          {
+            session_id: 'session-task',
+            kind: 'member_task',
+            agent_id: 'agent-admin',
+            agent_name: '行政',
+            task_id: 'task-1',
+            title: '团队任务:季度报告',
+            preview: '季度报告已经整理完成。',
+            created_at: '2026-08-15T00:00:30Z',
+            updated_at: '2026-08-15T00:01:00Z',
+          },
+        ],
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+
+    render(<TeamCollaborationPanel team={team} agents={agents} />);
+
+    expect(await screen.findByText('@行政')).toBeTruthy();
+    expect(screen.getByText('，请处理「季度报告」')).toBeTruthy();
+    expect(screen.getByText('项目领导')).toBeTruthy();
+    expect(screen.getAllByLabelText(/员工头像/).length).toBe(2);
+    expect(screen.getByText('行政回复：季度报告已经整理完成。')).toBeTruthy();
+
+    const reply = screen.getByRole('button', { name: '展开行政的回复' });
+    expect(reply.getAttribute('aria-expanded')).toBe('false');
+
+    await user.click(reply);
+
+    expect(await screen.findByRole('button', { name: '收起行政的回复' })).toBeTruthy();
+    expect(screen.getAllByText('季度报告已经整理完成。').length).toBe(1);
+    expect(screen.queryByText(/你是团队/)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/session-task/messages'),
+      expect.any(Object),
+    );
+  });
+
+  it('formats collaboration as a direct mention from the project leader', () => {
+    expect(collaborationQuestion({
+      session_id: 'session-task',
+      kind: 'member_task',
+      agent_id: 'agent-admin',
+      agent_name: '行政',
+      task_id: 'task-1',
+      title: '团队任务:季度报告',
+      preview: '',
+      created_at: '2026-08-15T00:00:30Z',
+      updated_at: '2026-08-15T00:01:00Z',
+    })).toBe('@行政，请处理「季度报告」');
+  });
+
+  it('inserts collaboration exchanges at their original position in the chat timeline', () => {
+    const messages: ChatMessage[] = [
+      { id: 'm1', role: 'user', content: '开始', created_at: '2026-08-15T00:00:00Z' },
+      { id: 'm2', role: 'assistant', content: '结束', created_at: '2026-08-15T00:10:00Z' },
+    ];
+    const conversations: TeamConversationRead[] = [
+      {
+        session_id: 'late',
+        kind: 'member_task',
+        agent_id: 'agent-admin',
+        agent_name: '行政',
+        title: '团队任务:后续任务',
+        preview: '完成',
+        created_at: '2026-08-15T00:11:00Z',
+        updated_at: '2026-08-15T00:12:00Z',
+      },
+      {
+        session_id: 'middle',
+        kind: 'member_task',
+        agent_id: 'agent-admin',
+        agent_name: '行政',
+        title: '团队任务:中间任务',
+        preview: '完成',
+        created_at: '2026-08-15T00:05:00Z',
+        updated_at: '2026-08-15T00:06:00Z',
+      },
+    ];
+
+    expect(mergeTeamChatTimeline(messages, conversations).map((entry) => (
+      entry.kind === 'message' ? entry.message.id : entry.conversation.session_id
+    ))).toEqual(['m1', 'middle', 'm2', 'late']);
+  });
+});

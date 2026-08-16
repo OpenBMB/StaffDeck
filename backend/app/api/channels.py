@@ -78,6 +78,7 @@ from app.db.models import (
     ChannelInboundEvent,
     ChatSession,
     Message,
+    Team,
     User,
     utc_now,
 )
@@ -275,27 +276,48 @@ def create_channel_binding(
     ensure_current_user_tenant(request.tenant_id, current_user)
     if request.channel not in SUPPORTED_CHANNELS:
         raise HTTPException(status_code=400, detail=f"v1 仅支持渠道: {sorted(SUPPORTED_CHANNELS)}")
-    ensure_agent_scope_manager(db, request.tenant_id, request.agent_id, current_user)
+    # 挂员工集或绑团队二选一:都给/都不给均拒绝
+    if bool(request.agent_id) == bool(request.team_id):
+        raise HTTPException(status_code=400, detail="agent_id 与 team_id 必须且只能提供一个")
+    if request.team_id:
+        team = db.get(Team, request.team_id)
+        if team is None or team.tenant_id != request.tenant_id:
+            raise HTTPException(status_code=404, detail="Team not found")
+        from app.teams.service import get_team_leader
+
+        leader = get_team_leader(db, team.id)
+        if leader is None:
+            raise HTTPException(status_code=400, detail="团队暂未设置 TL，请先设置 TL 后再绑定渠道")
+        # 复用员工绑定同款守卫:创建者须能管理现任 TL 员工
+        ensure_agent_scope_manager(db, request.tenant_id, leader.agent_id, current_user)
+        # agent_id 为非空遗留列(列表过滤/挂载回退仍在用):团队绑定回写现任 TL,
+        # 入站路由始终以 binding.team_id 解析的现任 TL 为准,换帅自动跟随
+        target_agent_id = leader.agent_id
+    else:
+        ensure_agent_scope_manager(db, request.tenant_id, request.agent_id, current_user)
+        target_agent_id = request.agent_id
     # 同一员工同一渠道允许多个绑定实例,总是新建
     binding = ChannelBinding(
         tenant_id=request.tenant_id,
-        agent_id=request.agent_id,
+        agent_id=target_agent_id,
         channel=request.channel,
         status="pending",
         created_by_user_id=current_user.id,
+        team_id=request.team_id,
     )
     db.add(binding)
     db.flush()
-    # 新绑定自动挂载默认员工
-    db.add(
-        ChannelBindingAgent(
-            tenant_id=request.tenant_id,
-            binding_id=binding.id,
-            agent_id=request.agent_id,
-            is_default=True,
-            sort_order=0,
+    if not request.team_id:
+        # 新绑定自动挂载默认员工;团队绑定走 TL 直路由,不写挂载行
+        db.add(
+            ChannelBindingAgent(
+                tenant_id=request.tenant_id,
+                binding_id=binding.id,
+                agent_id=target_agent_id,
+                is_default=True,
+                sort_order=0,
+            )
         )
-    )
     db.commit()
     db.refresh(binding)
     return channel_binding_read(db, binding)
@@ -470,6 +492,9 @@ def update_channel_binding_agents(
     _ensure_binding_manager(db, tenant_id, binding, current_user)
     if request.agents is None and request.auto_route is None:
         raise HTTPException(status_code=400, detail="无有效更新内容")
+    if request.agents is not None and binding.team_id:
+        # 团队绑定的接待员工由团队现任 TL 决定,不允许整表替换员工挂载
+        raise HTTPException(status_code=400, detail="团队绑定的渠道不支持修改员工挂载")
     default_agent_id: str | None = None
     if request.agents is not None:
         if not request.agents:
