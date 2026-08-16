@@ -95,9 +95,9 @@ describe('DiscordFeatureConfig', () => {
     expect(screen.getByLabelText('拒绝列表（每行一个 ID）')).toBeTruthy();
 
     const switches = screen.getAllByRole('switch');
-    expect(switches).toHaveLength(7);
+    expect(switches).toHaveLength(8);
     // voice 默认关闭，其余默认开启
-    expect(switches[5].getAttribute('data-state')).toBe('unchecked');
+    expect(switches[6].getAttribute('data-state')).toBe('unchecked');
     expect(switches[0].getAttribute('data-state')).toBe('checked');
   });
 
@@ -131,7 +131,7 @@ describe('DiscordFeatureConfig', () => {
 
     const switches = screen.getAllByRole('switch');
     expect(switches[0].getAttribute('data-state')).toBe('unchecked');
-    expect(switches[5].getAttribute('data-state')).toBe('checked');
+    expect(switches[6].getAttribute('data-state')).toBe('checked');
     expect((screen.getByLabelText('允许的服务器 ID') as HTMLTextAreaElement).value).toBe('111');
     expect((screen.getByLabelText('允许的频道 ID') as HTMLTextAreaElement).value).toBe('222');
     expect((screen.getByLabelText('允许的用户 ID') as HTMLTextAreaElement).value).toBe('333');
@@ -140,11 +140,25 @@ describe('DiscordFeatureConfig', () => {
     );
   });
 
+  it('pre-fills auto_thread from config_json', () => {
+    renderConfig(
+      binding({
+        config_json: {
+          features: { auto_thread: true },
+        },
+      }),
+    );
+
+    expect(screen.getByText('自动创建线程')).toBeTruthy();
+    // auto_thread 位于 threads 之后(index 2),配置为 true 时开关勾选
+    expect(screen.getAllByRole('switch')[2].getAttribute('data-state')).toBe('checked');
+  });
+
   it('saves features and allowlist through the binding update endpoint', async () => {
     putMock.mockResolvedValue(binding());
     renderConfig(binding());
 
-    fireEvent.click(screen.getAllByRole('switch')[5]); // 打开 voice
+    fireEvent.click(screen.getAllByRole('switch')[6]); // 打开 voice
     fireEvent.change(screen.getByLabelText('允许的服务器 ID'), {
       target: { value: 'guild-1\nguild-2' },
     });
@@ -179,6 +193,25 @@ describe('DiscordFeatureConfig', () => {
       );
     });
     await waitFor(() => expect(notify.success).toHaveBeenCalledWith('已保存'));
+  });
+
+  it('saves auto_thread through the binding update endpoint', async () => {
+    putMock.mockResolvedValue(binding());
+    renderConfig(binding());
+
+    fireEvent.click(screen.getAllByRole('switch')[2]); // 打开自动创建线程
+    fireEvent.click(screen.getByText('保存'));
+
+    await waitFor(() => {
+      expect(putMock).toHaveBeenCalledWith(
+        '/api/enterprise/channels/chan_discord?tenant_id=tenant_demo',
+        {
+          tenant_id: 'tenant_demo',
+          features: expect.objectContaining({ auto_thread: true }),
+          allowlist: expect.anything(),
+        },
+      );
+    });
   });
 
   it('switches to strict mode and reports save failure', async () => {

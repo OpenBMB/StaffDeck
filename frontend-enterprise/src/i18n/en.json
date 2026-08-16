@@ -2070,6 +2070,7 @@
   "功能开关": "Feature Toggles",
   "原生斜杠命令": "Native slash commands",
   "线程": "Threads",
+  "自动创建线程": "Auto-create threads",
   "批量投递": "Batch send",
   "历史回填": "History backfill",
   "输入状态提示": "Typing indicator",

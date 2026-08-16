@@ -858,6 +858,7 @@ export type ChannelBindingAgentRead = {
 export type ChannelFeatureFlags = {
   slash_commands?: boolean;
   threads?: boolean;
+  auto_thread?: boolean;
   batch_send?: boolean;
   backfill?: boolean;
   typing?: boolean;

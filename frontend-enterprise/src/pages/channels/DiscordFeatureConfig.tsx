@@ -25,6 +25,8 @@ const DISCORD_FEATURE_FLAGS: Array<{
 }> = [
   { key: 'slash_commands', label: '原生斜杠命令', defaultOn: true },
   { key: 'threads', label: '线程', defaultOn: true },
+  // 自动创建线程默认关闭,保存存量行为(未开启时不在新会话自动建线程)
+  { key: 'auto_thread', label: '自动创建线程', defaultOn: false },
   { key: 'batch_send', label: '批量投递', defaultOn: true },
   { key: 'backfill', label: '历史回填', defaultOn: true },
   { key: 'typing', label: '输入状态提示', defaultOn: true },
