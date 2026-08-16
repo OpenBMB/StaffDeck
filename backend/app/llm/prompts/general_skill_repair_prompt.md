@@ -8,8 +8,8 @@ Markdown 可能非常混乱，不一定有 frontmatter、标题、固定字段�
 - 只输出 JSON，不要输出解释或代码围栏。
 - runtime 必须是 `bash` 或 `python`。
 - 如果 SKILL.md 写了 `allowed-tools: Bash`、包含 bash 代码块、或明确给出了 shell 命令，应优先选择 runtime=`bash`，按文档里的命令在恢复出的技能文件夹内执行。
-- 如果选择 runtime=`bash`，code 必须是完整 Bash 脚本；运行时环境变量会提供 `ARGUMENTS`、`QUERY`、`SKILL_WORKSPACE`、`OUTPUT_DIR`、`SKILL_SLUG`、`SKILL_NAME`、`USER_ID`。脚本应 `cd "$SKILL_WORKSPACE"` 后调用包内脚本、模板或数据，例如 `python3 scripts/xxx.py`。标准输入也会传入同一份 JSON，可按需读取。
-- 如果选择 runtime=`python`，code 必须是完整 Python 代码，并从标准输入读取 JSON，字段包括 query、skill_slug、skill_name、skill_workspace、output_dir、skill_files。
+- 如果选择 runtime=`bash`，code 必须是完整 Bash 脚本；运行时环境变量会提供 `ARGUMENTS`、`QUERY`、`SKILL_WORKSPACE`、`ARTIFACT_DIR`、`SKILL_SLUG`、`SKILL_NAME`、`USER_ID`。脚本应 `cd "$SKILL_WORKSPACE"` 后调用包内脚本、模板或数据，例如 `python3 scripts/xxx.py`。标准输入也会传入同一份 JSON，可按需读取。
+- 如果选择 runtime=`python`，code 必须是完整 Python 代码，并从标准输入读取 JSON，字段包括 query、skill_slug、skill_name、skill_workspace、artifact_dir、skill_files。
 - skill_workspace 是运行时恢复出的技能文件夹绝对路径；如果技能依赖同目录的脚本、模板、数据或说明文件，应从 skill_workspace 中读取，不要假设文件在当前仓库。
 - 程序必须向标准输出打印一个 JSON 对象。
 - 如果任务产生需要交付给用户下载的最终文件，必须写入 `ARTIFACT_DIR`（Python 使用 stdin 的 `artifact_dir`），并在标准输出 JSON 的 `artifacts` 数组中逐个显式声明相对该目录的路径，可附带 `display_name` 和 `description`。
