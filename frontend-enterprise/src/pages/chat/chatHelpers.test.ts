@@ -84,7 +84,7 @@ describe('chat history consumer contract', () => {
       '<a href="https://example.com/docs?a=1" target="_blank" rel="noreferrer">https://example.com/docs?a=1</a>。',
     );
     expect(rendered).toContain(
-      '<a href="https://example.org" target="_blank" rel="noreferrer">官网</a>',
+      '<a href="https://example.org/" target="_blank" rel="noreferrer">官网</a>',
     );
     expect(rendered).toContain('<code>https://internal.test</code>');
     expect(rendered.match(/href=/g)).toHaveLength(2);
@@ -100,7 +100,26 @@ describe('chat history consumer contract', () => {
     );
 
     expect(rendered).toContain(
-      '<a href="https://www.baidu.com" target="_blank" rel="noreferrer">www.baidu.com</a>。',
+      '<a href="https://www.baidu.com/" target="_blank" rel="noreferrer">www.baidu.com</a>。',
+    );
+  });
+
+  it('does not turn unsafe or malformed Markdown targets into external links', () => {
+    const rendered = renderToStaticMarkup(
+      createElement(
+        'div',
+        null,
+        ...renderInlineMarkdown(
+          '[unsafe](javascript:alert(1)) [broken](https://[invalid) [safe](https://example.com/docs)',
+          'test-safe-links',
+        ),
+      ),
+    );
+
+    expect(rendered).not.toContain('href="javascript:');
+    expect(rendered).not.toContain('href="https://[invalid');
+    expect(rendered).toContain(
+      '<a href="https://example.com/docs" target="_blank" rel="noreferrer">safe</a>',
     );
   });
 
