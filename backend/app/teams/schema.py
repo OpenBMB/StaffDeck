@@ -282,3 +282,10 @@ class TeamConversationMessageRead(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TeamConversationStreamRead(BaseModel):
+    status: Literal["idle", "running", "completed", "failed"] = "idle"
+    content: str = ""
+    phase: str | None = None
+    updated_at: datetime | None = None

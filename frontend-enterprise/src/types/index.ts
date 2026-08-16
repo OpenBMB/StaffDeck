@@ -1037,6 +1037,13 @@ export type TeamConversationMessageRead = {
   created_at: string;
 };
 
+export type TeamConversationStreamRead = {
+  status: 'idle' | 'running' | 'completed' | 'failed';
+  content: string;
+  phase?: string | null;
+  updated_at?: string | null;
+};
+
 export type TeamTaskEventRead = {
   id: string;
   task_id: string;

@@ -10,6 +10,7 @@ import type {
   ChatMessage,
   TeamConversationMessageRead,
   TeamConversationRead,
+  TeamConversationStreamRead,
   TeamConversationsResponse,
   TeamRead,
 } from '@/types';
@@ -131,6 +132,7 @@ export default function TeamCollaborationPanel({
   const conversations = conversation ? [conversation] : loadedConversations;
   const [expandedSessionId, setExpandedSessionId] = useState('');
   const [messagesBySession, setMessagesBySession] = useState<Record<string, TeamConversationMessageRead[]>>({});
+  const [streamBySession, setStreamBySession] = useState<Record<string, TeamConversationStreamRead>>({});
   const [loadingSessionId, setLoadingSessionId] = useState('');
   const [answerByTaskId, setAnswerByTaskId] = useState<Record<string, string>>({});
   const [submittingTaskId, setSubmittingTaskId] = useState('');
@@ -142,6 +144,43 @@ export default function TeamCollaborationPanel({
   );
   const leaderMember = team.members.find((member) => member.role === 'leader');
   const leaderAgent = leaderMember ? agentById.get(leaderMember.agent_id) : undefined;
+
+  useEffect(() => {
+    if (!expandedSessionId) return undefined;
+    let cancelled = false;
+    let refreshing = false;
+    let pollTimer: number | undefined;
+    const refreshStream = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const stream = await api.get<TeamConversationStreamRead>(
+          `/api/enterprise/teams/${team.id}/conversations/${expandedSessionId}/stream?tenant_id=${TENANT_ID}`,
+        );
+        if (cancelled) return;
+        setStreamBySession((current) => ({ ...current, [expandedSessionId]: stream }));
+        if (stream.status === 'completed' || stream.status === 'failed') {
+          const rows = await api.get<TeamConversationMessageRead[]>(
+            `/api/enterprise/teams/${team.id}/conversations/${expandedSessionId}/messages?tenant_id=${TENANT_ID}`,
+          );
+          if (!cancelled) {
+            setMessagesBySession((current) => ({ ...current, [expandedSessionId]: rows }));
+            if (pollTimer !== undefined) window.clearInterval(pollTimer);
+          }
+        }
+      } catch {
+        // Preserve the last stream snapshot and retry while the reply stays expanded.
+      } finally {
+        refreshing = false;
+      }
+    };
+    pollTimer = window.setInterval(() => void refreshStream(), 400);
+    void refreshStream();
+    return () => {
+      cancelled = true;
+      if (pollTimer !== undefined) window.clearInterval(pollTimer);
+    };
+  }, [expandedSessionId, team.id]);
 
   async function toggleReply(conversation: TeamConversationRead) {
     if (expandedSessionId === conversation.session_id) {
@@ -198,6 +237,12 @@ export default function TeamCollaborationPanel({
     const loading = loadingSessionId === conversation.session_id;
     const memberReplies = (messagesBySession[conversation.session_id] || [])
       .filter((message) => message.role === 'assistant');
+    const stream = streamBySession[conversation.session_id];
+    const streamReply = staffdeckDisplayText(stream?.content || '');
+    const showStreamReply = Boolean(
+      streamReply
+      && !memberReplies.some((message) => staffdeckDisplayText(message.content) === streamReply),
+    );
     const preview = staffdeckDisplayText(conversation.preview || '成员正在处理…');
     const taskId = conversation.task_id || '';
     const waitingForInput = Boolean(conversation.needs_input && taskId);
@@ -316,7 +361,7 @@ export default function TeamCollaborationPanel({
               </span>
               {expanded && !loading && (
                 <span className="mt-[10px] block border-t border-[#eef1f6] pt-[10px]">
-                  {memberReplies.length > 0 ? memberReplies.map((message) => (
+                  {memberReplies.map((message) => (
                     <span
                       key={message.id}
                       className="mb-[8px] block text-[13px] leading-[21px] whitespace-pre-wrap text-[#18181a] last:mb-0"
@@ -324,9 +369,25 @@ export default function TeamCollaborationPanel({
                     >
                       {staffdeckDisplayText(message.content)}
                     </span>
-                  )) : (
-                    <span className="block text-[12px] text-[#a7adbb]">
-                      成员正在处理，完成后会自动更新
+                  ))}
+                  {showStreamReply && (
+                    <span
+                      className="mb-[8px] block whitespace-pre-wrap text-[13px] leading-[21px] text-[#18181a] last:mb-0"
+                      aria-live="polite"
+                      data-i18n-ignore
+                    >
+                      {streamReply}
+                      {stream?.status === 'running' && (
+                        <span className="ml-[3px] inline-block h-[14px] w-[2px] animate-pulse rounded-full bg-[#1a71ff] align-[-2px]" />
+                      )}
+                    </span>
+                  )}
+                  {memberReplies.length === 0 && !showStreamReply && (
+                    <span className="flex items-center gap-[6px] text-[12px] text-[#a7adbb]">
+                      {stream?.status === 'running' && (
+                        <LoaderCircle className="size-[12px] animate-spin" />
+                      )}
+                      {stream?.phase || '成员正在处理，回复会实时显示在这里'}
                     </span>
                   )}
                 </span>

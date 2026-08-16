@@ -2661,6 +2661,7 @@
   "成员已回复": "Member replied",
   "成员正在处理…": "Member is working…",
   "成员正在处理，完成后会自动更新": "The member is working. This will update automatically when complete.",
+  "成员正在处理，回复会实时显示在这里": "The member is working. The reply will appear here live.",
   "团队协作 {1}": "Team collaboration {1}",
   "团队内部协作": "Internal team collaboration",
   "，请参与「{1}」竞标": ", please bid on \"{1}\"",
@@ -2690,5 +2691,8 @@
   "工号 001，需要 A4 纸 2 包。": "Employee ID 001. Two packs of A4 paper are needed.",
   "结束": "End",
   "团队任务:后续任务": "Team task: Follow-up task",
-  "团队任务:中间任务": "Team task: Intermediate task"
+  "团队任务:中间任务": "Team task: Intermediate task",
+  "正在整理采购清单": "Organizing the purchase list",
+  "正在生成回复": "Generating reply",
+  "团队任务:整理采购清单": "Team task: Organize purchase list"
 }

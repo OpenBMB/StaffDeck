@@ -26,7 +26,7 @@ from test_teams_bidding import (
 from app.api import chat as chat_api
 from app.api import teams as teams_api
 from app.core import AgentLoop
-from app.db.models import ChatSession, Message, TeamTask, TeamWakeEvent
+from app.db.models import AgentEvent, ChatSession, Message, TeamTask, TeamWakeEvent
 from app.session.session_schema import ChatTurnRequest, ChatTurnResponse, SessionPublic
 from app.teams import wakeup
 from app.teams.schema import TeamTLChatRequest
@@ -339,6 +339,69 @@ def test_conversations_expose_member_question_waiting_for_user_input() -> None:
         assert row.pending_question == "请提供员工工号和物品清单。"
         # 注入给成员的任务提示不是成员回复，不能出现在群聊摘要中。
         assert row.preview == ""
+
+
+def test_conversation_stream_returns_incremental_member_reply() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        session = _make_session(
+            db,
+            session_id="sess_streaming_member",
+            team_id=team.id,
+            agent_id="agent_worker",
+            title="团队任务:实时整理",
+            created_at=base,
+        )
+        db.add_all(
+            [
+                AgentEvent(
+                    tenant_id="tenant_demo",
+                    session_id=session.id,
+                    event_type="user_message_received",
+                    payload_json={"message_id": "turn_stream", "turn_id": "turn_stream"},
+                    created_at=base + timedelta(seconds=1),
+                ),
+                AgentEvent(
+                    tenant_id="tenant_demo",
+                    session_id=session.id,
+                    event_type="stream_delta",
+                    payload_json={"turn_id": "turn_stream", "content": "正在整理"},
+                    created_at=base + timedelta(seconds=2),
+                ),
+                AgentEvent(
+                    tenant_id="tenant_demo",
+                    session_id=session.id,
+                    event_type="stream_delta",
+                    payload_json={"turn_id": "turn_stream", "content": "采购清单"},
+                    created_at=base + timedelta(seconds=3),
+                ),
+            ]
+        )
+        db.commit()
+
+        running = teams_api.get_team_conversation_stream(
+            team.id, session.id, "tenant_demo", db, _member_user()
+        )
+        assert running.status == "running"
+        assert running.content == "正在整理采购清单"
+
+        db.add(
+            AgentEvent(
+                tenant_id="tenant_demo",
+                session_id=session.id,
+                event_type="stream_end",
+                payload_json={"turn_id": "turn_stream"},
+                created_at=base + timedelta(seconds=4),
+            )
+        )
+        db.commit()
+
+        completed = teams_api.get_team_conversation_stream(
+            team.id, session.id, "tenant_demo", db, _member_user()
+        )
+        assert completed.status == "completed"
+        assert completed.content == "正在整理采购清单"
 
 
 # ---------- 团队会话消息端点 ----------

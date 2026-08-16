@@ -9,6 +9,7 @@ from app.async_jobs import enqueue_async_job
 from app.core import AgentLoop
 from app.db import get_session
 from app.db.models import (
+    AgentEvent,
     AgentProfile,
     ChatSession,
     Message,
@@ -41,6 +42,7 @@ from app.teams.schema import (
     TeamConversationKind,
     TeamConversationMessageRead,
     TeamConversationRead,
+    TeamConversationStreamRead,
     TeamConversationsResponse,
     TeamConversationTLRead,
     TeamCreateRequest,
@@ -629,6 +631,94 @@ def list_team_conversation_messages(
         )
         for row in rows
     ]
+
+
+@router.get(
+    "/{team_id}/conversations/{session_id}/stream",
+    response_model=TeamConversationStreamRead,
+)
+def get_team_conversation_stream(
+    team_id: str,
+    session_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> TeamConversationStreamRead:
+    """Return the latest member turn's incremental reply without exposing injected prompts."""
+    ensure_tenant(db, tenant_id)
+    _ensure_request_tenant(tenant_id, current_user)
+    team = get_team(db, tenant_id, team_id)
+    session = db.get(ChatSession, session_id)
+    if session is None or session.tenant_id != tenant_id or session.team_id != team.id:
+        raise HTTPException(status_code=404, detail="Team conversation not found")
+
+    rows = list(
+        reversed(
+            db.exec(
+                select(AgentEvent)
+                .where(
+                    AgentEvent.tenant_id == tenant_id,
+                    AgentEvent.session_id == session.id,
+                )
+                .order_by(AgentEvent.created_at.desc())
+                .limit(500)
+            ).all()
+        )
+    )
+    start_index = next(
+        (
+            index
+            for index in range(len(rows) - 1, -1, -1)
+            if rows[index].event_type == "user_message_received"
+        ),
+        None,
+    )
+    if start_index is None:
+        return TeamConversationStreamRead()
+
+    start_payload = dict(rows[start_index].payload_json or {})
+    turn_id = str(start_payload.get("turn_id") or start_payload.get("message_id") or "").strip()
+    content = ""
+    final_reply = ""
+    phase: str | None = None
+    status: str = "running"
+    updated_at = rows[start_index].created_at
+    for row in rows[start_index + 1 :]:
+        payload = dict(row.payload_json or {})
+        data = payload.get("data")
+        event_data = data if isinstance(data, dict) else payload
+        event_turn_id = str(
+            event_data.get("turn_id")
+            or event_data.get("user_message_id")
+            or payload.get("turn_id")
+            or payload.get("user_message_id")
+            or ""
+        ).strip()
+        if event_turn_id and turn_id and event_turn_id != turn_id:
+            continue
+        updated_at = row.created_at
+        if row.event_type == "stream_status":
+            next_phase = str(event_data.get("text") or event_data.get("phase") or "").strip()
+            phase = next_phase or phase
+        elif row.event_type == "stream_replace":
+            content = str(event_data.get("content") or "")
+        elif row.event_type in {"stream_delta", "token"}:
+            content += str(event_data.get("content") or event_data.get("text") or "")
+        elif row.event_type == "assistant_message_created":
+            final_reply = str(event_data.get("reply") or "")
+        elif row.event_type == "stream_end":
+            status = "completed"
+        elif row.event_type in {"stream_cancelled", "stream_interrupted", "error_occurred"}:
+            status = "failed"
+
+    if not content and status != "running":
+        content = final_reply
+    return TeamConversationStreamRead(
+        status=status,
+        content=content,
+        phase=phase,
+        updated_at=updated_at,
+    )
 
 
 @router.post("/{team_id}/tasks", response_model=TeamTaskRead)
