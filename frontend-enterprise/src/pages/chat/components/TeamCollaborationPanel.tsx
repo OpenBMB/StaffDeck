@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, LoaderCircle } from 'lucide-react';
+import { ChevronDown, CircleAlert, LoaderCircle, SendHorizontal } from 'lucide-react';
 
 import { api, TENANT_ID } from '@/api/client';
 import EmployeeAvatar from '@/components/EmployeeAvatar';
@@ -85,10 +85,11 @@ export function useTeamCollaborations(team?: TeamRead | null): TeamConversationR
       };
     }
     setConversations([]);
-    api.get<TeamConversationsResponse>(
-      `/api/enterprise/teams/${team.id}/conversations?tenant_id=${TENANT_ID}`,
-    )
-      .then((response) => {
+    const loadConversations = async () => {
+      try {
+        const response = await api.get<TeamConversationsResponse>(
+          `/api/enterprise/teams/${team.id}/conversations?tenant_id=${TENANT_ID}`,
+        );
         if (cancelled) return;
         const seen = new Set<string>();
         const latest = response.conversations.filter((conversation) => {
@@ -102,12 +103,15 @@ export function useTeamCollaborations(team?: TeamRead | null): TeamConversationR
         setConversations(latest.sort(
           (left, right) => conversationTimestamp(left) - conversationTimestamp(right),
         ));
-      })
-      .catch(() => {
-        if (!cancelled) setConversations([]);
-      });
+      } catch {
+        // Keep the last successful snapshot during a transient polling error.
+      }
+    };
+    void loadConversations();
+    const pollTimer = window.setInterval(() => void loadConversations(), 2_000);
     return () => {
       cancelled = true;
+      window.clearInterval(pollTimer);
     };
   }, [leaderAgentId, team?.id]);
 
@@ -128,6 +132,10 @@ export default function TeamCollaborationPanel({
   const [expandedSessionId, setExpandedSessionId] = useState('');
   const [messagesBySession, setMessagesBySession] = useState<Record<string, TeamConversationMessageRead[]>>({});
   const [loadingSessionId, setLoadingSessionId] = useState('');
+  const [answerByTaskId, setAnswerByTaskId] = useState<Record<string, string>>({});
+  const [submittingTaskId, setSubmittingTaskId] = useState('');
+  const [submittedTaskIds, setSubmittedTaskIds] = useState<string[]>([]);
+  const [submitErrorByTaskId, setSubmitErrorByTaskId] = useState<Record<string, string>>({});
   const agentById = useMemo(
     () => new Map(agents.map((agent) => [agent.id, agent])),
     [agents],
@@ -155,6 +163,30 @@ export default function TeamCollaborationPanel({
     }
   }
 
+  async function resumeTask(conversation: TeamConversationRead) {
+    const taskId = conversation.task_id;
+    const answer = taskId ? (answerByTaskId[taskId] || '').trim() : '';
+    if (!taskId || !answer || submittingTaskId) return;
+    setSubmittingTaskId(taskId);
+    setSubmitErrorByTaskId((current) => ({ ...current, [taskId]: '' }));
+    try {
+      await api.post(
+        `/api/enterprise/teams/${team.id}/tasks/${taskId}/resume`,
+        { tenant_id: TENANT_ID, answer },
+      );
+      setSubmittedTaskIds((current) => (
+        current.includes(taskId) ? current : [...current, taskId]
+      ));
+    } catch (error) {
+      setSubmitErrorByTaskId((current) => ({
+        ...current,
+        [taskId]: error instanceof Error ? error.message : '补充信息提交失败',
+      }));
+    } finally {
+      setSubmittingTaskId('');
+    }
+  }
+
   if (conversations.length === 0) return null;
 
   return conversations.map((conversation) => {
@@ -166,7 +198,15 @@ export default function TeamCollaborationPanel({
     const loading = loadingSessionId === conversation.session_id;
     const memberReplies = (messagesBySession[conversation.session_id] || [])
       .filter((message) => message.role === 'assistant');
-    const preview = staffdeckDisplayText(conversation.preview || '成员已回复');
+    const preview = staffdeckDisplayText(conversation.preview || '成员正在处理…');
+    const taskId = conversation.task_id || '';
+    const waitingForInput = Boolean(conversation.needs_input && taskId);
+    const submitted = Boolean(taskId && submittedTaskIds.includes(taskId));
+    const pendingQuestion = staffdeckDisplayText(
+      conversation.pending_question || conversation.preview || '请补充任务所需信息。',
+    );
+    const taskAnswer = taskId ? (answerByTaskId[taskId] || '') : '';
+    const submitError = taskId ? submitErrorByTaskId[taskId] : '';
 
     return (
       <div
@@ -200,13 +240,67 @@ export default function TeamCollaborationPanel({
           <EmployeeAvatar agent={memberAgent} size={36} radius={10} />
           <div className="flex min-w-0 max-w-[680px] flex-1 flex-col gap-[5px]">
             <span className="px-[2px] text-[11px] font-medium text-[#757f9c]">{memberName}</span>
-            <button
-              type="button"
-              aria-label={`${expanded ? '收起' : '展开'}${memberName}的回复`}
-              aria-expanded={expanded}
-              onClick={() => void toggleReply(conversation)}
-              className="group w-full rounded-[14px] border border-[#e3e7f1] bg-white px-[14px] py-[11px] text-left shadow-[0_1px_2px_rgba(24,24,26,0.03)] transition-colors hover:border-[#cfd6e3]"
-            >
+            {waitingForInput ? (
+              <div className="w-full rounded-[16px] border border-[#f0d8a8] bg-[#fffdf7] px-[14px] py-[12px] shadow-[0_8px_24px_rgba(90,61,8,0.06)]">
+                <div className="flex items-center gap-[7px] text-[11px] font-medium text-[#9a6811]">
+                  <CircleAlert className="size-[14px]" />
+                  <span>{`${memberName}需要补充信息`}</span>
+                  <span className="rounded-full bg-[#fff0c8] px-[7px] py-[2px] text-[9px] text-[#8a5b0a]">
+                    等待回复
+                  </span>
+                </div>
+                <p className="mt-[8px] whitespace-pre-wrap text-[13px] leading-[21px] text-[#34302a]">
+                  {pendingQuestion}
+                </p>
+                {submitted ? (
+                  <div className="mt-[11px] rounded-[10px] bg-[#eef8f3] px-[11px] py-[9px] text-[12px] text-[#277657]">
+                    已补充，任务正在继续执行
+                  </div>
+                ) : (
+                  <div className="mt-[11px] flex items-end gap-[8px]">
+                    <textarea
+                      aria-label={`回复${memberName}的补充问题`}
+                      value={taskAnswer}
+                      onChange={(event) => setAnswerByTaskId((current) => ({
+                        ...current,
+                        [taskId]: event.target.value,
+                      }))}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && !event.shiftKey) {
+                          event.preventDefault();
+                          void resumeTask(conversation);
+                        }
+                      }}
+                      rows={2}
+                      placeholder="补充所需信息，Enter 发送"
+                      className="min-h-[58px] min-w-0 flex-1 resize-none rounded-[11px] border border-[#e5d7b7] bg-white px-[11px] py-[8px] text-[12px] leading-[18px] text-[#18181a] outline-none transition focus:border-[#c99838] focus:ring-2 focus:ring-[#efdba8]/60"
+                    />
+                    <button
+                      type="button"
+                      aria-label="补充并继续"
+                      disabled={!taskAnswer.trim() || submittingTaskId === taskId}
+                      onClick={() => void resumeTask(conversation)}
+                      className="flex h-[36px] shrink-0 items-center gap-[5px] rounded-[10px] bg-[#18181a] px-[12px] text-[11px] font-medium text-white transition hover:bg-[#343437] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {submittingTaskId === taskId
+                        ? <LoaderCircle className="size-[13px] animate-spin" />
+                        : <SendHorizontal className="size-[13px]" />}
+                      继续执行
+                    </button>
+                  </div>
+                )}
+                {submitError && (
+                  <p className="mt-[7px] text-[11px] text-[#c13e35]">{submitError}</p>
+                )}
+              </div>
+            ) : (
+              <button
+                type="button"
+                aria-label={`${expanded ? '收起' : '展开'}${memberName}的回复`}
+                aria-expanded={expanded}
+                onClick={() => void toggleReply(conversation)}
+                className="group w-full rounded-[14px] border border-[#e3e7f1] bg-white px-[14px] py-[11px] text-left shadow-[0_1px_2px_rgba(24,24,26,0.03)] transition-colors hover:border-[#cfd6e3]"
+              >
               <span className="flex items-center gap-[8px]">
                 <span className="min-w-0 flex-1 truncate text-[12px] text-[#464c5e]">
                   {`${memberName}回复：${preview}`}
@@ -231,11 +325,14 @@ export default function TeamCollaborationPanel({
                       {staffdeckDisplayText(message.content)}
                     </span>
                   )) : (
-                    <span className="block text-[12px] text-[#a7adbb]">暂无回复内容</span>
+                    <span className="block text-[12px] text-[#a7adbb]">
+                      成员正在处理，完成后会自动更新
+                    </span>
                   )}
                 </span>
               )}
-            </button>
+              </button>
+            )}
           </div>
         </div>
       </div>

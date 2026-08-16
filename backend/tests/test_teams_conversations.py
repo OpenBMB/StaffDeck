@@ -268,6 +268,9 @@ def test_conversations_endpoint_kinds_preview_order_isolation() -> None:
         assert by_id[s_tl.id].agent_name == "TL"
         assert by_id[s_task.id].agent_name == "Worker"
         assert by_id[s_task.id].task_id == task.id
+        assert by_id[s_task.id].task_status == "in_progress"
+        assert by_id[s_task.id].needs_input is False
+        assert by_id[s_task.id].pending_question is None
         assert by_id[s_bid.id].task_id is None
         assert by_id[s_task.id].created_at == base
         # preview 为末条消息截取 80 字;无消息则空串
@@ -287,6 +290,55 @@ def test_conversations_endpoint_kinds_preview_order_isolation() -> None:
         assert other.tl is not None
         assert other.tl.agent_id == "agent_worker2"
         assert other.tl.session_id is None
+
+
+def test_conversations_expose_member_question_waiting_for_user_input() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        session = _make_session(
+            db,
+            session_id="sess_needs_input",
+            team_id=team.id,
+            agent_id="agent_worker",
+            title="团队任务:采购物品",
+            created_at=base,
+        )
+        task = TeamTask(
+            team_id=team.id,
+            tenant_id="tenant_demo",
+            title="采购物品",
+            status="escalated",
+            created_by_user_id="user_admin",
+            created_by_tl=True,
+            assignee_agent_id="agent_worker",
+            session_id=session.id,
+            report_json={
+                "needs_input": True,
+                "full_reply": "请提供员工工号和物品清单。",
+            },
+        )
+        db.add(task)
+        _make_message(
+            db,
+            session_id=session.id,
+            message_id="msg_needs_input_prompt",
+            role="user",
+            content="你是团队成员，请完成以下团队任务。任务标题:采购物品",
+            created_at=base + timedelta(seconds=1),
+        )
+        db.commit()
+
+        response = teams_api.list_team_conversations(
+            team.id, "tenant_demo", db, _member_user()
+        )
+        row = next(item for item in response.conversations if item.session_id == session.id)
+
+        assert row.task_status == "escalated"
+        assert row.needs_input is True
+        assert row.pending_question == "请提供员工工号和物品清单。"
+        # 注入给成员的任务提示不是成员回复，不能出现在群聊摘要中。
+        assert row.preview == ""
 
 
 # ---------- 团队会话消息端点 ----------

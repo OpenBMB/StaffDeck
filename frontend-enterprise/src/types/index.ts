@@ -1010,6 +1010,9 @@ export type TeamConversationRead = {
   agent_id?: string | null;
   agent_name?: string | null;
   task_id?: string | null;
+  task_status?: string | null;
+  needs_input?: boolean;
+  pending_question?: string | null;
   title: string;
   preview: string;
   created_at: string;

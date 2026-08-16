@@ -151,8 +151,15 @@ def build_member_task_message(db: Session, team: Team, task: TeamTask, *, rework
     if task.description:
         lines.append(f"任务描述:{task.description}")
     if rework:
-        comment = str((task.review_json or {}).get("comment") or "").strip()
-        lines.append("该任务已被退回重做。" + (f"退回意见:{comment}" if comment else ""))
+        review = dict(task.review_json or {})
+        comment = str(review.get("comment") or "").strip()
+        if review.get("input_provided_at"):
+            lines.append(
+                "用户已回答你上一次提出的补充问题,请沿用原任务继续执行。"
+                + (f"用户补充:{comment}" if comment else "")
+            )
+        else:
+            lines.append("该任务已被退回重做。" + (f"退回意见:{comment}" if comment else ""))
     query_text = f"{task.title}\n{task.description or ''}"
     blackboard = blackboard_context_lines(db, team, query_text)
     if blackboard:

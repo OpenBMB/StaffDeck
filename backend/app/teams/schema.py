@@ -147,6 +147,11 @@ class ReviewOverrideRequest(BaseModel):
     comment: str | None = None
 
 
+class TeamTaskResumeRequest(BaseModel):
+    tenant_id: str
+    answer: str
+
+
 class AwardOverrideRequest(BaseModel):
     tenant_id: str
     agent_id: str
@@ -254,6 +259,9 @@ class TeamConversationRead(BaseModel):
     agent_id: str | None = None
     agent_name: str | None = None
     task_id: str | None = None
+    task_status: str | None = None
+    needs_input: bool = False
+    pending_question: str | None = None
     title: str
     preview: str = ""
     created_at: datetime

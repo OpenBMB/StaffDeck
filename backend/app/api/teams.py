@@ -53,6 +53,7 @@ from app.teams.schema import (
     TeamTaskCreateRequest,
     TeamTaskEventRead,
     TeamTaskRead,
+    TeamTaskResumeRequest,
     TeamThreadRead,
     TeamTLChatRequest,
     TeamTLChatResponse,
@@ -533,8 +534,9 @@ def list_team_conversations(
             )
         ).all()
     )
-    # 每个会话的末条消息:按 created_at 正序扫一遍,后者覆盖前者
-    last_messages: dict[str, Message] = {}
+    # 每个会话只用对人可见的消息做摘要；成员执行会话优先取 assistant 回复，
+    # 避免把注入给成员的任务提示误显示成“成员回复”。
+    messages_by_session: dict[str, list[Message]] = {}
     if sessions:
         message_rows = db.exec(
             select(Message)
@@ -542,10 +544,10 @@ def list_team_conversations(
             .order_by(Message.created_at)
         ).all()
         for row in message_rows:
-            last_messages[row.session_id] = row
+            messages_by_session.setdefault(row.session_id, []).append(row)
     # member_task 会话由 task.session_id 反向关联任务
     task_by_session = {
-        str(task.session_id): task.id
+        str(task.session_id): task
         for task in db.exec(
             select(TeamTask).where(
                 TeamTask.team_id == team.id,
@@ -560,14 +562,27 @@ def list_team_conversations(
     } if agent_ids else {}
     conversations: list[TeamConversationRead] = []
     for item in sessions:
-        last = last_messages.get(item.id)
+        kind = _conversation_kind(item)
+        visible_rows = visible_message_rows(messages_by_session.get(item.id, []))
+        if kind in {"member_task", "member_bid", "tl_review"}:
+            visible_rows = [row for row in visible_rows if row.role == "assistant"]
+        last = visible_rows[-1] if visible_rows else None
+        task = task_by_session.get(item.id)
+        report = dict(task.report_json or {}) if task is not None else {}
+        needs_input = bool(task is not None and report.get("needs_input"))
+        pending_question = str(
+            report.get("full_reply") or report.get("summary") or ""
+        ).strip() if needs_input else ""
         conversations.append(
             TeamConversationRead(
                 session_id=item.id,
-                kind=_conversation_kind(item),
+                kind=kind,
                 agent_id=item.agent_id,
                 agent_name=agent_names.get(item.agent_id or ""),
-                task_id=task_by_session.get(item.id),
+                task_id=task.id if task is not None else None,
+                task_status=task.status if task is not None else None,
+                needs_input=needs_input,
+                pending_question=pending_question or None,
                 title=item.title or "",
                 preview=last.content[:80] if last else "",
                 created_at=item.created_at,
@@ -868,6 +883,69 @@ def override_task_review(
         )
         db.commit()
         start_wakeup_async(wake.id)
+    return _task_read(db, task, with_events=True)
+
+
+@router.post("/{team_id}/tasks/{task_id}/resume", response_model=TeamTaskRead)
+def resume_team_task(
+    team_id: str,
+    task_id: str,
+    request: TeamTaskResumeRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> TeamTaskRead:
+    """把用户补充信息送回原成员任务,沿用同一个 TeamTask 继续执行。"""
+    ensure_tenant(db, request.tenant_id)
+    _ensure_request_tenant(request.tenant_id, current_user)
+    team = get_team(db, request.tenant_id, team_id)
+    task = _get_team_task(db, team, task_id)
+    if task.created_by_user_id != current_user.id:
+        _ensure_team_manager(team, current_user)
+    answer = request.answer.strip()
+    if not answer:
+        raise HTTPException(status_code=400, detail="Answer is required")
+    report = dict(task.report_json or {})
+    if task.status != "escalated" or not report.get("needs_input"):
+        raise HTTPException(status_code=409, detail="Task is not waiting for user input")
+    if not task.assignee_agent_id:
+        raise HTTPException(status_code=409, detail="Task has no assigned member")
+
+    now = utc_now()
+    previous = task.status
+    task.status = "rework"
+    task.version += 1
+    task.updated_at = now
+    task.report_json = {**report, "needs_input": False, "answered_at": now.isoformat()}
+    task.review_json = {
+        **dict(task.review_json or {}),
+        "comment": answer,
+        "input_provided_by_user_id": current_user.id,
+        "input_provided_at": now.isoformat(),
+    }
+    db.add(task)
+    record_task_event(
+        db,
+        team_id=task.team_id,
+        task_id=task.id,
+        actor_type="user",
+        actor_id=current_user.id,
+        event_type="task_input_provided",
+        payload={
+            "from_status": previous,
+            "to_status": "rework",
+            "answer": answer,
+        },
+    )
+    wake = enqueue_wake_event(
+        db,
+        team=team,
+        target_agent_id=task.assignee_agent_id,
+        trigger_type="task_rework",
+        payload={"task_id": task.id},
+    )
+    db.commit()
+    db.refresh(task)
+    start_wakeup_async(wake.id)
     return _task_read(db, task, with_events=True)
 
 
