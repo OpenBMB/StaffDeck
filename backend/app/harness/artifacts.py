@@ -80,6 +80,18 @@ def normalize_harness_artifact_path(raw_path: str) -> str:
     return PurePosixPath(*parts).as_posix()
 
 
+_NOISE_ARTIFACT_SUFFIXES = (".tmp", ".part", ".partial", ".cache", ".log", ".lock")
+
+
+def is_noise_artifact_path(relative_path: str) -> bool:
+    """缓存/中间产物判定(自动补登时排除):点开头文件、__pycache__、临时/日志后缀。"""
+    for part in relative_path.replace("\\", "/").split("/"):
+        if part.startswith(".") or part == "__pycache__":
+            return True
+    lower = relative_path.lower()
+    return lower.endswith(_NOISE_ARTIFACT_SUFFIXES)
+
+
 def open_harness_artifact(
     workspace_root: Path,
     raw_path: str,
