@@ -808,6 +808,10 @@ class GeneralSkillRunner:
             artifact_root=artifact_dir,
             workspace_root=workspace_root,
         )
+        if workspace_root is not None:
+            # 供 invoker 在产物未声明时自动扫描补登(工作区相对路径);
+            # 强制覆盖:模型在输出 JSON 里自报的 artifact_dir 不可信,不得劫持扫描目录
+            structured["artifact_dir"] = artifact_dir.relative_to(workspace_root).as_posix()
         if return_code != 0:
             structured.setdefault("success", False)
             structured.setdefault("error", f"runner exited with code {return_code}")

@@ -53,6 +53,7 @@ from app.harness import (
     HarnessToolCall,
     HarnessToolContext,
     build_file_tool_registry,
+    is_noise_artifact_path,
     open_harness_artifact,
     publish_changed_harness_artifacts,
     register_command_tools,
@@ -734,13 +735,17 @@ class HarnessCapabilityInvoker:
             for item in (structured.get("artifact_errors") or [])[:20]
             if isinstance(item, dict)
         ]
+        declared = response.artifacts or [
+            item
+            for item in (structured.get("artifacts") or [])[:20]
+            if isinstance(item, dict)
+        ]
+        if not declared and succeeded:
+            # 兜底:模型未在结果 JSON 声明产物时,自动扫描本次运行的 artifact_dir 补登,
+            # 产出文件不因"忘了声明"而丢失(声明式仍是首选路径)
+            declared = self._auto_declare_artifacts(structured)
         artifacts, publish_errors = self._general_skill_artifacts(
-            response.artifacts
-            or [
-                item
-                for item in (structured.get("artifacts") or [])[:20]
-                if isinstance(item, dict)
-            ],
+            declared,
             skill_slug=skill.slug,
         )
         artifact_errors.extend(publish_errors)
@@ -786,6 +791,41 @@ class HarnessCapabilityInvoker:
                 "retryable": bool(structured.get("retryable")),
             },
         }
+
+    def _auto_declare_artifacts(self, structured: dict[str, Any]) -> list[dict[str, Any]]:
+        """未声明产物的兜底:扫描本次运行的 artifact_dir,把净产出文件自动登记为产物。
+
+        只接受 runner 写入 structured 的工作区相对 artifact_dir(我们强制注入的,
+        模型输出里的自报值已被覆盖);拒绝越出 TaskFrame 工作区的路径;缓存/中间
+        文件(点开头、__pycache__、*.tmp/*.part/*.log)不算产出;每个文件仍经
+        open_harness_artifact 校验。
+        """
+        artifact_dir = str(structured.get("artifact_dir") or "").strip()
+        if not artifact_dir:
+            return []
+        try:
+            workspace_root = self.workspace_root.resolve()
+            root = (workspace_root / artifact_dir).resolve()
+            if workspace_root not in root.parents or not root.is_dir():
+                return []
+            declared: list[dict[str, Any]] = []
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or path.stat().st_size == 0:
+                    continue
+                relative = path.relative_to(root).as_posix()
+                if is_noise_artifact_path(relative):
+                    continue
+                declared.append({"path": f"{artifact_dir}/{relative}", "display_name": path.name})
+                if len(declared) >= 20:
+                    break
+        except OSError:
+            return []
+        if declared:
+            self._emit_trace(
+                "general_skill_artifacts_auto_declared",
+                {"count": len(declared), "artifact_dir": artifact_dir},
+            )
+        return declared
 
     def _general_skill_artifacts(
         self,
