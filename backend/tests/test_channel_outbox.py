@@ -8,6 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.channels.adapters import base as adapter_registry
 from app.channels.adapters.base import register_channel_adapter
+from app.channels.adapters.discord import DiscordPermanentError, DiscordTransientError
 from app.channels.service_durable_inbox import reaction_target
 from app.channels.service_outbox import (
     cleanup_channel_reactions_before_binding_delete,
@@ -1939,4 +1940,480 @@ def test_user_mirror_delivered_via_daemon() -> None:
         assert delivery.attempts == 1
     assert adapter.sent == [
         (binding_id, {"channel_id": "channel-1"}, "Web 端提问镜像")
+    ]
+
+
+# ---------- D2-4:discord 自动建线程(群聊回复投递) ----------
+
+
+class _ThreadAdapter(FakeAdapter):
+    """带 create_thread 的 discord 测试适配器:记录建线程调用,可注入永久/瞬态失败。"""
+
+    def __init__(self, *, thread_fail: str | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self.thread_calls: list[tuple[str, dict, str]] = []
+        self.thread_fail = thread_fail
+
+    def create_thread(self, binding: ChannelBinding, target: dict, name: str) -> str:
+        self.thread_calls.append((binding.id, dict(target), name))
+        if self.thread_fail == "permanent":
+            raise DiscordPermanentError("模拟建线程永久失败")
+        if self.thread_fail == "transient":
+            raise DiscordTransientError("模拟建线程限流")
+        return "thread-9"
+
+
+class _ThreadVoiceAdapter(_ThreadAdapter):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.voice_calls: list[tuple[str, dict, dict]] = []
+
+    def send_voice(self, binding: ChannelBinding, target: dict, audio: dict) -> None:
+        self.voice_calls.append((binding.id, dict(target), dict(audio)))
+
+
+def _thread_binding(db: Session) -> ChannelBinding:
+    """discord 绑定并开启 auto_thread 特性(群聊场景)。"""
+    binding = _seed_binding(db, channel="discord")
+    binding.config_json = {"features": {"auto_thread": True}}
+    db.add(binding)
+    db.commit()
+    return binding
+
+
+def _thread_delivery_target() -> dict:
+    return {"channel_id": "channel-1", "guild_id": "guild-1"}
+
+
+def test_daemon_creates_thread_then_sends_into_thread() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        delivery = _make_delivery(db, binding, target_json=_thread_delivery_target())
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "delivered"
+        assert delivery.target_json["thread_id"] == "thread-9"
+        chat_session = db.get(ChatSession, "session_chan")
+        assert chat_session.channel_target_json["thread_id"] == "thread-9"
+    assert adapter.thread_calls == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "对话")
+    ]
+    assert adapter.sent[0][1]["thread_id"] == "thread-9"
+
+
+def test_daemon_skips_auto_thread_when_feature_disabled() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db, channel="discord")
+        binding_id = binding.id
+        delivery = _make_delivery(db, binding, target_json=_thread_delivery_target())
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == []
+    assert adapter.sent == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "回复内容")
+    ]
+
+
+def test_daemon_skips_auto_thread_when_target_already_has_thread_id() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        delivery = _make_delivery(
+            db,
+            binding,
+            target_json={
+                "channel_id": "channel-1",
+                "guild_id": "guild-1",
+                "thread_id": "thread-5",
+            },
+        )
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == []
+    assert adapter.sent[0][1]["thread_id"] == "thread-5"
+
+
+def test_daemon_skips_auto_thread_for_dm_session() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        delivery = _make_delivery(db, binding, target_json={"channel_id": "channel-1"})
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == []
+    assert adapter.sent == [(binding_id, {"channel_id": "channel-1"}, "回复内容")]
+
+
+def test_daemon_skips_auto_thread_for_voice_delivery() -> None:
+    engine = _test_engine()
+    adapter = _ThreadVoiceAdapter()
+    register_channel_adapter("discord", adapter)
+    payload = json.dumps(
+        {"audio": {"type": "file", "file_ref": "/tmp/clip.mp3"}}, ensure_ascii=False
+    )
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        delivery = _make_delivery(
+            db,
+            binding,
+            payload_json=payload,
+            delivery_kind="voice",
+            text="",
+            target_json=_thread_delivery_target(),
+        )
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == []
+    assert adapter.voice_calls == [
+        (
+            binding_id,
+            {"channel_id": "channel-1", "guild_id": "guild-1"},
+            {"type": "file", "file_ref": "/tmp/clip.mp3"},
+        )
+    ]
+
+
+def test_daemon_skips_auto_thread_for_non_reply_kind() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        delivery = _make_delivery(
+            db, binding, kind="error_notice", target_json=_thread_delivery_target()
+        )
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == []
+    assert adapter.sent == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "回复内容")
+    ]
+
+
+def test_daemon_skips_auto_thread_for_non_discord_channel() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("fake", adapter)
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        binding.config_json = {"features": {"auto_thread": True}}
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+        delivery = _make_delivery(db, binding)
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == []
+    assert adapter.sent == [(binding_id, {"to_user_id": "u1", "context_token": "ctx"}, "回复内容")]
+
+
+def test_daemon_thread_name_prefers_metadata_thread_name() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        message = _assistant_message("session_chan", "msg_chan")
+        message.metadata_json = {"thread_name": "预算讨论"}
+        db.add(message)
+        db.commit()
+        delivery = _make_delivery(db, binding, target_json=_thread_delivery_target())
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "预算讨论")
+    ]
+
+
+def test_daemon_thread_name_falls_back_to_first_user_message() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        db.add(_user_message("session_chan", "msg_chan", "帮我算一下本季度预算规划"))
+        db.commit()
+        delivery = _make_delivery(db, binding, target_json=_thread_delivery_target())
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "帮我算一下本季度预算规划")
+    ]
+
+
+def test_daemon_thread_name_defaults_when_no_messages() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        delivery = _make_delivery(db, binding, target_json=_thread_delivery_target())
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "对话")
+    ]
+
+
+def test_daemon_thread_name_falls_back_when_metadata_missing() -> None:
+    """message 存在但 metadata_json 为 None:回退到首条 user 消息。"""
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        db.add(_assistant_message("session_chan", "msg_chan"))
+        db.add(_user_message("session_chan", "user_1", "帮我算一下本季度预算规划"))
+        db.commit()
+        delivery = _make_delivery(db, binding, target_json=_thread_delivery_target())
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "帮我算一下本季度预算规划")
+    ]
+
+
+def test_daemon_thread_name_falls_back_when_metadata_blank() -> None:
+    """metadata.thread_name 为空白:strip 后为空,回退到首条 user 消息。"""
+    engine = _test_engine()
+    adapter = _ThreadAdapter()
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        assistant = _assistant_message("session_chan", "msg_chan")
+        assistant.metadata_json = {"thread_name": "   "}
+        db.add(assistant)
+        db.add(_user_message("session_chan", "user_1", "帮我算一下本季度预算规划"))
+        db.commit()
+        delivery = _make_delivery(db, binding, target_json=_thread_delivery_target())
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery_id).status == "delivered"
+    assert adapter.thread_calls == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "帮我算一下本季度预算规划")
+    ]
+
+
+def test_daemon_create_thread_permanent_error_degrades_to_channel() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter(thread_fail="permanent")
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        chat_session = _discord_channel_session(binding)
+        chat_session.channel_target_json = _thread_delivery_target()
+        msg1 = _assistant_message(chat_session.id, "msg_thr_1")
+        db.add(chat_session)
+        db.add(msg1)
+        db.commit()
+        stage_channel_delivery(db, chat_session, msg1)
+        db.commit()
+        delivery1_id = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.message_id == "msg_thr_1")
+        ).one().id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery1_id).status == "delivered"
+        chat_session = db.get(ChatSession, "session_discord")
+        assert chat_session.channel_target_json["auto_thread_blocked"] is True
+        # 同会话第二次投递:blocked 标志应让建线程被再次跳过,继续发主频道
+        msg2 = _assistant_message(chat_session.id, "msg_thr_2")
+        db.add(msg2)
+        db.commit()
+        stage_channel_delivery(db, chat_session, msg2)
+        db.commit()
+        delivery2_id = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.message_id == "msg_thr_2")
+        ).one().id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        assert db.get(ChannelDelivery, delivery2_id).status == "delivered"
+    assert adapter.thread_calls == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "对话")
+    ]
+    assert len(adapter.sent) == 2
+    assert adapter.sent[0][1].get("thread_id") is None
+    assert adapter.sent[1][1].get("thread_id") is None
+
+
+def test_daemon_create_thread_transient_error_retries() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter(thread_fail="transient")
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        delivery = _make_delivery(db, binding, target_json=_thread_delivery_target())
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "pending"
+        assert delivery.attempts == 1
+        assert "模拟建线程限流" in (delivery.last_error or "")
+        assert delivery.next_attempt_at > utc_now()
+    assert adapter.thread_calls == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "对话")
+    ]
+    assert adapter.sent == []
+
+
+def test_daemon_send_failure_after_thread_creation_retry_skips_create_thread() -> None:
+    engine = _test_engine()
+    adapter = _ThreadAdapter(fail_times=1)
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        delivery = _make_delivery(db, binding, target_json=_thread_delivery_target())
+        delivery_id = delivery.id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "pending"
+        assert delivery.target_json["thread_id"] == "thread-9"
+        delivery.next_attempt_at = utc_now() - timedelta(seconds=1)
+        db.add(delivery)
+        db.commit()
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery_id)
+        assert delivery.status == "delivered"
+        assert delivery.attempts == 2
+    assert adapter.thread_calls == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "对话")
+    ]
+    assert adapter.sent == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1", "thread_id": "thread-9"}, "回复内容")
+    ]
+
+
+def test_daemon_permanent_degrade_then_send_failure_retry_skips_create_thread() -> None:
+    """降级(建线程永久失败)后 send 也失败:重试须经 delivery.target_json 的
+    auto_thread_blocked 短路,不再重复建线程(回归 P1 缺陷)。"""
+    engine = _test_engine()
+    adapter = _ThreadAdapter(thread_fail="permanent", fail_times=1)
+    register_channel_adapter("discord", adapter)
+    with Session(engine) as db:
+        binding = _thread_binding(db)
+        binding_id = binding.id
+        chat_session = _discord_channel_session(binding)
+        chat_session.channel_target_json = _thread_delivery_target()
+        msg1 = _assistant_message(chat_session.id, "msg_thr_fail_1")
+        db.add(chat_session)
+        db.add(msg1)
+        db.commit()
+        stage_channel_delivery(db, chat_session, msg1)
+        db.commit()
+        delivery1_id = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.message_id == "msg_thr_fail_1")
+        ).one().id
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery1_id)
+        assert delivery.status == "pending"
+        # P1:降级分支须把 blocked 同步写进 delivery.target_json,供本投递重试短路
+        assert delivery.target_json.get("auto_thread_blocked") is True
+        delivery.next_attempt_at = utc_now() - timedelta(seconds=1)
+        db.add(delivery)
+        db.commit()
+
+    run_delivery_daemon(once=True, db_engine=engine)
+
+    with Session(engine) as db:
+        delivery = db.get(ChannelDelivery, delivery1_id)
+        assert delivery.status == "delivered"
+        assert delivery.attempts == 2
+    # 重试时不得再次建线程:仅第一次调用(永久失败那次)计入
+    assert adapter.thread_calls == [
+        (binding_id, {"channel_id": "channel-1", "guild_id": "guild-1"}, "对话")
+    ]
+    assert adapter.sent == [
+        (
+            binding_id,
+            {
+                "channel_id": "channel-1",
+                "guild_id": "guild-1",
+                "auto_thread_blocked": True,
+            },
+            "回复内容",
+        )
     ]

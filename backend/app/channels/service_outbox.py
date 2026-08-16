@@ -26,6 +26,7 @@ from app.db.models import (
     utc_now,
 )
 from app.channels.adapters.base import channel_reaction_token
+from app.channels.adapters.discord import DiscordPermanentError, DiscordTransientError
 from app.channels.service_durable_inbox import reaction_target
 from app.channels.service_identity import external_account_scope
 from app.session.origin import PILOTDECK_GROUP_CHAT_CHANNEL
@@ -530,6 +531,53 @@ def _event_has_delivered_response(
     return False
 
 
+def _should_auto_thread(
+    binding: ChannelBinding,
+    delivery: ChannelDelivery,
+    target: dict,
+) -> bool:
+    """判定是否应为该投递自动创建 discord 公开线程(D2-4)。
+
+    仅 discord 群聊(reply + guild_id)且特性显式开启时触发;已在线程内的会话
+    (target 带 thread_id)、语音投递、以及建线程永久失败过的会话(blocked 标记)
+    一律跳过,默认关闭保持存量行为。
+    """
+    if binding.channel != "discord":
+        return False
+    if delivery.kind != "reply":
+        return False
+    if delivery.delivery_kind == "voice":
+        return False
+    if target.get("thread_id"):
+        return False
+    if not target.get("guild_id"):
+        return False
+    if target.get("auto_thread_blocked"):
+        return False
+    features = (binding.config_json or {}).get("features") or {}
+    return features.get("auto_thread") is True
+
+
+def _thread_name_for(db: Session, delivery: ChannelDelivery) -> str:
+    """解析自动建线程的线程名:metadata.thread_name > 会话首条用户消息 > 默认值。"""
+    message = db.get(Message, delivery.message_id) if delivery.message_id else None
+    if message:
+        thread_name = str((message.metadata_json or {}).get("thread_name") or "").strip()
+        if thread_name:
+            return thread_name
+    first_user = db.exec(
+        select(Message)
+        .where(Message.session_id == delivery.session_id, Message.role == "user")
+        .order_by(Message.created_at, Message.id)
+        .limit(1)
+    ).first()
+    if first_user:
+        cleaned = " ".join(str(first_user.content or "").split())
+        if cleaned:
+            return cleaned[:40]
+    return "对话"
+
+
 def _deliver_one(db: Session, delivery: ChannelDelivery) -> None:
     from app.channels import binding_lifecycle_lock
 
@@ -626,6 +674,42 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     try:
         adapter = get_channel_adapter(binding.channel)
         target = dict(delivery.target_json or {})
+        if _should_auto_thread(binding, delivery, target):
+            # D2-4:建线程是外部副作用,成功立即提交 thread_id 到 target/session;
+            # 后续 send 失败重试经 refresh 读回 target_json,幂等跳过再建线程。
+            create_thread = getattr(adapter, "create_thread", None)
+            if not callable(create_thread):
+                logger.warning(
+                    "discord 适配器缺少 create_thread,自动建线程跳过 binding=%s",
+                    binding.id,
+                )
+            else:
+                try:
+                    thread_id = create_thread(binding, target, _thread_name_for(db, delivery))
+                except DiscordPermanentError:
+                    logger.warning(
+                        "discord 自动建线程永久失败,降级发主频道 binding=%s delivery=%s",
+                        binding.id,
+                        delivery.id,
+                    )
+                    blocked = dict(chat_session.channel_target_json or {})
+                    blocked["auto_thread_blocked"] = True
+                    chat_session.channel_target_json = blocked
+                    # blocked 同步写回 delivery:本投递后续重试经 refresh 读回
+                    # target_json 短路 _should_auto_thread,避免每次重试重复建线程
+                    delivery.target_json = dict(blocked)
+                    db.add(delivery)
+                    db.add(chat_session)
+                    db.commit()
+                except DiscordTransientError:
+                    raise
+                else:
+                    target["thread_id"] = thread_id
+                    delivery.target_json = dict(target)
+                    chat_session.channel_target_json = dict(target)
+                    db.add(delivery)
+                    db.add(chat_session)
+                    db.commit()
         if delivery.delivery_kind == "voice":
             send_voice = getattr(adapter, "send_voice", None)
             if not callable(send_voice):
