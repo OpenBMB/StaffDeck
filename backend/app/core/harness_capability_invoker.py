@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import mimetypes
 import time
@@ -14,7 +13,6 @@ from sqlmodel import Session, select
 
 from app.capabilities.local_general_skill import (
     package_from_row,
-    runtime_snapshot_from_package,
 )
 from app.core.capability_discovery import (
     CAPABILITY_SEARCH_MAX_RESULTS,
@@ -43,17 +41,12 @@ from app.db.models import (
     new_id,
     utc_now,
 )
-from app.general_skills.runner import (
-    GeneralSkillExecutionCancelled,
-    GeneralSkillRunner,
-)
 from app.harness import (
     HarnessArtifactAccessError,
     HarnessExecutor,
     HarnessToolCall,
     HarnessToolContext,
     build_file_tool_registry,
-    is_noise_artifact_path,
     open_harness_artifact,
     publish_changed_harness_artifacts,
     register_command_tools,
@@ -160,10 +153,6 @@ class HarnessCapabilityInvoker:
                 if name in self._descriptors
             }
         )
-        # GeneralSkill is a two-stage capability in Harness v2.  The task agent
-        # must inspect the frozen package before it can decide whether the
-        # instructions are sufficient or executable code is actually needed.
-        self._loaded_general_skill_ids: set[str] = set()
 
     def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self._raise_if_cancelled()
@@ -616,216 +605,35 @@ class HarnessCapabilityInvoker:
         query = str(arguments.get("query") or "").strip()
         if not query:
             return _failure("INVALID_ARGUMENTS", "通用技能 query 不能为空。")
-        # Fail safe for old callers that omit operation: loading instructions is
-        # non-executing and gives the AgentLoop enough context to choose its next
-        # action.  Never turn an omitted field into generated code.
-        operation = str(arguments.get("operation") or "read").strip().lower()
-        if operation not in {"read", "execute"}:
+        # GeneralSkill is an instruction package.  Loading it enriches the same
+        # isolated AgentLoop transcript; execution remains the responsibility of
+        # the regular Harness tools.  Accept legacy ``execute`` calls as a safe
+        # alias for ``read`` so persisted model/tool calls do not suddenly fail,
+        # but never start the old generated-runner pipeline from business runs.
+        requested_operation = str(arguments.get("operation") or "read").strip().lower()
+        if requested_operation not in {"read", "execute"}:
             return _failure(
                 "INVALID_ARGUMENTS",
-                "通用技能 operation 只能是 read 或 execute。",
+                "通用技能 operation 只能是 read。",
             )
-        if operation == "read":
-            result = self._read_general_skill_package(skill, metadata, query)
-            self._loaded_general_skill_ids.add(skill.id)
-            self._emit_trace(
-                "general_skill_trace",
-                {
-                    "skill_slug": skill.slug,
-                    "skill_name": skill.name,
-                    "operation": "read",
-                    "phase": "instructions_loaded",
-                    "message": "已加载技能说明，等待 AgentLoop 判断执行方式",
-                },
+        result = self._read_general_skill_package(skill, metadata, query)
+        if requested_operation == "execute":
+            result["data"]["requested_operation"] = "execute"
+            result["data"]["compatibility_notice"] = (
+                "execute 已弃用并安全降级为 read；请按 SKILL.md 指导调用现有 Harness 工具。"
             )
-            return result
-
-        if skill.id not in self._loaded_general_skill_ids:
-            return _failure(
-                "GENERAL_SKILL_NOT_INSPECTED",
-                (
-                    "执行技能包前必须先使用 operation=read 加载说明；"
-                    "由 AgentLoop 阅读后判断是否确实需要运行代码。"
-                ),
-            )
-
-        package = package_from_row(skill)
-        snapshot = runtime_snapshot_from_package(skill, package)
-        try:
-            run_kwargs = {
-                "max_attempts": _general_skill_max_attempts(skill),
-                "event_sink": lambda item: self._emit_trace(
-                    "general_skill_trace",
-                    {
-                        "skill_slug": skill.slug,
-                        "skill_name": skill.name,
-                        "operation": "execute",
-                        **item,
-                    },
-                ),
-            }
-            run_kwargs.update(
-                workspace_root=self.workspace_root,
-                is_cancelled=self.is_cancelled,
-                sandbox_network_mode=self._sandbox_network_mode,
-                sandbox_allowed_domains=self._sandbox_allowed_domains,
-                sandbox_enabled=self._sandbox_enabled,
-            )
-            runner = GeneralSkillRunner()
-            supported = inspect.signature(runner.run).parameters
-            if "sandbox_enabled" not in supported:
-                run_kwargs.pop("sandbox_enabled", None)
-            if "sandbox_network_mode" not in supported:
-                if self._sandbox_network_mode != "all":
-                    raise HarnessExecutionError(
-                        "SANDBOX_POLICY_UNSUPPORTED",
-                        "通用技能执行器不支持当前租户的沙盒网络策略，已拒绝执行。",
-                    )
-                # Legacy runners cannot weaken an unrestricted policy. Keep
-                # this compatibility path only for the explicit `all` mode.
-                run_kwargs.pop("sandbox_network_mode", None)
-                run_kwargs.pop("sandbox_allowed_domains", None)
-            response = runner.run(
-                snapshot, query, self.model_config, self.session.user_id, **run_kwargs
-            )
-        except HarnessExecutionError as exc:
-            code = str(exc.error.code or "SANDBOX_EXECUTION_FAILED")
-            message = str(exc.error.message or exc)
-            self._emit_trace(
-                "general_skill_run_finished",
-                {
-                    "skill_slug": skill.slug,
-                    "operation": "execute",
-                    "success": False,
-                    "error": code,
-                    "message": message,
-                },
-            )
-            return _failure(
-                code,
-                message,
-                retryable=False,
-                infrastructure_failure=True,
-            )
-        except GeneralSkillExecutionCancelled as exc:
-            self._emit_trace(
-                "general_skill_run_finished",
-                {
-                    "skill_slug": skill.slug,
-                    "operation": "execute",
-                    "success": False,
-                    "status": "cancelled",
-                },
-            )
-            raise HarnessExecutionCancelled(str(exc)) from exc
-
-        structured = (
-            dict(response.structured_result)
-            if isinstance(response.structured_result, dict)
-            else {}
-        )
-        declared_success = structured.get("success")
-        succeeded = True if declared_success is None else bool(declared_success)
-        artifact_errors: list[dict[str, str]] = [
-            {
-                "path": str(item.get("path") or ""),
-                "code": str(item.get("code") or "artifact_declaration_invalid"),
-                "message": str(item.get("message") or "产物声明无效。"),
-            }
-            for item in (structured.get("artifact_errors") or [])[:20]
-            if isinstance(item, dict)
-        ]
-        declared = response.artifacts or [
-            item
-            for item in (structured.get("artifacts") or [])[:20]
-            if isinstance(item, dict)
-        ]
-        if not declared and succeeded:
-            # 兜底:模型未在结果 JSON 声明产物时,自动扫描本次运行的 artifact_dir 补登,
-            # 产出文件不因"忘了声明"而丢失(声明式仍是首选路径)
-            declared = self._auto_declare_artifacts(structured)
-        artifacts, publish_errors = self._general_skill_artifacts(
-            declared,
-            skill_slug=skill.slug,
-        )
-        artifact_errors.extend(publish_errors)
-        data = {
-            "kind": "general_skill",
-            "slug": response.skill_slug,
-            "operation": response.operation,
-            "query": query,
-            "reply": response.reply,
-            "structured_result": structured,
-            "stdout": response.stdout,
-            "stderr": response.stderr,
-            "generated_code": response.generated_code,
-            "execution_trace": response.execution_trace,
-            "artifact_errors": artifact_errors,
-        }
         self._emit_trace(
-            "general_skill_run_finished",
+            "general_skill_trace",
             {
-                "skill_slug": response.skill_slug,
-                "operation": response.operation,
-                "success": succeeded,
-                "structured_result": structured,
-                "stdout_preview": response.stdout[:600],
-                "stderr_preview": response.stderr[:600],
+                "skill_slug": skill.slug,
+                "skill_name": skill.name,
+                "operation": "read",
+                "requested_operation": requested_operation,
+                "phase": "instructions_loaded",
+                "message": "已加载技能说明，AgentLoop 将按说明选择 Harness 工具",
             },
         )
-        if succeeded:
-            return {"success": True, "data": data, "artifacts": artifacts}
-        return {
-            "success": False,
-            "data": data,
-            "artifacts": artifacts,
-            "error": {
-                "code": str(
-                    structured.get("error") or "GENERAL_SKILL_EXECUTION_FAILED"
-                ),
-                "message": str(
-                    structured.get("message")
-                    or response.reply
-                    or "通用技能执行失败。"
-                ),
-                "retryable": bool(structured.get("retryable")),
-            },
-        }
-
-    def _auto_declare_artifacts(self, structured: dict[str, Any]) -> list[dict[str, Any]]:
-        """未声明产物的兜底:扫描本次运行的 artifact_dir,把净产出文件自动登记为产物。
-
-        只接受 runner 写入 structured 的工作区相对 artifact_dir(我们强制注入的,
-        模型输出里的自报值已被覆盖);拒绝越出 TaskFrame 工作区的路径;缓存/中间
-        文件(点开头、__pycache__、*.tmp/*.part/*.log)不算产出;每个文件仍经
-        open_harness_artifact 校验。
-        """
-        artifact_dir = str(structured.get("artifact_dir") or "").strip()
-        if not artifact_dir:
-            return []
-        try:
-            workspace_root = self.workspace_root.resolve()
-            root = (workspace_root / artifact_dir).resolve()
-            if workspace_root not in root.parents or not root.is_dir():
-                return []
-            declared: list[dict[str, Any]] = []
-            for path in sorted(root.rglob("*")):
-                if not path.is_file() or path.stat().st_size == 0:
-                    continue
-                relative = path.relative_to(root).as_posix()
-                if is_noise_artifact_path(relative):
-                    continue
-                declared.append({"path": f"{artifact_dir}/{relative}", "display_name": path.name})
-                if len(declared) >= 20:
-                    break
-        except OSError:
-            return []
-        if declared:
-            self._emit_trace(
-                "general_skill_artifacts_auto_declared",
-                {"count": len(declared), "artifact_dir": artifact_dir},
-            )
-        return declared
+        return result
 
     def _general_skill_artifacts(
         self,
@@ -913,9 +721,9 @@ class HarnessCapabilityInvoker:
                 "package": _skill_package_preview(skill),
                 "notice": (
                     "技能包说明已加载到当前隔离 Harness transcript；"
-                    "请由 AgentLoop 判断下一步：仅含 prompt、规则或示例时直接应用说明，"
-                    "并按任务需要调用知识库、原装 Tool 或文件工具；只有确实需要运行"
-                    "技能包代码时才使用 operation=execute。"
+                    "请由 AgentLoop 直接应用其中的 prompt、规则和示例，并按任务需要调用"
+                    "知识库、原装 Tool、exec_command 或 typed 文件工具；Skill 本身不会"
+                    "生成临时代码或启动第二套 runner。"
                 ),
             },
         }
@@ -1246,19 +1054,6 @@ def _workspace_root(
         task_frame_id=task_frame_id,
         db=db,
     )
-
-
-def _general_skill_max_attempts(skill: GeneralSkill) -> int:
-    runtime_config = (
-        skill.runtime_config_json
-        if isinstance(skill.runtime_config_json, dict)
-        else {}
-    )
-    try:
-        configured = int(runtime_config.get("max_attempts") or 3)
-    except (TypeError, ValueError):
-        configured = 3
-    return max(1, min(configured, 10))
 
 
 def _intersect_knowledge_metadata(

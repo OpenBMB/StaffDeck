@@ -131,11 +131,10 @@ class CapabilityManifestBuilder:
                             },
                             "operation": {
                                 "type": "string",
-                                "enum": ["read", "execute"],
+                                "enum": ["read"],
                                 "description": (
-                                    "首次必须使用 read 加载并理解技能包；读取后由 AgentLoop "
-                                    "判断是直接应用说明、调用其他 Harness 工具，还是确有必要时 "
-                                    "使用 execute 运行技能包代码。"
+                                    "使用 read 将经过快照校验的 SKILL.md 和包内文件说明加载到 "
+                                    "当前 AgentLoop；技能只提供执行指导，不会生成或运行临时代码。"
                                 ),
                             },
                         },
@@ -146,8 +145,8 @@ class CapabilityManifestBuilder:
                         "display_name": row.name,
                         "content_digest": general_skill_snapshot_digest(row),
                         "package_digest": package_from_row(row).digest,
-                        "execution_policy": "inspect_then_decide",
-                        "script_execution": "explicit_after_read",
+                        "execution_policy": "instructions_only",
+                        "script_execution": "use_harness_tools",
                         "permissions": dict(row.permissions_json or {}),
                         "runtime_config": dict(row.runtime_config_json or {}),
                         "sop_explicitly_allowed": explicitly_allowed,

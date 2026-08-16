@@ -21,6 +21,7 @@ import ScheduledTasksTab from './ScheduledTasksTab';
 import MemoriesTab from './MemoriesTab';
 import ConversationLogsTab from './ConversationLogsTab';
 import WorkRecordTab from './WorkRecordTab';
+import EvolutionPanel from './EvolutionPanel';
 import { employeeDashboardMetrics } from './employeeDashboardMetrics';
 import {
   agentResourceCount,
@@ -370,20 +371,23 @@ export default function DashboardPage({
       />
       <EmployeeProfileTabs activeKey={profileTab} />
       {profileTab === 'work' && (
-        <WorkRecordTab
-          selectedAgent={selectedAgent}
-          activeKnowledge={activeKnowledge}
-          activeGeneralSkills={activeGeneralSkills}
-          activeSkills={activeSkills}
-          activeTools={activeTools}
-          activeScheduledTasks={activeScheduledTasks}
-          employeeSessions={employeeSessions}
-          conversationCount={dashboardMetrics.conversationCount}
-          activityEvents={activityEvents}
-          feedbackCount={dashboardMetrics.feedbackCount}
-          positiveRate={dashboardMetrics.positiveRate}
-          negativeRate={dashboardMetrics.negativeRate}
-        />
+        <>
+          <WorkRecordTab
+            selectedAgent={selectedAgent}
+            activeKnowledge={activeKnowledge}
+            activeGeneralSkills={activeGeneralSkills}
+            activeSkills={activeSkills}
+            activeTools={activeTools}
+            activeScheduledTasks={activeScheduledTasks}
+            employeeSessions={employeeSessions}
+            conversationCount={dashboardMetrics.conversationCount}
+            activityEvents={activityEvents}
+            feedbackCount={dashboardMetrics.feedbackCount}
+            positiveRate={dashboardMetrics.positiveRate}
+            negativeRate={dashboardMetrics.negativeRate}
+          />
+          {canEditSelectedAgent && <EvolutionPanel agentId={selectedAgent.id} />}
+        </>
       )}
       {profileTab === 'scheduled' && <ScheduledTasksTab />}
       {profileTab === 'memories' && <MemoriesTab currentUser={currentUser} agent={selectedAgent} />}

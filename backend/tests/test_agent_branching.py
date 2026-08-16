@@ -1669,6 +1669,34 @@ def test_knowledge_branch_write_clones_existing_wiki_before_appending_concept() 
         assert cloned_chunks[0].bucket_id == cloned_buckets[0].id
 
 
+def test_knowledge_branch_write_normalizes_nested_branch_base_version() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        agent = AgentProfile(
+            id="agent_branch", tenant_id="tenant_demo", name="客服分支", is_overall=False
+        )
+        kb = KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="业务资料")
+        db.add(agent)
+        db.add(kb)
+        ensure_knowledge_base_version(db, kb, "1.0.0-branch.agent_branch.1")
+        branch = AgentKnowledgeBranch(
+            tenant_id="tenant_demo",
+            agent_id=agent.id,
+            knowledge_base_id=kb.id,
+            base_version="1.0.0-branch.agent_branch.1",
+            head_version="1.0.0-branch.agent_branch.1",
+            status="active",
+            sync_state="diverged",
+        )
+        db.add(branch)
+        db.commit()
+
+        target_version = knowledge_version_for_upload(db, "tenant_demo", kb.id, agent.id)
+
+        assert target_version.version == "1.0.0-branch.agent_branch.2"
+        assert branch.base_version == "1.0.0"
+
+
 def _graph(name: str, version: str) -> dict[str, object]:
     return {
         "skill_id": "skill_purchase",

@@ -22,6 +22,7 @@ class GraphRules:
             "knowledge_scope": node.get("knowledge_scope") or {},
             "retry_policy": node.get("retry_policy") or {},
             "metadata": node.get("metadata") or {},
+            "sub_sop_id": node.get("sub_sop_id"),
         }
 
     @staticmethod

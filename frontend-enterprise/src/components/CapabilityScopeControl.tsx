@@ -4,17 +4,19 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils';
 import type { CapabilityScope } from '@/types';
 
-export type CapabilityScopeResourceType = 'tool' | 'skill' | 'knowledge_base';
+export type CapabilityScopeResourceType = 'tool' | 'skill' | 'sop' | 'knowledge_base';
 
 const SOP_SPECIFIC_SCOPE_DESCRIPTIONS: Record<CapabilityScopeResourceType, string> = {
   tool: '仅限SOP：只有在SOP步骤中指定相关工具时方可调用',
   skill: '仅限SOP：只有在SOP步骤中指定相关技能时方可调用',
+  sop: '仅限 SOP：不参与普通意图匹配和斜杠发现，只能被其他 SOP 节点明确调用。',
   knowledge_base: '仅限SOP：只有在SOP步骤中指定相关知识库时方可调用',
 };
 
 const SOP_SPECIFIC_INLINE_DESCRIPTIONS: Record<CapabilityScopeResourceType, string> = {
   tool: '仅在 SOP 步骤指定相关工具时可用。',
   skill: '仅在 SOP 步骤指定相关技能时可用。',
+  sop: '仅能作为子 SOP 被明确调用，不会自动触发。',
   knowledge_base: '仅在 SOP 步骤指定相关知识库时可用。',
 };
 

@@ -849,6 +849,7 @@ def knowledge_version_for_upload(
     branch = _ensure_knowledge_branch(db, tenant_id, agent.id, kb)
     source_version = ensure_knowledge_base_version(db, kb, branch.head_version)
     next_version = _next_knowledge_branch_version(branch)
+    branch.base_version = _knowledge_branch_root_version(branch)
     target_version = ensure_knowledge_base_version(db, kb, next_version)
     target_version.capability_scope = source_version.capability_scope
     clone_knowledge_version_assets(
@@ -1232,12 +1233,21 @@ def _current_knowledge_version(kb: KnowledgeBase) -> str:
 
 
 def _next_knowledge_branch_version(branch: AgentKnowledgeBranch) -> str:
-    prefix = f"{branch.base_version}-branch.{_safe_version_id(branch.agent_id)}."
+    prefix = (
+        f"{_knowledge_branch_root_version(branch)}-branch."
+        f"{_safe_version_id(branch.agent_id)}."
+    )
     if branch.head_version.startswith(prefix):
         suffix = branch.head_version.removeprefix(prefix)
         if suffix.isdigit():
             return f"{prefix}{int(suffix) + 1}"
     return f"{prefix}1"
+
+
+def _knowledge_branch_root_version(branch: AgentKnowledgeBranch) -> str:
+    marker = f"-branch.{_safe_version_id(branch.agent_id)}."
+    base_version = branch.base_version.split(marker, 1)[0].strip()
+    return base_version or "1.0.0"
 
 
 def _retag_knowledge_version(

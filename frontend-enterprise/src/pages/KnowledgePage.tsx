@@ -197,7 +197,8 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
   const [versionKnowledgeBase, setVersionKnowledgeBase] = useState<KnowledgeBaseRead | null>(null);
   const [knowledgeBaseVersions, setKnowledgeBaseVersions] = useState<KnowledgeBaseVersionRead[]>([]);
   const [editingDocument, setEditingDocument] = useState<KnowledgeDocumentRead | null>(null);
-  const [documentDraft, setDocumentDraft] = useState({ title: '', status: 'ready' });
+  const [documentDraft, setDocumentDraft] = useState({ title: '', status: 'ready', content_md: '' });
+  const [documentEditorMode, setDocumentEditorMode] = useState<'edit' | 'preview'>('edit');
   const [editingBucket, setEditingBucket] = useState<KnowledgeBucketRead | null>(null);
   const [bucketDraft, setBucketDraft] = useState({ title: '', summary: '' });
   const [bucketChunks, setBucketChunks] = useState<KnowledgeChunkRead[]>([]);
@@ -391,7 +392,10 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
     }
   }
 
-  async function refresh(scopedAgentId = effectiveAgentId) {
+  async function refresh(
+    scopedAgentId = effectiveAgentId,
+    preferredDocument: KnowledgeDocumentRead | null = selectedDocument,
+  ) {
     if (!agentScopeLoaded) return;
     if (!isEnterpriseAdmin(currentUser) && !scopedAgentId) {
       clearKnowledgeViewState();
@@ -410,8 +414,14 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
         knowledgeBaseFilter === '__all__'
           ? docRows
           : docRows.filter((item) => item.knowledge_base_id === knowledgeBaseFilter);
-      const current = selectedDocument
-        ? scopedDocRows.find((item) => item.id === selectedDocument.id) || scopedDocRows[0] || null
+      const current = preferredDocument
+        ? scopedDocRows.find((item) => item.id === preferredDocument.id)
+          || scopedDocRows.find((item) => (
+            item.knowledge_base_id === preferredDocument.knowledge_base_id
+            && item.filename === preferredDocument.filename
+          ))
+          || scopedDocRows[0]
+          || null
         : scopedDocRows[0] || null;
       setSelectedDocument(current);
       if (current) {
@@ -846,28 +856,44 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
   }
 
   function openEditDocument(row: KnowledgeDocumentRead) {
+    const metadata = row.metadata || {};
+    const documentCard = isRecord(metadata.document_card) ? metadata.document_card : {};
+    const fallback = String(documentCard.summary || row.title || row.filename);
     setEditingDocument(row);
     setDocumentDraft({
       title: row.title || row.filename,
       status: row.status,
+      content_md: documentSourceMarkdown(row, fallback),
     });
+    setDocumentEditorMode('edit');
   }
 
   async function saveDocument() {
     if (!editingDocument) return;
+    if (!documentDraft.content_md.trim()) {
+      notify.warning('文档正文不能为空');
+      return;
+    }
+    setContentSaving(true);
     try {
-      const next = await api.put<KnowledgeDocumentRead>(`/api/enterprise/knowledge/documents/${editingDocument.id}`, {
-        tenant_id: TENANT_ID,
-        title: documentDraft.title,
-        status: documentDraft.status,
-      });
-      setDocuments((current) => current.map((item) => (item.id === next.id ? next : item)));
-      setSelectedDocument((current) => (current?.id === next.id ? next : current));
+      const query = effectiveAgentId ? `?agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+      const next = await api.put<KnowledgeDocumentRead>(
+        `/api/enterprise/knowledge/documents/${editingDocument.id}${query}`,
+        {
+          tenant_id: TENANT_ID,
+          title: documentDraft.title,
+          status: documentDraft.status,
+          content_md: documentDraft.content_md,
+          expected_updated_at: editingDocument.updated_at,
+        },
+      );
       setEditingDocument(null);
-      await loadBuckets(next, false);
-      notify.success('已保存文档');
+      await refresh(effectiveAgentId, next);
+      notify.success('已保存并重建知识索引');
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '保存文档失败');
+    } finally {
+      setContentSaving(false);
     }
   }
 
@@ -1198,6 +1224,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
               knowledgeBase={selectedKnowledgeBase}
               buckets={buckets}
               okfConcepts={okfConcepts}
+              canEdit={canManageCurrentScope}
               onEditDocument={openEditDocument}
               onEditBucket={openBucketEditor}
               onViewConcept={openConceptViewer}
@@ -1525,35 +1552,75 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       </KDialog>
       <KDialog
         open={Boolean(editingDocument)}
-        title="编辑文档"
+        title="在线编辑知识文档"
+        width="min(1080px, calc(100vw - 48px))"
         onClose={() => setEditingDocument(null)}
         footer={(
           <>
-            <KDialogCancelButton onClick={() => setEditingDocument(null)} />
-            <KDialogPrimaryButton onClick={() => void saveDocument()}>保存</KDialogPrimaryButton>
+            <KDialogCancelButton disabled={contentSaving} onClick={() => setEditingDocument(null)} />
+            <KDialogPrimaryButton disabled={contentSaving} onClick={() => void saveDocument()}>
+              {contentSaving ? '正在重建索引…' : '保存并重建索引'}
+            </KDialogPrimaryButton>
           </>
         )}
       >
-        <div className="flex w-full flex-col gap-[12px]">
-          <Input
-            value={documentDraft.title}
-            onChange={(event) => setDocumentDraft((prev) => ({ ...prev, title: event.target.value }))}
-            placeholder="文档标题"
-          />
-          <UISelect
-            value={documentDraft.status}
-            onValueChange={(value) => setDocumentDraft((prev) => ({ ...prev, status: value }))}
-          >
-            <SelectTrigger className={cn(SELECT_TRIGGER_CLASS, 'w-full')}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ready">可用</SelectItem>
-              <SelectItem value="processing">处理中</SelectItem>
-              <SelectItem value="failed">失败</SelectItem>
-              <SelectItem value="archived">下线</SelectItem>
-            </SelectContent>
-          </UISelect>
+        <div className="flex w-full flex-col gap-[14px]">
+          <div className="grid gap-[12px] md:grid-cols-[minmax(0,1fr)_220px]">
+            <Input
+              value={documentDraft.title}
+              onChange={(event) => setDocumentDraft((prev) => ({ ...prev, title: event.target.value }))}
+              placeholder="文档标题"
+            />
+            <UISelect
+              value={documentDraft.status}
+              onValueChange={(value) => setDocumentDraft((prev) => ({ ...prev, status: value }))}
+            >
+              <SelectTrigger className={cn(SELECT_TRIGGER_CLASS, 'w-full')}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ready">可用</SelectItem>
+                <SelectItem value="processing">处理中</SelectItem>
+                <SelectItem value="failed">失败</SelectItem>
+                <SelectItem value="archived">下线</SelectItem>
+              </SelectContent>
+            </UISelect>
+          </div>
+          <div className="flex items-center justify-between gap-[12px]">
+            <div className="inline-flex rounded-[9px] bg-[#f3f5f8] p-[3px]" aria-label="正文编辑模式">
+              <button
+                type="button"
+                className={cn('rounded-[7px] px-[14px] py-[6px] text-[12px] text-[#697085]', documentEditorMode === 'edit' && 'bg-white font-medium text-[#17191f] shadow-sm')}
+                onClick={() => setDocumentEditorMode('edit')}
+              >
+                Markdown 编辑
+              </button>
+              <button
+                type="button"
+                className={cn('rounded-[7px] px-[14px] py-[6px] text-[12px] text-[#697085]', documentEditorMode === 'preview' && 'bg-white font-medium text-[#17191f] shadow-sm')}
+                onClick={() => setDocumentEditorMode('preview')}
+              >
+                预览
+              </button>
+            </div>
+            <span className="text-[12px] tabular-nums text-[#858b9c]">{documentDraft.content_md.length.toLocaleString()} 字符</span>
+          </div>
+          {documentEditorMode === 'edit' ? (
+            <Textarea
+              rows={22}
+              value={documentDraft.content_md}
+              onChange={(event) => setDocumentDraft((prev) => ({ ...prev, content_md: event.target.value }))}
+              placeholder="使用 Markdown 编辑知识正文"
+              className="min-h-[460px] resize-y font-mono text-[13px] leading-6"
+            />
+          ) : (
+            <div className="min-h-[460px] max-h-[62vh] overflow-auto rounded-[12px] border border-[#e6e9ef] bg-white p-[18px]">
+              <MarkdownPreview markdown={documentDraft.content_md || '暂无正文'} />
+            </div>
+          )}
+          <p className="m-0 text-[12px] leading-5 text-[#858b9c]">
+            保存后会自动重建目录索引、引用来源和知识图谱；员工范围的修改会写入员工私有版本，不影响广场原版本。
+          </p>
         </div>
       </KDialog>
       <KDialog
@@ -2132,6 +2199,7 @@ function 目录索引Overview({
   knowledgeBase,
   buckets,
   okfConcepts,
+  canEdit,
   onEditDocument,
   onEditBucket,
   onViewConcept,
@@ -2141,6 +2209,7 @@ function 目录索引Overview({
   knowledgeBase: KnowledgeBaseRead | null;
   buckets: KnowledgeBucketRead[];
   okfConcepts: KnowledgeConceptRead[];
+  canEdit: boolean;
   onEditDocument: (document: KnowledgeDocumentRead) => void;
   onEditBucket: (bucket: KnowledgeBucketRead) => void;
   onViewConcept: (concept: KnowledgeConceptRead) => void;
@@ -2406,10 +2475,12 @@ function 目录索引Overview({
                 <span className="text-[13px] text-[#858b9c]">文档卡片</span>
                 <h4 className="my-[4px] text-[16px] font-semibold text-foreground">{documentTitle}</h4>
               </div>
-              <UIButton variant="outline" className={OUTLINE_ACTION_BUTTON_SM_CLASS} onClick={() => onEditDocument(document)}>
-                <EditOutlined />
-                修改
-              </UIButton>
+              {canEdit && (
+                <UIButton variant="outline" className={OUTLINE_ACTION_BUTTON_SM_CLASS} onClick={() => onEditDocument(document)}>
+                  <EditOutlined />
+                  修改
+                </UIButton>
+              )}
             </div>
             <section className="knowledge-document-md-panel">
               <div className="knowledge-document-md-panel-head">

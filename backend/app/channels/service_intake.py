@@ -42,6 +42,7 @@ from app.db.models import (
     ChannelIdentity,
     ChannelInboundEvent,
     ChatSession,
+    AgentEvent,
     MemoryRecord,
     Message,
     Team,
@@ -50,6 +51,7 @@ from app.db.models import (
     utc_now,
 )
 from app.session.session_schema import ChatTurnRequest
+from app.observability.spans import bind_span_sink
 
 logger = logging.getLogger(__name__)
 
@@ -1025,7 +1027,21 @@ def process_inbound(
             )
             _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 1, db_engine=use_engine)
             try:
-                response = AgentLoop(db).handle_turn(request)
+                def persist_span(event_type: str, payload: dict[str, object]) -> None:
+                    event_payload = dict(payload)
+                    event_payload.setdefault("client_turn_id", inbound.event_id)
+                    db.add(
+                        AgentEvent(
+                            tenant_id=binding.tenant_id,
+                            session_id=session_id,
+                            event_type=event_type,
+                            payload_json=event_payload,
+                        )
+                    )
+                    db.commit()
+
+                with bind_span_sink(persist_span):
+                    response = AgentLoop(db).handle_turn(request)
             except Exception as exc:
                 logger.exception("渠道入站处理失败 binding=%s event=%s", binding.id, inbound.event_id)
                 db.rollback()

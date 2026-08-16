@@ -10,6 +10,7 @@ from app.api import (
     auth,
     channels,
     chat,
+    evolution,
     feedback,
     general_skills,
     knowledge,
@@ -109,6 +110,7 @@ app.include_router(knowledge.router)
 app.include_router(skills.router)
 app.include_router(model_configs.router)
 app.include_router(memories.router)
+app.include_router(evolution.router)
 app.include_router(feedback.router)
 app.include_router(persona.router)
 app.include_router(scheduled_tasks.enterprise_router)

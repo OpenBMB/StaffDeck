@@ -19,6 +19,7 @@ from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
 from app.agents.branching import model_for_agent, visible_published_skills
+from app.skills.nesting import discoverable_sops
 from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn
@@ -942,7 +943,7 @@ def list_slash_commands(
         agent_id,
         current_user,
     )
-    skills = visible_published_skills(db, tenant_id, agent.id)
+    skills = discoverable_sops(visible_published_skills(db, tenant_id, agent.id))
     manifest = CapabilityManifestBuilder(db).build(
         tenant_id,
         agent.id,
