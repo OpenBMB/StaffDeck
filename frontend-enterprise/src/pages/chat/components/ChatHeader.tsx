@@ -1,10 +1,15 @@
+import { useEffect, useState } from 'react';
+
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Badge } from '@/components/ui';
+import { api, TENANT_ID } from '@/api/client';
 import { staffdeckDisplayText } from '@/employee';
+import type { TeamRead } from '@/types';
 import IconEdit from '@/assets/icons/edit.svg?react';
 import IconChevronDown from '@/assets/icons/chevron-down.svg?react';
 import IconLogout from '@/assets/icons/logout.svg?react';
@@ -19,16 +24,48 @@ import type { UseChatSession } from '../useChatSession';
 
 export default function ChatHeader({ chat }: { chat: UseChatSession }) {
   const { auth, currentSession, openRename, logout } = chat;
-  const name = currentSession?.title ? staffdeckDisplayText(currentSession.title) : currentSession?.id || '新对话';
+  const teamId = currentSession?.team_id || null;
+  const rawName = currentSession?.title
+    ? staffdeckDisplayText(currentSession.title)
+    : currentSession?.id || '新对话';
   const username = auth?.user?.username || '';
   const initial = username ? username.slice(0, 1).toUpperCase() : '--';
+
+  // 团队会话徽标：read 带 team_name 直接用；缺省时用团队列表做 id→name 映射。
+  const sessionTeamName = currentSession?.team_name || null;
+  const [teamName, setTeamName] = useState<string | null>(sessionTeamName);
+  const name = teamId
+    ? teamName || rawName.replace(/^团队\s*/, '').replace(/\s*·\s*TL 对话$/, '')
+    : rawName;
+
+  useEffect(() => {
+    setTeamName(sessionTeamName);
+    if (!teamId || sessionTeamName) return;
+    let cancelled = false;
+    api.get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${TENANT_ID}`)
+      .then((rows) => {
+        if (!cancelled) setTeamName(rows.find((team) => team.id === teamId)?.name || null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [teamId, sessionTeamName]);
 
   return (
     <div className={CHAT_HEADER_CLASS}>
       <div className={CHAT_HEADER_TITLE_STACK_CLASS}>
         <span className="flex min-w-0 items-center gap-[4px]">
           <span className={CHAT_HEADER_TITLE_NAME_CLASS}>{name}</span>
-          {currentSession && (
+          {teamId && (
+            <Badge
+              variant="secondary"
+              className="shrink-0 rounded-full bg-[#e8f0ff] text-[12px] font-normal text-[#1a71ff]"
+            >
+              群聊
+            </Badge>
+          )}
+          {currentSession && !teamId && (
             <button
               type="button"
               aria-label="重命名会话"

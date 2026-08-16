@@ -26,9 +26,9 @@ import IconSearch from '../../assets/icons/search.svg?react';
 import type { EnterpriseAuthUser } from '../../auth';
 import { canManageEmployeeAgent } from '../../employee';
 import { useClientPagination } from '../../hooks/useClientPagination';
+import { isTeamScope, readEmployeeScope } from '../../lib/agent-scope-storage';
 import type { AgentProfileRead, MemoryRead } from '../../types';
 
-const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const MEMORY_PAGE_SIZE = 10;
 const ALL_USERS_VALUE = '__all__';
 
@@ -61,9 +61,7 @@ export default function MemoriesTab({
   const [detail, setDetail] = useState<MemoryUserGroup | null>(null);
   const [loading, setLoading] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const [agentId, setAgentId] = useState(
-    () => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '',
-  );
+  const [agentId, setAgentId] = useState(readEmployeeScope);
   const [filter, setFilter] = useState<MemoryFilter>(EMPTY_FILTER);
 
   async function load(next: MemoryFilter = filter) {
@@ -86,11 +84,8 @@ export default function MemoriesTab({
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
-      const nextAgentId =
-        (event as CustomEvent<{ agentId?: string }>).detail?.agentId ||
-        window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) ||
-        '';
-      setAgentId(nextAgentId);
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);

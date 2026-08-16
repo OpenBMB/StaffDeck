@@ -32,6 +32,7 @@ import {
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 import { SELECT_TRIGGER_CLASS, formatDateTime } from '@/lib/enterprise-ui';
+import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
 import { MarkdownMessage } from '../chat/chatHelpers';
 
 import { api, TENANT_ID } from '../../api/client';
@@ -59,7 +60,6 @@ import {
 } from './conversationLogFilters';
 import { employeeDashboardMetrics } from './employeeDashboardMetrics';
 
-const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const FEEDBACK_PAGE_SIZE = 10;
 const ALL_CONVERSATION_USERS = '__all_conversation_users__';
 
@@ -88,9 +88,7 @@ const MOBILE_CARD_CLASS =
 
 export default function ConversationLogsTab() {
   const [searchParams] = useSearchParams();
-  const [scopedAgentId, setScopedAgentId] = useState(
-    () => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '',
-  );
+  const [scopedAgentId, setScopedAgentId] = useState(readEmployeeScope);
   const agentId = searchParams.get('agent_id') || scopedAgentId;
   const [sessions, setSessions] = useState<EnterpriseChatSessionRead[]>([]);
   const [downRows, setDownRows] = useState<FeedbackSessionRead[]>([]);
@@ -108,11 +106,8 @@ export default function ConversationLogsTab() {
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
-      setScopedAgentId(
-        (event as CustomEvent<{ agentId?: string }>).detail?.agentId ||
-          window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) ||
-          '',
-      );
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setScopedAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);

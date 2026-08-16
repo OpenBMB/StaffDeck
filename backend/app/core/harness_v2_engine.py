@@ -146,6 +146,11 @@ class HarnessV2Engine:
                 "channel": request.channel,
                 "user_id": request.user_id,
                 "execution_engine": "harness_v2",
+                **(
+                    {"message_visibility": request.message_visibility}
+                    if request.message_visibility != "visible"
+                    else {}
+                ),
             },
         )
 
@@ -155,23 +160,33 @@ class HarnessV2Engine:
                 "SLASH_COMMAND_MODE_CONFLICT",
                 "斜杠能力指令不能与定时任务创建模式同时使用。",
             )
-        execution_request = (
-            request.model_copy(
-                update={"message": slash_command_message(self.slash_command)}
-            )
+        execution_message = (
+            slash_command_message(self.slash_command)
             if self.slash_command
-            else request
+            else request.message
+        )
+        if request.context_injection:
+            execution_message = f"{request.context_injection.rstrip()}\n\n{execution_message}"
+        execution_request = request.model_copy(
+            update={"message": execution_message, "context_injection": None}
         )
 
         model_config = self.owner._get_request_model(request, session.agent_id)
         if model_config is None:
             raise RuntimeError("没有默认模型配置。")
-        skills = self.owner._list_published_skills(
+        published_skills = self.owner._list_published_skills(
             request.tenant_id, session.agent_id
         )
-        self.owner._drop_unavailable_skill_state(
-            request.tenant_id, session, skills
-        )
+        # A team TL session is a group-chat orchestration surface, not the
+        # leader employee's personal working session. Hide personal SOPs from
+        # this turn without mutating or cancelling their durable state.
+        if request.interaction_mode == "team_tl":
+            skills = []
+        else:
+            skills = published_skills
+            self.owner._drop_unavailable_skill_state(
+                request.tenant_id, session, skills
+            )
         memory_context = [
             memory_read(row)
             for row in self.owner.memory.context_memories(
@@ -445,9 +460,11 @@ class HarnessV2Engine:
         ):
             payload["knowledge_citations"] = list(result.citations)
 
-        response_skill = self.owner._get_active_skill(
-            request.tenant_id, session.active_skill_id, session.agent_id
-        ) or last_skill
+        response_skill = None if request.interaction_mode == "team_tl" else (
+            self.owner._get_active_skill(
+                request.tenant_id, session.active_skill_id, session.agent_id
+            ) or last_skill
+        )
         self._renew_session_lease()
         reply = self.owner.response_generator.generate(
             execution_request.message,
@@ -471,6 +488,8 @@ class HarnessV2Engine:
         }
         if request.client_turn_id:
             assistant_metadata["client_turn_id"] = request.client_turn_id
+        if request.message_visibility != "visible":
+            assistant_metadata["message_visibility"] = request.message_visibility
         if citations:
             assistant_metadata["knowledge_citations"] = citations
         if artifacts:
@@ -484,19 +503,20 @@ class HarnessV2Engine:
             request.tenant_id,
             reply,
             last_step_result,
-            execution_request.message,
+            request.message,
             user_message_id=user_message.id,
             assistant_metadata_override=assistant_metadata,
         )
         self.db.commit()
         self.db.refresh(session)
-        self.owner._enqueue_memory_capture(
-            execution_request,
-            session,
-            last_step_result,
-            None,
-            model_config,
-        )
+        if request.message_visibility == "visible":
+            self.owner._enqueue_memory_capture(
+                request,
+                session,
+                last_step_result,
+                None,
+                model_config,
+            )
         response = ChatTurnResponse(
             reply=reply,
             session_id=session.id,

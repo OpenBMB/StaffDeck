@@ -21,7 +21,6 @@ import { StatusBadge, TaskRunResultBadge, TaskStatusBadge } from '../scheduled-t
 import { TaskActionsMenu } from '../scheduled-tasks/TaskActionsMenu';
 import { TaskSection } from '../scheduled-tasks/TaskSection';
 import {
-  ENTERPRISE_AGENT_STORAGE_KEY,
   RUN_FILTER_TABS,
   TASK_FILTER_TABS,
   TASK_PAGE_SIZE,
@@ -32,6 +31,7 @@ import {
   type RunListFilter,
   type TaskListFilter,
 } from '../scheduled-tasks/shared';
+import { isTeamScope, readEmployeeScope } from '../../lib/agent-scope-storage';
 
 export {
   ScheduledTaskEditPage,
@@ -49,9 +49,7 @@ const MOBILE_SUMMARY_CLASS = 'mt-[8px] line-clamp-2 text-[12px] leading-[1.55] t
 export default function ScheduledTasksTab() {
   const [rows, setRows] = useState<ScheduledTaskRead[]>([]);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
-  const [agentId, setAgentId] = useState(
-    () => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '',
-  );
+  const [agentId, setAgentId] = useState(readEmployeeScope);
   const [loading, setLoading] = useState(false);
   const [runsOpen, setRunsOpen] = useState(false);
   const [runRows, setRunRows] = useState<ScheduledTaskRunRead[]>([]);
@@ -68,11 +66,8 @@ export default function ScheduledTasksTab() {
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
-      const nextAgentId =
-        (event as CustomEvent<{ agentId?: string }>).detail?.agentId ||
-        window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) ||
-        '';
-      setAgentId(nextAgentId);
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);

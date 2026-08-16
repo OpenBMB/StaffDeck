@@ -5,7 +5,7 @@ from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session
 
-from app.db.models import ChannelBinding, ChannelDelivery, User
+from app.db.models import ChannelBinding, ChannelDelivery, Team, User
 
 
 def _validate_allowlist_id(value: str) -> str:
@@ -71,7 +71,9 @@ class ChannelBackfillConfig(BaseModel):
 
 class ChannelBindingCreate(BaseModel):
     tenant_id: str
-    agent_id: str
+    # 与 team_id 互斥:挂员工集(现状)或绑一个团队,二选一
+    agent_id: Optional[str] = None
+    team_id: Optional[str] = None
     channel: str = "wechat"
 
 
@@ -104,6 +106,9 @@ class ChannelBindingRead(BaseModel):
     tenant_id: str
     agent_id: str
     channel: str
+    # 团队绑定:非空表示接入某团队(与员工挂载互斥)
+    team_id: Optional[str] = None
+    team_name: Optional[str] = None
     status: str
     connected: bool
     ilink_bot_id: Optional[str] = None
@@ -366,11 +371,17 @@ def channel_binding_creator_name(db: Session, binding: ChannelBinding) -> Option
 def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBindingRead:
     config = dict(binding.config_json or {})
     bound_at = config.get("bound_at")
+    team_name: Optional[str] = None
+    if binding.team_id:
+        team = db.get(Team, binding.team_id)
+        team_name = team.name if team else None
     return ChannelBindingRead(
         id=binding.id,
         tenant_id=binding.tenant_id,
         agent_id=binding.agent_id,
         channel=binding.channel,
+        team_id=binding.team_id,
+        team_name=team_name,
         status=binding.status,
         connected=binding.connected,
         ilink_bot_id=config.get("ilink_bot_id"),

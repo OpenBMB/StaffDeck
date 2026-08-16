@@ -27,6 +27,8 @@ export type DataTableColumn<T> = {
   className?: string;
   /** Extra classes for the header cell. */
   headClassName?: string;
+  /** Keep the column visible at an edge while the table scrolls horizontally. */
+  sticky?: 'left' | 'right';
 };
 
 export type DataTableProps<T> = {
@@ -62,6 +64,14 @@ const BODY_HEIGHT = {
   compact: 'min-h-[46px]',
 } as const;
 const CELL_BORDER = 'border border-[#f2f3f7]';
+const STICKY_HEAD_CLASS = {
+  left: 'sticky left-0 z-20 border-r border-[#e3e6ed] bg-[#f2f3f7]',
+  right: 'sticky right-0 z-20 border-l border-[#e3e6ed] bg-[#f2f3f7]',
+} as const;
+const STICKY_BODY_CLASS = {
+  left: 'sticky left-0 z-10 border-r border-[#e3e6ed]',
+  right: 'sticky right-0 z-10 border-l border-[#e3e6ed]',
+} as const;
 
 /**
  * Business data table (SD1 designs: node 281:1942 default, 281:2040 compact grid).
@@ -83,6 +93,10 @@ export function DataTable<T>({
   'aria-label': ariaLabel,
 }: DataTableProps<T>) {
   const hasData = data.length > 0;
+  const fixedTableWidth = columns.every((column) => typeof column.width === 'number')
+    ? columns.reduce((total, column) => total + (column.width as number), 0)
+    : undefined;
+
   return (
     <div
       className={cn(
@@ -90,7 +104,11 @@ export function DataTable<T>({
         className,
       )}
     >
-      <Table className="w-full table-fixed text-[12px]" aria-label={ariaLabel}>
+      <Table
+        className="w-full table-fixed text-[12px]"
+        style={fixedTableWidth ? { minWidth: fixedTableWidth } : undefined}
+        aria-label={ariaLabel}
+      >
         <TableHeader>
           <TableRow className="border-0 hover:bg-transparent">
             {columns.map((column) => (
@@ -101,6 +119,7 @@ export function DataTable<T>({
                   HEAD_CELL_CLASS,
                   bordered && CELL_BORDER,
                   ALIGN_CLASS[column.align ?? 'left'],
+                  column.sticky && STICKY_HEAD_CLASS[column.sticky],
                   column.headClassName,
                 )}
               >
@@ -116,7 +135,7 @@ export function DataTable<T>({
                 key={rowKey(row, index)}
                 onClick={onRowClick ? () => onRowClick(row, index) : undefined}
                 className={cn(
-                  'has-aria-expanded:bg-transparent',
+                  'group has-aria-expanded:bg-transparent',
                   bordered
                     ? 'border-0'
                     : 'border-b border-[#f2f3f7] last:border-0',
@@ -136,6 +155,11 @@ export function DataTable<T>({
                       BODY_HEIGHT[size],
                       bordered && CELL_BORDER,
                       ALIGN_CLASS[column.align ?? 'left'],
+                      column.sticky && STICKY_BODY_CLASS[column.sticky],
+                      column.sticky &&
+                        (striped && index % 2 === 1
+                          ? 'bg-[#fbfbfb] group-hover:bg-[#f2f3f7]'
+                          : 'bg-white group-hover:bg-[#fafbfc]'),
                       column.className,
                     )}
                   >

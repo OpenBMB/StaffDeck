@@ -11,9 +11,8 @@ import {
   notify,
 } from '@/components/ui';
 import { api, TENANT_ID } from '../api/client';
+import { isTeamScope, readEmployeeScope } from '../lib/agent-scope-storage';
 import type { AgentProfileRead, PersonaRead } from '../types';
-
-const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
 type PersonaForm = {
   agent_name: string;
@@ -37,7 +36,7 @@ export default function PersonaPage() {
   const [loading, setLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState('');
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [selectedAgentId, setSelectedAgentId] = useState(readEmployeeScope);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || null;
   const isOverallPersona = !selectedAgent || selectedAgent.is_overall;
 
@@ -50,7 +49,7 @@ export default function PersonaPage() {
   useEffect(() => {
     const onScopeChange = (event: Event) => {
       const agentId = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
-      if (agentId) setSelectedAgentId(agentId);
+      if (agentId && !isTeamScope(agentId)) setSelectedAgentId(agentId);
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
@@ -95,7 +94,7 @@ export default function PersonaPage() {
       const rows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
       setAgents(rows);
       setSelectedAgentId((current) => {
-        const stored = window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY);
+        const stored = readEmployeeScope();
         const candidate = current || stored || '';
         if (candidate && rows.some((agent) => agent.id === candidate)) return candidate;
         return rows.find((agent) => agent.is_overall)?.id || rows[0]?.id || '';

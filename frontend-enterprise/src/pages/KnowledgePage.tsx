@@ -30,6 +30,7 @@ import {
 } from '@/components/CapabilityScopeControl';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
+import KnowledgeGraphCanvas from '@/components/KnowledgeGraphCanvas';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
 import { Paginator } from '@/components/Paginator';
 import { ResourceImportDialog } from '@/components/ResourceImportDialog';
@@ -63,8 +64,9 @@ import { DIALOG_CANCEL_BUTTON_CLASS, DIALOG_FOOTER_CLASS, DIALOG_PRIMARY_BUTTON_
 import {
   clearSharedAgentScope,
   emitAgentScopeChange,
-  ENTERPRISE_AGENT_STORAGE_KEY,
+  isTeamScope,
   persistSharedAgentScope,
+  readEmployeeScope,
 } from '@/lib/agent-scope-storage';
 import IconAdd from '../assets/icons/add.svg?react';
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
@@ -175,7 +177,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
   const [selectedDocument, setSelectedDocument] = useState<KnowledgeDocumentRead | null>(null);
   const [buckets, setBuckets] = useState<KnowledgeBucketRead[]>([]);
   const [loading, setLoading] = useState(false);
-  const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [agentId, setAgentId] = useState(readEmployeeScope);
   const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [importOpen, setImportOpen] = useState(false);
@@ -344,7 +346,8 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
-      setAgentId((event as CustomEvent<{ agentId?: string }>).detail?.agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
@@ -1634,7 +1637,7 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('general');
   const [jobs, setJobs] = useState<Record<string, KnowledgeIngestJobRead>>({});
-  const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [agentId, setAgentId] = useState(readEmployeeScope);
   const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
   const [checkedDiscoveryJobIds, setCheckedDiscoveryJobIds] = useState<string[]>([]);
   const [pendingDiscoveries, setPendingDiscoveries] = useState<KnowledgeDiscoveryRead[]>([]);
@@ -1690,7 +1693,8 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
-      setAgentId((event as CustomEvent<{ agentId?: string }>).detail?.agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
@@ -2146,6 +2150,7 @@ function 目录索引Overview({
   const [detailFocusKey, setDetailFocusKey] = useState<string | null>(null);
   const [activeContentView, setActiveContentView] = useState<KnowledgeContentView>('evidence');
   const [wikiPresentation, setWikiPresentation] = useState<'graph' | 'cards'>('graph');
+  const [wikiViewMode, setWikiViewMode] = useState<'graph' | 'cards'>('graph');
   const metadata = document.metadata || {};
   const documentCard = isRecord(metadata.document_card) ? metadata.document_card : {};
   const wikiStructureConcepts = useMemo(() => sortWikiConcepts(okfConcepts), [okfConcepts]);
@@ -2390,7 +2395,7 @@ function 目录索引Overview({
       <KDialog
         open={Boolean(detailView)}
         title={knowledgeDetailTitle(detailView)}
-        width={detailView === 'sections' ? 'min(1240px, calc(100vw - 56px))' : 920}
+        width={detailView === 'sections' || detailView === 'wiki' ? 'min(1240px, calc(100vw - 56px))' : 920}
         className={`knowledge-detail-modal${detailView === 'sections' ? ' knowledge-detail-modal-sections' : ''}`}
         onClose={() => setDetailView(null)}
       >
@@ -2530,50 +2535,72 @@ function 目录索引Overview({
             {okfConcepts.length === 0 ? (
               <EmptyState description="暂无知识图谱" />
             ) : (
-              okfConcepts.map((concept) => (
-                <div
-                  className="knowledge-concept-card knowledge-detail-target"
-                  key={concept.id}
-                  data-detail-key={concept.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onViewConcept(concept)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      onViewConcept(concept);
-                    }
-                  }}
-                >
-                  <div className="knowledge-concept-card-head">
-                    <div>
-                      <div className="flex flex-wrap items-center gap-[8px]">
-                        <KTag color={conceptTypeColor(concept.concept_type)}>{conceptTypeLabel(concept.concept_type)}</KTag>
-                        {statusTag(concept.status)}
-                      </div>
-                      <h5 className="mt-[6px] mb-0 text-[15px] font-semibold text-foreground">{concept.title || concept.concept_id}</h5>
-                    </div>
-                    <UIButton
-                      variant="outline"
-                      size="sm"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onEditConcept(concept);
+              <>
+                <div className="knowledge-graph-view-switch">
+                  <button
+                    type="button"
+                    className={`knowledge-graph-view-btn${wikiViewMode === 'graph' ? ' is-active' : ''}`}
+                    onClick={() => setWikiViewMode('graph')}
+                  >
+                    图谱视图
+                  </button>
+                  <button
+                    type="button"
+                    className={`knowledge-graph-view-btn${wikiViewMode === 'cards' ? ' is-active' : ''}`}
+                    onClick={() => setWikiViewMode('cards')}
+                  >
+                    卡片视图
+                  </button>
+                </div>
+                {wikiViewMode === 'graph' ? (
+                  <KnowledgeGraphCanvas concepts={okfConcepts} onSelectConcept={onViewConcept} />
+                ) : (
+                  okfConcepts.map((concept) => (
+                    <div
+                      className="knowledge-concept-card knowledge-detail-target"
+                      key={concept.id}
+                      data-detail-key={concept.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => onViewConcept(concept)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          onViewConcept(concept);
+                        }
                       }}
                     >
-                      <EditOutlined />
-                      编辑
-                    </UIButton>
-                  </div>
-                  <p className="my-[6px] text-[13px] text-[#858b9c]">{concept.description || conceptSummary(concept)}</p>
-                  <div className="flex flex-wrap items-center gap-[6px]">
-                    <KTag>{concept.concept_id}</KTag>
-                    <KTag>{concept.links.length} 个链接</KTag>
-                    <KTag>{concept.citations.length} 个引用</KTag>
-                    {concept.document_id ? <KTag>来源文档 {concept.document_id}</KTag> : null}
-                  </div>
-                </div>
-              ))
+                      <div className="knowledge-concept-card-head">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-[8px]">
+                            <KTag color={conceptTypeColor(concept.concept_type)}>{conceptTypeLabel(concept.concept_type)}</KTag>
+                            {statusTag(concept.status)}
+                          </div>
+                          <h5 className="mt-[6px] mb-0 text-[15px] font-semibold text-foreground">{concept.title || concept.concept_id}</h5>
+                        </div>
+                        <UIButton
+                          variant="outline"
+                          size="sm"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onEditConcept(concept);
+                          }}
+                        >
+                          <EditOutlined />
+                          编辑
+                        </UIButton>
+                      </div>
+                      <p className="my-[6px] text-[13px] text-[#858b9c]">{concept.description || conceptSummary(concept)}</p>
+                      <div className="flex flex-wrap items-center gap-[6px]">
+                        <KTag>{concept.concept_id}</KTag>
+                        <KTag>{concept.links.length} 个链接</KTag>
+                        <KTag>{concept.citations.length} 个引用</KTag>
+                        {concept.document_id ? <KTag>来源文档 {concept.document_id}</KTag> : null}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </>
             )}
           </div>
         )}
