@@ -169,12 +169,19 @@ class HarnessV2Engine:
         model_config = self.owner._get_request_model(request, session.agent_id)
         if model_config is None:
             raise RuntimeError("没有默认模型配置。")
-        skills = self.owner._list_published_skills(
+        published_skills = self.owner._list_published_skills(
             request.tenant_id, session.agent_id
         )
-        self.owner._drop_unavailable_skill_state(
-            request.tenant_id, session, skills
-        )
+        # A team TL session is a group-chat orchestration surface, not the
+        # leader employee's personal working session. Hide personal SOPs from
+        # this turn without mutating or cancelling their durable state.
+        if request.interaction_mode == "team_tl":
+            skills = []
+        else:
+            skills = published_skills
+            self.owner._drop_unavailable_skill_state(
+                request.tenant_id, session, skills
+            )
         memory_context = [
             memory_read(row)
             for row in self.owner.memory.context_memories(
@@ -448,9 +455,11 @@ class HarnessV2Engine:
         ):
             payload["knowledge_citations"] = list(result.citations)
 
-        response_skill = self.owner._get_active_skill(
-            request.tenant_id, session.active_skill_id, session.agent_id
-        ) or last_skill
+        response_skill = None if request.interaction_mode == "team_tl" else (
+            self.owner._get_active_skill(
+                request.tenant_id, session.active_skill_id, session.agent_id
+            ) or last_skill
+        )
         self._renew_session_lease()
         reply = self.owner.response_generator.generate(
             execution_request.message,

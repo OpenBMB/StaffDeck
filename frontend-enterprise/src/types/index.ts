@@ -1010,6 +1010,9 @@ export type TeamConversationRead = {
   agent_id?: string | null;
   agent_name?: string | null;
   task_id?: string | null;
+  task_status?: string | null;
+  needs_input?: boolean;
+  pending_question?: string | null;
   title: string;
   preview: string;
   created_at: string;
@@ -1032,6 +1035,13 @@ export type TeamConversationMessageRead = {
   role: string;
   content: string;
   created_at: string;
+};
+
+export type TeamConversationStreamRead = {
+  status: 'idle' | 'running' | 'completed' | 'failed';
+  content: string;
+  phase?: string | null;
+  updated_at?: string | null;
 };
 
 export type TeamTaskEventRead = {
