@@ -11,6 +11,7 @@ import json
 import threading
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -342,11 +343,132 @@ def test_stage_discord_inbound_thread_allowlist_uses_parent_channel():
     assert result.disposition is StageDisposition.STAGED
 
 
+def test_stage_discord_inbound_target_includes_thread_id():
+    """线程消息 target 记录 thread_id,供出站定位线程端点(自动建线程前置)。"""
+    db_engine = _engine()
+    with Session(db_engine) as db:
+        db.add(Tenant(id="tenant-1", name="Tenant"))
+        db.add(_binding(id="chan-1"))
+        db.commit()
+    inbound = normalize_discord_message(
+        _raw(channel_id="thread-9", is_thread=True, thread_id="thread-9", parent_id="channel-1"),
+        account_scope="",
+    )
+    assert inbound is not None
+    result = stage_discord_inbound(
+        db_engine=db_engine, binding_id="chan-1", expected_revision=1,
+        bot_id="bot-1", inbound=inbound,
+    )
+    assert result.disposition is StageDisposition.STAGED
+    with Session(db_engine) as db:
+        event = db.get(ChannelInboundEvent, result.event_pk)
+        assert event.target_json.get("thread_id") == "thread-9"
+
+
+def test_stage_discord_inbound_plain_channel_target_has_no_thread_id_key():
+    """普通频道消息不写 thread_id 键,保持门禁不变量。"""
+    db_engine = _engine()
+    with Session(db_engine) as db:
+        db.add(Tenant(id="tenant-1", name="Tenant"))
+        db.add(_binding(id="chan-1"))
+        db.commit()
+    inbound = normalize_discord_message(_raw(), account_scope="")
+    assert inbound is not None
+    result = stage_discord_inbound(
+        db_engine=db_engine, binding_id="chan-1", expected_revision=1,
+        bot_id="bot-1", inbound=inbound,
+    )
+    assert result.disposition is StageDisposition.STAGED
+    with Session(db_engine) as db:
+        event = db.get(ChannelInboundEvent, result.event_pk)
+        assert "thread_id" not in event.target_json
+
+
 def test_send_prefers_target_thread_id():
     client = _RoutingClient({"messages": [_Response(200)]})
     _adapter(client).send(_binding(), {"channel_id": "channel-1", "thread_id": "thread-9"}, "hi")
     call = client.calls[0]
     assert call["url"] == f"{DISCORD_API_BASE}/channels/thread-9/messages"
+
+
+# ---------------------------------------------------------------- 自动建线程
+
+
+class _BrokenClient:
+    """post 直接抛 httpx.HTTPError 的假 client,模拟网络故障。"""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def post(self, url, **_kwargs):
+        raise httpx.ConnectError("network down")
+
+
+def test_create_thread_posts_to_threads_endpoint():
+    client = _RoutingClient({"threads": [_Response(200, {"id": "thread-9"})]})
+    result = _adapter(client).create_thread(_binding(), {"channel_id": "channel-1"}, "新线程")
+    call = client.calls_to("/threads")[0]
+    assert call["url"] == f"{DISCORD_API_BASE}/channels/channel-1/threads"
+    assert call["body"]["name"] == "新线程"
+    assert call["body"]["type"] == 11
+    assert call["headers"]["Authorization"] == "Bot secret"
+    assert result == "thread-9"
+
+
+def test_create_thread_returns_created_id():
+    client = _RoutingClient({"threads": [_Response(200, {"id": "thread-9"})]})
+    assert _adapter(client).create_thread(_binding(), {"channel_id": "channel-1"}, "t") == "thread-9"
+
+
+def test_create_thread_truncates_name_to_100_chars():
+    client = _RoutingClient({"threads": [_Response(200, {"id": "thread-9"})]})
+    _adapter(client).create_thread(_binding(), {"channel_id": "channel-1"}, "n" * 150)
+    assert len(client.calls_to("/threads")[0]["body"]["name"]) == 100
+
+
+def test_create_thread_missing_channel_is_permanent():
+    with pytest.raises(DiscordPermanentError) as excinfo:
+        _adapter(_RoutingClient({})).create_thread(_binding(), {}, "t")
+    assert excinfo.value.retryable is False
+
+
+def test_create_thread_permission_denied_is_permanent():
+    with pytest.raises(DiscordPermanentError):
+        _adapter(_RoutingClient({"threads": [_Response(403)]})).create_thread(
+            _binding(), {"channel_id": "channel-1"}, "t"
+        )
+
+
+def test_create_thread_rate_limited_is_transient():
+    with pytest.raises(DiscordTransientError) as excinfo:
+        _adapter(_RoutingClient({"threads": [_Response(429)]})).create_thread(
+            _binding(), {"channel_id": "channel-1"}, "t"
+        )
+    assert excinfo.value.retryable is True
+
+
+def test_create_thread_server_error_is_transient():
+    with pytest.raises(DiscordTransientError):
+        _adapter(_RoutingClient({"threads": [_Response(500)]})).create_thread(
+            _binding(), {"channel_id": "channel-1"}, "t"
+        )
+
+
+def test_create_thread_http_error_is_transient():
+    with pytest.raises(DiscordTransientError) as excinfo:
+        _adapter(_BrokenClient()).create_thread(_binding(), {"channel_id": "channel-1"}, "t")
+    assert excinfo.value.retryable is True
+
+
+def test_create_thread_missing_id_is_permanent():
+    with pytest.raises(DiscordPermanentError) as excinfo:
+        _adapter(_RoutingClient({"threads": [_Response(200, {})]})).create_thread(
+            _binding(), {"channel_id": "channel-1"}, "t"
+        )
+    assert excinfo.value.retryable is False
 
 
 # ---------------------------------------------------------------- 功能4 回填

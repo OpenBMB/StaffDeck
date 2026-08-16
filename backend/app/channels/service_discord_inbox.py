@@ -85,6 +85,11 @@ def stage_discord_inbound(
                 "guild_id": str(raw.get("guild_id") or "").strip(),
                 "message_id": inbound.event_id,
             }
+            # 线程消息记录 thread_id,供 outbox 自动建线程时识别已在线程内的会话;
+            # 仅非空时写入,避免 "thread_id": None 噪音污染普通频道目标。
+            thread_id = _clean(raw.get("thread_id"))
+            if thread_id:
+                target["thread_id"] = thread_id
             event = ChannelInboundEvent(
                 id=new_id("chevt"), tenant_id=binding.tenant_id, binding_id=binding.id,
                 channel="discord", event_id=inbound.event_id, payload_json=envelope,

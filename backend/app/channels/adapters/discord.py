@@ -38,6 +38,7 @@ DISCORD_MESSAGE_API = f"{DISCORD_API_BASE}/channels/{{channel_id}}/messages"
 _DISCORD_MENTION_PATTERN = re.compile(r"^\s*<@!?\d+>\s*")
 
 DISCORD_TYPING_API = f"{DISCORD_API_BASE}/channels/{{channel_id}}/typing"
+DISCORD_THREADS_API = f"{DISCORD_API_BASE}/channels/{{channel_id}}/threads"
 
 # 出站富媒体限制(与 Discord v10 一致):embeds≤10,各字段长度裁剪而非拒绝。
 _MAX_EMBEDS = 10
@@ -442,6 +443,34 @@ class DiscordAdapter(ChannelAdapter):
                 channel_id,
                 exc_info=True,
             )
+
+    def create_thread(self, binding: ChannelBinding, target: dict[str, Any], name: str) -> str:
+        """在 target 指定频道创建公开线程(GUILD_PUBLIC_THREAD),返回线程 ID。
+
+        供 outbox 自动建线程链路调用;name 裁剪到 Discord 100 字符上限,
+        错误分类复用 _raise_for_status(401/403/4xx 永久,429/5xx 可重试)。
+        """
+        channel_id = str(target.get("channel_id") or "").strip()
+        if not channel_id:
+            raise DiscordPermanentError("Discord 建线程目标缺少 channel_id")
+        _bot_id, token = _credential(binding)
+        headers = {"Authorization": f"Bot {token}"}
+        try:
+            with self._client_factory() as client:
+                response = client.post(
+                    DISCORD_THREADS_API.format(channel_id=channel_id),
+                    json={"name": str(name)[:100], "type": 11},
+                    headers=headers,
+                )
+                self._raise_for_status(response, "创建线程")
+                thread_id = str(response.json().get("id") or "").strip()
+        except DiscordSendError:
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            raise DiscordTransientError(str(exc)) from exc
+        if not thread_id:
+            raise DiscordPermanentError("Discord 创建线程未返回线程 ID")
+        return thread_id
 
     def fetch_history(
         self,
