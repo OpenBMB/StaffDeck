@@ -1207,6 +1207,37 @@ def test_put_binding_features_auto_thread_persists() -> None:
         assert binding.config_revision == 1
 
 
+def test_binding_read_returns_config_json_features() -> None:
+    """PUT 响应须回传 config_json.features,否则前端回显开关会落回默认值。
+
+    回归:auto_thread 保存成功后 UI 显示关闭(数据库已 true 但响应缺失
+    config_json 字段,前端 useEffect 回显读到 undefined→默认 false)。
+    """
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"features": {"auto_thread": True}},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["config_json"]["features"]["auto_thread"] is True
+
+    # 列表接口同样回传 config_json,保证刷新页面后开关状态保持
+    listing = client.get(
+        "/api/enterprise/channels",
+        params={"tenant_id": "tenant_demo"},
+        headers=_auth(users["owner"]),
+    )
+    assert listing.status_code == 200
+    row = next(item for item in listing.json() if item["id"] == binding_id)
+    assert row["config_json"]["features"]["auto_thread"] is True
+
+
 # ---------- 分页 ----------
 
 

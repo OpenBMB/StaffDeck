@@ -122,6 +122,7 @@ class ChannelBindingRead(BaseModel):
     created_by_name: Optional[str] = None
     agents: list[ChannelBindingAgentRead] = []
     auto_route: bool = True
+    config_json: Optional[dict] = None
     created_at: str
     updated_at: str
 
@@ -388,6 +389,7 @@ def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBinding
         created_by_name=channel_binding_creator_name(db, binding),
         agents=channel_binding_agents_read(db, binding),
         auto_route=(binding.config_json or {}).get("auto_route") is not False,
+        config_json=binding.config_json,
         created_at=binding.created_at.isoformat(),
         updated_at=binding.updated_at.isoformat(),
     )
