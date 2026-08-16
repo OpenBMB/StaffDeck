@@ -6,7 +6,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.api.channels as channels_api
 from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
-from app.channels.schema import channel_binding_read
+from app.channels.schema import ChannelFeaturesConfig, channel_binding_read
 from app.db import get_session
 from app.db.models import (
     AgentProfile,
@@ -1171,6 +1171,40 @@ def test_put_binding_empty_update_400() -> None:
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 400
+
+
+# ---------- 能力开关 features(auto_thread) ----------
+
+
+def test_channel_features_config_auto_thread_default_false() -> None:
+    # 自动建线程开关默认关闭,保存存量行为(未配置时后端不自动建线程)
+    assert ChannelFeaturesConfig().auto_thread is False
+
+
+def test_discord_channel_meta_declares_auto_thread_capability() -> None:
+    discord_meta = next(
+        meta for meta in channels_api.CHANNEL_META if meta["channel"] == "discord"
+    )
+    assert "auto_thread" in discord_meta["capabilities"]
+
+
+def test_put_binding_features_auto_thread_persists() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"features": {"auto_thread": True}},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert binding.config_json["features"]["auto_thread"] is True
+        # 结构化段变更 → config_revision 自增
+        assert binding.config_revision == 1
 
 
 # ---------- 分页 ----------

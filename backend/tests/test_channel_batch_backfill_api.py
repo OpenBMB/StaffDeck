@@ -679,6 +679,7 @@ def test_channel_meta_declares_discord_capabilities() -> None:
     assert set(discord["capabilities"]) == {
         "slash_commands",
         "threads",
+        "auto_thread",
         "batch_send",
         "backfill",
         "typing",

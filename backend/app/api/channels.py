@@ -191,6 +191,7 @@ CHANNEL_META = [
         "capabilities": [
             "slash_commands",
             "threads",
+            "auto_thread",
             "batch_send",
             "backfill",
             "typing",

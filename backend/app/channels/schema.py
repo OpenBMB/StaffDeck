@@ -47,6 +47,8 @@ class ChannelFeaturesConfig(BaseModel):
 
     slash_commands: bool = True
     threads: bool = True
+    # 自动建线程默认关闭,保存存量行为(未开启时不在新会话自动建线程)
+    auto_thread: bool = False
     typing: bool = True
     voice: bool = False
     rich_media: bool = True
