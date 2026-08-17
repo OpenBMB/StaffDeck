@@ -1946,6 +1946,10 @@ def list_chat_sessions(
             .where(
                 ChatSession.tenant_id == tenant_id,
                 or_(
+                    ChatSession.channel.is_(None),
+                    ChatSession.channel != "skill_test",
+                ),
+                or_(
                     and_(
                         ChatSession.user_id == current_user.id,
                         ChatSession.team_id.is_(None),

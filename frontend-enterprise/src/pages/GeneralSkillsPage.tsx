@@ -194,7 +194,7 @@ function TraceDisclosureLabel() {
 }
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
-const GENERAL_SKILL_RUN_TIMEOUT_MS = 120_000;
+const GENERAL_SKILL_RUN_IDLE_TIMEOUT_MS = 600_000;
 const FOLDER_INPUT_PROPS = {
   webkitdirectory: '',
   directory: '',
@@ -2238,10 +2238,24 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     });
     const controller = new AbortController();
     let timedOut = false;
-    const timeoutId = window.setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, GENERAL_SKILL_RUN_TIMEOUT_MS);
+    let debugSessionId = '';
+    let debugTurnId = '';
+    const receivedTrace: Record<string, unknown>[] = [];
+    let timeoutId = 0;
+    const resetIdleTimeout = () => {
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => {
+        timedOut = true;
+        if (debugSessionId && debugTurnId) {
+          void api.post(`/api/chat/sessions/${debugSessionId}/cancel`, {
+            tenant_id: TENANT_ID,
+            turn_id: debugTurnId,
+          }).catch(() => undefined);
+        }
+        controller.abort();
+      }, GENERAL_SKILL_RUN_IDLE_TIMEOUT_MS);
+    };
+    resetIdleTimeout();
     try {
       let completed = false;
       await streamPost(
@@ -2255,8 +2269,14 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
           max_attempts: 10,
         },
         (item) => {
+          resetIdleTimeout();
+          if (item.event === 'stream_started') {
+            debugSessionId = typeof item.data.session_id === 'string' ? item.data.session_id : '';
+            debugTurnId = typeof item.data.client_turn_id === 'string' ? item.data.client_turn_id : '';
+          }
           if (item.event === 'trace') {
             const traceItem = item.data;
+            receivedTrace.push(traceItem);
             setLiveResult((current) => {
               const previous = current || { skill_slug: slug, execution_trace: [] };
               const executionTrace = [...(previous.execution_trace || []), traceItem];
@@ -2285,7 +2305,12 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
           if (item.event === 'complete') {
             const result = item.data as unknown as GeneralSkillRunResponse;
             completed = true;
-            setRunResult(result);
+            setRunResult({
+              ...result,
+              execution_trace: result.execution_trace?.length
+                ? result.execution_trace
+                : receivedTrace,
+            });
             setLiveResult(null);
             notify.success('运行完成');
           }
@@ -2308,7 +2333,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       }
     } catch (error) {
       const text = timedOut
-        ? '技能运行超时，请检查模型或稍后重试。'
+        ? '技能测试 10 分钟内未收到新的执行事件，请检查模型或稍后重试。'
         : error instanceof Error ? error.message : '运行失败';
       setLiveResult((current) => ({
         ...(current || { skill_slug: slug, execution_trace: [] }),
