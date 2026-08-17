@@ -152,14 +152,31 @@ class AgentLoop:
             chat_session = engine.session
             self.db.rollback()
             chat_session = chat_session or self._get_or_create_session(request)
+            error_code = (
+                "HARNESS_SESSION_BUSY"
+                if isinstance(exc, HarnessSessionBusy)
+                else "HARNESS_TURN_CONFLICT"
+            )
+            self.events.record(
+                request.tenant_id,
+                chat_session.id,
+                "turn_rejected",
+                {
+                    "code": error_code,
+                    "message": str(exc),
+                    "client_turn_id": request.client_turn_id,
+                },
+            )
+            self.db.commit()
             return ChatTurnResponse(
                 reply=format_runtime_failure_reply(
                     "Harness 并发或重复请求已阻止",
                     exc,
-                    "HARNESS_TURN_CONFLICT",
+                    error_code,
                     "请等待原请求完成，或为新请求使用新的 client_turn_id。",
                 ),
                 session_id=chat_session.id,
+                runtime_error_code=error_code,
                 step_result=step_result,
                 session_state=public_session(chat_session),
             )
@@ -222,6 +239,16 @@ class AgentLoop:
                 "请查看执行记录或服务日志定位具体原因。",
             )
         finally:
+            terminal_record = getattr(engine, "turn_record", None)
+            terminal_session = getattr(engine, "session", None)
+            if (
+                terminal_record is not None
+                and terminal_session is not None
+                and terminal_record.status in {"completed", "failed", "cancelled"}
+            ):
+                for turn_id in (engine.user_message_id, request.client_turn_id):
+                    if turn_id:
+                        clear_chat_turn_cancelled(terminal_session.id, turn_id)
             engine.close()
 
         reply = self._finalize_turn(
@@ -342,6 +369,22 @@ class AgentLoop:
                 ),
             )
             return
+        resolved_turn_id = user_message_id or initial_turn_id
+        if response.runtime_error_code:
+            yield self._stream_event(
+                "error",
+                chat_session,
+                self._turn_payload(
+                    {
+                        "code": response.runtime_error_code,
+                        "message": response.reply,
+                        "client_turn_id": request.client_turn_id,
+                        "execution_engine": "harness_v2",
+                    },
+                    resolved_turn_id,
+                ),
+            )
+            return
         for chunk in self.response_generator.chunk_text(response.reply):
             event = self._stream_event(
                 "stream_delta",
@@ -351,7 +394,7 @@ class AgentLoop:
                         "content": chunk,
                         "execution_engine": "harness_v2",
                     },
-                    user_message_id,
+                    resolved_turn_id,
                 ),
             )
             self.db.commit()
@@ -359,7 +402,7 @@ class AgentLoop:
         end_event = self._stream_event(
             "stream_end",
             chat_session,
-            self._turn_payload({"execution_engine": "harness_v2"}, user_message_id),
+            self._turn_payload({"execution_engine": "harness_v2"}, resolved_turn_id),
         )
         self.db.commit()
         yield end_event
@@ -371,7 +414,7 @@ class AgentLoop:
                     **response.model_dump(mode="json"),
                     "execution_engine": "harness_v2",
                 },
-                user_message_id,
+                resolved_turn_id,
             ),
         )
 
