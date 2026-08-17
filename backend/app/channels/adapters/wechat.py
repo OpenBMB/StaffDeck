@@ -188,7 +188,8 @@ def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -
         if len(key) not in {16, 24, 32} or len(data) % 16:
             raise ValueError
         # AES-ECB is mandated by the third-party iLink CDN payload format. This
-        # compatibility path is limited to provider media and is not reusable storage crypto.
+        # compatibility path only decrypts provider media; it is not reusable storage crypto.
+        # codeql[py/weak-cryptographic-algorithm]
         decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
         padded = decryptor.update(data) + decryptor.finalize()
         unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
