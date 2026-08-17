@@ -189,8 +189,8 @@ def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -
             raise ValueError
         # AES-ECB is mandated by the third-party iLink CDN payload format. This
         # compatibility path only decrypts provider media; it is not reusable storage crypto.
-        # codeql[py/weak-cryptographic-algorithm]
-        decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+        ecb_mode = modes.ECB()  # lgtm[py/weak-cryptographic-algorithm]
+        decryptor = Cipher(algorithms.AES(key), ecb_mode).decryptor()
         padded = decryptor.update(data) + decryptor.finalize()
         unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
         decrypted = unpadder.update(padded) + unpadder.finalize()
