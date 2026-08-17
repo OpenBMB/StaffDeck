@@ -13,6 +13,7 @@ from app.db.models import (
     ChannelBinding,
     ChannelDelivery,
     ChannelInboundEvent,
+    Message,
     Tenant,
     User,
     utc_now,
@@ -985,6 +986,26 @@ def test_list_channel_conversation_messages_order_and_404() -> None:
     users = _seed_users(engine)
     binding_id = _seed_binding(engine)
     _seed_conversations(engine, binding_id)
+    with Session(engine) as db:
+        message = db.get(Message, "m1")
+        message.metadata_json = {
+            "attachments": [
+                {
+                    "id": "file-1",
+                    "filename": "image.png",
+                    "content_type": "image/png",
+                    "size": 123,
+                    "kind": "image",
+                    "data_url": "data:image/png;base64,SECRET",
+                    "sandbox_path": "/workspace/attachments/internal.png",
+                    "sha256": "a" * 64,
+                    "text": "internal text",
+                    "python_summary": "internal summary",
+                }
+            ]
+        }
+        db.add(message)
+        db.commit()
 
     client = _make_client(engine)
     response = client.get(
@@ -998,6 +1019,16 @@ def test_list_channel_conversation_messages_order_and_404() -> None:
     assert rows[0]["role"] == "user"
     assert rows[0]["content"] == "你好"
     assert rows[0]["created_at"]
+    assert rows[0]["attachments"] == [
+        {
+            "id": "file-1",
+            "filename": "image.png",
+            "content_type": "image/png",
+            "size": 123,
+            "kind": "image",
+        }
+    ]
+    assert rows[1]["attachments"] is None
 
     # 其他绑定的会话 → 404
     other = client.get(

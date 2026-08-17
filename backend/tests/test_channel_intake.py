@@ -1,6 +1,6 @@
+import os
 import threading
 import time
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -9,13 +9,15 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.channels.service_intake as intake_module
 import app.core.agent_loop as agent_loop_module
+from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
 from app.channels.service_identity import channel_username
 from app.channels.service_intake import (
-    _send_wechat_typing as _real_send_wechat_typing,
-)
-from app.channels.service_intake import (
+    _message_text,
     _session_lock,
     process_inbound,
+)
+from app.channels.service_intake import (
+    _send_wechat_typing as _real_send_wechat_typing,
 )
 from app.db.models import (
     ChannelBinding,
@@ -83,6 +85,33 @@ def _load_binding(engine, binding_id: str) -> ChannelBinding:
         binding = db.get(ChannelBinding, binding_id)
         db.expunge(binding)
         return binding
+
+
+def test_channel_only_attachment_uses_default_message_intent() -> None:
+    binding = ChannelBinding(tenant_id="tenant_demo", agent_id="agent_1", channel="wecom")
+    image = ChannelInbound(
+        channel="wecom",
+        event_id="evt-image",
+        from_user_id="user-1",
+        to_user_id="bot-1",
+        session_id="user-1",
+        group_id="",
+        context_token="user-1",
+        text="",
+        is_group=False,
+        raw={},
+        attachments=[ChannelInboundAttachment(media_id="image", kind="image")],
+    )
+    file = ChannelInbound(
+        **{
+            **image.__dict__,
+            "event_id": "evt-file",
+            "attachments": [ChannelInboundAttachment(media_id="file", kind="file")],
+        }
+    )
+
+    assert _message_text(binding, image) == "请读取并用一句话概括。"
+    assert _message_text(binding, file) == "请读取并用一句话概括。"
 
 
 class RecordingAgentLoop:
@@ -324,7 +353,7 @@ def test_harness_conflict_keeps_inbound_retryable_and_stages_terminal_notice(mon
     binding = _load_binding(engine, binding_id)
 
     class ConflictAgentLoop:
-        def __init__(self, db):
+        def __init__(self, db, *, event_sink=None):
             self.db = db
 
         def handle_turn(self, request):  # noqa: ANN001
@@ -355,7 +384,7 @@ def test_legacy_dict_harness_conflict_is_also_retryable(monkeypatch) -> None:
     binding = _load_binding(engine, binding_id)
 
     class ConflictAgentLoop:
-        def __init__(self, db):
+        def __init__(self, db, *, event_sink=None):
             self.db = db
 
         def handle_turn(self, request):  # noqa: ANN001
@@ -1006,8 +1035,8 @@ def test_concurrent_sweeps_stage_one_incomplete_notice(tmp_path) -> None:
 
 def test_inbound_attachment_download_failure_degrades_to_text(monkeypatch) -> None:
     """渠道附件下载异常时不阻塞文本轮,降级为纯文本处理。"""
-    from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
     import app.channels.attachment_bridge as bridge_module
+    from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
 
     engine = _test_engine()
     binding_id = _seed_binding(engine)
@@ -1051,8 +1080,8 @@ def test_inbound_attachment_download_failure_degrades_to_text(monkeypatch) -> No
 
 def test_inbound_with_attachments_passes_them_to_request(monkeypatch) -> None:
     """附件下载成功时,attachments 被填入 ChatTurnRequest。"""
-    from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
     import app.channels.attachment_bridge as bridge_module
+    from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
     from app.session.session_schema import ChatAttachmentRead
 
     engine = _test_engine()

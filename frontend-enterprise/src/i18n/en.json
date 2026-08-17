@@ -1205,6 +1205,8 @@
   "头像会显示在我的数字员工、数字员工档案页和对话端的员工选择中。": "The avatar appears in My Digital Employees, Employee Profile, and the employee picker in Chat.",
   "头像图片不能超过 5MB": "Avatar images cannot exceed 5 MB",
   "图片": "Image",
+  "图片加载中…": "Loading image...",
+  "图片暂不可用": "Image unavailable",
   "图谱视图": "Graph View",
   "复位": "Reset View",
   "推荐场景": "Recommended Scenarios",

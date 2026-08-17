@@ -1,25 +1,40 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import os
+import shutil
+import ssl
+import subprocess
 import threading
 import time
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
+import aiohttp
+import certifi
 import httpx
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.channels.adapters.base import (
     ChannelInbound,
+    ChannelInboundAttachment,
     register_channel_adapter,
     split_channel_text,
 )
 from app.channels.crypto import decrypt_channel_secret
+from app.channels.media import (
+    MAX_CHANNEL_MEDIA_BYTES,
+    MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES,
+    ensure_channel_media_size,
+)
 from app.config import get_settings
 from app.db import engine
 from app.db.models import ChannelBinding, utc_now
@@ -41,9 +56,152 @@ RECONCILE_SECONDS = 30.0
 RECOVERY_COOLDOWN_SECONDS = 3600.0
 # 连续恢复失败达上限才判真过期(expired + 清游标 + 线程退出)
 RECOVERY_MAX_FAILURES = 5
+WECHAT_MEDIA_DOWNLOAD_ATTEMPTS = 4
+WECHAT_CURL_DOWNLOAD_ATTEMPTS = 6
 
 # 腾讯官方接入域名:业务请求携带 bot_token,redirect/baseurl 必须限制在官方域内
 WECHAT_ALLOWED_HOSTS = ("ilinkai.weixin.qq.com",)
+
+
+async def _download_wechat_cdn_limited(url: str) -> tuple[bytes, str]:
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    for attempt in range(WECHAT_MEDIA_DOWNLOAD_ATTEMPTS):
+        try:
+            timeout = aiohttp.ClientTimeout(total=15.0)
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            async with (
+                aiohttp.ClientSession(timeout=timeout, connector=connector) as client,
+                client.get(url) as response,
+            ):
+                response.raise_for_status()
+                content_length = int(response.headers.get("content-length") or 0)
+                ensure_channel_media_size(content_length, encrypted=True)
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    total += len(chunk)
+                    if total > MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES:
+                        raise ValueError(
+                            "微信媒体密文超过大小上限: "
+                            f"size>{MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES}"
+                        )
+                    chunks.append(chunk)
+                return b"".join(chunks), response.headers.get("content-type", "")
+        except (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientPayloadError):
+            if attempt == WECHAT_MEDIA_DOWNLOAD_ATTEMPTS - 1:
+                raise
+            # 微信 CDN occasionally rejects a TLS handshake; retry with a new
+            # session/connection before dropping the channel attachment.
+            await asyncio.sleep(0.5 * (attempt + 1))
+    raise RuntimeError("微信媒体下载失败")
+
+
+async def _download_wechat_cdn_httpx(url: str) -> tuple[bytes, str]:
+    """Fallback for CDN nodes that reject aiohttp's TLS handshake."""
+    async with httpx.AsyncClient(
+        verify=certifi.where(),
+        http2=False,
+        timeout=15.0,
+    ) as client, client.stream("GET", url) as response:
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes(64 * 1024):
+            total += len(chunk)
+            if total > MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES:
+                raise ValueError("微信媒体密文超过大小上限")
+            chunks.append(chunk)
+        return b"".join(chunks), content_type
+
+
+async def _download_wechat_cdn_curl(url: str) -> tuple[bytes, str]:
+    """Use the system TLS stack for CDN nodes incompatible with Python TLS."""
+    curl = shutil.which("curl")
+    if not curl:
+        raise RuntimeError("微信媒体下载失败: curl 不可用")
+
+    def run() -> bytes:
+        command = [
+            curl,
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--location",
+            "--http1.1",
+            "--user-agent",
+            "Mozilla/5.0",
+            "--max-time",
+            "30",
+            "--connect-timeout",
+            "10",
+            "--ignore-content-length",
+            url,
+        ]
+        last_error = ""
+        for attempt in range(WECHAT_CURL_DOWNLOAD_ATTEMPTS):
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            chunks: list[bytes] = []
+            total = 0
+            assert process.stdout is not None
+            while True:
+                chunk = process.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES:
+                    process.kill()
+                    process.wait()
+                    raise ValueError("微信媒体密文超过大小上限")
+                chunks.append(chunk)
+            stderr = process.stderr.read() if process.stderr else b""
+            return_code = process.wait()
+            # 微信 CDN sometimes advertises a stale Content-Length. curl
+            # returns 18 or 28 after receiving the complete encrypted payload;
+            # let AES/expected_size validation decide whether it is usable.
+            data = b"".join(chunks)
+            if return_code == 0 or (return_code in {18, 28} and data):
+                return data
+            last_error = stderr.decode("utf-8", errors="replace")[:200]
+            if attempt < WECHAT_CURL_DOWNLOAD_ATTEMPTS - 1:
+                time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError(
+            f"微信媒体下载失败: curl exit={return_code} {last_error}"
+        )
+
+    data = await asyncio.to_thread(run)
+    ensure_channel_media_size(len(data), encrypted=True)
+    return data, ""
+
+
+def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -> bytes:
+    """Decrypt iLink CDN media using its fixed AES-ECB/PKCS#7 wire format."""
+    if not aes_key:
+        return data
+    try:
+        decoded = base64.b64decode(aes_key, validate=True)
+        key = bytes.fromhex(decoded.decode("ascii"))
+        if len(key) not in {16, 24, 32} or len(data) % 16:
+            raise ValueError
+        # AES-ECB is mandated by the third-party iLink CDN payload format. This
+        # compatibility path only decrypts provider media; it is not reusable storage crypto.
+        ecb_mode = modes.ECB()  # lgtm[py/weak-cryptographic-algorithm]
+        decryptor = Cipher(algorithms.AES(key), ecb_mode).decryptor()
+        padded = decryptor.update(data) + decryptor.finalize()
+        unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+        decrypted = unpadder.update(padded) + unpadder.finalize()
+    except (ValueError, TypeError) as exc:
+        raise WeChatApiError(-1, "微信媒体解密失败") from exc
+    if expected_size > 0 and len(decrypted) != expected_size:
+        raise WeChatApiError(
+            -1,
+            f"微信媒体解密后大小不匹配 expected={expected_size} actual={len(decrypted)}",
+        )
+    return decrypted
 
 
 def _patch_runtime_config(
@@ -165,7 +323,7 @@ class WeChatClient:
         self._client = httpx.Client(transport=transport)
 
     @classmethod
-    def for_binding(cls, binding: ChannelBinding) -> "WeChatClient":
+    def for_binding(cls, binding: ChannelBinding) -> WeChatClient:
         config = dict(binding.config_json or {})
         # 防御纵深:存量 config 里的非法 baseurl 一律钳制回默认官方地址
         base_url = sanitize_wechat_baseurl(
@@ -290,6 +448,91 @@ class WeChatClient:
         )
         resp.raise_for_status()
 
+    def download_media(self, context_token: str, media_id: str) -> bytes:
+        request = self._client.build_request(
+            "POST",
+            f"{self.base_url}/ilink/bot/downloadmedia",
+            headers=self._business_headers(),
+            json={
+                "context_token": context_token,
+                "media_id": media_id,
+                "base_info": self._base_info(),
+            },
+        )
+        response = self._client.send(request, stream=True)
+        try:
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            if "application/json" not in content_type.lower():
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in response.iter_bytes(64 * 1024):
+                    total += len(chunk)
+                    if total > MAX_CHANNEL_MEDIA_BYTES:
+                        raise ValueError("微信媒体超过大小上限")
+                    chunks.append(chunk)
+                return b"".join(chunks)
+            chunks = []
+            total = 0
+            for chunk in response.iter_bytes(64 * 1024):
+                total += len(chunk)
+                if total > MAX_CHANNEL_MEDIA_BYTES:
+                    raise ValueError("微信媒体响应超过大小上限")
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+        finally:
+            response.close()
+        try:
+            data = json.loads(raw)
+        except ValueError as exc:
+            raise WeChatApiError(-1, "下载响应格式无效") from exc
+        errcode = int(data.get("errcode") or data.get("ret") or 0)
+        if errcode:
+            raise WeChatApiError(errcode, str(data.get("errmsg") or ""))
+        raise WeChatApiError(-1, "下载响应缺少二进制内容")
+
+    def download_media_url(
+        self,
+        full_url: str,
+        *,
+        aes_key: str = "",
+        expected_size: int = 0,
+    ) -> bytes:
+        """Download the CDN URL supplied by an iLink image item."""
+        parsed = urlparse(full_url)
+        if parsed.scheme != "https" or not validate_wechat_host(parsed.hostname or ""):
+            raise WeChatApiError(-1, "微信媒体 URL 域名不受信任")
+        download_url = urlunparse(parsed)
+        try:
+            raw, content_type = asyncio.run(_download_wechat_cdn_limited(download_url))
+        except (TimeoutError, aiohttp.ClientError, OSError) as exc:
+            logger.warning(
+                "微信 CDN aiohttp 下载失败，切换 httpx: host=%s error=%s",
+                parsed.hostname,
+                type(exc).__name__,
+            )
+            try:
+                raw, content_type = asyncio.run(_download_wechat_cdn_httpx(download_url))
+            except (TimeoutError, httpx.HTTPError, OSError) as httpx_exc:
+                logger.warning(
+                    "微信 CDN httpx 下载失败，切换系统 curl: host=%s error=%s",
+                    parsed.hostname,
+                    type(httpx_exc).__name__,
+                )
+                raw, content_type = asyncio.run(_download_wechat_cdn_curl(download_url))
+        if "application/json" not in content_type.lower():
+            return decrypt_wechat_media(
+                raw,
+                aes_key,
+                expected_size=expected_size,
+            )
+        try:
+            data = json.loads(raw)
+        except ValueError as exc:
+            raise WeChatApiError(-1, "媒体下载响应格式无效") from exc
+        errcode = int(data.get("errcode") or data.get("ret") or 0)
+        raise WeChatApiError(errcode or -1, str(data.get("errmsg") or "媒体下载返回 JSON"))
+
 
 class WeChatAdapter:
     """微信适配器:出站 sendmessage + 归一化 + typing + ingress(poll manager)。"""
@@ -299,6 +542,29 @@ class WeChatAdapter:
 
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None:
         return normalize_wechat_message(raw)
+
+    def download_media(
+        self,
+        binding: ChannelBinding,
+        attachment: ChannelInboundAttachment,
+        *,
+        max_bytes: int = 0,
+    ) -> bytes:
+        context_token = str(attachment.download_params.get("context_token") or "").strip()
+        if not context_token:
+            raise ValueError("微信附件下载缺少 context_token")
+        client = self._client_factory(binding)
+        full_url = str(attachment.download_params.get("full_url") or "").strip()
+        if full_url:
+            declared_size = int(attachment.download_params.get("declared_size") or 0)
+            expected_size = int(attachment.download_params.get("expected_size") or 0)
+            ensure_channel_media_size(declared_size or expected_size)
+            return client.download_media_url(
+                full_url,
+                aes_key=str(attachment.download_params.get("aes_key") or ""),
+                expected_size=expected_size,
+            )
+        return client.download_media(context_token, attachment.media_id)
 
     def send(
         self,
@@ -411,6 +677,89 @@ def extract_message_text(msg: dict[str, Any]) -> str:
     return str(msg.get("text") or msg.get("content") or "").strip()
 
 
+def extract_message_attachments(msg: dict[str, Any]) -> list[ChannelInboundAttachment]:
+    """Extract assumed iLink image/file item descriptors."""
+    items = msg.get("item_list")
+    if not isinstance(items, list):
+        return []
+    context_token = str(msg.get("context_token") or "").strip()
+    attachments: list[ChannelInboundAttachment] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == 2:
+            info = item.get("image_item") or {}
+            media = info.get("media") or {}
+            full_url = str(media.get("full_url") or "").strip() if isinstance(media, dict) else ""
+            media_id = str(
+                info.get("media_id")
+                or info.get("file_id")
+                or (media.get("media_id") if isinstance(media, dict) else "")
+                or full_url
+            ).strip()
+            if media_id:
+                message_id = str(msg.get("message_id") or msg.get("msg_id") or media_id).strip()
+                download_params = {"context_token": context_token}
+                if full_url:
+                    download_params.update(
+                        {
+                            "full_url": full_url,
+                            "encrypt_query_param": str(
+                                media.get("encrypt_query_param") or ""
+                            ).strip(),
+                            "aes_key": str(media.get("aes_key") or info.get("aeskey") or "").strip(),
+                            # full_url may return a higher-resolution variant with channel
+                            # trailer bytes, so these sizes are only a pre-download limit hint.
+                            "declared_size": max(
+                                int(info.get("mid_size") or 0),
+                                int(info.get("hd_size") or 0),
+                            ),
+                        }
+                    )
+                attachments.append(
+                    ChannelInboundAttachment(
+                        media_id=media_id,
+                        kind="image",
+                        filename=f"{message_id}.jpg",
+                        content_type="image/jpeg",
+                        download_params=download_params,
+                    )
+                )
+        elif item_type == 4:
+            info = item.get("file_item") or {}
+            media = info.get("media") or {}
+            full_url = str(media.get("full_url") or "").strip() if isinstance(media, dict) else ""
+            media_id = str(
+                info.get("media_id")
+                or info.get("file_id")
+                or (media.get("media_id") if isinstance(media, dict) else "")
+                or full_url
+            ).strip()
+            if media_id:
+                download_params = {"context_token": context_token}
+                if full_url:
+                    download_params.update(
+                        {
+                            "full_url": full_url,
+                            "encrypt_query_param": str(
+                                media.get("encrypt_query_param") or ""
+                            ).strip(),
+                            "aes_key": str(media.get("aes_key") or "").strip(),
+                            "expected_size": int(info.get("len") or 0),
+                        }
+                    )
+                attachments.append(
+                    ChannelInboundAttachment(
+                        media_id=media_id,
+                        kind="file",
+                        filename=str(info.get("file_name") or info.get("name") or media_id).strip(),
+                        download_params=download_params,
+                    )
+                )
+    return attachments
+
+
 def normalize_wechat_message(msg: dict[str, Any], *, ilink_bot_id: str = "") -> WeChatInbound | None:
     """归一化 getupdates 消息；自身消息/无文本/无 context_token 返回 None（丢弃）。"""
     if not isinstance(msg, dict) or is_self_message(msg, ilink_bot_id):
@@ -420,7 +769,41 @@ def normalize_wechat_message(msg: dict[str, Any], *, ilink_bot_id: str = "") -> 
         return None
     context_token = str(msg.get("context_token") or "").strip()
     text = extract_message_text(msg)
-    if not context_token or not text:
+    attachments = extract_message_attachments(msg)
+    items = msg.get("item_list")
+    if isinstance(items, list) and logger.isEnabledFor(logging.DEBUG):
+        nested_keys = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for field_name in ("image_item", "file_item", "voice_item"):
+                nested = item.get(field_name)
+                if isinstance(nested, dict):
+                    entry = {
+                        "field": field_name,
+                        "keys": sorted(nested.keys()),
+                        "value_types": {
+                            key: type(value).__name__ for key, value in nested.items()
+                        },
+                    }
+                    media = nested.get("media")
+                    if isinstance(media, dict):
+                        entry["media_keys"] = sorted(media.keys())
+                        entry["media_value_types"] = {
+                            key: type(value).__name__ for key, value in media.items()
+                        }
+                    nested_keys.append(entry)
+        logger.debug(
+            "微信入站消息附件诊断 message_id=%s item_types=%s item_keys=%s "
+            "nested_keys=%s recognized_attachments=%s has_text=%s",
+            str(msg.get("message_id") or msg.get("msg_id") or "").strip(),
+            [item.get("type") for item in items if isinstance(item, dict)],
+            [sorted(item.keys()) for item in items if isinstance(item, dict)],
+            nested_keys,
+            len(attachments),
+            bool(text),
+        )
+    if not context_token or (not text and not attachments):
         return None
     event_id = str(msg.get("message_id") or msg.get("msg_id") or msg.get("client_id") or "").strip()
     if not event_id:
@@ -442,6 +825,7 @@ def normalize_wechat_message(msg: dict[str, Any], *, ilink_bot_id: str = "") -> 
         text=text,
         is_group=is_group,
         raw=msg,
+        attachments=attachments,
     )
 
 
@@ -615,7 +999,9 @@ class WeChatPollManager:
                         return
                     if errcode:
                         raise WeChatApiError(int(errcode), str(resp.get("errmsg") or ""))
-                except Exception as exc:
+                # Provider and transport implementations can raise heterogeneous errors. Keep
+                # the long-poll worker alive and route all failures through the logged backoff.
+                except Exception as exc:  # noqa: BLE001
                     failures += 1
                     backoff = self._on_failure(binding_id, stop_flag, failures, backoff, exc)
                     if failures >= POLL_FAILURE_CIRCUIT_THRESHOLD:

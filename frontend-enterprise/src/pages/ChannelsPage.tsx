@@ -34,6 +34,7 @@ import type {
   ChannelBindingRead,
   ChannelBindCodeRead,
   ChannelConversationMessageRead,
+  ChannelConversationAttachment,
   ChannelConversationRead,
   ChannelDeliveryDay,
   ChannelDeliveryDayPage,
@@ -100,6 +101,67 @@ function messageDisplay(
     return { label: conversation.agent_name || '员工', content: msg.content };
   }
   return { label: msg.role, content: msg.content };
+}
+
+function ChannelAttachmentView({
+  attachment,
+  bindingId,
+  sessionId,
+  messageId,
+}: {
+  attachment: ChannelConversationAttachment;
+  bindingId: string;
+  sessionId: string;
+  messageId: string;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const path = `/api/enterprise/channels/${bindingId}/conversations/${sessionId}/messages/${messageId}/attachments/${attachment.id}?tenant_id=${TENANT_ID}`;
+
+  useEffect(() => {
+    if (attachment.kind !== 'image') return;
+    let disposed = false;
+    let objectUrl: string | null = null;
+    setLoading(true);
+    void api.blob(path).then((blob) => {
+      objectUrl = URL.createObjectURL(blob);
+      if (!disposed) setUrl(objectUrl);
+      else URL.revokeObjectURL(objectUrl);
+    }).catch(() => {
+      if (!disposed) setUrl(null);
+    }).finally(() => {
+      if (!disposed) setLoading(false);
+    });
+    return () => {
+      disposed = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attachment.id, attachment.kind, path]);
+
+  if (attachment.kind === 'image') {
+    return url ? (
+      <img src={url} alt={attachment.filename} className="max-h-[220px] max-w-[320px] rounded-[8px] object-contain" />
+    ) : <span className="text-[12px] text-[#858b9c]">{loading ? '图片加载中…' : '图片暂不可用'}</span>;
+  }
+  return (
+    <button
+      type="button"
+      className="text-left text-[12px] text-[#3b63c8] underline"
+      onClick={() => void api.blob(path).then((blob) => {
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = attachment.filename;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+      })}
+    >
+      {attachment.filename}
+    </button>
+  );
 }
 
 function isSessionRecovering(binding: ChannelBindingRead): boolean {
@@ -1014,9 +1076,22 @@ export default function ChannelsPage({
                       <span className="text-[11px] text-[#a0a6b8]">
                         {shown.label} · {formatTime(msg.created_at)}
                       </span>
-                      <span className="wrap-break-word rounded-[10px] bg-[#f6f6f6] px-[12px] py-[8px] text-[13px] leading-[1.6] text-[#18181a]">
-                        {shown.content}
-                      </span>
+                       <div className="wrap-break-word rounded-[10px] bg-[#f6f6f6] px-[12px] py-[8px] text-[13px] leading-[1.6] text-[#18181a]">
+                         {shown.content}
+                         {msg.attachments?.length ? (
+                           <span className="mt-[8px] flex flex-col gap-[6px]">
+                             {msg.attachments.map((attachment) => (
+                               <ChannelAttachmentView
+                                 key={attachment.id}
+                                 attachment={attachment}
+                                 bindingId={binding?.id || ''}
+                                 sessionId={activeConversation.session_id}
+                                 messageId={msg.id}
+                               />
+                             ))}
+                           </span>
+                         ) : null}
+                       </div>
                     </div>
                   );
                 })}

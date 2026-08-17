@@ -915,12 +915,12 @@ export type ChannelConversationRead = {
   updated_at: string;
 };
 
-export type ChannelConversationAttachmentRead = {
-  id?: string;
-  filename?: string;
-  content_type?: string;
-  size?: number;
-  kind?: string;
+export type ChannelConversationAttachment = {
+  id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  kind: 'text' | 'pdf' | 'image' | 'binary';
 };
 
 export type ChannelConversationMessageRead = {
@@ -928,7 +928,7 @@ export type ChannelConversationMessageRead = {
   role: string;
   content: string;
   created_at: string;
-  attachments?: ChannelConversationAttachmentRead[];
+  attachments?: ChannelConversationAttachment[] | null;
 };
 
 export type ChannelBindCodeRead = {

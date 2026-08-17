@@ -13,6 +13,7 @@ import app.channels.service_intake as intake_module
 import app.core.agent_loop as agent_loop_module
 from app.channels.adapters.wecom import (
     WeComAdapter,
+    WeComTokenProvider,
     WeComStreamManager,
     is_self_frame,
     normalize_wecom_frame,
@@ -93,6 +94,58 @@ def _load_binding(engine, binding_id: str) -> ChannelBinding:
         return binding
 
 
+def test_access_tokens_are_cached_per_binding_and_revision() -> None:
+    calls: list[str] = []
+
+    class TokenClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, _url, *, params):
+            secret = params["corpsecret"]
+            calls.append(secret)
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "errcode": 0,
+                    "access_token": f"token-{secret}",
+                    "expires_in": 7200,
+                },
+            )
+
+    provider = WeComTokenProvider(client_factory=TokenClient)
+    first = ChannelBinding(
+        id="chan-first",
+        tenant_id="tenant",
+        agent_id="agent",
+        channel="wecom",
+        config_json={"corp_id": "same-corp", "bot_id": "bot-first"},
+        credentials_enc=encrypt_channel_secret("secret-first"),
+        config_revision=1,
+    )
+    second = ChannelBinding(
+        id="chan-second",
+        tenant_id="tenant",
+        agent_id="agent",
+        channel="wecom",
+        config_json={"corp_id": "same-corp", "bot_id": "bot-second"},
+        credentials_enc=encrypt_channel_secret("secret-second"),
+        config_revision=1,
+    )
+
+    assert provider.get(first) == "token-secret-first"
+    assert provider.get(first) == "token-secret-first"
+    assert provider.get(second) == "token-secret-second"
+    assert calls == ["secret-first", "secret-second"]
+
+    first.config_revision = 2
+    assert provider.get(first) == "token-secret-first"
+    assert calls == ["secret-first", "secret-second", "secret-first"]
+
+
 # ---------- 帧归一化 ----------
 
 
@@ -115,6 +168,174 @@ def test_normalize_voice_frame_uses_transcript() -> None:
     assert inbound.text == "我下午三点到"
 
 
+def test_normalize_image_and_file_frames() -> None:
+    image = normalize_wecom_frame(
+        _text_frame(
+            msgtype="image",
+            text=None,
+            image={
+                "url": "https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/image",
+                "aeskey": "image-key",
+            },
+        )
+    )
+    assert image is not None
+    assert image.text == ""
+    assert image.attachments[0].media_id.endswith("/image")
+    assert image.attachments[0].kind == "image"
+    assert image.attachments[0].download_params["aes_key"] == "image-key"
+
+    file = normalize_wecom_frame(
+        _text_frame(
+            msgtype="file",
+            text=None,
+            file={
+                "url": "https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/file",
+                "aeskey": "file-key",
+            },
+        )
+    )
+    assert file is not None
+    assert file.attachments[0].media_id.endswith("/file")
+    assert file.attachments[0].filename == "msg_1"
+    assert file.attachments[0].download_params["aes_key"] == "file-key"
+
+
+def test_normalize_mixed_frame_extracts_text_and_image() -> None:
+    inbound = normalize_wecom_frame(
+        _text_frame(
+            msgtype="mixed",
+            text=None,
+            mixed={
+                "msg_item": [
+                    {
+                        "msgtype": "image",
+                        "image": {
+                            "url": "https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/image",
+                            "aeskey": "image-key",
+                        },
+                    },
+                    {"msgtype": "text", "text": {"content": "图片里是什么"}},
+                ]
+            },
+        )
+    )
+
+    assert inbound is not None
+    assert inbound.text == "图片里是什么"
+    assert inbound.attachments[0].kind == "image"
+
+
+def test_url_download_uses_content_disposition_filename(monkeypatch) -> None:
+    import app.channels
+    import app.channels.adapters.wecom as wecom_module
+    from app.channels.adapters.base import ChannelInboundAttachment
+
+    attachment = ChannelInboundAttachment(
+        media_id="https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/file",
+        kind="file",
+        filename="message-id",
+        download_params={
+            "url": "https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/file",
+            "aes_key": "key",
+        },
+    )
+    binding = ChannelBinding(tenant_id="tenant", agent_id="agent", channel="wecom")
+    manager = SimpleNamespace(get_stream=lambda _binding_id: (object(), object()))
+
+    def run_coroutine_threadsafe(coroutine, _loop):
+        coroutine.close()
+        return SimpleNamespace(result=lambda timeout: (b"# document", "项目文档.md"))
+
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: manager)
+    monkeypatch.setattr(
+        wecom_module.asyncio,
+        "run_coroutine_threadsafe",
+        run_coroutine_threadsafe,
+    )
+
+    data = WeComAdapter().download_media(binding, attachment)
+
+    assert data == b"# document"
+    assert attachment.filename == "项目文档.md"
+
+
+def test_file_message_with_image_bytes_is_promoted_to_image(monkeypatch) -> None:
+    import app.channels.adapters.base as base_module
+    import app.channels.attachment_bridge as bridge_module
+    import app.session.attachment_store as attachment_store_module
+    import app.session.attachments as attachments_module
+    from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
+    from app.session.session_schema import ChatAttachmentRead
+
+    descriptor = ChannelInboundAttachment(
+        media_id="media",
+        kind="file",
+        filename="message-id",
+    )
+    inbound = ChannelInbound(
+        channel="wecom",
+        event_id="event",
+        from_user_id="user",
+        to_user_id="bot",
+        session_id="user",
+        group_id="",
+        context_token="user",
+        text="",
+        is_group=False,
+        raw={},
+        attachments=[descriptor],
+    )
+    binding = ChannelBinding(tenant_id="tenant", agent_id="agent", channel="wecom")
+    adapter = SimpleNamespace(
+        download_media=lambda _binding, _descriptor, **_kwargs: b"\x89PNG\r\n\x1a\ndata"
+    )
+    captured = {}
+
+    def parse(filename, content_type, data):
+        captured.update(filename=filename, content_type=content_type, data=data)
+        return ChatAttachmentRead(
+            id="file-1",
+            filename=filename,
+            content_type=content_type,
+            size=len(data),
+            kind="image",
+        )
+
+    monkeypatch.setattr(base_module, "get_channel_adapter", lambda _channel: adapter)
+    monkeypatch.setattr(attachments_module, "parse_chat_attachment", parse)
+    monkeypatch.setattr(
+        attachment_store_module,
+        "stage_chat_attachment",
+        lambda attachment, *_args, **_kwargs: attachment,
+    )
+
+    result = bridge_module.inbound_attachments_to_chat(
+        binding,
+        inbound,
+        tenant_id="tenant",
+        user_id="user",
+    )
+
+    assert descriptor.kind == "image"
+    assert captured["filename"] == "message-id.png"
+    assert captured["content_type"] == "image/png"
+    assert result[0].kind == "image"
+
+
+def test_wecom_replay_restores_attachment_dataclass() -> None:
+    from app.channels.service_wecom_inbox import decode_wecom_replay_envelope, encode_wecom_replay_envelope
+
+    inbound = normalize_wecom_frame(
+        _text_frame(msgtype="image", text=None, image={"media_id": "media-image"})
+    )
+    assert inbound is not None
+    restored = decode_wecom_replay_envelope(
+        encode_wecom_replay_envelope(inbound, account_scope="corp")
+    )
+    assert restored.attachments[0].media_id == "media-image"
+
+
 def test_normalize_group_frame() -> None:
     frame = _text_frame(
         chatid="wrQoP7CwAAA",
@@ -134,7 +355,7 @@ def test_normalize_drops_self_and_invalid_frames() -> None:
     self_frame = _text_frame(**{"from": {"userid": "aib_bot1"}})
     assert is_self_frame(self_frame) is True
     assert normalize_wecom_frame(self_frame) is None
-    # 图片消息(本期不支持)
+    # 非受信媒体 URL 不进入附件处理。
     image_frame = _text_frame(msgtype="image", text=None, image={"url": "x"})
     assert normalize_wecom_frame(image_frame) is None
     # 缺 msgid/req_id

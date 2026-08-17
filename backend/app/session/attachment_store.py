@@ -9,7 +9,6 @@ from pathlib import Path, PurePath
 from typing import Any
 
 from app import paths
-from app.core.harness_session_cleanup import harness_path_segment
 from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.session.session_schema import ChatAttachmentRead
 
@@ -18,10 +17,8 @@ def sandbox_attachment_path(attachment: ChatAttachmentRead, index: int = 1) -> s
     basename = PurePath(attachment.filename or f"attachment-{index}").name
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", basename).strip(".-")
     safe_name = safe_name[:96] or f"attachment-{index}.bin"
-    relative = (
-        "attachments/"
-        f"{harness_path_segment(attachment.id)[:32]}-{safe_name}"
-    )
+    attachment_key = hashlib.sha256(attachment.id.encode("utf-8")).hexdigest()[:32]
+    relative = f"attachments/{attachment_key}-{safe_name}"
     return f"{SANDBOX_WORKSPACE}/{relative}"
 
 
@@ -45,6 +42,8 @@ def stage_chat_attachment(
     digest = hashlib.sha256(data).hexdigest()
     _atomic_write(directory / "payload", data)
     metadata = {
+        "tenant_id": tenant_id,
+        "user_id": user_id,
         "attachment_id": attachment.id,
         "filename": attachment.filename,
         "content_type": attachment.content_type,
@@ -86,7 +85,9 @@ def read_staged_chat_attachment(
     digest = hashlib.sha256(data).hexdigest()
     expected_sha = str(attachment.sha256 or "").lower()
     if (
-        metadata.get("attachment_id") != attachment.id
+        metadata.get("tenant_id") != tenant_id
+        or metadata.get("user_id") != user_id
+        or metadata.get("attachment_id") != attachment.id
         or metadata.get("filename") != attachment.filename
         or metadata.get("content_type") != attachment.content_type
         or int(metadata.get("size") or -1) != attachment.size
@@ -98,13 +99,28 @@ def read_staged_chat_attachment(
 
 
 def _attachment_directory(*, tenant_id: str, user_id: str, attachment_id: str) -> Path:
-    root = paths.user_data_dir().resolve() / "harness_uploads"
-    return (
-        root
-        / harness_path_segment(tenant_id)
-        / harness_path_segment(user_id)
-        / harness_path_segment(attachment_id)
+    data_root = paths.user_data_dir().resolve()
+    root = (data_root / "harness_uploads").resolve()
+    if not root.is_relative_to(data_root):
+        raise ValueError("attachment storage root escapes user data directory")
+    key = _attachment_storage_key(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        attachment_id=attachment_id,
     )
+    directory = (root / key[:2] / key).resolve()
+    if not directory.is_relative_to(root):
+        raise ValueError("attachment path escapes storage root")
+    return directory
+
+
+def _attachment_storage_key(*, tenant_id: str, user_id: str, attachment_id: str) -> str:
+    identity = json.dumps(
+        [tenant_id, user_id, attachment_id],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(identity).hexdigest()
 
 
 def _atomic_write(path: Path, data: bytes) -> None:

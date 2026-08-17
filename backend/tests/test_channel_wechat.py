@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import threading
 import time
 
@@ -11,6 +12,7 @@ from app.channels.adapters.wechat import (
     WeChatAdapter,
     WeChatClient,
     WeChatPollManager,
+    decrypt_wechat_media,
     is_self_message,
     normalize_wechat_message,
     random_wechat_uin,
@@ -34,6 +36,15 @@ def _test_engine():
 
 def _client(handler) -> WeChatClient:
     return WeChatClient(BASE_URL, "bot_token_x", transport=httpx.MockTransport(handler))
+
+
+def test_decrypt_wechat_media_aes_ecb_pkcs7() -> None:
+    key = b"0123456789abcdef"
+    aes_key = base64.b64encode(key.hex().encode("ascii")).decode("ascii")
+    plaintext = b"\xff\xd8\xffjpeg-data\xff\xd9"
+    encrypted = bytes.fromhex("06780e9084a586882bfbed1c7dbd461b")
+
+    assert decrypt_wechat_media(encrypted, aes_key, expected_size=len(plaintext)) == plaintext
 
 
 def _text_message(**overrides) -> dict:
@@ -131,6 +142,90 @@ def test_get_updates_request_and_parse() -> None:
     assert inbound.context_token == "ctx_token_1"
     assert inbound.is_group is False
     assert inbound.external_conv_id == "wechat_p2p_user_ab12cd34@im.wechat"
+
+
+def test_normalize_image_and_file_items() -> None:
+    image = normalize_wechat_message(
+        _text_message(
+            item_list=[{"type": 2, "image_item": {"media_id": "image-1"}}],
+        )
+    )
+    assert image is not None
+    assert image.attachments[0].media_id == "image-1"
+    assert image.attachments[0].download_params["context_token"] == "ctx_token_1"
+
+    file = normalize_wechat_message(
+        _text_message(
+            item_list=[
+                {
+                    "type": 4,
+                    "file_item": {
+                        "file_name": "a.txt",
+                        "len": "12",
+                        "md5": "md5",
+                        "media": {
+                            "aes_key": "aes",
+                            "encrypt_query_param": "encrypted",
+                            "full_url": f"{BASE_URL}/c2c/download?encrypted_query_param=encrypted&taskid=task",
+                        },
+                    },
+                }
+            ],
+        )
+    )
+    assert file is not None
+    assert file.attachments[0].media_id.endswith("/c2c/download?encrypted_query_param=encrypted&taskid=task")
+    assert file.attachments[0].filename == "a.txt"
+
+
+def test_normalize_text_message_does_not_emit_attachment_warning(caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger="app.channels.adapters.wechat"):
+        assert normalize_wechat_message(_text_message()) is not None
+
+    assert "附件诊断" not in caplog.text
+
+
+def test_normalize_actual_image_media_shape() -> None:
+    inbound = normalize_wechat_message(
+        _text_message(
+            item_list=[
+                {
+                    "type": 2,
+                    "image_item": {
+                        "aeskey": "aes",
+                        "media": {
+                            "aes_key": "aes",
+                            "encrypt_query_param": "encrypted",
+                            "full_url": f"{BASE_URL}/c2c/download?encrypted_query_param=encrypted&taskid=task",
+                        },
+                        "mid_size": 10,
+                    },
+                }
+            ],
+        )
+    )
+    assert inbound is not None
+    attachment = inbound.attachments[0]
+    assert attachment.kind == "image"
+    assert attachment.download_params["full_url"].endswith("taskid=task")
+    assert attachment.download_params["aes_key"] == "aes"
+    assert attachment.download_params["declared_size"] == 10
+    assert "expected_size" not in attachment.download_params
+
+
+def test_download_media_request() -> None:
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, content=b"image-bytes", headers={"content-type": "image/jpeg"})
+
+    data = _client(handler).download_media("ctx-1", "media-1")
+    assert data == b"image-bytes"
+    assert captured["url"] == f"{BASE_URL}/ilink/bot/downloadmedia"
+    assert captured["body"]["context_token"] == "ctx-1"
+    assert captured["body"]["media_id"] == "media-1"
 
 
 def test_send_message_payload() -> None:

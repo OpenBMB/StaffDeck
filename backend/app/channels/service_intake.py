@@ -36,13 +36,13 @@ from app.channels.service_session import find_or_create_channel_session
 from app.config import get_settings
 from app.db import engine
 from app.db.models import (
+    AgentEvent,
     ChannelBindCode,
     ChannelBinding,
     ChannelDelivery,
     ChannelIdentity,
     ChannelInboundEvent,
     ChatSession,
-    AgentEvent,
     MemoryRecord,
     Message,
     Team,
@@ -50,8 +50,8 @@ from app.db.models import (
     new_id,
     utc_now,
 )
-from app.session.session_schema import ChatTurnRequest
 from app.observability.spans import bind_span_sink
+from app.session.session_schema import ChatTurnRequest
 
 logger = logging.getLogger(__name__)
 
@@ -498,15 +498,18 @@ def _stage_received_reaction(
 
 
 def _message_text(binding: ChannelBinding, inbound: ChannelInbound) -> str:
+    text = inbound.text.strip()
+    if not text and inbound.attachments:
+        text = "请读取并用一句话概括。"
     if not inbound.is_group:
-        return inbound.text
+        return text
     sender_label = inbound.sender_name or external_identity_for_message(
         binding.channel,
         is_group=False,
         conv_key="",
         from_user_id=inbound.from_user_id,
     )[1]
-    return f"[发送者: {sender_label}]\n{inbound.text}"
+    return f"[发送者: {sender_label}]\n{text}"
 
 
 def _run_bind_command(
@@ -1002,7 +1005,6 @@ def process_inbound(
                         binding.id,
                         inbound.event_id,
                     )
-
             # 团队绑定:重新挂到当前会话(跨 Session 边界只带 id)
             team = db.get(Team, turn_team_id) if turn_team_id else None
             user_message = _message_text(binding, inbound)

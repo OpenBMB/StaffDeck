@@ -1,23 +1,34 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import queue
+import re
 import threading
 import time
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
+from urllib.parse import unquote, urlparse
 
+import httpx
 from sqlalchemy import text, update
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine, select
 
 from app.channels.adapters.base import (
     ChannelInbound,
+    ChannelInboundAttachment,
     register_channel_adapter,
     split_channel_text,
 )
 from app.channels.crypto import decrypt_channel_secret
+from app.channels.media import (
+    MAX_CHANNEL_MEDIA_BYTES,
+    MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES,
+    ensure_channel_media_size,
+)
 from app.db import engine
 from app.db.models import ChannelBinding, utc_now
 
@@ -27,6 +38,44 @@ RECONCILE_SECONDS = 30.0
 SEND_TIMEOUT_SECONDS = 15.0
 # 企微长连接持续未 connected 超过该阈值时,给绑定创建者发一次性断开告警
 WECOM_DISCONNECT_ALERT_MINUTES = 15
+WECOM_API_BASE = "https://qyapi.weixin.qq.com/cgi-bin"
+WECOM_TOKEN_REFRESH_SKEW_SECONDS = 300
+WECOM_MEDIA_HOSTS = {"ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com"}
+
+
+def validate_wecom_media_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and (parsed.hostname or "").lower() in WECOM_MEDIA_HOSTS
+
+
+async def _download_wecom_media_limited(url: str, aes_key: str) -> tuple[bytes, str | None]:
+    from aibot import decrypt_file
+
+    async with httpx.AsyncClient(timeout=15.0) as client, client.stream("GET", url) as response:
+        response.raise_for_status()
+        content_length = int(response.headers.get("content-length") or 0)
+        ensure_channel_media_size(content_length, encrypted=True)
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES:
+                raise ValueError(
+                    f"企微附件超过大小上限: size>{MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES}"
+                )
+            chunks.append(chunk)
+        encrypted = b"".join(chunks)
+        data = decrypt_file(encrypted, aes_key) if aes_key else encrypted
+        if len(data) > MAX_CHANNEL_MEDIA_BYTES:
+            raise ValueError(f"企微附件解密后超过大小上限: size={len(data)}")
+        disposition = response.headers.get("content-disposition", "")
+        match = re.search(r"filename\*=UTF-8''([^;\s]+)", disposition, re.IGNORECASE)
+        if not match:
+            match = re.search(r'filename="?([^";\s]+)', disposition, re.IGNORECASE)
+        return data, unquote(match.group(1)) if match else None
 
 
 def is_self_frame(frame: dict[str, Any]) -> bool:
@@ -44,12 +93,93 @@ def normalize_wecom_frame(frame: dict[str, Any], *, account_scope: str = "") -> 
     body = frame.get("body") or {}
     msgtype = str(body.get("msgtype") or "")
     text = ""
+    attachments: list[ChannelInboundAttachment] = []
     if msgtype == "text":
         text = str((body.get("text") or {}).get("content") or "").strip()
     elif msgtype == "voice":
         # 语音帧 body.voice.content 为微信侧转写文本
         text = str((body.get("voice") or {}).get("content") or "").strip()
-    if not text:
+    elif msgtype == "image":
+        image = body.get("image") or {}
+        media_url = str(image.get("url") or "").strip()
+        media_id = str(image.get("media_id") or image.get("file_id") or "").strip()
+        if media_url and validate_wecom_media_url(media_url):
+            media_id = media_id or media_url
+        if media_id:
+            attachments.append(
+                ChannelInboundAttachment(
+                    media_id=media_id,
+                    kind="image",
+                    filename=f"{body.get('msgid') or 'image'}.jpg",
+                    content_type="image/jpeg",
+                    download_params={
+                        "url": media_url,
+                        "aes_key": str(image.get("aeskey") or "").strip(),
+                    },
+                )
+            )
+    elif msgtype == "file":
+        file_info = body.get("file") or {}
+        media_url = str(file_info.get("url") or "").strip()
+        media_id = str(file_info.get("media_id") or file_info.get("file_id") or "").strip()
+        if media_url and validate_wecom_media_url(media_url):
+            media_id = media_id or media_url
+        if media_id:
+            attachments.append(
+                ChannelInboundAttachment(
+                    media_id=media_id,
+                    kind="file",
+                    filename=str(
+                        file_info.get("file_name")
+                        or file_info.get("filename")
+                        or body.get("msgid")
+                        or "attachment.bin"
+                    ).strip(),
+                    download_params={
+                        "url": media_url,
+                        "aes_key": str(file_info.get("aeskey") or "").strip(),
+                    },
+                )
+            )
+    elif msgtype == "mixed":
+        mixed = body.get("mixed") or {}
+        items = mixed.get("msg_item") or []
+        if isinstance(items, list):
+            text_parts: list[str] = []
+            for index, item in enumerate(items, start=1):
+                if not isinstance(item, dict):
+                    continue
+                item_type = str(item.get("msgtype") or "")
+                if item_type == "text":
+                    content = str((item.get("text") or {}).get("content") or "").strip()
+                    if content:
+                        text_parts.append(content)
+                elif item_type in {"image", "file"}:
+                    info = item.get(item_type) or {}
+                    media_url = str(info.get("url") or "").strip()
+                    if not media_url or not validate_wecom_media_url(media_url):
+                        continue
+                    filename = str(
+                        info.get("file_name")
+                        or info.get("filename")
+                        or f"{body.get('msgid') or 'attachment'}-{index}"
+                    ).strip()
+                    if item_type == "image" and "." not in filename:
+                        filename = f"{filename}.jpg"
+                    attachments.append(
+                        ChannelInboundAttachment(
+                            media_id=media_url,
+                            kind=item_type,
+                            filename=filename,
+                            content_type="image/jpeg" if item_type == "image" else "",
+                            download_params={
+                                "url": media_url,
+                                "aes_key": str(info.get("aeskey") or "").strip(),
+                            },
+                        )
+                    )
+            text = "\n".join(text_parts)
+    if not text and not attachments:
         return None
     from_user_id = str((body.get("from") or {}).get("userid") or "").strip()
     if not from_user_id:
@@ -81,6 +211,7 @@ def normalize_wecom_frame(frame: dict[str, Any], *, account_scope: str = "") -> 
         raw=frame,
         sender_name=sender_name,
         account_scope=account_scope,
+        attachments=attachments,
     )
 
 
@@ -595,7 +726,8 @@ class WeComStreamManager:
             try:
                 loop.close()
             except Exception:
-                pass
+                # Cleanup must not mask the worker's original failure, but it must be observable.
+                logger.warning("企微事件循环关闭失败 binding=%s", binding_id, exc_info=True)
 
 
 class WeComAdapter:
@@ -606,6 +738,84 @@ class WeComAdapter:
 
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None:
         return normalize_wecom_frame(raw)
+
+    _token_provider: WeComTokenProvider | None = None
+
+    def _get_token_provider(self) -> WeComTokenProvider:
+        if self._token_provider is None:
+            self._token_provider = WeComTokenProvider()
+        return self._token_provider
+
+    def download_media(
+        self,
+        binding: ChannelBinding,
+        attachment: ChannelInboundAttachment,
+        *,
+        max_bytes: int = 0,
+    ) -> bytes:
+        media_url = str(attachment.download_params.get("url") or "").strip()
+        if media_url:
+            if not validate_wecom_media_url(media_url):
+                raise ValueError("企微媒体 URL 域名不受信任")
+            from app.channels import get_wecom_stream_manager
+
+            stream = get_wecom_stream_manager().get_stream(binding.id)
+            if not stream:
+                raise RuntimeError(f"企微连接未就绪 binding={binding.id}")
+            client, loop = stream
+            future = asyncio.run_coroutine_threadsafe(
+                _download_wecom_media_limited(
+                    media_url,
+                    str(attachment.download_params.get("aes_key") or "").strip(),
+                ),
+                loop,
+            )
+            data, downloaded_filename = future.result(timeout=15.0)
+            if downloaded_filename:
+                attachment.filename = downloaded_filename
+            return data
+        provider = self._get_token_provider()
+        token = provider.get(binding)
+        for attempt in range(2):
+            try:
+                with httpx.Client(timeout=15.0) as client, client.stream(
+                    "GET",
+                    f"{WECOM_API_BASE}/media/get",
+                    params={"access_token": token, "media_id": attachment.media_id},
+                ) as response:
+                    response.raise_for_status()
+                    content_type = response.headers.get("content-type", "")
+                    if "application/json" not in content_type.lower():
+                        chunks: list[bytes] = []
+                        total = 0
+                        for chunk in response.iter_bytes(64 * 1024):
+                            total += len(chunk)
+                            if total > MAX_CHANNEL_MEDIA_BYTES:
+                                raise ValueError("企微附件超过大小上限")
+                            chunks.append(chunk)
+                        return b"".join(chunks)
+                    chunks = []
+                    total = 0
+                    for chunk in response.iter_bytes(64 * 1024):
+                        total += len(chunk)
+                        if total > MAX_CHANNEL_MEDIA_BYTES:
+                            raise ValueError("企微媒体响应超过大小上限")
+                        chunks.append(chunk)
+                    raw = b"".join(chunks)
+            except httpx.HTTPError as exc:
+                raise WeComTokenError("企微媒体下载请求失败") from exc
+            try:
+                data = json.loads(raw)
+            except ValueError as exc:
+                raise WeComTokenError("企微 media/get 响应格式无效") from exc
+            errcode = int(data.get("errcode") or 0)
+            if errcode in {40014, 42001} and attempt == 0:
+                token = provider.get(binding, force_refresh=True)
+                continue
+            raise WeComTokenError(
+                f"企微 media/get 错误: errcode={errcode} msg={data.get('errmsg')}"
+            )
+        raise WeComTokenError("企微 media/get 下载失败")
 
     def send(
         self,
@@ -639,6 +849,58 @@ class WeComAdapter:
         from app.channels import get_wecom_stream_manager
 
         get_wecom_stream_manager().stop_binding(binding_id)
+
+
+class WeComTokenError(RuntimeError):
+    pass
+
+
+class WeComTokenProvider:
+    """Cache enterprise access tokens for each binding and configuration revision."""
+
+    def __init__(self, *, client_factory: Callable[[], httpx.Client] | None = None):
+        self._client_factory = client_factory or (lambda: httpx.Client(timeout=10.0))
+        self._cache: dict[tuple[str, int], tuple[str, float]] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(binding: ChannelBinding) -> tuple[str, int]:
+        return binding.id, binding.config_revision
+
+    def get(self, binding: ChannelBinding, *, force_refresh: bool = False) -> str:
+        key = self._key(binding)
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached and not force_refresh and cached[1] > time.monotonic():
+                return cached[0]
+        config = dict(binding.config_json or {})
+        corp_id = str(config.get("corp_id") or "").strip()
+        if not corp_id or not binding.credentials_enc:
+            raise WeComTokenError("企微绑定缺少 corp_id 或 secret")
+        secret = decrypt_channel_secret(binding.credentials_enc)
+        try:
+            with self._client_factory() as client:
+                response = client.get(
+                    f"{WECOM_API_BASE}/gettoken",
+                    params={"corpid": corp_id, "corpsecret": secret},
+                )
+                data = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise WeComTokenError("企微 token 请求失败") from exc
+        if response.status_code >= 400 or int(data.get("errcode", -1)) != 0:
+            raise WeComTokenError(
+                f"企微 token 请求失败: errcode={data.get('errcode')} msg={data.get('errmsg')}"
+            )
+        token = str(data.get("access_token") or "").strip()
+        expires_in = int(data.get("expires_in") or 0)
+        if not token or expires_in <= 0:
+            raise WeComTokenError("企微 token 响应缺少必要字段")
+        with self._lock:
+            self._cache[key] = (
+                token,
+                time.monotonic() + max(1, expires_in - WECOM_TOKEN_REFRESH_SKEW_SECONDS),
+            )
+        return token
 
 
 # 模块导入即注册企微适配器(渠道内核按注册表发现渠道)

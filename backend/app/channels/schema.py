@@ -159,11 +159,11 @@ class ChannelConversationAttachmentRead(BaseModel):
     内部字段或大体量内容塞进会话列表响应。
     """
 
-    id: Optional[str] = None
-    filename: Optional[str] = None
-    content_type: Optional[str] = None
-    size: Optional[int] = None
-    kind: Optional[str] = None
+    id: str
+    filename: str
+    content_type: str
+    size: int
+    kind: str
 
 
 class ChannelConversationMessageRead(BaseModel):

@@ -3,6 +3,7 @@ import base64
 import pytest
 
 from app.api.chat import _user_message_metadata
+from app.channels.media import normalize_image_media
 from app.session.attachments import (
     image_payloads_from_attachments,
     message_content_with_attachment_context,
@@ -45,7 +46,8 @@ def test_user_message_metadata_keeps_attachments() -> None:
 
 
 def test_image_attachment_uses_supported_extension_and_builds_image_payload() -> None:
-    attachment = parse_chat_attachment("screen.PNG", "application/octet-stream", b"image-bytes")
+    image = b"\x89PNG\r\n\x1a\nimage-bytes"
+    attachment = parse_chat_attachment("screen.PNG", "application/octet-stream", image)
 
     assert attachment.kind == "image"
     assert attachment.content_type == "image/png"
@@ -59,6 +61,21 @@ def test_image_attachment_uses_supported_extension_and_builds_image_payload() ->
             },
         }
     ]
+
+
+def test_historical_image_payload_rejects_invalid_image_signature() -> None:
+    attachment = parse_chat_attachment("screen.jpg", "image/jpeg", b"encrypted-bytes")
+
+    assert attachment.kind == "image"
+    assert image_payloads_from_attachments([attachment]) == []
+
+
+def test_jpeg_with_trailing_channel_bytes_is_normalized() -> None:
+    jpeg = b"\xff\xd8\xffjpeg-data\xff\xd9"
+
+    normalized = normalize_image_media(jpeg + b"\x00channel-trailer")
+
+    assert normalized == (jpeg, "image/jpeg", ".jpg")
 
 
 def test_message_context_uses_sandbox_path_without_inlining_text() -> None:
