@@ -33,6 +33,7 @@ from app.channels.markdown_render import (
 from app.config import get_settings
 from app.db import engine
 from app.db.models import ChannelBinding
+from app.net_proxy import httpx_proxy_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ class DingTalkTokenProvider:
     """按绑定缓存 access token；sessionWebhook 出站不需要它，服务端 API 才需要。"""
 
     def __init__(self, *, client_factory: Callable[[], httpx.Client] | None = None):
-        self._client_factory = client_factory or (lambda: httpx.Client(timeout=10.0))
+        self._client_factory = client_factory or (lambda: httpx.Client(timeout=10.0, **httpx_proxy_kwargs("https://api.dingtalk.com")))
         self._cache: dict[tuple[str, str, int], tuple[str, float]] = {}
         self._lock = threading.Lock()
         self._key_locks: dict[tuple[str, str, int], threading.Lock] = {}
@@ -301,7 +302,7 @@ def validate_dingtalk_credentials(
     client_secret = client_secret.strip()
     if not client_id or not client_secret:
         raise DingTalkPermanentError("钉钉 Client ID 与 Client Secret 均不能为空")
-    factory = client_factory or (lambda: httpx.Client(timeout=10.0))
+    factory = client_factory or (lambda: httpx.Client(timeout=10.0, **httpx_proxy_kwargs("https://api.dingtalk.com")))
     body = {
         "clientId": client_id,
         "clientSecret": client_secret,
@@ -373,7 +374,7 @@ class DingTalkAdapter:
         client_factory: Callable[[], httpx.Client] | None = None,
         token_provider: DingTalkTokenProvider | None = None,
     ):
-        self._client_factory = client_factory or (lambda: httpx.Client(timeout=15.0))
+        self._client_factory = client_factory or (lambda: httpx.Client(timeout=15.0, **httpx_proxy_kwargs("https://api.dingtalk.com")))
         self._tokens = token_provider or DingTalkTokenProvider(client_factory=self._client_factory)
 
     def normalize(self, raw: dict[str, Any]) -> ChannelInbound | None:
