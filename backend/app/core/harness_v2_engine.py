@@ -69,6 +69,23 @@ from app.session.session_schema import (
 from app.skills.nesting import discoverable_sops, expand_visible_sops
 
 
+def _turn_skill_projection(
+    source_skills: list[Skill],
+    *,
+    interaction_mode: str,
+) -> tuple[list[Skill], list[Skill]]:
+    """Project executable and routable SOPs for every supported turn mode.
+
+    Team TL conversations already own a dedicated session, so hiding the
+    leader's SOPs here would only disable valid work; it is not required for
+    state isolation.
+    """
+
+    _ = interaction_mode
+    skills = expand_visible_sops(source_skills)
+    return skills, discoverable_sops(skills)
+
+
 class HarnessV2Engine:
     """Outer planner + durable TaskFrame scheduler + isolated Harness runs."""
 
@@ -173,18 +190,18 @@ class HarnessV2Engine:
         source_skills = self.owner._list_published_skills(
             request.tenant_id, session.agent_id
         )
-        # A team TL session is a group-chat orchestration surface, not the
-        # leader employee's personal working session. Hide personal SOPs from
-        # this turn without mutating or cancelling their durable state.
-        if request.interaction_mode == "team_tl":
-            skills = []
-            routing_skills = []
-        else:
-            skills = expand_visible_sops(source_skills)
-            routing_skills = discoverable_sops(skills)
-            self.owner._drop_unavailable_skill_state(
-                request.tenant_id, session, skills
-            )
+        # Team TL conversations use a dedicated ChatSession, so the leader can
+        # safely execute their own SOPs without mutating a personal chat. Keep
+        # the same published/discoverable SOP boundary in every interaction
+        # mode; team orchestration remains an additional conversation concern,
+        # not a reason to hide the leader's executable workflow.
+        skills, routing_skills = _turn_skill_projection(
+            source_skills,
+            interaction_mode=request.interaction_mode,
+        )
+        self.owner._drop_unavailable_skill_state(
+            request.tenant_id, session, skills
+        )
         memory_context = [
             memory_read(row)
             for row in self.owner.memory.context_memories(
@@ -462,10 +479,8 @@ class HarnessV2Engine:
         # nested SOP's response rules remain available after the child graph
         # reaches a terminal node. Falling back to the stored row is only
         # needed for turns that did not execute a TaskFrame.
-        response_skill = None if request.interaction_mode == "team_tl" else (
-            last_skill or self.owner._get_active_skill(
-                request.tenant_id, session.active_skill_id, session.agent_id
-            )
+        response_skill = last_skill or self.owner._get_active_skill(
+            request.tenant_id, session.active_skill_id, session.agent_id
         )
         self._renew_session_lease()
         reply = self.owner.response_generator.generate(

@@ -102,6 +102,8 @@ class TeamTaskRead(BaseModel):
     created_by_tl: bool
     assignee_agent_id: str | None = None
     session_id: str | None = None
+    depends_on_task_ids: list[str] = Field(default_factory=list)
+    activation_condition: dict[str, Any] = Field(default_factory=dict)
     report: dict[str, Any] = Field(default_factory=dict)
     review: dict[str, Any] = Field(default_factory=dict)
     version: int
@@ -279,6 +281,8 @@ class TeamConversationMessageRead(BaseModel):
     id: str
     role: str
     content: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    turn_id: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

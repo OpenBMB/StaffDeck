@@ -73,6 +73,7 @@ export default function MessageList({
                 team={chat.displayedTeam}
                 agents={chat.agents}
                 conversation={entry.conversation}
+                onOpenCitation={chat.setActiveCitation}
               />
             ) : null;
           }

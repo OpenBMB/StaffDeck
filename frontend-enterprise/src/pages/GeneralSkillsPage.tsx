@@ -18,6 +18,7 @@ import { ContextMenu } from 'radix-ui';
 import { api, streamPost, TENANT_ID } from '../api/client';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
+import CapabilityScopeLoading from '@/components/CapabilityScopeLoading';
 import {
   CapabilityScopeBadge,
   CapabilityScopeControl,
@@ -764,6 +765,8 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
   const listEmptyText = isOverallAgent
     ? canManageCurrentScope ? '暂无技能，点击「新增」创建一个吧' : '暂无技能'
     : '当前员工暂无技能';
+
+  if (!agentScopeLoaded) return <CapabilityScopeLoading />;
 
   return (
     <div className={embedded ? undefined : 'min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]'}>

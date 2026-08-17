@@ -79,7 +79,7 @@ def test_nested_sop_is_expanded_and_parent_edges_are_rewired() -> None:
                 "name": "Nested",
                 "type": "subflow",
                 "sub_sop_id": "child",
-                "instruction": "Run the child flow.",
+                "instruction": "This legacy placeholder work must not execute.",
             },
             {"node_id": "done", "name": "Done", "type": "response"},
         ],
@@ -110,7 +110,9 @@ def test_nested_sop_is_expanded_and_parent_edges_are_rewired() -> None:
     nested_start = next(node for node in content["nodes"] if node["node_id"] == child_start)
     assert nested_start["metadata"]["source_sop_id"] == "child"
     assert nested_start["metadata"]["parent_sop_node_id"] == "nested"
-    assert nested_start["instruction"].startswith("Run the child flow.")
+    assert nested_start["metadata"]["slot_scope"] == "parent_task_frame"
+    assert nested_start["expected_user_info"] == ["email"]
+    assert "legacy placeholder" not in nested_start.get("instruction", "")
 
 
 def test_nested_sop_preserves_deepest_source_metadata() -> None:
@@ -172,6 +174,24 @@ def test_nested_sop_cycle_is_rejected() -> None:
 
     with pytest.raises(SopNestingError, match="cycle"):
         validate_sop_nesting("first", first.content_json, [first, second])
+
+
+def test_deep_nested_sop_cycle_is_rejected() -> None:
+    first = _skill(
+        "first",
+        nodes=[{"node_id": "to_second", "name": "Second", "type": "subflow", "sub_sop_id": "second"}],
+    )
+    second = _skill(
+        "second",
+        nodes=[{"node_id": "to_third", "name": "Third", "type": "subflow", "sub_sop_id": "third"}],
+    )
+    third = _skill(
+        "third",
+        nodes=[{"node_id": "to_first", "name": "First", "type": "subflow", "sub_sop_id": "first"}],
+    )
+
+    with pytest.raises(SopNestingError, match="first -> second -> third -> first"):
+        validate_sop_nesting("first", first.content_json, [first, second, third])
 
 
 def test_missing_or_unpublished_nested_sop_is_rejected() -> None:

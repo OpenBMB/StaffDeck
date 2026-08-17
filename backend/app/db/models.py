@@ -1324,7 +1324,7 @@ class TeamMember(SQLModel, table=True):
 
 
 class TeamTask(SQLModel, table=True):
-    """团队任务:pending -> in_progress -> review -> done/rework/escalated;
+    """团队任务:blocked -> pending -> in_progress -> review -> done/rework/escalated;
 
     rework -> in_progress 重入;pending -> bidding -> pending 为任务池竞标链路。
     """
@@ -1343,6 +1343,8 @@ class TeamTask(SQLModel, table=True):
     created_by_tl: bool = False
     assignee_agent_id: Optional[str] = Field(default=None, index=True)
     session_id: Optional[str] = Field(default=None, index=True)
+    depends_on_task_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    activation_condition_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     report_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     review_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     # 乐观锁版本号,人改判/验收并发时防覆盖

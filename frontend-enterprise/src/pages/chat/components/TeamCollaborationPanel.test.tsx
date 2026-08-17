@@ -247,6 +247,76 @@ describe('TeamCollaborationPanel', () => {
     );
   });
 
+  it('reuses standalone Markdown, citations, and artifact cards for member replies', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/stream')) {
+        return jsonResponse({
+          status: 'completed',
+          content: '## 制度结论\n\n请参考制度 [1]。',
+          updated_at: '2026-08-15T00:01:00Z',
+        });
+      }
+      if (url.includes('/messages')) {
+        return jsonResponse([
+          {
+            id: 'message-structured',
+            role: 'assistant',
+            content: '## 制度结论\n\n请参考制度 [1]。',
+            metadata: {
+              knowledge_citations: [
+                { id: '1', label: '1', title: '报销制度', excerpt: '制度正文' },
+              ],
+              harness_artifacts: [
+                {
+                  type: 'workspace_file',
+                  task_frame_id: 'frame-1',
+                  path: 'results/policy.md',
+                },
+              ],
+            },
+            created_at: '2026-08-15T00:01:00Z',
+          },
+        ]);
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    const onOpenCitation = vi.fn();
+    const conversation: TeamConversationRead = {
+      session_id: 'session-structured',
+      kind: 'member_task',
+      agent_id: 'agent-admin',
+      agent_name: '行政',
+      task_id: 'task-structured',
+      task_status: 'done',
+      title: '团队任务:整理制度',
+      preview: '请参考制度。',
+      created_at: '2026-08-15T00:00:30Z',
+      updated_at: '2026-08-15T00:01:00Z',
+    };
+
+    render(
+      <TeamCollaborationPanel
+        team={team}
+        agents={agents}
+        conversation={conversation}
+        onOpenCitation={onOpenCitation}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '展开行政的回复' }));
+
+    expect(await screen.findByRole('heading', { name: '制度结论' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /报销制度/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /下载文件 policy.md/ })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /报销制度/ }));
+    expect(onOpenCitation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: '1', title: '报销制度' }),
+    );
+  });
+
   it('inserts collaboration exchanges at their original position in the chat timeline', () => {
     const messages: ChatMessage[] = [
       { id: 'm1', role: 'user', content: '开始', created_at: '2026-08-15T00:00:00Z' },
