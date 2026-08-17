@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from app.api.chat import message_read, session_read
 from app.db import get_session
-from app.db.models import AgentProfile, ChatSession, Message, MessageFeedback, User, utc_now
+from app.db.models import APIJob, AgentProfile, ChatSession, Message, MessageFeedback, User, utc_now
 from app.feedback import FEEDBACK_BUCKET_LABELS, enqueue_feedback_analysis, feedback_analysis_read, feedback_summary
 from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user, is_admin_user
@@ -196,6 +196,42 @@ def reanalyze_feedback(
         "analysis_status": row.analysis_status,
         "job_id": job.id,
         "updated_at": row.updated_at.isoformat(),
+    }
+
+
+@router.get("/jobs/{job_id}")
+def get_feedback_analysis_job(
+    job_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> dict:
+    _ensure_request_tenant(tenant_id, current_user)
+    ensure_tenant(db, tenant_id)
+    job = db.get(APIJob, job_id)
+    if (
+        not job
+        or job.tenant_id != tenant_id
+        or job.kind != "feedback.analyze"
+        or job.credential_id != "internal"
+    ):
+        raise HTTPException(status_code=404, detail="Feedback analysis job not found")
+    feedback_id = str((job.request_json or {}).get("feedback_id") or "")
+    row = db.get(MessageFeedback, feedback_id) if feedback_id else None
+    if row:
+        _get_owned_chat_session(db, tenant_id, current_user, row.session_id)
+    return {
+        "id": job.id,
+        "feedback_id": feedback_id,
+        "status": job.status,
+        "stage": job.stage,
+        "progress": job.progress,
+        "result": dict(job.result_json or {}),
+        "error": dict(job.error_json or {}),
+        "created_at": job.created_at.isoformat(),
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "updated_at": job.updated_at.isoformat(),
     }
 
 

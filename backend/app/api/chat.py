@@ -22,13 +22,14 @@ from app.agents.branching import model_for_agent, visible_published_skills
 from app.skills.nesting import discoverable_sops
 from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
-from app.core.cancellation import cancel_chat_turn
+from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
 from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.harness_session_cleanup import (
     harness_task_workspace_path,
     remove_harness_session_workspace,
     stage_harness_session_record_deletion,
 )
+from app.core.harness_turn_store import HarnessTurnStore
 from app.core.slash_commands import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
 from app.db.models import (
@@ -622,6 +623,15 @@ def _maybe_handle_scheduled_task_request(
 ) -> tuple[ChatTurnResponse, ScheduledTaskDraftRead] | None:
     if request.interaction_mode != "scheduled_task" or not request.agent_id:
         return None
+    if request.client_turn_id and is_chat_turn_cancelled(
+        chat_session.id,
+        request.client_turn_id,
+        db=db,
+        identity_kind="client",
+    ):
+        # Cancellation wins over the shortcut. Let the normal Harness path
+        # claim and terminalize the logical turn instead of creating a draft.
+        return None
     draft = detect_scheduled_task_draft(
         db,
         request.tenant_id,
@@ -633,6 +643,11 @@ def _maybe_handle_scheduled_task_request(
     )
     if not draft or not draft.should_create:
         return None
+
+    turn_store = HarnessTurnStore(db)
+    turn_claim = turn_store.claim(chat_session, request)
+    if turn_claim.replay is not None:
+        return turn_claim.replay, draft
 
     reply = _scheduled_task_draft_reply(draft)
     now = utc_now()
@@ -653,6 +668,8 @@ def _maybe_handle_scheduled_task_request(
         created_at=now,
     )
     db.add(user_message)
+    db.flush()
+    turn_store.bind_user_message(turn_claim.record, user_message.id)
     draft_payload = draft.model_dump(mode="json")
     db.add(
         AgentEvent(
@@ -746,13 +763,13 @@ def _maybe_handle_scheduled_task_request(
             created_at=state_time,
         )
     )
-    db.commit()
-    db.refresh(chat_session)
     response = ChatTurnResponse(
         reply=reply,
         session_id=chat_session.id,
         session_state=public_session(chat_session),
     )
+    turn_store.complete(turn_claim.record, response)
+    db.refresh(chat_session)
     return response, draft
 
 
@@ -1462,9 +1479,19 @@ def cancel_chat_turn_endpoint(
 ) -> dict[str, bool]:
     _ensure_request_tenant(request.tenant_id, current_user)
     chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, session_id)
-    cancel_chat_turn(session_id, request.turn_id)
-    _persist_chat_turn_cancelled(db, request.tenant_id, chat_session, request.turn_id, current_user.id)
+    persisted = _persist_chat_turn_cancelled(
+        db,
+        request.tenant_id,
+        chat_session,
+        request.turn_id,
+        current_user.id,
+    )
     db.commit()
+    # Publish the process-local fast path only after the durable cancellation
+    # event commits. A failed commit must not change the outcome of a retry in
+    # this process compared with a fresh worker.
+    if persisted:
+        cancel_chat_turn(session_id, request.turn_id)
     return {"ok": True}
 
 

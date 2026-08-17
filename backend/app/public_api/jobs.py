@@ -89,6 +89,42 @@ def create_job(
     return row
 
 
+def create_internal_job(
+    db: Session,
+    *,
+    tenant_id: str,
+    kind: str,
+    request_payload: dict[str, Any],
+    agent_id: str | None = None,
+) -> APIJob:
+    """Persist an application-owned job before offering it to the executor.
+
+    Internal callers deliberately use the same durable job/receipt machinery as
+    the public API. If the executor is stopping, the queued row remains
+    recoverable on the next startup instead of disappearing with the process.
+    """
+
+    row = APIJob(
+        tenant_id=tenant_id,
+        credential_id="internal",
+        agent_id=agent_id,
+        kind=kind,
+        request_json=request_payload,
+    )
+    db.add(row)
+    db.flush()
+    emit_job_event(db, row, "job.queued", {"job_id": row.id, "kind": kind}, public=False)
+    db.commit()
+    db.refresh(row)
+    try:
+        enqueue_async_job(f"internal.{kind}", run_job, row.id)
+    except RuntimeError:
+        # The durable queued row is intentionally retained. Startup recovery
+        # will submit it to the replacement executor.
+        pass
+    return row
+
+
 def emit_job_event(
     db: Session,
     job: APIJob,

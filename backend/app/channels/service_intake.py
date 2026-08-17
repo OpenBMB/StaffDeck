@@ -429,6 +429,7 @@ def _stage_notice(
     text: str,
     *,
     final_for_event: bool = False,
+    idempotency_key: str | None = None,
 ) -> None:
     """系统提示投递(指令回复/员工下线提示);session_id 用 conv: 前缀占位。"""
     if not _valid_notice_target(binding.channel, target):
@@ -447,7 +448,7 @@ def _stage_notice(
             text=text,
             status="pending",
             next_attempt_at=utc_now(),
-            idempotency_key=new_id("chnotice"),
+            idempotency_key=idempotency_key or new_id("chnotice"),
         )
     )
 
@@ -1058,6 +1059,43 @@ def process_inbound(
                 return False
             finally:
                 _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 2, db_engine=use_engine)
+            runtime_error_code = getattr(response, "runtime_error_code", None)
+            response_reply = str(getattr(response, "reply", "") or "")
+            if isinstance(response, dict):
+                runtime_error_code = response.get("runtime_error_code")
+                response_reply = str(response.get("reply") or "")
+                if runtime_error_code is None and response_reply in {
+                    "HARNESS_TURN_CONFLICT",
+                    "HARNESS_SESSION_BUSY",
+                }:
+                    # Compatibility for older AgentLoop adapters that returned
+                    # the exact conflict code in ``reply`` instead of the
+                    # typed ``runtime_error_code`` field.
+                    runtime_error_code = response_reply
+            if runtime_error_code in {
+                "HARNESS_TURN_CONFLICT",
+                "HARNESS_SESSION_BUSY",
+            }:
+                # This is a retryable admission failure, not a completed
+                # channel turn. Persist an explicit terminal notice for this
+                # delivery (which also removes the processing reaction), then
+                # release the inbox row for a later retry.
+                event.status = "received"
+                event.processor_run_id = None
+                event.error = response_reply[:500]
+                event.updated_at = utc_now()
+                db.add(event)
+                _stage_notice(
+                    db,
+                    binding,
+                    str(inbound.external_conv_id or ""),
+                    dict(event.target_json or {}),
+                    response_reply,
+                    final_for_event=True,
+                    idempotency_key=f"channel-runtime-conflict:{binding.id}:{event.event_id}",
+                )
+                db.commit()
+                return False
             event.status = "done"
             event.processed_at = utc_now()
             event.updated_at = utc_now()

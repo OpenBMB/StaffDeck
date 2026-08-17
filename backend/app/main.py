@@ -27,7 +27,7 @@ from app.api import (
     traces,
     ui_config,
 )
-from app.async_jobs import shutdown_async_jobs
+from app.async_jobs import shutdown_async_jobs, start_async_jobs
 from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
 from app.db import engine, init_db
@@ -64,14 +64,17 @@ app.add_middleware(
 def on_startup() -> None:
     acquire_runtime_instance_lock()
     try:
+        start_async_jobs()
         init_db()
         with Session(engine) as db:
             seed_demo_data(db)
         start_background_worker()
         start_channel_services()
         start_timeout_sweeper()
+        # Internal durable jobs (for example feedback analysis) use the same
+        # recovery table even when the externally exposed API is disabled.
+        recover_public_jobs()
         if settings.public_api_enabled:
-            recover_public_jobs()
             cleanup_public_api_records()
             enqueue_due_webhook_deliveries()
             start_public_api_maintenance()

@@ -1,6 +1,7 @@
 import threading
 import time
 import os
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.pool import StaticPool
@@ -315,6 +316,62 @@ def test_failure_marks_event_failed_and_stages_error_notice() -> None:
         assert notices[0].status == "pending"
         assert notices[0].text == "处理出错，请稍后再试。"
         assert notices[0].target_json["to_user_id"] == "user_ab12cd34@im.wechat"
+
+
+def test_harness_conflict_keeps_inbound_retryable_and_stages_terminal_notice(monkeypatch) -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    binding = _load_binding(engine, binding_id)
+
+    class ConflictAgentLoop:
+        def __init__(self, db):
+            self.db = db
+
+        def handle_turn(self, request):  # noqa: ANN001
+            return SimpleNamespace(
+                runtime_error_code="HARNESS_SESSION_BUSY",
+                reply="当前会话仍有任务执行，请稍后重试。",
+            )
+
+    monkeypatch.setattr(agent_loop_module, "AgentLoop", ConflictAgentLoop)
+
+    assert process_inbound(binding, _p2p_message("evt_conflict"), db_engine=engine) is False
+
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "received"
+        assert event.processor_run_id is None
+        notices = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "notice")
+        ).all()
+        assert len(notices) == 1
+        assert notices[0].target_json["reaction_final"] is True
+        assert notices[0].idempotency_key.endswith(":evt_conflict")
+
+
+def test_legacy_dict_harness_conflict_is_also_retryable(monkeypatch) -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    binding = _load_binding(engine, binding_id)
+
+    class ConflictAgentLoop:
+        def __init__(self, db):
+            self.db = db
+
+        def handle_turn(self, request):  # noqa: ANN001
+            return {"reply": "HARNESS_TURN_CONFLICT"}
+
+    monkeypatch.setattr(agent_loop_module, "AgentLoop", ConflictAgentLoop)
+
+    assert process_inbound(binding, _p2p_message("evt_legacy_conflict"), db_engine=engine) is False
+
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "received"
+        assert event.processor_run_id is None
+        notice = db.exec(select(ChannelDelivery).where(ChannelDelivery.kind == "notice")).one()
+        assert notice.text == "HARNESS_TURN_CONFLICT"
+        assert notice.target_json["reaction_final"] is True
 
 
 def test_non_text_message_is_dropped_silently() -> None:
