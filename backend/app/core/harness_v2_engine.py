@@ -1001,13 +1001,24 @@ class HarnessV2Engine:
         request: ChatTurnRequest,
         session: ChatSession,
     ) -> bool:
-        turn_ids = {
-            str(self.user_message_id or "").strip(),
-            str(request.client_turn_id or "").strip(),
-        }
-        return any(
-            turn_id and is_chat_turn_cancelled(session.id, turn_id)
-            for turn_id in turn_ids
+        user_message_id = str(self.user_message_id or "").strip()
+        client_turn_id = str(request.client_turn_id or "").strip()
+        return bool(
+            user_message_id
+            and is_chat_turn_cancelled(
+                session.id,
+                user_message_id,
+                db=self.db,
+                identity_kind="message",
+            )
+        ) or bool(
+            client_turn_id
+            and is_chat_turn_cancelled(
+                session.id,
+                client_turn_id,
+                db=self.db,
+                identity_kind="client",
+            )
         )
 
     def _raise_if_cancelled(

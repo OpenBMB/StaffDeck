@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+import hashlib
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -13,13 +14,13 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.channels.adapters.feishu import (
     FeishuAdapter,
     FeishuPermanentError,
-    FeishuTransientError,
     FeishuTokenProvider,
+    FeishuTransientError,
     validate_feishu_credentials,
 )
 from app.channels.crypto import encrypt_channel_secret
-from app.channels.service_outbox import run_delivery_daemon
 from app.channels.feishu_runtime import _build_event_dispatcher, _normalize_event
+from app.channels.service_outbox import run_delivery_daemon
 from app.db.models import ChannelBinding, ChannelDelivery, Tenant, utc_now
 
 
@@ -38,6 +39,9 @@ class FakeClient:
 
     def get(self, url, **kwargs):
         return self.handler(url, {**kwargs, "_method": "GET"})
+
+    def patch(self, url, **kwargs):
+        return self.handler(url, {**kwargs, "_method": "PATCH"})
 
     def delete(self, url, **kwargs):
         return self.handler(url, {**kwargs, "_method": "DELETE"})
@@ -940,3 +944,286 @@ def test_normalize_post_message_without_locale_wrapper() -> None:
     assert len(inbound.attachments) == 1
     assert inbound.attachments[0].media_id == "img_v3_nolocale"
     assert inbound.text == "查询假期余额"
+
+
+# ---------------------------------------------------------------------------
+# 富文本（post）渲染 — channel-render-plan §5.2
+# ---------------------------------------------------------------------------
+
+
+def _rich_handler(calls):
+    def handler(url, kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        calls.append((url, kwargs))
+        return _response(200, {"code": 0}, url)
+    return handler
+
+
+def test_rich_post_render_for_markdown_text() -> None:
+    calls = []
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(_rich_handler(calls)))
+    adapter.send(
+        _binding(),
+        {"message_id": "om_source"},
+        "# 标题\n\n**粗体** 与 [链接](https://x.com)",
+        idempotency_key="rich-1",
+    )
+    send = calls[0]
+    assert send[1]["json"]["msg_type"] == "post"
+    content = json.loads(send[1]["json"]["content"])
+    rows = content["zh_cn"]["content"]
+    # 第一行标题，应含 bold style
+    assert any("bold" in (tag.get("style") or []) for tag in rows[0])
+    # 存在链接 tag
+    flat_tags = [tag for row in rows for tag in row]
+    assert any(tag.get("tag") == "a" and tag.get("href") == "https://x.com" for tag in flat_tags)
+
+
+def test_rich_post_code_block_tag() -> None:
+    calls = []
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(_rich_handler(calls)))
+    adapter.send(
+        _binding(),
+        {"message_id": "om_source"},
+        "```python\nprint(1)\n```",
+        idempotency_key="rich-code",
+    )
+    content = json.loads(calls[0][1]["json"]["content"])
+    tag = content["zh_cn"]["content"][0][0]
+    assert tag["tag"] == "code_block"
+    assert tag["language"] == "python"
+    assert tag["text"] == "print(1)"
+
+
+def test_plain_text_still_uses_text_msg_type() -> None:
+    calls = []
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(_rich_handler(calls)))
+    adapter.send(_binding(), {"message_id": "om_source"}, "hello", idempotency_key="t1")
+    assert calls[0][1]["json"]["msg_type"] == "text"
+    assert json.loads(calls[0][1]["json"]["content"]) == {"text": "hello"}
+
+
+def test_rich_render_disabled_falls_back_to_text(monkeypatch) -> None:
+    from app.config import get_settings
+    settings = get_settings().model_copy(update={"channel_rich_render_enabled": False})
+    monkeypatch.setattr("app.channels.adapters.feishu.get_settings", lambda: settings)
+    calls = []
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(_rich_handler(calls)))
+    adapter.send(
+        _binding(),
+        {"message_id": "om_source"},
+        "**粗体**",
+        idempotency_key="rich-off",
+    )
+    assert calls[0][1]["json"]["msg_type"] == "text"
+    assert json.loads(calls[0][1]["json"]["content"]) == {"text": "**粗体**"}
+
+
+def test_rich_long_markdown_chunks_use_distinct_stable_uuids() -> None:
+    calls = []
+
+    def handler(url, kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        calls.append(kwargs["json"])
+        return _response(200, {"code": 0}, url)
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    target = {"message_id": "om_source"}
+    # 构造超长 markdown：多行，每行含粗体，触发分块
+    long_md = "\n".join(f"**第{i}行**" for i in range(500))
+    adapter.send(_binding(), target, long_md, idempotency_key="long-rich")
+    first_uuids = [body["uuid"] for body in calls]
+    assert len(first_uuids) >= 2
+    assert len(set(first_uuids)) == len(first_uuids)  # 互不相同
+    # 全部走 post
+    assert all(body["msg_type"] == "post" for body in calls)
+    # 幂等：重发 uuid 稳定
+    calls.clear()
+    adapter.send(_binding(), target, long_md, idempotency_key="long-rich")
+    assert [body["uuid"] for body in calls] == first_uuids
+
+
+def test_rich_render_path_refreshes_token_on_401() -> None:
+    tokens = iter(["token-old", "token-new"])
+    send_count = 0
+
+    def handler(url, kwargs):
+        nonlocal send_count
+        if "/auth/" in url:
+            return _response(
+                200,
+                {"code": 0, "tenant_access_token": next(tokens), "expire": 7200},
+                url,
+            )
+        send_count += 1
+        if send_count == 1:
+            return _response(401, {"code": 99991663}, url)
+        assert kwargs["headers"]["Authorization"] == "Bearer token-new"
+        return _response(200, {"code": 0}, url)
+
+    def factory():
+        return FakeClient(handler)
+    adapter = FeishuAdapter(client_factory=factory)
+    adapter.send(
+        _binding(),
+        {"message_id": "om_source"},
+        "**粗体**",
+        idempotency_key="rich-401",
+    )
+    assert send_count == 2
+
+
+def test_rich_create_message_uses_receive_id() -> None:
+    calls = []
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(_rich_handler(calls)))
+    adapter.send(
+        _binding(),
+        {"receive_id": "ou_user", "receive_id_type": "open_id"},
+        "# 标题",
+        idempotency_key="rich-create",
+    )
+    send = calls[0]
+    assert send[1]["params"] == {"receive_id_type": "open_id"}
+    assert send[1]["json"]["receive_id"] == "ou_user"
+    assert send[1]["json"]["msg_type"] == "post"
+
+
+def test_rich_overlong_fenced_code_block_each_chunk_has_code_block() -> None:
+    """回归 P1：超长围栏代码块切分后，每个发送 chunk 应含闭合的 code_block tag。
+
+    避免围栏跨消息断裂导致代码块被当普通文本渲染。
+    """
+    calls = []
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(_rich_handler(calls)))
+    code_lines = [f"line_{i} = {i}" for i in range(300)]
+    text = "```python\n" + "\n".join(code_lines) + "\n```"
+    adapter.send(
+        _binding(),
+        {"message_id": "om_source"},
+        text,
+        idempotency_key="rich-long-code",
+    )
+    assert len(calls) >= 2
+    all_code_texts: list[str] = []
+    for _url, kwargs in calls:
+        assert kwargs["json"]["msg_type"] == "post"
+        content = json.loads(kwargs["json"]["content"])
+        rows = content["zh_cn"]["content"]
+        flat_tags = [tag for row in rows for tag in row]
+        assert any(tag.get("tag") == "code_block" for tag in flat_tags), (
+            "chunk missing code_block tag after split"
+        )
+        for tag in flat_tags:
+            if tag.get("tag") == "code_block":
+                all_code_texts.append(tag["text"])
+    recovered = "\n".join(all_code_texts)
+    assert "line_0 = 0" in recovered
+    assert "line_299 = 299" in recovered
+
+
+def test_create_card_reply_returns_message_id() -> None:
+    calls = []
+
+    def handler(url, kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        calls.append((url, kwargs))
+        return _response(
+            200,
+            {"code": 0, "data": {"message_id": "om_card_new"}},
+            url,
+        )
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    card = {"config": {}, "header": {"title": {"tag": "plain_text", "content": "test"}}, "elements": []}
+    message_id = adapter.create_card(
+        _binding(),
+        {"message_id": "om_source"},
+        card,
+        idempotency_key="card-key-1",
+    )
+    assert message_id == "om_card_new"
+    url, kwargs = calls[0]
+    assert url.endswith("/im/v1/messages/om_source/reply")
+    assert kwargs["json"]["msg_type"] == "interactive"
+    assert kwargs["json"]["uuid"] == hashlib.sha256(b"card-key-1:0").hexdigest()[:40]
+    assert json.loads(kwargs["json"]["content"]) == card
+
+
+def test_create_card_with_receive_id() -> None:
+    calls = []
+
+    def handler(url, kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        calls.append((url, kwargs))
+        return _response(200, {"code": 0, "data": {"message_id": "om_card_new"}}, url)
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    message_id = adapter.create_card(
+        _binding(),
+        {"receive_id": "ou_user", "receive_id_type": "open_id"},
+        {"elements": []},
+        idempotency_key="card-key-2",
+    )
+    assert message_id == "om_card_new"
+    url, kwargs = calls[0]
+    assert url.endswith("/im/v1/messages")
+    assert kwargs["params"] == {"receive_id_type": "open_id"}
+    assert kwargs["json"]["receive_id"] == "ou_user"
+
+
+def test_create_card_missing_idempotency_key_raises() -> None:
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(lambda *_a, **_kw: None))
+    with pytest.raises(FeishuPermanentError, match="幂等键"):
+        adapter.create_card(_binding(), {"message_id": "om"}, {}, idempotency_key="")
+
+
+def test_create_card_missing_response_message_id_raises_transient() -> None:
+    def handler(url, _kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        return _response(200, {"code": 0, "data": {}}, url)
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    with pytest.raises(FeishuTransientError, match="message_id"):
+        adapter.create_card(_binding(), {"message_id": "om"}, {}, idempotency_key="k")
+
+
+def test_update_card_sends_patch_request() -> None:
+    calls = []
+
+    def handler(url, kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        calls.append((url, kwargs))
+        return _response(200, {"code": 0}, url)
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    card = {"elements": [{"tag": "div"}]}
+    adapter.update_card(_binding(), "om_card_123", card)
+    assert len(calls) == 1
+    url, kwargs = calls[0]
+    assert url.endswith("/im/v1/messages/om_card_123")
+    assert kwargs["_method"] == "PATCH"
+    assert json.loads(kwargs["json"]["content"]) == card
+
+
+def test_update_card_missing_message_id_raises() -> None:
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(lambda *_a, **_kw: None))
+    with pytest.raises(FeishuPermanentError, match="message_id"):
+        adapter.update_card(_binding(), "", {})
+
+
+def test_update_card_429_is_transient() -> None:
+    def handler(url, _kwargs):
+        if "/auth/" in url:
+            return _response(200, {"code": 0, "tenant_access_token": "token", "expire": 7200}, url)
+        return _response(429, {"code": 1}, url)
+
+    adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
+    with pytest.raises(FeishuTransientError, match="暂时不可用"):
+        adapter.update_card(_binding(), "om_card", {})
+

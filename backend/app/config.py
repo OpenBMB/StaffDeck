@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     # 钉钉 emotion 接口的表情常量与所需权限尚未真机验证，验证通过前默认关闭：
     # 否则常量失效或权限未开时，每条入站消息都会留下一条失败的 reaction 投递。
     channel_dingtalk_reaction_enabled: bool = False
+    # 出站富文本渲染开关：开启时飞书走 post 富文本、钉钉走 markdown 消息；
+    # 关闭时两者回退为纯 text 消息，用于快速回退。
+    channel_rich_render_enabled: bool = True
+    # 飞书渠道实时执行步骤卡片开关：开启后飞书对话在执行过程中创建并实时更新
+    # 一张独立卡片展示智能体每一步（SOP/工具/知识检索），与正文回复互不影响。
+    # 仅影响飞书渠道；关闭时退化为仅发最终回复。
+    channel_feishu_trace_enabled: bool = True
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),

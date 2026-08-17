@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from typing import Any
 
 from sqlmodel import Session
 
 from app.db.models import AgentEvent
 
+logger = logging.getLogger(__name__)
+
 
 class EventLog:
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+        *,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    ):
         self.db = db
+        self._event_sink = event_sink
         self._turn_id: str | None = None
         self._client_turn_id: str | None = None
 
@@ -31,4 +41,9 @@ class EventLog:
             payload_json=traced_payload,
         )
         self.db.add(event)
+        if self._event_sink is not None:
+            try:
+                self._event_sink(event_type, traced_payload)
+            except Exception:
+                logger.exception("event_sink 调用失败 event_type=%s", event_type)
         return event

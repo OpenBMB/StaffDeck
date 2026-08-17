@@ -9,12 +9,20 @@ from typing import Any, Callable
 import httpx
 
 from app.channels.adapters.base import (
+    CHANNEL_TEXT_LIMIT,
     ChannelInboundAttachment,
     register_channel_adapter,
     split_channel_text,
     stream_download_with_limit,
 )
 from app.channels.crypto import decrypt_channel_secret
+from app.channels.markdown_render import (
+    has_markdown,
+    parse_markdown,
+    render_feishu_post,
+    split_markdown_by_lines,
+)
+from app.config import get_settings
 from app.db.models import ChannelBinding
 
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
@@ -202,6 +210,8 @@ class FeishuAdapter:
                         response = client.post(url, json=body, **request_kwargs)
                     elif method == "GET":
                         response = client.get(url, **request_kwargs)
+                    elif method == "PATCH":
+                        response = client.patch(url, json=body, **request_kwargs)
                     else:
                         response = client.delete(url, **request_kwargs)
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
@@ -387,6 +397,71 @@ class FeishuAdapter:
             return response.content
         raise FeishuPermanentError("飞书 token 刷新后仍无法下载附件")
 
+    def create_card(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        card_json: dict[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> str:
+        """发送一张交互式卡片，返回 message_id。
+
+        复用 send() 的目标解析逻辑：有 message_id 走 reply，否则按 receive_id 投递。
+        idempotency_key 生成稳定 uuid，保证重试不重复发卡。
+        """
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise FeishuPermanentError("飞书卡片创建缺少幂等键")
+        message_id = str(target.get("message_id") or "").strip()
+        receive_id = str(target.get("receive_id") or "").strip()
+        receive_id_type = str(target.get("receive_id_type") or "").strip()
+        if not message_id and (not receive_id or not receive_id_type):
+            raise FeishuPermanentError("飞书卡片投递目标无效")
+        body: dict[str, Any] = {
+            "msg_type": "interactive",
+            "content": json.dumps(card_json, ensure_ascii=False),
+            "uuid": self._uuid(key, 0),
+        }
+        if message_id:
+            body["reply_in_thread"] = bool(target.get("reply_in_thread"))
+            data = self._post(
+                binding,
+                f"{FEISHU_API_BASE}/im/v1/messages/{message_id}/reply",
+                params=None,
+                body=body,
+            )
+        else:
+            body["receive_id"] = receive_id
+            data = self._post(
+                binding,
+                f"{FEISHU_API_BASE}/im/v1/messages",
+                params={"receive_id_type": receive_id_type},
+                body=body,
+            )
+        created_id = str((data.get("data") or {}).get("message_id") or "").strip()
+        if not created_id:
+            raise FeishuTransientError("飞书卡片创建响应缺少 message_id")
+        return created_id
+
+    def update_card(
+        self,
+        binding: ChannelBinding,
+        message_id: str,
+        card_json: dict[str, Any],
+    ) -> None:
+        """PATCH 更新已发送卡片的 content。"""
+        message_id = str(message_id or "").strip()
+        if not message_id:
+            raise FeishuPermanentError("飞书卡片更新缺少 message_id")
+        self._request(
+            binding,
+            "PATCH",
+            f"{FEISHU_API_BASE}/im/v1/messages/{message_id}",
+            params=None,
+            body={"content": json.dumps(card_json, ensure_ascii=False)},
+        )
+
     def send(
         self,
         binding: ChannelBinding,
@@ -405,12 +480,28 @@ class FeishuAdapter:
         receive_id_type = str(target.get("receive_id_type") or "").strip()
         if not message_id and (not receive_id or not receive_id_type):
             raise FeishuPermanentError("飞书投递目标无效")
-        for index, chunk in enumerate(split_channel_text(text)):
-            body: dict[str, Any] = {
-                "msg_type": "text",
-                "content": json.dumps({"text": chunk}, ensure_ascii=False),
-                "uuid": self._uuid(key, index),
-            }
+        rich_enabled = bool(get_settings().channel_rich_render_enabled)
+        use_rich = rich_enabled and has_markdown(text)
+        if use_rich:
+            chunks = split_markdown_by_lines(text, CHANNEL_TEXT_LIMIT)
+            if not chunks:
+                chunks = [text]
+        else:
+            chunks = split_channel_text(text)
+        for index, chunk in enumerate(chunks):
+            if use_rich:
+                post_content = render_feishu_post(parse_markdown(chunk))
+                body: dict[str, Any] = {
+                    "msg_type": "post",
+                    "content": json.dumps(post_content, ensure_ascii=False),
+                    "uuid": self._uuid(key, index),
+                }
+            else:
+                body = {
+                    "msg_type": "text",
+                    "content": json.dumps({"text": chunk}, ensure_ascii=False),
+                    "uuid": self._uuid(key, index),
+                }
             if message_id:
                 body["reply_in_thread"] = bool(target.get("reply_in_thread"))
                 self._post(

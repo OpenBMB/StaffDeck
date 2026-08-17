@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from threading import Lock
@@ -30,7 +30,14 @@ class AsyncJobQueue:
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ultrarag-job")
         self._lock = Lock()
         self._jobs: dict[str, AsyncJob] = {}
+        self._futures: dict[str, Future[Any]] = {}
         self._max_history = max_history
+        self._accepting = True
+
+    @property
+    def accepting(self) -> bool:
+        with self._lock:
+            return self._accepting
 
     def enqueue(
         self,
@@ -42,9 +49,21 @@ class AsyncJobQueue:
     ) -> AsyncJob:
         job = AsyncJob(id=new_id("job"), name=name, metadata=metadata or {})
         with self._lock:
+            if not self._accepting:
+                raise RuntimeError("AsyncJobQueue is shutting down and no longer accepts jobs")
             self._jobs[job.id] = job
             self._trim_history_locked()
-        self._executor.submit(self._run_job, job.id, func, args, kwargs)
+        try:
+            future = self._executor.submit(self._run_job, job.id, func, args, kwargs)
+        except Exception:
+            # A rejected submission was never accepted. Do not expose a
+            # phantom queued handle or let it consume history capacity.
+            with self._lock:
+                self._jobs.pop(job.id, None)
+            raise
+        with self._lock:
+            self._futures[job.id] = future
+        future.add_done_callback(lambda completed, job_id=job.id: self._finish_future(job_id, completed))
         return job
 
     def get(self, job_id: str) -> AsyncJob | None:
@@ -57,7 +76,29 @@ class AsyncJobQueue:
         return rows[:limit]
 
     def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=False)
+        with self._lock:
+            self._accepting = False
+        # An accepted in-memory job must reach a terminal state before shutdown
+        # returns. Pending work is cancelled; already-running work is drained.
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        with self._lock:
+            now = utc_now()
+            for job in self._jobs.values():
+                if job.status == "queued":
+                    job.status = "cancelled"
+                    job.finished_at = now
+                    job.error = "Job cancelled because the service is shutting down"
+            self._futures.clear()
+            self._trim_history_locked()
+
+    def _finish_future(self, job_id: str, future: Future[Any]) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job and future.cancelled() and job.status == "queued":
+                job.status = "cancelled"
+                job.finished_at = utc_now()
+                job.error = "Job cancelled because the service is shutting down"
+            self._futures.pop(job_id, None)
 
     def _run_job(
         self,
@@ -90,7 +131,7 @@ class AsyncJobQueue:
             (
                 job
                 for job in self._jobs.values()
-                if job.status in {"succeeded", "failed"}
+                if job.status in {"succeeded", "failed", "cancelled"}
             ),
             key=lambda item: item.created_at,
         )
@@ -98,7 +139,17 @@ class AsyncJobQueue:
             self._jobs.pop(job.id, None)
 
 
+_default_queue_lock = Lock()
 _default_queue = AsyncJobQueue()
+
+
+def start_async_jobs() -> AsyncJobQueue:
+    """Ensure a fresh process-local executor exists for this app lifecycle."""
+    global _default_queue
+    with _default_queue_lock:
+        if not _default_queue.accepting:
+            _default_queue = AsyncJobQueue()
+        return _default_queue
 
 
 def enqueue_async_job(
@@ -108,12 +159,17 @@ def enqueue_async_job(
     metadata: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> AsyncJob:
-    return _default_queue.enqueue(name, func, *args, metadata=metadata, **kwargs)
+    with _default_queue_lock:
+        queue = _default_queue
+    return queue.enqueue(name, func, *args, metadata=metadata, **kwargs)
 
 
 def get_async_job_queue() -> AsyncJobQueue:
-    return _default_queue
+    with _default_queue_lock:
+        return _default_queue
 
 
 def shutdown_async_jobs() -> None:
-    _default_queue.shutdown()
+    with _default_queue_lock:
+        queue = _default_queue
+    queue.shutdown()

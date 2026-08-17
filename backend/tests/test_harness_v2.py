@@ -686,14 +686,14 @@ def test_staged_image_is_both_a_sandbox_file_and_vision_payload(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
-    raw = b"img"
+    raw = b"\x89PNG\r\n\x1a\n"
     parsed = ChatAttachmentRead(
         id="image-staged",
         filename="screen.png",
         content_type="image/png",
         size=len(raw),
         kind="image",
-        data_url="data:image/png;base64,aW1n",
+        data_url="data:image/png;base64,iVBORw0KGgo=",
     )
     attachment = stage_chat_attachment(
         parsed,
@@ -2513,14 +2513,14 @@ def test_harness_agent_projects_only_validated_current_turn_images(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
-    data_url = "data:image/png;base64,aW1n"
+    data_url = "data:image/png;base64,iVBORw0KGgo="
     descriptors = materialize_task_attachments(
         [
             ChatAttachmentRead(
                 id="image-current-turn",
                 filename="screen.png",
                 content_type="image/png",
-                size=3,
+                size=8,
                 kind="image",
                 data_url=data_url,
             )
@@ -2555,7 +2555,7 @@ def test_harness_agent_projects_only_validated_current_turn_images(
                 id="image-current-turn",
                 filename="screen.png",
                 content_type="image/png",
-                size=3,
+                size=8,
                 kind="image",
                 data_url=data_url,
             )

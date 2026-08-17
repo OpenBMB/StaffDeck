@@ -1046,3 +1046,24 @@ def test_public_api_rejects_new_full_access_employee_keys(monkeypatch) -> None:
     )
     assert credential.status_code == 400
     assert credential.json()["code"] == "AGENT_SCOPE_INVALID"
+
+
+def test_internal_job_remains_durably_queued_when_executor_is_stopping(monkeypatch) -> None:
+    _client_instance, engine, _admin_token = _client(monkeypatch)
+
+    def reject_submission(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("executor is shutting down")
+
+    monkeypatch.setattr(public_jobs, "enqueue_async_job", reject_submission)
+    with Session(engine) as db:
+        created = public_jobs.create_internal_job(
+            db,
+            tenant_id="tenant_api",
+            kind="feedback.analyze",
+            request_payload={"feedback_id": "feedback-1"},
+        )
+        persisted = db.get(APIJob, created.id)
+
+    assert persisted is not None
+    assert persisted.status == "queued"
+    assert persisted.credential_id == "internal"

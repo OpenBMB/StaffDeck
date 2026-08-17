@@ -239,6 +239,7 @@ class ChatAttachmentRead(BaseModel):
 class ChatTurnResponse(BaseModel):
     reply: str
     session_id: str
+    runtime_error_code: Optional[str] = None
     router_decision: Optional[RouterDecision] = None
     step_result: Optional[StepAgentResult] = None
     tool_result: Optional[ToolResult] = None

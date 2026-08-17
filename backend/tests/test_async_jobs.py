@@ -1,7 +1,9 @@
-from threading import Event
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Thread
 from time import sleep
 from types import SimpleNamespace
 
+import app.async_jobs as async_jobs
 from app.async_jobs import AsyncJobQueue
 from app.core.agent_loop import AgentLoop
 from app.db.models import ChatSession, ModelConfig
@@ -27,6 +29,103 @@ def test_async_job_queue_runs_job_without_calling_inline() -> None:
     finally:
         release.set()
         queue.shutdown()
+
+
+def test_async_job_queue_rejects_enqueue_after_shutdown_without_phantom_job() -> None:
+    queue = AsyncJobQueue(max_workers=1)
+    queue.shutdown()
+
+    try:
+        queue.enqueue("test.rejected", lambda: None)
+    except RuntimeError as exc:
+        assert "no longer accepts jobs" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("enqueue after shutdown was accepted")
+
+    assert queue.list_recent() == []
+
+
+def test_async_job_queue_shutdown_terminalizes_all_accepted_jobs() -> None:
+    queue = AsyncJobQueue(max_workers=1)
+    started = Event()
+    release = Event()
+
+    def blocking_job() -> None:
+        started.set()
+        release.wait(2)
+
+    running = queue.enqueue("test.running", blocking_job)
+    queued = queue.enqueue("test.queued", lambda: None)
+    assert started.wait(1)
+
+    shutdown = Thread(target=queue.shutdown)
+    shutdown.start()
+    assert shutdown.is_alive()
+    release.set()
+    shutdown.join(2)
+
+    assert not shutdown.is_alive()
+    assert queue.get(running.id).status == "succeeded"  # type: ignore[union-attr]
+    assert queue.get(queued.id).status in {"succeeded", "cancelled"}  # type: ignore[union-attr]
+    assert all(job.status in {"succeeded", "failed", "cancelled"} for job in queue.list_recent())
+
+
+def test_enqueue_racing_with_shutdown_leaves_no_phantom_job() -> None:
+    queue = AsyncJobQueue(max_workers=1)
+    queue._executor.shutdown(wait=True)  # noqa: SLF001 - controlled race fixture.
+    submit_entered = Event()
+    release_submit = Event()
+    delegate = ThreadPoolExecutor(max_workers=1)
+
+    class GatedExecutor:
+        def submit(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            submit_entered.set()
+            release_submit.wait(2)
+            return delegate.submit(*args, **kwargs)
+
+        def shutdown(self, *, wait=True, cancel_futures=False):  # noqa: ANN001
+            delegate.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    queue._executor = GatedExecutor()  # type: ignore[assignment]  # noqa: SLF001
+    errors: list[Exception] = []
+
+    def enqueue() -> None:
+        try:
+            queue.enqueue("test.race", lambda: None)
+        except Exception as exc:  # noqa: BLE001 - capture the expected rejection.
+            errors.append(exc)
+
+    enqueue_thread = Thread(target=enqueue)
+    enqueue_thread.start()
+    assert submit_entered.wait(1)
+
+    shutdown_thread = Thread(target=queue.shutdown)
+    shutdown_thread.start()
+    shutdown_thread.join(1)
+    assert not shutdown_thread.is_alive()
+
+    release_submit.set()
+    enqueue_thread.join(2)
+    assert not enqueue_thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
+    assert queue.list_recent() == []
+
+
+def test_start_async_jobs_replaces_queue_closed_by_prior_app_lifecycle(monkeypatch) -> None:
+    closed_queue = AsyncJobQueue(max_workers=1)
+    closed_queue.shutdown()
+    monkeypatch.setattr(async_jobs, "_default_queue", closed_queue)
+
+    restarted_queue = async_jobs.start_async_jobs()
+
+    try:
+        assert restarted_queue is not closed_queue
+        assert restarted_queue.accepting is True
+        job = restarted_queue.enqueue("test.after-restart", lambda: None)
+        assert _eventually_succeeded(restarted_queue, job.id)
+    finally:
+        restarted_queue.shutdown()
 
 
 def test_agent_loop_enqueues_memory_capture_without_running_it_inline(monkeypatch) -> None:
