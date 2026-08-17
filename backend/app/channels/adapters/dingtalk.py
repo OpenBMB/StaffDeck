@@ -24,6 +24,13 @@ from app.channels.adapters.base import (
     stream_download_with_limit,
 )
 from app.channels.crypto import decrypt_channel_secret
+from app.channels.markdown_render import (
+    ensure_code_fences,
+    extract_dingtalk_title,
+    has_markdown,
+    split_markdown_by_lines,
+)
+from app.config import get_settings
 from app.db import engine
 from app.db.models import ChannelBinding
 
@@ -543,12 +550,31 @@ class DingTalkAdapter:
         expires_ms = int(target.get("session_webhook_expired_time") or 0)
         if expires_ms and expires_ms <= int(datetime.now(tz=UTC).timestamp() * 1000):
             raise DingTalkPermanentError("钉钉会话回复地址已过期")
+        rich_enabled = bool(get_settings().channel_rich_render_enabled)
+        use_rich = rich_enabled and has_markdown(text)
+        if use_rich:
+            chunks = split_markdown_by_lines(text, DINGTALK_TEXT_LIMIT)
+            if not chunks:
+                chunks = [text]
+        else:
+            chunks = split_channel_text(text, DINGTALK_TEXT_LIMIT)
         try:
             with self._client_factory() as client:
-                for chunk in split_channel_text(text, DINGTALK_TEXT_LIMIT):
+                for chunk in chunks:
+                    if use_rich:
+                        fenced = ensure_code_fences(chunk)
+                        body = {
+                            "msgtype": "markdown",
+                            "markdown": {
+                                "title": extract_dingtalk_title(fenced),
+                                "text": fenced,
+                            },
+                        }
+                    else:
+                        body = {"msgtype": "text", "text": {"content": chunk}}
                     response = client.post(
                         webhook,
-                        json={"msgtype": "text", "text": {"content": chunk}},
+                        json=body,
                         headers={"Content-Type": "application/json"},
                     )
                     data = response.json()

@@ -1026,6 +1026,17 @@ def process_inbound(
                 interaction_mode=interaction_mode,
             )
             _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 1, db_engine=use_engine)
+            from app.channels.feishu_trace import FeishuTraceStreamer, is_feishu_trace_enabled
+
+            trace_streamer: FeishuTraceStreamer | None = None
+            if is_feishu_trace_enabled(binding):
+                trace_streamer = FeishuTraceStreamer(
+                    binding,
+                    target,
+                    inbound.event_id,
+                    db=db,
+                )
+                trace_streamer.start()
             try:
                 def persist_span(event_type: str, payload: dict[str, object]) -> None:
                     event_payload = dict(payload)
@@ -1041,9 +1052,13 @@ def process_inbound(
                     db.commit()
 
                 with bind_span_sink(persist_span):
-                    response = AgentLoop(db).handle_turn(request)
+                    response = AgentLoop(
+                        db, event_sink=trace_streamer.on_event if trace_streamer else None
+                    ).handle_turn(request)
             except Exception as exc:
                 logger.exception("渠道入站处理失败 binding=%s event=%s", binding.id, inbound.event_id)
+                if trace_streamer:
+                    trace_streamer.abort(str(exc)[:200])
                 db.rollback()
                 event = db.get(ChannelInboundEvent, event_id)
                 chat_session = db.get(ChatSession, session_id)
@@ -1056,6 +1071,9 @@ def process_inbound(
                 _stage_error_notice(db, binding, chat_session)
                 db.commit()
                 return False
+            else:
+                if trace_streamer:
+                    trace_streamer.finish()
             finally:
                 _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 2, db_engine=use_engine)
             event.status = "done"

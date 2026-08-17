@@ -126,31 +126,37 @@ export default function FeishuSetup({
 
   if (configuredAppId && !editing) {
     return (
-      <div className="flex flex-wrap items-center gap-[10px] rounded-[10px] bg-[#fafbfc] p-[16px]">
-        <span className="text-[12px] text-[#464c5e]">凭证已配置</span>
-        <span className="text-[12px] text-[#858b9c]">App ID：{configuredAppId}</span>
-        {binding.bot_name && (
-          <span className="text-[12px] text-[#858b9c]">机器人：{binding.bot_name}</span>
-        )}
-        {binding.provider_tenant_key && (
-          <span className="text-[12px] text-[#858b9c]">
-            Tenant：{binding.provider_tenant_key}
-          </span>
-        )}
-        <StatusBadge tone={binding.connected ? 'green' : 'gray'}>
-          {binding.connected ? '已连接' : '未连接'}
-        </StatusBadge>
-        <UIButton
-          variant="outline"
-          onClick={() => {
-            setAppId(configuredAppId);
-            setAppSecret('');
-            setEditing(true);
-          }}
-          className={OUTLINE_BUTTON_CLASS}
-        >
-          轮换 Secret
-        </UIButton>
+      <div className="flex flex-col gap-[10px] rounded-[10px] bg-[#fafbfc] p-[16px]">
+        <div className="flex flex-wrap items-center gap-[10px]">
+          <span className="text-[12px] text-[#464c5e]">凭证已配置</span>
+          <span className="text-[12px] text-[#858b9c]">App ID：{configuredAppId}</span>
+          {binding.bot_name && (
+            <span className="text-[12px] text-[#858b9c]">机器人：{binding.bot_name}</span>
+          )}
+          {binding.provider_tenant_key && (
+            <span className="text-[12px] text-[#858b9c]">
+              Tenant：{binding.provider_tenant_key}
+            </span>
+          )}
+          <StatusBadge tone={binding.connected ? 'green' : 'gray'}>
+            {binding.connected ? '已连接' : '未连接'}
+          </StatusBadge>
+          <UIButton
+            variant="outline"
+            onClick={() => {
+              setAppId(configuredAppId);
+              setAppSecret('');
+              setEditing(true);
+            }}
+            className={OUTLINE_BUTTON_CLASS}
+          >
+            轮换 Secret
+          </UIButton>
+        </div>
+        <div className="rounded-[8px] bg-[#f4f6fa] px-[12px] py-[8px] text-[11px] leading-[1.6] text-[#667085]">
+          对话过程将逐步推送实时执行步骤卡片（SOP 匹配 / 步骤 / 工具 / 知识检索），结束后定格。
+          可通过环境变量 <code className="rounded bg-[#e8edf5] px-[3px] py-[1px] text-[#3f5fb8]">channel_feishu_trace_enabled</code> 关闭。
+        </div>
       </div>
     );
   }

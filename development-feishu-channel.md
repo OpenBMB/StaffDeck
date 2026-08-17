@@ -250,7 +250,18 @@ sha256("<delivery idempotency key>:<chunk index>")[:40]
 
 因此首版提供的是去重窗口内的 effectively-once；超过窗口的模糊投递优先避免重复，不宣称无限期 exactly-once。
 
-### 8.1 Token 与错误分类
+### 8.1 实时执行步骤卡片（trace streaming）
+
+飞书渠道支持在对话执行过程中实时展示智能体每一步（SOP 匹配 / 步骤推进 / 工具调用 / 知识检索），以一张独立交互式卡片（`msg_type=interactive`）随事件推进逐步 PATCH 更新，与正文回复分开。
+
+- **开关**：`channel_feishu_trace_enabled`（默认 `True`），仅影响飞书渠道；可在 binding `config_json` 中设置 `trace_enabled: false` 细粒度关闭。
+- **生命周期**：intake worker 在 `handle_turn` 前调 `FeishuTraceStreamer.start()` 创建"正在执行"卡片；执行中通过 `EventLog.event_sink` 钩子把每个 trace 事件转发给 `streamer.on_event`，复用网页端 `_event_trace_lines` 渲染为可读行，节流（最小 1s 间隔）PATCH 更新卡片；结束后 `finish()` 定格为完成状态，异常路径 `abort()` 定格为失败状态。
+- **adapter 扩展**：`create_card(binding, target, card_json, *, idempotency_key)` 发送交互式卡片并返回 `message_id`；`update_card(binding, message_id, card_json)` 调 `PATCH /im/v1/messages/{message_id}` 更新卡片内容。`_request()` 支持 PATCH 方法。
+- **解耦**：卡片是"进度展示"，不进入 outbox 重试体系；正文回复仍走 outbox 幂等投递，两者互不影响。
+- **失败隔离**：卡片创建/更新失败仅记日志，绝不影响 turn 成功与回复投递。
+- **崩溃恢复**：intake worker 崩溃时卡片可能停留在"正在执行"状态（可接受）；重启后不重放卡片更新。
+
+### 8.2 Token 与错误分类
 
 `tenant_access_token` 由后端 token provider 管理：
 

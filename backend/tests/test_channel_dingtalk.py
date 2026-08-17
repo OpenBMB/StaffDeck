@@ -10,6 +10,7 @@ from app.channels.adapters.dingtalk import (
     DINGTALK_ACK_EMOTION_ID,
     DINGTALK_ACK_EMOTION_NAME,
     DINGTALK_REACTION_HANDLE,
+    DINGTALK_TEXT_LIMIT,
     DingTalkAdapter,
     DingTalkPermanentError,
     DingTalkTokenProvider,
@@ -713,3 +714,161 @@ def test_envelope_round_trips_attachments_as_dataclass() -> None:
     assert decoded.attachments[0].download_params["download_code"] == "dc_001"
     assert decoded.attachments[1].filename == "report.xlsx"
     assert decoded.attachments[1].kind == "file"
+
+
+# ---------------------------------------------------------------------------
+# 富文本（markdown）渲染 — channel-render-plan §5.3
+# ---------------------------------------------------------------------------
+
+
+class _WebhookClient:
+    """记录所有 webhook POST 请求的假 client。"""
+
+    def __init__(self, response=None):
+        self.calls = []
+        self._response = response or _Response(200, {"errcode": 0})
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def post(self, url, json=None, headers=None, **_kwargs):
+        self.calls.append({"url": url, "body": json, "headers": headers or {}})
+        return self._response
+
+
+def _send_binding():
+    return ChannelBinding(
+        tenant_id="t",
+        agent_id="a",
+        channel="dingtalk",
+        config_json={"client_id": "client-1"},
+        credentials_enc=encrypt_channel_secret("secret"),
+    )
+
+
+def _send_target():
+    return {"session_webhook": "https://oapi.dingtalk.com/robot/send?session=x"}
+
+
+def test_dingtalk_markdown_render_uses_markdown_msgtype():
+    client = _WebhookClient()
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    adapter.send(_send_binding(), _send_target(), "**粗体** 列表", idempotency_key="d1")
+    assert len(client.calls) == 1
+    body = client.calls[0]["body"]
+    assert body["msgtype"] == "markdown"
+    assert body["markdown"]["text"] == "**粗体** 列表"
+    assert body["markdown"]["title"]
+
+
+def test_dingtalk_markdown_title_from_heading():
+    client = _WebhookClient()
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    adapter.send(_send_binding(), _send_target(), "# 周报\n正文", idempotency_key="d2")
+    body = client.calls[0]["body"]
+    assert body["markdown"]["title"] == "周报"
+
+
+def test_dingtalk_markdown_title_from_first_line_when_no_heading():
+    client = _WebhookClient()
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    # 含 markdown 语法（粗体）但无标题，title 取首行截断
+    adapter.send(_send_binding(), _send_target(), "**首行**\n第二行", idempotency_key="d3")
+    body = client.calls[0]["body"]
+    assert body["msgtype"] == "markdown"
+    assert body["markdown"]["title"] == "**首行**"
+
+
+def test_dingtalk_plain_text_still_uses_text_msgtype():
+    client = _WebhookClient()
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    adapter.send(_send_binding(), _send_target(), "hello world", idempotency_key="d4")
+    body = client.calls[0]["body"]
+    assert body["msgtype"] == "text"
+    assert body["text"]["content"] == "hello world"
+
+
+def test_dingtalk_rich_render_disabled_falls_back_to_text(monkeypatch):
+    settings = get_settings().model_copy(update={"channel_rich_render_enabled": False})
+    monkeypatch.setattr("app.channels.adapters.dingtalk.get_settings", lambda: settings)
+    client = _WebhookClient()
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    adapter.send(_send_binding(), _send_target(), "**粗体**", idempotency_key="d5")
+    body = client.calls[0]["body"]
+    assert body["msgtype"] == "text"
+    assert body["text"]["content"] == "**粗体**"
+
+
+def test_dingtalk_markdown_long_text_chunked_with_titles():
+    client = _WebhookClient()
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    long_md = "\n".join(f"# 标题{i}\n内容{i}" for i in range(800))
+    adapter.send(_send_binding(), _send_target(), long_md, idempotency_key="d6")
+    assert len(client.calls) >= 2
+    for call in client.calls:
+        assert call["body"]["msgtype"] == "markdown"
+        assert call["body"]["markdown"]["title"]
+        assert len(call["body"]["markdown"]["text"]) <= DINGTALK_TEXT_LIMIT
+
+
+def test_dingtalk_markdown_rejects_untrusted_webhook():
+    client = _WebhookClient()
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    with pytest.raises(DingTalkPermanentError):
+        adapter.send(
+            _send_binding(),
+            {"session_webhook": "https://attacker.example/steal"},
+            "**x**",
+            idempotency_key="d7",
+        )
+    assert client.calls == []
+
+
+def test_dingtalk_markdown_rejects_expired_webhook():
+    client = _WebhookClient()
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    target = {
+        "session_webhook": "https://oapi.dingtalk.com/robot/send?session=x",
+        "session_webhook_expired_time": 1,
+    }
+    with pytest.raises(DingTalkPermanentError, match="过期"):
+        adapter.send(_send_binding(), target, "**x**", idempotency_key="d8")
+    assert client.calls == []
+
+
+def test_dingtalk_markdown_send_failure_is_permanent():
+    client = _WebhookClient(_Response(400, {"errcode": 1}))
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    with pytest.raises(DingTalkPermanentError):
+        adapter.send(_send_binding(), _send_target(), "**x**", idempotency_key="d9")
+
+
+def test_dingtalk_markdown_5xx_is_transient():
+    client = _WebhookClient(_Response(503, {"errcode": 0}))
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    with pytest.raises(DingTalkTransientError):
+        adapter.send(_send_binding(), _send_target(), "**x**", idempotency_key="d10")
+
+
+def test_dingtalk_overlong_fenced_code_block_chunks_are_balanced():
+    """回归 P1：超长围栏代码块切分后，每个发送 chunk 必须围栏平衡（合法 Markdown）。"""
+    client = _WebhookClient()
+    adapter = DingTalkAdapter(client_factory=lambda: client)
+    code_lines = [f"line_{i} = {i}" for i in range(300)]
+    text = "```python\n" + "\n".join(code_lines) + "\n```"
+    adapter.send(_send_binding(), _send_target(), text, idempotency_key="d-long-code")
+    assert len(client.calls) >= 2
+    for call in client.calls:
+        body = call["body"]
+        assert body["msgtype"] == "markdown"
+        md_text = body["markdown"]["text"]
+        fence_count = sum(
+            1 for line in md_text.split("\n") if line.strip().startswith("```")
+        )
+        assert fence_count % 2 == 0, "fenced code block split across messages is unbalanced"
+        assert len(md_text) <= DINGTALK_TEXT_LIMIT
+
+

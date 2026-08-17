@@ -213,7 +213,7 @@ def test_daemon_recovers_received_event_without_memory_notification(
     calls = []
 
     class FakeAgentLoop:
-        def __init__(self, db):
+        def __init__(self, db, *, event_sink=None):
             self.db = db
 
         def handle_turn(self, request):
@@ -290,7 +290,7 @@ def test_group_event_creates_group_session_and_preserves_sender_context(
     requests = []
 
     class FakeAgentLoop:
-        def __init__(self, db):
+        def __init__(self, db, *, event_sink=None):
             self.db = db
 
         def handle_turn(self, request):
@@ -441,7 +441,7 @@ def test_startup_sweep_decodes_stale_feishu_processing_envelope(
     calls = []
 
     class FakeAgentLoop:
-        def __init__(self, db):
+        def __init__(self, db, *, event_sink=None):
             self.db = db
 
         def handle_turn(self, request):

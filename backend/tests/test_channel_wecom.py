@@ -778,7 +778,7 @@ def test_reconcile_does_not_stop_stream_while_revision_initializes(monkeypatch) 
 class RecordingAgentLoop:
     calls: list = []
 
-    def __init__(self, db):
+    def __init__(self, db, *, event_sink=None):
         self.db = db
 
     def handle_turn(self, request):
@@ -1570,7 +1570,7 @@ def test_delete_rejects_while_durable_turn_is_running(monkeypatch) -> None:
     release_turn = threading.Event()
 
     class BlockingAgentLoop:
-        def __init__(self, db):
+        def __init__(self, db, *, event_sink=None):
             self.db = db
 
         def handle_turn(self, request):
