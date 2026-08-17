@@ -148,3 +148,58 @@ def test_frontmatter_for_skill_reads_existing_optional_fields() -> None:
     assert fields["compatibility"] == "Needs docker"
     assert fields["allowed_tools"] == "Bash"
     assert fields["metadata"] == {"author": "me"}
+
+
+# ---------- 复核回归:真 YAML 解析、幂等保存、严格模式 ----------
+
+
+def test_repeated_save_is_idempotent_with_special_chars() -> None:
+    """评审复现:license=MIT "Enterprise" \\ license 反复保存不再累积转义。"""
+    license_value = 'MIT "Enterprise" \\ license'
+    composed = compose_skill_markdown(
+        name="my-skill", description="示例", body="# 正文", license=license_value
+    )
+    # 第一次解析回读:值精确还原
+    metadata, body = split_frontmatter(composed)
+    assert metadata["license"] == license_value
+    # 再次组装:输出与第一次完全一致(幂等)
+    recomposed = compose_skill_markdown(
+        name="my-skill",
+        description="示例",
+        body=body,
+        license=str(metadata["license"]),
+    )
+    assert recomposed == composed
+    metadata2, _ = split_frontmatter(recomposed)
+    assert metadata2["license"] == license_value
+
+
+def test_strict_mode_rejects_invalid_frontmatter() -> None:
+    import pytest
+
+    # 未闭合
+    with pytest.raises(ValueError, match="未闭合"):
+        split_frontmatter("---\nname: a\n正文没有结束分隔", strict=True)
+    # 非法 YAML
+    with pytest.raises(ValueError, match="非法"):
+        split_frontmatter("---\nname: [unclosed\n---\n正文", strict=True)
+    # 顶层不是映射
+    with pytest.raises(ValueError, match="键值映射"):
+        split_frontmatter("---\n- just\n- a list\n---\n正文", strict=True)
+    # 非严格模式(读路径)回退原文,不抛
+    metadata, body = split_frontmatter("---\nname: [unclosed\n---\n正文")
+    assert metadata == {}
+    assert body.startswith("---")
+
+
+def test_compose_output_is_valid_yaml_with_nested_metadata() -> None:
+    composed = compose_skill_markdown(
+        name="data-analysis",
+        description="数据分析:含冒号、# 井号 与\"引号\"",
+        body="# 正文",
+        metadata={"author": "某公司", "tags": "a, b"},
+    )
+    metadata, _ = split_frontmatter(composed, strict=True)
+    assert metadata["name"] == "data-analysis"
+    assert "冒号" in metadata["description"]
+    assert metadata["metadata"] == {"author": "某公司", "tags": "a, b"}

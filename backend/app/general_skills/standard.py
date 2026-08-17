@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import yaml
+
 # name:1-64,小写字母/数字/连字符,不可首尾连字符,不可连续连字符
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 SKILL_NAME_MAX = 64
@@ -43,62 +45,60 @@ def validate_skill_description(description: str, *, required: bool) -> str | Non
     return None
 
 
-def split_frontmatter(markdown: str) -> tuple[dict[str, Any], str]:
+def validate_skill_compatibility(compatibility: str) -> str | None:
+    """校验规范 compatibility 字段(可选,≤500 字符)。"""
+    text = (compatibility or "").strip()
+    if len(text) > SKILL_COMPATIBILITY_MAX:
+        return f"compatibility 不能超过 {SKILL_COMPATIBILITY_MAX} 字符"
+    return None
+
+
+def split_frontmatter(markdown: str, *, strict: bool = False) -> tuple[dict[str, Any], str]:
     """拆出 YAML frontmatter 与正文;无 frontmatter 时返回 ({}, 原文)。
 
-    轻量解析:支持标量、键值嵌套(metadata:)与简单列表,与既有导入解析口径一致。
+    使用真正的 YAML 解析(PyYAML safe_load),重复保存不会累积转义。
+    strict=True 时,frontmatter 未闭合/YAML 非法/顶层不是映射 均抛 ValueError
+    (保存路径使用);strict=False(读路径)遇到非法 frontmatter 回退 ({}, 原文)。
     """
-    lines = (markdown or "").splitlines()
+    text = markdown or ""
+    lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
-        return {}, markdown or ""
-    metadata: dict[str, Any] = {}
-    body_start = len(lines)
-    current_map_key = ""
+        return {}, text
+    closing = None
     for index, line in enumerate(lines[1:], start=1):
-        stripped = line.strip()
-        if stripped == "---":
-            body_start = index + 1
+        if line.strip() == "---":
+            closing = index
             break
-        if not stripped or stripped.startswith("#"):
-            continue
-        # metadata: 下的嵌套键值(缩进)
-        if line.startswith((" ", "\t")) and current_map_key and ":" in stripped:
-            key, value = stripped.split(":", 1)
-            key = key.strip()
-            if key and isinstance(metadata.get(current_map_key), dict):
-                metadata[current_map_key][key] = _parse_value(value.strip())
-            continue
-        current_map_key = ""
-        if ":" not in stripped:
-            continue
-        key, value = stripped.split(":", 1)
-        key = key.strip()
-        if not key:
-            continue
-        value = value.strip()
-        if not value:
-            # 可能是嵌套映射(如 metadata:)——先占位字典
-            metadata[key] = {}
-            current_map_key = key
-        else:
-            metadata[key] = _parse_value(value)
-    return metadata, "\n".join(lines[body_start:]).lstrip("\n")
+    if closing is None:
+        if strict:
+            raise ValueError("SKILL.md 的 YAML frontmatter 未闭合(缺少结束 --- 行)")
+        return {}, text
+    raw = "\n".join(lines[1:closing])
+    body = "\n".join(lines[closing + 1:]).lstrip("\n")
+    try:
+        parsed = yaml.safe_load(raw) if raw.strip() else {}
+    except yaml.YAMLError as exc:
+        if strict:
+            raise ValueError(f"SKILL.md 的 YAML frontmatter 非法:{exc}") from exc
+        return {}, text
+    if parsed is None:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        if strict:
+            raise ValueError("SKILL.md 的 YAML frontmatter 顶层必须是键值映射")
+        return {}, text
+    return parsed, body
 
 
-def _parse_value(value: str) -> Any:
-    cleaned = value.strip().strip("'\"")
-    if cleaned.startswith("[") and cleaned.endswith("]"):
-        return [item.strip().strip("'\"") for item in cleaned[1:-1].split(",") if item.strip()]
-    return cleaned
-
-
-def _yaml_scalar(value: str) -> str:
-    """输出安全的 YAML 标量(含特殊字符时加引号)。"""
-    text = str(value)
-    if re.search(r"[:#\[\]{}&*!|>'\"%@`\s]", text):
-        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
-    return text
+def _dump_frontmatter(fields: dict[str, Any]) -> str:
+    """用真实 YAML 序列化输出 frontmatter(保序、Unicode 原文、自动转义)。"""
+    return yaml.safe_dump(
+        fields,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+        width=10**6,
+    ).strip()
 
 
 def compose_skill_markdown(
@@ -112,7 +112,7 @@ def compose_skill_markdown(
     metadata: dict[str, Any] | None = None,
 ) -> str:
     """按规范组装 SKILL.md(frontmatter + 正文);metadata 中的保留键被忽略。"""
-    lines = ["---", f"name: {_yaml_scalar(name)}", f"description: {_yaml_scalar(description)}"]
+    fields: dict[str, Any] = {"name": name, "description": description}
     optional = {
         "license": license.strip(),
         "compatibility": compatibility.strip(),
@@ -120,20 +120,15 @@ def compose_skill_markdown(
     }
     for key in _OPTIONAL_SCALAR_KEYS:
         if optional[key]:
-            lines.append(f"{key}: {_yaml_scalar(optional[key])}")
+            fields[key] = optional[key]
     extra_metadata = {
         str(key): value
         for key, value in (metadata or {}).items()
         if str(key) not in {"name", "description", *_OPTIONAL_SCALAR_KEYS} and str(key).strip()
     }
     if extra_metadata:
-        lines.append("metadata:")
-        for key, value in extra_metadata.items():
-            lines.append(f"  {key}: {_yaml_scalar(value)}")
-    lines.append("---")
-    lines.append("")
-    lines.append((body or "").strip())
-    return "\n".join(lines).rstrip("\n") + "\n"
+        fields["metadata"] = extra_metadata
+    return "---\n" + _dump_frontmatter(fields) + "\n---\n\n" + (body or "").strip() + "\n"
 
 
 def frontmatter_for_skill(skill: Any) -> dict[str, Any]:
