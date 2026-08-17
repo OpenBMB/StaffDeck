@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 _MIN_UPDATE_INTERVAL = 1.0
 # 单张卡片最多展示的步骤行数，超出截断尾部历史。
 _MAX_LINES = 60
-# 后台 worker 线程 join 超时（秒）：finish/abort 后等待最终卡片更新。
-_WORKER_JOIN_TIMEOUT = 8.0
 
 
 class _SinkEvent:
@@ -54,9 +52,10 @@ class FeishuTraceStreamer:
       abort()  → 异常路径定格为失败状态
 
     所有 HTTP I/O 在后台 worker 线程执行，on_event 不阻塞调用方
-    （即 AgentLoop 主线程）。start/finish/abort 同样非阻塞，
-    finish/abort 会 join worker 最多 _WORKER_JOIN_TIMEOUT 秒以确保
-    最终卡片更新被尝试。
+    （即 AgentLoop 主线程）。start/finish/abort 同样非阻塞：
+    finish/abort 仅入队最终状态任务后立即返回，不 join worker，
+    避免飞书网络异常拖住会话锁。worker 为 daemon 线程，进程退出时
+    自动结束；最终卡片更新由 worker 异步完成，失败仅记日志。
 
     全程 try/except 隔离：卡片创建/更新失败仅记日志，绝不抛出，不影响 turn
     成功与正文回复投递。
@@ -113,7 +112,8 @@ class FeishuTraceStreamer:
             try:
                 task = self._task_queue.get(timeout=0.05)
             except queue.Empty:
-                if self._draining:
+                # finish/abort 已调用且队列排空：worker 可退出
+                if self._draining and self._task_queue.empty():
                     return
                 continue
             if task is None:
@@ -126,14 +126,25 @@ class FeishuTraceStreamer:
                     self._binding.id,
                     self._turn_id,
                 )
+            # 任务执行后再次检查：若已在 draining 且队列空，退出
+            if self._draining and self._task_queue.empty():
+                return
 
-    def _stop_worker(self, *, timeout: float = _WORKER_JOIN_TIMEOUT) -> None:
+    def _stop_worker(self, *, timeout: float = 0.0) -> None:
+        """标记 worker 进入 draining 状态。
+
+        默认 timeout=0 表示不阻塞等待（用于 finish/abort 路径）：
+        仅设置 _draining 标志，worker 在处理完已排队任务（含最终状态
+        patch 及 _do_create_card 的补发任务）后自行退出。
+        timeout>0 时阻塞 join 指定秒数（仅测试场景使用）。
+        """
         if not self._worker_started or self._worker is None:
             return
         self._draining = True
-        self._worker.join(timeout=timeout)
-        self._worker_started = False
-        self._worker = None
+        if timeout > 0:
+            self._worker.join(timeout=timeout)
+            self._worker_started = False
+            self._worker = None
 
     # ---- adapter / skill names ----
 
@@ -188,6 +199,9 @@ class FeishuTraceStreamer:
                     line["state"] = "completed"
         if self._message_id:
             self._task_queue.put(_PatchCardTask(state="completed", force=True))
+        # 不 join worker：避免飞书网络异常阻塞会话锁。
+        # worker 为 daemon 线程，会处理完已排队任务（含最终状态 patch）后退出。
+        # 卡片尚未创建时，_do_create_card 检测 _final_state 会补发最终状态。
         self._stop_worker()
 
     def abort(self, reason: str | None = None) -> None:

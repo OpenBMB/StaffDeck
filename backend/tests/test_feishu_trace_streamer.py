@@ -69,12 +69,23 @@ def _wait_for_updates(adapter: FakeAdapter, count: int, timeout: float = 2.0) ->
         time.sleep(0.005)
 
 
+def _wait_for_worker_done(streamer: FeishuTraceStreamer, timeout: float = 2.0) -> None:
+    """等待 worker 线程退出（draining 完成）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        worker = streamer._worker
+        if worker is None or not worker.is_alive():
+            return
+        time.sleep(0.005)
+
+
 def test_start_creates_card_and_saves_message_id() -> None:
     adapter = FakeAdapter()
     streamer = _make_streamer(adapter=adapter)
     streamer.start()
     _wait_for_card(streamer)
     streamer.finish()
+    _wait_for_worker_done(streamer)
     assert streamer._message_id == "om_card_123"
     assert len(adapter.create_calls) == 1
     call = adapter.create_calls[0]
@@ -91,6 +102,7 @@ def test_start_failure_does_not_raise_and_disables_updates() -> None:
     _wait_for_card(streamer)
     streamer.on_event("step_result", {"turn_id": "turn_1", "reply": "ok"})
     streamer.finish()
+    _wait_for_worker_done(streamer)
     assert len(adapter.update_calls) == 0
 
 
@@ -105,6 +117,7 @@ def test_on_event_renders_line_and_patches_card() -> None:
         {"turn_id": "turn_1", "user_intent": "退款", "reason": "匹配退款SOP"},
     )
     streamer.finish()
+    _wait_for_worker_done(streamer)
 
     assert len(adapter.update_calls) >= 1
     last_card = adapter.update_calls[-1]["card"]
@@ -128,6 +141,7 @@ def test_throttle_merges_rapid_events() -> None:
     assert throttled_updates <= 1
 
     streamer.finish()
+    _wait_for_worker_done(streamer)
     final_updates = len(adapter.update_calls)
     assert final_updates > throttled_updates
     last_card = adapter.update_calls[-1]["card"]
@@ -142,6 +156,7 @@ def test_update_failure_does_not_raise() -> None:
     _wait_for_card(streamer)
     streamer.on_event("router_decision_created", {"turn_id": "t1"})
     streamer.finish()
+    _wait_for_worker_done(streamer)
 
 
 def test_finish_marks_running_lines_completed() -> None:
@@ -151,6 +166,7 @@ def test_finish_marks_running_lines_completed() -> None:
     _wait_for_card(streamer)
     streamer.on_event("tool_call_started", {"turn_id": "t1", "name": "lookup"})
     streamer.finish()
+    _wait_for_worker_done(streamer)
 
     last_card = adapter.update_calls[-1]["card"]
     assert last_card["header"]["template"] == "green"
@@ -163,6 +179,7 @@ def test_abort_marks_failed_state() -> None:
     _wait_for_card(streamer)
     streamer.on_event("tool_call_started", {"turn_id": "t1", "name": "lookup"})
     streamer.abort("boom")
+    _wait_for_worker_done(streamer)
 
     last_card = adapter.update_calls[-1]["card"]
     assert last_card["header"]["template"] == "red"
@@ -174,6 +191,7 @@ def test_on_event_after_finish_is_ignored() -> None:
     streamer.start()
     _wait_for_card(streamer)
     streamer.finish()
+    _wait_for_worker_done(streamer)
     updates_before = len(adapter.update_calls)
     streamer.on_event("step_result", {"turn_id": "t1"})
     assert len(adapter.update_calls) == updates_before
@@ -201,8 +219,8 @@ def test_on_event_does_not_block_when_card_not_created() -> None:
     # 不等待卡片创建——立即发送事件
     streamer.on_event("router_decision_created", {"turn_id": "t1"})
     streamer.on_event("step_result", {"turn_id": "t1"})
-    # finish 会 join worker，确保所有排队任务完成
     streamer.finish()
+    _wait_for_worker_done(streamer)
     assert len(adapter.create_calls) == 1
     # 卡片创建后应有一次最终更新
     assert len(adapter.update_calls) >= 1
@@ -218,7 +236,71 @@ def test_finish_before_card_created_still_sends_final_state() -> None:
     streamer.on_event("router_decision_created", {"turn_id": "t1"})
     # 立即 finish，不等卡片创建
     streamer.finish()
+    _wait_for_worker_done(streamer)
     assert len(adapter.create_calls) == 1
+    assert len(adapter.update_calls) >= 1
+    last_card = adapter.update_calls[-1]["card"]
+    assert last_card["header"]["template"] == "green"
+
+
+class _SlowAdapter(FakeAdapter):
+    """模拟飞书网络慢：create_card/update_card 阻塞指定秒数。"""
+
+    def __init__(self, *, delay: float, fail_create: bool = False, fail_update: bool = False) -> None:
+        super().__init__(fail_create=fail_create, fail_update=fail_update)
+        self.delay = delay
+
+    def create_card(self, binding, target, card_json, *, idempotency_key) -> str:
+        time.sleep(self.delay)
+        return super().create_card(binding, target, card_json, idempotency_key=idempotency_key)
+
+    def update_card(self, binding, message_id, card_json) -> None:
+        time.sleep(self.delay)
+        super().update_card(binding, message_id, card_json)
+
+
+def test_finish_does_not_block_on_slow_network() -> None:
+    """回归：finish 不应因飞书网络慢而阻塞主线程。
+
+    之前的实现 finish 会 join worker 最长 8 秒，飞书网络异常时
+    会拖住会话锁。改为非阻塞后 finish 应在远小于网络延迟的时间内返回。
+    """
+    adapter = _SlowAdapter(delay=2.0)
+    streamer = _make_streamer(adapter=adapter)
+    streamer.start()
+    _wait_for_card(streamer)
+    # 卡片已创建，finish 会入队最终状态 patch（worker 执行时 sleep 2s）
+    start = time.monotonic()
+    streamer.finish()
+    elapsed = time.monotonic() - start
+    # finish 应立即返回，不应等待 2s 的 update_card 完成
+    assert elapsed < 0.5, f"finish blocked for {elapsed:.2f}s"
+    _wait_for_worker_done(streamer, timeout=5.0)
+
+
+def test_abort_does_not_block_on_slow_network() -> None:
+    """回归：abort 不应因飞书网络慢而阻塞主线程。"""
+    adapter = _SlowAdapter(delay=2.0)
+    streamer = _make_streamer(adapter=adapter)
+    streamer.start()
+    _wait_for_card(streamer)
+    start = time.monotonic()
+    streamer.abort("boom")
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.5, f"abort blocked for {elapsed:.2f}s"
+    _wait_for_worker_done(streamer, timeout=5.0)
+
+
+def test_finish_then_worker_delivers_final_state() -> None:
+    """finish 非阻塞返回后，worker 仍应异步送达最终状态。"""
+    adapter = FakeAdapter()
+    streamer = _make_streamer(adapter=adapter)
+    streamer.start()
+    _wait_for_card(streamer)
+    streamer.on_event("tool_call_started", {"turn_id": "t1", "name": "lookup"})
+    streamer.finish()
+    # finish 立即返回，此时最终状态可能尚未送达
+    _wait_for_worker_done(streamer)
     assert len(adapter.update_calls) >= 1
     last_card = adapter.update_calls[-1]["card"]
     assert last_card["header"]["template"] == "green"

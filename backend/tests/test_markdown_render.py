@@ -526,6 +526,68 @@ def test_split_overlong_single_code_line_tilde_content_recovered():
     assert "".join(recovered) == long_line
 
 
+def test_split_every_chunk_respects_limit_overlong_single_line():
+    """回归：围栏内单行超长硬切时，每个 chunk 长度必须 <= limit。
+
+    之前的实现先截取 limit 字符再添加围栏，导致 chunk 实际长度
+    达到 limit + 围栏开销（如 100 + 14 = 114），超过渠道限制。
+    """
+    long_line = "x" * 500
+    text = f"```python\n{long_line}\n```"
+    chunks = split_markdown_by_lines(text, 100)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert len(chunk) <= 100, f"chunk exceeds limit: len={len(chunk)} chunk={chunk[:60]!r}"
+
+
+def test_split_every_chunk_respects_limit_overlong_block():
+    """回归：超长围栏代码块（多行）切分时，每个 chunk 长度必须 <= limit。"""
+    code_lines = [f"line_{i} = {i}" for i in range(200)]
+    text = "```python\n" + "\n".join(code_lines) + "\n```"
+    chunks = split_markdown_by_lines(text, 100)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert len(chunk) <= 100, f"chunk exceeds limit: len={len(chunk)} chunk={chunk[:60]!r}"
+
+
+def test_split_every_chunk_respects_limit_tilde_fence():
+    """~~~ 围栏超长单行：每个 chunk 长度必须 <= limit。"""
+    long_line = "y" * 300
+    text = f"~~~python\n{long_line}\n~~~"
+    chunks = split_markdown_by_lines(text, 80)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert len(chunk) <= 80, f"chunk exceeds limit: len={len(chunk)} chunk={chunk[:60]!r}"
+
+
+def test_split_every_chunk_respects_limit_no_lang():
+    """无语言标识围栏超长单行：每个 chunk 长度必须 <= limit。"""
+    long_line = "z" * 300
+    text = f"```\n{long_line}\n```"
+    chunks = split_markdown_by_lines(text, 80)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert len(chunk) <= 80, f"chunk exceeds limit: len={len(chunk)} chunk={chunk[:60]!r}"
+
+
+def test_split_overlong_single_code_line_still_recovers_content_with_limit():
+    """围栏内单行超长：在保证 len(chunk) <= limit 的同时内容仍可完整恢复。"""
+    long_line = "x" * 500
+    text = f"```python\n{long_line}\n```"
+    chunks = split_markdown_by_lines(text, 100)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert len(chunk) <= 100
+        assert _count_fences(chunk) % 2 == 0
+    recovered: list[str] = []
+    for chunk in chunks:
+        blocks = parse_markdown(chunk)
+        for block in blocks:
+            if isinstance(block, CodeBlock):
+                recovered.append(block.text)
+    assert "".join(recovered) == long_line
+
+
 # ---------------------------------------------------------------------------
 # extract_dingtalk_title
 # ---------------------------------------------------------------------------

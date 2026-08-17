@@ -548,15 +548,33 @@ def _is_fence_close(line: str, fence_marker: str) -> bool:
     return bool(re.match(rf"^\s*{fence_char}{{3,}}\s*$", line))
 
 
+def _fence_overhead(fence_marker: str, lang: str) -> int:
+    """计算包裹一个 chunk 所需的围栏开销（字符数）。
+
+    形如 ``open_fence\\n content \\nfence_marker``，开销 =
+    len(open_fence) + 1 (\\n) + 1 (\\n) + len(fence_marker)。
+    """
+    open_fence = f"{fence_marker}{lang}" if lang else fence_marker
+    return len(open_fence) + 1 + 1 + len(fence_marker)
+
+
+def _wrap_in_fence(content: str, fence_marker: str, lang: str) -> str:
+    """将 content 包裹在围栏代码块中，返回自包含的 markdown。"""
+    open_fence = f"{fence_marker}{lang}" if lang else fence_marker
+    return f"{open_fence}\n{content}\n{fence_marker}"
+
+
 def split_markdown_by_lines(text: str, limit: int) -> list[str]:
-    """按行边界切分 markdown，保证不破坏围栏代码块。
+    """按行边界切分 markdown，保证不破坏围栏代码块且每个 chunk 长度 <= limit。
 
     用于富文本路径的分块：优先在空行处切分，其次在普通行边界。
-    关键约束：当切分点落在围栏代码块内部时，会在前一段末尾补上闭合围栏、
-    在后一段开头重新打开同语言的围栏，使每个 chunk 都是合法且自包含的 Markdown，
-    飞书 parse_markdown 与钉钉 ensure_code_fences 均可独立正确处理。
-
-    单行超限时硬切该行（此时围栏已在行外，不会出现半截围栏问题）。
+    关键约束：
+    1. 当切分点落在围栏代码块内部时，会在前一段末尾补上闭合围栏、
+       在后一段开头重新打开同语言的围栏，使每个 chunk 都是合法且自包含的 Markdown。
+    2. 每个 chunk 的长度严格不超过 limit：累积阶段 current_len 始终预留
+       闭合围栏开销，围栏代码块内的硬切也预留围栏开销。
+    3. 若围栏开销本身 >= limit（极小 limit 场景），降级为不包裹围栏的纯文本硬切，
+       避免无限循环。
     """
     if not text:
         return []
@@ -565,9 +583,17 @@ def split_markdown_by_lines(text: str, limit: int) -> list[str]:
     lines = text.split("\n")
     chunks: list[str] = []
     current_lines: list[str] = []
+    # current_len 跟踪当前累积内容（含未来 flush 时追加的闭合围栏）的总长度。
+    # 即：若处于围栏内，current_len 已包含 "open_fence\\n ... \\n close_fence" 的完整长度。
     current_len = 0
     # 当前处于围栏代码块内时的状态：None 表示不在代码块内
     fence_state: tuple[str, str] | None = None  # (fence_marker, language)
+
+    def _close_fence_len() -> int:
+        """若处于围栏内，返回 flush 时追加的 "\\n" + close_fence 的长度。"""
+        if fence_state is None:
+            return 0
+        return 1 + len(fence_state[0])
 
     def _flush() -> None:
         nonlocal current_lines, current_len
@@ -581,6 +607,15 @@ def split_markdown_by_lines(text: str, limit: int) -> list[str]:
         current_lines = []
         current_len = 0
 
+    def _start_chunk_with_fence(line: str, line_len: int) -> None:
+        """在新 chunk 开头重新打开围栏并放入 line（fence_state 非 None 时调用）。"""
+        nonlocal current_lines, current_len
+        fence_marker, lang = fence_state  # type: ignore[misc]
+        open_fence = f"{fence_marker}{lang}" if lang else fence_marker
+        current_lines = [open_fence, line]
+        # open_fence + \n + line + \n + close_fence
+        current_len = len(open_fence) + 1 + len(line) + 1 + len(fence_marker)
+
     for line in lines:
         line_with_newline = line + "\n"
         line_len = len(line_with_newline)
@@ -592,23 +627,28 @@ def split_markdown_by_lines(text: str, limit: int) -> list[str]:
             fence_open = None
 
         # 单行超长：先 flush 已累积内容，再硬切该行。
-        # 注意：若该行是围栏起始行本身超长，不会发生（围栏行很短）；
-        # 若是代码块内的一行超长，flush 会闭合围栏，然后硬切该代码行。
         if line_len > limit:
             _flush()
             remaining = line
             if fence_state is not None:
                 # 围栏内的超长行：每个硬切片段都需包裹围栏，确保独立可渲染为代码块
                 fence_marker, lang = fence_state
-                open_fence = f"{fence_marker}{lang}" if lang else fence_marker
-                while len(remaining) > limit:
-                    chunk_content = remaining[:limit]
-                    chunks.append(f"{open_fence}\n{chunk_content}\n{fence_marker}")
-                    remaining = remaining[limit:]
+                overhead = _fence_overhead(fence_marker, lang)
+                if overhead >= limit:
+                    # 极小 limit：围栏开销已超限，降级为纯文本硬切（不包裹围栏）
+                    while len(remaining) > limit:
+                        chunks.append(remaining[:limit])
+                        remaining = remaining[limit:]
+                else:
+                    # 预留围栏开销后切分，保证包裹后 chunk <= limit
+                    content_budget = limit - overhead
+                    while len(remaining) > content_budget:
+                        chunk_content = remaining[:content_budget]
+                        chunks.append(_wrap_in_fence(chunk_content, fence_marker, lang))
+                        remaining = remaining[content_budget:]
                 if remaining:
-                    reopen = open_fence
-                    current_lines = [reopen, remaining]
-                    current_len = len(current_lines[0]) + 1 + len(remaining) + 1
+                    # 余下部分作为新 chunk 的起点，current_len 已含闭合围栏预留
+                    _start_chunk_with_fence(remaining, len(remaining) + 1)
             else:
                 while len(remaining) > limit:
                     chunks.append(remaining[:limit])
@@ -619,14 +659,40 @@ def split_markdown_by_lines(text: str, limit: int) -> list[str]:
             # 围栏状态不因普通代码行变化
             continue
 
+        # 判断加入该行后总长是否超限。
+        # current_len 已含闭合围栏预留（若处于围栏内），所以 current_len + line_len
+        # 就是加入该行后 flush 的真实 chunk 长度。
         if current_len + line_len > limit:
             _flush()
             # 新段开头：若仍处于围栏代码块内，重新打开围栏
             if fence_state is not None:
                 fence_marker, lang = fence_state
                 open_fence = f"{fence_marker}{lang}" if lang else fence_marker
-                current_lines = [open_fence, line]
-                current_len = len(open_fence) + 1 + line_len
+                # 重新打开围栏 + 该行 + 闭合围栏 可能超 limit：对该行硬切
+                full_len = len(open_fence) + 1 + len(line) + 1 + len(fence_marker)
+                if full_len > limit:
+                    overhead = _fence_overhead(fence_marker, lang)
+                    if overhead < limit:
+                        content_budget = limit - overhead
+                        remaining = line
+                        while len(remaining) > content_budget:
+                            chunk_content = remaining[:content_budget]
+                            chunks.append(_wrap_in_fence(chunk_content, fence_marker, lang))
+                            remaining = remaining[content_budget:]
+                        if remaining:
+                            _start_chunk_with_fence(remaining, len(remaining) + 1)
+                        # 已处理该行，更新围栏状态后跳过下方累积逻辑
+                        if fence_open is not None:
+                            fence_state = fence_open
+                        elif fence_state is not None and _is_fence_close(line, fence_state[0]):
+                            fence_state = None
+                        continue
+                    else:
+                        # 降级：不包裹围栏
+                        current_lines = [line]
+                        current_len = line_len
+                else:
+                    _start_chunk_with_fence(line, line_len)
             else:
                 current_lines = [line]
                 current_len = line_len
@@ -634,10 +700,22 @@ def split_markdown_by_lines(text: str, limit: int) -> list[str]:
             current_lines.append(line)
             current_len += line_len
 
-        # 更新围栏状态
+        # 更新围栏状态：
+        # - 进入围栏时，current_len 需加上闭合围栏预留（\n + close_fence）
+        # - 离开围栏时，current_len 需减去之前加的预留（因为该行就是闭合行，已含在 line_len 中）
         if fence_open is not None:
             fence_state = fence_open
+            # 进入围栏：预留闭合围栏开销（\n + fence_marker）
+            current_len += 1 + len(fence_open[0])
         elif fence_state is not None and _is_fence_close(line, fence_state[0]):
+            # 离开围栏：该行就是闭合行，已被 current_len 计入（作为普通行），
+            # 但之前预留的 \n + close_fence 不再需要（因为 close_fence 就是该行本身）。
+            # 实际上该行作为 line_len 加入时含 \n，而 join 中 close 行前也有 \n，
+            # 所以 current_len 正好。只需清除预留的额外 \n + close_fence 长度。
+            # 但要小心：进入围栏时加了 (1 + len(close))，现在该行就是 close，
+            # line_len = len(close) + 1，所以 current_len 多了 (1 + len(close))。
+            # 需要减去 (1 + len(close))。
+            current_len -= 1 + len(fence_state[0])
             fence_state = None
 
     _flush()
