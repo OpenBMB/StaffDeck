@@ -5,8 +5,6 @@ import threading
 import time
 
 import httpx
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -44,10 +42,7 @@ def test_decrypt_wechat_media_aes_ecb_pkcs7() -> None:
     key = b"0123456789abcdef"
     aes_key = base64.b64encode(key.hex().encode("ascii")).decode("ascii")
     plaintext = b"\xff\xd8\xffjpeg-data\xff\xd9"
-    padder = padding.PKCS7(algorithms.AES.block_size).padder()
-    padded = padder.update(plaintext) + padder.finalize()
-    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
-    encrypted = encryptor.update(padded) + encryptor.finalize()
+    encrypted = bytes.fromhex("06780e9084a586882bfbed1c7dbd461b")
 
     assert decrypt_wechat_media(encrypted, aes_key, expected_size=len(plaintext)) == plaintext
 

@@ -179,7 +179,7 @@ async def _download_wechat_cdn_curl(url: str) -> tuple[bytes, str]:
 
 
 def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -> bytes:
-    """Decrypt iLink CDN media using the observed AES-ECB/PKCS#7 format."""
+    """Decrypt iLink CDN media using its fixed AES-ECB/PKCS#7 wire format."""
     if not aes_key:
         return data
     try:
@@ -187,6 +187,8 @@ def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -
         key = bytes.fromhex(decoded.decode("ascii"))
         if len(key) not in {16, 24, 32} or len(data) % 16:
             raise ValueError
+        # AES-ECB is mandated by the third-party iLink CDN payload format. This
+        # compatibility path is limited to provider media and is not reusable storage crypto.
         decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
         padded = decryptor.update(data) + decryptor.finalize()
         unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
