@@ -24,6 +24,7 @@ from app.channels.markdown_render import (
 )
 from app.config import get_settings
 from app.db.models import ChannelBinding
+from app.net_proxy import httpx_proxy_kwargs
 
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 TOKEN_REFRESH_SKEW_SECONDS = 300
@@ -51,7 +52,7 @@ class FeishuTransientError(FeishuSendError):
 
 class FeishuTokenProvider:
     def __init__(self, *, client_factory: Callable[[], httpx.Client] | None = None):
-        self._client_factory = client_factory or (lambda: httpx.Client(timeout=10.0))
+        self._client_factory = client_factory or (lambda: httpx.Client(timeout=10.0, **httpx_proxy_kwargs("https://open.feishu.cn")))
         self._cache: dict[tuple[str, str, int], tuple[str, float]] = {}
         self._lock = threading.Lock()
         self._key_locks: dict[tuple[str, str, int], threading.Lock] = {}
@@ -126,7 +127,7 @@ def validate_feishu_credentials(
     *,
     client_factory: Callable[[], httpx.Client] | None = None,
 ) -> dict[str, str]:
-    factory = client_factory or (lambda: httpx.Client(timeout=10.0))
+    factory = client_factory or (lambda: httpx.Client(timeout=10.0, **httpx_proxy_kwargs("https://open.feishu.cn")))
     try:
         with factory() as client:
             token_response = client.post(
@@ -175,7 +176,7 @@ class FeishuAdapter:
         token_provider: FeishuTokenProvider | None = None,
         client_factory: Callable[[], httpx.Client] | None = None,
     ):
-        self._client_factory = client_factory or (lambda: httpx.Client(timeout=15.0))
+        self._client_factory = client_factory or (lambda: httpx.Client(timeout=15.0, **httpx_proxy_kwargs("https://open.feishu.cn")))
         self._tokens = token_provider or FeishuTokenProvider(client_factory=self._client_factory)
 
     def normalize(self, raw: dict[str, Any]):

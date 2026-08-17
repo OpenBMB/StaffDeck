@@ -260,6 +260,20 @@ Digital employees can serve users directly over IM channels: users chat with emp
 - Channel credentials (bot tokens/secrets) are stored Fernet-encrypted and never returned by any API;
 - Binding management is restricted to admins or the binding creator; mounting an employee exposes it to all users of that channel — grant with care.
 
+## Forward Proxy (enterprise private deployments)
+
+When outbound traffic must go through a forward proxy, set three variables in `backend/.env` — model calls, tools/MCP, channel connections (WeChat/WeCom/Feishu/DingTalk), sandboxed skill code, and pip installs all honor them:
+
+```dotenv
+HTTP_PROXY="http://proxy.corp.example:8080"
+HTTPS_PROXY="http://proxy.corp.example:8080"
+NO_PROXY=".corp.example"   # bypass list: domain suffix / exact host / *; private IPs and localhost always connect directly
+```
+
+- **Internal model services are never proxied**: private ranges (10./172.16./192.168./127.) and single-label hosts connect directly; an internal domain suffix (e.g. `.corp.example`) covers all subdomains with one entry;
+- Explicit configuration wins over process environment variables; when unset, env vars are honored as usual (httpx trust_env, websockets, pip);
+- With the sandbox network policy in allowlist mode, the proxy host is added to the allowed domains automatically.
+
 ## Project Structure
 
 ```text

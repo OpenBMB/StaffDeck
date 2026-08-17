@@ -38,6 +38,7 @@ from app.channels.media import (
 from app.config import get_settings
 from app.db import engine
 from app.db.models import ChannelBinding, utc_now
+from app.net_proxy import httpx_proxy_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,7 @@ async def _download_wechat_cdn_httpx(url: str) -> tuple[bytes, str]:
         verify=certifi.where(),
         http2=False,
         timeout=15.0,
+        **httpx_proxy_kwargs(url),
     ) as client, client.stream("GET", url) as response:
         response.raise_for_status()
         content_type = response.headers.get("content-type", "")
@@ -320,7 +322,7 @@ class WeChatClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.bot_token = bot_token
-        self._client = httpx.Client(transport=transport)
+        self._client = httpx.Client(transport=transport, **httpx_proxy_kwargs(base_url))
 
     @classmethod
     def for_binding(cls, binding: ChannelBinding) -> WeChatClient:

@@ -17,6 +17,7 @@ from anthropic import Anthropic
 from app.config import get_settings
 from app.db.models import ModelConfig
 from app.llm.model_protocols import ModelApiProtocol
+from app.net_proxy import httpx_proxy_kwargs
 from app.llm.output_policy import (
     operation_empty_response_retries,
     operation_output_tokens,
@@ -90,6 +91,14 @@ TURN_STAGE_MESSAGE_MARKER = "_agent_turn_message"
 REASONING_TOKEN_ESCALATION_CEILING = 32768
 
 
+def _maybe_proxied_http_client(base_url: str, timeout_seconds: float) -> httpx.Client | None:
+    """显式代理配置(或绕过名单强制直连)时,构造注入好的 http_client;否则 None(SDK 默认 trust_env)。"""
+    kwargs = httpx_proxy_kwargs(base_url)
+    if not kwargs:
+        return None
+    return httpx.Client(timeout=timeout_seconds, **kwargs)
+
+
 def _escalate_reasoning_token_budget(current_max_tokens: int) -> int:
     """Double the token budget for the next retry, but never below the ceiling.
 
@@ -125,11 +134,15 @@ class LLMClient:
             or DEFAULT_MODEL_API_TIMEOUT_SECONDS
         )
         self.base_url = str(model_config.base_url or "")
+        # 正向代理:显式配置时按目标 base_url 注入(绕过名单/私网自动直连),
+        # 未配置时 SDK 走 trust_env 读环境变量(HTTP_PROXY/NO_PROXY)
+        proxied_http_client = _maybe_proxied_http_client(self.base_url, self.timeout_seconds)
         if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
             self.client = OpenAI(
                 api_key=api_key,
                 base_url=self.base_url,
                 timeout=self.timeout_seconds,
+                **({"http_client": proxied_http_client} if proxied_http_client else {}),
             )
             self.driver = ChatCompletionsDriver(self.client)
         elif protocol is ModelApiProtocol.OPENAI_RESPONSES:
@@ -137,6 +150,7 @@ class LLMClient:
                 api_key=api_key,
                 base_url=self.base_url,
                 timeout=self.timeout_seconds,
+                **({"http_client": proxied_http_client} if proxied_http_client else {}),
             )
             self.driver = OpenAIResponsesDriver(self.client)
         elif protocol is ModelApiProtocol.ANTHROPIC_MESSAGES:
@@ -145,6 +159,8 @@ class LLMClient:
                 "timeout": self.timeout_seconds,
                 "max_retries": 0,
             }
+            if proxied_http_client:
+                kwargs["http_client"] = proxied_http_client
             if self.base_url:
                 # Anthropic's SDK always appends /v1/messages. If an operator
                 # already configured a /v1 API root, remove only that suffix
@@ -160,7 +176,9 @@ class LLMClient:
             self.client = Anthropic(**kwargs)
             self.driver = AnthropicMessagesDriver(self.client)
         elif protocol is ModelApiProtocol.GEMINI_GENERATE_CONTENT:
-            self.client = httpx.Client(timeout=self.timeout_seconds)
+            self.client = httpx.Client(
+                timeout=self.timeout_seconds, **httpx_proxy_kwargs(self.base_url)
+            )
             self.driver = GeminiGenerateContentDriver(
                 self.client,
                 self.base_url,

@@ -33,6 +33,7 @@ from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
+from app.net_proxy import apply_proxy_env
 from app.public_api import create_public_api_app
 from app.public_api.jobs import cleanup_public_api_records, recover_public_jobs
 from app.public_api.maintenance import start_public_api_maintenance, stop_public_api_maintenance
@@ -66,6 +67,8 @@ app.add_middleware(
 def on_startup() -> None:
     acquire_runtime_instance_lock()
     try:
+        # 正向代理配置先收敛进进程环境,后续所有网络栈(httpx/WS/pip)按其生效
+        apply_proxy_env()
         start_async_jobs()
         init_db()
         with Session(engine) as db:
