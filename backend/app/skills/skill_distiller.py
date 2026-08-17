@@ -353,6 +353,12 @@ class SkillDistiller:
                 draft.get("business_domain"), fallback.business_domain or "general"
             ),
             "description": _string(draft.get("description"), fallback.description),
+            "capability_scope": (
+                "sop_specific"
+                if str(draft.get("capability_scope") or "").replace("-", "_")
+                == "sop_specific"
+                else "general"
+            ),
             "trigger_intents": _string_list(draft.get("trigger_intents"), fallback.trigger_intents),
             "user_utterance_examples": _string_list(
                 draft.get("user_utterance_examples"), fallback.user_utterance_examples
@@ -469,6 +475,8 @@ class SkillDistiller:
                     "metadata": item.get("metadata")
                     if isinstance(item.get("metadata"), dict)
                     else fallback.metadata,
+                    "sub_sop_id": _string(item.get("sub_sop_id"), fallback.sub_sop_id or "")
+                    or None,
                 }
             )
         return nodes or [node.model_dump() for node in fallback_nodes]

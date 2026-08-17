@@ -996,7 +996,9 @@ class WeChatPollManager:
                         return
                     if errcode:
                         raise WeChatApiError(int(errcode), str(resp.get("errmsg") or ""))
-                except Exception as exc:
+                # Provider and transport implementations can raise heterogeneous errors. Keep
+                # the long-poll worker alive and route all failures through the logged backoff.
+                except Exception as exc:  # noqa: BLE001
                     failures += 1
                     backoff = self._on_failure(binding_id, stop_flag, failures, backoff, exc)
                     if failures >= POLL_FAILURE_CIRCUIT_THRESHOLD:

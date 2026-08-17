@@ -15,7 +15,14 @@ from app.observability.spans import llm_operation
 FEEDBACK_BUCKET_LABELS: dict[str, str] = {
     "model_issue": "模型问题",
     "skill_issue": "技能问题",
+    "skill_instruction_issue": "技能指令问题",
+    "sop_trigger_issue": "SOP 触发问题",
+    "sop_slot_issue": "SOP 信息收集问题",
+    "sop_transition_issue": "SOP 流转问题",
+    "sop_capability_issue": "SOP 能力绑定问题",
+    "knowledge_gap": "知识缺口",
     "tool_or_system_issue": "工具/系统问题",
+    "tool_or_runtime_issue": "工具/运行时问题",
     "user_random_or_unclear": "用户随意或上下文不足",
     "positive_or_resolved": "正向反馈",
     "needs_model_analysis": "待模型分析",
@@ -31,7 +38,7 @@ FEEDBACK_ANALYSIS_PROMPT = """
 
 你只输出 JSON，字段：
 {
-  "bucket": "model_issue | skill_issue | tool_or_system_issue | user_random_or_unclear | positive_or_resolved | unknown",
+  "bucket": "model_issue | skill_instruction_issue | sop_trigger_issue | sop_slot_issue | sop_transition_issue | sop_capability_issue | knowledge_gap | tool_or_runtime_issue | user_random_or_unclear | positive_or_resolved | unknown",
   "confidence": 0.0,
   "reason": "一句话原因，不超过 80 字",
   "summary": "给运营看的简短总结，不超过 120 字",
@@ -41,8 +48,14 @@ FEEDBACK_ANALYSIS_PROMPT = """
 
 分类标准：
 - model_issue：模型理解、推理、回复组织、语气或事实引用有问题。
-- skill_issue：技能定义、步骤、槽位、确认规则或工具编排设计导致问题。
-- tool_or_system_issue：工具未配置、调用失败、系统异常、返回值不足或错误。
+- skill_instruction_issue：通用技能的 SKILL.md 指令、示例或边界不清晰。
+- sop_trigger_issue：本应触发的 SOP 未触发，或错误触发了 SOP。
+- sop_slot_issue：槽位收集、确认、缺失信息追问或已有信息复用错误。
+- sop_transition_issue：SOP 当前节点、合法后继、分支条件或结束条件错误。
+- sop_capability_issue：SOP 节点绑定的技能、知识库或工具不正确或不可用。
+- knowledge_gap：缺少正式知识、检索未命中或引用证据不足。
+- tool_or_runtime_issue：工具未配置、调用失败、系统异常、超时或返回值错误。
+- skill_issue、tool_or_system_issue：仅用于兼容历史数据；新分析优先使用上面的细分类。
 - user_random_or_unclear：用户点踩缺少可解释问题，或上下文不足以判断。
 - positive_or_resolved：点赞或正向确认。
 - unknown：仍无法判断。

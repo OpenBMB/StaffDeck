@@ -16,12 +16,15 @@ export const SHOW_DEBUG = import.meta.env.VITE_SHOW_DEBUG === 'true';
 export class ApiError extends Error {
   status: number;
   body: string;
+  code?: string;
 
   constructor(status: number, body: string, statusText: string) {
-    super(parseErrorMessage(body) || statusText || `HTTP ${status}`);
+    const parsed = parseErrorPayload(body);
+    super(parsed.message || statusText || `HTTP ${status}`);
     this.name = 'ApiError';
     this.status = status;
     this.body = body;
+    this.code = parsed.code;
   }
 }
 
@@ -230,22 +233,46 @@ function parseSseBlock(block: string): StreamEvent | null {
   }
 }
 
-function parseErrorMessage(text: string): string {
-  if (!text) return '';
+type ParsedApiError = {
+  message: string;
+  code?: string;
+};
+
+function parseErrorPayload(text: string): ParsedApiError {
+  if (!text) return { message: '' };
   try {
-    const payload = JSON.parse(text) as { detail?: unknown; message?: unknown; error?: unknown };
+    const payload = JSON.parse(text) as {
+      code?: unknown;
+      detail?: unknown;
+      message?: unknown;
+      error?: unknown;
+    };
     const detail = payload.detail ?? payload.message ?? payload.error;
-    if (typeof detail === 'string') return detail;
+    const topLevelCode = typeof payload.code === 'string' ? payload.code : undefined;
+    if (typeof detail === 'string') return { message: detail, code: topLevelCode };
     if (Array.isArray(detail)) {
-      return detail
-        .map(formatValidationDetail)
-        .filter(Boolean)
-        .join('；');
+      return {
+        message: detail
+          .map(formatValidationDetail)
+          .filter(Boolean)
+          .join('；'),
+        code: topLevelCode,
+      };
+    }
+    if (detail && typeof detail === 'object') {
+      const structured = detail as { code?: unknown; message?: unknown; detail?: unknown };
+      const message = typeof structured.message === 'string'
+        ? structured.message
+        : typeof structured.detail === 'string'
+          ? structured.detail
+          : '';
+      const code = typeof structured.code === 'string' ? structured.code : topLevelCode;
+      if (message || code) return { message: message || String(code), code };
     }
   } catch {
-    return text;
+    return { message: text };
   }
-  return text;
+  return { message: text };
 }
 
 function formatValidationDetail(item: unknown): string {

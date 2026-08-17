@@ -104,6 +104,8 @@ class KnowledgeDocumentUpdateRequest(BaseModel):
     title: Optional[str] = None
     status: Optional[Literal["ready", "processing", "failed", "archived"]] = None
     metadata: Optional[dict[str, Any]] = None
+    content_md: Optional[str] = Field(default=None, max_length=2_000_000)
+    expected_updated_at: Optional[str] = None
 
 
 class KnowledgeBucketRead(BaseModel):

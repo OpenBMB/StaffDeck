@@ -10,6 +10,7 @@ from app.db.models import AgentEvent
 @dataclass(frozen=True)
 class _ModelSpan:
     operation: str
+    model_name: str
     started_ms: float
     finished_ms: float
     duration_ms: float
@@ -45,7 +46,17 @@ def enrich_turn_traces_with_timings(
         turn_id = str(trace.get("turn_id") or "").strip()
         spans = spans_by_turn.get(turn_id, [])
         windows = windows_by_turn.get(turn_id, {})
+        observations = observations_by_turn.get(turn_id, {})
         lines = trace.get("lines") if isinstance(trace.get("lines"), list) else []
+
+        # Timing fields are a projection over durable events rather than source
+        # data. Always clear a previous projection first so historical cached
+        # traces cannot keep the old ``0ms / 0 calls`` placeholders.
+        for key in ("duration_ms", "model_duration_ms", "model_names", "model_call_count"):
+            trace.pop(key, None)
+        for line in lines:
+            for key in ("duration_ms", "model_duration_ms", "model_names"):
+                line.pop(key, None)
 
         response_spans = [
             span
@@ -74,28 +85,51 @@ def enrich_turn_traces_with_timings(
             started_ms, finished_ms = window
             if finished_ms < started_ms:
                 continue
-            line["duration_ms"] = round(max(0.0, finished_ms - started_ms), 3)
-            line["model_duration_ms"] = _model_duration_in_window(
+            model_duration_ms = _model_duration_in_window(
                 spans,
                 started_ms,
                 finished_ms,
             )
+            observation = observations.get(line_id)
+            # A terminal-only event such as ``skill_started`` is an instantaneous
+            # state transition. Its inferred window is merely the gap from the
+            # previous log entry and must not be presented as execution time.
+            has_measured_window = bool(observation and observation.running_ms)
+            if not (
+                has_measured_window
+                or model_duration_ms is not None
+                or line_id in {"decision_router", "response_generation"}
+            ):
+                continue
+            line["duration_ms"] = round(max(0.0, finished_ms - started_ms), 3)
+            if model_duration_ms is not None:
+                line["model_duration_ms"] = model_duration_ms
+            model_names = _model_names_in_window(spans, started_ms, finished_ms)
+            if model_names:
+                line["model_names"] = model_names
 
         trace_started = _iso_ms(trace.get("started_at"))
         trace_finished = _iso_ms(trace.get("completed_at"))
         if trace_started is not None and trace_finished is not None:
             trace["duration_ms"] = round(max(0.0, trace_finished - trace_started), 3)
-            trace["model_duration_ms"] = _model_duration_in_window(
+            model_duration_ms = _model_duration_in_window(
                 spans,
                 trace_started,
                 trace_finished,
             )
-            trace["model_call_count"] = sum(
+            if model_duration_ms is not None:
+                trace["model_duration_ms"] = model_duration_ms
+            model_names = _model_names_in_window(spans, trace_started, trace_finished)
+            if model_names:
+                trace["model_names"] = model_names
+            model_call_count = sum(
                 1
                 for span in spans
                 if span.finished_ms >= trace_started - 1
                 and span.started_ms <= trace_finished + 1
             )
+            if model_call_count > 0:
+                trace["model_call_count"] = model_call_count
     return traces
 
 
@@ -120,6 +154,7 @@ def _event_turn_id(event: AgentEvent, aliases: dict[str, str]) -> str:
     raw = str(
         payload.get("user_message_id")
         or payload.get("turn_id")
+        or payload.get("client_turn_id")
         or (payload.get("message_id") if event.event_type == "user_message_received" else "")
         or ""
     ).strip()
@@ -146,6 +181,9 @@ def _model_spans_by_turn(
         spans_by_turn.setdefault(turn_id, []).append(
             _ModelSpan(
                 operation=str(payload.get("operation") or "llm.request"),
+                model_name=str(
+                    payload.get("model_name") or payload.get("model") or ""
+                ).strip(),
                 started_ms=started_ms,
                 finished_ms=finished_ms,
                 duration_ms=duration_ms or max(0.0, finished_ms - started_ms),
@@ -385,7 +423,7 @@ def _model_duration_in_window(
     spans: list[_ModelSpan],
     started_ms: float,
     finished_ms: float,
-) -> float:
+) -> float | None:
     intervals = sorted(
         (
             max(started_ms, span.started_ms),
@@ -395,7 +433,7 @@ def _model_duration_in_window(
         if span.finished_ms >= started_ms and span.started_ms <= finished_ms
     )
     if not intervals:
-        return 0.0
+        return None
 
     merged: list[tuple[float, float]] = []
     for interval_started, interval_finished in intervals:
@@ -406,6 +444,20 @@ def _model_duration_in_window(
             continue
         merged[-1] = (merged[-1][0], max(merged[-1][1], interval_finished))
     return round(sum(end - start for start, end in merged), 3)
+
+
+def _model_names_in_window(
+    spans: list[_ModelSpan],
+    started_ms: float,
+    finished_ms: float,
+) -> list[str]:
+    names: list[str] = []
+    for span in spans:
+        if span.finished_ms < started_ms or span.started_ms > finished_ms:
+            continue
+        if span.model_name and span.model_name not in names:
+            names.append(span.model_name)
+    return names
 
 
 def _event_ms(event: AgentEvent) -> float:

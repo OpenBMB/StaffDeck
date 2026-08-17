@@ -836,11 +836,11 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     )
     operation_schema = shared_descriptor.input_schema["properties"]["operation"]
     assert operation_schema["type"] == "string"
-    assert operation_schema["enum"] == ["read", "execute"]
+    assert operation_schema["enum"] == ["read"]
     assert "default" not in operation_schema
     assert shared_descriptor.input_schema["required"] == ["query", "operation"]
-    assert shared_descriptor.metadata["execution_policy"] == "inspect_then_decide"
-    assert shared_descriptor.metadata["script_execution"] == ("explicit_after_read")
+    assert shared_descriptor.metadata["execution_policy"] == "instructions_only"
+    assert shared_descriptor.metadata["script_execution"] == "use_harness_tools"
 
 
 def test_general_tools_remain_discoverable_across_sop_steps() -> None:
@@ -1641,7 +1641,7 @@ def test_general_skill_harness_tool_reads_full_package_when_requested(
         "scripts/run.sh",
     ]
     assert read_result["data"]["operation"] == "read"
-    assert "只有确实需要" in read_result["data"]["notice"]
+    assert "不会生成临时代码" in read_result["data"]["notice"]
 
 
 def test_general_skill_harness_tool_defaults_to_read_instead_of_generating_code(
@@ -1671,7 +1671,7 @@ def test_general_skill_harness_tool_defaults_to_read_instead_of_generating_code(
         raise AssertionError("instruction loading must not generate a runner")
 
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.GeneralSkillRunner.run",
+        "app.general_skills.runner.GeneralSkillRunner.run",
         unexpected_run,
     )
     engine = _test_engine()
@@ -1734,7 +1734,7 @@ def test_harness_task_agent_stops_when_sop_step_deadline_is_exhausted() -> None:
     assert trace_events[0][0] == "harness_step_timeout"
 
 
-def test_general_skill_harness_tool_rejects_execute_before_read(
+def test_general_skill_harness_tool_treats_legacy_execute_as_instruction_load(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -1758,10 +1758,10 @@ def test_general_skill_harness_tool_rejects_execute_before_read(
     )
 
     def unexpected_run(*_args, **_kwargs):
-        raise AssertionError("execute must be fenced until the package is read")
+        raise AssertionError("business Harness must not generate a skill runner")
 
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.GeneralSkillRunner.run",
+        "app.general_skills.runner.GeneralSkillRunner.run",
         unexpected_run,
     )
     engine = _test_engine()
@@ -1785,11 +1785,13 @@ def test_general_skill_harness_tool_rejects_execute_before_read(
             {"query": "run it", "operation": "execute"},
         )
 
-    assert result["success"] is False
-    assert result["error"]["code"] == "GENERAL_SKILL_NOT_INSPECTED"
+    assert result["success"] is True
+    assert result["data"]["operation"] == "read"
+    assert result["data"]["requested_operation"] == "execute"
+    assert "已弃用" in result["data"]["compatibility_notice"]
 
 
-def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
+def test_general_skill_harness_tool_never_executes_generated_runner(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -1851,7 +1853,7 @@ def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
         )
 
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.GeneralSkillRunner.run",
+        "app.general_skills.runner.GeneralSkillRunner.run",
         fake_run,
     )
     skill = GeneralSkill(
@@ -1910,30 +1912,20 @@ def test_general_skill_harness_tool_executes_frozen_runner_snapshot(
         )
 
     assert result["success"] is True
-    assert result["data"]["operation"] == "execute"
-    assert result["data"]["structured_result"]["temperature"] == 30
-    assert result["artifacts"][0]["display_name"] == "北京天气.txt"
-    assert result["artifacts"][0]["path"] == "general_skill_fake/outputs/weather.txt"
-    assert result["artifacts"][0]["size"] == 4
-    assert captured["query"] == "北京天气如何"
-    assert captured["user_id"] == "user-1"
-    assert captured["max_attempts"] == 2
-    assert captured["workspace_root"] == invoker.workspace_root
-    assert captured["is_cancelled"] is cancelled
-    assert captured["skill"] is not skill
-    assert captured["skill"].package_digest
+    assert result["data"]["operation"] == "read"
+    assert result["data"]["requested_operation"] == "execute"
+    assert "不会生成" in result["data"]["notice"]
+    assert captured == {}
     assert [event_type for event_type, _ in trace_events] == [
         "general_skill_trace",
         "general_skill_trace",
-        "general_skill_run_finished",
     ]
     assert trace_events[0][1]["phase"] == "instructions_loaded"
-    assert trace_events[1][1]["phase"] == "plan_created"
+    assert trace_events[1][1]["phase"] == "instructions_loaded"
     assert trace_events[1][1]["skill_slug"] == "weather"
-    assert trace_events[2][1]["success"] is True
 
 
-def test_general_skill_harness_tool_preserves_structured_sandbox_failure(
+def test_general_skill_harness_tool_does_not_enter_legacy_sandbox_runner(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -1946,7 +1938,7 @@ def test_general_skill_harness_tool_preserves_structured_sandbox_failure(
         )
 
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.GeneralSkillRunner.run",
+        "app.general_skills.runner.GeneralSkillRunner.run",
         fail_run,
     )
     skill = GeneralSkill(
@@ -1995,16 +1987,12 @@ def test_general_skill_harness_tool_preserves_structured_sandbox_failure(
             {"query": "run", "operation": "execute"},
         )
 
-    assert result["success"] is False
-    assert result["error"] == {
-        "code": "SANDBOX_POLICY_UNSUPPORTED",
-        "message": "当前沙盒不支持域名白名单。",
-        "retryable": False,
-        "infrastructure_failure": True,
-    }
+    assert result["success"] is True
+    assert result["data"]["operation"] == "read"
+    assert result["data"]["requested_operation"] == "execute"
 
 
-def test_general_skill_harness_tool_publishes_valid_artifact_among_failures(
+def test_general_skill_harness_tool_does_not_publish_legacy_runner_artifacts(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -2051,7 +2039,7 @@ def test_general_skill_harness_tool_publishes_valid_artifact_among_failures(
         )
 
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.GeneralSkillRunner.run",
+        "app.general_skills.runner.GeneralSkillRunner.run",
         fake_run,
     )
     skill = GeneralSkill(
@@ -2100,14 +2088,9 @@ def test_general_skill_harness_tool_publishes_valid_artifact_among_failures(
         )
 
     assert result["success"] is True
-    assert [item["path"] for item in result["artifacts"]] == [
-        "general_skill_mixed/artifacts/valid.txt"
-    ]
-    assert [item["code"] for item in result["data"]["artifact_errors"]] == [
-        "artifact_declaration_invalid",
-        "artifact_publish_failed",
-        "artifact_publish_failed",
-    ]
+    assert result["data"]["operation"] == "read"
+    assert result["data"]["requested_operation"] == "execute"
+    assert "artifacts" not in result
 
 
 def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
@@ -2216,8 +2199,9 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
     assert second_transcript[0]["result"]["error"]["code"] == "TOOL_NOT_AVAILABLE"
     assert "OUTER_CONTEXT_MUST_NOT_LEAK" not in json.dumps(payloads, ensure_ascii=False)
     assert "不得为了“更精准”而在零检索、零工具结果时提前结束" in system_prompts[0]
-    assert "首次调用某个" in system_prompts[0]
-    assert "不得跳过 read 直接 execute" in system_prompts[0]
+    assert "GeneralSkill 是工作流说明包" in system_prompts[0]
+    assert "不会启动第二套 runner" in system_prompts[0]
+    assert "Skill 负责提供工作流程" in system_prompts[0]
 
 
 def test_harness_agent_activates_described_capability_for_current_revision(

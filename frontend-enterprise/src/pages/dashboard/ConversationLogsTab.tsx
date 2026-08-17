@@ -32,6 +32,7 @@ import {
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 import { SELECT_TRIGGER_CLASS, formatDateTime } from '@/lib/enterprise-ui';
+import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
 import { MarkdownMessage } from '../chat/chatHelpers';
 
 import { api, TENANT_ID } from '../../api/client';
@@ -59,7 +60,6 @@ import {
 } from './conversationLogFilters';
 import { employeeDashboardMetrics } from './employeeDashboardMetrics';
 
-const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const FEEDBACK_PAGE_SIZE = 10;
 const ALL_CONVERSATION_USERS = '__all_conversation_users__';
 
@@ -88,9 +88,7 @@ const MOBILE_CARD_CLASS =
 
 export default function ConversationLogsTab() {
   const [searchParams] = useSearchParams();
-  const [scopedAgentId, setScopedAgentId] = useState(
-    () => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '',
-  );
+  const [scopedAgentId, setScopedAgentId] = useState(readEmployeeScope);
   const agentId = searchParams.get('agent_id') || scopedAgentId;
   const [sessions, setSessions] = useState<EnterpriseChatSessionRead[]>([]);
   const [downRows, setDownRows] = useState<FeedbackSessionRead[]>([]);
@@ -108,11 +106,8 @@ export default function ConversationLogsTab() {
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
-      setScopedAgentId(
-        (event as CustomEvent<{ agentId?: string }>).detail?.agentId ||
-          window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) ||
-          '',
-      );
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setScopedAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
@@ -880,7 +875,13 @@ function FeedbackTraceBlock({ trace }: { trace: TurnTraceRead }) {
         <Workflow className="size-[14px]" />
         <span>执行记录</span>
         <span className="feedback-trace-overall-timing">
-          {timingText(trace.duration_ms, trace.model_duration_ms, trace.model_call_count)}
+          {timingText(
+            trace.duration_ms,
+            trace.model_duration_ms,
+            trace.model_call_count,
+            trace.model_names,
+            true,
+          )}
         </span>
         <span className="feedback-trace-status">{trace.completed_at ? '已完成' : '执行中'}</span>
       </div>
@@ -893,7 +894,7 @@ function FeedbackTraceBlock({ trace }: { trace: TurnTraceRead }) {
                 <span className="feedback-trace-text">{line.text}</span>
                 {(typeof line.duration_ms === 'number' || typeof line.model_duration_ms === 'number') && (
                   <span className="feedback-trace-timing">
-                    {timingText(line.duration_ms, line.model_duration_ms)}
+                    {timingText(line.duration_ms, line.model_duration_ms, undefined, line.model_names)}
                   </span>
                 )}
               </span>
@@ -948,11 +949,21 @@ function timingText(
   durationMs?: number | null,
   modelDurationMs?: number | null,
   modelCallCount?: number | null,
+  modelNames?: string[] | null,
+  showMissingModel = false,
 ): string {
   const parts: string[] = [];
   if (typeof durationMs === 'number') parts.push(`总 ${formatDuration(durationMs)}`);
-  if (typeof modelDurationMs === 'number') parts.push(`模型 ${formatDuration(modelDurationMs)}`);
-  if (typeof modelCallCount === 'number') parts.push(`${modelCallCount} 次调用`);
+  const names = Array.from(new Set((modelNames || []).filter(Boolean)));
+  if (names.length > 0) {
+    parts.push(names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个模型`);
+  }
+  if (typeof modelDurationMs === 'number') parts.push(`模型耗时 ${formatDuration(modelDurationMs)}`);
+  if (typeof modelCallCount === 'number' && modelCallCount > 0) {
+    parts.push(`${modelCallCount} 次调用`);
+  } else if (showMissingModel && typeof durationMs === 'number' && modelDurationMs == null) {
+    parts.push('模型调用未记录');
+  }
   return parts.join(' · ');
 }
 

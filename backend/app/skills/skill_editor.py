@@ -28,6 +28,7 @@ BASIC_FIELDS = {
     "version",
     "business_domain",
     "description",
+    "capability_scope",
     "trigger_intents",
     "user_utterance_examples",
     "goal",
@@ -48,6 +49,7 @@ NODE_FIELDS = {
     "knowledge_scope",
     "retry_policy",
     "metadata",
+    "sub_sop_id",
 }
 
 

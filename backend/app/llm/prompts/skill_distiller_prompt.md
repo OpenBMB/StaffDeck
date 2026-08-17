@@ -20,11 +20,12 @@
 
 输出 JSON，不要输出 Markdown、解释、注释或代码围栏。
 draft_skill 必须是 graph-only，不得输出 steps 字段。
-nodes 中每个节点必须包含 node_id、type、name、instruction、optional、condition、expected_user_info、allowed_actions、capability_refs、knowledge_scope、retry_policy、metadata。
+nodes 中每个节点必须包含 node_id、type、name、instruction、optional、condition、expected_user_info、allowed_actions、capability_refs、knowledge_scope、retry_policy、metadata；type=subflow 时还必须包含 sub_sop_id。
 edges 中每条边必须包含 source_node_id、next_node_id、condition、priority、label。
 nodes 中每个 node_id 必须全局唯一，不得重复；如果两个节点语义相近，也必须使用不同 node_id。
 必须输出 start_node_id 和 terminal_node_ids；start_node_id 与 terminal_node_ids 必须引用 nodes 中存在的 node_id。
 节点 type 可选：collect_info、decision、tool_call、knowledge_query、response、handoff、subflow。
+仅当原始内容明确给出现有 SOP ID 时才生成 subflow 节点，并将该 ID 写入 sub_sop_id；不得臆造子 SOP ID。
 如果原始流程需要工具，请优先从 available_tools 中选择工具，并在 allowed_actions 中使用 call_tool:<tool_name>。
 capability_refs 必须包含 general_skill_ids、tool_ids、knowledge_base_ids 以及对应的 required_general_skill_ids、required_tool_ids、required_knowledge_base_ids。前三者表示节点允许使用的能力，后三者必须是对应允许列表的子集。默认使用可选执行；只有原文明确要求“必须执行”“依次执行”或该能力是节点完成的必要条件时，才放入 required_*_ids。
 required_info 和 expected_user_info 应使用稳定的 snake_case 字段名；如果要调用工具，字段名应尽量与工具 input_schema 参数一致。
@@ -60,6 +61,7 @@ tool_mentions 中的 url 必须逐字来自原始文档中的接口地址或路�
     "version": "1.0.0",
     "business_domain": "...",
     "description": "...",
+    "capability_scope": "general",
     "trigger_intents": [],
     "user_utterance_examples": [],
     "goal": [],

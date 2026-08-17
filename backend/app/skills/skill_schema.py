@@ -4,6 +4,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.capability_scope import CapabilityScope
+
 
 class SkillCapabilityRefs(BaseModel):
     """Capabilities explicitly exposed while this SOP node is active."""
@@ -49,6 +51,7 @@ class SkillGraphNode(BaseModel):
     capability_refs: SkillCapabilityRefs = Field(default_factory=SkillCapabilityRefs)
     retry_policy: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    sub_sop_id: Optional[str] = None
 
 
 class SkillGraphEdge(BaseModel):
@@ -67,6 +70,7 @@ class SkillCard(BaseModel):
     version: str = "1.0.0"
     business_domain: Optional[str] = None
     description: str = ""
+    capability_scope: CapabilityScope = "general"
     step_timeout_seconds: Optional[int] = Field(default=None, ge=1, le=3600)
     trigger_intents: list[str] = Field(default_factory=list)
     user_utterance_examples: list[str] = Field(default_factory=list)
@@ -107,6 +111,11 @@ class SkillCard(BaseModel):
                 )
             if edge.next_node_id not in node_id_set:
                 raise ValueError(f"edge next_node_id references missing node: {edge.next_node_id}")
+        for node in self.nodes:
+            if node.type == "subflow" and not str(node.sub_sop_id or "").strip():
+                raise ValueError(
+                    f"subflow node must reference sub_sop_id: {node.node_id}"
+                )
         return self
 
 

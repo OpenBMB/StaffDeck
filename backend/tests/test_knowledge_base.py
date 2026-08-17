@@ -1088,6 +1088,132 @@ def test_update_document_syncs_document_card_and_okf_source_concept() -> None:
         assert source_concepts[0].concept_id != "sources/old-title"
 
 
+def test_update_document_content_rebuilds_all_derived_knowledge() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        db.add(
+            KnowledgeBaseVersion(
+                id="kbv_demo",
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
+                version="1.0.0",
+                name="默认知识库",
+                status="active",
+            )
+        )
+        document = KnowledgeDocument(
+            id="kdoc_demo",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            knowledge_base_version_id="kbv_demo",
+            filename="demo.md",
+            file_type="md",
+            title="旧标题",
+            status="ready",
+            bucket_count=1,
+            chunk_count=1,
+            metadata_json={"raw_text": "# 旧内容\n\n即将被替换。"},
+        )
+        bucket = KnowledgeBucket(
+            id="kbucket_old",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            knowledge_base_version_id="kbv_demo",
+            document_id=document.id,
+            bucket_key="old",
+            title="旧索引",
+            summary="旧摘要",
+            token_estimate=10,
+            metadata_json={"content": "旧内容"},
+        )
+        db.add(document)
+        db.add(bucket)
+        db.add(
+            KnowledgeChunk(
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
+                knowledge_base_version_id="kbv_demo",
+                document_id=document.id,
+                bucket_id=bucket.id,
+                chunk_index=0,
+                content="旧内容",
+            )
+        )
+        db.add(
+            KnowledgeConcept(
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
+                knowledge_base_version_id="kbv_demo",
+                document_id=document.id,
+                concept_id="sources/old-title",
+                concept_type="Source Document",
+                title="旧标题",
+                content_md="# 旧标题\n\n旧内容",
+            )
+        )
+        db.commit()
+
+        updated = update_document(
+            document.id,
+            KnowledgeDocumentUpdateRequest(
+                tenant_id="tenant_demo",
+                title="新版制度",
+                content_md="# 新版制度\n\n## 适用范围\n\n仅适用于在线编辑测试。",
+                expected_updated_at=document.updated_at.isoformat(),
+            ),
+            db,
+        )
+
+        assert updated.title == "新版制度"
+        assert updated.metadata["raw_text"].startswith("# 新版制度")
+        assert updated.metadata["section_stats"]["section_count"] >= 2
+        assert updated.bucket_count >= 1
+        assert updated.chunk_count >= 1
+        chunks = db.exec(
+            select(KnowledgeChunk).where(KnowledgeChunk.document_id == document.id)
+        ).all()
+        assert chunks
+        assert all("旧内容" not in row.content for row in chunks)
+        assert any("在线编辑测试" in row.content for row in chunks)
+        concepts = db.exec(
+            select(KnowledgeConcept).where(KnowledgeConcept.document_id == document.id)
+        ).all()
+        assert concepts
+        assert all(row.concept_id != "sources/old-title" for row in concepts)
+        assert any(row.title == "新版制度" for row in concepts)
+
+
+def test_update_document_content_rejects_stale_editor_revision() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        document = KnowledgeDocument(
+            id="kdoc_demo",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            filename="demo.md",
+            file_type="md",
+            title="制度",
+            status="ready",
+        )
+        db.add(document)
+        db.commit()
+
+        with pytest.raises(Exception) as exc_info:
+            update_document(
+                document.id,
+                KnowledgeDocumentUpdateRequest(
+                    tenant_id="tenant_demo",
+                    content_md="# 冲突内容",
+                    expected_updated_at="2020-01-01T00:00:00",
+                ),
+                db,
+            )
+
+        assert getattr(exc_info.value, "status_code", None) == 409
+
+
 def test_update_chunk_refreshes_bucket_content_and_okf_topic() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))

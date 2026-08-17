@@ -65,6 +65,7 @@ import {
   visibleEmployeeAgents,
 } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
+import { isTeamScope, readEmployeeScope } from '../lib/agent-scope-storage';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import type {
   AgentProfileRead,
@@ -117,7 +118,7 @@ const TRANSPORT_OPTIONS: { value: MCPTransport; label: string; hint: string }[] 
 
 export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {}) {
   const [rows, setRows] = useState<ToolRead[]>([]);
-  const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [agentId, setAgentId] = useState(readEmployeeScope);
   const [isOverallAgent, setIsOverallAgent] = useState(true);
   const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
   const [bucketFilter, setBucketFilter] = useState('__all__');
@@ -196,8 +197,8 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
-      const nextAgentId = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '';
-      setAgentId(nextAgentId);
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
@@ -2206,7 +2207,7 @@ async function loadBucketOptions() {
 }
 
 function currentAgentQuery() {
-  const agentId = window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '';
+  const agentId = readEmployeeScope();
   return agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
 }
 

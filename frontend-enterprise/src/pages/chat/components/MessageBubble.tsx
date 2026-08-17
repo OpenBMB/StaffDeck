@@ -1,6 +1,8 @@
+import EmployeeAvatar from '@/components/EmployeeAvatar';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 import IconThumbUp from '@/assets/icons/thumb-up.svg?react';
 import IconThumbDown from '@/assets/icons/thumb-down.svg?react';
+import { employeeDisplayName } from '@/employee';
 import { cn } from '@/lib/utils';
 import type {
   ChatAttachmentRead,
@@ -29,6 +31,11 @@ import {
   CHAT_FEEDBACK_BTN_CLASS,
   CHAT_FEEDBACK_BTN_DISLIKE_ACTIVE_CLASS,
   CHAT_FEEDBACK_CLASS,
+  CHAT_GROUP_MESSAGE_AVATAR_CLASS,
+  CHAT_GROUP_MESSAGE_CONTENT_CLASS,
+  CHAT_GROUP_MESSAGE_LEADER_BADGE_CLASS,
+  CHAT_GROUP_MESSAGE_ROW_CLASS,
+  CHAT_GROUP_MESSAGE_SENDER_CLASS,
   CHAT_MESSAGE_ITEM_CLASS,
   CHAT_MESSAGE_MODE_CHIP_CLASS,
   CHAT_PLAIN_ANSWER_CLASS,
@@ -106,16 +113,35 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
   const sentSlashCommand = item.role === 'user'
     ? slashCommandMessage(visibleContent, chat.slashCommands)
     : null;
+  const groupAssistantMessage = item.role === 'assistant' && Boolean(chat.displayedTeam);
+  const groupSenderName = chat.displayedAgent
+    ? employeeDisplayName(chat.displayedAgent)
+    : '项目领导';
 
   return (
     <div className={cn(CHAT_MESSAGE_ITEM_CLASS, queuedMessage && CHAT_QUEUED_MESSAGE_ITEM_CLASS)}>
-      <div className={chatRowClass(item.role)}>
-        <div
-          className={cn(
-            chatBubbleClass(item.role, item.isError),
-            queuedMessage && CHAT_QUEUED_BUBBLE_CLASS,
+      <div className={cn(chatRowClass(item.role), groupAssistantMessage && CHAT_GROUP_MESSAGE_ROW_CLASS)}>
+        {groupAssistantMessage && (
+          <EmployeeAvatar
+            agent={chat.displayedAgent}
+            size={36}
+            radius={10}
+            className={CHAT_GROUP_MESSAGE_AVATAR_CLASS}
+          />
+        )}
+        <div className={groupAssistantMessage ? CHAT_GROUP_MESSAGE_CONTENT_CLASS : 'contents'}>
+          {groupAssistantMessage && (
+            <span className={CHAT_GROUP_MESSAGE_SENDER_CLASS} data-i18n-ignore>
+              {groupSenderName}
+              <span className={CHAT_GROUP_MESSAGE_LEADER_BADGE_CLASS}>项目领导</span>
+            </span>
           )}
-        >
+          <div
+            className={cn(
+              chatBubbleClass(item.role, item.isError),
+              queuedMessage && CHAT_QUEUED_BUBBLE_CLASS,
+            )}
+          >
           {queuedMessage && (
             <button
               type="button"
@@ -257,6 +283,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
               </button>
             </div>
           )}
+          </div>
         </div>
       </div>
       {queuedMessage && (

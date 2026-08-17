@@ -726,7 +726,8 @@ class WeComStreamManager:
             try:
                 loop.close()
             except Exception:
-                pass
+                # Cleanup must not mask the worker's original failure, but it must be observable.
+                logger.warning("企微事件循环关闭失败 binding=%s", binding_id, exc_info=True)
 
 
 class WeComAdapter:

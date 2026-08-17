@@ -1354,6 +1354,21 @@ def test_general_skill_prompt_rejects_unlisted_external_apis() -> None:
     assert "runtime=`bash`" in prompt
 
 
+def test_general_skill_repair_prompt_uses_artifact_directory_contract() -> None:
+    prompt = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "llm"
+        / "prompts"
+        / "general_skill_repair_prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert "`ARTIFACT_DIR`" in prompt
+    assert "artifact_dir" in prompt
+    assert "`OUTPUT_DIR`" not in prompt
+    assert "output_dir" not in prompt
+
+
 def test_general_skill_runner_reflects_failed_initial_plan(monkeypatch) -> None:
     calls: list[str] = []
 

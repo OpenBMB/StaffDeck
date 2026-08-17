@@ -18,6 +18,7 @@ function sourceFiles(directory) {
       if (entry.name === 'i18n') return [];
       return sourceFiles(fullPath);
     }
+    if (/\.(test|spec)\.(ts|tsx)$/.test(entry.name)) return [];
     return /\.(ts|tsx)$/.test(entry.name) ? [fullPath] : [];
   });
 }

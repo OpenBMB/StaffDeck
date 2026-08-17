@@ -21,6 +21,7 @@ import ScheduledTasksTab from './ScheduledTasksTab';
 import MemoriesTab from './MemoriesTab';
 import ConversationLogsTab from './ConversationLogsTab';
 import WorkRecordTab from './WorkRecordTab';
+import EvolutionPanel from './EvolutionPanel';
 import { employeeDashboardMetrics } from './employeeDashboardMetrics';
 import {
   agentResourceCount,
@@ -45,6 +46,7 @@ import type {
   SkillRead,
   ToolRead,
 } from '../../types';
+import { isTeamScope, readEmployeeScope } from '../../lib/agent-scope-storage';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
@@ -70,14 +72,15 @@ export default function DashboardPage({
   const [feedbackSummary, setFeedbackSummary] = useState<FeedbackSummaryRead | null>(null);
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskRead[]>([]);
   const [activityEvents, setActivityEvents] = useState<AgentWorkRecordEventRead[]>([]);
-  const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [agentId, setAgentId] = useState(readEmployeeScope);
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
-      setAgentId((event as CustomEvent<{ agentId?: string }>).detail?.agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+      const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
@@ -368,20 +371,23 @@ export default function DashboardPage({
       />
       <EmployeeProfileTabs activeKey={profileTab} />
       {profileTab === 'work' && (
-        <WorkRecordTab
-          selectedAgent={selectedAgent}
-          activeKnowledge={activeKnowledge}
-          activeGeneralSkills={activeGeneralSkills}
-          activeSkills={activeSkills}
-          activeTools={activeTools}
-          activeScheduledTasks={activeScheduledTasks}
-          employeeSessions={employeeSessions}
-          conversationCount={dashboardMetrics.conversationCount}
-          activityEvents={activityEvents}
-          feedbackCount={dashboardMetrics.feedbackCount}
-          positiveRate={dashboardMetrics.positiveRate}
-          negativeRate={dashboardMetrics.negativeRate}
-        />
+        <>
+          <WorkRecordTab
+            selectedAgent={selectedAgent}
+            activeKnowledge={activeKnowledge}
+            activeGeneralSkills={activeGeneralSkills}
+            activeSkills={activeSkills}
+            activeTools={activeTools}
+            activeScheduledTasks={activeScheduledTasks}
+            employeeSessions={employeeSessions}
+            conversationCount={dashboardMetrics.conversationCount}
+            activityEvents={activityEvents}
+            feedbackCount={dashboardMetrics.feedbackCount}
+            positiveRate={dashboardMetrics.positiveRate}
+            negativeRate={dashboardMetrics.negativeRate}
+          />
+          {canEditSelectedAgent && <EvolutionPanel agentId={selectedAgent.id} />}
+        </>
       )}
       {profileTab === 'scheduled' && <ScheduledTasksTab />}
       {profileTab === 'memories' && <MemoriesTab currentUser={currentUser} agent={selectedAgent} />}

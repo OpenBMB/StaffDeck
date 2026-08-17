@@ -68,6 +68,7 @@ from app.skills.skill_schema import (
 )
 from app.skills.stream_jobs import SkillStreamEvent, SkillStreamJob, stream_jobs
 from app.skills.step_ids import skill_card_with_unique_step_ids
+from app.skills.nesting import SopNestingError, validate_sop_nesting
 
 router = APIRouter(
     prefix="/api/enterprise/skills",
@@ -205,6 +206,19 @@ def create_skill(
     normalized_content, _warnings = skill_card_with_unique_step_ids(request.content)
     content = normalized_content.model_dump()
     agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
+    try:
+        validate_sop_nesting(
+            normalized_content.skill_id,
+            content,
+            visible_skill_rows(
+                db,
+                request.tenant_id,
+                agent.id if agent else None,
+                include_inactive=True,
+            ),
+        )
+    except SopNestingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     row = Skill(
         tenant_id=request.tenant_id,
         skill_id=normalized_content.skill_id,
@@ -285,6 +299,19 @@ def update_skill(
     row = _get_skill(db, request.tenant_id, skill_id)
     normalized_content, _warnings = skill_card_with_unique_step_ids(request.content)
     agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
+    try:
+        validate_sop_nesting(
+            normalized_content.skill_id,
+            normalized_content.model_dump(),
+            visible_skill_rows(
+                db,
+                request.tenant_id,
+                agent.id if agent else None,
+                include_inactive=True,
+            ),
+        )
+    except SopNestingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if agent and not agent.is_overall:
         binding = db.exec(
             select(AgentResourceBinding).where(
@@ -343,6 +370,24 @@ def publish_skill(
 ) -> SkillRead:
     row = _get_skill(db, tenant_id, skill_id)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
+    validation_content = (
+        ensure_agent_skill_branch(db, tenant_id, agent.id, row).content_json
+        if agent and not agent.is_overall
+        else row.content_json
+    )
+    try:
+        validate_sop_nesting(
+            row.skill_id,
+            validation_content,
+            visible_skill_rows(
+                db,
+                tenant_id,
+                agent.id if agent else None,
+                include_inactive=True,
+            ),
+        )
+    except SopNestingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if agent and not agent.is_overall:
         branch = ensure_agent_skill_branch(db, tenant_id, agent.id, row)
         branch.status = "active"

@@ -446,6 +446,78 @@ def _create_macos_webview_window(AppKit, Foundation, WebKit, target: str):
     return window, webview
 
 
+def _create_macos_main_menu(AppKit, app_delegate):
+    """Create the standard app and edit menus used by the native macOS shell."""
+    main_menu = AppKit.NSMenu.alloc().initWithTitle_(APP_NAME)
+
+    app_menu_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        APP_NAME, None, ""
+    )
+    main_menu.addItem_(app_menu_item)
+    app_menu = AppKit.NSMenu.alloc().initWithTitle_(APP_NAME)
+    app_menu_item.setSubmenu_(app_menu)
+
+    about_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        f"关于 {APP_NAME}", "showAbout:", ""
+    )
+    about_item.setTarget_(app_delegate)
+    app_menu.addItem_(about_item)
+    app_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+
+    hide_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        f"隐藏 {APP_NAME}", "hide:", "h"
+    )
+    app_menu.addItem_(hide_item)
+    hide_others_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "隐藏其他", "hideOtherApplications:", "h"
+    )
+    hide_others_item.setKeyEquivalentModifierMask_(
+        AppKit.NSEventModifierFlagCommand | AppKit.NSEventModifierFlagOption
+    )
+    app_menu.addItem_(hide_others_item)
+    app_menu.addItem_(
+        AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "全部显示", "unhideAllApplications:", ""
+        )
+    )
+    app_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+
+    quit_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        f"退出 {APP_NAME}", "quitStaffDeck:", "q"
+    )
+    quit_item.setTarget_(app_delegate)
+    app_menu.addItem_(quit_item)
+
+    edit_menu_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "编辑", None, ""
+    )
+    main_menu.addItem_(edit_menu_item)
+    edit_menu = AppKit.NSMenu.alloc().initWithTitle_("编辑")
+    edit_menu_item.setSubmenu_(edit_menu)
+
+    edit_actions = (
+        ("撤销", "undo:", "z"),
+        ("重做", "redo:", "Z"),
+        None,
+        ("剪切", "cut:", "x"),
+        ("拷贝", "copy:", "c"),
+        ("粘贴", "paste:", "v"),
+        ("全选", "selectAll:", "a"),
+    )
+    for action in edit_actions:
+        if action is None:
+            edit_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+            continue
+        title, selector, key = action
+        # A nil target sends the action through the responder chain to the focused WKWebView.
+        item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title, selector, key
+        )
+        edit_menu.addItem_(item)
+
+    return main_menu
+
+
 def _run_macos_dock_app(cfg: dict, url: str) -> int:
     """Run the local service behind a native WKWebView window on macOS."""
     import AppKit
@@ -638,6 +710,7 @@ def _run_macos_dock_app(cfg: dict, url: str) -> int:
     # PyObjC 不总是按 Python 预期保留 delegate，模块级引用保证菜单和事件代理常驻。
     _MACOS_DELEGATE_REF = delegate
     app.setDelegate_(delegate)
+    app.setMainMenu_(_create_macos_main_menu(AppKit, delegate))
     app.activateIgnoringOtherApps_(True)
     AppHelper.runEventLoop()
     return 0

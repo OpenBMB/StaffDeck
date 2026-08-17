@@ -161,13 +161,17 @@ function renderBareLinks(text: string, keyPrefix: string): ReactNode[] {
     const candidate = match[0];
     const label = candidate.replace(trailingPunctuation, '');
     if (!label) continue;
-    const href = /^www\./i.test(label) ? `https://${label}` : label;
+    const href = safeExternalHttpUrl(/^www\./i.test(label) ? `https://${label}` : label);
     if (match.index > cursor) nodes.push(text.slice(cursor, match.index));
-    nodes.push(
-      <a key={`${keyPrefix}-url-${index}`} href={href} target="_blank" rel="noreferrer">
-        {label}
-      </a>,
-    );
+    if (href) {
+      nodes.push(
+        <a key={`${keyPrefix}-url-${index}`} href={href} target="_blank" rel="noreferrer">
+          {label}
+        </a>,
+      );
+    } else {
+      nodes.push(label);
+    }
     const trailing = candidate.slice(label.length);
     if (trailing) nodes.push(trailing);
     cursor = match.index + candidate.length;
@@ -181,6 +185,16 @@ function renderBareLinks(text: string, keyPrefix: string): ReactNode[] {
 export type MarkdownRenderOptions = {
   renderInternalLink?: (link: { label: string; href: string; key: string }) => ReactNode;
 };
+
+function safeExternalHttpUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
 
 export function renderInlineMarkdown(
   text: string,
@@ -215,9 +229,10 @@ export function renderInlineMarkdown(
       if (link) {
         const href = link[2].trim();
         const label = link[1] || href;
-        if (/^https?:\/\//i.test(href)) {
+        const safeHref = safeExternalHttpUrl(href);
+        if (safeHref) {
           nodes.push(
-            <a key={key} href={href} target="_blank" rel="noreferrer">
+            <a key={key} href={safeHref} target="_blank" rel="noreferrer">
               {label}
             </a>,
           );

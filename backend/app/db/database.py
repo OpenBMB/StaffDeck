@@ -145,6 +145,8 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_binding_id VARCHAR"))
             if "channel_account_key" not in session_columns:
                 conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_account_key VARCHAR"))
+            if "team_id" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN team_id VARCHAR"))
             # SQLite 唯一索引中 NULL 互不相等，web 会话（channel 为空）不受约束；
             # 含 channel_binding_id 以隔离同企业多 Bot(老三列索引先 DROP 再按新四列重建)
             session_index_columns = {
@@ -181,6 +183,8 @@ def _migrate_sqlite_skill_schema() -> None:
             binding_columns = {column["name"] for column in inspector.get_columns("channel_bindings")}
             if "last_connected_at" not in binding_columns:
                 conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN last_connected_at DATETIME"))
+            if "team_id" not in binding_columns:
+                conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN team_id VARCHAR"))
 
         if "channel_deliveries" in tables:
             delivery_columns = {column["name"] for column in inspector.get_columns("channel_deliveries")}

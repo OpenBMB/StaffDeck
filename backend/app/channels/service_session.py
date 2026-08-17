@@ -83,8 +83,15 @@ def find_or_create_channel_session(
     agent_id: str,
     external_conv_id: str,
     first_text: str,
+    *,
+    team_id: str | None = None,
+    team_title: str | None = None,
 ) -> ChatSession:
-    """按 (agent_id, channel, external_conv_id) 锚定渠道会话，无则创建。"""
+    """按 (agent_id, channel, external_conv_id) 锚定渠道会话，无则创建。
+
+    团队绑定传 team_id/team_title:创建时落 team_id 并以「团队 X · TL 对话」为题,
+    命中 api/chat 的 TL 会话三条件识别;TL 换帅后按新 agent_id 锚定自然另起会话。
+    """
     chat_session = find_channel_session(db, binding, agent_id, external_conv_id)
     if chat_session:
         if chat_session.user_id != user.id:
@@ -105,7 +112,7 @@ def find_or_create_channel_session(
                 db.add(chat_session)
             return chat_session
 
-    title = (first_text or "").strip()[:_CHANNEL_TITLE_LIMIT] or None
+    title = team_title or (first_text or "").strip()[:_CHANNEL_TITLE_LIMIT] or None
     chat_session = ChatSession(
         id=new_id("session"),
         tenant_id=binding.tenant_id,
@@ -116,6 +123,7 @@ def find_or_create_channel_session(
         external_conv_id=external_conv_id,
         channel_binding_id=binding.id,
         channel_account_key=binding.external_account_key,
+        team_id=team_id,
     )
     db.add(chat_session)
     try:
