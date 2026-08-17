@@ -306,8 +306,9 @@ Roadmap priorities are driven by real deployment needs. Please open an [Issue](h
 - For bugs and feature requests, please open a [GitHub Issues](https://github.com/OpenBMB/StaffDeck/issues)。
 - For business corporation, please contact:
   ```
-  business@modelbest.cn
+  agentverse@modelbest.cn
   ```
+  or fill out the [Feishu survey](https://modelbest.feishu.cn/share/base/form/shrcnLAF6EpCi8lXhTS3VYnWc4g)
 - Join our community channels:
 
 <table width="100%">
