@@ -66,6 +66,7 @@ from app.general_skills.standard import (
     frontmatter_for_skill,
     split_frontmatter,
     standard_package_files,
+    validate_skill_compatibility,
     validate_skill_description,
     validate_skill_name,
 )
@@ -101,6 +102,31 @@ CLAWHUB_DOWNLOAD_ENDPOINT = "https://wry-manatee-359.convex.site/api/v1/download
 
 def _agent_id_or_none(agent_id: object | None) -> str | None:
     return agent_id if isinstance(agent_id, str) and agent_id else None
+
+
+def _resolve_optional_field(
+    request_value: str | None, existing_value: object, is_edit: bool
+) -> str:
+    """可选规范字段(license/compatibility/allowed-tools)的取值规则:
+
+    - 未提交(None):保留既有 frontmatter 值(旧客户端/第三方导入不变);
+    - 非空:采用提交值;
+    - 显式空串:编辑场景视为清空,新建场景回退既有值。
+    """
+    if request_value is None:
+        return str(existing_value or "")
+    text = request_value.strip()
+    if text:
+        return text
+    return "" if is_edit else str(existing_value or "")
+
+
+def _validate_skill_publishable(row: GeneralSkill) -> None:
+    """发布校验(规范 name/description 必填且合规),所有发布路径统一调用。"""
+    if error := validate_skill_name(row.slug):
+        raise HTTPException(status_code=400, detail=f"发布失败:slug(name):{error}")
+    if error := validate_skill_description(row.description, required=True):
+        raise HTTPException(status_code=400, detail=f"发布失败:{error}")
 
 
 def general_skill_read(row: GeneralSkill, status_override: str | None = None) -> GeneralSkillRead:
@@ -166,17 +192,26 @@ def import_general_skill(
         raise HTTPException(status_code=400, detail=f"Slug(name):{error}")
     if error := validate_skill_description(description, required=request.status == "published"):
         raise HTTPException(status_code=400, detail=error)
-    # SKILL.md 归一化:frontmatter 以表单/规范字段重组(name 恒等于 slug),正文保留
-    existing_frontmatter, markdown_body = split_frontmatter(markdown)
+    if error := validate_skill_compatibility(request.compatibility or ""):
+        raise HTTPException(status_code=400, detail=error)
+    # SKILL.md 归一化:frontmatter 以表单/规范字段重组(name 恒等于 slug),正文保留;
+    # 非法/未闭合的 frontmatter 直接拒绝(官方 skills-ref 解析器同语义)
+    try:
+        existing_frontmatter, markdown_body = split_frontmatter(markdown, strict=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    is_edit = bool(lookup_slug)
     markdown = compose_skill_markdown(
         name=slug,
         description=description or "",
         body=markdown_body,
-        license=_optional_text(request.license) or str(existing_frontmatter.get("license") or ""),
-        compatibility=_optional_text(request.compatibility)
-        or str(existing_frontmatter.get("compatibility") or ""),
-        allowed_tools=_optional_text(request.allowed_tools)
-        or str(existing_frontmatter.get("allowed-tools") or ""),
+        license=_resolve_optional_field(request.license, existing_frontmatter.get("license"), is_edit),
+        compatibility=_resolve_optional_field(
+            request.compatibility, existing_frontmatter.get("compatibility"), is_edit
+        ),
+        allowed_tools=_resolve_optional_field(
+            request.allowed_tools, existing_frontmatter.get("allowed-tools"), is_edit
+        ),
         metadata=(
             existing_frontmatter.get("metadata")
             if isinstance(existing_frontmatter.get("metadata"), dict)
@@ -621,6 +656,8 @@ def publish_general_skill(
     row = _get_general_skill(db, tenant_id, slug)
     agent_id = _agent_id_or_none(agent_id)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
+    # 发布校验对所有发布路径生效(含员工私有分支)
+    _validate_skill_publishable(row)
     if agent and not agent.is_overall:
         binding = _ensure_general_skill_binding(
             db,
@@ -635,11 +672,6 @@ def publish_general_skill(
         db.commit()
         return general_skill_read(row, status_override="published")
     ensure_open_gallery_admin(tenant_id, current_user)
-    # 发布前必须通过 Agent Skills 规范校验(name/description 必填且合规)
-    if error := validate_skill_name(row.slug):
-        raise HTTPException(status_code=400, detail=f"发布失败:slug(name):{error}")
-    if error := validate_skill_description(row.description, required=True):
-        raise HTTPException(status_code=400, detail=f"发布失败:{error}")
     row.status = "published"
     mark_resource_open_gallery(row, row.metadata_json or {})
     row.updated_at = utc_now()
@@ -705,6 +737,8 @@ def publish_general_skill_to_gallery(
     if not _private_skill_owned_by_agent(db, tenant_id, row, agent.id):
         raise HTTPException(status_code=403, detail="Only the skill owner can publish it")
 
+    # 发布到广场前同样必须通过规范校验(私有技能不豁免)
+    _validate_skill_publishable(row)
     row.status = "published"
     mark_resource_open_gallery(row, row.metadata_json or {})
     row.updated_at = utc_now()
@@ -1322,7 +1356,10 @@ def _metadata_text(metadata: dict[str, object], *keys: str) -> str | None:
 
 
 def _slugify(value: str) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip().lower()).strip("-_")
+    """转成规范 name 形态:小写、下划线转连字符、连续连字符收敛、去首尾连字符。"""
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip().lower())
+    slug = slug.replace("_", "-")
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
     return slug or "general-skill"
 
 

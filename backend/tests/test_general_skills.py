@@ -1875,3 +1875,166 @@ def test_allowed_tools_gates_bash_runtime() -> None:
     assert _runtime_languages(without_bash) == ["python"]
     # 未声明 allowed-tools:不限制
     assert _bash_allowed(undeclared) is True
+
+
+# ---------- 复核回归:发布校验全路径、slugify、可选字段清空、compatibility 限长 ----------
+
+
+def test_publish_to_gallery_requires_valid_description() -> None:
+    """评审复现:无描述草稿经 publish-to-gallery 不得发布成功。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False
+            )
+        )
+        db.commit()
+        draft = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                agent_id="agent_branch",
+                name="草稿",
+                slug="draft-skill",
+                markdown="# x",
+                status="draft",
+            ),
+            db,
+            _admin_user(),
+        )
+        assert draft.status == "draft"
+        from app.api.general_skills import publish_general_skill_to_gallery
+
+        try:
+            publish_general_skill_to_gallery(
+                draft.slug, "tenant_demo", "agent_branch", db, _admin_user()
+            )
+            raise AssertionError("expected publish-to-gallery rejected")
+        except HTTPException as error:
+            assert error.status_code == 400
+            assert "发布失败" in error.detail
+
+
+def test_private_branch_publish_requires_valid_description() -> None:
+    """员工私有分支的 publish 也走规范校验(此前提前返回绕过)。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False
+            )
+        )
+        db.commit()
+        draft = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                agent_id="agent_branch",
+                name="草稿",
+                slug="draft-skill",
+                markdown="# x",
+                status="draft",
+            ),
+            db,
+            _admin_user(),
+        )
+        try:
+            publish_general_skill(
+                draft.slug, "tenant_demo", db, agent_id="agent_branch", current_user=_admin_user()
+            )
+            raise AssertionError("expected private publish rejected")
+        except HTTPException as error:
+            assert error.status_code == 400
+
+
+def test_slugify_produces_spec_compliant_names() -> None:
+    from app.api.general_skills import _slugify
+    from app.general_skills.standard import validate_skill_name
+
+    assert _slugify("bad_name") == "bad-name"
+    assert _slugify("Weather__ZH") == "weather-zh"
+    # 非 ASCII 字符整段清洗为连字符后为空则回退默认名(规范仅允许 a-z0-9-)
+    assert _slugify("--双  连--") == "general-skill"
+    for value in ("bad_name", "Nuwa Skill", "weather__zh", "--开头", "结尾--"):
+        assert validate_skill_name(_slugify(value)) is None
+
+
+def test_compatibility_over_500_chars_rejected() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+        try:
+            import_general_skill(
+                GeneralSkillImportRequest(
+                    tenant_id="tenant_demo",
+                    name="技能",
+                    slug="compat-skill",
+                    description="描述",
+                    compatibility="x" * 501,
+                    markdown="# x",
+                ),
+                db,
+                _admin_user(),
+            )
+            raise AssertionError("expected 501-char compatibility rejected")
+        except HTTPException as error:
+            assert error.status_code == 400
+            assert "compatibility" in error.detail
+
+
+def test_optional_fields_clearable_on_edit() -> None:
+    """编辑时提交空串=清空;不提交(None)=保留原值。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+        created = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="技能",
+                slug="clearable-skill",
+                description="描述",
+                license="MIT",
+                markdown="# x",
+            ),
+            db,
+            _admin_user(),
+        )
+        assert created.license == "MIT"
+        # 编辑清空
+        cleared = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="技能",
+                slug="clearable-skill",
+                description="描述",
+                license="",
+                original_slug="clearable-skill",
+                markdown="# x",
+            ),
+            db,
+            _admin_user(),
+        )
+        assert cleared.license is None
+        # 不提交(None):保留现状(此时为空)
+        kept = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="技能",
+                slug="clearable-skill",
+                description="描述",
+                original_slug="clearable-skill",
+                markdown="# x",
+            ),
+            db,
+            _admin_user(),
+        )
+        assert kept.license is None

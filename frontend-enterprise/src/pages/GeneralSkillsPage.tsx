@@ -1678,9 +1678,10 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         description: skillDescription.trim() || undefined,
         homepage: skillHomepage.trim() || undefined,
         capability_scope: capabilityScope,
-        license: skillLicense.trim() || undefined,
-        compatibility: skillCompatibility.trim() || undefined,
-        allowed_tools: skillAllowedTools.trim() || undefined,
+        // 空串语义:编辑时显式清空该字段;不提交(undefined)则保留原值
+        license: skillLicense.trim(),
+        compatibility: skillCompatibility.trim(),
+        allowed_tools: skillAllowedTools.trim(),
         markdown,
         files: skillFiles.length ? skillFiles : [{ path: 'SKILL.md', content: markdown }],
         directories: skillDirectories,
