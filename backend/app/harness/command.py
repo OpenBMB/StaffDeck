@@ -87,7 +87,7 @@ _WINDOWS_COMMAND_START = re.compile(
     r"(?im)(?:^|[;&\n|])\s*(?:&\s*)?['\"]?([a-z][a-z0-9_.-]*)['\"]?(?=\s|$)"
 )
 _WINDOWS_ABSOLUTE_PATH = re.compile(
-    r"(?i)(?:\b[a-z]:[\\/]|(?<![:/a-z0-9_])/(?:[^/\s]|$)|\\\\|~[\\/])"
+    r"(?i)(?:\b[a-z]:[\\/]|(?<![:/a-z0-9_.])/(?:[^/\s]|$)|\\\\|~[\\/])"
 )
 _WINDOWS_PARENT_PATH = re.compile(r"(?:^|[\\/\s\"'=:(])\.\.(?:[\\/\s\"')]|$)")
 _WINDOWS_PROFILE_EXPANSION = re.compile(
@@ -267,10 +267,14 @@ def exec_command(
 
     args = _as_exec_arguments(arguments)
     command = args.command.strip()
+    # Models use the stable /workspace alias across every sandbox backend.
+    # Validate its relative equivalent so the alias is not mistaken for host
+    # absolute-path access. Other absolute paths remain unchanged and denied.
+    validation_command = _command_for_sandbox_workspace(command, "unsandboxed")
     if sys.platform == "win32":
-        _validate_windows_command(command)
+        _validate_windows_command(validation_command)
     else:
-        _validate_command(command)
+        _validate_command(validation_command)
     workspace = _prepare_workspace(context)
     backend = available_backend() if context.sandbox_enabled else "unsandboxed"
     # Keep the existing Bubblewrap seam patchable for unit tests and Linux

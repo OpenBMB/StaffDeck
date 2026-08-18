@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
@@ -119,6 +121,74 @@ def test_artifacts_are_published_explicitly_with_safe_metadata(tmp_path: Path) -
         "publish_artifact",
         {"path": "reports/missing.txt"},
     ) == "NOT_FOUND"
+
+
+def test_extract_document_text_persists_docx_for_bounded_reading(tmp_path: Path) -> None:
+    executor, context = _harness(tmp_path)
+    context.workspace_root.mkdir(parents=True)
+    document = BytesIO()
+    with ZipFile(document, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+              <Default Extension="xml" ContentType="application/xml"/>
+              <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+            </Types>""",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+            </Relationships>""",
+        )
+        archive.writestr(
+            "word/document.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+              <w:body><w:p><w:r><w:t>合同审查内容</w:t></w:r></w:p></w:body>
+            </w:document>""",
+        )
+    source = context.workspace_root / "attachments" / "contract.docx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(document.getvalue())
+
+    extracted = _execute(
+        executor,
+        context,
+        "extract_document_text",
+        {"path": "/workspace/attachments/contract.docx"},
+    )
+
+    assert extracted["source_path"] == "attachments/contract.docx"
+    assert extracted["extracted_text_path"] == (
+        "attachments/contract.docx.extracted.txt"
+    )
+    assert extracted["format"] == "docx"
+    read = _execute(
+        executor,
+        context,
+        "read_file",
+        {"path": extracted["extracted_text_path"]},
+    )
+    assert "合同审查内容" in str(read["content"])
+
+
+def test_extract_document_text_rejects_unsupported_binary(tmp_path: Path) -> None:
+    executor, context = _harness(tmp_path)
+    context.workspace_root.mkdir(parents=True)
+    (context.workspace_root / "unknown.bin").write_bytes(b"\x00\x01")
+
+    error = _execute_failure(
+        executor,
+        context,
+        "extract_document_text",
+        {"path": "unknown.bin"},
+    )
+
+    assert error == "DOCUMENT_EXTRACTION_FAILED"
 
 
 @pytest.mark.parametrize(

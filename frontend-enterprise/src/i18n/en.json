@@ -2996,5 +2996,11 @@
   "未指定（使用渠道默认）": "Not assigned (use channel default)",
   "处理人": "Assignee",
   "对话过程将逐步推送实时执行步骤卡片（SOP 匹配 / 步骤 / 工具 / 知识检索），结束后定格。 可通过环境变量": "The conversation streams live execution cards for SOP matching, steps, tools, and knowledge retrieval, then keeps the final state. Use the environment variable",
-  "关闭。": "to disable it."
+  "关闭。": "to disable it.",
+  "SOP 版本策略": "SOP version policy",
+  "始终使用最新发布版本": "Always use the latest published version",
+  "固定使用保存时版本": "Pin the version at save time",
+  "每次运行前重新读取当前员工可用的最新已发布 SOP。": "Reload the latest published SOP available to this employee before every run.",
+  "保存时锁定主 SOP 及其嵌套子 SOP{1}；后续发布新版本不会影响该任务。": "Pin the main SOP and its nested child SOPs when saving{1}. Later published versions will not affect this task.",
+  "（当前固定版本 {1}）": " (currently pinned to version {1})"
 }

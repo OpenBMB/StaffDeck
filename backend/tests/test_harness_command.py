@@ -210,6 +210,60 @@ def test_non_mount_sandbox_rewrites_model_visible_workspace_paths() -> None:
     assert command_module._command_for_sandbox_workspace(command, "bubblewrap") == command
 
 
+def test_exec_command_accepts_workspace_alias_before_non_mount_rewrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setattr(command_module, "available_backend", lambda: "unsandboxed")
+
+    def fake_unsandboxed_argv(command: str) -> list[str]:
+        captured["command"] = command
+        return ["powershell.exe"]
+
+    monkeypatch.setattr(command_module, "_unsandboxed_argv", fake_unsandboxed_argv)
+
+    def fake_run(argv, **_kwargs):
+        captured["argv"] = list(argv)
+        return command_module._BoundedProcessResult(
+            returncode=0,
+            stdout=b"ok",
+            stderr=b"",
+            stdout_bytes=2,
+            stderr_bytes=0,
+            timed_out=False,
+            output_truncated=False,
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr(command_module, "_run_bounded_process", fake_run)
+
+    result = _execute(
+        tmp_path,
+        {"command": "Get-Content /workspace/attachments/contract.txt"},
+    )
+
+    assert result.success is True
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert "/workspace" not in str(captured["command"])
+    assert "./attachments/contract.txt" in str(captured["command"])
+
+
+def test_exec_command_still_rejects_other_absolute_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+
+    result = _execute(tmp_path, {"command": "Get-Content C:\\Windows\\win.ini"})
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.code == "COMMAND_DENIED"
+
+
 def test_exec_command_validates_every_line_of_multiline_script(tmp_path: Path) -> None:
     result = _execute(
         tmp_path,
@@ -333,6 +387,7 @@ def test_windows_srt_relies_on_dedicated_user_for_profile_isolation(
     [
         "Write-Output ok",
         "Set-Content -Path result.txt -Value ok\nGet-Content result.txt",
+        "Get-Content ./attachments/result.txt",
         "Get-ChildItem .",
         "python runner.py",
         "Invoke-WebRequest https://example.com",

@@ -86,6 +86,58 @@ def _turn_skill_projection(
     return skills, discoverable_sops(skills)
 
 
+def _apply_forced_sop_snapshot(
+    source_skills: list[Skill],
+    forced_sop_id: str | None,
+    snapshot: dict[str, Any] | None,
+) -> list[Skill]:
+    """Replace one currently accessible SOP with its immutable scheduled snapshot."""
+
+    target = str(forced_sop_id or "").strip()
+    if not target or not snapshot:
+        return source_skills
+    if str(snapshot.get("skill_id") or "").strip() != target:
+        raise SlashCommandError(
+            "FORCED_SOP_SNAPSHOT_INVALID",
+            "定时任务保存的 SOP 快照与指定 SOP 不一致。",
+        )
+    content = snapshot.get("content_json")
+    if not isinstance(content, dict):
+        raise SlashCommandError(
+            "FORCED_SOP_SNAPSHOT_INVALID",
+            "定时任务保存的 SOP 快照内容无效。",
+        )
+    current = next((skill for skill in source_skills if skill.skill_id == target), None)
+    if current is None:
+        # Keep the normal capability-access error from resolve_sop. A historical
+        # snapshot must never resurrect an SOP that is no longer bound/visible.
+        return source_skills
+    pinned = Skill(
+        id=current.id,
+        tenant_id=current.tenant_id,
+        skill_id=current.skill_id,
+        version=str(snapshot.get("version") or current.version),
+        name=str(snapshot.get("name") or current.name),
+        business_domain=(
+            str(snapshot.get("business_domain"))
+            if snapshot.get("business_domain") is not None
+            else current.business_domain
+        ),
+        description=(
+            str(snapshot.get("description"))
+            if snapshot.get("description") is not None
+            else current.description
+        ),
+        content_json=deepcopy(content),
+        status="published",
+        created_at=current.created_at,
+        updated_at=current.updated_at,
+    )
+    if hasattr(current, "agent_branch_meta"):
+        object.__setattr__(pinned, "agent_branch_meta", getattr(current, "agent_branch_meta"))
+    return [pinned if skill.skill_id == target else skill for skill in source_skills]
+
+
 def _turn_slash_selection(request: ChatTurnRequest) -> SlashCommandSelection | None:
     """Resolve user slash commands and server-pinned scheduled SOPs uniformly."""
 
@@ -209,6 +261,11 @@ class HarnessV2Engine:
             raise RuntimeError("没有默认模型配置。")
         source_skills = self.owner._list_published_skills(
             request.tenant_id, session.agent_id
+        )
+        source_skills = _apply_forced_sop_snapshot(
+            source_skills,
+            request.forced_sop_id,
+            request.forced_sop_snapshot,
         )
         # Team TL conversations use a dedicated ChatSession, so the leader can
         # safely execute their own SOPs without mutating a personal chat. Keep

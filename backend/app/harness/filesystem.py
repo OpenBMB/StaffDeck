@@ -18,6 +18,7 @@ from app.harness.contracts import HarnessToolContext
 from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
 from app.harness.registry import HarnessRegistry
+from app.knowledge.parser import KnowledgeParseError, extract_text
 
 _TRASH_DIRECTORY = ".harness-trash"
 _SHA256_PATTERN = r"^[A-Fa-f0-9]{64}$"
@@ -32,6 +33,11 @@ class ReadFileArguments(_FileArguments):
     path: str = Field(min_length=1)
     offset: int = Field(default=0, ge=0)
     max_bytes: int | None = Field(default=None, ge=1)
+
+
+class ExtractDocumentTextArguments(_FileArguments):
+    path: str = Field(min_length=1)
+    output_path: str | None = Field(default=None, min_length=1)
 
 
 class WriteFileArguments(_FileArguments):
@@ -415,6 +421,74 @@ def read_file(
         "truncated": next_offset < metadata.st_size,
         "size": metadata.st_size,
         "sha256": _sha256(path),
+    }
+
+
+def extract_document_text(
+    context: HarnessToolContext,
+    arguments: BaseModel,
+) -> dict[str, Any]:
+    """Extract a supported document into a UTF-8 workspace file.
+
+    Binary documents deliberately do not flow through ``read_file``.  The
+    extracted text is persisted so the model can page through it with the
+    existing bounded text reader instead of receiving an unbounded payload.
+    """
+
+    args = _as(arguments, ExtractDocumentTextArguments)
+    workspace = _Workspace(context)
+    source = workspace.resolve(args.path)
+    source_metadata = workspace.require_file(source)
+    workspace.ensure_file_size(source_metadata.st_size)
+    try:
+        source_bytes = source.read_bytes()
+    except OSError as exc:
+        raise _io_error("Document could not be read.", exc) from exc
+
+    try:
+        text, document_format = extract_text(source.name, source_bytes)
+    except KnowledgeParseError as exc:
+        raise HarnessExecutionError(
+            "DOCUMENT_EXTRACTION_FAILED",
+            str(exc),
+            details={"path": workspace.relative(source)},
+        ) from exc
+    except Exception as exc:
+        raise HarnessExecutionError(
+            "DOCUMENT_EXTRACTION_FAILED",
+            "Document content could not be extracted.",
+            details={
+                "path": workspace.relative(source),
+                "exception_type": type(exc).__name__,
+            },
+        ) from exc
+
+    output_raw = args.output_path or f"{workspace.relative(source)}.extracted.txt"
+    output = workspace.resolve(output_raw)
+    if output == source:
+        raise HarnessExecutionError(
+            "INVALID_PATH",
+            "Extracted text output must differ from the source document.",
+        )
+    workspace.prepare_parent(output, create=True)
+    content_bytes = text.encode("utf-8")
+    workspace.ensure_file_size(len(content_bytes))
+    previous_size = 0
+    if output.exists():
+        previous_size = workspace.require_file(output).st_size
+    workspace.ensure_workspace_capacity(
+        replacing_bytes=previous_size,
+        new_bytes=len(content_bytes),
+    )
+    _atomic_write(output, content_bytes)
+    return {
+        "source_path": workspace.relative(source),
+        "extracted_text_path": workspace.relative(output),
+        "format": document_format,
+        "characters": len(text),
+        "size": len(content_bytes),
+        "empty": not bool(text.strip()),
+        "sha256": _sha256(output),
     }
 
 
@@ -855,6 +929,17 @@ def register_file_tools(registry: HarnessRegistry) -> HarnessRegistry:
         side_effect="read",
     )
     registry.register(
+        name="extract_document_text",
+        description=(
+            "Extract PDF, DOCX, HTML, Markdown, or plain-text content into a UTF-8 "
+            "workspace file, then use read_file to inspect the extracted text. Use this "
+            "instead of read_file for binary documents such as PDF and DOCX."
+        ),
+        argument_model=ExtractDocumentTextArguments,
+        handler=extract_document_text,
+        side_effect="write",
+    )
+    registry.register(
         name="write_file",
         description=(
             "Atomically create or replace a UTF-8 file inside this TaskFrame workspace."
@@ -1224,6 +1309,7 @@ __all__ = [
     "CopyFileArguments",
     "DeleteFileArguments",
     "EditFileArguments",
+    "ExtractDocumentTextArguments",
     "FileInfoArguments",
     "GlobArguments",
     "GrepArguments",
@@ -1237,6 +1323,7 @@ __all__ = [
     "copy_file",
     "delete_file",
     "edit_file",
+    "extract_document_text",
     "file_info",
     "glob_files",
     "grep_files",
