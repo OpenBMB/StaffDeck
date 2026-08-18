@@ -12,7 +12,6 @@ from fastapi import HTTPException
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-import app.api.general_skills as general_skills_api
 from app.agents.branching import ensure_open_gallery_binding
 from app.api.general_skills import (
     archive_general_skill,
@@ -1060,8 +1059,9 @@ async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypat
             },
         )
 
-    monkeypatch.setattr(general_skills_api, "engine", test_engine)
-    monkeypatch.setattr(general_skills_api.AgentLoop, "handle_turn", fake_handle_turn)
+    general_skills_module = sys.modules[run_general_skill.__module__]
+    monkeypatch.setattr(general_skills_module, "engine", test_engine)
+    monkeypatch.setattr(general_skills_module.AgentLoop, "handle_turn", fake_handle_turn)
     monkeypatch.setattr(GeneralSkillRunner, "run", fail_legacy_runner)
 
     with Session(test_engine) as db:
