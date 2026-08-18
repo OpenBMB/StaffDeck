@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
 import time
+from copy import deepcopy
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
-from app.core.capability_manifest import CapabilityManifestBuilder
-from app.core.capability_discovery import project_capability_manifest
 from app.core.cancellation import is_chat_turn_cancelled
+from app.core.capability_discovery import project_capability_manifest
+from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.harness_agent import (
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
@@ -20,14 +20,14 @@ from app.core.harness_attachments import (
     validated_task_image_payloads,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
-from app.core.harness_session_lock import (
-    acquire_harness_session,
-    release_harness_session,
-)
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
     HarnessSessionLeaseToken,
+)
+from app.core.harness_session_lock import (
+    acquire_harness_session,
+    release_harness_session,
 )
 from app.core.harness_turn_store import HarnessTurnStore
 from app.core.slash_commands import (
@@ -551,6 +551,7 @@ class HarnessV2Engine:
             strict=False,
         ):
             payload["knowledge_citations"] = list(result.citations)
+        _inject_handoff_context(self.db, session, execution_payloads, execution_results, request)
 
         # ``last_skill`` is the execution-expanded parent graph. Prefer it so a
         # nested SOP's response rules remain available after the child graph
@@ -1402,6 +1403,54 @@ def _response_task_payload(
         "task_summary": result.task_summary,
         "artifacts": list(result.artifacts),
     }
+
+
+def _inject_handoff_context(
+    db: object,
+    session: ChatSession,
+    payloads: list[dict[str, object]],
+    results: list[TaskExecutionResult],
+    request: ChatTurnRequest | None = None,
+) -> None:
+    """在 resume turn 执行期间注入 handoff_info(含 human_reply),供 response_generator 转述。
+
+    判定 resume turn:request.channel == "human_handoff_resume"(由 _resume_human_handoff_worker
+    传入)。此时 handoff 已 answered 且 human_reply 已落库,直接注入即可——不再依赖
+    resume_finished_at 标记(原标记在 worker 写入时机晚于 turn 执行,导致注入永远 miss)。
+    handoff 状态的 task(本轮新触发转人工)也注入 handoff_info(无 human_reply),
+    用于告知用户已转交。
+    """
+    from sqlmodel import select
+
+    from app.db.models import HumanHandoffRequest
+
+    handoff = db.exec(
+        select(HumanHandoffRequest)
+        .where(HumanHandoffRequest.session_id == session.id)
+        .order_by(HumanHandoffRequest.created_at.desc())
+    ).first()
+    if not handoff:
+        return
+    notify_message_id = handoff.notify_message_id or ""
+    human_reply = (handoff.human_reply or "").strip()
+    is_answered = handoff.status in ("answered", "resolved") and bool(human_reply)
+    # resume turn:由 worker 显式传入 channel 标识判定,时序可靠。
+    is_resume_turn = (
+        bool(request and getattr(request, "channel", "") == "human_handoff_resume")
+        and is_answered
+    )
+    for payload, result in zip(payloads, results, strict=False):
+        if is_resume_turn or payload.get("status") == "handoff":
+            pass
+        else:
+            continue
+        handoff_info: dict[str, Any] = {
+            "handoff_id": handoff.id,
+            "notified_via_feishu": bool(notify_message_id),
+        }
+        if is_answered:
+            handoff_info["human_reply"] = human_reply
+        payload["handoff_info"] = handoff_info
 
 
 def _globalize_citations(

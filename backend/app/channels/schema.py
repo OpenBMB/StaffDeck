@@ -32,6 +32,9 @@ class ChannelBindingAgentsUpdate(BaseModel):
     agents: Optional[list[ChannelBindingAgentInput]] = None
     # 智能分发开关:不传不动,传则写 config_json.auto_route
     auto_route: Optional[bool] = None
+    # 渠道默认人工处理人:不传不动;传 None 清空,传 user_id 写入。
+    # SOP 节点未指定 assignee 时回退到此值,再回退到数字员工负责人/管理员。
+    default_handoff_assignee_user_id: str | None = "unchanged"
 
 
 class ChannelBindingRead(BaseModel):
@@ -62,6 +65,10 @@ class ChannelBindingRead(BaseModel):
     created_by_name: Optional[str] = None
     agents: list[ChannelBindingAgentRead] = []
     auto_route: bool = True
+    # 渠道默认人工处理人(SOP 节点未指定 assignee 时回退到此值)。
+    default_handoff_assignee_user_id: Optional[str] = None
+    default_handoff_assignee_name: Optional[str] = None
+    identity_scope_key: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -227,6 +234,18 @@ def channel_binding_creator_name(db: Session, binding: ChannelBinding) -> Option
     return user.display_name or user.username
 
 
+def _default_handoff_assignee_name(db: Session, binding: ChannelBinding) -> Optional[str]:
+    """渠道默认人工处理人展示名;未配置或用户已删除时返回 None。"""
+    config = binding.config_json if isinstance(binding.config_json, dict) else {}
+    user_id = str(config.get("default_handoff_assignee_user_id") or "").strip() or None
+    if not user_id:
+        return None
+    user = db.get(User, user_id)
+    if not user or user.tenant_id != binding.tenant_id:
+        return None
+    return user.display_name or user.username
+
+
 def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBindingRead:
     config = dict(binding.config_json or {})
     bound_at = config.get("bound_at")
@@ -259,6 +278,11 @@ def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBinding
         created_by_name=channel_binding_creator_name(db, binding),
         agents=channel_binding_agents_read(db, binding),
         auto_route=(binding.config_json or {}).get("auto_route") is not False,
+        default_handoff_assignee_user_id=(binding.config_json or {}).get(
+            "default_handoff_assignee_user_id"
+        ),
+        default_handoff_assignee_name=_default_handoff_assignee_name(db, binding),
+        identity_scope_key=binding.identity_scope_key,
         created_at=binding.created_at.isoformat(),
         updated_at=binding.updated_at.isoformat(),
     )

@@ -12,6 +12,8 @@ export type SkillCapabilityRefs = {
 export type SkillGraphNode = Record<string, unknown> & {
   capability_refs?: SkillCapabilityRefs;
   sub_sop_id?: string | null;
+  /** 人工节点指定处理人（handoff / handoff_human 节点）。 */
+  assignee_user_id?: string | null;
 };
 
 export type SkillCard = {
@@ -887,6 +889,10 @@ export type ChannelBindingRead = {
   team_id?: string | null;
   team_name?: string | null;
   auto_route?: boolean;
+  /** 渠道默认人工处理人（SOP 节点未指定 assignee 时回退到此值）。 */
+  default_handoff_assignee_user_id?: string | null;
+  default_handoff_assignee_name?: string | null;
+  identity_scope_key?: string | null;
   created_at: string;
   updated_at: string;
 };

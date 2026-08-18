@@ -489,6 +489,8 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
   },
 ];
 const DISTILL_REWRITE_MODEL_STORAGE_KEY = 'skill-distill-rewrite-model';
+const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信' };
+const UNASSIGNED_USER_VALUE = '__unassigned__';
 
 type DistillCacheSnapshot = {
   draft: SkillCard | null;
@@ -618,6 +620,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
   const [sopSkills, setSopSkills] = useState<SkillRead[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
+  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string; external_account_scope?: string }> }>>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [selectedRewriteModelId, setSelectedRewriteModelId] = useState(
     () => window.localStorage.getItem(`${DISTILL_REWRITE_MODEL_STORAGE_KEY}:${TENANT_ID}`) || '',
@@ -843,6 +846,15 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
       setSopSkills(sopRows);
     });
   }, [agentQuery]);
+
+  useEffect(() => {
+    api
+      .get<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>>(
+        `/api/auth/users?tenant_id=${TENANT_ID}&include_channel=true`,
+      )
+      .then(setTenantUsers)
+      .catch(() => setTenantUsers([]));
+  }, []);
 
   useEffect(() => {
     api
@@ -2614,6 +2626,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
               sopSkills={sopSkills}
               tools={tools}
               knowledgeBases={knowledgeBases}
+              tenantUsers={tenantUsers}
               containerRef={sourceScrollRef}
               lockSkillId={Boolean(lockedSkillId)}
               onToggle={toggleTarget}
@@ -2634,6 +2647,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
                 sopSkills={sopSkills}
                 tools={tools}
                 knowledgeBases={knowledgeBases}
+                tenantUsers={tenantUsers}
                 containerRef={sourceScrollRef}
                 lockSkillId={Boolean(lockedSkillId)}
                 assistantPanelOpen={flowAssistantPanelOpen}
@@ -3158,6 +3172,7 @@ function SkillSource({
   sopSkills,
   tools,
   knowledgeBases,
+  tenantUsers,
   containerRef,
   lockSkillId,
   onToggle,
@@ -3175,6 +3190,7 @@ function SkillSource({
   sopSkills: SkillRead[];
   tools: ToolRead[];
   knowledgeBases: KnowledgeBaseRead[];
+  tenantUsers: Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>;
   containerRef: RefObject<HTMLDivElement>;
   lockSkillId?: boolean;
   onToggle: (target: TargetSelection) => void;
@@ -3541,6 +3557,16 @@ function SkillSource({
       value: item.skill_id,
       label: `${item.name} · ${item.skill_id}`,
     }));
+  const tenantUserOptions: SelectOption[] = [
+    { value: UNASSIGNED_USER_VALUE, label: '未指定（使用渠道默认）' },
+    ...tenantUsers.filter((user) => !user.source || user.source === 'web').map((user) => {
+      const channelLabel = user.channel_identities?.[0]
+        ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
+        : '';
+      const name = user.display_name || user.username || user.id;
+      return { value: user.id, label: `${name}${channelLabel}` };
+    }),
+  ];
 
   return (
     <div className={SOURCE_MD_CLASS} ref={containerRef}>
@@ -3598,6 +3624,9 @@ function SkillSource({
           const path = stepTargetPath(index);
           const outgoingEdges = edgeMap[stepId] || [];
           const isSubflow = String(step.type || '') === 'subflow';
+          const isHandoffNode =
+            String(step.type || '') === 'handoff' ||
+            asStringList(step.allowed_actions).includes('handoff_human');
           const nodeState = [
             stepId === startNodeId ? '起始节点' : '',
             Boolean(step.optional) ? '可选' : '必选',
@@ -3663,6 +3692,18 @@ function SkillSource({
                         <EditableCapabilityReferencesLine label="SOP 知识库" values={asStringList(step.knowledge_base_ids)} requiredValues={asStringList(step.required_knowledge_base_ids)} options={knowledgeBaseOptions} emptyText="未指定知识库" onChange={(value) => editStep(index, 'knowledge_base_ids', value)} onRequiredChange={(value) => editStep(index, 'required_knowledge_base_ids', value)} />
                       </>
                     )}
+                    {isHandoffNode && (
+                      <EditableSourceSelectLine
+                        label="处理人"
+                        value={String(step.assignee_user_id || UNASSIGNED_USER_VALUE)}
+                        options={tenantUserOptions}
+                        onChange={(value) => editStep(
+                          index,
+                          'assignee_user_id',
+                          value === UNASSIGNED_USER_VALUE ? '' : value,
+                        )}
+                      />
+                    )}
                     <EditableFlowRulesLine
                       sourceNodeId={stepId}
                       edges={outgoingEdges}
@@ -3708,6 +3749,7 @@ function SkillFlow({
   sopSkills,
   tools,
   knowledgeBases,
+  tenantUsers,
   containerRef,
   lockSkillId,
   assistantPanelOpen,
@@ -3728,6 +3770,7 @@ function SkillFlow({
   sopSkills: SkillRead[];
   tools: ToolRead[];
   knowledgeBases: KnowledgeBaseRead[];
+  tenantUsers: Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>;
   containerRef: RefObject<HTMLDivElement>;
   lockSkillId?: boolean;
   assistantPanelOpen: boolean;
@@ -3827,6 +3870,16 @@ function SkillFlow({
       value: item.skill_id,
       label: `${item.name} · ${item.skill_id}`,
     }));
+  const tenantUserOptions: SelectOption[] = [
+    { value: UNASSIGNED_USER_VALUE, label: '未指定（使用渠道默认）' },
+    ...tenantUsers.filter((user) => !user.source || user.source === 'web').map((user) => {
+      const channelLabel = user.channel_identities?.[0]
+        ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
+        : '';
+      const name = user.display_name || user.username || user.id;
+      return { value: user.id, label: `${name}${channelLabel}` };
+    }),
+  ];
 
   const editFlowNode = (
     index: number,
@@ -4722,6 +4775,7 @@ function SkillFlow({
             toolOptions={toolOptions}
             knowledgeBaseOptions={knowledgeBaseOptions}
             sopOptions={sopOptions}
+            tenantUserOptions={tenantUserOptions}
             onEditNode={editFlowNode}
             onAddEdge={addFlowEdge}
             onUpdateEdge={updateFlowEdge}
@@ -4848,6 +4902,7 @@ function SkillFlowInspector({
   toolOptions,
   knowledgeBaseOptions,
   sopOptions,
+  tenantUserOptions,
   onEditNode,
   onAddEdge,
   onUpdateEdge,
@@ -4867,6 +4922,7 @@ function SkillFlowInspector({
   toolOptions: CapabilityReferenceOption[];
   knowledgeBaseOptions: CapabilityReferenceOption[];
   sopOptions: SelectOption[];
+  tenantUserOptions: SelectOption[];
   onEditNode: (index: number, field: string, value: string | string[] | boolean | Record<string, unknown>) => void;
   onAddEdge: (index: number) => void;
   onUpdateEdge: (index: number, edgeIndex: number, patch: Record<string, unknown>) => void;
@@ -4886,6 +4942,9 @@ function SkillFlowInspector({
     terminal ? '终止节点' : '流程节点',
   ].join(' · ');
   const isSubflow = String(node.type || '') === 'subflow';
+  const isHandoffNode =
+    String(node.type || '') === 'handoff' ||
+    asStringList(node.allowed_actions).includes('handoff_human');
   return (
     <aside className={FLOW_INSPECTOR_CLASS} aria-label={`编辑节点 ${String(node.name || nodeId)}`}>
       <div className={FLOW_INSPECTOR_HEADER_CLASS}>
@@ -4914,6 +4973,18 @@ function SkillFlowInspector({
               <SourceReadonlyLine label="执行职责" value="仅进入所选子 SOP；字段、动作和能力由子 SOP 自己定义。" />
             ) : (
               <EditableSourceTextLine label={fieldLabel('instruction')} value={String(node.instruction || '')} multiline onChange={(value) => onEditNode(nodeIndex, 'instruction', value)} />
+            )}
+            {isHandoffNode && (
+              <EditableSourceSelectLine
+                label="处理人"
+                value={String(node.assignee_user_id || UNASSIGNED_USER_VALUE)}
+                options={tenantUserOptions}
+                onChange={(value) => onEditNode(
+                  nodeIndex,
+                  'assignee_user_id',
+                  value === UNASSIGNED_USER_VALUE ? '' : value,
+                )}
+              />
             )}
           </FlowInspectorSection>
           {!isSubflow && (
@@ -7204,6 +7275,7 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
   const instruction = extractJsonStringField(fragment, 'instruction') || '';
   const condition = extractJsonStringField(fragment, 'condition') || '';
   const subSopId = extractJsonStringField(fragment, 'sub_sop_id') || '';
+  const assigneeUserId = extractJsonStringField(fragment, 'assignee_user_id') || '';
   const expectedUserInfo = extractJsonStringArrayField(fragment, 'expected_user_info') || [];
   const allowedActions = extractJsonStringArrayField(fragment, 'allowed_actions') || [];
   const generalSkillIds = extractJsonStringArrayField(fragment, 'general_skill_ids') || [];
@@ -7245,12 +7317,14 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
     knowledge_scope: {},
     retry_policy: {},
     metadata: {},
+    assignee_user_id: assigneeUserId || null,
   };
 }
 
 function normalizeNodePreview(node: Record<string, unknown>, index = 0): Record<string, unknown> {
   const nodeId = stringValue(node.node_id, `node_${index + 1}`);
   const capabilityRefs = nodeCapabilityRefs(node);
+  const assigneeUserId = stringValue(node.assignee_user_id, '');
   return {
     node_id: nodeId,
     type: stringValue(node.type, 'collect_info'),
@@ -7265,6 +7339,7 @@ function normalizeNodePreview(node: Record<string, unknown>, index = 0): Record<
     retry_policy: isRecord(node.retry_policy) ? node.retry_policy : {},
     metadata: isRecord(node.metadata) ? node.metadata : {},
     sub_sop_id: stringValue(node.sub_sop_id, ''),
+    assignee_user_id: assigneeUserId || null,
   };
 }
 

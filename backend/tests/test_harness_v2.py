@@ -312,6 +312,181 @@ def test_turn_planner_falls_back_to_an_isolated_conversation_frame() -> None:
     assert frame.target_step_id is None
 
 
+def test_turn_planner_routes_handoff_human_to_sop_handoff_node() -> None:
+    """When router decides handoff_human and an active SOP has a handoff node,
+    the planner should create an SOP frame targeting that node instead of a
+    conversation frame. This ensures harness executes the handoff node and
+    reads its assignee_user_id for Feishu notification."""
+    skill = Skill(
+        id="skill-repair",
+        tenant_id="tenant-demo",
+        skill_id="repair_sop",
+        name="维修流程",
+        status="published",
+        content_json={
+            "start_node_id": "collect_issue",
+            "nodes": [
+                {
+                    "node_id": "collect_issue",
+                    "name": "收集故障信息",
+                    "instruction": "了解电脑故障详情。",
+                    "expected_user_info": ["issue_description"],
+                },
+                {
+                    "node_id": "handoff_to_specialist",
+                    "name": "转接维修专家",
+                    "type": "handoff",
+                    "assignee_user_id": "user_specialist_001",
+                    "allowed_actions": ["handoff_human"],
+                },
+            ],
+            "edges": [
+                {
+                    "source_node_id": "collect_issue",
+                    "next_node_id": "handoff_to_specialist",
+                    "condition": "slots_complete",
+                }
+            ],
+        },
+    )
+    session = _chat_session(
+        active_skill_id="repair_sop",
+        active_step_id="collect_issue",
+    )
+    plan = TurnPlan(
+        decision="handoff_human",
+        user_intent="电脑开不了机",
+        task_frames=[],
+    )
+
+    normalized = TurnPlanner()._normalize(
+        plan,
+        "我的电脑开不了机了",
+        session,
+        available_skills=[skill],
+    )
+
+    assert normalized.decision == "handoff_human"
+    assert len(normalized.task_frames) == 1
+    frame = normalized.task_frames[0]
+    assert frame.kind == "sop"
+    assert frame.decision == "handoff_human"
+    assert frame.target_skill_id == "repair_sop"
+    assert frame.target_step_id == "handoff_to_specialist"
+    assert frame.task_id
+
+
+def test_turn_planner_handoff_human_falls_back_to_conversation_without_handoff_node() -> None:
+    """When router decides handoff_human but the active SOP has no handoff
+    node, the planner falls back to a conversation frame so the harness
+    conversation-handoff path still fires."""
+    skill = Skill(
+        id="skill-refund",
+        tenant_id="tenant-demo",
+        skill_id="refund",
+        name="退款流程",
+        status="published",
+        content_json={
+            "start_node_id": "collect",
+            "nodes": [
+                {
+                    "node_id": "collect",
+                    "name": "收集退款信息",
+                    "instruction": "核对订单号并收集退款原因。",
+                    "expected_user_info": ["order_id"],
+                }
+            ],
+            "edges": [],
+        },
+    )
+    session = _chat_session(
+        active_skill_id="refund",
+        active_step_id="collect",
+    )
+    plan = TurnPlan(
+        decision="handoff_human",
+        user_intent="我要找人工客服",
+        task_frames=[],
+    )
+
+    normalized = TurnPlanner()._normalize(
+        plan,
+        "我要找人工客服",
+        session,
+        available_skills=[skill],
+    )
+
+    assert normalized.decision == "handoff_human"
+    assert len(normalized.task_frames) == 1
+    frame = normalized.task_frames[0]
+    assert frame.kind == "conversation"
+    assert frame.decision == "handoff_human"
+    assert frame.target_skill_id is None
+    assert frame.target_step_id is None
+
+
+def test_turn_planner_handoff_human_picks_reachable_handoff_node() -> None:
+    """When multiple handoff nodes exist, the planner should pick the one
+    reachable from the current node via edges, not the first in array order."""
+    skill = Skill(
+        id="skill-multi-handoff",
+        tenant_id="tenant-demo",
+        skill_id="multi_handoff_sop",
+        name="多分支转人工",
+        status="published",
+        content_json={
+            "start_node_id": "intake",
+            "nodes": [
+                {
+                    "node_id": "intake",
+                    "name": "接待",
+                    "instruction": "了解需求。",
+                },
+                {
+                    "node_id": "handoff_sales",
+                    "name": "转销售",
+                    "type": "handoff",
+                    "assignee_user_id": "user_sales",
+                    "allowed_actions": ["handoff_human"],
+                },
+                {
+                    "node_id": "handoff_tech",
+                    "name": "转技术",
+                    "type": "handoff",
+                    "assignee_user_id": "user_tech",
+                    "allowed_actions": ["handoff_human"],
+                },
+            ],
+            "edges": [
+                {"source_node_id": "intake", "next_node_id": "handoff_tech"},
+                # handoff_sales is NOT reachable from intake
+            ],
+        },
+    )
+    session = _chat_session(
+        active_skill_id="multi_handoff_sop",
+        active_step_id="intake",
+    )
+    plan = TurnPlan(
+        decision="handoff_human",
+        user_intent="技术问题",
+        task_frames=[],
+    )
+
+    normalized = TurnPlanner()._normalize(
+        plan,
+        "遇到技术问题",
+        session,
+        available_skills=[skill],
+    )
+
+    assert normalized.decision == "handoff_human"
+    assert len(normalized.task_frames) == 1
+    frame = normalized.task_frames[0]
+    assert frame.kind == "sop"
+    assert frame.target_step_id == "handoff_tech"
+
+
 def test_turn_plan_defaults_null_container_fields() -> None:
     plan = TurnPlan.model_validate(
         {

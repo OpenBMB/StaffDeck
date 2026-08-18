@@ -510,11 +510,24 @@ def update_channel_binding_agents(
     ensure_current_user_tenant(tenant_id, current_user)
     binding = _get_binding(db, tenant_id, binding_id)
     _ensure_binding_manager(db, tenant_id, binding, current_user)
-    if request.agents is None and request.auto_route is None:
+    if (
+        request.agents is None
+        and request.auto_route is None
+        and request.default_handoff_assignee_user_id == "unchanged"
+    ):
         raise HTTPException(status_code=400, detail="无有效更新内容")
     if request.agents is not None and binding.team_id:
         # 团队绑定的接待员工由团队现任 TL 决定,不允许整表替换员工挂载
         raise HTTPException(status_code=400, detail="团队绑定的渠道不支持修改员工挂载")
+    # 校验默认人工处理人:传入非 None 且非空时,用户必须存在且属于当前租户
+    handoff_assignee = request.default_handoff_assignee_user_id
+    if handoff_assignee != "unchanged" and handoff_assignee:
+        user = db.get(User, handoff_assignee)
+        if not user or user.tenant_id != tenant_id or user.source != "web":
+            raise HTTPException(
+                status_code=400,
+                detail="默认人工处理人必须是当前租户的内部成员",
+            )
     default_agent_id: str | None = None
     if request.agents is not None:
         if not request.agents:
@@ -560,6 +573,15 @@ def update_channel_binding_agents(
                 binding_id,
                 "auto_route",
                 request.auto_route,
+            )
+            db.commit()
+        if request.default_handoff_assignee_user_id != "unchanged":
+            _patch_binding_config_key(
+                db,
+                tenant_id,
+                binding_id,
+                "default_handoff_assignee_user_id",
+                request.default_handoff_assignee_user_id or None,
             )
             db.commit()
         binding = _get_binding(db, tenant_id, binding_id)

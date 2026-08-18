@@ -4,6 +4,7 @@ import hashlib
 import logging
 import re
 import secrets
+from collections.abc import Callable
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -146,6 +147,12 @@ def find_channel_identity(
     ).first()
 
 
+def _is_placeholder_display_name(display_name: str, channel: str) -> bool:
+    """判断 display_name 是否为自动生成的占位名(如 \"飞书用户 5b09042b\")。"""
+    label = channel_label(channel)
+    return display_name.startswith(f"{label}用户 ") or display_name.startswith(f"{label}群聊 ")
+
+
 def resolve_or_provision_user(
     db: Session,
     tenant_id: str,
@@ -153,8 +160,13 @@ def resolve_or_provision_user(
     external_id: str,
     display_name: str | None = None,
     account_scope: str = "",
+    *,
+    name_resolver: Callable[[str], str | None] | None = None,
 ) -> User:
-    """按 (tenant, channel, scope, external_id) 解析 StaffDeck 用户，不存在则开通懒建账号。"""
+    """按 (tenant, channel, scope, external_id) 解析 StaffDeck 用户，不存在则开通懒建账号。
+
+    name_resolver 可选:传入 open_id 返回真实姓名;用于将占位 display_name 替换为渠道真实名。
+    """
     identity = find_channel_identity(db, tenant_id, channel, external_id, account_scope)
     if not identity and external_id.startswith("group:"):
         # 兼容 PR 早期数据:group_{scope}_{chatid} → group:{chatid}
@@ -170,16 +182,35 @@ def resolve_or_provision_user(
     if identity:
         user = db.get(User, identity.staffdeck_user_id)
         if user and user.tenant_id == tenant_id:
+            # 尝试用真实姓名替换占位名
+            if (
+                name_resolver
+                and not external_id.startswith("group:")
+                and _is_placeholder_display_name(user.display_name or "", channel)
+            ):
+                real_name = name_resolver(external_id)
+                if real_name:
+                    user.display_name = real_name
+                    identity.display_name = real_name
+                    db.add(user)
+                    db.add(identity)
+                    db.flush()
             return user
         # 损坏或跨租户 identity 不能继续占据正常 scope 唯一键。
         db.delete(identity)
         db.flush()
 
+    # 尝试获取真实姓名
+    resolved_name = None
+    if name_resolver and not external_id.startswith("group:"):
+        resolved_name = name_resolver(external_id)
+    final_display = (resolved_name or display_name or "").strip() or None
+
     username = channel_username(tenant_id, channel, external_id, account_scope)
     user = User(
         tenant_id=tenant_id,
         username=username,
-        display_name=(display_name or "").strip() or username,
+        display_name=final_display or username,
         role="member",
         source=channel,
         password_hash=hash_password(secrets.token_urlsafe(24)),

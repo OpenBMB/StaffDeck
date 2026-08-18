@@ -289,6 +289,7 @@ class ResponseGenerator:
                         task_citations
                     ),
                     "response_rules": content.get("response_rules", []),
+                    "handoff_info": item.get("handoff_info"),
                 }
             )
         return projected
