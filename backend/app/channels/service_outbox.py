@@ -876,11 +876,36 @@ def _write_handoff_notify_message_id(
     db.add(handoff)
 
 
+def _resolve_inquirer_display_name(
+    db: Session,
+    session: ChatSession,
+    binding: ChannelBinding,
+) -> str:
+    """查找提问人显示名:优先 ChannelIdentity.display_name,回退 User.display_name。"""
+    if not session.user_id:
+        return ""
+    scope = external_account_scope(db, binding)
+    identity = db.exec(
+        select(ChannelIdentity).where(
+            ChannelIdentity.staffdeck_user_id == session.user_id,
+            ChannelIdentity.channel == binding.channel,
+            ChannelIdentity.external_account_scope == scope,
+        )
+    ).first()
+    if identity and identity.display_name:
+        return identity.display_name.strip()
+    user = db.get(User, session.user_id)
+    if user:
+        return str(user.display_name or user.username or "").strip()
+    return ""
+
+
 def _build_handoff_problem_description(
     db: Session,
     handoff: HumanHandoffRequest,
+    binding: ChannelBinding,
 ) -> str:
-    """构造给处理人看的问题描述:用户原始消息 + 已收集 slots + step 名称。
+    """构造给处理人看的问题描述:提问人 + 用户原始消息 + 已收集 slots + step 名称。
 
     找不到 session/message 时回退到 handoff.pending_question。
     """
@@ -892,9 +917,12 @@ def _build_handoff_problem_description(
         step_name = str(step.get("name") or "").strip()
         if step_name:
             parts.append(f"[{step_name}]")
-    # 用户最后一条消息 + slots
+    # 提问人 + 用户最后一条消息 + slots
     session = db.get(ChatSession, handoff.session_id)
     if session:
+        inquirer = _resolve_inquirer_display_name(db, session, binding)
+        if inquirer:
+            parts.append(f"提问人:{inquirer}")
         user_msg = db.exec(
             select(Message)
             .where(
@@ -950,7 +978,7 @@ def notify_handoff_assignee(
         name = ""
         if assignee:
             name = str(assignee.display_name or assignee.username or "").strip()
-        problem_description = _build_handoff_problem_description(db, handoff)
+        problem_description = _build_handoff_problem_description(db, handoff, binding)
         text_parts = [
             f"【人工介入转接】{'已转接给真人员工 ' + name if name else '有一条人工介入待处理'}",
             "",
