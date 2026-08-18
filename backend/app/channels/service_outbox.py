@@ -16,6 +16,7 @@ from app.db.models import (
     ChannelIdentity,
     ChannelInboundEvent,
     ChatSession,
+    HumanHandoffRequest,
     Message,
     new_id,
     utc_now,
@@ -87,14 +88,16 @@ def _immutable_delivery_target(
         or ""
     ).strip()
     if not client_turn_id:
-        return {}
+        return dict(chat_session.channel_target_json or {})
     event = db.exec(
         select(ChannelInboundEvent).where(
             ChannelInboundEvent.binding_id == binding.id,
             ChannelInboundEvent.event_id == client_turn_id,
         )
     ).first()
-    return dict(event.target_json or {}) if event else {}
+    if event:
+        return dict(event.target_json or {})
+    return dict(chat_session.channel_target_json or {})
 
 
 def _find_active_binding_for_agent(db: Session, chat_session: ChatSession) -> ChannelBinding | None:
@@ -471,6 +474,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     try:
         adapter = get_channel_adapter(binding.channel)
         target = dict(delivery.target_json or {})
+        sent_message_id: str | None = None
         if delivery.kind == "reaction_add":
             add_reaction = getattr(adapter, "add_reaction", None)
             if not callable(add_reaction):
@@ -504,7 +508,7 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
                 reaction_event.updated_at = utc_now()
                 db.add(reaction_event)
         else:
-            adapter.send(
+            sent_message_id = adapter.send(
                 binding,
                 target,
                 delivery.text,
@@ -530,6 +534,11 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
     delivery.last_error = None
     delivery.sending_since = None
     delivery.updated_at = utc_now()
+    # handoff_notice 投递成功后,把飞书返回的 message_id 回写到 delivery 与关联的
+    # HumanHandoffRequest.notify_message_id,阶段 4 据此关联处理人的飞书回复。
+    if delivery.kind == "handoff_notice" and sent_message_id:
+        delivery.message_id = sent_message_id
+        _write_handoff_notify_message_id(db, delivery, sent_message_id)
     db.add(delivery)
     if channel_reaction_token(binding.channel) and delivery.kind not in _REACTION_KINDS:
         event = _reaction_event_for_delivery(db, delivery, binding.channel)
@@ -806,3 +815,187 @@ def notify_binding_creator(db: Session, binding: ChannelBinding, text: str) -> N
         db.commit()
     except Exception:
         logger.exception("渠道告警投递登记失败 binding=%s", binding.id)
+
+
+def _resolve_assignee_feishu_open_id(
+    db: Session,
+    binding: ChannelBinding,
+    assignee_user_id: str | None,
+    contact_target: dict[str, str],
+) -> str | None:
+    """确定 handoff assignee 的飞书 open_id(方案 A+B 组合)。
+
+    优先级:① Contact 概念里直填的 feishu_open_id;② assignee 的 ChannelIdentity
+    (方案 A/C 入站积累);③ 飞书通讯录 batch_get_id 反查手机号/邮箱(方案 B)。
+    返回 open_id 或 None(无法投递时由调用方兜底)。
+    """
+    direct_open_id = str(contact_target.get("feishu_open_id") or "").strip()
+    if direct_open_id:
+        return direct_open_id
+    scope = external_account_scope(db, binding)
+    if assignee_user_id:
+        identity = db.exec(
+            select(ChannelIdentity).where(
+                ChannelIdentity.tenant_id == binding.tenant_id,
+                ChannelIdentity.channel == "feishu",
+                ChannelIdentity.external_account_scope == scope,
+                ChannelIdentity.staffdeck_user_id == assignee_user_id,
+            )
+        ).first()
+        if identity and identity.external_user_id:
+            return identity.external_user_id
+    # 方案 B:通讯录反查。仅飞书适配器支持;需应用具备通讯录权限。
+    mobile = contact_target.get("feishu_mobile")
+    email = contact_target.get("feishu_email")
+    if not mobile and not email:
+        return None
+    try:
+        import app.channels.adapters.feishu  # noqa: F401 - ensure adapter is registered
+        from app.channels.adapters import get_channel_adapter
+
+        adapter = get_channel_adapter("feishu")
+        resolve = getattr(adapter, "resolve_open_id_by_mobile_or_email", None)
+        if not callable(resolve):
+            return None
+        return resolve(binding, mobile=mobile, email=email)
+    except Exception:
+        logger.exception("飞书通讯录反查 open_id 失败 binding=%s", binding.id)
+        return None
+
+
+def _write_handoff_notify_message_id(
+    db: Session,
+    delivery: ChannelDelivery,
+    message_id: str,
+) -> None:
+    """handoff_notice 投递成功后,把飞书 message_id 回写到关联的 HumanHandoffRequest。
+
+    delivery.target_json.handoff_id 指向待更新的 handoff;阶段 4 据此关联处理人回复。
+    """
+    target = delivery.target_json or {}
+    handoff_id = str(target.get("handoff_id") or "").strip()
+    if not handoff_id:
+        return
+    handoff = db.get(HumanHandoffRequest, handoff_id)
+    if not handoff or handoff.tenant_id != delivery.tenant_id:
+        return
+    handoff.notify_message_id = message_id
+    handoff.updated_at = utc_now()
+    db.add(handoff)
+
+
+def _build_handoff_problem_description(
+    db: Session,
+    handoff: HumanHandoffRequest,
+) -> str:
+    """构造给处理人看的问题描述:用户原始消息 + 已收集 slots + step 名称。
+
+    找不到 session/message 时回退到 handoff.pending_question。
+    """
+    parts: list[str] = []
+    # step name
+    metadata = handoff.metadata_json or {}
+    step = metadata.get("step") if isinstance(metadata, dict) else None
+    if isinstance(step, dict):
+        step_name = str(step.get("name") or "").strip()
+        if step_name:
+            parts.append(f"[{step_name}]")
+    # 用户最后一条消息 + slots
+    from app.db.models import ChatSession, Message
+
+    session = db.get(ChatSession, handoff.session_id)
+    if session:
+        user_msg = db.exec(
+            select(Message)
+            .where(
+                Message.session_id == handoff.session_id,
+                Message.role == "user",
+            )
+            .order_by(Message.created_at.desc())
+        ).first()
+        if user_msg and user_msg.content.strip():
+            parts.append(user_msg.content.strip()[:300])
+        slots = session.slots_json or {}
+        if isinstance(slots, dict) and slots:
+            _INTERNAL_SLOT_KEYS = {
+                "handoff_confirmed",
+                "message_content",
+                "_tool_results",
+            }
+            slot_lines = [
+                f"  {k}: {v}"
+                for k, v in slots.items()
+                if v and k not in _INTERNAL_SLOT_KEYS
+            ]
+            if slot_lines:
+                parts.append("已收集信息:\n" + "\n".join(slot_lines))
+    if not parts:
+        fallback = (handoff.pending_question or "").strip()
+        if fallback:
+            return fallback[:600]
+        return "当前 SOP 需要人工确认后继续执行。"
+    return "\n".join(parts)
+
+
+def notify_handoff_assignee(
+    db: Session,
+    binding: ChannelBinding,
+    handoff: HumanHandoffRequest,
+    contact_target: dict[str, str],
+    pending_question: str,
+    context_summary: str,
+) -> None:
+    """转人工时给 assignee 发飞书私聊通知(kind=handoff_notice)。
+
+    仿 notify_binding_creator:查 assignee 的 open_id → 构造 target → 登记
+    ChannelDelivery 由 outbox 守护线程投递。任何异常仅记日志,不影响 handoff 主流程
+    (网页收件箱仍可用作兜底)。多租户 scope 隔离:仅在 assignee 与 binding 同 scope
+    下有身份时直接投递;否则尝试通讯录反查,失败则跳过。
+    """
+    try:
+        open_id = _resolve_assignee_feishu_open_id(
+            db, binding, handoff.assignee_user_id, contact_target
+        )
+        if not open_id:
+            logger.info(
+                "飞书 handoff 通知跳过:assignee 无可用 open_id handoff=%s binding=%s",
+                handoff.id,
+                binding.id,
+            )
+            return
+        name = contact_target.get("name") or ""
+        problem_description = _build_handoff_problem_description(db, handoff)
+        text_parts = [
+            f"【人工介入转接】{'已转接给真人员工 ' + name if name else '有一条人工介入待处理'}",
+            "",
+            "问题:" + problem_description,
+        ]
+        if context_summary:
+            text_parts.append("")
+            text_parts.append("上下文:")
+            text_parts.append(context_summary[:800])
+        text_parts.append("")
+        text_parts.append("如要回复本条消息，请在开头加上 /回复反馈 然后输入答复内容。")
+        text = "\n".join(text_parts)
+        target = {
+            "receive_id_type": "open_id",
+            "receive_id": open_id,
+            "handoff_id": handoff.id,
+        }
+        db.add(
+            ChannelDelivery(
+                tenant_id=binding.tenant_id,
+                binding_id=binding.id,
+                session_id=f"handoff:{handoff.id}",
+                message_id=None,
+                target_json=target,
+                kind="handoff_notice",
+                text=text,
+                status="pending",
+                next_attempt_at=utc_now(),
+                idempotency_key=new_id("hnotice"),
+            )
+        )
+        db.commit()
+    except Exception:
+        logger.exception("飞书 handoff 通知登记失败 handoff=%s binding=%s", handoff.id, binding.id)

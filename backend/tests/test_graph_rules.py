@@ -106,4 +106,5 @@ def test_graph_runtime_legacy_node_defaults_and_dangling_edges() -> None:
         "knowledge_scope": {},
         "retry_policy": {},
         "metadata": {},
+        "sub_sop_id": None,
     }

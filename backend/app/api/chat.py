@@ -541,6 +541,58 @@ def _normalized_session_event_payload(row: AgentEvent) -> dict[str, object]:
     return normalized
 
 
+def _apply_handoff_reply(
+    db: Session,
+    row: HumanHandoffRequest,
+    reply: str,
+    *,
+    answered_by_user_id: str | None,
+) -> None:
+    """把一条 pending handoff 置为 answered 并触发 SOP 恢复。
+
+    供网页 API(reply_human_handoff)与飞书 intake 回复分支复用。
+    调用前需已完成权限校验与状态校验;本函数负责落库 + 事件 + 异步恢复。
+    """
+    now = utc_now()
+    row.status = "answered"
+    row.human_reply = reply
+    row.answered_at = now
+    row.updated_at = now
+    row.resume_payload_json = {
+        **(row.resume_payload_json or {}),
+        "answered_by_user_id": answered_by_user_id,
+    }
+    db.add(row)
+
+    chat_session = db.get(ChatSession, row.session_id)
+    if chat_session and chat_session.tenant_id == row.tenant_id:
+        chat_session.status = "active"
+        chat_session.awaiting_input_json = None
+        chat_session.summary = f"最近回复：{reply[:120]}"
+        chat_session.updated_at = now
+        db.add(chat_session)
+    db.add(
+        AgentEvent(
+            tenant_id=row.tenant_id,
+            session_id=row.session_id,
+            event_type="human_handoff_answered",
+            payload_json={
+                "handoff_id": row.id,
+                "agent_id": row.agent_id,
+                "trigger_skill_id": row.trigger_skill_id,
+                "trigger_step_id": row.trigger_step_id,
+                "answered_by_user_id": answered_by_user_id,
+                "reply_preview": reply[:180],
+                "source": "feishu" if answered_by_user_id and not answered_by_user_id.startswith("web_") else "web",
+            },
+            created_at=now,
+        )
+    )
+    db.commit()
+    db.refresh(row)
+    _resume_human_handoff_async(row.id)
+
+
 def _resume_human_handoff_async(handoff_id: str) -> None:
     thread = threading.Thread(target=_resume_human_handoff_worker, args=(handoff_id,), daemon=True)
     thread.start()
@@ -2323,38 +2375,7 @@ def reply_human_handoff(
     if not chat_session or chat_session.tenant_id != request.tenant_id:
         raise HTTPException(status_code=409, detail="Original handoff session is not available")
 
-    now = utc_now()
-    row.status = "answered"
-    row.human_reply = reply
-    row.answered_at = now
-    row.updated_at = now
-    row.resume_payload_json = {**(row.resume_payload_json or {}), "answered_by_user_id": current_user.id}
-    db.add(row)
-
-    chat_session.status = "active"
-    chat_session.awaiting_input_json = None
-    chat_session.summary = f"最近回复：{reply[:120]}"
-    chat_session.updated_at = now
-    db.add(chat_session)
-    db.add(
-        AgentEvent(
-            tenant_id=request.tenant_id,
-            session_id=row.session_id,
-            event_type="human_handoff_answered",
-            payload_json={
-                "handoff_id": row.id,
-                "agent_id": row.agent_id,
-                "trigger_skill_id": row.trigger_skill_id,
-                "trigger_step_id": row.trigger_step_id,
-                "answered_by_user_id": current_user.id,
-                "reply_preview": reply[:180],
-            },
-            created_at=now,
-        )
-    )
-    db.commit()
-    db.refresh(row)
-    _resume_human_handoff_async(row.id)
+    _apply_handoff_reply(db, row, reply, answered_by_user_id=current_user.id)
     return human_handoff_read(row)
 
 

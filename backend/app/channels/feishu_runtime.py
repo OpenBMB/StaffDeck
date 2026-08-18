@@ -221,6 +221,12 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
             return None
 
     thread_id = str(message.thread_id or "").strip()
+    # 飞书回复消息时,message.parent_id 为被回复消息的 message_id(话题回复时
+    # parent_id 指向被回复的那条,root_id 指向话题根)。阶段 4 据此关联 handoff 通知。
+    # 优先取 parent_id;话题内回复时若 parent_id 为空回退 root_id。
+    parent_id = str(getattr(message, "parent_id", "") or "").strip()
+    if not parent_id:
+        parent_id = str(getattr(message, "root_id", "") or "").strip()
     conv_key = (
         f"{chat_id}:thread:{thread_id}"
         if is_group and thread_id
@@ -241,6 +247,7 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
             "message": {"message_id": message_id, "chat_id": chat_id},
         },
         sender_name="",
+        parent_id=parent_id,
         attachments=attachments,
     )
     target = {

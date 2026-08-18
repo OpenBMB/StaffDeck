@@ -426,6 +426,14 @@ def _finish_result(
     action_count: int,
 ) -> TaskExecutionResult:
     status = action.status or "completed"
+    step = requirement.sop_context.get("step") if requirement.sop_context else None
+    step_type = str(step.get("type") or "").strip() if isinstance(step, dict) else ""
+    allowed_actions = step.get("allowed_actions") if isinstance(step, dict) else None
+    is_handoff_node = step_type == "handoff" or (
+        isinstance(allowed_actions, list) and "handoff_to_human" in allowed_actions
+    )
+    if is_handoff_node and status == "completed":
+        status = "handoff"
     allowed_next_steps = {
         str(item.get("next_node_id") or "").strip()
         for item in requirement.allowed_transitions

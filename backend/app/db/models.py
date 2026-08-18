@@ -969,6 +969,9 @@ class HumanHandoffRequest(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     answered_at: Optional[datetime] = None
+    # 飞书 handoff_notice 投递成功后回写的飞书 message_id;阶段 4 据此关联处理人回复。
+    # 网页触发的 handoff 无此字段(为空),不影响现有网页回复链路。
+    notify_message_id: Optional[str] = Field(default=None, index=True)
 
 
 class ScheduledTask(SQLModel, table=True):

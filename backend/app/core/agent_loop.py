@@ -15,6 +15,8 @@ from app.channels.service_outbox import stage_channel_delivery
 from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled
 from app.core.conversation_context import build_conversation_context
+from app.core.conversation_projection import ConversationProjection
+from app.core.graph_rules import GraphRules
 from app.core.harness_agent import HarnessExecutionCancelled
 from app.core.harness_session_lock import HarnessSessionBusy
 from app.core.harness_turn_store import HarnessTurnConflict
@@ -24,9 +26,6 @@ from app.core.harness_v2_engine import (
     get_or_create_harness_session,
 )
 from app.core.human_handoff_service import HumanHandoffService
-from app.core.conversation_projection import ConversationProjection
-from app.core.graph_rules import GraphRules
-from app.core.turn_finalizer import TurnFinalizer
 from app.core.response_generator import (
     ResponseGenerator,
     format_runtime_failure_reply,
@@ -34,6 +33,7 @@ from app.core.response_generator import (
 )
 from app.core.skill_runtime import SkillRuntime
 from app.core.slash_commands import SlashCommandError
+from app.core.turn_finalizer import TurnFinalizer
 from app.db.models import (
     AgentProfile,
     ChatSession,
@@ -682,7 +682,7 @@ class AgentLoop:
         active_skill: Skill | None,
         step_result: StepAgentResult,
     ) -> HumanHandoffRequest:
-        return HumanHandoffService(self.db, self.events).create(
+        handoff = HumanHandoffService(self.db, self.events).create(
             tenant_id,
             chat_session,
             step_result,
@@ -694,6 +694,55 @@ class AgentLoop:
             assignee_resolver=self._human_handoff_assignee_user_id,
             context_summary=self._human_handoff_context_summary,
             pending_question=self._human_handoff_pending_question,
+        )
+        # 阶段 3:若 agent 绑定了飞书,给 assignee 发私聊通知。失败仅记日志,
+        # 不影响 handoff 主流程(网页收件箱仍可兜底)。
+        self._maybe_notify_handoff_assignee_on_feishu(tenant_id, chat_session, handoff)
+        return handoff
+
+    def _maybe_notify_handoff_assignee_on_feishu(
+        self,
+        tenant_id: str,
+        chat_session: ChatSession,
+        handoff: HumanHandoffRequest,
+    ) -> None:
+        from app.channels.service_outbox import notify_handoff_assignee
+        from app.db.models import ChannelBinding, ChannelBindingAgent
+
+        if not chat_session.agent_id:
+            return
+        # 查 agent 挂载的飞书绑定(取首个 active 的)
+        mount_rows = self.db.exec(
+            select(ChannelBindingAgent).where(
+                ChannelBindingAgent.agent_id == chat_session.agent_id,
+                ChannelBindingAgent.tenant_id == tenant_id,
+            )
+        ).all()
+        if not mount_rows:
+            return
+        binding_ids = [row.binding_id for row in mount_rows if row.binding_id]
+        if not binding_ids:
+            return
+        binding = self.db.exec(
+            select(ChannelBinding).where(
+                ChannelBinding.id.in_(binding_ids),
+                ChannelBinding.channel == "feishu",
+                ChannelBinding.status == "active",
+            )
+        ).first()
+        if not binding:
+            return
+        metadata = handoff.metadata_json or {}
+        contact_target = metadata.get("contact_target") if isinstance(metadata, dict) else {}
+        if not isinstance(contact_target, dict):
+            contact_target = {}
+        notify_handoff_assignee(
+            self.db,
+            binding,
+            handoff,
+            contact_target,
+            handoff.pending_question or "",
+            handoff.context_summary or "",
         )
 
     def _apply_step_result(

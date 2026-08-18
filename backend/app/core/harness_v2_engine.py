@@ -457,6 +457,7 @@ class HarnessV2Engine:
             strict=False,
         ):
             payload["knowledge_citations"] = list(result.citations)
+        _inject_handoff_context(self.db, session, execution_payloads, execution_results)
 
         # ``last_skill`` is the execution-expanded parent graph. Prefer it so a
         # nested SOP's response rules remain available after the child graph
@@ -1310,6 +1311,53 @@ def _response_task_payload(
         "task_summary": result.task_summary,
         "artifacts": list(result.artifacts),
     }
+
+
+def _inject_handoff_context(
+    db: object,
+    session: ChatSession,
+    payloads: list[dict[str, object]],
+    results: list[TaskExecutionResult],
+) -> None:
+    from app.db.models import HumanHandoffRequest
+    from sqlmodel import select
+
+    handoff = db.exec(
+        select(HumanHandoffRequest)
+        .where(HumanHandoffRequest.session_id == session.id)
+        .order_by(HumanHandoffRequest.created_at.desc())
+    ).first()
+    if not handoff:
+        return
+    metadata = handoff.metadata_json or {}
+    contact_target = metadata.get("contact_target") if isinstance(metadata, dict) else None
+    if not isinstance(contact_target, dict):
+        contact_target = {}
+    notify_message_id = handoff.notify_message_id or ""
+    human_reply = (handoff.human_reply or "").strip()
+    is_answered = handoff.status in ("answered", "resolved") and bool(human_reply)
+    resume_finished_at = metadata.get("resume_finished_at") if isinstance(metadata, dict) else None
+    is_resume_turn = is_answered and bool(resume_finished_at)
+    for payload, result in zip(payloads, results, strict=False):
+        if is_resume_turn:
+            pass
+        elif payload.get("status") == "handoff":
+            pass
+        else:
+            continue
+        handoff_info: dict[str, Any] = {
+            "handoff_id": handoff.id,
+            "assignee_name": contact_target.get("name") or "",
+            "assignee_role": contact_target.get("role") or "",
+            "notified_via_feishu": bool(notify_message_id),
+        }
+        if is_answered:
+            handoff_info["human_reply"] = human_reply
+        payload["handoff_info"] = handoff_info
+    if is_resume_turn:
+        handoff.metadata_json = {**(handoff.metadata_json or {}), "resume_finished_at": None}
+        db.add(handoff)
+        db.flush()
 
 
 def _globalize_citations(

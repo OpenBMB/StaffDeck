@@ -191,6 +191,21 @@ def _migrate_sqlite_skill_schema() -> None:
             if "sending_since" not in delivery_columns:
                 conn.execute(text("ALTER TABLE channel_deliveries ADD COLUMN sending_since DATETIME"))
 
+        if "human_handoff_requests" in tables:
+            handoff_columns = {
+                column["name"] for column in inspector.get_columns("human_handoff_requests")
+            }
+            if "notify_message_id" not in handoff_columns:
+                conn.execute(
+                    text("ALTER TABLE human_handoff_requests ADD COLUMN notify_message_id VARCHAR")
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_human_handoff_requests_notify_message_id "
+                        "ON human_handoff_requests(notify_message_id)"
+                    )
+                )
+
         if "messages" in tables:
             message_columns = {column["name"] for column in inspector.get_columns("messages")}
             if "metadata_json" not in message_columns:
