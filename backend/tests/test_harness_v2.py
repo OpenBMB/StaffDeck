@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import ensure_open_gallery_binding
+from app.capabilities.local_general_skill import package_from_row
 from app.core import harness_agent as harness_agent_module
 from app.core import turn_planner as turn_planner_module
 from app.core.agent_loop import AgentLoop
@@ -1645,6 +1646,7 @@ def test_general_skill_harness_tool_reads_full_package_when_requested(
             {"path": "SKILL.md", "content": "# Runner"},
             {"path": "scripts/run.sh", "content": "echo ok"},
         ],
+        metadata_json={"skill_directories": ["references/empty"]},
         status="published",
     )
     descriptor = CapabilityDescriptor(
@@ -1683,7 +1685,18 @@ def test_general_skill_harness_tool_reads_full_package_when_requested(
         "scripts/run.sh",
     ]
     assert read_result["data"]["operation"] == "read"
-    assert "不会生成临时代码" in read_result["data"]["notice"]
+    assert "真实包文件已物化" in read_result["data"]["notice"]
+    assert "不会启动第二套 runner" in read_result["data"]["notice"]
+    package = package_from_row(skill)
+    package_workspace = read_result["data"]["package_workspace"]
+    assert package_workspace["relative_path"] == (
+        f".harness/skill_packages/runner--{package.digest.removeprefix('sha256:')[:12]}"
+    )
+    package_root = invoker.workspace_root / package_workspace["relative_path"]
+    assert (package_root / "SKILL.md").read_text(encoding="utf-8") == "# Runner"
+    assert (package_root / "scripts/run.sh").read_text(encoding="utf-8") == "echo ok"
+    assert (package_root / "references/empty").is_dir()
+    assert invoker.discover_artifacts() == []
 
 
 def test_general_skill_harness_tool_defaults_to_read_instead_of_generating_code(

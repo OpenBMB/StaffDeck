@@ -16,6 +16,7 @@ from typing import Any
 
 from app import paths
 from app.db.models import GeneralSkill, ModelConfig
+from app.general_skills.package_materialization import materialize_general_skill_package
 from app.general_skills.runtime_env import (
     GeneralSkillRuntimeError,
     ensure_runtime_python,
@@ -1033,19 +1034,7 @@ def _skill_package_payload(skill: GeneralSkill, preview_limit: int = 12000) -> d
 
 
 def _materialize_skill_package(skill: GeneralSkill, target_dir: Path) -> None:
-    target_dir.mkdir(parents=True, exist_ok=True)
-    metadata = getattr(skill, "metadata_json", None)
-    directory_values = metadata.get("skill_directories", []) if isinstance(metadata, Mapping) else []
-    if isinstance(directory_values, Sequence) and not isinstance(directory_values, (str, bytes)):
-        for value in directory_values:
-            relative_path = _safe_package_path(str(value or ""))
-            if relative_path:
-                (target_dir / relative_path).mkdir(parents=True, exist_ok=True)
-    for file in _skill_files(skill):
-        relative_path = _safe_package_path(str(file["path"]))
-        output_path = target_dir / relative_path
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(str(file.get("content") or ""), encoding="utf-8")
+    materialize_general_skill_package(skill, target_dir)
 
 
 def _safe_package_path(path: str) -> str:
