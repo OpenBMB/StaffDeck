@@ -523,7 +523,7 @@ class KnowledgeBucket(SQLModel, table=True):
     document_id: str = Field(index=True)
     bucket_key: str = Field(index=True)
     title: str = Field(sa_column=Column(Text))
-    summary: str
+    summary: str = Field(sa_column=Column(Text))
     token_estimate: int = 0
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
@@ -1411,15 +1411,15 @@ class EvolutionProposal(SQLModel, table=True):
     trigger_type: str = Field(default="feedback", index=True)
     risk_level: str = Field(default="medium", index=True)
     hypothesis: str = ""
-    rationale: str = ""
+    rationale: str = Field(default="", sa_column=Column(Text))
     expected_outcome: str = ""
-    source_feedback_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    evidence_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    candidate_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    diff_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    evaluation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    published_snapshot_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error: Optional[str] = None
+    source_feedback_ids_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    evidence_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    candidate_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    diff_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    evaluation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    published_snapshot_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_by_user_id: str = Field(index=True)
     reviewed_by_user_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
@@ -1465,10 +1465,10 @@ class Team(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("team"), primary_key=True)
     tenant_id: str = Field(index=True)
     name: str
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
     owner_user_id: str = Field(index=True)
     # 预留:并发策略/竞标等团队级配置
-    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     status: str = Field(default="active", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -1498,18 +1498,18 @@ class TeamTask(SQLModel, table=True):
     team_id: str = Field(index=True)
     tenant_id: str = Field(index=True)
     parent_task_id: Optional[str] = Field(default=None, index=True)
-    title: str
-    description: Optional[str] = None
+    title: str = Field(sa_column=Column(Text))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
     priority: str = Field(default="normal", index=True)
     status: str = Field(default="pending", index=True)
     created_by_user_id: Optional[str] = Field(default=None, index=True)
     created_by_tl: bool = False
     assignee_agent_id: Optional[str] = Field(default=None, index=True)
     session_id: Optional[str] = Field(default=None, index=True)
-    depends_on_task_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    activation_condition_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    report_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    review_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    depends_on_task_ids_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    activation_condition_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    report_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    review_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     # 乐观锁版本号,人改判/验收并发时防覆盖
     version: int = 0
     created_at: datetime = Field(default_factory=utc_now)
@@ -1528,7 +1528,7 @@ class TeamTaskEvent(SQLModel, table=True):
     actor_type: str = Field(index=True)
     actor_id: Optional[str] = Field(default=None, index=True)
     event_type: str = Field(index=True)
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -1543,10 +1543,10 @@ class TeamWakeEvent(SQLModel, table=True):
     target_agent_id: str = Field(index=True)
     # trigger_type: task_assigned / task_report / task_rework / tl_message 等
     trigger_type: str = Field(index=True)
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     # status: pending -> claimed -> done / failed
     status: str = Field(default="pending", index=True)
-    error: Optional[str] = None
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1559,14 +1559,14 @@ class TeamBlackboardEntry(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("bbentry"), primary_key=True)
     team_id: str = Field(index=True)
     tenant_id: str = Field(index=True)
-    content: str
-    tags_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    content: str = Field(sa_column=Column(Text))
+    tags_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     # source_type: member(TL 裁决的成员建议) / leader / human(人直写)
     source_type: str = Field(default="human", index=True)
     source_agent_id: Optional[str] = Field(default=None, index=True)
     source_task_id: Optional[str] = Field(default=None, index=True)
     # 引用回链:如 {"task_id": ..., "task_title": ...}
-    citation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    citation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     # status: active / archived
     status: str = Field(default="active", index=True)
     pinned: bool = False
@@ -1590,7 +1590,7 @@ class TeamTaskBid(SQLModel, table=True):
     round: int = 1
     # kind: statement(方案陈述) / rebuttal(反驳)
     kind: str = Field(default="statement", index=True)
-    content: str
+    content: str = Field(sa_column=Column(Text))
     # TL 裁决后回写的分数与理由,未裁决前为 None
     score: Optional[float] = None
     score_rationale: Optional[str] = None
