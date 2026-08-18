@@ -27,7 +27,10 @@ class Tenant(SQLModel, table=True):
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("tenant_id", "username", name="uq_user_tenant_username"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "username", name="uq_user_tenant_username"),
+        Index("ix_users_tenant_id_display_name", "tenant_id", "display_name"),
+    )
 
     id: str = Field(default_factory=lambda: new_id("user"), primary_key=True)
     tenant_id: str = Field(index=True)

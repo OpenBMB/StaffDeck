@@ -1,8 +1,9 @@
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 from app import paths
+from app.db import database
 from app.db.database import (
     _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID,
     _MODEL_API_PROTOCOLS_MIGRATION_ID,
@@ -10,6 +11,47 @@ from app.db.database import (
     _migrate_model_api_protocols,
     _normalize_database_url,
 )
+
+
+def test_sqlite_startup_migration_adds_display_name_login_index(
+    monkeypatch, tmp_path
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-users.db'}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE users (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    username VARCHAR NOT NULL,
+                    display_name VARCHAR,
+                    role VARCHAR NOT NULL DEFAULT 'member',
+                    source VARCHAR NOT NULL DEFAULT 'web',
+                    password_hash VARCHAR NOT NULL
+                )
+                """
+            )
+        )
+
+    monkeypatch.setattr(database, "engine", engine)
+
+    database._migrate_sqlite_skill_schema()
+    database._migrate_sqlite_skill_schema()
+
+    display_name_indexes = [
+        index
+        for index in inspect(engine).get_indexes("users")
+        if index["name"] == "ix_users_tenant_id_display_name"
+    ]
+    assert display_name_indexes == [
+        {
+            "name": "ix_users_tenant_id_display_name",
+            "column_names": ["tenant_id", "display_name"],
+            "unique": 0,
+            "dialect_options": {},
+        }
+    ]
 
 
 def test_relative_sqlite_url_resolves_under_backend_dir() -> None:
