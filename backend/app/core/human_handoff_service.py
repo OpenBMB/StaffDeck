@@ -142,9 +142,15 @@ class HumanHandoffService:
                     "owner_id",
                 ):
                     value = metadata.get(key)
-                    if value:
-                        return str(value)
-        return tenant_admin_resolver(tenant_id) or fallback_user_id
+                    candidate = str(value or "").strip() or None
+                    if self._is_internal_assignee(tenant_id, candidate):
+                        return candidate
+        admin_user_id = tenant_admin_resolver(tenant_id)
+        if self._is_internal_assignee(tenant_id, admin_user_id):
+            return admin_user_id
+        if self._is_internal_assignee(tenant_id, fallback_user_id):
+            return fallback_user_id
+        return None
 
     def tenant_admin_user_id(self, tenant_id: str) -> str | None:
         row = self.db.exec(

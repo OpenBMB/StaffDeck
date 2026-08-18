@@ -963,6 +963,16 @@ def notify_handoff_assignee(
     无可用 open_id 时跳过(网页收件箱兜底)。任何异常仅记日志,不影响 handoff 主流程。
     """
     try:
+        existing_notice = db.exec(
+            select(ChannelDelivery).where(
+                ChannelDelivery.tenant_id == binding.tenant_id,
+                ChannelDelivery.binding_id == binding.id,
+                ChannelDelivery.kind == "handoff_notice",
+                ChannelDelivery.session_id == f"handoff:{handoff.id}",
+            )
+        ).first()
+        if existing_notice:
+            return
         open_id = _resolve_assignee_feishu_open_id(
             db, binding, handoff.assignee_user_id
         )
@@ -1012,4 +1022,5 @@ def notify_handoff_assignee(
         )
         db.commit()
     except Exception:
+        db.rollback()
         logger.exception("飞书 handoff 通知登记失败 handoff=%s binding=%s", handoff.id, binding.id)

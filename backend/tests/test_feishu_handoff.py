@@ -482,6 +482,28 @@ def test_notify_handoff_assignee_stages_handoff_notice_delivery() -> None:
         assert delivery.status == "pending"
 
 
+def test_notify_handoff_assignee_deduplicates_existing_notice() -> None:
+    from app.channels.service_outbox import notify_handoff_assignee
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _feishu_binding()
+        handoff = _pending_handoff()
+        db.add(binding)
+        db.add(_channel_identity(external_user_id="ou_assignee"))
+        db.add(handoff)
+        db.commit()
+
+        notify_handoff_assignee(db, binding, handoff, "网络故障", "")
+        notify_handoff_assignee(db, binding, handoff, "网络故障", "")
+
+        deliveries = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "handoff_notice")
+        ).all()
+        assert len(deliveries) == 1
+
+
 def test_notify_handoff_assignee_skips_when_no_open_id() -> None:
     from app.channels.service_outbox import notify_handoff_assignee
 
@@ -725,6 +747,7 @@ def _seed_handoff_reply_scenario(
         tenant_id="tenant_demo",
         binding_id=binding.id,
         session_id=f"handoff:{handoff.id}",
+        message_id=notify_message_id,
         kind="handoff_notice",
         text="通知",
         target_json={
@@ -1126,6 +1149,35 @@ def test_run_handoff_reply_command_rejects_multiple_pending(monkeypatch) -> None
             intake_mod.external_account_scope = original
 
 
+def test_run_handoff_reply_command_rejects_unknown_parent_id() -> None:
+    import app.channels.service_intake as intake_mod
+    from app.channels.service_intake import _run_handoff_reply_command
+    from app.channels.service_routing import ChannelCommand
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _feishu_binding()
+        handoff = _pending_handoff(notify_message_id="om_notice_expected")
+        db.add(binding)
+        db.add(_channel_identity())
+        db.add(handoff)
+        db.commit()
+
+        inbound = _inbound(event_id="om_hr_unknown", text="/回复反馈 修好了")
+        inbound.parent_id = "om_unrelated_message"
+        command = ChannelCommand(kind="handoff_reply", query="修好了")
+
+        original = intake_mod.external_account_scope
+        intake_mod.external_account_scope = lambda _db, _b: ""
+        try:
+            result = _run_handoff_reply_command(db, binding, inbound, command)
+            assert "未找到" in result
+            assert db.get(HumanHandoffRequest, handoff.id).status == "pending"
+        finally:
+            intake_mod.external_account_scope = original
+
+
 def test_run_handoff_reply_command_matches_by_parent_id(monkeypatch) -> None:
     """引用通知(parent_id)时,按 notify_message_id 精确匹配 handoff。"""
     from datetime import timedelta
@@ -1176,6 +1228,23 @@ def test_run_handoff_reply_command_matches_by_parent_id(monkeypatch) -> None:
             notify_message_id="om_notice_2",
             created_at=new_time,
         ))
+        db.add(
+            ChannelDelivery(
+                tenant_id="tenant_demo",
+                binding_id=binding.id,
+                session_id="handoff:handoff_p1",
+                message_id="om_notice_1",
+                kind="handoff_notice",
+                text="旧通知",
+                target_json={
+                    "receive_id_type": "open_id",
+                    "receive_id": "ou_assignee",
+                    "handoff_id": "handoff_p1",
+                },
+                status="delivered",
+                idempotency_key="notice_p1",
+            )
+        )
         db.commit()
 
         # 回复旧通知 → 应命中 handoff_p1 而非最新的 handoff_p2

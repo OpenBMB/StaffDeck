@@ -791,6 +791,8 @@ def _try_handle_feishu_handoff_reply(
             ChannelDelivery.binding_id == binding.id,
             ChannelDelivery.kind == "handoff_notice",
             ChannelDelivery.session_id == f"handoff:{handoff.id}",
+            ChannelDelivery.message_id == parent_id,
+            ChannelDelivery.status == "delivered",
         )
     ).first()
     if not notice:
@@ -886,6 +888,11 @@ def _run_handoff_reply_command(
         )
     ).first()
     assignee_user_id = identity.staffdeck_user_id if identity else None
+    if not assignee_user_id:
+        return (
+            "未找到待处理的人工转接请求。"
+            "或当前飞书账号未绑定到 StaffDeck 处理人身份。"
+        )
 
     handoff: HumanHandoffRequest | None = None
     # 策略 1:引用通知 — 按 parent_id -> notify_message_id 精确匹配
@@ -898,17 +905,30 @@ def _run_handoff_reply_command(
                 HumanHandoffRequest.status == "pending",
             )
         ).first()
-        if handoff and assignee_user_id and handoff.assignee_user_id != assignee_user_id:
-            # 引用的通知不属于当前发送者,拒绝以防越权
+        if not handoff:
+            return "未找到该引用消息对应的待处理人工转接请求。"
+        notice = db.exec(
+            select(ChannelDelivery).where(
+                ChannelDelivery.tenant_id == binding.tenant_id,
+                ChannelDelivery.binding_id == binding.id,
+                ChannelDelivery.kind == "handoff_notice",
+                ChannelDelivery.session_id == f"handoff:{handoff.id}",
+                ChannelDelivery.message_id == parent_id,
+                ChannelDelivery.status == "delivered",
+            )
+        ).first()
+        notice_target = notice.target_json if notice else {}
+        if (
+            not notice
+            or str(notice_target.get("receive_id") or "").strip()
+            != inbound.from_user_id
+            or handoff.assignee_user_id != assignee_user_id
+        ):
+            # 同时校验通知实际目标与当前 StaffDeck 身份，防止引用或身份变更后越权。
             return "该人工转接请求不是分配给你的，无法代为回复。"
 
     # 策略 2:非引用 — 按 assignee 查 pending handoff
     if not handoff:
-        if not assignee_user_id:
-            return (
-                "未找到待处理的人工转接请求。"
-                "或当前飞书账号未绑定到 StaffDeck 处理人身份。"
-            )
         pending = db.exec(
             select(HumanHandoffRequest).where(
                 HumanHandoffRequest.tenant_id == binding.tenant_id,
