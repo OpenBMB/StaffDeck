@@ -815,6 +815,7 @@ def run_general_skill_stream(
                     try:
                         pending_terminal = terminal.get_nowait()
                     except queue.Empty:
+                        # The worker is still running; keep polling persisted trace events.
                         pass
                 if pending_terminal is not None and not rows:
                     event, payload = pending_terminal
