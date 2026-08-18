@@ -1094,6 +1094,7 @@ async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypat
                 tenant_id="tenant_demo",
                 name="天气",
                 slug="weather-harness",
+                description="中国城市天气查询",
                 markdown=WEATHER_SKILL_MD,
                 status="published",
             ),
