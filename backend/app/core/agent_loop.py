@@ -92,21 +92,16 @@ def _knowledge_scope_ids(
     return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
-def _find_handoff_node_id_in_skill(skill: Skill) -> str | None:
-    """查找 SOP 中第一个 type=handoff 或 allowed_actions 含 handoff_human 的节点。"""
-    for node in GraphRules.nodes(skill.content_json or {}):
-        node_type = str(node.get("type") or "").strip()
-        if node_type == "handoff":
-            node_id = str(node.get("node_id") or "").strip()
-            if node_id:
-                return node_id
-            continue
-        actions = GraphRules.step_actions(node)
-        if "handoff_human" in actions:
-            node_id = str(node.get("node_id") or "").strip()
-            if node_id:
-                return node_id
-    return None
+def _find_handoff_node_id_in_skill(
+    skill: Skill, active_step_id: str | None = None
+) -> str | None:
+    """查找 SOP 中从当前节点可达的 handoff 节点。
+
+    使用 GraphRules.find_handoff_node_id 做基于 edges 的 BFS,
+    优先返回从 active_step_id 可达的 handoff 节点,而非数组顺序的第一个。
+    """
+    content = skill.content_json or {}
+    return GraphRules.find_handoff_node_id(content, active_step_id)
 
 
 def _agent_identity_prompt(agent: AgentProfile) -> str:
@@ -519,7 +514,9 @@ class AgentLoop:
         )
         if current_step and self._step_declares_human_handoff(current_step):
             return False
-        handoff_step_id = _find_handoff_node_id_in_skill(active_skill)
+        handoff_step_id = _find_handoff_node_id_in_skill(
+            active_skill, chat_session.active_step_id
+        )
         if not handoff_step_id:
             return False
         self._change_active_step(

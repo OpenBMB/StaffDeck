@@ -898,7 +898,7 @@ def test_run_handoff_reply_command_matches_by_identity(monkeypatch) -> None:
         try:
             result = _run_handoff_reply_command(db, binding, inbound, command)
             assert resumed == [("handoff_hr1", "feishu")]
-            assert "已收到回复" in result
+            assert result is intake_mod._HANDOFF_REPLY_HANDLED
             assert db.get(HumanHandoffRequest, "handoff_hr1").status == "answered"
             ack = db.exec(
                 select(ChannelDelivery).where(ChannelDelivery.kind == "handoff_ack")
@@ -992,8 +992,8 @@ def test_run_handoff_reply_command_empty_query_returns_usage() -> None:
         assert "用法" in result
 
 
-def test_run_handoff_reply_command_picks_latest_pending(monkeypatch) -> None:
-    """多个 pending handoff 时,取 created_at 最新的那个。"""
+def test_run_handoff_reply_command_rejects_multiple_pending(monkeypatch) -> None:
+    """多个 pending handoff 且未引用通知时,拒绝模糊处理。"""
     from datetime import timedelta
 
     import app.channels.service_intake as intake_mod
@@ -1064,8 +1064,89 @@ def test_run_handoff_reply_command_picks_latest_pending(monkeypatch) -> None:
         original = intake_mod.external_account_scope
         intake_mod.external_account_scope = lambda _db, _b: ""
         try:
-            _run_handoff_reply_command(db, binding, inbound, command)
-            assert resumed == ["handoff_new"]
+            result = _run_handoff_reply_command(db, binding, inbound, command)
+            assert resumed == []
+            assert "多个待处理" in result
+        finally:
+            intake_mod.external_account_scope = original
+
+
+def test_run_handoff_reply_command_matches_by_parent_id(monkeypatch) -> None:
+    """引用通知(parent_id)时,按 notify_message_id 精确匹配 handoff。"""
+    from datetime import timedelta
+
+    import app.channels.service_intake as intake_mod
+    from app.channels.service_intake import _run_handoff_reply_command
+    from app.channels.service_routing import ChannelCommand
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _feishu_binding()
+        db.add(binding)
+        db.add(_channel_identity())
+        db.add(ChatSession(
+            id="session_p1",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            status="handoff",
+        ))
+        db.add(ChatSession(
+            id="session_p2",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            status="handoff",
+        ))
+        old_time = utc_now()
+        new_time = old_time + timedelta(seconds=10)
+        db.add(HumanHandoffRequest(
+            id="handoff_p1",
+            tenant_id="tenant_demo",
+            session_id="session_p1",
+            agent_id="agent_demo",
+            assignee_user_id="assignee_user",
+            pending_question="旧问题",
+            status="pending",
+            notify_message_id="om_notice_1",
+            created_at=old_time,
+        ))
+        db.add(HumanHandoffRequest(
+            id="handoff_p2",
+            tenant_id="tenant_demo",
+            session_id="session_p2",
+            agent_id="agent_demo",
+            assignee_user_id="assignee_user",
+            pending_question="新问题",
+            status="pending",
+            notify_message_id="om_notice_2",
+            created_at=new_time,
+        ))
+        db.commit()
+
+        # 回复旧通知 → 应命中 handoff_p1 而非最新的 handoff_p2
+        inbound = _inbound(event_id="om_hr_6", text="/回复反馈 修好了")
+        inbound.parent_id = "om_notice_1"
+        command = ChannelCommand(kind="handoff_reply", query="修好了")
+
+        resumed: list[str] = []
+
+        def fake_apply(db_arg, row, reply, *, answered_by_user_id, source="web"):
+            row.status = "answered"
+            row.human_reply = reply
+            db_arg.add(row)
+            db_arg.commit()
+            resumed.append(row.id)
+
+        import app.api.chat as chat_api
+
+        monkeypatch.setattr(chat_api, "_apply_handoff_reply", fake_apply)
+
+        original = intake_mod.external_account_scope
+        intake_mod.external_account_scope = lambda _db, _b: ""
+        try:
+            result = _run_handoff_reply_command(db, binding, inbound, command)
+            assert resumed == ["handoff_p1"]
+            assert result is intake_mod._HANDOFF_REPLY_HANDLED
         finally:
             intake_mod.external_account_scope = original
 

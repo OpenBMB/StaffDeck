@@ -425,6 +425,68 @@ def test_turn_planner_handoff_human_falls_back_to_conversation_without_handoff_n
     assert frame.target_step_id is None
 
 
+def test_turn_planner_handoff_human_picks_reachable_handoff_node() -> None:
+    """When multiple handoff nodes exist, the planner should pick the one
+    reachable from the current node via edges, not the first in array order."""
+    skill = Skill(
+        id="skill-multi-handoff",
+        tenant_id="tenant-demo",
+        skill_id="multi_handoff_sop",
+        name="多分支转人工",
+        status="published",
+        content_json={
+            "start_node_id": "intake",
+            "nodes": [
+                {
+                    "node_id": "intake",
+                    "name": "接待",
+                    "instruction": "了解需求。",
+                },
+                {
+                    "node_id": "handoff_sales",
+                    "name": "转销售",
+                    "type": "handoff",
+                    "assignee_user_id": "user_sales",
+                    "allowed_actions": ["handoff_human"],
+                },
+                {
+                    "node_id": "handoff_tech",
+                    "name": "转技术",
+                    "type": "handoff",
+                    "assignee_user_id": "user_tech",
+                    "allowed_actions": ["handoff_human"],
+                },
+            ],
+            "edges": [
+                {"source_node_id": "intake", "next_node_id": "handoff_tech"},
+                # handoff_sales is NOT reachable from intake
+            ],
+        },
+    )
+    session = _chat_session(
+        active_skill_id="multi_handoff_sop",
+        active_step_id="intake",
+    )
+    plan = TurnPlan(
+        decision="handoff_human",
+        user_intent="技术问题",
+        task_frames=[],
+    )
+
+    normalized = TurnPlanner()._normalize(
+        plan,
+        "遇到技术问题",
+        session,
+        available_skills=[skill],
+    )
+
+    assert normalized.decision == "handoff_human"
+    assert len(normalized.task_frames) == 1
+    frame = normalized.task_frames[0]
+    assert frame.kind == "sop"
+    assert frame.target_step_id == "handoff_tech"
+
+
 def test_turn_plan_defaults_null_container_fields() -> None:
     plan = TurnPlan.model_validate(
         {

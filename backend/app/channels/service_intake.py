@@ -58,6 +58,8 @@ logger = logging.getLogger(__name__)
 
 ERROR_NOTICE_TEXT = "处理出错，请稍后再试。"
 INTERRUPTED_NOTICE_TEXT = "上一条消息处理中断，请重新发送。"
+# handoff_reply 命令成功时返回此哨兵,跳过通用 _stage_notice(已自行创建 handoff_ack)
+_HANDOFF_REPLY_HANDLED: object = object()
 _DEDUP_LOOKBACK = 50
 _processor_run_pid: int | None = None
 _processor_run_id: str | None = None
@@ -816,10 +818,13 @@ def _run_handoff_reply_command(
 ) -> str:
     """/回复反馈 指令处理:处理人通过飞书发送 /回复反馈 <内容> 回复人工转接通知。
 
-    匹配策略:查发送者(open_id)在当前 binding scope 下的 ChannelIdentity,
-    取 staffdeck_user_id,再查该 user 名下 status=pending 的最新 handoff。
+    匹配策略(按优先级):
+    1. 引用通知(parent_id):按 handoff.notify_message_id == parent_id 精确匹配。
+    2. 非引用:查发送者在当前 binding scope 下的 ChannelIdentity → staffdeck_user_id,
+       再查该 user 名下 status=pending 的 handoff。恰好一个时直接使用;多个时拒绝,
+       提示处理人回复对应通知消息。
     命中后复用 _apply_handoff_reply 置 answered + 恢复 SOP,并给处理人回确认。
-    无 ChannelIdentity 时拒绝(不再用 contact_target open_id 模糊匹配)。
+    无 ChannelIdentity 时拒绝。
     """
     reply_text = command.query.strip()
     if not reply_text:
@@ -837,23 +842,49 @@ def _run_handoff_reply_command(
             ChannelIdentity.external_user_id == inbound.from_user_id,
         )
     ).first()
+    assignee_user_id = identity.staffdeck_user_id if identity else None
+
     handoff: HumanHandoffRequest | None = None
-    if identity and identity.staffdeck_user_id:
+    # 策略 1:引用通知 — 按 parent_id -> notify_message_id 精确匹配
+    parent_id = str(inbound.parent_id or "").strip()
+    if parent_id:
         handoff = db.exec(
             select(HumanHandoffRequest).where(
                 HumanHandoffRequest.tenant_id == binding.tenant_id,
-                HumanHandoffRequest.assignee_user_id == identity.staffdeck_user_id,
+                HumanHandoffRequest.notify_message_id == parent_id,
+                HumanHandoffRequest.status == "pending",
+            )
+        ).first()
+        if handoff and assignee_user_id and handoff.assignee_user_id != assignee_user_id:
+            # 引用的通知不属于当前发送者,拒绝以防越权
+            return "该人工转接请求不是分配给你的，无法代为回复。"
+
+    # 策略 2:非引用 — 按 assignee 查 pending handoff
+    if not handoff:
+        if not assignee_user_id:
+            return (
+                "未找到待处理的人工转接请求。"
+                "或当前飞书账号未绑定到 StaffDeck 处理人身份。"
+            )
+        pending = db.exec(
+            select(HumanHandoffRequest).where(
+                HumanHandoffRequest.tenant_id == binding.tenant_id,
+                HumanHandoffRequest.assignee_user_id == assignee_user_id,
                 HumanHandoffRequest.status == "pending",
             ).order_by(HumanHandoffRequest.created_at.desc())
-        ).first()
-    if not handoff:
-        return (
-            "未找到待处理的人工转接请求。可能已被处理或已过期，"
-            "或当前飞书账号未绑定到 StaffDeck 处理人身份。"
-        )
+        ).all()
+        if not pending:
+            return "未找到待处理的人工转接请求。可能已被处理或已过期。"
+        if len(pending) > 1:
+            return (
+                "你有多个待处理的人工转接请求，请直接回复对应的通知消息"
+                "以指定要回复的请求。"
+            )
+        handoff = pending[0]
+
     from app.api.chat import _apply_handoff_reply
 
-    answered_by = identity.staffdeck_user_id if identity else handoff.assignee_user_id
+    answered_by = assignee_user_id or handoff.assignee_user_id
     _apply_handoff_reply(
         db,
         handoff,
@@ -885,7 +916,7 @@ def _run_handoff_reply_command(
         handoff.id,
         inbound.from_user_id,
     )
-    return f"已收到回复，正在恢复 SOP 执行。回复预览：{reply_text[:120]}"
+    return _HANDOFF_REPLY_HANDLED
 
 
 def process_inbound(
@@ -1022,14 +1053,16 @@ def process_inbound(
                 reply = "该渠道已接入团队，消息由团队 TL 统一接收，员工切换类指令不可用。"
             else:
                 reply = run_command(db, binding, inbound.external_conv_id, command)
-            _stage_notice(
-                db,
-                binding,
-                inbound.external_conv_id,
-                target,
-                reply,
-                final_for_event=True,
-            )
+            # handoff_reply 成功时已自行创建 handoff_ack 投递,跳过通用 notice 避免重复
+            if reply is not _HANDOFF_REPLY_HANDLED:
+                _stage_notice(
+                    db,
+                    binding,
+                    inbound.external_conv_id,
+                    target,
+                    reply,
+                    final_for_event=True,
+                )
             event.status = "done"
             event.processed_at = utc_now()
             event.updated_at = utc_now()

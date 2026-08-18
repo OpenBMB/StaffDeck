@@ -11,6 +11,7 @@ from app.core.context_projection import (
     compact_conversation_context,
     compact_pending_tasks,
 )
+from app.core.graph_rules import GraphRules
 from app.core.task_frame_store import MAX_TASK_FRAMES_PER_TURN
 from app.db.models import ChatSession, ModelConfig, Skill, new_id
 from app.llm import LLMClient, LLMError
@@ -239,7 +240,9 @@ class TurnPlanner:
                     )
                 )
             elif plan.decision == "handoff_human" and active_skill is not None:
-                handoff_step_id = _find_handoff_node_id(active_skill)
+                handoff_step_id = _find_handoff_node_id(
+                    active_skill, session.active_step_id
+                )
                 if handoff_step_id:
                     frames.append(
                         PlannedTaskFrame(
@@ -422,25 +425,16 @@ def _first_node_id(skill: Skill) -> str | None:
     return None
 
 
-def _find_handoff_node_id(skill: Skill) -> str | None:
-    """查找 SOP 中第一个 type=handoff 或 allowed_actions 含 handoff_human 的节点。
+def _find_handoff_node_id(
+    skill: Skill, active_step_id: str | None = None
+) -> str | None:
+    """查找 SOP 中从当前节点可达的 handoff 节点。
 
-    当 router 决定 handoff_human 但未绑定 SOP frame 时,用此函数定位到
-    SOP 中的 handoff 节点,使 harness 能在该节点读取 assignee_user_id
-    并正确触发飞书通知。
+    使用 GraphRules.find_handoff_node_id 做基于 edges 的 BFS,
+    优先返回从 active_step_id 可达的 handoff 节点,而非数组顺序的第一个。
     """
     content = skill.content_json or {}
-    for node in content.get("nodes") or []:
-        if not isinstance(node, dict):
-            continue
-        node_type = str(node.get("type") or "").strip()
-        actions = node.get("allowed_actions") or []
-        normalized = {str(a or "").strip() for a in actions}
-        if node_type == "handoff" or "handoff_human" in normalized:
-            node_id = str(node.get("node_id") or "").strip()
-            if node_id:
-                return node_id
-    return None
+    return GraphRules.find_handoff_node_id(content, active_step_id)
 
 
 def _known_task_frames(

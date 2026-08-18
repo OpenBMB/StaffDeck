@@ -12,6 +12,11 @@ import {
   DialogTitle,
   RadioGroup,
   RadioGroupItem,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Switch,
 } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
@@ -245,6 +250,8 @@ export default function ChannelsPage({
   const [defaultAgentId, setDefaultAgentId] = useState('');
   const [savingAgents, setSavingAgents] = useState(false);
   const [autoRouteSaving, setAutoRouteSaving] = useState(false);
+  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string }>>([]);
+  const [handoffAssigneeSaving, setHandoffAssigneeSaving] = useState(false);
   const [bindCode, setBindCode] = useState<ChannelBindCodeRead | null>(null);
   const [bindCodeOpen, setBindCodeOpen] = useState(false);
   const [bindCodeLoading, setBindCodeLoading] = useState(false);
@@ -289,6 +296,12 @@ export default function ChannelsPage({
     void loadIdentityBindings();
     void loadChannelMetas();
     void loadTeams();
+    api
+      .get<Array<{ id: string; username: string; display_name?: string }>>(
+        `/api/auth/users?tenant_id=${TENANT_ID}`,
+      )
+      .then(setTenantUsers)
+      .catch(() => setTenantUsers([]));
   }, []);
 
   useEffect(() => {
@@ -626,6 +639,25 @@ export default function ChannelsPage({
     }
   }
 
+  async function saveHandoffAssignee(userId: string | null) {
+    if (!binding || handoffAssigneeSaving) return;
+    setHandoffAssigneeSaving(true);
+    try {
+      const updated = await api.put<ChannelBindingRead>(
+        `/api/enterprise/channels/${binding.id}?tenant_id=${TENANT_ID}`,
+        { tenant_id: TENANT_ID, default_handoff_assignee_user_id: userId },
+      );
+      setBindings((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      notify.success('已保存');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '保存默认人工处理人失败');
+    } finally {
+      setHandoffAssigneeSaving(false);
+    }
+  }
+
   function metaFor(channel: string): ChannelMetaRead | undefined {
     return channelMetas.find((item) => item.channel === channel);
   }
@@ -881,6 +913,38 @@ export default function ChannelsPage({
             disabled={autoRouteSaving}
             onCheckedChange={(next) => void toggleAutoRoute(next)}
           />
+        </div>
+        <div className="flex items-center justify-between gap-[12px] border-t border-[#eef0f4] pt-[16px]">
+          <div className="flex min-w-0 flex-col gap-[4px]">
+            <span className="text-[13px] font-semibold text-[#18181a]">默认人工处理人</span>
+            <span className="text-[12px] leading-[1.6] text-[#858b9c]">
+              SOP 人工节点未指定处理人时，转交给此用户。未配置时回退到数字员工负责人或管理员。
+            </span>
+          </div>
+          <div className="flex items-center gap-[8px]">
+            {binding.default_handoff_assignee_name && (
+              <span className="text-[12px] text-[#858b9c]">
+                当前：{binding.default_handoff_assignee_name}
+              </span>
+            )}
+            <Select
+              value={binding.default_handoff_assignee_user_id || '__none__'}
+              disabled={handoffAssigneeSaving}
+              onValueChange={(value) => void saveHandoffAssignee(value === '__none__' ? null : value)}
+            >
+              <SelectTrigger className="h-[32px] w-[160px] text-[12px]">
+                <SelectValue placeholder="选择处理人" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">未配置</SelectItem>
+                {tenantUsers.map((user) => (
+                  <SelectItem key={user.id} value={user.id}>
+                    {user.display_name || user.username || user.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </div>
 

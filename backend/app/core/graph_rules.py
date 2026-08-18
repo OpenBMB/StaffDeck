@@ -303,3 +303,66 @@ class GraphRules:
         return all(
             action in terminal_actions or action.startswith("call_tool:") for action in actions
         )
+
+    @classmethod
+    def is_handoff_node(cls, node: dict[str, Any]) -> bool:
+        node_type = str(node.get("type") or "").strip()
+        if node_type == "handoff":
+            return True
+        return "handoff_human" in cls.step_actions(node)
+
+    @classmethod
+    def find_handoff_node_id(
+        cls,
+        content: dict[str, Any],
+        active_step_id: str | None = None,
+    ) -> str | None:
+        """查找 SOP 中从当前节点可达的 handoff 节点。
+
+        优先从 active_step_id 出发沿 edges BFS,返回第一个可达的 handoff 节点。
+        若 active_step_id 为空或无可达 handoff 节点,回退到 start_node_id 做 BFS。
+        若仍无结果,回退到 nodes 数组中第一个 handoff 节点(兼容无 edges 的简单 SOP)。
+        """
+        nodes = cls.nodes(content)
+        nodes_by_id = {
+            str(node.get("node_id") or ""): node for node in nodes if node.get("node_id")
+        }
+        outgoing = cls.outgoing_edges(content)
+
+        def _bfs(start: str | None) -> str | None:
+            if not start or start not in nodes_by_id:
+                return None
+            visited: set[str] = set()
+            queue: list[str] = [start]
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                visited.add(current)
+                node = nodes_by_id.get(current)
+                if node and cls.is_handoff_node(node):
+                    return current
+                for edge in outgoing.get(current, []):
+                    next_id = str(edge.get("next_node_id") or "").strip()
+                    if next_id and next_id not in visited:
+                        queue.append(next_id)
+            return None
+
+        # 1. 从当前节点 BFS
+        if active_step_id:
+            found = _bfs(active_step_id)
+            if found:
+                return found
+        # 2. 从 start_node_id BFS
+        start = str(content.get("start_node_id") or "").strip()
+        if start and start != active_step_id:
+            found = _bfs(start)
+            if found:
+                return found
+        # 3. 回退:数组中第一个 handoff 节点
+        for node in nodes:
+            if cls.is_handoff_node(node):
+                node_id = str(node.get("node_id") or "").strip()
+                if node_id:
+                    return node_id
+        return None

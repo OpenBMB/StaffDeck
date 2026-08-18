@@ -52,6 +52,9 @@ class SkillGraphNode(BaseModel):
     retry_policy: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     sub_sop_id: Optional[str] = None
+    # 人工节点指定处理人(handoff / handoff_human 节点)。None 表示未指定,
+    # 运行时回退到渠道默认处理人 → 数字员工负责人 → 租户管理员。
+    assignee_user_id: Optional[str] = None
 
 
 class SkillGraphEdge(BaseModel):
