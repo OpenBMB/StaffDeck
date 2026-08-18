@@ -23,7 +23,6 @@ from app.security.auth import (
 from app.security.permissions import MEMBER_ROLE, is_admin_user
 from app.security.tenant import ensure_tenant
 
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -262,17 +261,30 @@ def list_users(
     db: Session = Depends(get_session),
 ) -> list[UserRead]:
     ensure_current_user_tenant(tenant_id, current_user)
+    statement = select(User).where(User.tenant_id == tenant_id)
+    # 非管理员只需要为处理人选择器读取内部成员。不能依赖前端过滤，否则
+    # include_channel=true 会把渠道客户及群聊虚拟账号暴露给任意租户成员。
+    if not is_admin_user(current_user) or not include_channel:
+        statement = statement.where(User.source == "web")
+    rows = db.exec(statement.order_by(User.created_at.desc())).all()
     if include_channel:
-        # include_channel=true: 返回全部用户(含渠道懒建客户/群聊虚拟账号),并附带渠道身份信息。
-        # 处理人候选前端会自行过滤 source === "web"。
-        statement = select(User).where(User.tenant_id == tenant_id)
-        rows = db.exec(statement.order_by(User.created_at.desc())).all()
+        # 附带内部成员已绑定的渠道身份，供处理人选择器判断当前 binding 是否可达。
         from app.db.models import ChannelIdentity
 
         all_identities: dict[str, list[ChannelIdentity]] = {}
-        for ci in db.exec(
-            select(ChannelIdentity).where(ChannelIdentity.tenant_id == tenant_id)
-        ).all():
+        user_ids = [row.id for row in rows]
+        identities = (
+            db.exec(
+                select(ChannelIdentity).where(
+                    ChannelIdentity.tenant_id == tenant_id,
+                    ChannelIdentity.staffdeck_user_id.in_(user_ids),
+                    ~ChannelIdentity.external_user_id.startswith("group:"),
+                )
+            ).all()
+            if user_ids
+            else []
+        )
+        for ci in identities:
             all_identities.setdefault(ci.staffdeck_user_id, []).append(ci)
         result = []
         for row in rows:
@@ -292,12 +304,6 @@ def list_users(
             )
             result.append(_user_read(row, channel_identities=identities))
         return result
-    # 默认只返回内部成员(source="web"),排除渠道懒建客户/群聊虚拟账号。
-    statement = select(User).where(
-        User.tenant_id == tenant_id,
-        User.source == "web",
-    )
-    rows = db.exec(statement.order_by(User.created_at.desc())).all()
     return [_user_read(row) for row in rows]
 
 

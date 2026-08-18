@@ -233,6 +233,61 @@ def test_assignee_falls_back_to_binding_default() -> None:
         assert handoff.assignee_user_id == "assignee_user"
 
 
+def test_assignee_skips_invalid_configured_users() -> None:
+    """失效、跨租户或渠道客户配置不能阻断 owner/admin 降级。"""
+    from app.core.human_handoff_service import HumanHandoffService
+    from app.session.session_schema import StepAgentResult
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        db.add(Tenant(id="tenant_other", name="Other"))
+        db.add(
+            User(
+                id="other_tenant_user",
+                tenant_id="tenant_other",
+                username="other",
+                password_hash="x",
+            )
+        )
+        db.add(
+            User(
+                id="channel_customer",
+                tenant_id="tenant_demo",
+                username="feishu_customer",
+                source="feishu",
+                password_hash="x",
+            )
+        )
+        db.add(AgentProfile(id="agent_demo", tenant_id="tenant_demo", name="IT"))
+        session = ChatSession(
+            id="session_invalid_assignee",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            status="active",
+        )
+        db.add(session)
+        db.commit()
+
+        service = HumanHandoffService(db, FakeEvents())
+        for step_assignee, binding_assignee in (
+            ("deleted_user", "other_tenant_user"),
+            ("channel_customer", None),
+        ):
+            handoff = service.create(
+                "tenant_demo",
+                session,
+                StepAgentResult(),
+                current_step_resolver=lambda: {"name": "转人工"},
+                assignee_resolver=lambda *_: "admin_user",
+                context_summary=lambda _: "",
+                pending_question=lambda *_: "问题",
+                step_assignee_user_id=step_assignee,
+                binding_default_assignee_user_id=binding_assignee,
+            )
+            assert handoff.assignee_user_id == "admin_user"
+
+
 def test_assignee_falls_back_to_owner_then_admin() -> None:
     """SOP 与渠道默认都未指定时,走 assignee_resolver(owner → admin)。"""
     from app.core.human_handoff_service import HumanHandoffService

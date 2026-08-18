@@ -1253,6 +1253,32 @@ def test_put_binding_default_handoff_assignee_rejects_unknown_user() -> None:
     assert response.status_code == 400
 
 
+def test_put_binding_default_handoff_assignee_rejects_channel_customer() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    with Session(engine) as db:
+        db.add(
+            User(
+                id="user_channel_customer",
+                tenant_id="tenant_demo",
+                username="feishu_customer",
+                source="feishu",
+                password_hash="x",
+            )
+        )
+        db.commit()
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": "user_channel_customer"},
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 400
+
+
 def test_put_binding_default_handoff_assignee_unchanged_by_default() -> None:
     """不传 default_handoff_assignee_user_id 时,现有值保持不动。"""
     engine = _test_engine()

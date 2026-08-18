@@ -523,8 +523,11 @@ def update_channel_binding_agents(
     handoff_assignee = request.default_handoff_assignee_user_id
     if handoff_assignee != "unchanged" and handoff_assignee:
         user = db.get(User, handoff_assignee)
-        if not user or user.tenant_id != tenant_id:
-            raise HTTPException(status_code=400, detail="默认人工处理人不存在或不属于当前租户")
+        if not user or user.tenant_id != tenant_id or user.source != "web":
+            raise HTTPException(
+                status_code=400,
+                detail="默认人工处理人必须是当前租户的内部成员",
+            )
     default_agent_id: str | None = None
     if request.agents is not None:
         if not request.agents:

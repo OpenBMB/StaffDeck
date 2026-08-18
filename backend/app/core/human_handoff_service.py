@@ -56,12 +56,16 @@ class HumanHandoffService:
         # Assignee 优先级:SOP 节点指定 → 当前渠道默认处理人 → 数字员工负责人 → 租户管理员。
         # 不再从知识库 Contact 概念推断 assignee(知识内容变化会导致处理人不稳定,
         # 且缺少权限/审计入口)。
-        assignee_user_id = (
-            step_assignee_user_id
-            or binding_default_assignee_user_id
-            or assignee_resolver(
-                tenant_id, chat_session.agent_id, chat_session.user_id
-            )
+        configured_assignee = next(
+            (
+                user_id
+                for user_id in (step_assignee_user_id, binding_default_assignee_user_id)
+                if self._is_internal_assignee(tenant_id, user_id)
+            ),
+            None,
+        )
+        assignee_user_id = configured_assignee or assignee_resolver(
+            tenant_id, chat_session.agent_id, chat_session.user_id
         )
         handoff = HumanHandoffRequest(
             tenant_id=tenant_id,
@@ -107,6 +111,12 @@ class HumanHandoffService:
             },
         )
         return handoff
+
+    def _is_internal_assignee(self, tenant_id: str, user_id: str | None) -> bool:
+        if not user_id:
+            return False
+        user = self.db.get(User, user_id)
+        return bool(user and user.tenant_id == tenant_id and user.source == "web")
 
     def assignee_user_id(
         self,

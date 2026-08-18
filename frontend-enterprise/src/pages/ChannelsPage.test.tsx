@@ -113,6 +113,7 @@ function makeFetchMock(overrides: { bindings?: unknown; teams?: unknown; agents?
     if (url.includes('/api/enterprise/agents')) return jsonResponse(agents);
     if (url.includes('/api/enterprise/teams')) return jsonResponse(teams);
     if (url.includes('/api/enterprise/channels')) return jsonResponse(bindings);
+    if (url.includes('/api/auth/users')) return jsonResponse([]);
     return jsonResponse({});
   });
 }

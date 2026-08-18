@@ -215,6 +215,31 @@ def test_find_handoff_node_id_falls_back_to_conditional_edges() -> None:
     assert GraphRules.find_handoff_node_id(content, "intake") == "handoff_b"
 
 
+def test_find_handoff_node_id_rejects_ambiguous_conditional_branches() -> None:
+    content = {
+        "start_node_id": "decision",
+        "nodes": [
+            {"node_id": "decision", "allowed_actions": ["continue_flow"]},
+            {"node_id": "sales_handoff", "type": "handoff"},
+            {"node_id": "support_handoff", "type": "handoff"},
+        ],
+        "edges": [
+            {
+                "source_node_id": "decision",
+                "next_node_id": "sales_handoff",
+                "condition": "售前咨询",
+            },
+            {
+                "source_node_id": "decision",
+                "next_node_id": "support_handoff",
+                "condition": "售后故障",
+            },
+        ],
+    }
+
+    assert GraphRules.find_handoff_node_id(content, "decision") is None
+
+
 def test_skill_graph_node_preserves_assignee_user_id() -> None:
     """SkillGraphNode schema should preserve assignee_user_id through Pydantic round-trip."""
     node = SkillGraphNode(

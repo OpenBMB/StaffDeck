@@ -490,6 +490,7 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
 ];
 const DISTILL_REWRITE_MODEL_STORAGE_KEY = 'skill-distill-rewrite-model';
 const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信' };
+const UNASSIGNED_USER_VALUE = '__unassigned__';
 
 type DistillCacheSnapshot = {
   draft: SkillCard | null;
@@ -3557,7 +3558,7 @@ function SkillSource({
       label: `${item.name} · ${item.skill_id}`,
     }));
   const tenantUserOptions: SelectOption[] = [
-    { value: '', label: '未指定（使用渠道默认）' },
+    { value: UNASSIGNED_USER_VALUE, label: '未指定（使用渠道默认）' },
     ...tenantUsers.filter((user) => !user.source || user.source === 'web').map((user) => {
       const channelLabel = user.channel_identities?.[0]
         ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
@@ -3694,9 +3695,13 @@ function SkillSource({
                     {isHandoffNode && (
                       <EditableSourceSelectLine
                         label="处理人"
-                        value={String(step.assignee_user_id || '')}
+                        value={String(step.assignee_user_id || UNASSIGNED_USER_VALUE)}
                         options={tenantUserOptions}
-                        onChange={(value) => editStep(index, 'assignee_user_id', value)}
+                        onChange={(value) => editStep(
+                          index,
+                          'assignee_user_id',
+                          value === UNASSIGNED_USER_VALUE ? '' : value,
+                        )}
                       />
                     )}
                     <EditableFlowRulesLine
@@ -3866,7 +3871,7 @@ function SkillFlow({
       label: `${item.name} · ${item.skill_id}`,
     }));
   const tenantUserOptions: SelectOption[] = [
-    { value: '', label: '未指定（使用渠道默认）' },
+    { value: UNASSIGNED_USER_VALUE, label: '未指定（使用渠道默认）' },
     ...tenantUsers.filter((user) => !user.source || user.source === 'web').map((user) => {
       const channelLabel = user.channel_identities?.[0]
         ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
@@ -4972,9 +4977,13 @@ function SkillFlowInspector({
             {isHandoffNode && (
               <EditableSourceSelectLine
                 label="处理人"
-                value={String(node.assignee_user_id || '')}
+                value={String(node.assignee_user_id || UNASSIGNED_USER_VALUE)}
                 options={tenantUserOptions}
-                onChange={(value) => onEditNode(nodeIndex, 'assignee_user_id', value)}
+                onChange={(value) => onEditNode(
+                  nodeIndex,
+                  'assignee_user_id',
+                  value === UNASSIGNED_USER_VALUE ? '' : value,
+                )}
               />
             )}
           </FlowInspectorSection>
