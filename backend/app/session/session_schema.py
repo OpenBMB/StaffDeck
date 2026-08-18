@@ -221,6 +221,10 @@ class ChatTurnRequest(BaseModel):
     # is deliberately separate from the visible message so execution does not
     # depend on the planner rediscovering the same SOP on every wake-up.
     forced_sop_id: Optional[str] = Field(default=None, exclude=True)
+    # Scheduled tasks may freeze the selected SOP at save time. The snapshot is
+    # server-only and is applied only after the current employee binding has
+    # been verified, so pinning a version never bypasses capability access.
+    forced_sop_snapshot: Optional[dict[str, Any]] = Field(default=None, exclude=True)
     client_timezone: Optional[str] = None
     debug: bool = False
 

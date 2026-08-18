@@ -8,6 +8,7 @@ import json
 import mimetypes
 import re
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from app.db.models import new_id
@@ -75,16 +76,35 @@ def attachment_context_lines(attachments: Iterable[ChatAttachmentRead | dict[str
     if not normalized:
         return lines
     lines.append("上传附件上下文：")
+    lines.append("调用 Harness 工具时优先使用工作区相对路径，不要传宿主机绝对路径。")
     for index, attachment in enumerate(normalized, start=1):
+        sandbox_path = attachment.sandbox_path or sandbox_attachment_path(attachment, index)
+        relative_path = sandbox_path.removeprefix("/workspace/")
         lines.append(
             f"{index}. 文件名：{attachment.filename}；类型：{attachment.kind}/{attachment.content_type}；"
             f"大小：{attachment.size} bytes；"
-            f"沙箱路径：{attachment.sandbox_path or sandbox_attachment_path(attachment, index)}"
+            f"工作区相对路径：{relative_path}；文件工具路径：{sandbox_path}"
         )
         if attachment.kind == "image":
             lines.append("图片同时作为本轮视觉输入提供；若模型不支持视觉输入，请读取沙箱文件。")
+        elif Path(attachment.filename).suffix.lower() in {
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".html",
+            ".htm",
+        }:
+            lines.append(
+                "这是文档附件；不要直接使用 read_file。先调用 extract_document_text，"
+                "再用 read_file 分页读取生成的 UTF-8 文本。"
+            )
+        elif attachment.kind == "text":
+            lines.append("需要内容时请使用 read_file 读取工作区文件。")
         else:
-            lines.append("附件正文未预先抽取；需要内容时请使用文件工具读取沙箱文件。")
+            lines.append(
+                "这是二进制附件，不能直接使用 read_file；请调用与文件格式匹配的能力"
+                "或使用工作区相对路径交给受控命令处理。"
+            )
     return lines
 
 

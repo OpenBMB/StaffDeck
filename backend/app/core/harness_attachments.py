@@ -99,6 +99,7 @@ def materialize_task_attachments(
                 descriptor.update(
                     {
                         "workspace_path": sandbox_path,
+                        "workspace_relative_path": relative_path,
                         "sandbox_path": sandbox_path,
                         "sha256": hashlib.sha256(staged_data).hexdigest(),
                         "materialized": True,
@@ -147,6 +148,7 @@ def materialize_task_attachments(
                 descriptor.update(
                     {
                         "workspace_path": sandbox_path,
+                        "workspace_relative_path": sandbox_path.removeprefix("/workspace/"),
                         "sandbox_path": sandbox_path,
                         "sha256": data.get("sha256"),
                         "materialized": True,
