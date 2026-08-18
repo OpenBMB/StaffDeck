@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 import httpx
-from sqlalchemy import text, update
+from sqlalchemy import update
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine, select
 
