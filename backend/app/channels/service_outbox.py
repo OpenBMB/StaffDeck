@@ -36,7 +36,11 @@ _delivery_thread: threading.Thread | None = None
 _reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
 _FEISHU_DEDUP_RECOVERY_SECONDS = 55 * 60
-_NON_DELIVERY_CHANNELS = {"public_api", PILOTDECK_GROUP_CHAT_CHANNEL}
+_NON_DELIVERY_CHANNELS = {
+    "public_api",
+    PILOTDECK_GROUP_CHAT_CHANNEL,
+    "skill_test",
+}
 
 
 def _stage_failed_delivery(

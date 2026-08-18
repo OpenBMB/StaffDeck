@@ -2983,5 +2983,8 @@
   "开始团队对话失败": "Failed to start the team conversation",
   "进入中…": "Opening…",
   "开始与团队 {1} 对话": "Start a conversation with team {1}",
-  "技能测试 10 分钟内未收到新的执行事件，请检查模型或稍后重试。": "The skill test received no new execution events within 10 minutes. Check the model or try again later."
+  "技能测试 10 分钟内未收到新的执行事件，请检查模型或稍后重试。": "The skill test received no new execution events within 10 minutes. Check the model or try again later.",
+  "指定 SOP": "Pinned SOP",
+  "由 Harness v2 自动判断": "Let Harness v2 decide",
+  "选择后每次唤醒都会由 Harness v2 强制启动该 SOP；未选择时仍由模型按任务判断。": "When selected, Harness v2 starts this SOP on every scheduled run. Otherwise, the model decides from the task."
 }
