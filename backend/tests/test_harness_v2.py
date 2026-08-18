@@ -2246,6 +2246,143 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
     assert "Skill 负责提供工作流程" in system_prompts[0]
 
 
+def test_harness_agent_adapts_bare_json_after_loading_general_skill(
+    monkeypatch,
+) -> None:
+    business_result = {
+        "function": "ZRFC_HR_GET_PERNR_INFO",
+        "params": '{"I_ENAME":"张三","I_BS":"1"}',
+    }
+    actions = iter(
+        [
+            {
+                "action": "tool",
+                "tool_name": "general_skill.rfc-params",
+                "arguments": {
+                    "operation": "read",
+                    "query": "查询已入职员工张三的信息",
+                },
+            },
+            business_result,
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt, _payload):
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    invoked: list[tuple[str, dict[str, object]]] = []
+    trace_events: list[tuple[str, dict[str, object]]] = []
+
+    def invoke_tool(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        invoked.append((name, arguments))
+        return {
+            "success": True,
+            "data": {
+                "kind": "general_skill",
+                "slug": "rfc-params",
+                "operation": "read",
+                "package": {
+                    "files": [
+                        {
+                            "path": "SKILL.md",
+                            "content_preview": "只返回固定业务 JSON，不执行函数。",
+                        }
+                    ]
+                },
+            },
+        }
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-rfc-params",
+            kind="conversation",
+            goal="把自然语言转换为 SAP RFC 参数",
+            required_capability_names=["general_skill.rfc-params"],
+            capability_manifest=CapabilityManifest(
+                available=[
+                    CapabilityDescriptor(
+                        capability_id="skill-rfc-params",
+                        name="general_skill.rfc-params",
+                        kind="general_skill",
+                    )
+                ]
+            ),
+        ),
+        _model_config(),
+        invoke_tool,
+        max_actions=2,
+        trace_sink=lambda event_type, payload: trace_events.append(
+            (event_type, payload)
+        ),
+    )
+
+    assert result.status == "completed"
+    assert result.action_count == 2
+    assert result.structured_result == business_result
+    assert result.reply_fragment == (
+        '{"function":"ZRFC_HR_GET_PERNR_INFO",'
+        '"params":"{\\"I_ENAME\\":\\"张三\\",\\"I_BS\\":\\"1\\"}"}'
+    )
+    assert invoked == [
+        (
+            "general_skill.rfc-params",
+            {
+                "operation": "read",
+                "query": "查询已入职员工张三的信息",
+            },
+        )
+    ]
+    assert any(
+        event_type == "harness_structured_result_adapted"
+        and payload["source"] == "general_skill.rfc-params"
+        for event_type, payload in trace_events
+    )
+    assert not any(
+        event_type == "harness_action_failed"
+        for event_type, _payload in trace_events
+    )
+
+
+def test_harness_agent_does_not_adapt_bare_json_without_loaded_general_skill(
+    monkeypatch,
+) -> None:
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt, _payload):
+            return {
+                "function": "ZRFC_HR_GET_PERNR_INFO",
+                "params": '{"I_ENAME":"张三","I_BS":"1"}',
+            }
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-invalid-bare-json",
+            kind="conversation",
+            goal="普通任务",
+            capability_manifest=CapabilityManifest(),
+        ),
+        _model_config(),
+        lambda _name, _arguments: {
+            "success": True,
+        },
+        max_actions=1,
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error["code"] == "HARNESS_ACTION_INVALID"
+    assert result.structured_result is None
+
+
 def test_harness_agent_activates_described_capability_for_current_revision(
     monkeypatch,
 ) -> None:

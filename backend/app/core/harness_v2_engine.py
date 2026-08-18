@@ -1283,6 +1283,7 @@ def _step_result(result: TaskExecutionResult) -> StepAgentResult:
         next_step_id=result.next_step_id,
         is_step_completed=result.status == "completed",
         handoff=result.status == "handoff",
+        structured_result=result.structured_result,
     )
 
 
@@ -1354,6 +1355,7 @@ def _combine_results(
             for item in results
             for capability_result in item.capability_results
         ],
+        structured_result=last.structured_result,
         artifacts=[
             artifact
             for item in results
@@ -1596,6 +1598,7 @@ def _prior_result(result: TaskExecutionResult) -> dict[str, Any]:
         "slot_updates": result.slot_updates,
         "capability_results": result.capability_results,
         "artifacts": result.artifacts,
+        "structured_result": result.structured_result,
     }
 
 

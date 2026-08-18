@@ -48,6 +48,7 @@ class HarnessAction(BaseModel):
     slot_updates: dict[str, Any] = Field(default_factory=dict)
     next_step_id: str | None = None
     task_summary: str = ""
+    structured_result: Any | None = None
 
 
 class HarnessTaskAgent:
@@ -74,6 +75,7 @@ class HarnessTaskAgent:
         satisfied_required_knowledge_ids: set[str] = set()
         successful_knowledge_searches = 0
         artifacts: list[dict[str, Any]] = []
+        loaded_general_skill_names: list[str] = []
         allowed_names = requirement.capability_manifest.allowed_names()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
 
@@ -122,7 +124,24 @@ class HarnessTaskAgent:
                         system_prompt,
                         payload,
                     )
-                action = HarnessAction.model_validate(raw)
+                try:
+                    action = HarnessAction.model_validate(raw)
+                except ValidationError:
+                    action = _adapt_general_skill_structured_result(
+                        raw,
+                        loaded_general_skill_names=loaded_general_skill_names,
+                    )
+                    if action is None:
+                        raise
+                    if trace_sink:
+                        trace_sink(
+                            "harness_structured_result_adapted",
+                            {
+                                "iteration": iteration,
+                                "source": loaded_general_skill_names[-1],
+                                "result_type": type(raw).__name__,
+                            },
+                        )
             except (ValidationError, LLMError) as exc:
                 if _deadline_expired(step_deadline_monotonic):
                     return _step_timeout_result(
@@ -272,6 +291,8 @@ class HarnessTaskAgent:
                         },
                     }
             bounded_result = _bounded_capability_result(tool_name, result)
+            if _is_loaded_general_skill_result(tool_name, result):
+                loaded_general_skill_names.append(tool_name)
             transcript.extend(
                 [
                     {
@@ -387,6 +408,55 @@ def _activate_described_capabilities(
     return activated
 
 
+def _is_loaded_general_skill_result(
+    tool_name: str,
+    result: dict[str, Any],
+) -> bool:
+    data = result.get("data")
+    return (
+        tool_name.startswith("general_skill.")
+        and result.get("success") is True
+        and isinstance(data, dict)
+        and data.get("kind") == "general_skill"
+        and data.get("operation") == "read"
+    )
+
+
+def _adapt_general_skill_structured_result(
+    raw: object,
+    *,
+    loaded_general_skill_names: list[str],
+) -> HarnessAction | None:
+    """Turn an instruction-only Skill's bare business JSON into a safe finish action.
+
+    Skill authors describe the business output contract, not the Harness control
+    protocol.  The adapter is deliberately gated on a successfully loaded
+    GeneralSkill and never accepts an object that attempted to emit an invalid
+    Harness action.  Consequently an RFC/MCP-shaped object is returned as data;
+    it is not interpreted or executed as a tool call.
+    """
+
+    if not loaded_general_skill_names or not isinstance(raw, (dict, list)):
+        return None
+    if isinstance(raw, dict) and "action" in raw:
+        return None
+    reply_fragment = json.dumps(
+        raw,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return HarnessAction(
+        action="finish",
+        status="completed",
+        reply_fragment=reply_fragment,
+        task_summary=(
+            f"{loaded_general_skill_names[-1]} 已生成结构化业务结果。"
+        ),
+        structured_result=raw,
+    )
+
+
 def _missing_required_capabilities(
     requirement: TaskRequirement,
     capability_results: list[dict[str, Any]],
@@ -446,6 +516,7 @@ def _finish_result(
         artifacts=artifacts,
         task_summary=action.task_summary.strip(),
         action_count=action_count,
+        structured_result=action.structured_result,
     )
 
 

@@ -181,6 +181,7 @@ class StepAgentResult(BaseModel):
     next_step_id: Optional[str] = None
     is_step_completed: bool = False
     handoff: bool = False
+    structured_result: Any | None = None
 
 
 class SessionPublic(BaseModel):

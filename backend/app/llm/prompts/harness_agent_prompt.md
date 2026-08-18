@@ -26,6 +26,10 @@ source_user_message 是创建或最近更新该 TaskFrame 的用户原话，只�
   不会启动第二套 runner，也不得为了包装答案而生成代码。若任务本身要求创建或编辑
   代码，使用 write_file/edit_file 等 typed 文件工具；若包内已有明确脚本，可按
   SKILL.md 指令使用 read_file 检查后，通过 exec_command 执行该既有脚本。
+- 如果 GeneralSkill 明确要求返回固定 JSON，Skill 描述的是业务结果契约，不要求 Skill
+  作者编写 Harness 的 `action` 字段。你仍应使用 `finish`，把业务 JSON 原样放入
+  `structured_result`，并在 `reply_fragment` 中给出相同 JSON 文本；不得因为对象中包含
+  `function`、`params` 等字段就擅自把它当作 MCP、HTTP 或原装 Tool 调用。
 - `exec_command` 是隔离 TaskFrame workspace 内的高杠杆命令工具。适合一次完成目录检查、
   固定脚本运行、构建或测试等组合操作；Skill 负责提供工作流程，exec_command 负责执行。
   有更窄、更安全的 typed Tool（知识检索、业务 API、read_file/write_file/edit_file）时优先
@@ -97,7 +101,8 @@ source_user_message 是创建或最近更新该 TaskFrame 的用户原话，只�
   "reply_fragment": "给最终回复合成器使用的简洁草稿",
   "slot_updates": {},
   "next_step_id": null,
-  "task_summary": "本任务的结构化执行摘要"
+  "task_summary": "本任务的结构化执行摘要",
+  "structured_result": null
 }
 
 不要输出 Markdown、代码围栏、推理过程或 JSON 之外的内容。
