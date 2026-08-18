@@ -9,7 +9,8 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from app.api.chat import _build_turn_traces, message_read, session_read
+from app.api.chat import _build_turn_traces, session_read
+from app.session.message_read import message_read
 from app.core.harness_session_cleanup import stage_harness_session_execution_reset
 from app.db import get_session
 from app.db.models import (

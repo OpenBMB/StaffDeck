@@ -8,12 +8,21 @@ import { cn } from '@/lib/utils';
 import type {
   AgentProfileRead,
   ChatMessage,
+  KnowledgeCitation,
   TeamConversationMessageRead,
   TeamConversationRead,
   TeamConversationStreamRead,
   TeamConversationsResponse,
   TeamRead,
 } from '@/types';
+import {
+  MarkdownMessage,
+  harnessWorkspaceArtifacts,
+  knowledgeCitations,
+  stripTrailingCitationSummary,
+} from '../chatHelpers';
+import HarnessArtifactDownloads from './HarnessArtifactDownloads';
+import KnowledgeCitationList from './KnowledgeCitationList';
 
 function conversationTitle(conversation: TeamConversationRead): string {
   return staffdeckDisplayText(conversation.title)
@@ -123,10 +132,12 @@ export default function TeamCollaborationPanel({
   team,
   agents,
   conversation,
+  onOpenCitation,
 }: {
   team: TeamRead;
   agents: AgentProfileRead[];
   conversation?: TeamConversationRead;
+  onOpenCitation?: (citation: KnowledgeCitation) => void;
 }) {
   const loadedConversations = useTeamCollaborations(conversation ? undefined : team);
   const conversations = conversation ? [conversation] : loadedConversations;
@@ -339,48 +350,70 @@ export default function TeamCollaborationPanel({
                 )}
               </div>
             ) : (
-              <button
-                type="button"
-                aria-label={`${expanded ? '收起' : '展开'}${memberName}的回复`}
-                aria-expanded={expanded}
-                onClick={() => void toggleReply(conversation)}
+              <div
                 className="group w-full rounded-[14px] border border-[#e3e7f1] bg-white px-[14px] py-[11px] text-left shadow-[0_1px_2px_rgba(24,24,26,0.03)] transition-colors hover:border-[#cfd6e3]"
               >
-              <span className="flex items-center gap-[8px]">
-                <span className="min-w-0 flex-1 truncate text-[12px] text-[#464c5e]">
-                  {`${memberName}回复：${preview}`}
-                </span>
-                {loading ? (
-                  <LoaderCircle className="size-[13px] shrink-0 animate-spin text-[#858b9c]" />
-                ) : (
-                  <ChevronDown className={cn(
-                    'size-[14px] shrink-0 text-[#858b9c] transition-transform',
-                    expanded && 'rotate-180',
-                  )} />
-                )}
-              </span>
+                <button
+                  type="button"
+                  aria-label={`${expanded ? '收起' : '展开'}${memberName}的回复`}
+                  aria-expanded={expanded}
+                  onClick={() => void toggleReply(conversation)}
+                  className="flex w-full items-center gap-[8px] text-left"
+                >
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-[#464c5e]">
+                    {`${memberName}回复：${preview}`}
+                  </span>
+                  {loading ? (
+                    <LoaderCircle className="size-[13px] shrink-0 animate-spin text-[#858b9c]" />
+                  ) : (
+                    <ChevronDown className={cn(
+                      'size-[14px] shrink-0 text-[#858b9c] transition-transform',
+                      expanded && 'rotate-180',
+                    )} />
+                  )}
+                </button>
               {expanded && !loading && (
-                <span className="mt-[10px] block border-t border-[#eef1f6] pt-[10px]">
-                  {memberReplies.map((message) => (
-                    <span
-                      key={message.id}
-                      className="mb-[8px] block text-[13px] leading-[21px] whitespace-pre-wrap text-[#18181a] last:mb-0"
-                      data-i18n-ignore
-                    >
-                      {staffdeckDisplayText(message.content)}
-                    </span>
-                  ))}
+                <div className="mt-[10px] border-t border-[#eef1f6] pt-[10px]">
+                  {memberReplies.map((message) => {
+                    const chatMessage: ChatMessage = {
+                      ...message,
+                      role: 'assistant',
+                    };
+                    const visibleContent = stripTrailingCitationSummary(
+                      staffdeckDisplayText(message.content),
+                    );
+                    const citations = knowledgeCitations(chatMessage, visibleContent);
+                    const artifacts = harnessWorkspaceArtifacts(chatMessage);
+                    return (
+                      <div
+                        key={message.id}
+                        className="mb-[10px] text-[13px] leading-[21px] text-[#18181a] last:mb-0"
+                        data-i18n-ignore
+                      >
+                        <MarkdownMessage content={visibleContent} />
+                        <HarnessArtifactDownloads
+                          artifacts={artifacts}
+                          tenantId={TENANT_ID}
+                          sessionId={conversation.session_id}
+                        />
+                        <KnowledgeCitationList
+                          citations={citations}
+                          onOpen={(citation) => onOpenCitation?.(citation)}
+                        />
+                      </div>
+                    );
+                  })}
                   {showStreamReply && (
-                    <span
-                      className="mb-[8px] block whitespace-pre-wrap text-[13px] leading-[21px] text-[#18181a] last:mb-0"
+                    <div
+                      className="mb-[8px] block text-[13px] leading-[21px] text-[#18181a] last:mb-0"
                       aria-live="polite"
                       data-i18n-ignore
                     >
-                      {streamReply}
+                      <MarkdownMessage content={streamReply} />
                       {stream?.status === 'running' && (
                         <span className="ml-[3px] inline-block h-[14px] w-[2px] animate-pulse rounded-full bg-[#1a71ff] align-[-2px]" />
                       )}
-                    </span>
+                    </div>
                   )}
                   {memberReplies.length === 0 && !showStreamReply && (
                     <span className="flex items-center gap-[6px] text-[12px] text-[#a7adbb]">
@@ -390,9 +423,9 @@ export default function TeamCollaborationPanel({
                       {stream?.phase || '成员正在处理，回复会实时显示在这里'}
                     </span>
                   )}
-                </span>
+                </div>
               )}
-              </button>
+              </div>
             )}
           </div>
         </div>

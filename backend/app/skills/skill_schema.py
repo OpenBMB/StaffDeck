@@ -112,10 +112,21 @@ class SkillCard(BaseModel):
             if edge.next_node_id not in node_id_set:
                 raise ValueError(f"edge next_node_id references missing node: {edge.next_node_id}")
         for node in self.nodes:
-            if node.type == "subflow" and not str(node.sub_sop_id or "").strip():
-                raise ValueError(
-                    f"subflow node must reference sub_sop_id: {node.node_id}"
-                )
+            if node.type != "subflow":
+                continue
+            if not str(node.sub_sop_id or "").strip():
+                raise ValueError(f"subflow node must reference sub_sop_id: {node.node_id}")
+            # A subflow node is an orchestration boundary, not another executable
+            # TaskFrame. Keeping work on the placeholder would make the parent
+            # execute it in addition to the child SOP and could expose capabilities
+            # that the child did not declare. Normalize legacy drafts on write so
+            # the node has exactly one responsibility: enter the referenced SOP.
+            node.instruction = ""
+            node.expected_user_info = []
+            node.allowed_actions = []
+            node.knowledge_scope = {}
+            node.capability_refs = SkillCapabilityRefs()
+            node.retry_policy = {}
         return self
 
 

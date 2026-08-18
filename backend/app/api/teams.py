@@ -27,6 +27,7 @@ from app.security.auth import get_current_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
 from app.session.message_visibility import visible_message_content, visible_message_rows
+from app.session.message_read import message_read
 from app.session.session_schema import ChatTurnRequest
 from app.teams import service as team_service
 from app.teams.schema import (
@@ -81,6 +82,7 @@ from app.teams.service import (
     write_blackboard_entries,
 )
 from app.teams.wakeup import (
+    activate_ready_tasks,
     build_tl_chat_context,
     enqueue_wake_event,
     process_tl_reply,
@@ -191,6 +193,8 @@ def _task_read(db: Session, task: TeamTask, *, with_events: bool = False) -> Tea
         created_by_tl=task.created_by_tl,
         assignee_agent_id=task.assignee_agent_id,
         session_id=task.session_id,
+        depends_on_task_ids=list(task.depends_on_task_ids_json or []),
+        activation_condition=dict(task.activation_condition_json or {}),
         report=dict(task.report_json or {}),
         review=dict(task.review_json or {}),
         version=task.version,
@@ -622,15 +626,24 @@ def list_team_conversation_messages(
         select(Message).where(Message.session_id == session.id).order_by(Message.created_at)
     ).all()
     rows = visible_message_rows(rows)
-    return [
-        TeamConversationMessageRead(
-            id=row.id,
-            role=row.role,
-            content=visible_message_content(row),
-            created_at=row.created_at,
+    result: list[TeamConversationMessageRead] = []
+    for row in rows:
+        serialized = message_read(
+            row,
+            db=db,
+            content_override=team_service.strip_team_control_blocks(visible_message_content(row)),
         )
-        for row in rows
-    ]
+        result.append(
+            TeamConversationMessageRead(
+                id=serialized.id,
+                role=serialized.role,
+                content=serialized.content,
+                metadata=dict(serialized.metadata or {}),
+                turn_id=serialized.turn_id,
+                created_at=row.created_at,
+            )
+        )
+    return result
 
 
 @router.get(
@@ -963,6 +976,8 @@ def override_task_review(
     db.add(task)
     db.commit()
     db.refresh(task)
+    if target in {"done", "escalated"}:
+        activate_ready_tasks(db, team)
     if request.verdict == "rework" and task.assignee_agent_id:
         wake = enqueue_wake_event(
             db,

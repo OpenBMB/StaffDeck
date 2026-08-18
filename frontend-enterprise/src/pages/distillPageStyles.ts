@@ -350,9 +350,9 @@ export const FLOW_GRAPH_CANVAS_CLASS =
   'absolute top-0 left-0 origin-top-left rounded-[18px] bg-[radial-gradient(circle_at_40px_40px,rgba(18,128,115,0.05),transparent_240px),linear-gradient(90deg,rgba(218,211,199,0.38)_1px,transparent_1px),linear-gradient(rgba(218,211,199,0.26)_1px,transparent_1px)] [background-size:auto,72px_72px,72px_72px] box-border';
 export const FLOW_EDGES_CLASS = 'pointer-events-none absolute top-0 left-0 z-[2] overflow-visible';
 export const FLOW_EDGE_PATH_CLASS =
-  'fill-none stroke-[#718683] [stroke-width:1.65] [vector-effect:non-scaling-stroke] [stroke-linecap:round] [stroke-linejoin:round] opacity-72';
+  'fill-none stroke-[#547772] [stroke-width:1.8] [vector-effect:non-scaling-stroke] [stroke-linecap:round] [stroke-linejoin:round] opacity-88 transition-[stroke,stroke-width,opacity]';
 export const FLOW_EDGE_LABEL_BASE_CLASS =
-  'pointer-events-none absolute z-[4] max-w-[176px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#d7cbbb] bg-[#fffdf8]/98 px-[9px] py-[4px] text-[11px] leading-[1.35] text-ellipsis whitespace-nowrap text-[#5f574b] shadow-[0_8px_18px_rgba(38,32,23,0.1)]';
+  'pointer-events-none absolute z-[4] max-w-[176px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#cbdad7] bg-white/98 px-[9px] py-[4px] text-[11px] leading-[1.35] text-ellipsis whitespace-nowrap text-[#486762] shadow-[0_5px_14px_rgba(30,71,65,0.1)]';
 export const FLOW_ROOT_POSITION_CLASS = 'absolute z-[6]';
 export const FLOW_NODE_POSITION_CLASS = 'absolute z-[7] cursor-grab touch-none active:cursor-grabbing';
 export const FLOW_NODE_SHELL_CLASS =

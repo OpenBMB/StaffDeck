@@ -303,6 +303,27 @@ def _migrate_sqlite_skill_schema() -> None:
                     text("ALTER TABLE ui_configs ADD COLUMN harness_storage_path VARCHAR")
                 )
 
+        if "team_tasks" in tables:
+            team_task_columns = {
+                column["name"] for column in inspector.get_columns("team_tasks")
+            }
+            if "depends_on_task_ids_json" not in team_task_columns:
+                conn.execute(text("ALTER TABLE team_tasks ADD COLUMN depends_on_task_ids_json JSON"))
+                conn.execute(
+                    text(
+                        "UPDATE team_tasks SET depends_on_task_ids_json = '[]' "
+                        "WHERE depends_on_task_ids_json IS NULL"
+                    )
+                )
+            if "activation_condition_json" not in team_task_columns:
+                conn.execute(text("ALTER TABLE team_tasks ADD COLUMN activation_condition_json JSON"))
+                conn.execute(
+                    text(
+                        "UPDATE team_tasks SET activation_condition_json = '{}' "
+                        "WHERE activation_condition_json IS NULL"
+                    )
+                )
+
         if "skill_feedback" in tables:
             feedback_columns = {column["name"] for column in inspector.get_columns("skill_feedback")}
             if "skill_version" not in feedback_columns:

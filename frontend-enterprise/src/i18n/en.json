@@ -2969,5 +2969,19 @@
   "内部执行记录已归档": "Internal execution records archived",
   "正在整理采购清单": "Organizing the purchase list",
   "正在生成回复": "Generating reply",
-  "团队任务:整理采购清单": "Team task: Organize purchase list"
+  "团队任务:整理采购清单": "Team task: Organize purchase list",
+  "仅进入所选子 SOP；父子流程共享当前 TaskFrame 字段。": "Only enter the selected child SOP; the parent and child share the current TaskFrame fields.",
+  "仅进入所选子 SOP；字段、动作和能力由子 SOP 自己定义。": "Only enter the selected child SOP; its fields, actions, and capabilities are defined by the child SOP.",
+  "未找到子 SOP": "Child SOP not found",
+  "共享字段": "Shared fields",
+  "尚未选择 SOP": "No SOP selected",
+  "子 SOP 节点预览": "Child SOP node preview",
+  "发布子 SOP 后将在这里显示其流程节点": "Its flow nodes will appear here after the child SOP is published",
+  "执行职责": "Execution responsibility",
+  "正在加载员工能力": "Loading employee capabilities",
+  "正在加载当前员工的能力配置…": "Loading the current employee's capabilities…",
+  "开始团队对话失败": "Failed to start the team conversation",
+  "进入中…": "Opening…",
+  "开始与团队 {1} 对话": "Start a conversation with team {1}",
+  "技能测试 10 分钟内未收到新的执行事件，请检查模型或稍后重试。": "The skill test received no new execution events within 10 minutes. Check the model or try again later."
 }
