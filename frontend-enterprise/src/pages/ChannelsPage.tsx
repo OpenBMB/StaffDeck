@@ -22,6 +22,8 @@ import {
 import { Button as UIButton } from '@/components/ui/button';
 
 import { api, TENANT_ID } from '../api/client';
+
+const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信' };
 import IconAdd from '../assets/icons/add.svg?react';
 import IconAlignJustify from '../assets/icons/align-justify.svg?react';
 import IconChat from '../assets/icons/chat.svg?react';
@@ -250,7 +252,7 @@ export default function ChannelsPage({
   const [defaultAgentId, setDefaultAgentId] = useState('');
   const [savingAgents, setSavingAgents] = useState(false);
   const [autoRouteSaving, setAutoRouteSaving] = useState(false);
-  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string }>>([]);
+  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>>([]);
   const [handoffAssigneeSaving, setHandoffAssigneeSaving] = useState(false);
   const [bindCode, setBindCode] = useState<ChannelBindCodeRead | null>(null);
   const [bindCodeOpen, setBindCodeOpen] = useState(false);
@@ -297,8 +299,8 @@ export default function ChannelsPage({
     void loadChannelMetas();
     void loadTeams();
     api
-      .get<Array<{ id: string; username: string; display_name?: string }>>(
-        `/api/auth/users?tenant_id=${TENANT_ID}`,
+      .get<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>>(
+        `/api/auth/users?tenant_id=${TENANT_ID}&include_channel=true`,
       )
       .then(setTenantUsers)
       .catch(() => setTenantUsers([]));
@@ -937,11 +939,17 @@ export default function ChannelsPage({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__none__">未配置</SelectItem>
-                {tenantUsers.map((user) => (
-                  <SelectItem key={user.id} value={user.id}>
-                    {user.display_name || user.username || user.id}
-                  </SelectItem>
-                ))}
+                {tenantUsers.map((user) => {
+                  const channelLabel = user.channel_identities?.[0]
+                    ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
+                    : '';
+                  const name = user.display_name || user.username || user.id;
+                  return (
+                    <SelectItem key={user.id} value={user.id}>
+                      {name}{channelLabel}
+                    </SelectItem>
+                  );
+                })}
               </SelectContent>
             </Select>
           </div>

@@ -456,6 +456,27 @@ def _stage_notice(
     )
 
 
+def _build_name_resolver(binding: ChannelBinding):
+    """返回一个 name_resolver 回调,用于向渠道 API 查询用户真实姓名。
+
+    仅飞书渠道支持;其他渠道返回 None。
+    """
+    if binding.channel != "feishu":
+        return None
+
+    def _resolve(open_id: str) -> str | None:
+        try:
+            from app.channels.adapters.feishu import FeishuAdapter
+
+            adapter = FeishuAdapter()
+            return adapter.get_user_name(binding, open_id)
+        except Exception:
+            logger.debug("feishu get_user_name failed for %s", open_id, exc_info=True)
+            return None
+
+    return _resolve
+
+
 def _valid_notice_target(channel: str, target: dict) -> bool:
     if channel == "feishu":
         return bool(target.get("message_id") or target.get("receive_id"))
@@ -1091,7 +1112,13 @@ def process_inbound(
             account_scope=scope,
         )
         user = resolve_or_provision_user(
-            db, binding.tenant_id, binding.channel, external_id, display_name, scope
+            db,
+            binding.tenant_id,
+            binding.channel,
+            external_id,
+            display_name,
+            scope,
+            name_resolver=_build_name_resolver(binding),
         )
         # 先在仍保持原 external_conv_id 的历史会话中去重。身份不一致会在后续
         # session 创建时隔离旧会话，若等隔离后再查会漏掉已落库的 turn。

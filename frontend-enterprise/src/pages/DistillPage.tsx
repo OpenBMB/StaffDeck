@@ -489,6 +489,7 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
   },
 ];
 const DISTILL_REWRITE_MODEL_STORAGE_KEY = 'skill-distill-rewrite-model';
+const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信' };
 
 type DistillCacheSnapshot = {
   draft: SkillCard | null;
@@ -618,7 +619,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
   const [sopSkills, setSopSkills] = useState<SkillRead[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
-  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string }>>([]);
+  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [selectedRewriteModelId, setSelectedRewriteModelId] = useState(
     () => window.localStorage.getItem(`${DISTILL_REWRITE_MODEL_STORAGE_KEY}:${TENANT_ID}`) || '',
@@ -847,8 +848,8 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
 
   useEffect(() => {
     api
-      .get<Array<{ id: string; username: string; display_name?: string }>>(
-        `/api/auth/users?tenant_id=${TENANT_ID}`,
+      .get<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>>(
+        `/api/auth/users?tenant_id=${TENANT_ID}&include_channel=true`,
       )
       .then(setTenantUsers)
       .catch(() => setTenantUsers([]));
@@ -2624,6 +2625,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
               sopSkills={sopSkills}
               tools={tools}
               knowledgeBases={knowledgeBases}
+              tenantUsers={tenantUsers}
               containerRef={sourceScrollRef}
               lockSkillId={Boolean(lockedSkillId)}
               onToggle={toggleTarget}
@@ -3169,6 +3171,7 @@ function SkillSource({
   sopSkills,
   tools,
   knowledgeBases,
+  tenantUsers,
   containerRef,
   lockSkillId,
   onToggle,
@@ -3186,6 +3189,7 @@ function SkillSource({
   sopSkills: SkillRead[];
   tools: ToolRead[];
   knowledgeBases: KnowledgeBaseRead[];
+  tenantUsers: Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>;
   containerRef: RefObject<HTMLDivElement>;
   lockSkillId?: boolean;
   onToggle: (target: TargetSelection) => void;
@@ -3552,6 +3556,13 @@ function SkillSource({
       value: item.skill_id,
       label: `${item.name} · ${item.skill_id}`,
     }));
+  const tenantUserOptions: SelectOption[] = tenantUsers.map((user) => {
+    const channelLabel = user.channel_identities?.[0]
+      ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
+      : '';
+    const name = user.display_name || user.username || user.id;
+    return { value: user.id, label: `${name}${channelLabel}` };
+  });
 
   return (
     <div className={SOURCE_MD_CLASS} ref={containerRef}>
@@ -3609,6 +3620,9 @@ function SkillSource({
           const path = stepTargetPath(index);
           const outgoingEdges = edgeMap[stepId] || [];
           const isSubflow = String(step.type || '') === 'subflow';
+          const isHandoffNode =
+            String(step.type || '') === 'handoff' ||
+            asStringList(step.allowed_actions).includes('handoff_human');
           const nodeState = [
             stepId === startNodeId ? '起始节点' : '',
             Boolean(step.optional) ? '可选' : '必选',
@@ -3673,6 +3687,14 @@ function SkillSource({
                         <EditableCapabilityReferencesLine label="SOP 工具" values={asStringList(step.tool_ids)} requiredValues={asStringList(step.required_tool_ids)} options={toolOptions} emptyText="未指定工具" onChange={(value) => editStep(index, 'tool_ids', value)} onRequiredChange={(value) => editStep(index, 'required_tool_ids', value)} />
                         <EditableCapabilityReferencesLine label="SOP 知识库" values={asStringList(step.knowledge_base_ids)} requiredValues={asStringList(step.required_knowledge_base_ids)} options={knowledgeBaseOptions} emptyText="未指定知识库" onChange={(value) => editStep(index, 'knowledge_base_ids', value)} onRequiredChange={(value) => editStep(index, 'required_knowledge_base_ids', value)} />
                       </>
+                    )}
+                    {isHandoffNode && (
+                      <EditableSourceSelectLine
+                        label="处理人"
+                        value={String(step.assignee_user_id || '')}
+                        options={tenantUserOptions}
+                        onChange={(value) => editStep(index, 'assignee_user_id', value)}
+                      />
                     )}
                     <EditableFlowRulesLine
                       sourceNodeId={stepId}
@@ -3740,7 +3762,7 @@ function SkillFlow({
   sopSkills: SkillRead[];
   tools: ToolRead[];
   knowledgeBases: KnowledgeBaseRead[];
-  tenantUsers: Array<{ id: string; username: string; display_name?: string }>;
+  tenantUsers: Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>;
   containerRef: RefObject<HTMLDivElement>;
   lockSkillId?: boolean;
   assistantPanelOpen: boolean;
@@ -3840,10 +3862,13 @@ function SkillFlow({
       value: item.skill_id,
       label: `${item.name} · ${item.skill_id}`,
     }));
-  const tenantUserOptions: SelectOption[] = tenantUsers.map((user) => ({
-    value: user.id,
-    label: user.display_name || user.username || user.id,
-  }));
+  const tenantUserOptions: SelectOption[] = tenantUsers.map((user) => {
+    const channelLabel = user.channel_identities?.[0]
+      ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
+      : '';
+    const name = user.display_name || user.username || user.id;
+    return { value: user.id, label: `${name}${channelLabel}` };
+  });
 
   const editFlowNode = (
     index: number,

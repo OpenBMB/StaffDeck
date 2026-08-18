@@ -44,6 +44,12 @@ class UserUpdateRequest(BaseModel):
     role: Optional[Literal["admin", "member"]] = None
 
 
+class UserChannelIdentity(BaseModel):
+    channel: str
+    display_name: Optional[str] = None
+    external_user_id: Optional[str] = None
+
+
 class UserRead(BaseModel):
     id: str
     tenant_id: str
@@ -56,6 +62,8 @@ class UserRead(BaseModel):
     avatar_url: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    # 渠道身份信息(仅 include_channel=True 时返回)
+    channel_identities: Optional[list[UserChannelIdentity]] = None
 
 
 class AvatarRead(BaseModel):
@@ -252,6 +260,26 @@ def list_users(
         # 渠道懒建账号(source != 'web')默认从用户管理列表隐藏
         statement = statement.where(User.source == "web")
     rows = db.exec(statement.order_by(User.created_at.desc())).all()
+    if include_channel:
+        # 附带渠道身份信息,供 SOP 处理人选择器展示可识别名
+        from app.db.models import ChannelIdentity
+
+        all_identities = {
+            (ci.staffdeck_user_id): ci
+            for ci in db.exec(
+                select(ChannelIdentity).where(ChannelIdentity.tenant_id == tenant_id)
+            ).all()
+        }
+        result = []
+        for row in rows:
+            ci = all_identities.get(row.id)
+            identities = (
+                [UserChannelIdentity(channel=ci.channel, display_name=ci.display_name, external_user_id=ci.external_user_id)]
+                if ci
+                else None
+            )
+            result.append(_user_read(row, channel_identities=identities))
+        return result
     return [_user_read(row) for row in rows]
 
 
@@ -408,7 +436,11 @@ def delete_user(
     return {"ok": True}
 
 
-def _user_read(user: User, avatar_url: Optional[str] = None) -> UserRead:
+def _user_read(
+    user: User,
+    avatar_url: Optional[str] = None,
+    channel_identities: Optional[list[UserChannelIdentity]] = None,
+) -> UserRead:
     return UserRead(
         id=user.id,
         tenant_id=user.tenant_id,
@@ -419,6 +451,7 @@ def _user_read(user: User, avatar_url: Optional[str] = None) -> UserRead:
         avatar_url=avatar_url,
         created_at=user.created_at.isoformat() if user.created_at else None,
         updated_at=user.updated_at.isoformat() if user.updated_at else None,
+        channel_identities=channel_identities,
     )
 
 

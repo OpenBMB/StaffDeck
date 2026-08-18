@@ -500,6 +500,33 @@ class FeishuAdapter:
                 return open_id
         return None
 
+    def get_user_name(
+        self,
+        binding: ChannelBinding,
+        open_id: str,
+    ) -> str | None:
+        """通过 open_id 查询飞书用户真实姓名: GET /contact/v3/users/{open_id}。
+
+        需要应用具备 contact:user.base:readonly 权限。
+        返回 name 字段;无权限或未命中返回 None。
+        """
+        open_id = str(open_id or "").strip()
+        if not open_id or open_id.startswith("group:"):
+            return None
+        try:
+            data = self._request(
+                binding,
+                "GET",
+                f"{FEISHU_API_BASE}/contact/v3/users/{open_id}",
+                params={"user_id_type": "open_id"},
+                body=None,
+            )
+        except Exception:
+            return None
+        user = (data.get("data") or {}).get("user") or {}
+        name = str(user.get("name") or "").strip()
+        return name or None
+
     def send(
         self,
         binding: ChannelBinding,
