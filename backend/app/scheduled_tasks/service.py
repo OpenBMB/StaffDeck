@@ -51,6 +51,13 @@ DEFAULT_TASK_TIME = "09:00"
 LEASE_SECONDS = 15 * 60
 WORKER_SLEEP_SECONDS = 5
 SCHEDULE_TYPES = {"once", "daily", "weekly", "monthly", "every_5_min"}
+GATE_OWNED_MARKERS = {"external_gate", "deterministic_gate", "gate_owned"}
+
+
+def _is_gate_owned(task: ScheduledTask) -> bool:
+    metadata = task.metadata_json or {}
+    execution_mode = str(metadata.get("execution_mode") or "").strip().lower()
+    return execution_mode in GATE_OWNED_MARKERS or metadata.get("gate_owned") is True
 
 
 class ScheduledTaskAgentUnavailable(RuntimeError):
@@ -330,6 +337,7 @@ def execute_scheduled_task(
     manual: bool = False,
 ) -> ScheduledTaskRun:
     scheduled_for = scheduled_for or task.next_run_at or utc_now()
+    _ensure_task_executable(task, manual=manual)
     run = _prepare_scheduled_task_run(db, task, scheduled_for, manual)
     if run.status != "running" or not run.session_id:
         return run
@@ -344,6 +352,7 @@ def start_scheduled_task_async(
     manual: bool = False,
 ) -> ScheduledTaskRun:
     scheduled_for = scheduled_for or task.next_run_at or utc_now()
+    _ensure_task_executable(task, manual=manual)
     run = _prepare_scheduled_task_run(db, task, scheduled_for, manual)
     if run.status == "running" and run.session_id:
         threading.Thread(
@@ -352,6 +361,18 @@ def start_scheduled_task_async(
             daemon=True,
         ).start()
     return run
+
+
+def _ensure_task_executable(task: ScheduledTask, *, manual: bool) -> None:
+    if task.status == "paused":
+        raise HTTPException(status_code=400, detail="已暂停的自动任务不能运行")
+    if task.status == "archived":
+        raise HTTPException(status_code=400, detail="已归档的自动任务不能运行")
+    if _is_gate_owned(task):
+        raise HTTPException(
+            status_code=400,
+            detail="external_gate 任务由外部确定性门控执行，不能通过通用 AgentLoop 运行",
+        )
 
 
 def _prepare_scheduled_task_run(
@@ -448,6 +469,8 @@ def _execute_prepared_scheduled_task(
             message=automatic_task_message(task),
             channel="scheduled_task",
             interaction_mode="scheduled_task",
+            execution_mode="scheduled_task",
+            memory_capture_enabled=True,
             client_timezone=task.timezone,
         )
         result: ChatTurnResponse | None = None

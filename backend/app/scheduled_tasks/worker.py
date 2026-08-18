@@ -9,7 +9,12 @@ from sqlmodel import Session
 
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
-from app.scheduled_tasks.service import WORKER_SLEEP_SECONDS, due_scheduled_tasks, execute_scheduled_task
+from app.scheduled_tasks.service import (
+    WORKER_SLEEP_SECONDS,
+    _is_gate_owned,
+    due_scheduled_tasks,
+    execute_scheduled_task,
+)
 
 
 _stopped = False
@@ -29,6 +34,8 @@ def run_worker(*, once: bool = False, poll_seconds: float = WORKER_SLEEP_SECONDS
         with Session(engine) as db:
             due = due_scheduled_tasks(db)
             for task in due:
+                if _is_gate_owned(task):
+                    continue
                 execute_scheduled_task(db, task)
         if once:
             return

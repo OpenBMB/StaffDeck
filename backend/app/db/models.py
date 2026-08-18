@@ -1019,6 +1019,45 @@ class ScheduledTaskRun(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class ExternalGateEvent(SQLModel, table=True):
+    """Durable event snapshot claim for deterministic external gates.
+
+    The same event set is claimable at most once per policy version and cooldown
+    bucket. This is the outbox record consumed by the one-shot analysis path, so
+    the analysis never rescans the source system.
+    """
+
+    __tablename__ = "external_gate_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "gate_task_id",
+            "event_set_hash",
+            "policy_version",
+            "cooldown_bucket",
+            name="uq_external_gate_event_claim",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("extgate"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    gate_task_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    event_set_hash: str = Field(index=True)
+    policy_version: str
+    cooldown_bucket: int
+    event_fingerprint: str = Field(index=True)
+    snapshot_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    status: str = Field(default="pending", index=True)
+    summary: Optional[str] = None
+    analysis_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    error: Optional[str] = None
+    retry_count: int = 0
+    claim_owner: Optional[str] = None
+    claimed_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class HarnessTaskFrameRecord(SQLModel, table=True):
     """Durable TaskFrame state for the isolated Harness v2 execution path."""
 

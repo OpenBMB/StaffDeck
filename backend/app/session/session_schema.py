@@ -211,6 +211,10 @@ class ChatTurnRequest(BaseModel):
     attachments: list["ChatAttachmentRead"] = Field(default_factory=list)
     channel: str = "web"
     interaction_mode: Literal["normal", "scheduled_task"] = "normal"
+    execution_mode: Optional[str] = None
+    memory_capture_enabled: bool = True
+    gate_run_id: Optional[str] = None
+    event_fingerprint: Optional[str] = None
     client_timezone: Optional[str] = None
     debug: bool = False
 

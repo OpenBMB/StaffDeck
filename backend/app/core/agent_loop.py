@@ -1290,6 +1290,20 @@ class AgentLoop:
         tool_result: ToolResult | None,
         model_config: ModelConfig,
     ) -> list[dict[str, object]]:
+        if not getattr(request, "memory_capture_enabled", True):
+            self.events.record(
+                request.tenant_id,
+                chat_session.id,
+                "memory_capture_disabled",
+                {
+                    "execution_mode": request.execution_mode,
+                    "memory_capture_enabled": False,
+                    "gate_run_id": request.gate_run_id,
+                    "event_fingerprint": request.event_fingerprint,
+                },
+            )
+            self.db.commit()
+            return []
         try:
             job = enqueue_memory_capture(
                 request,
