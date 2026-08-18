@@ -456,22 +456,44 @@ def _stage_notice(
     )
 
 
+_NEGATIVE_NAME_CACHE_TTL = 300  # 5 minutes
+_negative_name_cache: dict[str, float] = {}
+_negative_name_cache_lock = threading.Lock()
+
+
 def _build_name_resolver(binding: ChannelBinding):
     """返回一个 name_resolver 回调,用于向渠道 API 查询用户真实姓名。
 
     仅飞书渠道支持;其他渠道返回 None。
+    对查询返回 None 的 open_id 做负缓存(_NEGATIVE_NAME_CACHE_TTL 秒),
+    避免每条消息都同步请求飞书 Contact API。
     """
     if binding.channel != "feishu":
         return None
 
     def _resolve(open_id: str) -> str | None:
+        now = time.time()
+        with _negative_name_cache_lock:
+            expiry = _negative_name_cache.get(open_id)
+            if expiry and now < expiry:
+                return None
         try:
             from app.channels.adapters.feishu import FeishuAdapter
 
             adapter = FeishuAdapter()
-            return adapter.get_user_name(binding, open_id)
+            name = adapter.get_user_name(binding, open_id)
+            if name:
+                with _negative_name_cache_lock:
+                    _negative_name_cache.pop(open_id, None)
+                return name
+            # 负缓存:TTL 内不再重试
+            with _negative_name_cache_lock:
+                _negative_name_cache[open_id] = now + _NEGATIVE_NAME_CACHE_TTL
+            return None
         except Exception:
             logger.debug("feishu get_user_name failed for %s", open_id, exc_info=True)
+            with _negative_name_cache_lock:
+                _negative_name_cache[open_id] = now + _NEGATIVE_NAME_CACHE_TTL
             return None
 
     return _resolve

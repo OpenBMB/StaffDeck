@@ -892,6 +892,7 @@ export type ChannelBindingRead = {
   /** 渠道默认人工处理人（SOP 节点未指定 assignee 时回退到此值）。 */
   default_handoff_assignee_user_id?: string | null;
   default_handoff_assignee_name?: string | null;
+  identity_scope_key?: string | null;
   created_at: string;
   updated_at: string;
 };

@@ -68,6 +68,7 @@ class ChannelBindingRead(BaseModel):
     # 渠道默认人工处理人(SOP 节点未指定 assignee 时回退到此值)。
     default_handoff_assignee_user_id: Optional[str] = None
     default_handoff_assignee_name: Optional[str] = None
+    identity_scope_key: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -281,6 +282,7 @@ def channel_binding_read(db: Session, binding: ChannelBinding) -> ChannelBinding
             "default_handoff_assignee_user_id"
         ),
         default_handoff_assignee_name=_default_handoff_assignee_name(db, binding),
+        identity_scope_key=binding.identity_scope_key,
         created_at=binding.created_at.isoformat(),
         updated_at=binding.updated_at.isoformat(),
     )

@@ -13,7 +13,13 @@ from app.db import get_session
 from app.db.models import APIClient, APICredential, User, UserAvatar, utc_now
 from app.public_api.auth import generate_api_key
 from app.public_api.credential_profiles import USER_FULL_ACCESS_SCOPES
-from app.security.auth import create_access_token, get_current_user, hash_password, verify_password
+from app.security.auth import (
+    create_access_token,
+    ensure_current_user_tenant,
+    get_current_user,
+    hash_password,
+    verify_password,
+)
 from app.security.permissions import MEMBER_ROLE, is_admin_user
 from app.security.tenant import ensure_tenant
 
@@ -48,6 +54,7 @@ class UserChannelIdentity(BaseModel):
     channel: str
     display_name: Optional[str] = None
     external_user_id: Optional[str] = None
+    external_account_scope: Optional[str] = None
 
 
 class UserRead(BaseModel):
@@ -254,32 +261,43 @@ def list_users(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> list[UserRead]:
-    _require_admin(current_user, tenant_id)
-    statement = select(User).where(User.tenant_id == tenant_id)
-    if not include_channel:
-        # 渠道懒建账号(source != 'web')默认从用户管理列表隐藏
-        statement = statement.where(User.source == "web")
-    rows = db.exec(statement.order_by(User.created_at.desc())).all()
+    ensure_current_user_tenant(tenant_id, current_user)
     if include_channel:
-        # 附带渠道身份信息,供 SOP 处理人选择器展示可识别名
+        # include_channel=true: 返回全部用户(含渠道懒建客户/群聊虚拟账号),并附带渠道身份信息。
+        # 处理人候选前端会自行过滤 source === "web"。
+        statement = select(User).where(User.tenant_id == tenant_id)
+        rows = db.exec(statement.order_by(User.created_at.desc())).all()
         from app.db.models import ChannelIdentity
 
-        all_identities = {
-            (ci.staffdeck_user_id): ci
-            for ci in db.exec(
-                select(ChannelIdentity).where(ChannelIdentity.tenant_id == tenant_id)
-            ).all()
-        }
+        all_identities: dict[str, list[ChannelIdentity]] = {}
+        for ci in db.exec(
+            select(ChannelIdentity).where(ChannelIdentity.tenant_id == tenant_id)
+        ).all():
+            all_identities.setdefault(ci.staffdeck_user_id, []).append(ci)
         result = []
         for row in rows:
-            ci = all_identities.get(row.id)
+            cis = all_identities.get(row.id)
             identities = (
-                [UserChannelIdentity(channel=ci.channel, display_name=ci.display_name, external_user_id=ci.external_user_id)]
-                if ci
+                [
+                    UserChannelIdentity(
+                        channel=ci.channel,
+                        display_name=ci.display_name,
+                        external_user_id=ci.external_user_id,
+                        external_account_scope=ci.external_account_scope,
+                    )
+                    for ci in cis
+                ]
+                if cis
                 else None
             )
             result.append(_user_read(row, channel_identities=identities))
         return result
+    # 默认只返回内部成员(source="web"),排除渠道懒建客户/群聊虚拟账号。
+    statement = select(User).where(
+        User.tenant_id == tenant_id,
+        User.source == "web",
+    )
+    rows = db.exec(statement.order_by(User.created_at.desc())).all()
     return [_user_read(row) for row in rows]
 
 

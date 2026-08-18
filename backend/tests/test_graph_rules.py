@@ -175,6 +175,46 @@ def test_find_handoff_node_id_detects_handoff_human_action() -> None:
     assert GraphRules.find_handoff_node_id(content, "start") == "custom_node"
 
 
+def test_find_handoff_node_id_prefers_unconditional_path_over_conditional() -> None:
+    """Should prefer handoff reachable via unconditional edge over conditional edge.
+
+    当当前节点有两条出边:无条件边指向 handoff_a,条件边指向 handoff_b,
+    BFS 第一阶段(仅无条件边)应返回 handoff_a,不会误入条件分支。
+    """
+    content = {
+        "start_node_id": "decision",
+        "nodes": [
+            {"node_id": "decision", "allowed_actions": ["continue_flow"]},
+            {"node_id": "handoff_a", "type": "handoff"},
+            {"node_id": "handoff_b", "type": "handoff"},
+        ],
+        "edges": [
+            {"source_node_id": "decision", "next_node_id": "handoff_a", "priority": 2},
+            {"source_node_id": "decision", "next_node_id": "handoff_b", "condition": "故障未解决", "priority": 1},
+        ],
+    }
+    # unconditional handoff_a should be preferred even though handoff_b has higher priority
+    assert GraphRules.find_handoff_node_id(content, "decision") == "handoff_a"
+
+
+def test_find_handoff_node_id_falls_back_to_conditional_edges() -> None:
+    """When no unconditional path reaches a handoff node, should follow conditional edges."""
+    content = {
+        "start_node_id": "intake",
+        "nodes": [
+            {"node_id": "intake", "allowed_actions": ["continue_flow"]},
+            {"node_id": "triage", "allowed_actions": ["continue_flow"]},
+            {"node_id": "handoff_b", "type": "handoff"},
+        ],
+        "edges": [
+            {"source_node_id": "intake", "next_node_id": "triage", "condition": "需要分诊"},
+            {"source_node_id": "triage", "next_node_id": "handoff_b"},
+        ],
+    }
+    # intake → triage is conditional, but phase 2 (all edges) should find handoff_b
+    assert GraphRules.find_handoff_node_id(content, "intake") == "handoff_b"
+
+
 def test_skill_graph_node_preserves_assignee_user_id() -> None:
     """SkillGraphNode schema should preserve assignee_user_id through Pydantic round-trip."""
     node = SkillGraphNode(

@@ -252,7 +252,7 @@ export default function ChannelsPage({
   const [defaultAgentId, setDefaultAgentId] = useState('');
   const [savingAgents, setSavingAgents] = useState(false);
   const [autoRouteSaving, setAutoRouteSaving] = useState(false);
-  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>>([]);
+  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string; external_account_scope?: string }> }>>([]);
   const [handoffAssigneeSaving, setHandoffAssigneeSaving] = useState(false);
   const [bindCode, setBindCode] = useState<ChannelBindCodeRead | null>(null);
   const [bindCodeOpen, setBindCodeOpen] = useState(false);
@@ -299,7 +299,7 @@ export default function ChannelsPage({
     void loadChannelMetas();
     void loadTeams();
     api
-      .get<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>>(
+      .get<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string; external_account_scope?: string }> }>>(
         `/api/auth/users?tenant_id=${TENANT_ID}&include_channel=true`,
       )
       .then(setTenantUsers)
@@ -939,10 +939,16 @@ export default function ChannelsPage({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__none__">未配置</SelectItem>
-                {tenantUsers.map((user) => {
-                  const channelLabel = user.channel_identities?.[0]
-                    ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
-                    : '';
+                {tenantUsers.filter((user) => !user.source || user.source === 'web').map((user) => {
+                  const scope = binding.identity_scope_key || '';
+                  const matchingIdentity = user.channel_identities?.find(
+                    (ci) => ci.channel === binding.channel && (ci.external_account_scope || '') === scope,
+                  );
+                  const channelLabel = matchingIdentity
+                    ? ` (${_CHANNEL_LABELS[matchingIdentity.channel] || matchingIdentity.channel} 可达)`
+                    : user.channel_identities?.[0]
+                      ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
+                      : '';
                   const name = user.display_name || user.username || user.id;
                   return (
                     <SelectItem key={user.id} value={user.id}>

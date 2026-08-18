@@ -322,6 +322,10 @@ class GraphRules:
         优先从 active_step_id 出发沿 edges BFS,返回第一个可达的 handoff 节点。
         若 active_step_id 为空或无可达 handoff 节点,回退到 start_node_id 做 BFS。
         若仍无结果,回退到 nodes 数组中第一个 handoff 节点(兼容无 edges 的简单 SOP)。
+
+        BFS 分两阶段:
+        1. 仅沿无条件边(condition 为空/default/else)搜索,避免误入未命中的条件分支;
+        2. 若未命中,沿所有边搜索(含条件边),按 priority 顺序遍历。
         """
         nodes = cls.nodes(content)
         nodes_by_id = {
@@ -329,7 +333,7 @@ class GraphRules:
         }
         outgoing = cls.outgoing_edges(content)
 
-        def _bfs(start: str | None) -> str | None:
+        def _bfs(start: str | None, unconditional_only: bool) -> str | None:
             if not start or start not in nodes_by_id:
                 return None
             visited: set[str] = set()
@@ -344,19 +348,32 @@ class GraphRules:
                     return current
                 for edge in outgoing.get(current, []):
                     next_id = str(edge.get("next_node_id") or "").strip()
-                    if next_id and next_id not in visited:
-                        queue.append(next_id)
+                    if not next_id or next_id in visited:
+                        continue
+                    if unconditional_only and cls.edge_condition(edge) not in {"", "default", "else"}:
+                        continue
+                    queue.append(next_id)
             return None
 
-        # 1. 从当前节点 BFS
+        # 1a. 从当前节点沿无条件边 BFS
         if active_step_id:
-            found = _bfs(active_step_id)
+            found = _bfs(active_step_id, unconditional_only=True)
             if found:
                 return found
-        # 2. 从 start_node_id BFS
+        # 1b. 从 start_node_id 沿无条件边 BFS
         start = str(content.get("start_node_id") or "").strip()
         if start and start != active_step_id:
-            found = _bfs(start)
+            found = _bfs(start, unconditional_only=True)
+            if found:
+                return found
+        # 2a. 从当前节点沿所有边 BFS(含条件边)
+        if active_step_id:
+            found = _bfs(active_step_id, unconditional_only=False)
+            if found:
+                return found
+        # 2b. 从 start_node_id 沿所有边 BFS
+        if start and start != active_step_id:
+            found = _bfs(start, unconditional_only=False)
             if found:
                 return found
         # 3. 回退:数组中第一个 handoff 节点

@@ -619,7 +619,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
   const [sopSkills, setSopSkills] = useState<SkillRead[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
-  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>>([]);
+  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string; external_account_scope?: string }> }>>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [selectedRewriteModelId, setSelectedRewriteModelId] = useState(
     () => window.localStorage.getItem(`${DISTILL_REWRITE_MODEL_STORAGE_KEY}:${TENANT_ID}`) || '',
@@ -3556,13 +3556,16 @@ function SkillSource({
       value: item.skill_id,
       label: `${item.name} · ${item.skill_id}`,
     }));
-  const tenantUserOptions: SelectOption[] = tenantUsers.map((user) => {
-    const channelLabel = user.channel_identities?.[0]
-      ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
-      : '';
-    const name = user.display_name || user.username || user.id;
-    return { value: user.id, label: `${name}${channelLabel}` };
-  });
+  const tenantUserOptions: SelectOption[] = [
+    { value: '', label: '未指定（使用渠道默认）' },
+    ...tenantUsers.filter((user) => !user.source || user.source === 'web').map((user) => {
+      const channelLabel = user.channel_identities?.[0]
+        ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
+        : '';
+      const name = user.display_name || user.username || user.id;
+      return { value: user.id, label: `${name}${channelLabel}` };
+    }),
+  ];
 
   return (
     <div className={SOURCE_MD_CLASS} ref={containerRef}>
@@ -3862,13 +3865,16 @@ function SkillFlow({
       value: item.skill_id,
       label: `${item.name} · ${item.skill_id}`,
     }));
-  const tenantUserOptions: SelectOption[] = tenantUsers.map((user) => {
-    const channelLabel = user.channel_identities?.[0]
-      ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
-      : '';
-    const name = user.display_name || user.username || user.id;
-    return { value: user.id, label: `${name}${channelLabel}` };
-  });
+  const tenantUserOptions: SelectOption[] = [
+    { value: '', label: '未指定（使用渠道默认）' },
+    ...tenantUsers.filter((user) => !user.source || user.source === 'web').map((user) => {
+      const channelLabel = user.channel_identities?.[0]
+        ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
+        : '';
+      const name = user.display_name || user.username || user.id;
+      return { value: user.id, label: `${name}${channelLabel}` };
+    }),
+  ];
 
   const editFlowNode = (
     index: number,
