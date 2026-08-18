@@ -238,6 +238,56 @@ class TurnPlanner:
                         source_message=message,
                     )
                 )
+            elif plan.decision == "handoff_human" and active_skill is not None:
+                handoff_step_id = _find_handoff_node_id(active_skill)
+                if handoff_step_id:
+                    frames.append(
+                        PlannedTaskFrame(
+                            task_id=_unique_task_id(None, seen_ids),
+                            kind="sop",
+                            decision="handoff_human",
+                            target_skill_id=active_skill.skill_id,
+                            target_step_id=handoff_step_id,
+                            user_intent=_one_line(plan.user_intent or message),
+                            requirements=_requirements(
+                                [], plan.user_intent or message
+                            ),
+                            source_message=message,
+                        )
+                    )
+                else:
+                    active_conversation = next(
+                        (
+                            item
+                            for item in known_frames.values()
+                            if item.get("active")
+                            and item.get("kind") == "conversation"
+                        ),
+                        None,
+                    )
+                    frames.append(
+                        PlannedTaskFrame(
+                            task_id=(
+                                str(active_conversation.get("task_id"))
+                                if active_conversation
+                                else _unique_task_id(None, seen_ids)
+                            ),
+                            kind="conversation",
+                            decision="handoff_human",
+                            user_intent=_one_line(plan.user_intent or message),
+                            requirements=_requirements(
+                                (
+                                    list(
+                                        active_conversation.get("requirements") or []
+                                    )
+                                    if active_conversation
+                                    else []
+                                ),
+                                plan.user_intent or message,
+                            ),
+                            source_message=message,
+                        )
+                    )
             else:
                 active_conversation = next(
                     (
@@ -366,6 +416,27 @@ def _first_node_id(skill: Skill) -> str | None:
         return start
     for node in content.get("nodes") or []:
         if isinstance(node, dict):
+            node_id = str(node.get("node_id") or "").strip()
+            if node_id:
+                return node_id
+    return None
+
+
+def _find_handoff_node_id(skill: Skill) -> str | None:
+    """查找 SOP 中第一个 type=handoff 或 allowed_actions 含 handoff_human 的节点。
+
+    当 router 决定 handoff_human 但未绑定 SOP frame 时,用此函数定位到
+    SOP 中的 handoff 节点,使 harness 能在该节点读取 assignee_user_id
+    并正确触发飞书通知。
+    """
+    content = skill.content_json or {}
+    for node in content.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("type") or "").strip()
+        actions = node.get("allowed_actions") or []
+        normalized = {str(a or "").strip() for a in actions}
+        if node_type == "handoff" or "handoff_human" in normalized:
             node_id = str(node.get("node_id") or "").strip()
             if node_id:
                 return node_id

@@ -31,25 +31,8 @@ CONCEPT_TYPES = {
     "Playbook",
     "Business Rule",
     "Query Analysis",
-    "Contact",
 }
 MIN_CONCEPT_SEARCH_SCORE = 4.0
-
-# Contact 概念在 frontmatter 中识别处理人/飞书投递目标的保留键。
-# 这些键同时参与知识库检索评分(heading_text 已含 frontmatter 之外的标题字段),
-# 并由 human_handoff_service 在转人工时读取以确定 assignee 与飞书 open_id。
-CONTACT_FRONTMATTER_KEYS = (
-    "name",
-    "title",
-    "role",
-    "responsibilities",
-    "keywords",
-    "feishu_open_id",
-    "feishu_mobile",
-    "feishu_email",
-    "staffdeck_user_id",
-    "contact",
-)
 
 
 @dataclass
@@ -181,27 +164,12 @@ def search_concepts(query: str, concepts: list[KnowledgeConcept], limit: int = 6
         ).lower()
         body_text = _strip_frontmatter(row.content_md).lower()[:2400]
         haystack = f"{heading_text} {body_text}"
-        # Contact 概念的处理人路由字段(name/role/responsibilities/keywords)承载于
-        # frontmatter,默认不进 body_text;这里显式纳入检索,让"问题→联系人"
-        # 路由能命中(例如 keywords 含"网络故障"时,问题里出现该词即可命中联系人)。
-        contact_text = ""
-        if row.concept_type == "Contact":
-            frontmatter = row.frontmatter_json if isinstance(row.frontmatter_json, dict) else {}
-            contact_parts: list[str] = []
-            for key in CONTACT_FRONTMATTER_KEYS:
-                value = frontmatter.get(key)
-                if isinstance(value, list):
-                    contact_parts.extend(str(item) for item in value if item)
-                elif value:
-                    contact_parts.append(str(value))
-            contact_text = " ".join(contact_parts).lower()
-            haystack = f"{haystack} {contact_text}"
         score = 0.0
         matched = False
         for token in tokens:
             if not token:
                 continue
-            if token in heading_text or (contact_text and token in contact_text):
+            if token in heading_text:
                 score += 6.0 + min(len(token), 6)
                 matched = True
             elif token in body_text:
@@ -212,85 +180,10 @@ def search_concepts(query: str, concepts: list[KnowledgeConcept], limit: int = 6
             matched = True
         if row.concept_type == "Source Document" and matched:
             score -= 2
-        # Contact 命中时小幅加权:转人工路由优先于通用 Topic/文档概念,
-        # 避免"问题→联系人"被同名 Topic 抢走。
-        if row.concept_type == "Contact" and matched:
-            score += 1.5
         if score >= MIN_CONCEPT_SEARCH_SCORE and matched:
             scored.append((score, row.updated_at, row))
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [row for _score, _updated_at, row in scored[:limit]]
-
-
-def extract_contact_target(concept: KnowledgeConcept) -> dict[str, str]:
-    """从 Contact 概念读取处理人投递目标字段。
-
-    返回 dict 可能包含:name / role / staffdeck_user_id / feishu_open_id /
-    feishu_mobile / feishu_email / contact。空 dict 表示不是 Contact 或无可用字段。
-    供 human_handoff_service 在转人工时确定 assignee 与飞书 open_id 来源。
-    """
-    frontmatter = concept.frontmatter_json if isinstance(concept.frontmatter_json, dict) else {}
-    if concept.concept_type == "Contact":
-        result: dict[str, str] = {}
-        for key in CONTACT_FRONTMATTER_KEYS:
-            value = frontmatter.get(key)
-            if isinstance(value, list):
-                joined = ", ".join(str(item).strip() for item in value if str(item).strip())
-                text = joined
-            else:
-                text = str(value).strip() if value else ""
-            if text:
-                result[key] = text
-        # name 缺失时回退到概念 title,保证通知消息能带上真人姓名。
-        if not result.get("name"):
-            title = str(concept.title or "").strip()
-            if title:
-                result["name"] = title
-        return result
-    # Fallback: 尝试从非 Contact 概念的 description / content_md 中解析联系人信息。
-    return _parse_contact_from_text(concept, frontmatter)
-
-
-_MOBILE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
-
-
-def _parse_contact_from_text(
-    concept: KnowledgeConcept, frontmatter: dict[str, Any]
-) -> dict[str, str]:
-    """从非 Contact 概念的 description / content_md 中提取联系人信息。
-
-    支持 Markdown 格式如:
-    - 姓名：xxx
-    - 岗位/职责：修电脑师傅
-    - 联系方式：13888888888
-    """
-    description = str(frontmatter.get("description") or "").strip()
-    content = str(concept.content_md or "").strip()
-    haystack = f"{description}\n{content}"
-    if not haystack:
-        return {}
-    result: dict[str, str] = {}
-    # 提取手机号
-    mobile_match = _MOBILE_RE.search(haystack)
-    if mobile_match:
-        result["feishu_mobile"] = mobile_match.group(0)
-    # 提取姓名:匹配"姓名：XXX"或"姓名: XXX"
-    name_match = re.search(r"姓名[：:]\s*([^\n\-#|]+)", haystack)
-    if name_match:
-        result["name"] = name_match.group(1).strip()
-    # 提取岗位/职责
-    role_match = re.search(r"岗位/职责[：:]\s*([^\n\-#|]+)", haystack)
-    if role_match:
-        result["role"] = role_match.group(1).strip()
-    # title 作为 name fallback
-    if not result.get("name"):
-        title = str(concept.title or "").strip()
-        if title:
-            result["name"] = title
-    # 至少要有手机号才算有效联系人
-    if not result.get("feishu_mobile"):
-        return {}
-    return result
 
 
 def okf_citations_for_concepts(concepts: list[KnowledgeConcept]) -> list[dict[str, Any]]:
@@ -575,8 +468,7 @@ def render_okf_markdown(frontmatter: dict[str, Any], body: str) -> str:
 
 def normalize_concept_id(value: str) -> str:
     text = value.strip().replace("\\", "/").strip("/")
-    if text.endswith(".md"):
-        text = text[:-3]
+    text = text.removesuffix(".md")
     parts = [safe_path_segment(part) for part in text.split("/") if part.strip()]
     return "/".join(part for part in parts if part)
 
@@ -903,7 +795,7 @@ def _query_tokens(query: str) -> list[str]:
             for size in (4, 3, 2):
                 if len(text) <= size:
                     continue
-                tokens.extend(text[index : index + size] for index in range(0, len(text) - size + 1))
+                tokens.extend(text[index : index + size] for index in range(len(text) - size + 1))
     seen: set[str] = set()
     unique_tokens: list[str] = []
     for token in tokens:

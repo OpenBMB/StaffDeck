@@ -23,6 +23,8 @@ class GraphRules:
             "retry_policy": node.get("retry_policy") or {},
             "metadata": node.get("metadata") or {},
             "sub_sop_id": node.get("sub_sop_id"),
+            # handoff 节点可指定处理人;未指定时回退到渠道默认/owner/admin。
+            "assignee_user_id": node.get("assignee_user_id"),
         }
 
     @staticmethod

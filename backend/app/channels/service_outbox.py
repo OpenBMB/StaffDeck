@@ -7,6 +7,9 @@ from datetime import timedelta
 from sqlalchemy import func, or_, update
 from sqlmodel import Session, select
 
+from app.channels.adapters.base import channel_reaction_token
+from app.channels.service_durable_inbox import reaction_target
+from app.channels.service_identity import external_account_scope
 from app.config import get_settings
 from app.db import engine
 from app.db.models import (
@@ -18,12 +21,10 @@ from app.db.models import (
     ChatSession,
     HumanHandoffRequest,
     Message,
+    User,
     new_id,
     utc_now,
 )
-from app.channels.adapters.base import channel_reaction_token
-from app.channels.service_durable_inbox import reaction_target
-from app.channels.service_identity import external_account_scope
 from app.session.origin import PILOTDECK_GROUP_CHAT_CHANNEL
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,10 @@ _reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
 _FEISHU_DEDUP_RECOVERY_SECONDS = 55 * 60
 _NON_DELIVERY_CHANNELS = {"public_api", PILOTDECK_GROUP_CHAT_CHANNEL}
+# handoff 问题描述里要过滤掉的内部 slot 键。
+_INTERNAL_SLOT_KEYS = frozenset(
+    {"handoff_confirmed", "message_content", "_tool_results"}
+)
 
 
 def _stage_failed_delivery(
@@ -821,17 +826,16 @@ def _resolve_assignee_feishu_open_id(
     db: Session,
     binding: ChannelBinding,
     assignee_user_id: str | None,
-    contact_target: dict[str, str],
 ) -> str | None:
-    """确定 handoff assignee 的飞书 open_id(方案 A+B 组合)。
+    """确定 handoff assignee 的飞书 open_id。
 
-    优先级:① Contact 概念里直填的 feishu_open_id;② assignee 的 ChannelIdentity
-    (方案 A/C 入站积累);③ 飞书通讯录 batch_get_id 反查手机号/邮箱(方案 B)。
-    返回 open_id 或 None(无法投递时由调用方兜底)。
+    主链路:用当前 binding 的 external_account_scope 查 ChannelIdentity
+    (staffdeck_user_id → external_user_id),保证跨 binding/scope 隔离。
+    未命中返回 None(由调用方兜底,网页收件箱仍可用)。
+
+    注:手机号/邮箱反查需要 User 表存储手机号/邮箱,当前 User 模型无此字段,
+    故反查 fallback 暂不启用;待前端用户档案补齐后可在此接入。
     """
-    direct_open_id = str(contact_target.get("feishu_open_id") or "").strip()
-    if direct_open_id:
-        return direct_open_id
     scope = external_account_scope(db, binding)
     if assignee_user_id:
         identity = db.exec(
@@ -844,23 +848,7 @@ def _resolve_assignee_feishu_open_id(
         ).first()
         if identity and identity.external_user_id:
             return identity.external_user_id
-    # 方案 B:通讯录反查。仅飞书适配器支持;需应用具备通讯录权限。
-    mobile = contact_target.get("feishu_mobile")
-    email = contact_target.get("feishu_email")
-    if not mobile and not email:
-        return None
-    try:
-        import app.channels.adapters.feishu  # noqa: F401 - ensure adapter is registered
-        from app.channels.adapters import get_channel_adapter
-
-        adapter = get_channel_adapter("feishu")
-        resolve = getattr(adapter, "resolve_open_id_by_mobile_or_email", None)
-        if not callable(resolve):
-            return None
-        return resolve(binding, mobile=mobile, email=email)
-    except Exception:
-        logger.exception("飞书通讯录反查 open_id 失败 binding=%s", binding.id)
-        return None
+    return None
 
 
 def _write_handoff_notify_message_id(
@@ -901,8 +889,6 @@ def _build_handoff_problem_description(
         if step_name:
             parts.append(f"[{step_name}]")
     # 用户最后一条消息 + slots
-    from app.db.models import ChatSession, Message
-
     session = db.get(ChatSession, handoff.session_id)
     if session:
         user_msg = db.exec(
@@ -917,11 +903,6 @@ def _build_handoff_problem_description(
             parts.append(user_msg.content.strip()[:300])
         slots = session.slots_json or {}
         if isinstance(slots, dict) and slots:
-            _INTERNAL_SLOT_KEYS = {
-                "handoff_confirmed",
-                "message_content",
-                "_tool_results",
-            }
             slot_lines = [
                 f"  {k}: {v}"
                 for k, v in slots.items()
@@ -941,20 +922,17 @@ def notify_handoff_assignee(
     db: Session,
     binding: ChannelBinding,
     handoff: HumanHandoffRequest,
-    contact_target: dict[str, str],
     pending_question: str,
     context_summary: str,
 ) -> None:
     """转人工时给 assignee 发飞书私聊通知(kind=handoff_notice)。
 
-    仿 notify_binding_creator:查 assignee 的 open_id → 构造 target → 登记
-    ChannelDelivery 由 outbox 守护线程投递。任何异常仅记日志,不影响 handoff 主流程
-    (网页收件箱仍可用作兜底)。多租户 scope 隔离:仅在 assignee 与 binding 同 scope
-    下有身份时直接投递;否则尝试通讯录反查,失败则跳过。
+    主链路:assignee_user_id → 当前 binding scope 下的 ChannelIdentity → open_id。
+    无可用 open_id 时跳过(网页收件箱兜底)。任何异常仅记日志,不影响 handoff 主流程。
     """
     try:
         open_id = _resolve_assignee_feishu_open_id(
-            db, binding, handoff.assignee_user_id, contact_target
+            db, binding, handoff.assignee_user_id
         )
         if not open_id:
             logger.info(
@@ -963,7 +941,11 @@ def notify_handoff_assignee(
                 binding.id,
             )
             return
-        name = contact_target.get("name") or ""
+        # assignee 显示名:从 User 表取,无则空
+        assignee = db.get(User, handoff.assignee_user_id) if handoff.assignee_user_id else None
+        name = ""
+        if assignee:
+            name = str(assignee.display_name or assignee.username or "").strip()
         problem_description = _build_handoff_problem_description(db, handoff)
         text_parts = [
             f"【人工介入转接】{'已转接给真人员工 ' + name if name else '有一条人工介入待处理'}",

@@ -712,7 +712,9 @@ def test_handoff_resume_worker_continues_original_session_once(monkeypatch):
         assert handoff is not None
         assert handoff.status == "answered"
         assert handoff.metadata_json["resume_started_at"]
-        assert handoff.metadata_json["resume_finished_at"]
+        # resume_finished_at 标记已移除:_inject_handoff_context 改用
+        # request.channel == "human_handoff_resume" 判定 resume turn,
+        # 不再依赖事后写入的标记(原实现时序 bug 导致注入永远 miss)。
         events = db.exec(select(AgentEvent).where(AgentEvent.event_type == "human_handoff_resume_started")).all()
         assert len(events) == 1
         assert events[0].payload_json["handoff_id"] == "handoff_worker"

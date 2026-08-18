@@ -6,17 +6,14 @@ from typing import Any
 
 from sqlmodel import Session, select
 
-from app.agents.branching import visible_knowledge_base_versions
 from app.db.models import (
     AgentProfile,
     ChatSession,
     HumanHandoffRequest,
-    KnowledgeConcept,
     Message,
     User,
     utc_now,
 )
-from app.knowledge.okf import extract_contact_target, search_concepts
 from app.session.session_schema import StepAgentResult
 
 
@@ -35,6 +32,8 @@ class HumanHandoffService:
         assignee_resolver: Callable[[str, str | None, str | None], str | None],
         context_summary: Callable[[ChatSession], str],
         pending_question: Callable[[dict[str, Any] | None, StepAgentResult], str],
+        step_assignee_user_id: str | None = None,
+        binding_default_assignee_user_id: str | None = None,
     ) -> HumanHandoffRequest:
         existing = self.db.exec(
             select(HumanHandoffRequest)
@@ -54,17 +53,16 @@ class HumanHandoffService:
 
         current_step = current_step_resolver()
         pending_question_text = pending_question(current_step, step_result)
-        # 知识库驱动 assignee:用 pending_question 检索 Contact 概念,命中则取其
-        # staffdeck_user_id 作为 assignee;未命中回退到 agent owner → 租户 admin。
-        contact_target = self.resolve_contact_assignee(
-            tenant_id, chat_session.agent_id, pending_question_text
-        )
-        if contact_target and contact_target.get("staffdeck_user_id"):
-            assignee_user_id = contact_target["staffdeck_user_id"]
-        else:
-            assignee_user_id = assignee_resolver(
+        # Assignee 优先级:SOP 节点指定 → 当前渠道默认处理人 → 数字员工负责人 → 租户管理员。
+        # 不再从知识库 Contact 概念推断 assignee(知识内容变化会导致处理人不稳定,
+        # 且缺少权限/审计入口)。
+        assignee_user_id = (
+            step_assignee_user_id
+            or binding_default_assignee_user_id
+            or assignee_resolver(
                 tenant_id, chat_session.agent_id, chat_session.user_id
             )
+        )
         handoff = HumanHandoffRequest(
             tenant_id=tenant_id,
             session_id=chat_session.id,
@@ -85,7 +83,6 @@ class HumanHandoffService:
                 "step": current_step or {},
                 "step_reply": step_result.reply,
                 "step_handoff": step_result.handoff,
-                "contact_target": contact_target,
             },
         )
         self.db.add(handoff)
@@ -110,50 +107,6 @@ class HumanHandoffService:
             },
         )
         return handoff
-
-    def resolve_contact_assignee(
-        self,
-        tenant_id: str,
-        agent_id: str | None,
-        pending_question_text: str,
-    ) -> dict[str, str]:
-        """用 pending_question 检索 agent 可见知识库的 Contact 概念,返回首个命中联系人的目标字段。
-
-        返回 dict(可能含 name/role/staffdeck_user_id/feishu_open_id/feishu_mobile/
-        feishu_email 等);空 dict 表示未命中。供 create 确定 assignee 与阶段 3 通知使用。
-        """
-        query = (pending_question_text or "").strip()
-        if not query or not agent_id:
-            return {}
-        try:
-            versions = visible_knowledge_base_versions(self.db, tenant_id, agent_id)
-        except Exception:  # noqa: BLE001 - knowledge lookup failure must not break handoff.
-            return {}
-        if not versions:
-            return {}
-        version_ids = [row.id for row in versions.values() if row.id]
-        if not version_ids:
-            return {}
-        concepts = self.db.exec(
-            select(KnowledgeConcept).where(
-                KnowledgeConcept.tenant_id == tenant_id,
-                KnowledgeConcept.knowledge_base_version_id.in_(version_ids),
-                KnowledgeConcept.status == "active",
-            )
-        ).all()
-        if not concepts:
-            return {}
-        matched = search_concepts(query, concepts, limit=3)
-        for concept in matched:
-            target = extract_contact_target(concept)
-            # 只要有任一可定位处理人的字段就算命中;assignee 优先级:
-            # staffdeck_user_id > feishu_open_id > feishu_mobile/feishu_email(需反查)
-            if target.get("staffdeck_user_id") or target.get("feishu_open_id") or target.get(
-                "feishu_mobile"
-            ) or target.get("feishu_email"):
-                target["concept_id"] = concept.concept_id
-                return target
-        return {}
 
     def assignee_user_id(
         self,

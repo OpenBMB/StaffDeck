@@ -43,7 +43,6 @@ from app.db.models import (
     ChannelIdentity,
     ChannelInboundEvent,
     ChatSession,
-    AgentEvent,
     HumanHandoffRequest,
     MemoryRecord,
     Message,
@@ -723,7 +722,8 @@ def _try_handle_feishu_handoff_reply(
     """飞书 handoff 回复分支:处理人回复通知消息即完成人工答复。
 
     匹配条件:飞书 p2p 消息的 parent_id == 某 pending handoff 的 notify_message_id,
-    且发送者 open_id 对应的 ChannelIdentity.staffdeck_user_id == handoff.assignee_user_id。
+    且发送者 open_id == 该 handoff 对应 handoff_notice 投递的 receive_id(严格校验
+    发送者就是实际通知目标,防止转发/截图场景下的越权回复)。
     命中则复用 _apply_handoff_reply 置 answered + 恢复 SOP,并给处理人回一条确认。
     返回 True 表示已处理(短路 process_inbound);False 表示非 handoff 回复,继续正常流程。
     """
@@ -738,42 +738,44 @@ def _try_handle_feishu_handoff_reply(
     ).first()
     if not handoff or handoff.tenant_id != binding.tenant_id:
         return False
-    # 校验发送者是 assignee:open_id → ChannelIdentity → staffdeck_user_id
+    # 严格校验发送者 == 通知目标:查该 handoff 对应的 handoff_notice 投递,
+    # 其 target_json.receive_id 必须等于 inbound.from_user_id。
+    notice = db.exec(
+        select(ChannelDelivery).where(
+            ChannelDelivery.tenant_id == binding.tenant_id,
+            ChannelDelivery.binding_id == binding.id,
+            ChannelDelivery.kind == "handoff_notice",
+            ChannelDelivery.session_id == f"handoff:{handoff.id}",
+        )
+    ).first()
+    if not notice:
+        return False
+    notice_target = notice.target_json or {}
+    notice_receive_id = str(notice_target.get("receive_id") or "").strip()
+    if not notice_receive_id or notice_receive_id != inbound.from_user_id:
+        return False
+    reply_text = (inbound.text or "").strip()
+    if not reply_text:
+        return False
+    # assignee 的 StaffDeck 用户 id:从 ChannelIdentity 反查(同 binding scope)。
+    scope = external_account_scope(db, binding)
     identity = db.exec(
         select(ChannelIdentity).where(
             ChannelIdentity.tenant_id == binding.tenant_id,
             ChannelIdentity.channel == "feishu",
+            ChannelIdentity.external_account_scope == scope,
             ChannelIdentity.external_user_id == inbound.from_user_id,
         )
     ).first()
-    if not identity:
-        return False
-    # assignee 校验:优先匹配 staffdeck_user_id;若知识库未配置 staffdeck_user_id
-    # (assignee fallback 到 admin),则回退匹配 contact_target 对应的 open_id —
-    # 通知就是发给该 open_id 的,能回复这条消息的人即为正确处理人。
-    metadata = handoff.metadata_json or {}
-    contact_target = metadata.get("contact_target") if isinstance(metadata, dict) else {}
-    if not isinstance(contact_target, dict):
-        contact_target = {}
-    assignee_matched = (
-        bool(handoff.assignee_user_id)
-        and identity.staffdeck_user_id == handoff.assignee_user_id
-    )
-    if not assignee_matched:
-        # assignee 是 fallback 值(admin 等)且 contact_target 存在时,信任 parent_id
-        # 匹配 + 发送者 open_id == 通知接收者 open_id 即可。
-        if not contact_target:
-            return False
-    reply_text = (inbound.text or "").strip()
-    if not reply_text:
-        return False
+    answered_by = identity.staffdeck_user_id if identity else handoff.assignee_user_id
     from app.api.chat import _apply_handoff_reply
 
     _apply_handoff_reply(
         db,
         handoff,
         reply_text,
-        answered_by_user_id=identity.staffdeck_user_id,
+        answered_by_user_id=answered_by,
+        source="feishu",
     )
     # 给处理人回一条确认(经 outbox 投递)
     db.add(
@@ -786,8 +788,8 @@ def _try_handle_feishu_handoff_reply(
                 "receive_id_type": "open_id",
                 "receive_id": inbound.from_user_id,
             },
-            kind="error_notice",
-            text=f"已收到你的回复,正在恢复 SOP 执行。回复预览:{reply_text[:120]}",
+            kind="handoff_ack",
+            text=f"已收到你的回复，正在恢复 SOP 执行。回复预览：{reply_text[:120]}",
             status="pending",
             next_attempt_at=utc_now(),
             idempotency_key=new_id("hreplyack"),
@@ -801,7 +803,7 @@ def _try_handle_feishu_handoff_reply(
     logger.info(
         "飞书 handoff 回复命中 handoff=%s assignee=%s",
         handoff.id,
-        identity.staffdeck_user_id,
+        answered_by,
     )
     return True
 
@@ -814,11 +816,10 @@ def _run_handoff_reply_command(
 ) -> str:
     """/回复反馈 指令处理:处理人通过飞书发送 /回复反馈 <内容> 回复人工转接通知。
 
-    匹配策略:查发送者(open_id)对应的 ChannelIdentity,取 staffdeck_user_id,
-    再查该 user 名下 status=pending 的最新 handoff。若知识库未配置
-    staffdeck_user_id(assignee fallback 为 admin),则回退匹配 contact_target
-    对应 open_id == 发送者 open_id 的 pending handoff。命中后复用
-    _apply_handoff_reply 置 answered + 恢复 SOP,并给处理人回确认。
+    匹配策略:查发送者(open_id)在当前 binding scope 下的 ChannelIdentity,
+    取 staffdeck_user_id,再查该 user 名下 status=pending 的最新 handoff。
+    命中后复用 _apply_handoff_reply 置 answered + 恢复 SOP,并给处理人回确认。
+    无 ChannelIdentity 时拒绝(不再用 contact_target open_id 模糊匹配)。
     """
     reply_text = command.query.strip()
     if not reply_text:
@@ -826,11 +827,13 @@ def _run_handoff_reply_command(
             "用法：/回复反馈 <答复内容>\n"
             "回复内容将作为人工答复并恢复 SOP 执行。"
         )
-    # 查发送者身份
+    # 查发送者身份(用当前 binding scope 隔离)
+    scope = external_account_scope(db, binding)
     identity = db.exec(
         select(ChannelIdentity).where(
             ChannelIdentity.tenant_id == binding.tenant_id,
             ChannelIdentity.channel == binding.channel,
+            ChannelIdentity.external_account_scope == scope,
             ChannelIdentity.external_user_id == inbound.from_user_id,
         )
     ).first()
@@ -844,41 +847,19 @@ def _run_handoff_reply_command(
             ).order_by(HumanHandoffRequest.created_at.desc())
         ).first()
     if not handoff:
-        # 回退:查最近发给该 open_id 的 pending handoff(通过 metadata.contact_target)
-        recent = db.exec(
-            select(HumanHandoffRequest).where(
-                HumanHandoffRequest.tenant_id == binding.tenant_id,
-                HumanHandoffRequest.status == "pending",
-            ).order_by(HumanHandoffRequest.created_at.desc()).limit(20)
-        ).all()
-        for h in recent:
-            meta = h.metadata_json or {}
-            ct = meta.get("contact_target") if isinstance(meta, dict) else {}
-            if not isinstance(ct, dict):
-                ct = {}
-            ct_open_id = ct.get("feishu_open_id") or ""
-            if not ct_open_id:
-                # contact_target 无直接 open_id,尝试通过 resolve 链反查
-                from app.channels.service_outbox import _resolve_assignee_feishu_open_id
-
-                resolved = _resolve_assignee_feishu_open_id(
-                    db, binding, h.assignee_user_id, ct
-                )
-                if resolved:
-                    ct_open_id = resolved
-            if ct_open_id and ct_open_id == inbound.from_user_id:
-                handoff = h
-                break
-    if not handoff:
-        return "未找到待处理的人工转接请求。可能已被处理或已过期。"
+        return (
+            "未找到待处理的人工转接请求。可能已被处理或已过期，"
+            "或当前飞书账号未绑定到 StaffDeck 处理人身份。"
+        )
     from app.api.chat import _apply_handoff_reply
 
-    answered_by = identity.staffdeck_user_id if identity else None
+    answered_by = identity.staffdeck_user_id if identity else handoff.assignee_user_id
     _apply_handoff_reply(
         db,
         handoff,
         reply_text,
         answered_by_user_id=answered_by,
+        source="feishu",
     )
     # 给处理人回一条确认(经 outbox 投递)
     db.add(
@@ -891,7 +872,7 @@ def _run_handoff_reply_command(
                 "receive_id_type": "open_id",
                 "receive_id": inbound.from_user_id,
             },
-            kind="error_notice",
+            kind="handoff_ack",
             text=f"已收到你的回复，正在恢复 SOP 执行。回复预览：{reply_text[:120]}",
             status="pending",
             next_attempt_at=utc_now(),
