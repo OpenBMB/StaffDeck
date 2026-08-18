@@ -27,6 +27,7 @@ export type TaskFormValues = {
   status: 'active' | 'paused';
   max_runs?: number;
   sop_id?: string;
+  sop_version_policy: 'latest' | 'pinned';
 };
 
 export const INITIAL_VALUES: TaskFormValues = {
@@ -41,6 +42,7 @@ export const INITIAL_VALUES: TaskFormValues = {
   status: 'active',
   max_runs: undefined,
   sop_id: '',
+  sop_version_policy: 'latest',
 };
 
 export type TaskListFilter = 'all' | 'pending' | 'completed' | 'paused';
@@ -82,6 +84,12 @@ export function matchesTaskFilter(row: ScheduledTaskRead, filter: TaskListFilter
 
 export function matchesRunFilter(row: ScheduledTaskRunRead, filter: RunListFilter): boolean {
   return RUN_FILTERS[filter](row);
+}
+
+export function scheduledTaskSopOptions<T extends { status: string }>(rows: T[]): T[] {
+  // Explicitly selecting an SOP authorizes SOP-specific resources for this
+  // scheduled task; only unpublished entries must stay unavailable.
+  return rows.filter((row) => row.status === 'published');
 }
 
 export type BadgeTone = 'blue' | 'orange' | 'green' | 'red' | 'gray';
@@ -159,6 +167,7 @@ export function taskToFormValues(row: ScheduledTaskRead): TaskFormValues {
     status: row.status === 'active' ? 'active' : 'paused',
     max_runs: row.max_runs,
     sop_id: typeof row.metadata?.sop_id === 'string' ? row.metadata.sop_id : '',
+    sop_version_policy: row.metadata?.sop_version_policy === 'pinned' ? 'pinned' : 'latest',
   };
 }
 

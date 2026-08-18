@@ -14,7 +14,7 @@ from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.agents.branching import model_for_agent
+from app.agents.branching import model_for_agent, visible_published_skills
 from app.core import AgentLoop
 from app.db import engine
 from app.db.models import (
@@ -44,6 +44,7 @@ from app.session.session_schema import ChatTurnRequest, ChatTurnResponse
 from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
+from app.skills.nesting import SopNestingError, expand_sop_for_execution
 
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -51,6 +52,8 @@ DEFAULT_TASK_TIME = "09:00"
 LEASE_SECONDS = 15 * 60
 WORKER_SLEEP_SECONDS = 5
 SCHEDULE_TYPES = {"once", "daily", "weekly", "monthly"}
+SOP_VERSION_POLICIES = {"latest", "pinned"}
+SOP_SNAPSHOT_METADATA_KEY = "_sop_snapshot"
 
 
 class ScheduledTaskAgentUnavailable(RuntimeError):
@@ -101,6 +104,8 @@ SCHEDULE_DRAFT_PROMPT = """
 
 
 def scheduled_task_read(row: ScheduledTask) -> ScheduledTaskRead:
+    metadata = dict(row.metadata_json or {})
+    metadata.pop(SOP_SNAPSHOT_METADATA_KEY, None)
     return ScheduledTaskRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -123,7 +128,7 @@ def scheduled_task_read(row: ScheduledTask) -> ScheduledTaskRead:
         last_status=row.last_status,
         run_count=row.run_count,
         source_session_id=row.source_session_id,
-        metadata=row.metadata_json or {},
+        metadata=metadata,
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
@@ -178,7 +183,12 @@ def create_scheduled_task(
         max_runs=request.max_runs,
         end_at=end_at,
         source_session_id=request.source_session_id,
-        metadata_json=request.metadata or {},
+        metadata_json=_prepare_scheduled_task_sop_metadata(
+            db,
+            request.tenant_id,
+            request.agent_id,
+            request.metadata,
+        ),
         created_at=now,
         updated_at=now,
     )
@@ -198,9 +208,11 @@ def update_scheduled_task(
     current_user: User,
 ) -> ScheduledTask:
     _ensure_task_access(row, current_user)
+    agent_changed = False
     if request.agent_id is not None and request.agent_id != row.agent_id:
         _ensure_agent_access(db, request.tenant_id, request.agent_id, current_user)
         row.agent_id = request.agent_id
+        agent_changed = True
     if request.title is not None:
         row.title = _nonempty(request.title, "自动任务名称不能为空", 80)
     if request.prompt is not None:
@@ -227,7 +239,20 @@ def update_scheduled_task(
     if request.end_at is not None:
         row.end_at = parse_user_datetime(request.end_at, row.timezone) if request.end_at else None
     if request.metadata is not None:
-        row.metadata_json = request.metadata
+        row.metadata_json = _prepare_scheduled_task_sop_metadata(
+            db,
+            row.tenant_id,
+            row.agent_id,
+            request.metadata,
+            existing=None if agent_changed else row.metadata_json,
+        )
+    elif agent_changed:
+        row.metadata_json = _prepare_scheduled_task_sop_metadata(
+            db,
+            row.tenant_id,
+            row.agent_id,
+            row.metadata_json,
+        )
     row.updated_at = utc_now()
     row.next_run_at = compute_next_run_at(row, after=utc_now()) if row.status == "active" else None
     db.add(row)
@@ -449,6 +474,7 @@ def _execute_prepared_scheduled_task(
             channel="scheduled_task",
             interaction_mode="scheduled_task",
             forced_sop_id=_scheduled_task_sop_id(task),
+            forced_sop_snapshot=_scheduled_task_sop_snapshot(task),
             client_timezone=task.timezone,
         )
         result: ChatTurnResponse | None = None
@@ -735,6 +761,78 @@ def _scheduled_task_sop_id(task: ScheduledTask) -> str | None:
     metadata = task.metadata_json if isinstance(task.metadata_json, dict) else {}
     value = str(metadata.get("sop_id") or "").strip()
     return value or None
+
+
+def _scheduled_task_sop_snapshot(task: ScheduledTask) -> dict[str, Any] | None:
+    metadata = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    if str(metadata.get("sop_version_policy") or "latest") != "pinned":
+        return None
+    snapshot = metadata.get(SOP_SNAPSHOT_METADATA_KEY)
+    return dict(snapshot) if isinstance(snapshot, dict) else None
+
+
+def _prepare_scheduled_task_sop_metadata(
+    db: Session,
+    tenant_id: str,
+    agent_id: str,
+    incoming: dict[str, Any] | None,
+    *,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = dict(incoming or {})
+    # Internal snapshots are always produced by the server, never trusted from
+    # an API payload.
+    metadata.pop(SOP_SNAPSHOT_METADATA_KEY, None)
+    sop_id = str(metadata.get("sop_id") or "").strip()
+    if not sop_id:
+        metadata.pop("sop_id", None)
+        metadata.pop("sop_version_policy", None)
+        metadata.pop("sop_version", None)
+        return metadata
+
+    previous = dict(existing or {})
+    previous_policy = str(previous.get("sop_version_policy") or "latest")
+    requested_policy = str(
+        metadata.get("sop_version_policy")
+        or (previous_policy if str(previous.get("sop_id") or "") == sop_id else "latest")
+    ).strip()
+    policy = requested_policy if requested_policy in SOP_VERSION_POLICIES else "latest"
+    metadata["sop_id"] = sop_id
+    metadata["sop_version_policy"] = policy
+    available = visible_published_skills(db, tenant_id, agent_id)
+    selected = next((skill for skill in available if skill.skill_id == sop_id), None)
+    if selected is None:
+        raise HTTPException(status_code=400, detail="指定的 SOP 当前不可用")
+    if policy == "latest":
+        metadata.pop("sop_version", None)
+        return metadata
+
+    previous_snapshot = previous.get(SOP_SNAPSHOT_METADATA_KEY)
+    if (
+        previous_policy == "pinned"
+        and str(previous.get("sop_id") or "") == sop_id
+        and isinstance(previous_snapshot, dict)
+    ):
+        metadata["sop_version"] = str(
+            previous.get("sop_version") or previous_snapshot.get("version") or ""
+        )
+        metadata[SOP_SNAPSHOT_METADATA_KEY] = dict(previous_snapshot)
+        return metadata
+
+    try:
+        expanded = expand_sop_for_execution(selected, available)
+    except SopNestingError as exc:
+        raise HTTPException(status_code=400, detail=f"指定的 SOP 无法生成版本快照：{exc}") from exc
+    metadata["sop_version"] = selected.version
+    metadata[SOP_SNAPSHOT_METADATA_KEY] = {
+        "skill_id": selected.skill_id,
+        "version": selected.version,
+        "name": selected.name,
+        "business_domain": selected.business_domain,
+        "description": selected.description,
+        "content_json": expanded.content_json,
+    }
+    return metadata
 
 
 def compute_next_run_at(task: ScheduledTask, after: datetime | None = None) -> datetime | None:

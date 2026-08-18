@@ -29,6 +29,7 @@ import {
   INITIAL_VALUES,
   WEEKDAY_OPTIONS,
   buildSchedule,
+  scheduledTaskSopOptions,
   taskToFormValues,
   type TaskFormValues,
 } from './shared';
@@ -114,12 +115,7 @@ function ScheduledTaskEditorPage({
       )
       .then((rows) => {
         if (cancelled) return;
-        setSops(
-          rows.filter(
-            (row) =>
-              row.status === 'published' && row.content.capability_scope !== 'sop_specific',
-          ),
-        );
+        setSops(scheduledTaskSopOptions(rows));
       })
       .catch(() => {
         if (!cancelled) setSops([]);
@@ -151,6 +147,20 @@ function ScheduledTaskEditorPage({
       notify.error('请先选择员工');
       return;
     }
+    const metadata: Record<string, unknown> = {
+      ...taskMetadata,
+      ...(values.sop_id
+        ? {
+            sop_id: values.sop_id,
+            sop_version_policy: values.sop_version_policy,
+          }
+        : {}),
+    };
+    if (!values.sop_id) {
+      delete metadata.sop_id;
+      delete metadata.sop_version_policy;
+      delete metadata.sop_version;
+    }
     const payload = {
       tenant_id: TENANT_ID,
       agent_id: agentId,
@@ -164,12 +174,8 @@ function ScheduledTaskEditorPage({
       concurrency_policy: 'forbid',
       misfire_policy: 'coalesce',
       max_runs: values.max_runs || undefined,
-      metadata: {
-        ...taskMetadata,
-        ...(values.sop_id ? { sop_id: values.sop_id } : {}),
-      },
+      metadata,
     };
-    if (!values.sop_id) delete payload.metadata.sop_id;
     setSaving(true);
     try {
       const saved =
@@ -180,6 +186,7 @@ function ScheduledTaskEditorPage({
       if (!isEdit) {
         navigate(`/enterprise/scheduled-tasks/${saved.id}/edit`, { replace: true });
       } else {
+        setTaskMetadata(saved.metadata || {});
         setValues(taskToFormValues(saved));
       }
     } catch (error) {
@@ -278,7 +285,14 @@ function ScheduledTaskEditorPage({
               <Label className={FIELD_LABEL_CLASS}>指定 SOP</Label>
               <Select
                 value={values.sop_id || '__auto__'}
-                onValueChange={(value) => update('sop_id', value === '__auto__' ? '' : value)}
+                onValueChange={(value) => {
+                  const sopId = value === '__auto__' ? '' : value;
+                  setValues((prev) => ({
+                    ...prev,
+                    sop_id: sopId,
+                    sop_version_policy: sopId ? prev.sop_version_policy : 'latest',
+                  }));
+                }}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="由 Harness v2 自动判断" />
@@ -296,6 +310,35 @@ function ScheduledTaskEditorPage({
                 选择后每次唤醒都会由 Harness v2 强制启动该 SOP；未选择时仍由模型按任务判断。
               </p>
             </div>
+
+            {values.sop_id && (
+              <div className="flex flex-col gap-[6px]">
+                <Label className={FIELD_LABEL_CLASS}>SOP 版本策略</Label>
+                <Select
+                  value={values.sop_version_policy}
+                  onValueChange={(value) =>
+                    update('sop_version_policy', value === 'pinned' ? 'pinned' : 'latest')
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="latest">始终使用最新发布版本</SelectItem>
+                    <SelectItem value="pinned">固定使用保存时版本</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[12px] leading-[18px] text-[#858b9c]">
+                  {values.sop_version_policy === 'latest'
+                    ? '每次运行前重新读取当前员工可用的最新已发布 SOP。'
+                    : `保存时锁定主 SOP 及其嵌套子 SOP${
+                        typeof taskMetadata.sop_version === 'string' && taskMetadata.sop_version
+                          ? `（当前固定版本 ${taskMetadata.sop_version}）`
+                          : ''
+                      }；后续发布新版本不会影响该任务。`}
+                </p>
+              </div>
+            )}
 
             <div className="flex flex-col gap-[6px]">
               <Label htmlFor="task-description" className={FIELD_LABEL_CLASS}>
