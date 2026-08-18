@@ -88,8 +88,31 @@ def test_message_context_uses_sandbox_path_without_inlining_text() -> None:
 
     assert "总结一下" in context
     assert "上传附件上下文" in context
+    assert "工作区相对路径：attachments/readme.md" in context
     assert "/workspace/attachments/readme.md" in context
     assert "# Title" not in context
+
+
+def test_document_attachment_context_routes_binary_to_extractor() -> None:
+    attachment = ChatAttachmentRead(
+        id="contract-docx",
+        filename="contract.docx",
+        content_type=(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        size=128,
+        kind="binary",
+        sandbox_path="/workspace/attachments/contract.docx",
+    )
+
+    context = message_content_with_attachment_context(
+        "检查合同",
+        {"attachments": [attachment.model_dump(mode="json")]},
+    )
+
+    assert "工作区相对路径：attachments/contract.docx" in context
+    assert "先调用 extract_document_text" in context
+    assert "不要直接使用 read_file" in context
 
 
 def test_path_only_attachment_skips_text_extraction() -> None:
