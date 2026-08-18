@@ -57,6 +57,14 @@ def test_sqlite_startup_migration_adds_display_name_login_index(
 
 def test_knowledge_base_migration_accepts_existing_noncanonical_version_id(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'knowledge-version.db'}")
+    child_tables = (
+        "knowledge_documents",
+        "knowledge_buckets",
+        "knowledge_chunks",
+        "knowledge_concepts",
+        "knowledge_discovery_suggestions",
+        "knowledge_ingest_jobs",
+    )
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -117,8 +125,31 @@ def test_knowledge_base_migration_accepts_existing_noncanonical_version_id(tmp_p
                 """
             )
         )
+        for table_name in child_tables:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE {table_name} (
+                        id VARCHAR PRIMARY KEY,
+                        tenant_id VARCHAR NOT NULL,
+                        knowledge_base_id VARCHAR,
+                        knowledge_base_version_id VARCHAR
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    f"""
+                    INSERT INTO {table_name}
+                        (id, tenant_id, knowledge_base_id, knowledge_base_version_id)
+                    VALUES (:id, 'tenant_demo', 'kb_preset_sales_001', NULL)
+                    """
+                ),
+                {"id": f"{table_name}-row"},
+            )
 
-        tables = {"knowledge_bases", "knowledge_base_versions"}
+        tables = {"knowledge_bases", "knowledge_base_versions", *child_tables}
         _migrate_knowledge_base_schema(conn, inspect(conn), tables)
         _migrate_knowledge_base_schema(conn, inspect(conn), tables)
 
@@ -129,6 +160,10 @@ def test_knowledge_base_migration_accepts_existing_noncanonical_version_id(tmp_p
             )
         ).scalars().all()
         assert versions == ["legacy-version-id"]
+        for table_name in child_tables:
+            assert conn.execute(
+                text(f"SELECT knowledge_base_version_id FROM {table_name}")
+            ).scalar_one() == "legacy-version-id"
 
 
 def test_relative_sqlite_url_resolves_under_backend_dir() -> None:
