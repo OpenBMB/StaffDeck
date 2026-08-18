@@ -38,7 +38,11 @@ _delivery_thread: threading.Thread | None = None
 _reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
 _FEISHU_DEDUP_RECOVERY_SECONDS = 55 * 60
-_NON_DELIVERY_CHANNELS = {"public_api", PILOTDECK_GROUP_CHAT_CHANNEL}
+_NON_DELIVERY_CHANNELS = {
+    "public_api",
+    PILOTDECK_GROUP_CHAT_CHANNEL,
+    "skill_test",
+}
 # handoff 问题描述里要过滤掉的内部 slot 键。
 _INTERNAL_SLOT_KEYS = frozenset(
     {"handoff_confirmed", "message_content", "_tool_results"}

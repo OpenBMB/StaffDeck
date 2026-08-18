@@ -157,15 +157,12 @@ def _expand_content(
             metadata.setdefault("source_sop_id", child_id)
             metadata.setdefault("source_node_id", source_node_id)
             metadata.setdefault("parent_sop_node_id", placeholder_id)
+            # Expanded child nodes execute inside the parent's Harness task frame.
+            # The shared scope makes this contract explicit for trace consumers;
+            # expected fields intentionally stay un-namespaced so parent and child
+            # can read and fill the same durable session slots.
+            metadata.setdefault("slot_scope", "parent_task_frame")
             next_node["metadata"] = metadata
-            if source_node_id == str(child_content.get("start_node_id") or ""):
-                parent_instruction = str(placeholder.get("instruction") or "").strip()
-                if parent_instruction:
-                    next_node["instruction"] = "\n\n".join(
-                        value
-                        for value in [parent_instruction, str(next_node.get("instruction") or "").strip()]
-                        if value
-                    )
             namespaced_nodes.append(next_node)
 
         namespaced_edges = [

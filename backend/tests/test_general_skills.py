@@ -24,11 +24,15 @@ from app.api.general_skills import (
     publish_general_skill,
     publish_general_skill_to_gallery,
     run_general_skill,
+    run_general_skill_stream,
 )
 from app.db.models import (
+    AgentEvent,
     AgentProfile,
     AgentResourceBinding,
+    ChatSession,
     GeneralSkill,
+    Message,
     ModelConfig,
     Skill,
     Tenant,
@@ -50,6 +54,7 @@ from app.general_skills.schema import (
 from app.llm import LLMClient, LLMError
 from app.security.auth import hash_password
 from app.security.encryption import encrypt_secret
+from app.session.session_schema import ChatTurnResponse
 
 WEATHER_SKILL_MD = """# 中国城市天气查询工具
 
@@ -1006,6 +1011,108 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
             assert error.status_code == 404
         else:
             raise AssertionError("deleted general skill should be gone")
+
+
+@pytest.mark.anyio
+async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypatch) -> None:
+    test_engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(test_engine)
+    captured_requests = []
+
+    def fail_legacy_runner(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("legacy GeneralSkillRunner must not handle skill tests")
+
+    def fake_handle_turn(self, request):  # noqa: ANN001
+        captured_requests.append(request)
+        self.db.add(
+            AgentEvent(
+                tenant_id=request.tenant_id,
+                session_id=request.session_id,
+                event_type="general_skill_trace",
+                payload_json={
+                    "phase": "instructions_loaded",
+                    "text": "已加载技能说明",
+                },
+            )
+        )
+        self.db.add(
+            Message(
+                tenant_id=request.tenant_id,
+                session_id=request.session_id,
+                role="assistant",
+                content="北京天气晴朗",
+                metadata_json={"harness_artifacts": [{"path": "weather.txt"}]},
+            )
+        )
+        self.db.commit()
+        return ChatTurnResponse(
+            reply="北京天气晴朗",
+            session_id=request.session_id,
+            session_state={
+                "session_id": request.session_id,
+                "tenant_id": request.tenant_id,
+                "status": "active",
+            },
+        )
+
+    general_skills_module = sys.modules[run_general_skill.__module__]
+    monkeypatch.setattr(general_skills_module, "engine", test_engine)
+    monkeypatch.setattr(general_skills_module.AgentLoop, "handle_turn", fake_handle_turn)
+    monkeypatch.setattr(GeneralSkillRunner, "run", fail_legacy_runner)
+
+    with Session(test_engine) as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall",
+                tenant_id="tenant_demo",
+                name="开放广场",
+                is_overall=True,
+            )
+        )
+        db.commit()
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="天气",
+                slug="weather-harness",
+                markdown=WEATHER_SKILL_MD,
+                status="published",
+            ),
+            db,
+            _admin_user(),
+        )
+        response = run_general_skill_stream(
+            imported.slug,
+            GeneralSkillRunRequest(
+                tenant_id="tenant_demo",
+                agent_id="agent_overall",
+                user_id="user_demo",
+                query="北京天气",
+            ),
+            db,
+            _admin_user(),
+        )
+        chunks = [chunk async for chunk in response.body_iterator]
+        body = "".join(
+            chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk for chunk in chunks
+        )
+        debug_session = db.exec(
+            select(ChatSession).where(ChatSession.channel == "skill_test")
+        ).one()
+
+    assert captured_requests
+    assert captured_requests[0].message == "/skill weather-harness 北京天气"
+    assert captured_requests[0].message_visibility == "internal"
+    assert debug_session.id == captured_requests[0].session_id
+    assert '"execution_engine": "harness_v2"' in body
+    assert "已加载技能说明" in body
+    assert "北京天气晴朗" in body
+    assert '"path": "weather.txt"' in body
 
 
 def test_non_overall_agent_delete_hides_general_skill_only_in_branch() -> None:

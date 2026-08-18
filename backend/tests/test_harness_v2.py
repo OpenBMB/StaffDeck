@@ -36,6 +36,7 @@ from app.core.harness_v2_engine import (
     HarnessV2Engine,
     _globalize_citations,
     _prior_result,
+    _turn_skill_projection,
     _with_recoverable_first_session,
 )
 from app.core.task_frame_store import (
@@ -106,6 +107,47 @@ def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
     assert first.session_id != other_user.session_id
     assert "client-turn-1" not in first.session_id
     assert request.session_id is None
+
+
+def test_team_tl_turn_keeps_leader_sops_routable() -> None:
+    purchase = Skill(
+        id="skill-purchase-row",
+        tenant_id="tenant-demo",
+        skill_id="purchase",
+        version="1.0.0",
+        name="购买商品流程",
+        content_json={
+            "skill_id": "purchase",
+            "version": "1.0.0",
+            "name": "购买商品流程",
+            "description": "完成商品购买",
+            "business_domain": "commerce",
+            "triggers": ["购买商品"],
+            "slots": [],
+            "nodes": [
+                {
+                    "node_id": "collect_product",
+                    "name": "收集商品",
+                    "description": "确认需要购买的商品",
+                    "node_type": "collect_info",
+                    "expected_user_info": [],
+                    "allowed_actions": ["ask_user"],
+                    "entry_rules": [],
+                    "exit_rules": [],
+                    "transitions": [],
+                }
+            ],
+        },
+        status="published",
+    )
+
+    executable, routable = _turn_skill_projection(
+        [purchase],
+        interaction_mode="team_tl",
+    )
+
+    assert [skill.skill_id for skill in executable] == ["purchase"]
+    assert [skill.skill_id for skill in routable] == ["purchase"]
 
 
 def test_agent_loop_has_no_legacy_runtime_switch(monkeypatch) -> None:

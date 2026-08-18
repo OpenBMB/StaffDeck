@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
-from app.api.chat import message_read, session_read
+from app.api.chat import session_read
+from app.session.message_read import message_read
 from app.db import get_session
 from app.db.models import APIJob, AgentProfile, ChatSession, Message, MessageFeedback, User, utc_now
 from app.feedback import FEEDBACK_BUCKET_LABELS, enqueue_feedback_analysis, feedback_analysis_read, feedback_summary

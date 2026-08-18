@@ -1038,6 +1038,8 @@ export type TeamConversationMessageRead = {
   id: string;
   role: string;
   content: string;
+  metadata?: ChatMessage['metadata'];
+  turn_id?: string | null;
   created_at: string;
 };
 
@@ -1082,6 +1084,7 @@ export type TeamTaskRead = {
   priority: string;
   status:
     | 'bidding'
+    | 'blocked'
     | 'pending'
     | 'in_progress'
     | 'review'
@@ -1093,6 +1096,8 @@ export type TeamTaskRead = {
   created_by_tl: boolean;
   assignee_agent_id?: string | null;
   session_id?: string | null;
+  depends_on_task_ids?: string[];
+  activation_condition?: Record<string, unknown>;
   report: Record<string, unknown>;
   review: Record<string, unknown>;
   version?: number;

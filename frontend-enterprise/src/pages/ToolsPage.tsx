@@ -8,6 +8,7 @@ import { pinyin } from 'pinyin-pro';
 import { api, TENANT_ID } from '../api/client';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
+import CapabilityScopeLoading from '@/components/CapabilityScopeLoading';
 import {
   CapabilityScopeBadge,
   CapabilityScopeControl,
@@ -673,6 +674,8 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
   const listEmptyText = isOverallAgent
     ? canManageCurrentScope ? '暂无工具，点击「新增」创建一个吧' : '暂无工具'
     : '当前员工暂无工具';
+
+  if (!agentScopeLoaded) return <CapabilityScopeLoading />;
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">

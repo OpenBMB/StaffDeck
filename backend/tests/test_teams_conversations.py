@@ -65,6 +65,7 @@ def _make_message(
     role: str,
     content: str,
     created_at: datetime,
+    metadata: dict | None = None,
 ) -> Message:
     row = Message(
         id=message_id,
@@ -72,6 +73,7 @@ def _make_message(
         session_id=session_id,
         role=role,
         content=content,
+        metadata_json=dict(metadata or {}),
         created_at=created_at,
     )
     db.add(row)
@@ -465,6 +467,55 @@ def test_conversation_messages_endpoint_order_and_isolation() -> None:
             )
         assert exc_info.value.status_code == 404
 
+
+def test_conversation_messages_reuse_chat_metadata_and_hide_only_team_control_json() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        session = _make_session(
+            db,
+            session_id="sess_structured_reply",
+            team_id=team.id,
+            agent_id="agent_worker",
+            title="团队任务:整理制度",
+            created_at=base,
+        )
+        _make_message(
+            db,
+            session_id=session.id,
+            message_id="msg_structured_reply",
+            role="assistant",
+            content=(
+                "## 制度结论\n\n依据资料 [1]。\n"
+                '```json\n{"example": true}\n```\n'
+                '```json\n{"team_tasks": [{"title": "内部控制块"}]}\n```'
+            ),
+            metadata={
+                "turn_id": "turn_structured_reply",
+                "knowledge_citations": [
+                    {"id": "1", "label": "1", "title": "报销制度", "excerpt": "制度正文"}
+                ],
+                "harness_artifacts": [
+                    {
+                        "type": "workspace_file",
+                        "task_frame_id": "frame_1",
+                        "path": "results/policy.md",
+                    }
+                ],
+            },
+            created_at=base + timedelta(seconds=1),
+        )
+        db.commit()
+
+        [row] = teams_api.list_team_conversation_messages(
+            team.id, session.id, "tenant_demo", db, _member_user()
+        )
+
+        assert row.turn_id == "turn_structured_reply"
+        assert row.metadata["knowledge_citations"][0]["title"] == "报销制度"
+        assert row.metadata["harness_artifacts"][0]["path"] == "results/policy.md"
+        assert '"example": true' in row.content
+        assert "team_tasks" not in row.content
 
 # ---------- 发送复用:团队会话对本租户成员放行 ----------
 

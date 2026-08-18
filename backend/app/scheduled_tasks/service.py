@@ -448,6 +448,7 @@ def _execute_prepared_scheduled_task(
             message=automatic_task_message(task),
             channel="scheduled_task",
             interaction_mode="scheduled_task",
+            forced_sop_id=_scheduled_task_sop_id(task),
             client_timezone=task.timezone,
         )
         result: ChatTurnResponse | None = None
@@ -728,6 +729,12 @@ def _record_scheduled_task_stream_event(
 
 def automatic_task_message(task: ScheduledTask) -> str:
     return task.prompt.strip() or task.title
+
+
+def _scheduled_task_sop_id(task: ScheduledTask) -> str | None:
+    metadata = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    value = str(metadata.get("sop_id") or "").strip()
+    return value or None
 
 
 def compute_next_run_at(task: ScheduledTask, after: datetime | None = None) -> datetime | None:

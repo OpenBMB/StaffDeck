@@ -217,6 +217,10 @@ class ChatTurnRequest(BaseModel):
     # Internal retry turns remain auditable in storage while staying out of the
     # user-facing conversation and subsequent conversational context.
     message_visibility: Literal["visible", "internal"] = Field(default="visible", exclude=True)
+    # Internal callers such as scheduled tasks may pin one published SOP.  This
+    # is deliberately separate from the visible message so execution does not
+    # depend on the planner rediscovering the same SOP on every wake-up.
+    forced_sop_id: Optional[str] = Field(default=None, exclude=True)
     client_timezone: Optional[str] = None
     debug: bool = False
 

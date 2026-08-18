@@ -193,6 +193,27 @@ def test_public_api_session_returns_through_api_without_channel_delivery() -> No
         assert db.exec(select(ChannelDelivery)).all() == []
 
 
+def test_skill_test_session_returns_through_debug_stream_without_channel_delivery() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        skill_test_session = ChatSession(
+            id="session_skill_test",
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="skill_test",
+        )
+        message = _assistant_message("session_skill_test", "msg_skill_test")
+        db.add(skill_test_session)
+        db.add(message)
+        db.commit()
+
+        stage_channel_delivery(db, skill_test_session, message)
+        db.commit()
+
+        assert db.exec(select(ChannelDelivery)).all() == []
+
+
 def test_pilotdeck_legacy_session_returns_through_api_without_channel_delivery() -> None:
     engine = _test_engine()
     with Session(engine) as db:
