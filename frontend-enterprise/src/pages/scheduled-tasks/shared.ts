@@ -26,6 +26,7 @@ export type TaskFormValues = {
   day_of_month: number;
   status: 'active' | 'paused';
   max_runs?: number;
+  sop_id?: string;
 };
 
 export const INITIAL_VALUES: TaskFormValues = {
@@ -39,6 +40,7 @@ export const INITIAL_VALUES: TaskFormValues = {
   day_of_month: 1,
   status: 'active',
   max_runs: undefined,
+  sop_id: '',
 };
 
 export type TaskListFilter = 'all' | 'pending' | 'completed' | 'paused';
@@ -156,6 +158,7 @@ export function taskToFormValues(row: ScheduledTaskRead): TaskFormValues {
     day_of_month: Number(schedule.day_of_month || 1),
     status: row.status === 'active' ? 'active' : 'paused',
     max_runs: row.max_runs,
+    sop_id: typeof row.metadata?.sop_id === 'string' ? row.metadata.sop_id : '',
   };
 }
 

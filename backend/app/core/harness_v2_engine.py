@@ -86,6 +86,31 @@ def _turn_skill_projection(
     return skills, discoverable_sops(skills)
 
 
+def _turn_slash_selection(request: ChatTurnRequest) -> SlashCommandSelection | None:
+    """Resolve user slash commands and server-pinned scheduled SOPs uniformly."""
+
+    selection = parse_slash_command(request.message)
+    forced_sop_id = str(request.forced_sop_id or "").strip()
+    if forced_sop_id:
+        if selection is not None:
+            raise SlashCommandError(
+                "FORCED_SOP_COMMAND_CONFLICT",
+                "内部指定的 SOP 不能与用户斜杠指令同时使用。",
+            )
+        return SlashCommandSelection(
+            kind="sop",
+            target=forced_sop_id,
+            prompt=request.message,
+            raw=f"/sop {forced_sop_id}",
+        )
+    if selection and request.interaction_mode == "scheduled_task":
+        raise SlashCommandError(
+            "SLASH_COMMAND_MODE_CONFLICT",
+            "定时任务执行不能从任务文本解析斜杠指令，请使用结构化 SOP 选择。",
+        )
+    return selection
+
+
 class HarnessV2Engine:
     """Outer planner + durable TaskFrame scheduler + isolated Harness runs."""
 
@@ -167,12 +192,7 @@ class HarnessV2Engine:
             },
         )
 
-        self.slash_command = parse_slash_command(request.message)
-        if self.slash_command and request.interaction_mode == "scheduled_task":
-            raise SlashCommandError(
-                "SLASH_COMMAND_MODE_CONFLICT",
-                "斜杠能力指令不能与定时任务创建模式同时使用。",
-            )
+        self.slash_command = _turn_slash_selection(request)
         execution_message = (
             slash_command_message(self.slash_command)
             if self.slash_command

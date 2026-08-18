@@ -24,7 +24,7 @@ import IconArrowRight from '../../assets/icons/arrow-right.svg?react';
 import IconAlarm from '../../assets/icons/profile-alarm.svg?react';
 import type { EnterpriseAuthUser } from '../../auth';
 import { isTeamScope, readEmployeeScope } from '../../lib/agent-scope-storage';
-import type { ScheduledTaskRead } from '../../types';
+import type { ScheduledTaskRead, SkillRead } from '../../types';
 import {
   INITIAL_VALUES,
   WEEKDAY_OPTIONS,
@@ -64,6 +64,8 @@ function ScheduledTaskEditorPage({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [agentId, setAgentId] = useState(readEmployeeScope);
+  const [sops, setSops] = useState<SkillRead[]>([]);
+  const [taskMetadata, setTaskMetadata] = useState<Record<string, unknown>>({});
   const navigate = useNavigate();
   const { taskId } = useParams();
   const isEdit = mode === 'edit';
@@ -93,11 +95,39 @@ function ScheduledTaskEditorPage({
       .get<ScheduledTaskRead>(`/api/enterprise/scheduled-tasks/${taskId}?tenant_id=${TENANT_ID}`)
       .then((row) => {
         setAgentId(row.agent_id);
+        setTaskMetadata(row.metadata || {});
         setValues(taskToFormValues(row));
       })
       .catch((error) => notify.error(error instanceof Error ? error.message : '加载定时任务失败'))
       .finally(() => setLoading(false));
   }, [isEdit, taskId]);
+
+  useEffect(() => {
+    if (!agentId) {
+      setSops([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .get<SkillRead[]>(
+        `/api/enterprise/skills?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(agentId)}`,
+      )
+      .then((rows) => {
+        if (cancelled) return;
+        setSops(
+          rows.filter(
+            (row) =>
+              row.status === 'published' && row.content.capability_scope !== 'sop_specific',
+          ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setSops([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   function validate(): boolean {
     const nextErrors: FormErrors = {};
@@ -134,7 +164,12 @@ function ScheduledTaskEditorPage({
       concurrency_policy: 'forbid',
       misfire_policy: 'coalesce',
       max_runs: values.max_runs || undefined,
+      metadata: {
+        ...taskMetadata,
+        ...(values.sop_id ? { sop_id: values.sop_id } : {}),
+      },
     };
+    if (!values.sop_id) delete payload.metadata.sop_id;
     setSaving(true);
     try {
       const saved =
@@ -237,6 +272,29 @@ function ScheduledTaskEditorPage({
                   {values.prompt.length}/10000
                 </span>
               </div>
+            </div>
+
+            <div className="flex flex-col gap-[6px]">
+              <Label className={FIELD_LABEL_CLASS}>指定 SOP</Label>
+              <Select
+                value={values.sop_id || '__auto__'}
+                onValueChange={(value) => update('sop_id', value === '__auto__' ? '' : value)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="由 Harness v2 自动判断" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__auto__">由 Harness v2 自动判断</SelectItem>
+                  {sops.map((sop) => (
+                    <SelectItem key={sop.skill_id} value={sop.skill_id}>
+                      {sop.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[12px] leading-[18px] text-[#858b9c]">
+                选择后每次唤醒都会由 Harness v2 强制启动该 SOP；未选择时仍由模型按任务判断。
+              </p>
             </div>
 
             <div className="flex flex-col gap-[6px]">
