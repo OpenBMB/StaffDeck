@@ -106,12 +106,13 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'member'"))
             if "source" not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN source VARCHAR NOT NULL DEFAULT 'web'"))
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_users_tenant_id_display_name "
-                    "ON users(tenant_id, display_name)"
+            if "display_name" in user_columns:
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_users_tenant_id_display_name "
+                        "ON users(tenant_id, display_name)"
+                    )
                 )
-            )
             _migrate_user_source_backfill(conn)
 
         if "sessions" in tables:
@@ -1962,8 +1963,22 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
         for row in knowledge_bases:
             version_id = _knowledge_base_version_id(str(row["id"]), "1.0.0")
             existing = conn.execute(
-                text("SELECT id FROM knowledge_base_versions WHERE id = :id"),
-                {"id": version_id},
+                text(
+                    """
+                    SELECT id FROM knowledge_base_versions
+                    WHERE id = :id
+                       OR (
+                            tenant_id = :tenant_id
+                            AND knowledge_base_id = :knowledge_base_id
+                            AND version = '1.0.0'
+                       )
+                    """
+                ),
+                {
+                    "id": version_id,
+                    "tenant_id": row["tenant_id"],
+                    "knowledge_base_id": row["id"],
+                },
             ).first()
             if not existing:
                 conn.execute(
