@@ -228,3 +228,35 @@ def _read_row(row: ExternalGateEvent) -> dict[str, Any]:
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
     }
+
+
+def lookup_last_problem_for_trigger(trigger_id: str, host: str) -> dict[str, Any] | None:
+    """查找同一 trigger+host 最近一条 problem 事件的分析结果。
+
+    用于恢复事件对称过滤：如果问题事件被 Agent 判断为不严重（urgency=low/unknown
+    且 needs_human=False），恢复事件也跳过通知。
+    """
+    with Session(engine) as db:
+        rows = db.exec(
+            select(ExternalGateEvent)
+            .where(
+                ExternalGateEvent.gate_task_id == GATE_TASK_ID,
+                ExternalGateEvent.status == "analyzed",
+            )
+            .order_by(ExternalGateEvent.created_at.desc())
+            .limit(100)
+        ).all()
+        for row in rows:
+            snapshot = row.snapshot_json or {}
+            if (
+                snapshot.get("trigger_id") == trigger_id
+                and snapshot.get("host") == host
+                and not snapshot.get("is_recovery", False)
+            ):
+                return {
+                    "event_id": row.id,
+                    "urgency": (row.analysis_json or {}).get("urgency", "unknown"),
+                    "needs_human": bool((row.analysis_json or {}).get("needs_human")),
+                    "created_at": row.created_at.isoformat(),
+                }
+    return None
