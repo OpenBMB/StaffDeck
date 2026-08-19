@@ -100,6 +100,35 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_capability_scope_schema(conn, inspector, tables)
         _migrate_harness_v2_schema(conn, inspector, tables)
 
+        if "api_jobs" in tables:
+            job_columns = {column["name"] for column in inspector.get_columns("api_jobs")}
+            api_job_columns = {
+                "execution_owner": "ALTER TABLE api_jobs ADD COLUMN execution_owner VARCHAR",
+                "execution_generation": (
+                    "ALTER TABLE api_jobs ADD COLUMN execution_generation INTEGER NOT NULL DEFAULT 0"
+                ),
+                "lease_expires_at": "ALTER TABLE api_jobs ADD COLUMN lease_expires_at DATETIME",
+            }
+            for column_name, ddl in api_job_columns.items():
+                if column_name not in job_columns:
+                    conn.execute(text(ddl))
+
+        if "webhook_deliveries" in tables:
+            webhook_columns = {
+                column["name"] for column in inspector.get_columns("webhook_deliveries")
+            }
+            webhook_delivery_columns = {
+                "delivery_owner": (
+                    "ALTER TABLE webhook_deliveries ADD COLUMN delivery_owner VARCHAR"
+                ),
+                "lease_expires_at": (
+                    "ALTER TABLE webhook_deliveries ADD COLUMN lease_expires_at DATETIME"
+                ),
+            }
+            for column_name, ddl in webhook_delivery_columns.items():
+                if column_name not in webhook_columns:
+                    conn.execute(text(ddl))
+
         if "users" in tables:
             user_columns = {column["name"] for column in inspector.get_columns("users")}
             if "role" not in user_columns:
@@ -178,6 +207,13 @@ def _migrate_sqlite_skill_schema() -> None:
             conv_columns = {column["name"] for column in inspector.get_columns("channel_conv_states")}
             if "manual_pin_until" not in conv_columns:
                 conn.execute(text("ALTER TABLE channel_conv_states ADD COLUMN manual_pin_until DATETIME"))
+            if "routing_revision" not in conv_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE channel_conv_states ADD COLUMN routing_revision "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+                )
 
         if "channel_bindings" in tables:
             binding_columns = {column["name"] for column in inspector.get_columns("channel_bindings")}
@@ -190,6 +226,27 @@ def _migrate_sqlite_skill_schema() -> None:
             delivery_columns = {column["name"] for column in inspector.get_columns("channel_deliveries")}
             if "sending_since" not in delivery_columns:
                 conn.execute(text("ALTER TABLE channel_deliveries ADD COLUMN sending_since DATETIME"))
+            if "delivery_owner" not in delivery_columns:
+                conn.execute(text("ALTER TABLE channel_deliveries ADD COLUMN delivery_owner VARCHAR"))
+            if "delivery_generation" not in delivery_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE channel_deliveries ADD COLUMN delivery_generation "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+                )
+
+        if "channel_inbound_events" in tables:
+            inbound_columns = {
+                column["name"] for column in inspector.get_columns("channel_inbound_events")
+            }
+            if "processor_lease_expires_at" not in inbound_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE channel_inbound_events ADD COLUMN "
+                        "processor_lease_expires_at DATETIME"
+                    )
+                )
 
         if "messages" in tables:
             message_columns = {column["name"] for column in inspector.get_columns("messages")}

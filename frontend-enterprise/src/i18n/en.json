@@ -813,6 +813,7 @@
   "流程靠人盯": "Flow Requires Manual Supervision",
   "流程能跳过已满足信息，并在关键动作前确认。": "The flow skips information already provided and asks for confirmation before critical actions.",
   "流程图": "Flowchart",
+  "流程连线": "Flow Connections",
   "流程图缩放": "Flowchart Zoom",
   "流程推进": "Workflow Progress",
   "流程约束": "Flow Constraints",

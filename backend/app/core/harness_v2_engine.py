@@ -560,19 +560,21 @@ class HarnessV2Engine:
             request.tenant_id, session.active_skill_id, session.agent_id
         )
         self._renew_session_lease()
-        reply = self.owner.response_generator.generate(
-            execution_request.message,
-            session,
-            response_skill,
-            router_decision,
-            last_step_result,
-            None,
-            model_config,
-            self.owner._get_persona_prompt(request.tenant_id, session.agent_id),
-            memory_context,
-            conversation_context,
-            execution_payloads,
-        )
+        reply = _single_task_reply(execution_results)
+        if reply is None:
+            reply = self.owner.response_generator.generate(
+                execution_request.message,
+                session,
+                response_skill,
+                router_decision,
+                last_step_result,
+                None,
+                model_config,
+                self.owner._get_persona_prompt(request.tenant_id, session.agent_id),
+                memory_context,
+                conversation_context,
+                execution_payloads,
+            )
         self._renew_session_lease()
         reply, citations = compact_knowledge_citation_labels(reply, citations)
         artifacts = _aggregate_artifacts(execution_results)
@@ -592,6 +594,10 @@ class HarnessV2Engine:
             assistant_metadata["slash_command"] = self.slash_command.model_dump(
                 mode="json"
             )
+        # Cancellation and normal projection compete for this durable receipt.
+        # Only the winner may append a terminal assistant message.
+        self._raise_if_cancelled(request, session)
+        self.turn_store.begin_completion(self.turn_record)
         reply = self.owner._finalize_turn(
             session,
             request.tenant_id,
@@ -1371,6 +1377,21 @@ def _combine_results(
         action_count=sum(item.action_count for item in results),
         error=last.error,
     )
+
+
+def _single_task_reply(results: list[TaskExecutionResult]) -> str | None:
+    """Use a lone TaskFrame's terminal reply without another model pass.
+
+    ``finish`` already asks the Harness model for the user-facing reply.  A
+    response synthesis pass is only useful when several TaskFrames must be
+    reconciled.  Empty replies still fall back to ``ResponseGenerator`` so
+    malformed or legacy execution results keep the existing recovery path.
+    """
+
+    if len(results) != 1:
+        return None
+    reply = str(results[0].reply_fragment or "").strip()
+    return reply or None
 
 
 def _response_task_payload(

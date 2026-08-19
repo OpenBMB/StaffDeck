@@ -76,6 +76,7 @@ class HarnessTaskAgent:
         successful_knowledge_searches = 0
         artifacts: list[dict[str, Any]] = []
         loaded_general_skill_names: list[str] = []
+        non_retryable_action_signatures: set[str] = set()
         allowed_names = requirement.capability_manifest.allowed_names()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
 
@@ -116,7 +117,14 @@ class HarnessTaskAgent:
             if attachment_context is not None:
                 payload["conversation_context"] = attachment_context
             try:
-                with llm_operation("harness.task_action"):
+                # Persist a stable link between this LLM span and the Harness
+                # iteration that consumes it.  Timing projections must not
+                # infer this relationship from overlapping wall-clock windows.
+                with llm_operation(
+                    "harness.task_action",
+                    task_frame_id=requirement.task_frame_id,
+                    iteration=iteration,
+                ):
                     raw = _deadline_llm_client(
                         model_config,
                         step_deadline_monotonic,
@@ -276,6 +284,41 @@ class HarnessTaskAgent:
                     },
                 }
             else:
+                action_signature = _action_signature(
+                    tool_name,
+                    dict(action.arguments or {}),
+                )
+                if action_signature in non_retryable_action_signatures:
+                    if trace_sink:
+                        trace_sink(
+                            "harness_action_failed",
+                            {
+                                "iteration": iteration,
+                                "tool_name": tool_name,
+                                "error": {
+                                    "code": "NON_RETRYABLE_ACTION_REPEATED",
+                                    "message": (
+                                        "模型重复提交了已标记为不可重试的相同工具调用。"
+                                    ),
+                                    "retryable": False,
+                                },
+                            },
+                        )
+                    return TaskExecutionResult(
+                        task_frame_id=requirement.task_frame_id,
+                        status="failed",
+                        reply_fragment="相同的不可重试工具调用被阻止。",
+                        task_summary="Harness 阻止重复的不可重试动作。",
+                        capability_results=capability_results,
+                        citations=citations,
+                        evidence_results=evidence_results,
+                        artifacts=artifacts,
+                        action_count=iteration,
+                        error={
+                            "code": "NON_RETRYABLE_ACTION_REPEATED",
+                            "message": "相同工具与参数已失败且不可重试。",
+                        },
+                    )
                 try:
                     _raise_if_cancelled(is_cancelled)
                     result = invoke_tool(tool_name, dict(action.arguments or {}))
@@ -290,6 +333,8 @@ class HarnessTaskAgent:
                             "message": str(exc),
                         },
                     }
+                if _is_non_retryable_failure(result):
+                    non_retryable_action_signatures.add(action_signature)
             bounded_result = _bounded_capability_result(tool_name, result)
             if _is_loaded_general_skill_result(tool_name, result):
                 loaded_general_skill_names.append(tool_name)
@@ -420,6 +465,23 @@ def _is_loaded_general_skill_result(
         and data.get("kind") == "general_skill"
         and data.get("operation") == "read"
     )
+
+
+def _action_signature(tool_name: str, arguments: dict[str, Any]) -> str:
+    return json.dumps(
+        {"tool_name": tool_name, "arguments": arguments},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _is_non_retryable_failure(result: object) -> bool:
+    if not isinstance(result, dict) or result.get("success") is not False:
+        return False
+    error = result.get("error")
+    return isinstance(error, dict) and error.get("retryable") is False
 
 
 def _adapt_general_skill_structured_result(

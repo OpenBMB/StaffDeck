@@ -514,6 +514,7 @@ def test_wecom_stale_processing_event_is_recovered() -> None:
     with Session(engine) as db:
         event = db.get(ChannelInboundEvent, staged.event_pk)
         event.processor_run_id = "dead-process"
+        event.processor_lease_expires_at = utc_now() - timedelta(seconds=1)
         db.add(event)
         db.commit()
 
@@ -542,6 +543,7 @@ def test_wecom_stale_processing_event_recovers_after_binding_disabled() -> None:
     with Session(engine) as db:
         event = db.get(ChannelInboundEvent, staged.event_pk)
         event.processor_run_id = "dead-process"
+        event.processor_lease_expires_at = utc_now() - timedelta(seconds=1)
         binding = db.get(ChannelBinding, binding_id)
         binding.status = "disabled"
         db.add(event)

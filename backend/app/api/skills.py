@@ -68,7 +68,12 @@ from app.skills.skill_schema import (
 )
 from app.skills.stream_jobs import SkillStreamEvent, SkillStreamJob, stream_jobs
 from app.skills.step_ids import skill_card_with_unique_step_ids
-from app.skills.nesting import SopNestingError, validate_sop_nesting
+from app.skills.nesting import (
+    SopNestingError,
+    nested_sop_ids,
+    sop_capability_scope,
+    validate_sop_nesting,
+)
 
 router = APIRouter(
     prefix="/api/enterprise/skills",
@@ -709,6 +714,7 @@ def distill_skill_stream(
 def rewrite_skill_stream(
     skill_id: str,
     request: SkillRewriteRequest,
+    db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
     if request.current_skill.skill_id != skill_id:
@@ -716,6 +722,9 @@ def rewrite_skill_stream(
             status_code=400, detail="Path skill_id must match current_skill.skill_id"
         )
     ensure_current_user_tenant(request.tenant_id, current_user)
+    ensure_tenant(db, request.tenant_id)
+    _ensure_rewrite_agent_scope(db, request, current_user)
+    request = _with_available_context_for_rewrite(db, request)
     job_id = _start_rewrite_stream_job(skill_id, request, current_user)
     return StreamingResponse(_stream_skill_job(job_id), media_type="text/event-stream")
 
@@ -733,6 +742,7 @@ def create_distill_job(
 def create_rewrite_job(
     skill_id: str,
     request: SkillRewriteRequest,
+    db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
     if request.current_skill.skill_id != skill_id:
@@ -740,6 +750,9 @@ def create_rewrite_job(
             status_code=400, detail="Path skill_id must match current_skill.skill_id"
         )
     ensure_current_user_tenant(request.tenant_id, current_user)
+    ensure_tenant(db, request.tenant_id)
+    _ensure_rewrite_agent_scope(db, request, current_user)
+    request = _with_available_context_for_rewrite(db, request)
     return {"job_id": _start_rewrite_stream_job(skill_id, request, current_user)}
 
 
@@ -794,11 +807,12 @@ def rewrite_skill(
         )
     ensure_current_user_tenant(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
+    _ensure_rewrite_agent_scope(db, request, current_user)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-    request = _with_available_tools_for_rewrite(db, request)
+    request = _with_available_context_for_rewrite(db, request)
     try:
         return SkillEditor().rewrite(request, model_config)
-    except LLMError as exc:
+    except (LLMError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -869,9 +883,8 @@ def _run_rewrite_stream_job(job_id: str, skill_id: str, request_data: dict[str, 
         with Session(get_session_engine()) as db:
             ensure_tenant(db, request.tenant_id)
             model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-            enriched_request = _with_available_tools_for_rewrite(db, request)
             stream_jobs.append(job_id, "status", {"text": "正在调用模型分析改写要求"})
-            for item in SkillEditor().stream_text(enriched_request, model_config):
+            for item in SkillEditor().stream_text(request, model_config):
                 if stream_jobs.is_cancelled(job_id):
                     stream_jobs.append(job_id, "status", {"text": "已停止改写"})
                     stream_jobs.complete(job_id)
@@ -1008,30 +1021,102 @@ def _with_available_tools(db: Session, request: SkillDistillRequest) -> SkillDis
     return request.model_copy(update={"available_tools": available_tools})
 
 
-def _with_available_tools_for_rewrite(
+def _with_available_context_for_rewrite(
     db: Session, request: SkillRewriteRequest
 ) -> SkillRewriteRequest:
     tools = db.exec(
         select(Tool).where(Tool.tenant_id == request.tenant_id, Tool.enabled == True)  # noqa: E712
     ).all()
-    available_tools = [
-        *request.available_tools,
-        *[
-            {
-                "id": tool.id,
-                "name": tool.name,
-                "display_name": tool.display_name,
-                "description": tool.description,
-                "bucket": tool.bucket or "未分桶",
-                "method": tool.method,
-                "url": tool.url,
-                "input_schema": tool.input_schema,
-                "output_schema": tool.output_schema,
-            }
-            for tool in tools
+    available_tools = _dedupe_capability_catalog(
+        [
+            *request.available_tools,
+            *[
+                {
+                    "id": tool.id,
+                    "name": tool.name,
+                    "display_name": tool.display_name,
+                    "description": tool.description,
+                    "bucket": tool.bucket or "未分桶",
+                    "method": tool.method,
+                    "url": tool.url,
+                    "input_schema": tool.input_schema,
+                    "output_schema": tool.output_schema,
+                }
+                for tool in tools
+            ],
         ],
+        ("id", "name"),
+    )
+    rows = visible_skill_rows(
+        db,
+        request.tenant_id,
+        request.agent_id,
+        include_inactive=True,
+    )
+    available_sops = [
+        {
+            "skill_id": row.skill_id,
+            "name": row.name,
+            "description": row.description or "",
+            "capability_scope": sop_capability_scope(row),
+            "status": row.status,
+            "nested_sop_ids": nested_sop_ids(row.content_json or {}),
+            "selectable": row.skill_id != request.current_skill.skill_id
+            and row.status in {"published", "active"},
+            "unavailable_reason": (
+                "不能调用当前 SOP 自身"
+                if row.skill_id == request.current_skill.skill_id
+                else "SOP 尚未发布"
+                if row.status not in {"published", "active"}
+                else None
+            ),
+            "content": {
+                "capability_scope": sop_capability_scope(row),
+                "nodes": [
+                    {
+                        "type": "subflow",
+                        "sub_sop_id": node.get("sub_sop_id"),
+                    }
+                    for node in (row.content_json or {}).get("nodes", [])
+                    if isinstance(node, dict) and str(node.get("type") or "") == "subflow"
+                ],
+            },
+        }
+        for row in rows
     ]
-    return request.model_copy(update={"available_tools": available_tools})
+    return request.model_copy(
+        update={
+            "available_tools": available_tools,
+            "available_sops": available_sops,
+        }
+    )
+
+
+def _ensure_rewrite_agent_scope(
+    db: Session,
+    request: SkillRewriteRequest,
+    current_user: User,
+) -> None:
+    if request.agent_id:
+        ensure_agent_scope_manager(db, request.tenant_id, request.agent_id, current_user)
+
+
+def _dedupe_capability_catalog(
+    values: list[dict[str, object]],
+    keys: tuple[str, ...],
+) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        identity = next((str(item.get(key) or "").strip() for key in keys if item.get(key)), "")
+        if identity and identity in seen:
+            continue
+        if identity:
+            seen.add(identity)
+        result.append(item)
+    return result
 
 
 def _sse(event: object, data: object) -> str:

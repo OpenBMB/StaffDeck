@@ -4,7 +4,6 @@ import base64
 import json
 import os
 import re
-import uuid
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -16,6 +15,7 @@ from app.agents.branching import visible_tool_rows
 from app.config import get_settings
 from app.db.models import MCPServer, Tool
 from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
+from app.tools.a2a_client import A2AClient, A2AClientError
 from app.tools.http_request import prepare_get_request
 from app.tools.mcp_client import MCPClientError, execute_mcp_tool, execute_mcp_tool_result
 from app.tools.tool_schema import MCPAppDescriptor, ToolCall, ToolError, ToolResult
@@ -41,6 +41,7 @@ class ToolExecutor:
         active_skill_id: str | None = None,
         agent_id: str | None = None,
         session_id: str | None = None,
+        invocation_id: str | None = None,
         timeout_seconds_override: float | None = None,
     ) -> ToolResult:
         with self.db.no_autoflush:
@@ -76,6 +77,9 @@ class ToolExecutor:
             return self._execute_a2a_tool(
                 tool,
                 tool_call.arguments,
+                agent_id=agent_id,
+                session_id=session_id,
+                invocation_id=invocation_id,
                 timeout_seconds_override=timeout_seconds_override,
             )
         if (tool.tool_type or "http") != "http":
@@ -129,71 +133,35 @@ class ToolExecutor:
         tool: Tool,
         arguments: dict[str, Any],
         *,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        invocation_id: str | None = None,
         timeout_seconds_override: float | None = None,
     ) -> ToolResult:
-        """Invoke an A2A agent through the JSON-RPC 2.0 SendMessage method."""
+        """Invoke an A2A agent and wait for its durable Task lifecycle."""
 
-        policy = self._execution_policy(tool, timeout_seconds_override=timeout_seconds_override)
-        config = tool.config_json if isinstance(tool.config_json, dict) else {}
         headers = self._request_headers(
             tool.url,
             self._resolve_headers(tool.headers_json or {}, tool.auth_json or {}),
         )
         headers.setdefault("Content-Type", "application/json")
+        config = tool.config_json if isinstance(tool.config_json, dict) else {}
         a2a_version = str(config.get("a2a_version") or "1.0").strip()
         if a2a_version:
             headers.setdefault("A2A-Version", a2a_version)
-        message = arguments.get("message")
-        if not isinstance(message, dict):
-            text_value = arguments.get("text") or arguments.get("query")
-            part = (
-                {"text": str(text_value)}
-                if text_value is not None
-                else {"text": self._json_text(arguments)}
-            )
-            message = {
-                "messageId": uuid.uuid4().hex,
-                "role": "ROLE_USER",
-                "parts": [part],
-            }
-        else:
-            message = dict(message)
-            message.setdefault("messageId", uuid.uuid4().hex)
-            message.setdefault("role", "ROLE_USER")
-        output_modes = config.get("accepted_output_modes")
-        if not isinstance(output_modes, list) or not output_modes:
-            output_modes = ["text/plain", "application/json"]
-        payload = {
-            "jsonrpc": "2.0",
-            "id": uuid.uuid4().hex,
-            "method": "SendMessage",
-            "params": {
-                "message": message,
-                "configuration": {
-                    "acceptedOutputModes": [str(item) for item in output_modes],
-                },
-            },
-        }
         try:
-            with httpx.Client(timeout=policy.timeout_seconds) as client:
-                response = client.post(tool.url, headers=headers, json=payload)
-                response.raise_for_status()
-            data = self._response_data(response)
-            if isinstance(data, dict) and isinstance(data.get("error"), dict):
-                error = data["error"]
-                return self._error(
-                    tool.name,
-                    "A2A_ERROR",
-                    str(error.get("message") or "A2A Agent 返回错误。"),
-                )
-            result = data.get("result") if isinstance(data, dict) and "result" in data else data
-            return ToolResult(tool_name=tool.name, success=True, data=result, error=None)
-        except httpx.TimeoutException:
-            return self._error(
-                tool.name,
-                "TIMEOUT",
-                f"A2A 调用超过 {policy.timeout_seconds:g} 秒未返回。",
-            )
+            data = A2AClient(
+                self.db,
+                tool,
+                headers=headers,
+                timeout_seconds=timeout_seconds_override,
+                agent_id=agent_id,
+                session_id=session_id,
+                invocation_id=invocation_id,
+            ).execute(arguments)
+            return ToolResult(tool_name=tool.name, success=True, data=data, error=None)
+        except A2AClientError as exc:
+            return self._error(tool.name, exc.code, str(exc))
         except httpx.HTTPStatusError as exc:
             return self._error(
                 tool.name,
@@ -202,12 +170,6 @@ class ToolExecutor:
             )
         except Exception as exc:
             return self._error(tool.name, "A2A_EXECUTION_ERROR", str(exc))
-
-    @staticmethod
-    def _json_text(value: dict[str, Any]) -> str:
-        import json
-
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
     def _execute_mcp_tool(
         self,
@@ -293,7 +255,7 @@ class ToolExecutor:
             timeout_seconds = float(raw_timeout)
         except (TypeError, ValueError):
             timeout_seconds = self.settings.tool_timeout_seconds
-        if not 1 <= timeout_seconds <= 300:
+        if not 1 <= timeout_seconds <= 3600:
             timeout_seconds = self.settings.tool_timeout_seconds
         if timeout_seconds_override is not None:
             timeout_seconds = min(timeout_seconds, max(float(timeout_seconds_override), 0.1))

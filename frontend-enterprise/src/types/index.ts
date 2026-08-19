@@ -761,7 +761,9 @@ export type TraceLineRead = {
   collapsible?: boolean | null;
   duration_ms?: number | null;
   model_duration_ms?: number | null;
+  model_call_count?: number | null;
   model_names?: string[] | null;
+  depth?: number | null;
 };
 
 export type TurnTraceRead = {

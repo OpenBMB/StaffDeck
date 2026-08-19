@@ -622,6 +622,8 @@ def delete_channel_binding(
                 .values(
                     status="failed",
                     next_attempt_at=None,
+                    delivery_owner=None,
+                    delivery_generation=ChannelDelivery.delivery_generation + 1,
                     last_error=case(
                         (ChannelDelivery.status == "sending", "binding_deleted_remote_unknown"),
                         else_="binding_deleted",
@@ -666,6 +668,8 @@ def delete_channel_binding(
             _resume_binding(channel, binding_id, start=should_run)
             raise
         _resume_binding(channel, binding_id, start=False)
+        # 删除完成后也释放进程内 fence，避免已删除 binding 永久滞留在暂停注册表。
+        resume_binding_intake(binding_id)
     return Response(status_code=204)
 
 

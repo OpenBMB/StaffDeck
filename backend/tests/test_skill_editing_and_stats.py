@@ -26,6 +26,7 @@ from app.db.models import AgentEvent, AgentProfile, Message, Skill, SkillFeedbac
 from app.db.models import ModelConfig
 from app.skills.skill_distiller import SkillDistiller
 from app.skills.skill_editor import SkillEditor
+from app.skills.nesting import SopNestingError
 from app.skills.skill_reflection import PROMPT_PATH as SKILL_REFLECTION_PROMPT_PATH
 from app.skills.skill_reflection import RUBRIC_LABELS
 from app.skills.skill_schema import SkillCard, SkillCreateRequest, SkillDistillRequest, SkillDistillResponse, SkillRewriteRequest, SkillUpdateRequest
@@ -265,6 +266,152 @@ def test_skill_editor_applies_patch_response_without_full_draft() -> None:
 
     assert response.draft_skill.response_rules == ["信息不足时追问；工具成功后给出明确结果，不编造事实。"]
     assert response.draft_skill.nodes[0].instruction == current.nodes[0].instruction
+
+
+def test_skill_editor_patches_graph_topology_and_capability_refs() -> None:
+    current = _skill_card()
+    response = SkillEditor()._normalize_response(  # noqa: SLF001
+        {
+            "patches": [
+                {
+                    "path": "edges",
+                    "value": [
+                        {
+                            "source_node_id": "collect_info",
+                            "next_node_id": "reply_result",
+                            "condition": "product_id 已填写",
+                            "priority": 1,
+                            "label": "信息完整",
+                        }
+                    ],
+                },
+                {
+                    "path": "nodes[0].capability_refs",
+                    "value": {
+                        "tool_ids": ["product.price_query"],
+                        "required_tool_ids": ["product.price_query"],
+                    },
+                },
+            ]
+        },
+        SkillRewriteRequest(
+            tenant_id="tenant_demo",
+            current_skill=current,
+            instruction="商品信息完整后强制查询价格再继续",
+            target_paths=["nodes[0]"],
+        ),
+    )
+
+    assert response.draft_skill.edges[0].condition == "product_id 已填写"
+    assert response.draft_skill.nodes[0].capability_refs.required_tool_ids == [
+        "product.price_query"
+    ]
+    assert "graph" in response.changed_paths
+
+
+def test_skill_editor_does_not_apply_unreported_graph_changes() -> None:
+    current = _skill_card()
+    candidate = current.model_copy(deep=True)
+    candidate.nodes[0].instruction = "只修改节点说明"
+    candidate.edges[0].label = "模型顺手改了连线"
+
+    response = SkillEditor()._normalize_response(  # noqa: SLF001
+        {
+            "draft_skill": candidate.model_dump(mode="json"),
+            "changed_paths": ["nodes[0]"],
+        },
+        SkillRewriteRequest(
+            tenant_id="tenant_demo",
+            current_skill=current,
+            instruction="只修改节点说明",
+            target_paths=["nodes[0]"],
+        ),
+    )
+
+    assert response.draft_skill.nodes[0].instruction == "只修改节点说明"
+    assert response.draft_skill.edges[0].label == "默认推进"
+    assert "graph" not in response.changed_paths
+
+
+def test_skill_editor_validates_and_normalizes_nested_sop() -> None:
+    current = _skill_card()
+    candidate = current.model_dump(mode="json")
+    candidate["nodes"][0].update(
+        {
+            "type": "subflow",
+            "sub_sop_id": "child_purchase",
+            "instruction": "不应在父节点继续执行",
+            "allowed_actions": ["ask_user"],
+        }
+    )
+    response = SkillEditor()._normalize_response(  # noqa: SLF001
+        {"draft_skill": candidate},
+        SkillRewriteRequest(
+            tenant_id="tenant_demo",
+            current_skill=current,
+            instruction="第一步改为调用子 SOP",
+            target_paths=["nodes[0]"],
+            available_sops=[_available_sop("child_purchase")],
+        ),
+    )
+
+    node = response.draft_skill.nodes[0]
+    assert node.type == "subflow"
+    assert node.sub_sop_id == "child_purchase"
+    assert node.instruction == ""
+    assert node.allowed_actions == []
+    assert node.capability_refs.tool_ids == []
+
+
+def test_skill_editor_rejects_unknown_or_cyclic_nested_sop() -> None:
+    current = _skill_card()
+    candidate = current.model_dump(mode="json")
+    candidate["nodes"][0].update(
+        {
+            "type": "subflow",
+            "sub_sop_id": "child_purchase",
+        }
+    )
+    request = SkillRewriteRequest(
+        tenant_id="tenant_demo",
+        current_skill=current,
+        instruction="第一步改为调用子 SOP",
+        target_paths=["nodes[0]"],
+    )
+
+    with pytest.raises(SopNestingError, match="missing or unpublished"):
+        SkillEditor()._normalize_response({"draft_skill": candidate}, request)  # noqa: SLF001
+
+    cyclic_child = _available_sop("child_purchase", nested_sop_ids=[current.skill_id])
+    with pytest.raises(SopNestingError, match="cycle"):
+        SkillEditor()._normalize_response(  # noqa: SLF001
+            {"draft_skill": candidate},
+            request.model_copy(update={"available_sops": [cyclic_child]}),
+        )
+
+
+def test_skill_editor_payload_exposes_compact_sop_catalog() -> None:
+    child = _available_sop("child_purchase")
+    request = SkillRewriteRequest(
+        tenant_id="tenant_demo",
+        current_skill=_skill_card(),
+        instruction="调用子 SOP",
+        available_sops=[child],
+    )
+
+    payload = SkillEditor()._payload(request)  # noqa: SLF001
+
+    assert payload["available_sops"] == [
+        {
+            "skill_id": "child_purchase",
+            "name": "child_purchase",
+            "capability_scope": "sop_specific",
+            "status": "published",
+            "nested_sop_ids": [],
+            "selectable": True,
+        }
+    ]
+    assert "content" not in payload["available_sops"][0]
 
 
 def test_skill_editor_stream_repairs_invalid_json_once(monkeypatch) -> None:
@@ -1338,6 +1485,10 @@ def test_skill_reflection_prompt_keeps_new_candidate_tool_actions() -> None:
     assert "保留该 action" in prompt
     assert "不得仅因不在 available_tools" in prompt
     assert "tool_suggestions(existing/new_candidate)" in prompt
+    assert RUBRIC_LABELS["graph_integrity"] == "图结构完整性"
+    assert RUBRIC_LABELS["nested_sop_grounding"] == "子 SOP 依据"
+    assert RUBRIC_LABELS["capability_policy"] == "能力可见性与强制执行"
+    assert "available_sops 中 selectable=true" in prompt
 
 
 def test_skill_distiller_stream_repairs_invalid_json_with_model(monkeypatch) -> None:
@@ -1606,6 +1757,32 @@ def _skill_card() -> SkillCard:
         interruption_policy={},
         response_rules=[],
     )
+
+
+def _available_sop(
+    skill_id: str,
+    *,
+    nested_sop_ids: list[str] | None = None,
+) -> dict[str, object]:
+    child_ids = nested_sop_ids or []
+    return {
+        "skill_id": skill_id,
+        "name": skill_id,
+        "capability_scope": "sop_specific",
+        "status": "published",
+        "nested_sop_ids": child_ids,
+        "selectable": True,
+        "content": {
+            "capability_scope": "sop_specific",
+            "nodes": [
+                {
+                    "type": "subflow",
+                    "sub_sop_id": child_id,
+                }
+                for child_id in child_ids
+            ],
+        },
+    }
 
 
 def _reflection_passes_json() -> str:

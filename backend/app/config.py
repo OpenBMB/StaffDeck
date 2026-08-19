@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     model_thinking_mode: str = ""
     model_thinking_models: str = ""
     tool_timeout_seconds: float = 8.0
+    a2a_task_timeout_seconds: float = 600.0
+    a2a_poll_interval_seconds: float = 0.5
+    codex_a2a_enabled: bool = False
+    codex_a2a_command: str = "codex"
+    codex_a2a_workspace_root: str = ""
+    codex_a2a_timeout_seconds: float = 1800.0
+    codex_a2a_token: str = ""
     tool_base_url: str = "http://localhost:5173"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     general_skill_runtime_python: str = ""

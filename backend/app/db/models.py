@@ -138,6 +138,9 @@ class APIJob(SQLModel, table=True):
     error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     cancel_requested: bool = False
     retryable: bool = False
+    execution_owner: Optional[str] = Field(default=None, index=True)
+    execution_generation: int = 0
+    lease_expires_at: Optional[datetime] = Field(default=None, index=True)
     session_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
     started_at: Optional[datetime] = None
@@ -158,6 +161,56 @@ class APIJobEvent(SQLModel, table=True):
     event_type: str = Field(index=True)
     data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     public: bool = True
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class A2ATaskRun(SQLModel, table=True):
+    """Durable state for outbound A2A calls and locally served A2A tasks."""
+
+    __tablename__ = "a2a_task_runs"
+
+    id: str = Field(default_factory=lambda: new_id("a2arun"), primary_key=True)
+    direction: str = Field(default="client", index=True)
+    tenant_id: str = Field(index=True)
+    tool_id: Optional[str] = Field(default=None, index=True)
+    agent_id: Optional[str] = Field(default=None, index=True)
+    session_id: Optional[str] = Field(default=None, index=True)
+    invocation_id: Optional[str] = Field(default=None, index=True)
+    endpoint_url: str
+    agent_card_url: Optional[str] = None
+    protocol_binding: str = "JSONRPC"
+    protocol_version: str = "1.0"
+    remote_task_id: Optional[str] = Field(default=None, index=True)
+    context_id: Optional[str] = Field(default=None, index=True)
+    codex_session_id: Optional[str] = Field(default=None, index=True)
+    status: str = Field(default="submitted", index=True)
+    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    artifacts_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    agent_card_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    last_event_id: Optional[str] = Field(default=None, index=True)
+    cancel_requested: bool = False
+    recovery_attempts: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class A2ATaskEvent(SQLModel, table=True):
+    __tablename__ = "a2a_task_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_a2a_task_event_sequence"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("a2aevt"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    run_id: str = Field(index=True)
+    sequence: int = Field(index=True)
+    external_event_id: Optional[str] = Field(default=None, index=True)
+    event_type: str = Field(index=True)
+    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -189,6 +242,8 @@ class WebhookDelivery(SQLModel, table=True):
     event_type: str = Field(index=True)
     payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     status: str = Field(default="queued", index=True)
+    delivery_owner: Optional[str] = Field(default=None, index=True)
+    lease_expires_at: Optional[datetime] = Field(default=None, index=True)
     attempt_count: int = 0
     next_attempt_at: Optional[datetime] = Field(default=None, index=True)
     last_status_code: Optional[int] = None
@@ -831,6 +886,11 @@ class ChannelConvState(SQLModel, table=True):
     binding_id: str = Field(index=True)
     external_conv_id: str
     current_agent_id: str
+    # 路由指针版本；自动路由分类完成后必须以此做 CAS，避免覆盖期间的手动切换。
+    routing_revision: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
     # 手动 /切换 后的保护窗:此时间之前跳过智能自动分发
     manual_pin_until: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -914,6 +974,7 @@ class ChannelInboundEvent(SQLModel, table=True):
     status: str = Field(default="received", index=True)
     # 创建/接管该事件的进程启动代次；当前代次仍在运行时禁止按墙钟误接管。
     processor_run_id: Optional[str] = Field(default=None, index=True)
+    processor_lease_expires_at: Optional[datetime] = Field(default=None, index=True)
     error: Optional[str] = None
     processed_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -939,6 +1000,12 @@ class ChannelDelivery(SQLModel, table=True):
     next_attempt_at: Optional[datetime] = Field(default=None, index=True)
     # 原子 claim 的抢占时间(守护据此重置卡死投递)
     sending_since: Optional[datetime] = None
+    # 每次领取投递都会生成新的 owner 并递增 generation；旧 worker 的迟到结果不得落库。
+    delivery_owner: Optional[str] = Field(default=None, index=True)
+    delivery_generation: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
     last_error: Optional[str] = None
     # 回复类投递 = message_id，天然幂等
     idempotency_key: str = Field(unique=True, index=True)
