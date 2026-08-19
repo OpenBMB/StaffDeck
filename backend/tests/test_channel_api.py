@@ -11,6 +11,7 @@ from app.db import get_session
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
+    ChannelIdentity,
     ChannelDelivery,
     ChannelInboundEvent,
     Message,
@@ -1277,6 +1278,52 @@ def test_put_binding_default_handoff_assignee_rejects_channel_customer() -> None
     )
 
     assert response.status_code == 400
+
+
+def test_put_feishu_default_handoff_assignee_requires_bound_identity() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="feishu",
+            status="active",
+            identity_scope_key="cli_feishu:tenant_a",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.commit()
+        db.refresh(binding)
+        binding_id = binding.id
+    client = _make_client(engine)
+
+    unbound = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": "user_owner"},
+        headers=_auth(users["owner"]),
+    )
+    assert unbound.status_code == 400
+
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="cli_feishu:tenant_a",
+                external_user_id="ou_owner",
+                display_name="Owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+    reachable = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": "user_owner"},
+        headers=_auth(users["owner"]),
+    )
+    assert reachable.status_code == 200
 
 
 def test_put_binding_default_handoff_assignee_unchanged_by_default() -> None:

@@ -893,8 +893,18 @@ export type ChannelBindingRead = {
   default_handoff_assignee_user_id?: string | null;
   default_handoff_assignee_name?: string | null;
   identity_scope_key?: string | null;
+  /** 当前请求者对该绑定的管理角色:admin/owner/collaborator;无关系时为 null */
+  my_role?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ChannelBindingManagerRead = {
+  user_id: string;
+  name?: string | null;
+  granted_at: string;
+  granted_by_user_id?: string | null;
+  granted_by_name?: string | null;
 };
 
 export type ChannelDeliveryRead = {
