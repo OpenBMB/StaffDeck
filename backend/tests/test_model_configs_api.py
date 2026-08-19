@@ -378,7 +378,7 @@ def test_switching_default_clears_existing_row_before_setting_new(tmp_path) -> N
     with _db(tmp_path) as db:
         db.exec(
             text(
-                "CREATE UNIQUE INDEX uq_model_configs_tenant_default "
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_model_configs_tenant_default "
                 "ON model_configs(tenant_id) WHERE is_default = 1"
             )
         )
@@ -614,13 +614,7 @@ def test_concurrent_initial_verification_activates_only_one_default(tmp_path, mo
         connect_args={"check_same_thread": False, "timeout": 30},
     )
     SQLModel.metadata.create_all(engine)
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "CREATE UNIQUE INDEX uq_model_configs_tenant_default "
-                "ON model_configs(tenant_id) WHERE is_default = 1"
-            )
-        )
+    # 部分唯一索引 uq_model_configs_tenant_default 已由 models.py 并入 create_all
     with Session(engine) as db:
         db.add(Tenant(id="tenant_a", name="Tenant A"))
         for model_id in ("model_a", "model_b"):

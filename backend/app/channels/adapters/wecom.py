@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 import httpx
-from sqlalchemy import text, update
+from sqlalchemy import update
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine, select
 
@@ -30,6 +30,7 @@ from app.channels.media import (
     ensure_channel_media_size,
 )
 from app.db import engine
+from app.db.dialect import get_dialect
 from app.db.models import ChannelBinding, utc_now
 
 logger = logging.getLogger(__name__)
@@ -540,16 +541,14 @@ class WeComStreamManager:
                 result = db.exec(statement.values(**values))
                 if result.rowcount == 1:
                     if connected:
-                        # 断开告警标记在重连成功时清除(允许下次再告警)
-                        db.execute(
-                            text(
-                                "UPDATE channel_bindings "
-                                "SET config_json = json_remove(config_json, '$.disconnect_alerted_at'), "
-                                "updated_at = :updated_at "
-                                "WHERE id = :binding_id"
-                            ),
-                            {"binding_id": binding_id, "updated_at": utc_now()},
-                        )
+                        # 断开告警标记在重连成功时清除(允许下次再告警);读-改-写,方言中立
+                        binding = db.get(ChannelBinding, binding_id)
+                        if binding is not None:
+                            binding.config_json = get_dialect(
+                                db.get_bind().url.get_backend_name()
+                            ).json_config_remove(binding.config_json, "disconnect_alerted_at")
+                            binding.updated_at = utc_now()
+                            db.add(binding)
                     db.commit()
                 else:
                     db.rollback()

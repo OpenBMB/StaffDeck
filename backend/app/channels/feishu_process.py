@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import multiprocessing
 import secrets
 import threading
@@ -12,13 +13,18 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.pool import NullPool
+from sqlmodel import Session, create_engine
+
+from app.db.dialect import get_dialect
 from feishu_connector_worker import (
-    BindingProcessLock,
     ConnectorChildSpec,
     PRODUCTION_RUNTIME,
-    binding_lock_path,
+    binding_lock_key,
     connector_child_entry,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectorState(str, Enum):
@@ -52,6 +58,7 @@ class FeishuProcessSupervisor:
         self,
         *,
         runtime_path: str = PRODUCTION_RUNTIME,
+        database_url: str | None = None,
         database_path: Path | None = None,
         data_dir: Path | None = None,
         watchdog_seconds: float = 2.5,
@@ -68,7 +75,12 @@ class FeishuProcessSupervisor:
         self._ctx = multiprocessing.get_context("spawn")
         self._runtime_path = runtime_path
         root = (data_dir or Path.cwd()).expanduser().resolve()
-        self._database_path = (database_path or root / "skill_agent_loop.db").expanduser().resolve()
+        # database_path 为兼容旧参数;子进程统一按完整 SQLAlchemy URL 自建引擎
+        if database_url:
+            self._database_url = database_url
+        else:
+            legacy_path = (database_path or root / "skill_agent_loop.db").expanduser().resolve()
+            self._database_url = f"sqlite:///{legacy_path}"
         self._watchdog_seconds = watchdog_seconds
         self._terminate_grace_seconds = terminate_grace_seconds
         self._max_processes = max_processes
@@ -83,7 +95,8 @@ class FeishuProcessSupervisor:
         self._reserved_process_slots = 0
         self._crashes: dict[str, deque[float]] = {}
         self._backoff_until: dict[str, float] = {}
-        self._pending_lock_paths: set[Path] = set()
+        self._pending_lock_bindings: set[str] = set()
+        self._probe_engine = None
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._global_stop_lock = threading.Lock()
@@ -160,8 +173,7 @@ class FeishuProcessSupervisor:
     def _spawn_reserved_binding(
         self, binding_id: str, config_revision: int
     ) -> ConnectorRecord:
-        lock_path = binding_lock_path(binding_id, self._database_path)
-        if not self._wait_for_binding_lock(lock_path, self._lock_wait_seconds):
+        if not self._wait_for_binding_lock(binding_id, self._lock_wait_seconds):
             raise RuntimeError(f"Feishu connector binding lock is still held: {binding_id}")
         nonce = secrets.token_hex(16)
         parent_connection, child_connection = self._ctx.Pipe(duplex=True)
@@ -170,8 +182,7 @@ class FeishuProcessSupervisor:
             config_revision=config_revision,
             child_nonce=nonce,
             runtime_path=self._runtime_path,
-            binding_lock_path=str(lock_path),
-            database_path=str(self._database_path),
+            database_url=self._database_url,
             watchdog_seconds=self._watchdog_seconds,
         )
         process = self._ctx.Process(
@@ -399,7 +410,7 @@ class FeishuProcessSupervisor:
                     self._records.pop(binding_id, None)
                     self._dispose_record(record)
                 self._condition.notify_all()
-            return stopped and self._binding_lock_is_free(Path(record.spec.binding_lock_path))
+            return stopped and self._binding_lock_is_free(record.spec.binding_id)
 
     def replace_binding(
         self,
@@ -420,7 +431,7 @@ class FeishuProcessSupervisor:
                 current.state = ConnectorState.STOPPING
             if not self._stop_records([current], deadline):
                 raise TimeoutError("old Feishu connector did not stop before reconfiguration")
-            if not self._binding_lock_is_free(Path(current.spec.binding_lock_path)):
+            if not self._binding_lock_is_free(current.spec.binding_id):
                 raise TimeoutError("old Feishu connector binding lock is still held")
             with self._condition:
                 self._drain_events(current)
@@ -478,15 +489,17 @@ class FeishuProcessSupervisor:
                         self._dispose_record(record)
                     self._records.clear()
                 self._condition.notify_all()
-            lock_paths = self._pending_lock_paths | {
-                Path(record.spec.binding_lock_path) for record in records
+            lock_bindings = self._pending_lock_bindings | {
+                record.spec.binding_id for record in records
             }
-            blocked_paths = {
-                path for path in lock_paths if not self._binding_lock_is_free(path)
+            blocked_bindings = {
+                binding_id
+                for binding_id in lock_bindings
+                if not self._binding_lock_is_free(binding_id)
             }
-            locks_free = not blocked_paths
+            locks_free = not blocked_bindings
             with self._condition:
-                self._pending_lock_paths = blocked_paths
+                self._pending_lock_bindings = blocked_bindings
                 self._closed = stopped and monitor_stopped and locks_free
                 self._condition.notify_all()
             return stopped and monitor_stopped and locks_free
@@ -517,18 +530,35 @@ class FeishuProcessSupervisor:
             except ValueError:
                 pass
 
-    @staticmethod
-    def _binding_lock_is_free(path: Path) -> bool:
-        lock = BindingProcessLock(path)
-        if not lock.acquire():
-            return False
-        lock.release()
-        return True
+    def _lock_probe_engine(self):
+        # 探测用缓存 engine:NullPool,每次探测开短会话,不常驻连接
+        if self._probe_engine is None:
+            self._probe_engine = create_engine(self._database_url, poolclass=NullPool)
+        return self._probe_engine
 
-    def _wait_for_binding_lock(self, path: Path, timeout: float) -> bool:
+    def _binding_lock_is_free(self, binding_id: str) -> bool:
+        """方言探测 binding 锁:短会话 try-acquire + release。
+
+        探测本身失败(数据库不可达等)按"仍占用"保守处理:宁误拒启动,
+        不冒双起 connector 的风险。
+        """
+        key = binding_lock_key(binding_id)
+        try:
+            engine = self._lock_probe_engine()
+            dialect = get_dialect(engine.url.get_backend_name())
+            with Session(engine) as session:
+                if not dialect.acquire_advisory_lock(session, key):
+                    return False
+                dialect.release_advisory_lock(session, key)
+                return True
+        except Exception:
+            logger.warning("飞书 binding 锁探测失败 binding=%s", binding_id, exc_info=True)
+            return False
+
+    def _wait_for_binding_lock(self, binding_id: str, timeout: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
-            if self._binding_lock_is_free(path):
+            if self._binding_lock_is_free(binding_id):
                 return True
             if time.monotonic() >= deadline:
                 return False
