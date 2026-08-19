@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,60 +36,6 @@ from app.security.managed_subprocess import ManagedProcess, ManagedProcessError
 
 _BASH_PATH = "/bin/bash"
 _WINDOWS_POWERSHELL = "powershell.exe"
-_WINDOWS_DENIED_COMMANDS = {
-    "bash",
-    "bash.exe",
-    "cmd",
-    "cmd.exe",
-    "cscript",
-    "cscript.exe",
-    "diskpart",
-    "format",
-    "format-volume",
-    "icacls",
-    "iex",
-    "invoke-command",
-    "invoke-expression",
-    "mshta",
-    "mshta.exe",
-    "new-service",
-    "powershell",
-    "powershell.exe",
-    "pwsh",
-    "pwsh.exe",
-    "reg",
-    "reg.exe",
-    "register-scheduledtask",
-    "remove-item",
-    "restart-computer",
-    "rundll32",
-    "rundll32.exe",
-    "sc",
-    "sc.exe",
-    "schtasks",
-    "schtasks.exe",
-    "set-service",
-    "sh",
-    "sh.exe",
-    "shutdown",
-    "shutdown.exe",
-    "start-job",
-    "start-process",
-    "start-service",
-    "stop-computer",
-    "stop-service",
-    "takeown",
-    "takeown.exe",
-    "wscript",
-    "wscript.exe",
-}
-_WINDOWS_COMMAND_START = re.compile(
-    r"(?im)(?:^|[;&\n|])\s*(?:&\s*)?['\"]?([a-z][a-z0-9_.-]*)['\"]?(?=\s|$)"
-)
-_WINDOWS_ABSOLUTE_PATH = re.compile(
-    r"(?i)(?:\b[a-z]:[\\/]|(?<![:/a-z0-9_.])/(?:[^/\s]|$)|\\\\|~[\\/])"
-)
-_WINDOWS_PARENT_PATH = re.compile(r"(?:^|[\\/\s\"'=:(])\.\.(?:[\\/\s\"')]|$)")
 _WINDOWS_PROFILE_EXPANSION = re.compile(
     r"(?i)(?:\$env:(?:userprofile|homedrive|homepath|appdata|localappdata|programdata)\b"
     r"|\$(?:userprofile|home|profile|pshome|psscriptroot)\b"
@@ -118,86 +64,6 @@ _READ_ONLY_SYSTEM_PATHS = (
     "/etc/ssl/certs",
 )
 _SANDBOX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-_DENIED_COMMANDS = {
-    "bash",
-    "chgrp",
-    "chmod",
-    "chown",
-    "curl",
-    "dash",
-    "dd",
-    "diskutil",
-    "doas",
-    "eval",
-    "exec",
-    "fdisk",
-    "fish",
-    "halt",
-    "kill",
-    "killall",
-    "launchctl",
-    "ln",
-    "mkfs",
-    "mount",
-    "nc",
-    "ncat",
-    "open",
-    "pkill",
-    "poweroff",
-    "reboot",
-    "rm",
-    "rmdir",
-    "scp",
-    "sftp",
-    "sh",
-    "shutdown",
-    "shred",
-    "socat",
-    "source",
-    "ssh",
-    "sudo",
-    "su",
-    "systemctl",
-    "telnet",
-    "umount",
-    "unlink",
-    "wget",
-    "xargs",
-    "xdg-open",
-    "zsh",
-}
-_DENIED_GIT_SUBCOMMANDS = {
-    "add",
-    "branch",
-    "checkout",
-    "clean",
-    "commit",
-    "config",
-    "fetch",
-    "merge",
-    "mv",
-    "pull",
-    "push",
-    "rebase",
-    "reset",
-    "restore",
-    "rm",
-    "submodule",
-    "switch",
-    "tag",
-    "worktree",
-}
-_DENIED_FIND_ARGUMENTS = {"-delete", "-exec", "-execdir", "-fls", "-fprint"}
-_DENIED_INLINE_CODE_FLAGS = {
-    "node": {"-e", "--eval", "-p", "--print"},
-    "perl": {"-e", "-E"},
-    "php": {"-r"},
-    "python": {"-c"},
-    "python3": {"-c"},
-    "ruby": {"-e"},
-}
-
-
 class ExecCommandArguments(BaseModel):
     """Typed arguments for the isolated Bash command capability."""
 
@@ -268,8 +134,9 @@ def exec_command(
     args = _as_exec_arguments(arguments)
     command = args.command.strip()
     # Models use the stable /workspace alias across every sandbox backend.
-    # Validate its relative equivalent so the alias is not mistaken for host
-    # absolute-path access. Other absolute paths remain unchanged and denied.
+    # Normalize that one compatibility alias before validation. Other absolute
+    # paths remain unchanged and are honored according to process permissions
+    # and the administrator-selected OS sandbox policy.
     validation_command = _command_for_sandbox_workspace(command, "unsandboxed")
     if sys.platform == "win32":
         _validate_windows_command(validation_command)
@@ -372,6 +239,22 @@ def exec_command(
 def _command_for_sandbox_workspace(command: str, backend: str) -> str:
     """Make the stable model-visible /workspace path work on non-mount sandboxes."""
 
+    if sys.platform == "win32":
+        # Models sometimes translate the stable /workspace alias into a
+        # Windows-looking path. Keep the alias portable without rewriting any
+        # other user-supplied absolute path.
+        command = re.sub(
+            r"(?i)(?<![A-Za-z0-9_.-])[A-Za-z]:[\\/]workspace"
+            r"(?=[\\/\s]|$|[\"'])",
+            ".",
+            command,
+        )
+        command = re.sub(
+            r"(?i)(?<![:A-Za-z0-9_.-])[\\/]{1,2}workspace"
+            r"(?=[\\/\s]|$|[\"'])",
+            ".",
+            command,
+        )
     if backend == "bubblewrap":
         return command
     return re.sub(r"(?<![A-Za-z0-9_.-])/workspace(?=/|\s|$|[\"'])", ".", command)
@@ -390,7 +273,9 @@ def register_command_tools(registry: HarnessRegistry) -> HarnessRegistry:
             "configured network policy. On Windows do not use Bash syntax (heredoc, "
             "python3, py -3, or bash chaining); use PowerShell statements. In a "
             "packaged Windows build, python/python3 resolve to the bundled runtime; "
-            "in source deployments, use the General Skill Python runtime."
+            "in source deployments, use the General Skill Python runtime. Relative "
+            "paths start in the TaskFrame workspace; absolute paths are accepted and "
+            "remain subject to OS permissions and the configured sandbox policy."
         ),
         argument_model=ExecCommandArguments,
         handler=exec_command,
@@ -1117,11 +1002,6 @@ def _validate_command(command: str) -> None:
             raise _command_denied("Background processes are not allowed.")
     for token in words:
         _validate_path_token(token)
-        executable = PurePosixPath(token).name
-        if executable in _DENIED_COMMANDS:
-            raise _command_denied(f"Dangerous command is not allowed: {executable}")
-
-    _validate_command_specific_arguments(words)
 
 
 def _validate_windows_command(command: str) -> None:
@@ -1151,47 +1031,8 @@ def _validate_windows_command(command: str) -> None:
             "py is not the bundled Python runtime on Windows. "
             "Use the General Skill Python runtime for Python execution."
         )
-    if _WINDOWS_PARENT_PATH.search(command):
-        raise _command_denied("Parent-directory traversal is not allowed.")
-    if _WINDOWS_ABSOLUTE_PATH.search(command):
-        raise _command_denied("Absolute and home-relative paths are not allowed.")
     if _WINDOWS_PROFILE_EXPANSION.search(command):
         raise _command_denied("Host profile path expansion is not allowed.")
-
-    commands = {
-        match.group(1).casefold()
-        for match in _WINDOWS_COMMAND_START.finditer(command)
-    }
-    denied = sorted(commands & _WINDOWS_DENIED_COMMANDS)
-    if denied:
-        raise _command_denied(
-            f"Dangerous or nested shell command is not allowed: {denied[0]}"
-        )
-
-
-def _validate_command_specific_arguments(words: list[str]) -> None:
-    for index, token in enumerate(words):
-        executable = PurePosixPath(token).name
-        if executable == "git" and index + 1 < len(words):
-            denied = {
-                word.casefold() for word in words[index + 1 :]
-            } & _DENIED_GIT_SUBCOMMANDS
-            if denied:
-                subcommand = sorted(denied)[0]
-                raise _command_denied(
-                    f"State-changing git command is not allowed: {subcommand}"
-                )
-        if executable == "find":
-            remaining = set(words[index + 1 :])
-            if remaining & _DENIED_FIND_ARGUMENTS:
-                raise _command_denied("State-changing find arguments are not allowed.")
-        denied_flags = _DENIED_INLINE_CODE_FLAGS.get(executable)
-        if denied_flags and index + 1 < len(words):
-            if words[index + 1] in denied_flags:
-                raise _command_denied(
-                    f"Inline code execution is not allowed for {executable}."
-                )
-
 
 def _validate_path_token(token: str) -> None:
     candidates = [token]
@@ -1199,17 +1040,8 @@ def _validate_path_token(token: str) -> None:
         candidates.extend(part for part in token.split("=")[1:] if part)
     for candidate in candidates:
         normalized = candidate.replace("\\", "/")
-        if PureWindowsPath(candidate).drive:
-            raise _command_denied("Drive-qualified paths are not allowed.")
-        if normalized.startswith("/") or normalized.startswith("~"):
-            raise _command_denied("Absolute and home-relative paths are not allowed.")
-        if ".." in PurePosixPath(normalized).parts:
-            raise _command_denied("Parent-directory traversal is not allowed.")
         if ".harness-trash" in PurePosixPath(normalized).parts:
             raise _command_denied("Harness internal paths are not accessible.")
-        slash_index = normalized.find("/")
-        if slash_index > 0 and normalized[:slash_index].startswith("-"):
-            raise _command_denied("Options containing absolute paths are not allowed.")
 
 
 def _is_shell_operator(token: str) -> bool:

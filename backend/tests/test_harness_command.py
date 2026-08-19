@@ -58,16 +58,10 @@ def test_exec_command_fails_closed_without_bubblewrap(
 @pytest.mark.parametrize(
     "command",
     [
-        "cat /etc/passwd",
-        "cat ../outside.txt",
-        "printf x > ../outside.txt",
-        "rm -rf .",
-        "curl https://example.com",
-        "python3 -c 'print(1)'",
         "sleep 1 &",
     ],
 )
-def test_exec_command_rejects_escape_and_dangerous_commands(
+def test_exec_command_rejects_background_processes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     command: str,
@@ -80,6 +74,26 @@ def test_exec_command_rejects_escape_and_dangerous_commands(
     assert result.success is False
     assert result.error is not None
     assert result.error.code == "COMMAND_DENIED"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf ./generated-output",
+        "curl https://example.com",
+        "wget https://example.com/file",
+        "ssh example.com true",
+        "scp result.txt example.com:/tmp/result.txt",
+        "chmod 600 result.txt",
+        "sudo true",
+        "git commit -m update",
+        "find . -name '*.tmp' -delete",
+        "python3 -c 'print(1)'",
+        "node --eval 'console.log(1)'",
+    ],
+)
+def test_posix_validator_allows_commands_without_a_static_blacklist(command: str) -> None:
+    command_module._validate_command(command)
 
 
 def test_exec_command_builds_fixed_isolated_argv_and_structured_result(
@@ -210,6 +224,52 @@ def test_non_mount_sandbox_rewrites_model_visible_workspace_paths() -> None:
     assert command_module._command_for_sandbox_workspace(command, "bubblewrap") == command
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            r"Get-Content C:\workspace\attachments\contract.txt",
+            r"Get-Content .\attachments\contract.txt",
+        ),
+        (
+            r"Get-Content C:/workspace/attachments/contract.txt",
+            "Get-Content ./attachments/contract.txt",
+        ),
+        (
+            r"Get-Content \workspace\attachments\contract.txt",
+            r"Get-Content .\attachments\contract.txt",
+        ),
+        (
+            "Get-Content /workspace/attachments/contract.txt",
+            "Get-Content ./attachments/contract.txt",
+        ),
+    ],
+)
+def test_windows_workspace_aliases_are_normalized_before_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    expected: str,
+) -> None:
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+
+    normalized = command_module._command_for_sandbox_workspace(command, "unsandboxed")
+
+    assert normalized == expected
+    command_module._validate_windows_command(normalized)
+
+
+def test_windows_other_absolute_paths_remain_unchanged_and_are_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+    command = r"Get-Content C:\Users\staffdeck\secret.txt"
+
+    normalized = command_module._command_for_sandbox_workspace(command, "unsandboxed")
+
+    assert normalized == command
+    command_module._validate_windows_command(normalized)
+
+
 def test_exec_command_accepts_workspace_alias_before_non_mount_rewrite(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -251,23 +311,41 @@ def test_exec_command_accepts_workspace_alias_before_non_mount_rewrite(
     assert "./attachments/contract.txt" in str(captured["command"])
 
 
-def test_exec_command_still_rejects_other_absolute_paths(
+def test_exec_command_accepts_other_absolute_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setattr(command_module, "available_backend", lambda: "unsandboxed")
+    monkeypatch.setattr(
+        command_module,
+        "_unsandboxed_argv",
+        lambda command: ["powershell.exe", "-Command", command],
+    )
+    monkeypatch.setattr(
+        command_module,
+        "_run_bounded_process",
+        lambda _argv, **_kwargs: command_module._BoundedProcessResult(
+            returncode=0,
+            stdout=b"ok",
+            stderr=b"",
+            stdout_bytes=2,
+            stderr_bytes=0,
+            timed_out=False,
+            output_truncated=False,
+            duration_ms=1,
+        ),
+    )
 
     result = _execute(tmp_path, {"command": "Get-Content C:\\Windows\\win.ini"})
 
-    assert result.success is False
-    assert result.error is not None
-    assert result.error.code == "COMMAND_DENIED"
+    assert result.success is True
 
 
 def test_exec_command_validates_every_line_of_multiline_script(tmp_path: Path) -> None:
     result = _execute(
         tmp_path,
-        {"command": "printf safe\ncat /etc/passwd"},
+        {"command": "printf safe\nsleep 1 &"},
     )
 
     assert result.success is False
@@ -400,19 +478,63 @@ def test_windows_validator_allows_workspace_power_shell_workflows(command: str) 
 @pytest.mark.parametrize(
     "command",
     [
-        "Get-Content ..\\outside.txt",
-        "Get-Content C:\\Windows\\win.ini",
-        "Get-Content $env:USERPROFILE\\.ssh\\id_rsa",
+        r"Get-Content C:\Windows\win.ini",
+        r"Get-Content \\server\share\document.txt",
+        r"Set-Content -Path C:\Temp\result.txt -Value ok",
+    ],
+)
+def test_windows_validator_allows_absolute_paths(command: str) -> None:
+    command_module._validate_windows_command(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat /etc/hosts",
+        "printf ok > /tmp/staffdeck-result.txt",
+        "tool --output=/tmp/result.json",
+        "cat ~/notes.txt",
+    ],
+)
+def test_posix_validator_allows_absolute_and_home_paths(command: str) -> None:
+    command_module._validate_command(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat ../outside.txt",
+        "printf ok > ../../outside.txt",
+        "tool --output=../results/result.json",
+    ],
+)
+def test_posix_validator_allows_parent_directory_paths(command: str) -> None:
+    command_module._validate_command(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "Remove-Item result.txt",
         "Start-Process powershell.exe",
         "Invoke-Expression 'Get-Process'",
+        "cmd.exe /c echo ok",
+        "Set-Service -Name example -StartupType Manual",
     ],
 )
-def test_windows_validator_rejects_escape_and_nested_host_commands(command: str) -> None:
+def test_windows_validator_allows_commands_without_a_static_blacklist(command: str) -> None:
+    command_module._validate_windows_command(command)
+
+
+def test_windows_validator_still_rejects_implicit_host_profile_expansion() -> None:
     with pytest.raises(HarnessExecutionError) as denied:
-        command_module._validate_windows_command(command)
+        command_module._validate_windows_command("Get-Content $env:USERPROFILE\\.ssh\\id_rsa")
 
     assert denied.value.error.code == "COMMAND_DENIED"
+
+
+def test_windows_validator_allows_parent_directory_paths() -> None:
+    command_module._validate_windows_command(r"Get-Content ..\outside.txt")
 
 
 @pytest.mark.parametrize(

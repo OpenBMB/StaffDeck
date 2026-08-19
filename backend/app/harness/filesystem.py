@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import mimetypes
 import os
+import shutil
 import stat
 import tempfile
 import uuid
@@ -148,29 +149,28 @@ class _Workspace:
         *,
         allow_root: bool = False,
     ) -> Path:
-        normalized = _normalize_relative_path(raw_path, allow_root=allow_root)
-        if _TRASH_DIRECTORY in normalized.parts:
+        candidate = _normalize_access_path(raw_path, root=self.root, allow_root=allow_root)
+        if _TRASH_DIRECTORY in candidate.parts:
             raise HarnessExecutionError(
                 "RESERVED_PATH",
                 "The Harness internal trash directory is not directly accessible.",
-                details={"path": normalized.as_posix()},
+                details={"path": str(candidate)},
             )
-
-        candidate = self.root.joinpath(*normalized.parts)
         self._reject_symlink_components(candidate)
-        try:
-            canonical = candidate.resolve(strict=False)
-            canonical.relative_to(self.root)
-        except (OSError, ValueError) as exc:
-            raise HarnessExecutionError(
-                "PATH_OUTSIDE_WORKSPACE",
-                "Path resolves outside the isolated Harness workspace.",
-                details={"path": normalized.as_posix()},
-            ) from exc
         return candidate
 
     def relative(self, path: Path) -> str:
-        return path.relative_to(self.root).as_posix() or "."
+        try:
+            return path.relative_to(self.root).as_posix() or "."
+        except ValueError:
+            return str(path)
+
+    def is_inside_workspace(self, path: Path) -> bool:
+        try:
+            path.relative_to(self.root)
+        except ValueError:
+            return False
+        return True
 
     def require_file(self, path: Path) -> os.stat_result:
         self._reject_symlink_components(path)
@@ -265,7 +265,15 @@ class _Workspace:
                 },
             )
 
-    def ensure_workspace_capacity(self, *, replacing_bytes: int, new_bytes: int) -> None:
+    def ensure_workspace_capacity(
+        self,
+        *,
+        path: Path,
+        replacing_bytes: int,
+        new_bytes: int,
+    ) -> None:
+        if not self.is_inside_workspace(path):
+            return
         current = self.workspace_bytes()
         projected = current - replacing_bytes + new_bytes
         if projected > self.context.limits.max_workspace_bytes:
@@ -352,13 +360,16 @@ class _Workspace:
     def _reject_symlink_components(self, path: Path) -> None:
         try:
             relative = path.relative_to(self.root)
-        except ValueError as exc:
-            raise HarnessExecutionError(
-                "PATH_OUTSIDE_WORKSPACE",
-                "Path is outside the isolated Harness workspace.",
-            ) from exc
-
-        current = self.root
+            current = self.root
+        except ValueError:
+            if not path.is_absolute():
+                raise HarnessExecutionError(
+                    "INVALID_PATH",
+                    "Harness file-tool paths must resolve to an absolute host path.",
+                )
+            anchor = Path(path.anchor)
+            current = anchor
+            relative = Path(*path.parts[1:])
         for part in relative.parts:
             current = current / part
             try:
@@ -477,6 +488,7 @@ def extract_document_text(
     if output.exists():
         previous_size = workspace.require_file(output).st_size
     workspace.ensure_workspace_capacity(
+        path=output,
         replacing_bytes=previous_size,
         new_bytes=len(content_bytes),
     )
@@ -519,6 +531,7 @@ def write_file(
         )
 
     workspace.ensure_workspace_capacity(
+        path=path,
         replacing_bytes=previous_size,
         new_bytes=len(content_bytes),
     )
@@ -566,6 +579,7 @@ def edit_file(
     updated_bytes = updated.encode("utf-8")
     workspace.ensure_file_size(len(updated_bytes))
     workspace.ensure_workspace_capacity(
+        path=path,
         replacing_bytes=metadata.st_size,
         new_bytes=len(updated_bytes),
     )
@@ -771,6 +785,20 @@ def publish_artifact(
     path = workspace.resolve(args.path)
     metadata = workspace.require_file(path)
     workspace.ensure_file_size(metadata.st_size)
+    if not workspace.is_inside_workspace(path):
+        staged = workspace.root / "published" / f"{uuid.uuid4().hex}-{path.name}"
+        workspace.prepare_parent(staged, create=True)
+        workspace.ensure_workspace_capacity(
+            path=staged,
+            replacing_bytes=0,
+            new_bytes=metadata.st_size,
+        )
+        try:
+            shutil.copyfile(path, staged)
+        except OSError as exc:
+            raise _io_error("External artifact could not be staged for download.", exc) from exc
+        path = staged
+        metadata = workspace.require_file(path)
     display_name = _safe_artifact_text(args.display_name, 180) or path.name
     description = _safe_artifact_text(args.description, 500)
     return {
@@ -830,14 +858,22 @@ def delete_file(
     metadata = workspace.require_file(path)
     sha256 = workspace.assert_expected_hash(path, args.expected_sha256)
     trash_id = uuid.uuid4().hex
-    relative = path.relative_to(workspace.root)
-    trash_target = workspace.trash_target(relative, trash_id)
+    display_path = workspace.relative(path)
+    trash_relative = (
+        path.relative_to(workspace.root)
+        if workspace.is_inside_workspace(path)
+        else Path(path.name)
+    )
+    trash_target = workspace.trash_target(trash_relative, trash_id)
     try:
         os.replace(path, trash_target)
-    except OSError as exc:
-        raise _io_error("File could not be moved to Harness trash.", exc) from exc
+    except OSError:
+        try:
+            shutil.move(str(path), str(trash_target))
+        except OSError as move_exc:
+            raise _io_error("File could not be moved to Harness trash.", move_exc) from move_exc
     return {
-        "path": relative.as_posix(),
+        "path": display_path,
         "deleted": True,
         "recoverable": True,
         "trash_id": trash_id,
@@ -898,6 +934,7 @@ def copy_file(
     )
     destination_size = destination.stat().st_size if destination.exists() else 0
     workspace.ensure_workspace_capacity(
+        path=destination,
         replacing_bytes=destination_size,
         new_bytes=source_metadata.st_size,
     )
@@ -916,12 +953,18 @@ def copy_file(
 
 
 def register_file_tools(registry: HarnessRegistry) -> HarnessRegistry:
-    """Register the built-in isolated-workspace tools on ``registry``."""
+    """Register the built-in typed filesystem tools on ``registry``."""
+
+    path_contract = (
+        "Relative paths start in the current TaskFrame workspace; absolute paths and "
+        "parent-directory paths are accepted subject to host permissions and any enabled OS sandbox. "
+    )
 
     registry.register(
         name="read_file",
         description=(
-            "Read UTF-8 text from a file inside this TaskFrame workspace. "
+            path_contract
+            + "Read UTF-8 text from a file. "
             "Use the returned byte offset to continue a truncated read."
         ),
         argument_model=ReadFileArguments,
@@ -931,8 +974,9 @@ def register_file_tools(registry: HarnessRegistry) -> HarnessRegistry:
     registry.register(
         name="extract_document_text",
         description=(
-            "Extract PDF, DOCX, HTML, Markdown, or plain-text content into a UTF-8 "
-            "workspace file, then use read_file to inspect the extracted text. Use this "
+            path_contract
+            + "Extract PDF, DOCX, HTML, Markdown, or plain-text content into a UTF-8 "
+            "file, then use read_file to inspect the extracted text. Use this "
             "instead of read_file for binary documents such as PDF and DOCX."
         ),
         argument_model=ExtractDocumentTextArguments,
@@ -941,44 +985,42 @@ def register_file_tools(registry: HarnessRegistry) -> HarnessRegistry:
     )
     registry.register(
         name="write_file",
-        description=(
-            "Atomically create or replace a UTF-8 file inside this TaskFrame workspace."
-        ),
+        description=path_contract + "Atomically create or replace a UTF-8 file.",
         argument_model=WriteFileArguments,
         handler=write_file,
         side_effect="write",
     )
     registry.register(
         name="edit_file",
-        description="Atomically replace exact text in a UTF-8 workspace file.",
+        description=path_contract + "Atomically replace exact text in a UTF-8 file.",
         argument_model=EditFileArguments,
         handler=edit_file,
         side_effect="write",
     )
     registry.register(
         name="list_directory",
-        description="List files and directories without following symbolic links.",
+        description=path_contract + "List files and directories without following symbolic links.",
         argument_model=ListDirectoryArguments,
         handler=list_directory,
         side_effect="read",
     )
     registry.register(
         name="glob",
-        description="Find workspace paths matching a relative glob pattern.",
+        description=path_contract + "Find paths under a start directory matching a glob pattern.",
         argument_model=GlobArguments,
         handler=glob_files,
         side_effect="read",
     )
     registry.register(
         name="grep",
-        description="Search UTF-8 workspace files using literal text or a regular expression.",
+        description=path_contract + "Search UTF-8 files using literal text.",
         argument_model=GrepArguments,
         handler=grep_files,
         side_effect="read",
     )
     registry.register(
         name="file_info",
-        description="Return type, size, SHA-256, and modification time for a workspace path.",
+        description=path_contract + "Return type, size, SHA-256, and modification time.",
         argument_model=FileInfoArguments,
         handler=file_info,
         side_effect="read",
@@ -986,7 +1028,9 @@ def register_file_tools(registry: HarnessRegistry) -> HarnessRegistry:
     registry.register(
         name="publish_artifact",
         description=(
-            "Explicitly publish one verified final workspace file for user download. "
+            path_contract
+            + "Explicitly publish one verified final file for user download; external files "
+            "are copied into the TaskFrame artifact area. "
             "Use only for final deliverables, never for inputs, caches, logs, temporary "
             "files, runner code, or build intermediates."
         ),
@@ -996,28 +1040,31 @@ def register_file_tools(registry: HarnessRegistry) -> HarnessRegistry:
     )
     registry.register(
         name="mkdir",
-        description="Create a directory inside this TaskFrame workspace.",
+        description=path_contract + "Create a directory.",
         argument_model=MakeDirectoryArguments,
         handler=make_directory,
         side_effect="write",
     )
     registry.register(
         name="delete_file",
-        description="Soft-delete a file into private Harness trash so it remains recoverable.",
+        description=(
+            path_contract
+            + "Soft-delete a file into private Harness trash so it remains recoverable."
+        ),
         argument_model=DeleteFileArguments,
         handler=delete_file,
         side_effect="delete",
     )
     registry.register(
         name="move_file",
-        description="Atomically move a regular file within this TaskFrame workspace.",
+        description=path_contract + "Move a regular file.",
         argument_model=MoveFileArguments,
         handler=move_file,
         side_effect="write",
     )
     registry.register(
         name="copy_file",
-        description="Atomically copy a regular file within this TaskFrame workspace.",
+        description=path_contract + "Atomically copy a regular file.",
         argument_model=CopyFileArguments,
         handler=copy_file,
         side_effect="write",
@@ -1038,25 +1085,34 @@ def _as(arguments: BaseModel, expected: type[BaseModel]) -> Any:
     return arguments
 
 
-def _normalize_relative_path(raw_path: str, *, allow_root: bool) -> PurePosixPath:
+def _normalize_access_path(raw_path: str, *, root: Path, allow_root: bool) -> Path:
     if "\x00" in raw_path:
         raise HarnessExecutionError("INVALID_PATH", "Path cannot contain a null byte.")
     if not raw_path.strip():
         raise HarnessExecutionError("INVALID_PATH", "Path cannot be empty.")
-    if PureWindowsPath(raw_path).drive:
-        raise HarnessExecutionError("INVALID_PATH", "Absolute or drive-qualified paths are denied.")
-    normalized_raw = _strip_sandbox_workspace_prefix(raw_path.replace("\\", "/"))
-    normalized = PurePosixPath(normalized_raw)
-    if normalized.is_absolute():
-        raise HarnessExecutionError("INVALID_PATH", "Absolute paths are denied.")
-    parts = tuple(part for part in normalized.parts if part not in {"", "."})
-    if any(part == ".." for part in parts):
-        raise HarnessExecutionError("INVALID_PATH", "Parent-directory traversal is denied.")
-    if not parts:
+    portable = raw_path.replace("\\", "/")
+    normalized_alias = _strip_sandbox_workspace_prefix(portable)
+    normalized_raw = normalized_alias if normalized_alias != portable else raw_path
+    try:
+        candidate = Path(normalized_raw).expanduser()
+    except (KeyError, RuntimeError) as exc:
+        raise HarnessExecutionError(
+            "INVALID_PATH",
+            "Home-relative path could not be expanded on this host.",
+        ) from exc
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    candidate = Path(os.path.abspath(os.path.normpath(candidate)))
+    if candidate == root and not allow_root:
+        raise HarnessExecutionError(
+            "INVALID_PATH",
+            "A file or child-directory path is required.",
+        )
+    if not candidate.parts:
         if allow_root:
-            return PurePosixPath(".")
+            return candidate
         raise HarnessExecutionError("INVALID_PATH", "A file or child-directory path is required.")
-    return PurePosixPath(*parts)
+    return candidate
 
 
 def _normalize_glob(raw_pattern: str | None) -> str:

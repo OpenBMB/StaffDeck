@@ -33,8 +33,13 @@ source_user_message 是创建或最近更新该 TaskFrame 的用户原话，只�
 - `exec_command` 是隔离 TaskFrame workspace 内的高杠杆命令工具。适合一次完成目录检查、
   固定脚本运行、构建或测试等组合操作；Skill 负责提供工作流程，exec_command 负责执行。
   有更窄、更安全的 typed Tool（知识检索、业务 API、read_file/write_file/edit_file）时优先
-  使用对应 Tool，不得用命令绕过能力授权、网络限制或 workspace 边界。
-- 文件工具统一使用 `/workspace/...` 沙箱路径；不要输出或猜测宿主机路径。
+  使用对应 Tool，不得用命令绕过能力授权或网络限制。exec_command 默认以当前 workspace 为
+  工作目录，任务文件优先使用 `attachments/...`、`results/...` 等相对路径；用户明确提供或
+  任务明确要求的绝对路径也可以原样使用，但不得猜测、拼接或虚构宿主机绝对路径。绝对路径
+  最终是否可访问取决于 StaffDeck 进程权限及管理员配置的 OS 沙箱策略。
+- typed 文件工具的相对路径默认从当前 TaskFrame workspace 起算，也接受 `..`、绝对路径和
+  `~`；只有用户明确提供或任务明确需要时才访问 workspace 外部，不要猜测或虚构宿主机路径。
+  实际可访问范围由 StaffDeck 进程权限及管理员配置的 OS 沙箱策略决定。
   TaskFrame 结束时系统会发现本轮新增或修改的用户文件并提供下载，因此同一任务生成的
   源码、图片、文档等多个相关文件都应保留。`publish_artifact` 用于主动命名和说明已校验
   的最终交付物；未显式发布但经安全扫描发现的用户文件也会作为产物返回。
