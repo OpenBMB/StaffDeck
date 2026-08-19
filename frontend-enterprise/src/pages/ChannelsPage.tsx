@@ -307,6 +307,17 @@ export default function ChannelsPage({
     return snapshot !== selectedIdRef.current;
   }
 
+  async function loadTenantUsers() {
+    try {
+      const rows = await api.get<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string; external_account_scope?: string }> }>>(
+        `/api/auth/users?tenant_id=${TENANT_ID}&include_channel=true`,
+      );
+      setTenantUsers(rows);
+    } catch {
+      setTenantUsers([]);
+    }
+  }
+
   useEffect(() => {
     if (!bindCodeOpen || !bindCode) return undefined;
     const update = () => {
@@ -326,12 +337,7 @@ export default function ChannelsPage({
     void loadIdentityBindings();
     void loadChannelMetas();
     void loadTeams();
-    api
-      .get<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string; external_account_scope?: string }> }>>(
-        `/api/auth/users?tenant_id=${TENANT_ID}&include_channel=true`,
-      )
-      .then(setTenantUsers)
-      .catch(() => setTenantUsers([]));
+    void loadTenantUsers();
   }, []);
 
   useEffect(() => {
@@ -1625,7 +1631,11 @@ export default function ChannelsPage({
         open={bindCodeOpen}
         onOpenChange={(open) => {
           setBindCodeOpen(open);
-          if (!open) void loadIdentityBindings();
+          if (!open) {
+            void loadIdentityBindings();
+            void loadTenantUsers();
+            void load();
+          }
         }}
       >
         <DialogContent

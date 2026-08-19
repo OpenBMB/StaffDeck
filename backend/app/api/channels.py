@@ -479,7 +479,7 @@ def create_identity_bind_code(
     target = db.get(User, request.user_id)
     if not target or target.tenant_id != tenant_id or target.source != "web":
         raise HTTPException(status_code=400, detail="身份绑定对象必须是当前租户的内部成员")
-    if binding.channel == "feishu" and not binding.identity_scope_key:
+    if binding.channel == "feishu" and not binding.credentials_enc:
         raise HTTPException(status_code=409, detail="请先完成飞书应用接入，再邀请成员绑定身份")
     if not _check_bind_code_rate(current_user.id):
         raise HTTPException(status_code=429, detail="绑定码生成过于频繁，请稍后再试")
@@ -602,11 +602,20 @@ def update_channel_binding_agents(
                 detail="默认人工处理人必须是当前租户的内部成员",
             )
         if binding.channel == "feishu":
+            identity_scope = binding.identity_scope_key
+            if not identity_scope:
+                config = dict(binding.config_json or {})
+                app_id = str(config.get("app_id") or "").strip()
+                tenant_key = str(binding.provider_tenant_key or "").strip()
+                if app_id and tenant_key:
+                    from app.channels.service_feishu_inbox import feishu_identity_scope
+
+                    identity_scope = feishu_identity_scope(app_id, tenant_key)
             reachable = db.exec(
                 select(ChannelIdentity).where(
                     ChannelIdentity.tenant_id == tenant_id,
                     ChannelIdentity.channel == "feishu",
-                    ChannelIdentity.external_account_scope == binding.identity_scope_key,
+                    ChannelIdentity.external_account_scope == (identity_scope or ""),
                     ChannelIdentity.staffdeck_user_id == handoff_assignee,
                     ~ChannelIdentity.external_user_id.startswith("group:"),
                 )

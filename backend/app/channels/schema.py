@@ -296,6 +296,14 @@ def channel_binding_read(
     if binding.team_id:
         team = db.get(Team, binding.team_id)
         team_name = team.name if team else None
+    identity_scope_key = binding.identity_scope_key
+    if not identity_scope_key and binding.channel == "feishu":
+        app_id = str(config.get("app_id") or "").strip()
+        tenant_key = str(binding.provider_tenant_key or "").strip()
+        if app_id and tenant_key:
+            from app.channels.service_feishu_inbox import feishu_identity_scope
+
+            identity_scope_key = feishu_identity_scope(app_id, tenant_key)
     return ChannelBindingRead(
         id=binding.id,
         tenant_id=binding.tenant_id,
@@ -325,7 +333,7 @@ def channel_binding_read(
             "default_handoff_assignee_user_id"
         ),
         default_handoff_assignee_name=_default_handoff_assignee_name(db, binding),
-        identity_scope_key=binding.identity_scope_key,
+        identity_scope_key=identity_scope_key,
         my_role=channel_binding_my_role(db, binding, current_user),
         created_at=binding.created_at.isoformat(),
         updated_at=binding.updated_at.isoformat(),

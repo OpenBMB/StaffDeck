@@ -175,6 +175,7 @@ def test_manager_can_invite_internal_user_to_bind_identity() -> None:
     with Session(engine) as db:
         binding = db.get(ChannelBinding, binding_id)
         binding.identity_scope_key = "cli_feishu:tenant_a"
+        binding.credentials_enc = "encrypted-secret"
         db.add(binding)
         db.commit()
 
