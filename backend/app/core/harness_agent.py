@@ -47,6 +47,7 @@ class HarnessAction(BaseModel):
     slot_updates: dict[str, Any] = Field(default_factory=dict)
     next_step_id: str | None = None
     task_summary: str = ""
+    structured_result: Any | None = None
 
 
 class HarnessTaskAgent:
@@ -73,6 +74,8 @@ class HarnessTaskAgent:
         satisfied_required_knowledge_ids: set[str] = set()
         successful_knowledge_searches = 0
         artifacts: list[dict[str, Any]] = []
+        loaded_general_skill_names: list[str] = []
+        non_retryable_action_signatures: set[str] = set()
         allowed_names = requirement.capability_manifest.allowed_names()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
 
@@ -113,7 +116,14 @@ class HarnessTaskAgent:
             if attachment_context is not None:
                 payload["conversation_context"] = attachment_context
             try:
-                with llm_operation("harness.task_action"):
+                # Persist a stable link between this LLM span and the Harness
+                # iteration that consumes it.  Timing projections must not
+                # infer this relationship from overlapping wall-clock windows.
+                with llm_operation(
+                    "harness.task_action",
+                    task_frame_id=requirement.task_frame_id,
+                    iteration=iteration,
+                ):
                     raw = _deadline_llm_client(
                         model_config,
                         step_deadline_monotonic,
@@ -121,7 +131,24 @@ class HarnessTaskAgent:
                         system_prompt,
                         payload,
                     )
-                action = HarnessAction.model_validate(raw)
+                try:
+                    action = HarnessAction.model_validate(raw)
+                except ValidationError:
+                    action = _adapt_general_skill_structured_result(
+                        raw,
+                        loaded_general_skill_names=loaded_general_skill_names,
+                    )
+                    if action is None:
+                        raise
+                    if trace_sink:
+                        trace_sink(
+                            "harness_structured_result_adapted",
+                            {
+                                "iteration": iteration,
+                                "source": loaded_general_skill_names[-1],
+                                "result_type": type(raw).__name__,
+                            },
+                        )
             except (ValidationError, LLMError) as exc:
                 if _deadline_expired(step_deadline_monotonic):
                     return _step_timeout_result(
@@ -256,6 +283,41 @@ class HarnessTaskAgent:
                     },
                 }
             else:
+                action_signature = _action_signature(
+                    tool_name,
+                    dict(action.arguments or {}),
+                )
+                if action_signature in non_retryable_action_signatures:
+                    if trace_sink:
+                        trace_sink(
+                            "harness_action_failed",
+                            {
+                                "iteration": iteration,
+                                "tool_name": tool_name,
+                                "error": {
+                                    "code": "NON_RETRYABLE_ACTION_REPEATED",
+                                    "message": (
+                                        "模型重复提交了已标记为不可重试的相同工具调用。"
+                                    ),
+                                    "retryable": False,
+                                },
+                            },
+                        )
+                    return TaskExecutionResult(
+                        task_frame_id=requirement.task_frame_id,
+                        status="failed",
+                        reply_fragment="相同的不可重试工具调用被阻止。",
+                        task_summary="Harness 阻止重复的不可重试动作。",
+                        capability_results=capability_results,
+                        citations=citations,
+                        evidence_results=evidence_results,
+                        artifacts=artifacts,
+                        action_count=iteration,
+                        error={
+                            "code": "NON_RETRYABLE_ACTION_REPEATED",
+                            "message": "相同工具与参数已失败且不可重试。",
+                        },
+                    )
                 try:
                     _raise_if_cancelled(is_cancelled)
                     result = invoke_tool(tool_name, dict(action.arguments or {}))
@@ -270,7 +332,11 @@ class HarnessTaskAgent:
                             "message": str(exc),
                         },
                     }
+                if _is_non_retryable_failure(result):
+                    non_retryable_action_signatures.add(action_signature)
             bounded_result = _bounded_capability_result(tool_name, result)
+            if _is_loaded_general_skill_result(tool_name, result):
+                loaded_general_skill_names.append(tool_name)
             transcript.extend(
                 [
                     {
@@ -386,6 +452,72 @@ def _activate_described_capabilities(
     return activated
 
 
+def _is_loaded_general_skill_result(
+    tool_name: str,
+    result: dict[str, Any],
+) -> bool:
+    data = result.get("data")
+    return (
+        tool_name.startswith("general_skill.")
+        and result.get("success") is True
+        and isinstance(data, dict)
+        and data.get("kind") == "general_skill"
+        and data.get("operation") == "read"
+    )
+
+
+def _action_signature(tool_name: str, arguments: dict[str, Any]) -> str:
+    return json.dumps(
+        {"tool_name": tool_name, "arguments": arguments},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _is_non_retryable_failure(result: object) -> bool:
+    if not isinstance(result, dict) or result.get("success") is not False:
+        return False
+    error = result.get("error")
+    return isinstance(error, dict) and error.get("retryable") is False
+
+
+def _adapt_general_skill_structured_result(
+    raw: object,
+    *,
+    loaded_general_skill_names: list[str],
+) -> HarnessAction | None:
+    """Turn an instruction-only Skill's bare business JSON into a safe finish action.
+
+    Skill authors describe the business output contract, not the Harness control
+    protocol.  The adapter is deliberately gated on a successfully loaded
+    GeneralSkill and never accepts an object that attempted to emit an invalid
+    Harness action.  Consequently an RFC/MCP-shaped object is returned as data;
+    it is not interpreted or executed as a tool call.
+    """
+
+    if not loaded_general_skill_names or not isinstance(raw, (dict, list)):
+        return None
+    if isinstance(raw, dict) and "action" in raw:
+        return None
+    reply_fragment = json.dumps(
+        raw,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return HarnessAction(
+        action="finish",
+        status="completed",
+        reply_fragment=reply_fragment,
+        task_summary=(
+            f"{loaded_general_skill_names[-1]} 已生成结构化业务结果。"
+        ),
+        structured_result=raw,
+    )
+
+
 def _missing_required_capabilities(
     requirement: TaskRequirement,
     capability_results: list[dict[str, Any]],
@@ -453,6 +585,7 @@ def _finish_result(
         artifacts=artifacts,
         task_summary=action.task_summary.strip(),
         action_count=action_count,
+        structured_result=action.structured_result,
     )
 
 

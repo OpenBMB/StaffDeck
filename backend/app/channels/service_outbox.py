@@ -57,9 +57,11 @@ def _stage_failed_delivery(
     binding_id: str,
     target: dict,
     error: str,
+    idempotency_key: str | None = None,
 ) -> None:
+    stable_key = idempotency_key or message.id
     existing = db.exec(
-        select(ChannelDelivery).where(ChannelDelivery.idempotency_key == message.id)
+        select(ChannelDelivery).where(ChannelDelivery.idempotency_key == stable_key)
     ).first()
     if existing:
         return
@@ -75,9 +77,27 @@ def _stage_failed_delivery(
             status="failed",
             next_attempt_at=None,
             last_error=error,
-            idempotency_key=message.id,
+            idempotency_key=stable_key,
         )
     )
+
+
+def _message_client_turn_id(db: Session, message: Message) -> str:
+    metadata = message.metadata_json or {}
+    user_message_id = str(metadata.get("user_message_id") or "").strip()
+    user_message = db.get(Message, user_message_id) if user_message_id else None
+    return str(
+        ((user_message.metadata_json or {}) if user_message else {}).get("client_turn_id")
+        or metadata.get("client_turn_id")
+        or ""
+    ).strip()
+
+
+def _reply_idempotency_key(db: Session, binding_id: str, message: Message) -> str:
+    client_turn_id = _message_client_turn_id(db, message)
+    if client_turn_id:
+        return f"channel-reply:{binding_id}:{client_turn_id}"
+    return message.id
 
 
 def _immutable_delivery_target(
@@ -86,17 +106,10 @@ def _immutable_delivery_target(
     chat_session: ChatSession,
     message: Message,
 ) -> dict:
-    if binding.channel != "feishu":
-        return dict(chat_session.channel_target_json or {})
-    metadata = message.metadata_json or {}
-    user_message_id = str(metadata.get("user_message_id") or "").strip()
-    user_message = db.get(Message, user_message_id) if user_message_id else None
-    client_turn_id = str(
-        ((user_message.metadata_json or {}) if user_message else {}).get("client_turn_id")
-        or metadata.get("client_turn_id")
-        or ""
-    ).strip()
+    client_turn_id = _message_client_turn_id(db, message)
     if not client_turn_id:
+        # Legacy sessions may not carry a turn id. Snapshot the target at staging time;
+        # delivery workers must never read the mutable session target later.
         return dict(chat_session.channel_target_json or {})
     event = db.exec(
         select(ChannelInboundEvent).where(
@@ -198,8 +211,11 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
             db.add(chat_session)
             db.flush()
         target = _immutable_delivery_target(db, binding, chat_session, message)
+        idempotency_key = _reply_idempotency_key(db, binding.id, message)
         existing = db.exec(
-            select(ChannelDelivery).where(ChannelDelivery.idempotency_key == message.id)
+            select(ChannelDelivery).where(
+                ChannelDelivery.idempotency_key == idempotency_key
+            )
         ).first()
         if existing:
             return
@@ -215,6 +231,7 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
                 binding_id=binding.id,
                 target=target,
                 error="delivery_target_missing",
+                idempotency_key=idempotency_key,
             )
             return
         db.add(
@@ -228,7 +245,7 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
                 text=message.content,
                 status="pending",
                 next_attempt_at=utc_now(),
-                idempotency_key=message.id,
+                idempotency_key=idempotency_key,
             )
         )
     except Exception:
@@ -269,6 +286,7 @@ def _claim_delivery(
     now,
     reaction_lane: bool,
 ) -> ChannelDelivery | None:
+    owner = new_id("delivery-owner")
     claim = (
         update(ChannelDelivery)
         .where(
@@ -283,6 +301,8 @@ def _claim_delivery(
             first_attempt_at=func.coalesce(ChannelDelivery.first_attempt_at, now),
             # 标记领取时刻:_reset_stuck_deliveries 据此区分在飞与卡死(120s 阈值)
             sending_since=now,
+            delivery_owner=owner,
+            delivery_generation=ChannelDelivery.delivery_generation + 1,
             updated_at=now,
         )
     )
@@ -295,6 +315,39 @@ def _claim_delivery(
     if result.rowcount != 1:
         return None
     return db.get(ChannelDelivery, delivery_id)
+
+
+def _finish_delivery_claim(
+    db: Session,
+    delivery: ChannelDelivery,
+    *,
+    status: str,
+    last_error: str | None,
+    next_attempt_at=None,
+    delivered_at=None,
+) -> bool:
+    """Commit a delivery outcome only for the worker generation that owns it."""
+    result = db.exec(
+        update(ChannelDelivery)
+        .where(
+            ChannelDelivery.id == delivery.id,
+            ChannelDelivery.status == "sending",
+            ChannelDelivery.delivery_owner == delivery.delivery_owner,
+            ChannelDelivery.delivery_generation == delivery.delivery_generation,
+        )
+        .values(
+            status=status,
+            last_error=last_error,
+            next_attempt_at=next_attempt_at,
+            delivered_at=delivered_at,
+            sending_since=None,
+            delivery_owner=None,
+            updated_at=utc_now(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return result.rowcount == 1
 
 
 def _reaction_event_for_delivery(
@@ -419,31 +472,31 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
         or (binding.status != "active" and not allow_inactive_reaction)
     )
     if invalid_binding:
-        delivery.status = "failed"
-        delivery.last_error = "渠道绑定不存在或已停用"
-        delivery.sending_since = None
-        delivery.updated_at = utc_now()
-        db.add(delivery)
-        db.commit()
+        _finish_delivery_claim(
+            db,
+            delivery,
+            status="failed",
+            last_error="渠道绑定不存在或已停用",
+        )
         return
     reaction_event = None
     if delivery.kind in _REACTION_KINDS:
         if not channel_reaction_token(binding.channel):
-            delivery.status = "failed"
-            delivery.last_error = "reaction 渠道无效"
-            delivery.next_attempt_at = None
-            delivery.updated_at = utc_now()
-            db.add(delivery)
-            db.commit()
+            _finish_delivery_claim(
+                db,
+                delivery,
+                status="failed",
+                last_error="reaction 渠道无效",
+            )
             return
         reaction_event = _reaction_event_for_delivery(db, delivery, binding.channel)
         if not reaction_event:
-            delivery.status = "failed"
-            delivery.last_error = "reaction 事件边界无效"
-            delivery.next_attempt_at = None
-            delivery.updated_at = utc_now()
-            db.add(delivery)
-            db.commit()
+            _finish_delivery_claim(
+                db,
+                delivery,
+                status="failed",
+                last_error="reaction 事件边界无效",
+            )
             return
     if (
         binding.channel == "feishu"
@@ -453,12 +506,12 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
         and (utc_now() - delivery.first_attempt_at).total_seconds()
         > _FEISHU_DEDUP_RECOVERY_SECONDS
     ):
-        delivery.status = "failed"
-        delivery.last_error = "remote_state_unknown"
-        delivery.next_attempt_at = None
-        delivery.updated_at = utc_now()
-        db.add(delivery)
-        db.commit()
+        _finish_delivery_claim(
+            db,
+            delivery,
+            status="failed",
+            last_error="remote_state_unknown",
+        )
         return
     if delivery.kind == "reply":
         chat_session = db.get(ChatSession, delivery.session_id)
@@ -472,13 +525,12 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
             or chat_session.channel_account_key != binding.external_account_key
         )
         if invalid_session:
-            delivery.status = "failed"
-            delivery.last_error = "渠道会话与绑定账号不一致"
-            delivery.next_attempt_at = None
-            delivery.sending_since = None
-            delivery.updated_at = utc_now()
-            db.add(delivery)
-            db.commit()
+            _finish_delivery_claim(
+                db,
+                delivery,
+                status="failed",
+                last_error="渠道会话与绑定账号不一致",
+            )
             return
     try:
         adapter = get_channel_adapter(binding.channel)
@@ -524,31 +576,29 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
                 idempotency_key=delivery.idempotency_key,
             )
     except Exception as exc:
-        delivery.last_error = str(exc)[:500]
+        last_error = str(exc)[:500]
         retryable = bool(getattr(exc, "retryable", True))
         if not retryable or delivery.attempts >= settings.channel_delivery_max_attempts:
-            delivery.status = "failed"
-            delivery.next_attempt_at = None
+            status = "failed"
+            next_attempt_at = None
         else:
             delay = min(2**delivery.attempts, 300)
-            delivery.status = "pending"
-            delivery.next_attempt_at = utc_now() + timedelta(seconds=delay)
-        delivery.updated_at = utc_now()
-        db.add(delivery)
-        db.commit()
+            status = "pending"
+            next_attempt_at = utc_now() + timedelta(seconds=delay)
+        _finish_delivery_claim(
+            db,
+            delivery,
+            status=status,
+            last_error=last_error,
+            next_attempt_at=next_attempt_at,
+        )
         logger.warning("渠道投递失败(第 %s 次) delivery=%s: %s", delivery.attempts, delivery.id, exc)
         return
-    delivery.status = "delivered"
-    delivery.delivered_at = utc_now()
-    delivery.last_error = None
-    delivery.sending_since = None
-    delivery.updated_at = utc_now()
     # handoff_notice 投递成功后,把飞书返回的 message_id 回写到 delivery 与关联的
     # HumanHandoffRequest.notify_message_id,阶段 4 据此关联处理人的飞书回复。
     if delivery.kind == "handoff_notice" and sent_message_id:
         delivery.message_id = sent_message_id
         _write_handoff_notify_message_id(db, delivery, sent_message_id)
-    db.add(delivery)
     if channel_reaction_token(binding.channel) and delivery.kind not in _REACTION_KINDS:
         event = _reaction_event_for_delivery(db, delivery, binding.channel)
         target = delivery.target_json or {}
@@ -557,7 +607,13 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
         )
         if event and is_final:
             _stage_reaction_removal(db, delivery, event)
-    db.commit()
+    _finish_delivery_claim(
+        db,
+        delivery,
+        status="delivered",
+        last_error=None,
+        delivered_at=utc_now(),
+    )
 
 
 def cleanup_channel_reactions_before_binding_delete(
@@ -649,23 +705,23 @@ def _reset_stuck_deliveries(db: Session, *, reaction_lane: bool = False) -> None
         statement = statement.where(ChannelDelivery.kind.notin_(_REACTION_KINDS))
     stuck = db.exec(statement).all()
     for row in stuck:
-        binding = db.get(ChannelBinding, row.binding_id)
-        if (
-            binding
-            and binding.channel == "feishu"
-            and row.kind not in _REACTION_KINDS
-            and row.first_attempt_at is not None
-            and (now - row.first_attempt_at).total_seconds()
-            > _FEISHU_DEDUP_RECOVERY_SECONDS
-        ):
+        # A reply send that outlived its lease has an unknown remote outcome. Replaying it
+        # is not safe for providers that do not offer a verifiable idempotent receipt.
+        if row.kind not in _REACTION_KINDS:
             row.status = "failed"
             row.last_error = "remote_state_unknown"
             row.next_attempt_at = None
+            row.delivery_owner = None
+            row.delivery_generation += 1
             row.updated_at = now
             db.add(row)
             continue
+        # Reaction adapters have explicit recovery semantics (lookup or idempotent attach),
+        # so a new generation may safely take over.
         row.status = "pending"
         row.sending_since = None
+        row.delivery_owner = None
+        row.delivery_generation += 1
         row.next_attempt_at = now
         row.updated_at = now
         db.add(row)

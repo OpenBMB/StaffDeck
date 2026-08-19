@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import mimetypes
@@ -842,6 +843,7 @@ class HarnessCapabilityInvoker:
             active_skill_id=self.active_skill_id,
             agent_id=self.agent_id,
             session_id=self.session.id,
+            invocation_id=call_id,
             timeout_seconds_override=self._remaining_step_seconds(),
         )
         payload = result.model_dump(mode="json")
@@ -852,6 +854,9 @@ class HarnessCapabilityInvoker:
         payload.pop("mcp_metadata", None)
         if payload.get("success") is not True:
             return payload
+        a2a_artifacts = self._materialize_a2a_artifacts(payload, call_id=call_id)
+        if a2a_artifacts:
+            payload["artifacts"] = [*(payload.get("artifacts") or []), *a2a_artifacts]
         payload = self._persist_large_json_result(payload, call_id=call_id)
         if isinstance(app_descriptor, dict) and payload.get("success") is True:
             app_descriptor["initial_result"] = payload.get("data")
@@ -863,6 +868,68 @@ class HarnessCapabilityInvoker:
                 },
             )
         return payload
+
+    def _materialize_a2a_artifacts(
+        self,
+        payload: dict[str, Any],
+        *,
+        call_id: str,
+    ) -> list[dict[str, Any]]:
+        data = payload.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("artifacts"), list):
+            return []
+        published: list[dict[str, Any]] = []
+        directory = self.workspace_root / "artifacts" / "a2a" / _safe_artifact_name(call_id)
+        for artifact_index, artifact in enumerate(data["artifacts"], start=1):
+            if not isinstance(artifact, dict):
+                continue
+            for part_index, part in enumerate(artifact.get("parts") or [], start=1):
+                if not isinstance(part, dict) or not isinstance(part.get("file"), dict):
+                    continue
+                file_part = part["file"]
+                encoded = file_part.get("bytes")
+                if not isinstance(encoded, str) or not encoded:
+                    continue
+                try:
+                    content = base64.b64decode(encoded, validate=True)
+                except ValueError:
+                    continue
+                requested_name = str(file_part.get("name") or "").strip()
+                filename = _safe_artifact_name(
+                    requested_name or f"artifact-{artifact_index}-{part_index}.bin"
+                )
+                directory.mkdir(parents=True, exist_ok=True)
+                output = directory / filename
+                suffix = 2
+                while output.exists():
+                    output = directory / f"{Path(filename).stem}-{suffix}{Path(filename).suffix}"
+                    suffix += 1
+                output.write_bytes(content)
+                relative = output.relative_to(self.workspace_root).as_posix()
+                sha256 = hashlib.sha256(content).hexdigest()
+                content_type = str(file_part.get("mimeType") or "").strip() or (
+                    mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                )
+                file_part.pop("bytes", None)
+                file_part["path"] = relative
+                file_part["sandbox_path"] = _sandbox_path(relative)
+                file_part["sha256"] = sha256
+                published.append(
+                    {
+                        "type": "workspace_file",
+                        "task_frame_id": self.task_frame_id,
+                        "path": relative,
+                        "sandbox_path": _sandbox_path(relative),
+                        "sha256": sha256,
+                        "size": len(content),
+                        "display_name": requested_name or filename,
+                        "description": str(artifact.get("description") or "A2A Artifact"),
+                        "content_type": content_type,
+                        "operation": "a2a_artifact",
+                        "source": "a2a",
+                    }
+                )
+        return published
 
     def _persist_large_json_result(
         self,
@@ -1245,6 +1312,14 @@ def _sandbox_path(relative_path: str) -> str:
     if normalized in {"", "."}:
         return SANDBOX_WORKSPACE
     return f"{SANDBOX_WORKSPACE}/{normalized.lstrip('/')}"
+
+
+def _safe_artifact_name(value: str) -> str:
+    cleaned = "".join(
+        character if character.isalnum() or character in {"-", "_", "."} else "-"
+        for character in Path(str(value or "artifact").replace("\\", "/")).name
+    ).strip(".-")
+    return cleaned[:180] or "artifact"
 
 
 def _model_visible_file_result(value: Any, *, key: str = "") -> Any:

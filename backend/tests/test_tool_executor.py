@@ -1,15 +1,17 @@
+import json
 import sys
 from pathlib import Path
 
 import httpx
+import pytest
 
 from app.agents.branching import ensure_private_resource_binding
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
-from app.db.models import AgentProfile, MCPServer, Tenant, Tool
+from app.db.models import A2ATaskEvent, A2ATaskRun, AgentProfile, MCPServer, Tenant, Tool
 from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 
 def test_resolve_secret_header(monkeypatch):
@@ -170,7 +172,7 @@ def test_execution_policy_uses_tool_timeout_and_falls_back_for_invalid_values() 
         name="bad.lookup",
         method="POST",
         url="https://example.test/bad",
-        config_json={"execution": {"timeout_seconds": 999}},
+        config_json={"execution": {"timeout_seconds": 9999}},
     )
 
     assert executor._execution_policy(configured).timeout_seconds == 20
@@ -270,11 +272,417 @@ def test_execute_a2a_tool_sends_standard_send_message_request(monkeypatch) -> No
         )
 
     assert result.success is True
-    assert result.data == {"kind": "message", "parts": [{"text": "done"}]}
-    assert captured["timeout"] == 25
+    assert result.data["state"] == "completed"
+    assert result.data["task"] == {"kind": "message", "parts": [{"text": "done"}]}
+    assert captured["timeout"] == pytest.approx(25, abs=0.01)
     assert captured["headers"]["A2A-Version"] == "1.0"
     assert captured["payload"]["method"] == "SendMessage"
     assert captured["payload"]["params"]["message"]["parts"] == [{"text": "查询报销制度"}]
+
+
+def test_execute_a2a_waits_for_working_task_and_persists_lifecycle(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *, timeout: float):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url, *, headers=None):
+            return httpx.Response(
+                200,
+                json={
+                    "protocolVersion": "1.0",
+                    "supportedInterfaces": [
+                        {
+                            "url": "https://agent.example.test/a2a",
+                            "protocolBinding": "JSONRPC",
+                            "protocolVersion": "1.0",
+                        }
+                    ],
+                    "capabilities": {"streaming": False},
+                },
+                request=httpx.Request("GET", url),
+            )
+
+        def post(self, url, *, headers=None, json=None):
+            method = json["method"]
+            calls.append(method)
+            if method == "SendMessage":
+                result = {
+                    "id": "remote-task-1",
+                    "contextId": "ctx-1",
+                    "status": {"state": "working"},
+                }
+            else:
+                result = {
+                    "id": "remote-task-1",
+                    "contextId": "ctx-1",
+                    "status": {
+                        "state": "completed",
+                        "message": {"parts": [{"text": "done"}]},
+                    },
+                }
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": json["id"], "result": result},
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            Tool(
+                id="tool_a2a_wait",
+                tenant_id="tenant_demo",
+                name="a2a.wait",
+                tool_type="a2a",
+                method="POST",
+                url="https://agent.example.test/a2a",
+                config_json={"poll_interval_seconds": 0.001},
+                enabled=True,
+            )
+        )
+        db.commit()
+
+        result = ToolExecutor(db).execute(
+            "tenant_demo",
+            ToolCall(name="a2a.wait", arguments={"query": "run"}),
+            session_id="session-1",
+        )
+        runs = list(db.exec(select(A2ATaskRun)).all())
+        events = list(db.exec(select(A2ATaskEvent)).all())
+
+    assert result.success is True
+    assert result.data["state"] == "completed"
+    assert result.data["task_id"] == "remote-task-1"
+    assert calls == ["SendMessage", "GetTask"]
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+    assert {event.event_type for event in events} >= {
+        "submitted",
+        "message_result",
+        "task_polled",
+        "completed",
+    }
+
+
+def test_execute_a2a_same_invocation_returns_persisted_result_without_resending(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *, timeout: float):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url, *, headers=None):
+            raise RuntimeError("no agent card")
+
+        def post(self, url, *, headers=None, json=None):
+            calls.append(json["method"])
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": json["id"],
+                    "result": {
+                        "id": "remote-idempotent",
+                        "status": {"state": "completed"},
+                    },
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            Tool(
+                id="tool_a2a_idempotent",
+                tenant_id="tenant_demo",
+                name="a2a.idempotent",
+                tool_type="a2a",
+                method="POST",
+                url="https://agent.example.test/a2a",
+                enabled=True,
+            )
+        )
+        db.commit()
+
+        first = ToolExecutor(db).execute(
+            "tenant_demo",
+            ToolCall(name="a2a.idempotent", arguments={"query": "run"}),
+            invocation_id="call-1",
+        )
+        second = ToolExecutor(db).execute(
+            "tenant_demo",
+            ToolCall(name="a2a.idempotent", arguments={"query": "run"}),
+            invocation_id="call-1",
+        )
+        runs = list(db.exec(select(A2ATaskRun)).all())
+
+    assert first.success is True
+    assert second.success is True
+    assert second.data == first.data
+    assert calls == ["SendMessage"]
+    assert len(runs) == 1
+
+
+def test_execute_a2a_same_invocation_resumes_remote_working_task(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *, timeout: float):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, *, headers=None, json=None):
+            calls.append(json["method"])
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": json["id"],
+                    "result": {
+                        "id": "remote-recover",
+                        "contextId": "context-recover",
+                        "status": {"state": "completed"},
+                    },
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            Tool(
+                id="tool_a2a_recover",
+                tenant_id="tenant_demo",
+                name="a2a.recover",
+                tool_type="a2a",
+                method="POST",
+                url="https://agent.example.test/a2a",
+                config_json={"discover_agent_card": False, "poll_interval_seconds": 0.001},
+                enabled=True,
+            )
+        )
+        db.add(
+            A2ATaskRun(
+                id="a2arun_recover",
+                direction="client",
+                tenant_id="tenant_demo",
+                tool_id="tool_a2a_recover",
+                invocation_id="call-recover",
+                endpoint_url="https://agent.example.test/a2a",
+                remote_task_id="remote-recover",
+                context_id="context-recover",
+                status="working",
+                request_json={
+                    "arguments": {"query": "run"},
+                    "message": {
+                        "messageId": "message-recover",
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "run"}],
+                    },
+                },
+            )
+        )
+        db.commit()
+
+        result = ToolExecutor(db).execute(
+            "tenant_demo",
+            ToolCall(name="a2a.recover", arguments={"query": "run"}),
+            invocation_id="call-recover",
+        )
+        recovered = db.get(A2ATaskRun, "a2arun_recover")
+
+    assert result.success is True
+    assert calls == ["GetTask"]
+    assert recovered is not None
+    assert recovered.status == "completed"
+    assert recovered.recovery_attempts == 1
+
+
+def test_execute_a2a_continues_input_required_task_in_same_session(monkeypatch) -> None:
+    messages: list[dict[str, object]] = []
+
+    class FakeClient:
+        def __init__(self, *, timeout: float):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url, *, headers=None):
+            raise RuntimeError("no agent card")
+
+        def post(self, url, *, headers=None, json=None):
+            message = json["params"]["message"]
+            messages.append(message)
+            first = len(messages) == 1
+            result = {
+                "id": "remote-task-input",
+                "contextId": "ctx-input",
+                "status": {
+                    "state": "input-required" if first else "completed",
+                    "message": {
+                        "parts": [{"text": "请提供姓名" if first else "张三已查询"}]
+                    },
+                },
+            }
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": json["id"], "result": result},
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            Tool(
+                id="tool_a2a_continue",
+                tenant_id="tenant_demo",
+                name="a2a.continue",
+                tool_type="a2a",
+                method="POST",
+                url="https://agent.example.test/a2a",
+                enabled=True,
+            )
+        )
+        db.commit()
+
+        first = ToolExecutor(db).execute(
+            "tenant_demo",
+            ToolCall(name="a2a.continue", arguments={"query": "查询员工"}),
+            session_id="session-continue",
+        )
+        second = ToolExecutor(db).execute(
+            "tenant_demo",
+            ToolCall(name="a2a.continue", arguments={"query": "张三"}),
+            session_id="session-continue",
+        )
+
+    assert first.success is True
+    assert first.data["awaiting_input"] is True
+    assert second.success is True
+    assert second.data["state"] == "completed"
+    assert messages[1]["taskId"] == "remote-task-input"
+    assert messages[1]["contextId"] == "ctx-input"
+
+
+def test_execute_a2a_stream_merges_artifact_before_terminal_status(monkeypatch) -> None:
+    class FakeStreamResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            artifact = {
+                "jsonrpc": "2.0",
+                "id": "1",
+                "result": {
+                    "artifactUpdate": {
+                        "taskId": "stream-task",
+                        "contextId": "stream-context",
+                        "artifact": {
+                            "artifactId": "report",
+                            "parts": [{"file": {"name": "report.txt", "bytes": "aGVsbG8="}}],
+                        },
+                    }
+                },
+            }
+            completed = {
+                "jsonrpc": "2.0",
+                "id": "1",
+                "result": {
+                    "statusUpdate": {
+                        "taskId": "stream-task",
+                        "contextId": "stream-context",
+                        "status": {"state": "completed"},
+                        "final": True,
+                    }
+                },
+            }
+            return iter(
+                [
+                    "id: 1",
+                    f"data: {json.dumps(artifact)}",
+                    "",
+                    "id: 2",
+                    f"data: {json.dumps(completed)}",
+                    "",
+                ]
+            )
+
+    class FakeClient:
+        def __init__(self, *, timeout: float):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url, *, headers=None):
+            return httpx.Response(
+                200,
+                json={"capabilities": {"streaming": True}},
+                request=httpx.Request("GET", url),
+            )
+
+        def stream(self, method, url, *, headers=None, json=None):
+            return FakeStreamResponse()
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            Tool(
+                tenant_id="tenant_demo",
+                name="a2a.stream",
+                tool_type="a2a",
+                method="POST",
+                url="https://agent.example.test/a2a",
+                enabled=True,
+            )
+        )
+        db.commit()
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="a2a.stream", arguments={"query": "report"})
+        )
+
+    assert result.success is True
+    assert result.data["state"] == "completed"
+    assert result.data["artifacts"][0]["artifactId"] == "report"
 
 
 def test_execute_mcp_tool_passes_configured_timeout(monkeypatch) -> None:

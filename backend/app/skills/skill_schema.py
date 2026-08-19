@@ -244,6 +244,7 @@ class SkillDistillResponse(BaseModel):
 
 class SkillRewriteRequest(BaseModel):
     tenant_id: str
+    agent_id: Optional[str] = None
     current_skill: SkillCard
     instruction: str
     model_config_id: Optional[str] = None
@@ -252,6 +253,7 @@ class SkillRewriteRequest(BaseModel):
     target_label: Optional[str] = None
     conversation: list[dict[str, str]] = Field(default_factory=list)
     available_tools: list[dict[str, Any]] = Field(default_factory=list)
+    available_sops: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SkillRewriteResponse(BaseModel):

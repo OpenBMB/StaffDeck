@@ -85,6 +85,45 @@ def test_harness_turn_receipt_blocks_in_progress_and_mismatched_reuse() -> None:
             raise AssertionError("mismatched client_turn_id reuse was not blocked")
 
 
+def test_harness_turn_terminal_receipt_allows_only_cancel_or_completion() -> None:
+    engine = _engine()
+    with Session(engine) as db:
+        session = ChatSession(id="session-1", tenant_id="tenant-demo")
+        db.add(session)
+        db.commit()
+        store = HarnessTurnStore(db)
+
+        cancelled = store.claim(session, _request()).record
+        assert cancelled is not None
+        assert store.cancel(cancelled) is True
+        assert cancelled.status == "cancelled"
+        try:
+            store.begin_completion(cancelled)
+        except HarnessTurnConflict:
+            pass
+        else:  # pragma: no cover - defensive assertion
+            raise AssertionError("cancelled receipt allowed normal completion")
+
+        completing_request = _request().model_copy(
+            update={"client_turn_id": "turn-client-2"}
+        )
+        completing = store.claim(session, completing_request).record
+        assert completing is not None
+        store.begin_completion(completing)
+        assert completing.status == "finalizing"
+        assert store.cancel(completing) is False
+        response = ChatTurnResponse(
+            reply="done",
+            session_id=session.id,
+            session_state=SessionPublic(
+                session_id=session.id,
+                tenant_id=session.tenant_id,
+            ),
+        )
+        store.complete(completing, response)
+        assert completing.status == "completed"
+
+
 def test_first_turn_retry_without_returned_session_id_replays_original() -> None:
     engine = _engine()
     original_request = ChatTurnRequest(

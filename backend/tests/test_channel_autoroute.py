@@ -10,11 +10,12 @@ import app.channels.service_intake as intake_module
 import app.core.agent_loop as agent_loop_module
 from app.channels.service_autoroute import (
     AUTO_ROUTE_CONFIDENCE_THRESHOLD,
+    RouteDecision,
     classify_intent,
     maybe_auto_route,
 )
 from app.channels.service_intake import process_inbound
-from app.channels.service_routing import resolve_current_agent
+from app.channels.service_routing import resolve_current_agent, set_current_agent
 from app.db.models import (
     AgentEvent,
     AgentProfile,
@@ -342,6 +343,40 @@ def test_auto_route_hit_updates_pointer() -> None:
         assert decision is not None and decision.switched is True
         current, _ = resolve_current_agent(db, binding, "wechat_p2p_u1")
         assert current == "agent_cw"
+
+
+def test_auto_route_does_not_overwrite_manual_switch_during_classification(monkeypatch) -> None:
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        resolve_current_agent(db, binding, "wechat_p2p_u1")
+        db.commit()
+
+        def classify_after_manual_switch(*_args, **_kwargs):
+            set_current_agent(
+                db,
+                binding,
+                "wechat_p2p_u1",
+                "agent_xz",
+                pin_until=utc_now() + timedelta(minutes=5),
+            )
+            return RouteDecision(
+                agent_id="agent_cw",
+                switched=True,
+                confidence=0.99,
+                reason="财务问题",
+                target_agent_id="agent_cw",
+            )
+
+        monkeypatch.setattr(autoroute_module, "classify_intent", classify_after_manual_switch)
+        decision = maybe_auto_route(db, binding, "agent_xz", "wechat_p2p_u1", "报销吗")
+
+        assert decision is not None
+        assert decision.switched is False
+        assert decision.error == "route_changed_during_classification"
+        current, _ = resolve_current_agent(db, binding, "wechat_p2p_u1")
+        assert current == "agent_xz"
 
 
 # ---------- intake 集成 ----------

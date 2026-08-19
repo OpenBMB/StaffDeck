@@ -176,6 +176,32 @@ def test_nested_sop_cycle_is_rejected() -> None:
         validate_sop_nesting("first", first.content_json, [first, second])
 
 
+def test_nesting_validator_accepts_compact_rewrite_catalog() -> None:
+    current = _skill(
+        "parent",
+        nodes=[
+            {
+                "node_id": "child_flow",
+                "name": "Child",
+                "type": "subflow",
+                "sub_sop_id": "child",
+            }
+        ],
+    )
+    catalog = [
+        {
+            "skill_id": "child",
+            "status": "published",
+            "content": {
+                "capability_scope": "sop_specific",
+                "nodes": [],
+            },
+        }
+    ]
+
+    validate_sop_nesting("parent", current.content_json, catalog)
+
+
 def test_deep_nested_sop_cycle_is_rejected() -> None:
     first = _skill(
         "first",

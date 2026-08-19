@@ -88,7 +88,8 @@ def test_message_context_uses_sandbox_path_without_inlining_text() -> None:
 
     assert "总结一下" in context
     assert "上传附件上下文" in context
-    assert "工作区相对路径：attachments/readme.md" in context
+    assert "exec_command 相对路径：attachments/readme.md" in context
+    assert "typed 文件工具路径：/workspace/attachments/readme.md" in context
     assert "/workspace/attachments/readme.md" in context
     assert "# Title" not in context
 
@@ -110,7 +111,7 @@ def test_document_attachment_context_routes_binary_to_extractor() -> None:
         {"attachments": [attachment.model_dump(mode="json")]},
     )
 
-    assert "工作区相对路径：attachments/contract.docx" in context
+    assert "exec_command 相对路径：attachments/contract.docx" in context
     assert "先调用 extract_document_text" in context
     assert "不要直接使用 read_file" in context
 

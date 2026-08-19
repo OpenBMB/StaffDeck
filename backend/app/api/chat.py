@@ -14,7 +14,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, update
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
@@ -35,6 +35,7 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
+    HarnessTurnRecord,
     HarnessTaskFrameRecord,
     HumanHandoffRequest,
     Message,
@@ -1509,6 +1510,13 @@ def _persist_chat_turn_cancelled(
         if not matches_message and not matches_client_turn:
             continue
         if event.event_type == "stream_cancelled":
+            _cancel_harness_turn_receipt(
+                db,
+                tenant_id,
+                chat_session.id,
+                message_id,
+                client_turn_id,
+            )
             return _ensure_cancelled_assistant_message(
                 db,
                 tenant_id,
@@ -1520,6 +1528,17 @@ def _persist_chat_turn_cancelled(
         return False
 
     now = utc_now()
+    receipt_cancelled = _cancel_harness_turn_receipt(
+        db,
+        tenant_id,
+        chat_session.id,
+        message_id,
+        client_turn_id,
+    )
+    if receipt_cancelled is False:
+        # Normal completion already owns the terminal receipt. Do not append a
+        # contradictory cancellation event/message after that linearization.
+        return False
     db.add(
         AgentEvent(
             tenant_id=tenant_id,
@@ -1548,6 +1567,60 @@ def _persist_chat_turn_cancelled(
     chat_session.updated_at = now
     db.add(chat_session)
     return True
+
+
+def _cancel_harness_turn_receipt(
+    db: Session,
+    tenant_id: str,
+    session_id: str,
+    user_message_id: str,
+    client_turn_id: str,
+) -> bool | None:
+    """Fence the worker in the same transaction as the cancellation event."""
+
+    identities = {value for value in (user_message_id, client_turn_id) if value}
+    if not identities:
+        return None
+    matching = db.exec(
+        select(HarnessTurnRecord).where(
+            HarnessTurnRecord.tenant_id == tenant_id,
+            HarnessTurnRecord.session_id == session_id,
+            (
+                HarnessTurnRecord.client_turn_id.in_(identities)
+                | HarnessTurnRecord.user_message_id.in_(identities)
+            ),
+        )
+    ).first()
+    if matching is None:
+        return None
+    if matching.status == "cancelled":
+        return True
+    if matching.status != "started":
+        return False
+    now = utc_now()
+    result = db.exec(
+        update(HarnessTurnRecord)
+        .where(
+            HarnessTurnRecord.tenant_id == tenant_id,
+            HarnessTurnRecord.session_id == session_id,
+            HarnessTurnRecord.status == "started",
+            (
+                HarnessTurnRecord.client_turn_id.in_(identities)
+                | HarnessTurnRecord.user_message_id.in_(identities)
+            ),
+        )
+        .values(
+            status="cancelled",
+            error_json={
+                "code": "CANCELLED",
+                "message": "用户取消了当前 Harness 执行。",
+            },
+            finished_at=now,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return getattr(result, "rowcount", 0) == 1
 
 
 def _ensure_cancelled_assistant_message(

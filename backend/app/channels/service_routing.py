@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
+from sqlalchemy import or_, update
 from sqlmodel import Session, select
 
 from app.channels.service_identity import channel_label
@@ -162,6 +163,7 @@ def set_current_agent(
     state = _get_conv_state(db, binding, external_conv_id)
     if state:
         state.current_agent_id = agent_id
+        state.routing_revision += 1
         state.updated_at = utc_now()
         if pin_until is not None:
             state.manual_pin_until = pin_until
@@ -175,6 +177,52 @@ def set_current_agent(
         )
     db.add(state)
     db.flush()
+
+
+def route_revision(
+    db: Session,
+    binding: ChannelBinding,
+    external_conv_id: str,
+) -> tuple[str, int] | None:
+    """Return the current route pointer and its compare-and-set revision."""
+    state = _get_conv_state(db, binding, external_conv_id)
+    if not state:
+        return None
+    return state.current_agent_id, state.routing_revision
+
+
+def compare_and_set_current_agent(
+    db: Session,
+    binding: ChannelBinding,
+    external_conv_id: str,
+    *,
+    expected_agent_id: str,
+    expected_revision: int,
+    agent_id: str,
+) -> bool:
+    """Apply an automatic route only while the inspected route is still current."""
+    now = utc_now()
+    result = db.exec(
+        update(ChannelConvState)
+        .where(
+            ChannelConvState.binding_id == binding.id,
+            ChannelConvState.external_conv_id == external_conv_id,
+            ChannelConvState.current_agent_id == expected_agent_id,
+            ChannelConvState.routing_revision == expected_revision,
+            or_(
+                ChannelConvState.manual_pin_until.is_(None),
+                ChannelConvState.manual_pin_until <= now,
+            ),
+        )
+        .values(
+            current_agent_id=agent_id,
+            routing_revision=ChannelConvState.routing_revision + 1,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.flush()
+    return result.rowcount == 1
 
 
 def manual_pin_active(db: Session, binding: ChannelBinding, external_conv_id: str) -> bool:

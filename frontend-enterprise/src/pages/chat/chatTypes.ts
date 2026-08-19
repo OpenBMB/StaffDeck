@@ -65,6 +65,7 @@ export type TraceLine = {
   icon?: CotTraceIconName;
   placeholder?: boolean;
   provisional?: boolean;
+  depth?: number;
   mcpApp?: MCPAppViewDescriptor;
 };
 

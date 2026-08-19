@@ -23,6 +23,7 @@ import {
 import { Maximize2, Minimize2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import {
   useEffect,
+  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -74,6 +75,7 @@ import {
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
 import { cn } from '@/lib/utils';
 import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
+import { subscribeEnterpriseCapabilityCatalogRefresh } from '@/lib/capability-catalog-events';
 import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
 import type { EnterpriseAuthUser } from '../auth';
 import {
@@ -634,6 +636,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   const uploadControllersRef = useRef<Record<string, AbortController>>({});
   const dragDepthRef = useRef(0);
   const animationTimersRef = useRef<number[]>([]);
+  const capabilityCatalogRequestRef = useRef(0);
   const sourceScrollRef = useRef<HTMLDivElement | null>(null);
   const chatMessagesRef = useRef<HTMLDivElement | null>(null);
   const [cacheReady, setCacheReady] = useState(false);
@@ -825,27 +828,40 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     };
   }, [active]);
 
+  const refreshCapabilityCatalog = useCallback(async () => {
+    if (!active) return;
+    const requestId = capabilityCatalogRequestRef.current + 1;
+    capabilityCatalogRequestRef.current = requestId;
+    const [toolResult, skillResult, knowledgeResult, sopResult] = await Promise.allSettled([
+      api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentQuery}`),
+      api.get<GeneralSkillRead[]>(
+        `/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentQuery}`,
+      ),
+      api.get<KnowledgeBaseRead[]>(
+        `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentQuery}`,
+      ),
+      api.get<SkillRead[]>(`/api/enterprise/skills?tenant_id=${TENANT_ID}${agentQuery}`),
+    ]);
+    if (requestId !== capabilityCatalogRequestRef.current) return;
+    if (toolResult.status === 'fulfilled') setTools(toolResult.value);
+    if (skillResult.status === 'fulfilled') setGeneralSkills(skillResult.value);
+    if (knowledgeResult.status === 'fulfilled') setKnowledgeBases(knowledgeResult.value);
+    if (sopResult.status === 'fulfilled') setSopSkills(sopResult.value);
+  }, [active, agentQuery]);
+
   useEffect(() => {
-    void Promise.all([
-      api
-        .get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentQuery}`)
-        .catch(() => [] as ToolRead[]),
-      api
-        .get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentQuery}`)
-        .catch(() => [] as GeneralSkillRead[]),
-      api
-        .get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentQuery}`)
-        .catch(() => [] as KnowledgeBaseRead[]),
-      api
-        .get<SkillRead[]>(`/api/enterprise/skills?tenant_id=${TENANT_ID}${agentQuery}`)
-        .catch(() => [] as SkillRead[]),
-    ]).then(([toolRows, skillRows, knowledgeRows, sopRows]) => {
-      setTools(toolRows);
-      setGeneralSkills(skillRows);
-      setKnowledgeBases(knowledgeRows);
-      setSopSkills(sopRows);
+    void refreshCapabilityCatalog();
+    return () => {
+      capabilityCatalogRequestRef.current += 1;
+    };
+  }, [refreshCapabilityCatalog]);
+
+  useEffect(() => {
+    if (!active) return;
+    return subscribeEnterpriseCapabilityCatalogRefresh(() => {
+      void refreshCapabilityCatalog();
     });
-  }, [agentQuery]);
+  }, [active, refreshCapabilityCatalog]);
 
   useEffect(() => {
     api
@@ -1093,6 +1109,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
         `/api/enterprise/skills/${encodeURIComponent(editableDraft.skill_id)}/rewrite/stream`,
         {
           tenant_id: TENANT_ID,
+          agent_id: activeAgentId || undefined,
           current_skill: editableDraft,
           instruction: text,
           model_config_id: selectedRewriteModelId || undefined,
@@ -6502,7 +6519,11 @@ export function EditableCapabilityReferencesLine({
   onRequiredChange: (value: string[]) => void;
 }) {
   const [query, setQuery] = useState('');
-  const mergedOptions = mergeCapabilityReferenceOptions(options, values);
+  const selectedValues = new Set(values);
+  const mergedOptions = mergeCapabilityReferenceOptions(
+    options.filter((option) => !option.unavailableReason || selectedValues.has(option.value)),
+    values,
+  );
   const selected = new Set(values);
   const required = new Set(requiredValues);
   const normalizedQuery = query.trim().toLowerCase();
@@ -8058,7 +8079,12 @@ function blankSkillForAnimation(skill: SkillCard): SkillCard {
 }
 
 function diffTargetPaths(previousDraft: SkillCard, nextDraft: SkillCard, targetPaths: string[]): string[] {
-  const candidates = Array.from(new Set([...targetPaths, ...allTargetPaths(previousDraft), ...allTargetPaths(nextDraft)]));
+  const candidates = Array.from(new Set([
+    ...targetPaths,
+    ...allTargetPaths(previousDraft),
+    ...allTargetPaths(nextDraft),
+    'graph',
+  ]));
   return candidates.filter((path) => sectionSignature(previousDraft, path) !== sectionSignature(nextDraft, path));
 }
 
@@ -8077,6 +8103,13 @@ function sectionSignature(skill: SkillCard, path: string): string {
       required_info: skill.required_info || [],
       interruption_policy: skill.interruption_policy || {},
       response_rules: skill.response_rules || [],
+    });
+  }
+  if (path === 'graph') {
+    return JSON.stringify({
+      edges: skill.edges || [],
+      start_node_id: skill.start_node_id,
+      terminal_node_ids: skill.terminal_node_ids || [],
     });
   }
   const stepIndex = stepIndexFromPath(path);
@@ -8425,6 +8458,7 @@ function diffTargetLabel(path: string, skill: SkillCard | null): string {
 function targetLabel(paths: string[], skill: SkillCard): string {
   const labels = paths.map((path) => {
     if (path === 'basic') return '基础信息';
+    if (path === 'graph') return '流程连线';
     const stepIndex = stepIndexFromPath(path);
     if (stepIndex !== null) {
       const index = stepIndex;

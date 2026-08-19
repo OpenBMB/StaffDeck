@@ -36,6 +36,7 @@ from app.core.harness_v2_engine import (
     HarnessV2Engine,
     _globalize_citations,
     _prior_result,
+    _single_task_reply,
     _turn_skill_projection,
     _with_recoverable_first_session,
 )
@@ -75,7 +76,10 @@ from app.harness.errors import HarnessExecutionError
 from app.knowledge.schema import KnowledgeSearchResponse
 from app.scheduled_tasks.service import (
     _finish_task_schedule,
+    _prepare_scheduled_task_run,
     _scheduled_harness_outcome,
+    _skip_misfired_run,
+    due_scheduled_tasks,
 )
 from app.session.session_schema import (
     ChatAttachmentRead,
@@ -310,6 +314,41 @@ def test_turn_planner_falls_back_to_an_isolated_conversation_frame() -> None:
     assert frame.source_message == "请解释退款规则"
     assert frame.target_skill_id is None
     assert frame.target_step_id is None
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["completed", "awaiting_user", "handoff", "failed", "blocked", "action_budget"],
+)
+def test_single_task_reply_uses_harness_finish_reply(status: str) -> None:
+    result = TaskExecutionResult(
+        task_frame_id="task-1",
+        status=status,
+        reply_fragment="  Harness 已生成的用户回复。  ",
+    )
+
+    assert _single_task_reply([result]) == "Harness 已生成的用户回复。"
+
+
+def test_single_task_reply_keeps_multi_task_and_empty_reply_on_synthesis_path() -> None:
+    completed = TaskExecutionResult(
+        task_frame_id="task-1",
+        status="completed",
+        reply_fragment="第一个任务结果",
+    )
+    awaiting = TaskExecutionResult(
+        task_frame_id="task-2",
+        status="awaiting_user",
+        reply_fragment="请补充第二个任务的信息",
+    )
+    empty = TaskExecutionResult(
+        task_frame_id="task-3",
+        status="completed",
+        reply_fragment="  ",
+    )
+
+    assert _single_task_reply([completed, awaiting]) is None
+    assert _single_task_reply([empty]) is None
 
 
 def test_turn_planner_routes_handoff_human_to_sop_handoff_node() -> None:
@@ -1311,6 +1350,105 @@ def test_one_shot_scheduled_task_stays_retryable_when_harness_needs_input() -> N
         assert task.status == "paused"
         assert task.last_status == "needs_input"
         assert task.next_run_at is None
+
+
+def test_due_scheduled_tasks_completes_expired_task_without_claiming_it() -> None:
+    engine = _test_engine()
+    now = utc_now()
+    with Session(engine) as db:
+        task = ScheduledTask(
+            id="scheduled-expired",
+            tenant_id="tenant-demo",
+            agent_id="agent-1",
+            created_by_user_id="user-1",
+            title="已过期任务",
+            prompt="不应执行",
+            schedule_type="daily",
+            schedule_json={"time": "09:00"},
+            timezone="UTC",
+            status="active",
+            next_run_at=now - timedelta(minutes=2),
+            end_at=now - timedelta(minutes=1),
+        )
+        db.add(task)
+        db.commit()
+
+        assert due_scheduled_tasks(db, now=now) == []
+        db.refresh(task)
+        assert task.status == "completed"
+        assert task.next_run_at is None
+        assert task.lease_owner is None
+
+
+def test_skip_misfire_records_skip_and_advances_past_backlog() -> None:
+    engine = _test_engine()
+    now = utc_now()
+    scheduled_for = now - timedelta(days=3)
+    with Session(engine) as db:
+        task = ScheduledTask(
+            id="scheduled-misfire-skip",
+            tenant_id="tenant-demo",
+            agent_id="agent-1",
+            created_by_user_id="user-1",
+            title="跳过积压任务",
+            prompt="不应补跑",
+            schedule_type="daily",
+            schedule_json={"time": "09:00"},
+            timezone="UTC",
+            status="active",
+            misfire_policy="skip",
+            next_run_at=scheduled_for,
+        )
+        db.add(task)
+        db.commit()
+
+        run = _skip_misfired_run(db, task, scheduled_for, manual=False)
+
+        assert run is not None
+        assert run.status == "skipped"
+        assert task.run_count == 1
+        assert task.next_run_at is not None
+        assert task.next_run_at > now
+
+
+def test_retrying_scheduled_run_reuses_same_run_and_session() -> None:
+    engine = _test_engine()
+    now = utc_now()
+    with Session(engine) as db:
+        task = ScheduledTask(
+            id="scheduled-retry",
+            tenant_id="tenant-demo",
+            agent_id="agent-1",
+            created_by_user_id="user-1",
+            title="冲突后重试",
+            prompt="继续执行",
+            schedule_type="daily",
+            schedule_json={"time": "09:00"},
+            timezone="UTC",
+            status="active",
+            next_run_at=now,
+        )
+        run = ScheduledTaskRun(
+            id="scheduled-run-retry",
+            tenant_id=task.tenant_id,
+            scheduled_task_id=task.id,
+            agent_id=task.agent_id,
+            user_id=task.created_by_user_id,
+            session_id="scheduled-session-retry",
+            scheduled_for=now,
+            status="retrying",
+            error="HARNESS_TURN_CONFLICT",
+        )
+        db.add(task)
+        db.add(run)
+        db.commit()
+
+        claimed = _prepare_scheduled_task_run(db, task, now, manual=False)
+
+        assert claimed.id == run.id
+        assert claimed.session_id == run.session_id
+        assert claimed.status == "running"
+        assert claimed.error is None
 
 
 def test_external_tool_names_cannot_shadow_later_builtin_capabilities() -> None:
@@ -2419,6 +2557,205 @@ def test_harness_agent_enforces_tool_allowlist_and_keeps_an_isolated_transcript(
     assert "GeneralSkill 是工作流说明包" in system_prompts[0]
     assert "不会启动第二套 runner" in system_prompts[0]
     assert "Skill 负责提供工作流程" in system_prompts[0]
+
+
+def test_harness_agent_adapts_bare_json_after_loading_general_skill(
+    monkeypatch,
+) -> None:
+    business_result = {
+        "function": "ZRFC_HR_GET_PERNR_INFO",
+        "params": '{"I_ENAME":"张三","I_BS":"1"}',
+    }
+    actions = iter(
+        [
+            {
+                "action": "tool",
+                "tool_name": "general_skill.rfc-params",
+                "arguments": {
+                    "operation": "read",
+                    "query": "查询已入职员工张三的信息",
+                },
+            },
+            business_result,
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt, _payload):
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    invoked: list[tuple[str, dict[str, object]]] = []
+    trace_events: list[tuple[str, dict[str, object]]] = []
+
+    def invoke_tool(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        invoked.append((name, arguments))
+        return {
+            "success": True,
+            "data": {
+                "kind": "general_skill",
+                "slug": "rfc-params",
+                "operation": "read",
+                "package": {
+                    "files": [
+                        {
+                            "path": "SKILL.md",
+                            "content_preview": "只返回固定业务 JSON，不执行函数。",
+                        }
+                    ]
+                },
+            },
+        }
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-rfc-params",
+            kind="conversation",
+            goal="把自然语言转换为 SAP RFC 参数",
+            required_capability_names=["general_skill.rfc-params"],
+            capability_manifest=CapabilityManifest(
+                available=[
+                    CapabilityDescriptor(
+                        capability_id="skill-rfc-params",
+                        name="general_skill.rfc-params",
+                        kind="general_skill",
+                    )
+                ]
+            ),
+        ),
+        _model_config(),
+        invoke_tool,
+        max_actions=2,
+        trace_sink=lambda event_type, payload: trace_events.append(
+            (event_type, payload)
+        ),
+    )
+
+    assert result.status == "completed"
+    assert result.action_count == 2
+    assert result.structured_result == business_result
+    assert result.reply_fragment == (
+        '{"function":"ZRFC_HR_GET_PERNR_INFO",'
+        '"params":"{\\"I_ENAME\\":\\"张三\\",\\"I_BS\\":\\"1\\"}"}'
+    )
+    assert invoked == [
+        (
+            "general_skill.rfc-params",
+            {
+                "operation": "read",
+                "query": "查询已入职员工张三的信息",
+            },
+        )
+    ]
+    assert any(
+        event_type == "harness_structured_result_adapted"
+        and payload["source"] == "general_skill.rfc-params"
+        for event_type, payload in trace_events
+    )
+    assert not any(
+        event_type == "harness_action_failed"
+        for event_type, _payload in trace_events
+    )
+
+
+def test_harness_agent_does_not_adapt_bare_json_without_loaded_general_skill(
+    monkeypatch,
+) -> None:
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt, _payload):
+            return {
+                "function": "ZRFC_HR_GET_PERNR_INFO",
+                "params": '{"I_ENAME":"张三","I_BS":"1"}',
+            }
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-invalid-bare-json",
+            kind="conversation",
+            goal="普通任务",
+            capability_manifest=CapabilityManifest(),
+        ),
+        _model_config(),
+        lambda _name, _arguments: {
+            "success": True,
+        },
+        max_actions=1,
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error["code"] == "HARNESS_ACTION_INVALID"
+    assert result.structured_result is None
+
+
+def test_harness_agent_blocks_repeated_non_retryable_action(
+    monkeypatch,
+) -> None:
+    repeated_action = {
+        "action": "tool",
+        "tool_name": "exec_command",
+        "arguments": {"command": "sleep 1 &"},
+    }
+    actions = iter([repeated_action, repeated_action])
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt, _payload):
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    invoked: list[tuple[str, dict[str, object]]] = []
+
+    def invoke_tool(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        invoked.append((name, arguments))
+        return {
+            "success": False,
+            "error": {
+                "code": "COMMAND_DENIED",
+                "message": "Dangerous or nested shell command is not allowed.",
+                "retryable": False,
+            },
+        }
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-no-command-retry",
+            kind="conversation",
+            goal="读取附件",
+            capability_manifest=CapabilityManifest(
+                available=[
+                    CapabilityDescriptor(
+                        capability_id="builtin.exec-command",
+                        name="exec_command",
+                        kind="internal",
+                    )
+                ]
+            ),
+        ),
+        _model_config(),
+        invoke_tool,
+        max_actions=3,
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error["code"] == "NON_RETRYABLE_ACTION_REPEATED"
+    assert invoked == [
+        (
+            "exec_command",
+            {"command": "sleep 1 &"},
+        )
+    ]
 
 
 def test_harness_agent_activates_described_capability_for_current_revision(
