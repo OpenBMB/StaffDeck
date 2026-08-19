@@ -217,11 +217,11 @@ class A2ATaskRun(SQLModel, table=True):
     context_id: Optional[str] = Field(default=None, index=True)
     codex_session_id: Optional[str] = Field(default=None, index=True)
     status: str = Field(default="submitted", index=True)
-    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    artifacts_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    agent_card_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    artifacts_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    agent_card_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     last_event_id: Optional[str] = Field(default=None, index=True)
     cancel_requested: bool = False
     recovery_attempts: int = 0
@@ -243,7 +243,7 @@ class A2ATaskEvent(SQLModel, table=True):
     sequence: int = Field(index=True)
     external_event_id: Optional[str] = Field(default=None, index=True)
     event_type: str = Field(index=True)
-    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -1089,17 +1089,13 @@ class ChannelDelivery(SQLModel, table=True):
     next_attempt_at: Optional[datetime] = Field(default=None, index=True)
     # 原子 claim 的抢占时间(守护据此重置卡死投递)
     sending_since: Optional[datetime] = None
-<<<<<<< HEAD
     # 每次领取投递都会生成新的 owner 并递增 generation；旧 worker 的迟到结果不得落库。
     delivery_owner: Optional[str] = Field(default=None, index=True)
     delivery_generation: int = Field(
         default=0,
         sa_column=Column(Integer, nullable=False, server_default="0"),
     )
-    last_error: Optional[str] = None
-=======
     last_error: Optional[str] = Field(default=None, sa_column=Column(Text))
->>>>>>> 3c00706 (fix: 复核修复——advisory lock 专属连接化、MySQL 长文本、PortableJSON、PG 池加固)
     # 回复类投递 = message_id，天然幂等
     idempotency_key: str = Field(unique=True, index=True)
     # 第一次真正尝试远端发送的时间，用于飞书 UUID 一小时去重窗口

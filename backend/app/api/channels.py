@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import Response as FastAPIResponse
-from sqlalchemy import case, or_, text, update
+from sqlalchemy import case, or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
