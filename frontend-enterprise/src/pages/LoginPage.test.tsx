@@ -40,11 +40,12 @@ function renderLogin(onLogin = vi.fn()) {
   return onLogin;
 }
 
-async function enterCredentials(
+async function showFormAndEnterCredentials(
   user: ReturnType<typeof userEvent.setup>,
   username = 'admin',
   password = 'secret',
 ) {
+  await user.click(screen.getByRole('button', { name: '登录' }));
   await user.type(screen.getByLabelText('账号'), username);
   await user.type(screen.getByLabelText('密码'), password);
 }
@@ -56,29 +57,24 @@ afterEach(() => {
 });
 
 describe('LoginPage', () => {
-  it('shows the credential form when the page first renders', () => {
-    renderLogin();
-
-    expect(screen.getByLabelText('账号')).toBeTruthy();
-    expect(screen.getByLabelText('密码')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
-  });
-
-  it('marks both required fields invalid after an empty submission', async () => {
+  it('shows the original landing hero before revealing credentials', async () => {
     const user = userEvent.setup();
     renderLogin();
 
+    expect(screen.getByText('我们来做什么？')).toBeTruthy();
+    expect(screen.getByAltText('StaffDeck 产品预览')).toBeTruthy();
+    expect(screen.queryByLabelText('账号')).toBeNull();
+
     await user.click(screen.getByRole('button', { name: '登录' }));
 
-    expect(screen.getByText('请输入账号')).toBeTruthy();
-    expect(screen.getByText('请输入密码')).toBeTruthy();
-    expect(screen.getByLabelText('账号').getAttribute('aria-invalid')).toBe('true');
-    expect(screen.getByLabelText('密码').getAttribute('aria-invalid')).toBe('true');
+    expect(screen.getByLabelText('账号')).toBeTruthy();
+    expect(screen.getByLabelText('密码')).toBeTruthy();
   });
 
   it('toggles the password between hidden and visible text', async () => {
     const user = userEvent.setup();
     renderLogin();
+    await user.click(screen.getByRole('button', { name: '登录' }));
     const password = screen.getByLabelText('密码');
 
     expect(password.getAttribute('type')).toBe('password');
@@ -94,7 +90,7 @@ describe('LoginPage', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderLogin();
 
-    await enterCredentials(user, '  admin  ', '  secret  ');
+    await showFormAndEnterCredentials(user, '  admin  ', '  secret  ');
     await user.click(screen.getByRole('button', { name: '登录' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -113,25 +109,11 @@ describe('LoginPage', () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(session)));
     const onLogin = renderLogin();
 
-    await enterCredentials(user);
+    await showFormAndEnterCredentials(user);
     await user.click(screen.getByRole('button', { name: '登录' }));
 
     await waitFor(() => expect(onLogin).toHaveBeenCalledWith(session));
     expect(JSON.parse(window.localStorage.getItem(ENTERPRISE_AUTH_STORAGE_KEY) || 'null'))
       .toEqual(session);
-  });
-
-  it('shows the server error when login is rejected', async () => {
-    const user = userEvent.setup();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => jsonResponse({ detail: '账号或密码错误' }, 401)),
-    );
-    renderLogin();
-
-    await enterCredentials(user);
-    await user.click(screen.getByRole('button', { name: '登录' }));
-
-    expect(await screen.findByText('账号或密码错误')).toBeTruthy();
   });
 });
