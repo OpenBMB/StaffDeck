@@ -17,6 +17,7 @@ from typing import Any
 from app import paths
 from app.db.models import GeneralSkill, ModelConfig
 from app.general_skills.runtime_env import (
+
     GeneralSkillRuntimeError,
     ensure_runtime_python,
     runtime_environment,
@@ -31,6 +32,7 @@ from app.general_skills.schema import (
 from app.harness.artifacts import HarnessArtifactAccessError, normalize_harness_artifact_path
 from app.harness.command import run_sandboxed_process
 from app.harness.errors import HarnessExecutionError
+from app.general_skills.standard import allowed_tools_list, standard_package_files
 from app.llm import LLMClient, LLMError
 from app.llm.model_config_resolver import snapshot_model_config
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
@@ -124,6 +126,24 @@ class GeneralSkillSelector:
         if decision.use_general_skill and decision.selected_slug in slugs:
             return decision
         return decision.model_copy(update={"use_general_skill": False, "selected_slug": None})
+
+
+def _bash_allowed(skill: GeneralSkill) -> bool:
+    """allowed-tools 声明了 Bash 才放行 bash runtime;未声明 allowed-tools 不限制。"""
+    tools = allowed_tools_list(skill)
+    if not tools:
+        return True
+    return any(tool.startswith("Bash") for tool in tools)
+
+
+def _runtime_languages(skill: GeneralSkill) -> list[str]:
+    return ["bash", "python"] if _bash_allowed(skill) else ["python"]
+
+
+def _enforce_allowed_tools_runtime(skill: GeneralSkill, plan: GeneralSkillExecutionPlan) -> None:
+    """allowed-tools 门控:未声明 Bash 而模型仍给出 bash 计划时拒绝,促使其改用 python。"""
+    if plan.runtime == "bash" and not _bash_allowed(skill):
+        raise LLMError("该技能的 allowed-tools 未声明 Bash,请改用 python runtime 重新生成")
 
 
 class GeneralSkillReader:
@@ -433,7 +453,7 @@ class GeneralSkillRunner:
                 "package": _skill_package_payload(skill),
             },
             "runtime": {
-                "languages": ["bash", "python"],
+                "languages": _runtime_languages(skill),
                 "stdin_json": {
                     "query": query,
                     "skill_slug": skill.slug,
@@ -461,6 +481,7 @@ class GeneralSkillRunner:
             )
         plan = GeneralSkillExecutionPlan.model_validate(raw)
         plan.runtime = _plan_runtime(plan)
+        _enforce_allowed_tools_runtime(skill, plan)
         if not plan.code.strip():
             raise LLMError("General skill runner code is empty")
         runtime_label = _runtime_label(plan.runtime)
@@ -594,7 +615,7 @@ class GeneralSkillRunner:
                 "package": _skill_package_payload(skill),
             },
             "runtime": {
-                "languages": ["bash", "python"],
+                "languages": _runtime_languages(skill),
                 "stdin_json": {
                     "query": query,
                     "skill_slug": skill.slug,
@@ -623,6 +644,7 @@ class GeneralSkillRunner:
             )
         plan = GeneralSkillExecutionPlan.model_validate(raw)
         plan.runtime = _plan_runtime(plan)
+        _enforce_allowed_tools_runtime(skill, plan)
         if not plan.code.strip():
             raise LLMError("General skill repaired runner code is empty")
         runtime_label = _runtime_label(plan.runtime)
@@ -1041,7 +1063,8 @@ def _materialize_skill_package(skill: GeneralSkill, target_dir: Path) -> None:
             relative_path = _safe_package_path(str(value or ""))
             if relative_path:
                 (target_dir / relative_path).mkdir(parents=True, exist_ok=True)
-    for file in _skill_files(skill):
+    # SKILL.md 一律物化为规范化版本(frontmatter 齐全),存量无 frontmatter 的技能同样生效
+    for file in standard_package_files(skill):
         relative_path = _safe_package_path(str(file["path"]))
         output_path = target_dir / relative_path
         output_path.parent.mkdir(parents=True, exist_ok=True)

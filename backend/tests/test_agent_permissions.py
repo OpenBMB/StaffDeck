@@ -907,6 +907,7 @@ def test_private_general_skill_edit_does_not_mutate_open_gallery_skill() -> None
                     original_slug=updated.slug,
                     slug="weather-renamed",
                     name="员工天气技能",
+                    description="员工天气技能描述",
                     markdown="# 员工天气技能\n",
                 ),
                 db=db,
