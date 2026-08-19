@@ -117,6 +117,14 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
     user = db.exec(
         select(User).where(User.tenant_id == request.tenant_id, User.username == username)
     ).first()
+    if not user:
+        display_name_matches = db.exec(
+            select(User)
+            .where(User.tenant_id == request.tenant_id, User.display_name == username)
+            .limit(2)
+        ).all()
+        if len(display_name_matches) == 1:
+            user = display_name_matches[0]
     if not user or not verify_password(request.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
