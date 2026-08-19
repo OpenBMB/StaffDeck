@@ -1247,9 +1247,10 @@ def test_run_handoff_reply_command_matches_by_parent_id(monkeypatch) -> None:
         )
         db.commit()
 
-        # 回复旧通知 → 应命中 handoff_p1 而非最新的 handoff_p2
+        # 话题内回复的 parent_id 指向中间消息,应通过 root_id 命中原通知。
         inbound = _inbound(event_id="om_hr_6", text="/回复反馈 修好了")
-        inbound.parent_id = "om_notice_1"
+        inbound.parent_id = "om_reply_child"
+        inbound.raw = {"message": {"root_id": "om_notice_1"}}
         command = ChannelCommand(kind="handoff_reply", query="修好了")
 
         resumed: list[str] = []

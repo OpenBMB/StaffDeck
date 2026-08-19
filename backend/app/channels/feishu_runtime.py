@@ -244,7 +244,12 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
         is_group=is_group,
         raw={
             "header": {"app_id": app_id, "tenant_key": tenant_key},
-            "message": {"message_id": message_id, "chat_id": chat_id},
+            "message": {
+                "message_id": message_id,
+                "chat_id": chat_id,
+                "parent_id": str(getattr(message, "parent_id", "") or "").strip(),
+                "root_id": str(getattr(message, "root_id", "") or "").strip(),
+            },
         },
         sender_name="",
         parent_id=parent_id,

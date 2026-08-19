@@ -757,6 +757,20 @@ def _normalize_compat(binding: ChannelBinding, raw: dict) -> ChannelInbound | No
     return adapter.normalize(raw)
 
 
+def _feishu_reply_message_ids(inbound: ChannelInbound) -> list[str]:
+    """Return direct-parent and topic-root ids for reliable handoff matching."""
+    ids: list[str] = []
+    parent_id = str(inbound.parent_id or "").strip()
+    if parent_id:
+        ids.append(parent_id)
+    raw_message = (inbound.raw or {}).get("message")
+    if isinstance(raw_message, dict):
+        root_id = str(raw_message.get("root_id") or "").strip()
+        if root_id and root_id not in ids:
+            ids.append(root_id)
+    return ids
+
+
 def _try_handle_feishu_handoff_reply(
     db: Session,
     binding: ChannelBinding,
@@ -772,12 +786,12 @@ def _try_handle_feishu_handoff_reply(
     命中则复用 _apply_handoff_reply 置 answered + 恢复 SOP,并给处理人回一条确认。
     返回 True 表示已处理(短路 process_inbound);False 表示非 handoff 回复,继续正常流程。
     """
-    parent_id = str(inbound.parent_id or "").strip()
-    if not parent_id:
+    reply_ids = _feishu_reply_message_ids(inbound)
+    if not reply_ids:
         return False
     handoff = db.exec(
         select(HumanHandoffRequest).where(
-            HumanHandoffRequest.notify_message_id == parent_id,
+            HumanHandoffRequest.notify_message_id.in_(reply_ids),
             HumanHandoffRequest.status == "pending",
         )
     ).first()
@@ -791,7 +805,7 @@ def _try_handle_feishu_handoff_reply(
             ChannelDelivery.binding_id == binding.id,
             ChannelDelivery.kind == "handoff_notice",
             ChannelDelivery.session_id == f"handoff:{handoff.id}",
-            ChannelDelivery.message_id == parent_id,
+            ChannelDelivery.message_id.in_(reply_ids),
             ChannelDelivery.status == "delivered",
         )
     ).first()
@@ -896,12 +910,12 @@ def _run_handoff_reply_command(
 
     handoff: HumanHandoffRequest | None = None
     # 策略 1:引用通知 — 按 parent_id -> notify_message_id 精确匹配
-    parent_id = str(inbound.parent_id or "").strip()
-    if parent_id:
+    reply_ids = _feishu_reply_message_ids(inbound)
+    if reply_ids:
         handoff = db.exec(
             select(HumanHandoffRequest).where(
                 HumanHandoffRequest.tenant_id == binding.tenant_id,
-                HumanHandoffRequest.notify_message_id == parent_id,
+                HumanHandoffRequest.notify_message_id.in_(reply_ids),
                 HumanHandoffRequest.status == "pending",
             )
         ).first()
@@ -913,7 +927,7 @@ def _run_handoff_reply_command(
                 ChannelDelivery.binding_id == binding.id,
                 ChannelDelivery.kind == "handoff_notice",
                 ChannelDelivery.session_id == f"handoff:{handoff.id}",
-                ChannelDelivery.message_id == parent_id,
+                ChannelDelivery.message_id.in_(reply_ids),
                 ChannelDelivery.status == "delivered",
             )
         ).first()
