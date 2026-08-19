@@ -32,6 +32,8 @@ class HumanHandoffService:
         assignee_resolver: Callable[[str, str | None, str | None], str | None],
         context_summary: Callable[[ChatSession], str],
         pending_question: Callable[[dict[str, Any] | None, StepAgentResult], str],
+        step_assignee_user_id: str | None = None,
+        binding_default_assignee_user_id: str | None = None,
     ) -> HumanHandoffRequest:
         existing = self.db.exec(
             select(HumanHandoffRequest)
@@ -50,18 +52,31 @@ class HumanHandoffService:
             return existing
 
         current_step = current_step_resolver()
+        pending_question_text = pending_question(current_step, step_result)
+        # Assignee 优先级:SOP 节点指定 → 当前渠道默认处理人 → 数字员工负责人 → 租户管理员。
+        # 不再从知识库 Contact 概念推断 assignee(知识内容变化会导致处理人不稳定,
+        # 且缺少权限/审计入口)。
+        configured_assignee = next(
+            (
+                user_id
+                for user_id in (step_assignee_user_id, binding_default_assignee_user_id)
+                if self._is_internal_assignee(tenant_id, user_id)
+            ),
+            None,
+        )
+        assignee_user_id = configured_assignee or assignee_resolver(
+            tenant_id, chat_session.agent_id, chat_session.user_id
+        )
         handoff = HumanHandoffRequest(
             tenant_id=tenant_id,
             session_id=chat_session.id,
             agent_id=chat_session.agent_id,
             requester_user_id=chat_session.user_id,
-            assignee_user_id=assignee_resolver(
-                tenant_id, chat_session.agent_id, chat_session.user_id
-            ),
+            assignee_user_id=assignee_user_id,
             trigger_skill_id=chat_session.active_skill_id,
             trigger_step_id=chat_session.active_step_id,
             context_summary=context_summary(chat_session),
-            pending_question=pending_question(current_step, step_result),
+            pending_question=pending_question_text,
             resume_payload_json={
                 "active_skill_id": chat_session.active_skill_id,
                 "active_step_id": chat_session.active_step_id,
@@ -97,6 +112,12 @@ class HumanHandoffService:
         )
         return handoff
 
+    def _is_internal_assignee(self, tenant_id: str, user_id: str | None) -> bool:
+        if not user_id:
+            return False
+        user = self.db.get(User, user_id)
+        return bool(user and user.tenant_id == tenant_id and user.source == "web")
+
     def assignee_user_id(
         self,
         tenant_id: str,
@@ -121,9 +142,15 @@ class HumanHandoffService:
                     "owner_id",
                 ):
                     value = metadata.get(key)
-                    if value:
-                        return str(value)
-        return tenant_admin_resolver(tenant_id) or fallback_user_id
+                    candidate = str(value or "").strip() or None
+                    if self._is_internal_assignee(tenant_id, candidate):
+                        return candidate
+        admin_user_id = tenant_admin_resolver(tenant_id)
+        if self._is_internal_assignee(tenant_id, admin_user_id):
+            return admin_user_id
+        if self._is_internal_assignee(tenant_id, fallback_user_id):
+            return fallback_user_id
+        return None
 
     def tenant_admin_user_id(self, tenant_id: str) -> str | None:
         row = self.db.exec(
@@ -138,7 +165,7 @@ class HumanHandoffService:
             select(Message)
             .where(Message.session_id == chat_session.id)
             .order_by(Message.created_at.desc())
-            .limit(8)
+            .limit(2)
         ).all()
         lines: list[str] = []
         for message in reversed(rows):

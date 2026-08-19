@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import is_dataclass, replace
 import json
 import time
+from collections.abc import Callable
+from dataclasses import is_dataclass, replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -22,7 +22,6 @@ from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
 from app.observability.spans import llm_operation
 from app.session.slot_policy import strip_router_generated_message_slots
-
 
 PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "harness_agent_prompt.md"
 MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK = 2
@@ -558,6 +557,14 @@ def _finish_result(
     action_count: int,
 ) -> TaskExecutionResult:
     status = action.status or "completed"
+    step = requirement.sop_context.get("step") if requirement.sop_context else None
+    step_type = str(step.get("type") or "").strip() if isinstance(step, dict) else ""
+    allowed_actions = step.get("allowed_actions") if isinstance(step, dict) else None
+    is_handoff_node = step_type == "handoff" or (
+        isinstance(allowed_actions, list) and "handoff_human" in allowed_actions
+    )
+    if is_handoff_node and status == "completed":
+        status = "handoff"
     allowed_next_steps = {
         str(item.get("next_node_id") or "").strip()
         for item in requirement.allowed_transitions

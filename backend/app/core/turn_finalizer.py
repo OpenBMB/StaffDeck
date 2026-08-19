@@ -23,6 +23,7 @@ class TurnFinalizer:
         tool_result: ToolResult | None,
         *,
         current_step_allows_handoff: Callable[[Skill | None, str | None], bool],
+        route_to_handoff_node: Callable[[ChatSession, Skill | None], bool],
         create_handoff: Callable[[str, ChatSession, Skill | None, StepAgentResult], Any],
         record_event: Callable[[str, str, str, dict[str, Any]], None],
         should_complete: Callable[
@@ -32,6 +33,8 @@ class TurnFinalizer:
     ) -> ExecutionFinalizeState:
         requested_handoff = router_decision.decision == "handoff_human" or step_result.handoff
         if requested_handoff:
+            if not current_step_allows_handoff(active_skill, chat_session.active_step_id):
+                route_to_handoff_node(chat_session, active_skill)
             if current_step_allows_handoff(active_skill, chat_session.active_step_id):
                 create_handoff(tenant_id, chat_session, active_skill, step_result)
                 return "handoff"

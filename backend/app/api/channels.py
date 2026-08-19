@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import Response as FastAPIResponse
-from sqlalchemy import case, text, update
+from sqlalchemy import case, or_, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -37,7 +37,10 @@ from app.channels.schema import (
     ChannelBindingAgentRead,
     ChannelBindingAgentsUpdate,
     ChannelBindingCreate,
+    ChannelBindingManagerCreate,
+    ChannelBindingManagerRead,
     ChannelBindingRead,
+    ChannelIdentityBindCodeCreate,
     ChannelConversationAttachmentRead,
     ChannelConversationMessageRead,
     ChannelConversationPage,
@@ -75,6 +78,7 @@ from app.db.models import (
     ChannelBindCode,
     ChannelBinding,
     ChannelBindingAgent,
+    ChannelBindingManager,
     ChannelConvState,
     ChannelDelivery,
     ChannelIdentity,
@@ -200,10 +204,44 @@ def _get_binding(db: Session, tenant_id: str, binding_id: str) -> ChannelBinding
     return binding
 
 
-def _ensure_binding_manager(db: Session, tenant_id: str, binding: ChannelBinding, current_user: User) -> None:
-    """渠道绑定管理权限:仅 admin 或绑定创建者;不随默认员工(binding.agent_id)漂移。"""
+_MANAGER_ACTION_CREDENTIALS = "manage_credentials"
+_MANAGER_ACTION_AGENTS = "manage_agents"
+_MANAGER_ACTION_TOGGLE_STATUS = "toggle_status"
+# 协作者可执行的 action 集合;delete/manage_managers 不在此列,仅创建者+admin 可为
+_COLLABORATOR_ACTIONS = frozenset(
+    {_MANAGER_ACTION_CREDENTIALS, _MANAGER_ACTION_AGENTS, _MANAGER_ACTION_TOGGLE_STATUS}
+)
+
+
+def _is_active_collaborator(db: Session, binding: ChannelBinding, user: User) -> bool:
+    """该用户是否为该绑定的有效协作者(revoked_at 为空)。"""
+    row = db.exec(
+        select(ChannelBindingManager).where(
+            ChannelBindingManager.binding_id == binding.id,
+            ChannelBindingManager.user_id == user.id,
+            ChannelBindingManager.revoked_at.is_(None),
+        )
+    ).first()
+    return row is not None
+
+
+def _ensure_binding_manager(
+    db: Session,
+    tenant_id: str,
+    binding: ChannelBinding,
+    current_user: User,
+    action: str | None = None,
+) -> None:
+    """渠道绑定管理权限。
+
+    admin/创建者全权;协作者仅可在 _COLLABORATOR_ACTIONS 范围内操作
+    (凭证/挂载/启停)。删除渠道、管理协作者名单仅限创建者+admin。
+    不随默认员工(binding.agent_id)漂移。
+    """
     ensure_current_user_tenant(tenant_id, current_user)
     if is_admin_user(current_user) or binding.created_by_user_id == current_user.id:
+        return
+    if action in _COLLABORATOR_ACTIONS and _is_active_collaborator(db, binding, current_user):
         return
     raise HTTPException(status_code=403, detail="Only the creator or administrator can manage this channel binding")
 
@@ -281,10 +319,20 @@ def list_channel_bindings(
     if agent_id:
         statement = statement.where(ChannelBinding.agent_id == agent_id)
     elif not is_admin_user(current_user):
-        # 渠道绑定是租户级资源:admin 全量可见,普通成员只见自己创建的
-        statement = statement.where(ChannelBinding.created_by_user_id == current_user.id)
+        # 渠道绑定是租户级资源:admin 全量可见,普通成员可见自己创建的或被授权协管的
+        managed_ids = select(ChannelBindingManager.binding_id).where(
+            ChannelBindingManager.tenant_id == tenant_id,
+            ChannelBindingManager.user_id == current_user.id,
+            ChannelBindingManager.revoked_at.is_(None),
+        )
+        statement = statement.where(
+            or_(
+                ChannelBinding.created_by_user_id == current_user.id,
+                ChannelBinding.id.in_(managed_ids),
+            )
+        )
     rows = db.exec(statement.order_by(ChannelBinding.created_at)).all()
-    return [channel_binding_read(db, row) for row in rows]
+    return [channel_binding_read(db, row, current_user) for row in rows]
 
 
 @router.post("", response_model=ChannelBindingRead)
@@ -340,7 +388,7 @@ def create_channel_binding(
         )
     db.commit()
     db.refresh(binding)
-    return channel_binding_read(db, binding)
+    return channel_binding_read(db, binding, current_user)
 
 
 BIND_CODE_TTL_MINUTES = 10
@@ -372,17 +420,7 @@ def _generate_bind_code() -> str:
     return f"{secrets.randbelow(900000) + 100000}"
 
 
-@router.post("/bind-code", response_model=ChannelBindCodeRead)
-def create_bind_code(
-    tenant_id: str = Query(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session),
-) -> ChannelBindCodeRead:
-    """为当前用户生成渠道身份绑定码(6 位数字,10 分钟有效,旧码作废)。"""
-    ensure_current_user_tenant(tenant_id, current_user)
-    if not _check_bind_code_rate(current_user.id):
-        raise HTTPException(status_code=429, detail="绑定码生成过于频繁，请稍后再试")
-    user_id = current_user.id
+def _issue_bind_code(db: Session, tenant_id: str, user_id: str) -> ChannelBindCodeRead:
     for _attempt in range(10):
         now = utc_now()
         record = db.exec(
@@ -411,6 +449,41 @@ def create_bind_code(
             continue
         return ChannelBindCodeRead(code=record.code, expires_at=record.expires_at.isoformat())
     raise HTTPException(status_code=409, detail="绑定码生成冲突，请重试")
+
+
+@router.post("/bind-code", response_model=ChannelBindCodeRead)
+def create_bind_code(
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> ChannelBindCodeRead:
+    """为当前用户生成渠道身份绑定码(6 位数字,10 分钟有效,旧码作废)。"""
+    ensure_current_user_tenant(tenant_id, current_user)
+    if not _check_bind_code_rate(current_user.id):
+        raise HTTPException(status_code=429, detail="绑定码生成过于频繁，请稍后再试")
+    return _issue_bind_code(db, tenant_id, current_user.id)
+
+
+@router.post("/{binding_id}/identity-bind-code", response_model=ChannelBindCodeRead)
+def create_identity_bind_code(
+    binding_id: str,
+    request: ChannelIdentityBindCodeCreate,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> ChannelBindCodeRead:
+    """为内部成员生成身份绑定邀请；成员仍须用自己的渠道账号发送绑定指令。"""
+    ensure_current_user_tenant(tenant_id, current_user)
+    binding = _get_binding(db, tenant_id, binding_id)
+    _ensure_binding_manager(db, tenant_id, binding, current_user, action=_MANAGER_ACTION_AGENTS)
+    target = db.get(User, request.user_id)
+    if not target or target.tenant_id != tenant_id or target.source != "web":
+        raise HTTPException(status_code=400, detail="身份绑定对象必须是当前租户的内部成员")
+    if binding.channel == "feishu" and not binding.credentials_enc:
+        raise HTTPException(status_code=409, detail="请先完成飞书应用接入，再邀请成员绑定身份")
+    if not _check_bind_code_rate(current_user.id):
+        raise HTTPException(status_code=429, detail="绑定码生成过于频繁，请稍后再试")
+    return _issue_bind_code(db, tenant_id, target.id)
 
 
 @router.get("/my-identity-bindings", response_model=list[MyIdentityBindingRead])
@@ -495,7 +568,7 @@ def list_channel_binding_agents(
 ) -> list[ChannelBindingAgentRead]:
     ensure_current_user_tenant(tenant_id, current_user)
     binding = _get_binding(db, tenant_id, binding_id)
-    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    _ensure_binding_manager(db, tenant_id, binding, current_user, action=_MANAGER_ACTION_AGENTS)
     return channel_binding_agents_read(db, binding)
 
 
@@ -509,12 +582,49 @@ def update_channel_binding_agents(
 ) -> ChannelBindingRead:
     ensure_current_user_tenant(tenant_id, current_user)
     binding = _get_binding(db, tenant_id, binding_id)
-    _ensure_binding_manager(db, tenant_id, binding, current_user)
-    if request.agents is None and request.auto_route is None:
+    _ensure_binding_manager(db, tenant_id, binding, current_user, action=_MANAGER_ACTION_AGENTS)
+    if (
+        request.agents is None
+        and request.auto_route is None
+        and request.default_handoff_assignee_user_id == "unchanged"
+    ):
         raise HTTPException(status_code=400, detail="无有效更新内容")
     if request.agents is not None and binding.team_id:
         # 团队绑定的接待员工由团队现任 TL 决定,不允许整表替换员工挂载
         raise HTTPException(status_code=400, detail="团队绑定的渠道不支持修改员工挂载")
+    # 校验默认人工处理人:传入非 None 且非空时,用户必须存在且属于当前租户
+    handoff_assignee = request.default_handoff_assignee_user_id
+    if handoff_assignee != "unchanged" and handoff_assignee:
+        user = db.get(User, handoff_assignee)
+        if not user or user.tenant_id != tenant_id or user.source != "web":
+            raise HTTPException(
+                status_code=400,
+                detail="默认人工处理人必须是当前租户的内部成员",
+            )
+        if binding.channel == "feishu":
+            identity_scope = binding.identity_scope_key
+            if not identity_scope:
+                config = dict(binding.config_json or {})
+                app_id = str(config.get("app_id") or "").strip()
+                tenant_key = str(binding.provider_tenant_key or "").strip()
+                if app_id and tenant_key:
+                    from app.channels.service_feishu_inbox import feishu_identity_scope
+
+                    identity_scope = feishu_identity_scope(app_id, tenant_key)
+            reachable = db.exec(
+                select(ChannelIdentity).where(
+                    ChannelIdentity.tenant_id == tenant_id,
+                    ChannelIdentity.channel == "feishu",
+                    ChannelIdentity.external_account_scope == (identity_scope or ""),
+                    ChannelIdentity.staffdeck_user_id == handoff_assignee,
+                    ~ChannelIdentity.external_user_id.startswith("group:"),
+                )
+            ).first()
+            if not reachable:
+                raise HTTPException(
+                    status_code=400,
+                    detail="默认人工处理人必须已绑定当前飞书账号",
+                )
     default_agent_id: str | None = None
     if request.agents is not None:
         if not request.agents:
@@ -562,9 +672,18 @@ def update_channel_binding_agents(
                 request.auto_route,
             )
             db.commit()
+        if request.default_handoff_assignee_user_id != "unchanged":
+            _patch_binding_config_key(
+                db,
+                tenant_id,
+                binding_id,
+                "default_handoff_assignee_user_id",
+                request.default_handoff_assignee_user_id or None,
+            )
+            db.commit()
         binding = _get_binding(db, tenant_id, binding_id)
         db.refresh(binding)
-        return channel_binding_read(db, binding)
+        return channel_binding_read(db, binding, current_user)
 
 
 @router.delete("/{binding_id}", status_code=204)
@@ -673,6 +792,179 @@ def delete_channel_binding(
     return Response(status_code=204)
 
 
+def _user_display_name(db: Session, user_id: str, tenant_id: str) -> str | None:
+    """租户内用户展示名;用户不存在或不属于该租户时返回 None。"""
+    user = db.get(User, user_id)
+    if not user or user.tenant_id != tenant_id:
+        return None
+    return user.display_name or user.username
+
+
+@router.get("/{binding_id}/managers", response_model=list[ChannelBindingManagerRead])
+def list_channel_binding_managers(
+    binding_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[ChannelBindingManagerRead]:
+    """列出渠道协作者(仅创建者+admin 可见协作者名单)。"""
+    ensure_current_user_tenant(tenant_id, current_user)
+    binding = _get_binding(db, tenant_id, binding_id)
+    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    rows = db.exec(
+        select(ChannelBindingManager)
+        .where(
+            ChannelBindingManager.binding_id == binding.id,
+            ChannelBindingManager.revoked_at.is_(None),
+        )
+        .order_by(ChannelBindingManager.granted_at)
+    ).all()
+    return [
+        ChannelBindingManagerRead(
+            user_id=row.user_id,
+            name=_user_display_name(db, row.user_id, tenant_id),
+            granted_at=row.granted_at.isoformat(),
+            granted_by_user_id=row.granted_by_user_id,
+            granted_by_name=_user_display_name(db, row.granted_by_user_id, tenant_id),
+        )
+        for row in rows
+    ]
+
+
+@router.post(
+    "/{binding_id}/managers",
+    response_model=ChannelBindingManagerRead,
+    status_code=201,
+)
+def add_channel_binding_manager(
+    binding_id: str,
+    request: ChannelBindingManagerCreate,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> ChannelBindingManagerRead:
+    """添加协作者(仅创建者+admin)。同一(binding,user)仅一行,已撤销则复活。"""
+    ensure_current_user_tenant(tenant_id, current_user)
+    binding = _get_binding(db, tenant_id, binding_id)
+    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    target = db.get(User, request.user_id)
+    if not target or target.tenant_id != tenant_id or target.source != "web":
+        raise HTTPException(status_code=400, detail="协作者必须是当前租户的内部成员")
+    if target.id == binding.created_by_user_id:
+        raise HTTPException(status_code=400, detail="创建者已是该渠道拥有者,无需添加")
+    if is_admin_user(target):
+        raise HTTPException(status_code=400, detail="管理员默认拥有全部渠道权限,无需添加")
+    existing = db.exec(
+        select(ChannelBindingManager).where(
+            ChannelBindingManager.binding_id == binding.id,
+            ChannelBindingManager.user_id == target.id,
+        )
+    ).first()
+    if existing and existing.revoked_at is None:
+        raise HTTPException(status_code=409, detail="该用户已是协作者")
+    try:
+        if existing:
+            existing.revoked_at = None
+            existing.granted_by_user_id = current_user.id
+            existing.granted_at = utc_now()
+            existing.tenant_id = tenant_id
+            manager = existing
+        else:
+            manager = ChannelBindingManager(
+                tenant_id=tenant_id,
+                binding_id=binding.id,
+                user_id=target.id,
+                granted_by_user_id=current_user.id,
+            )
+        db.add(manager)
+        db.commit()
+        db.refresh(manager)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="该用户已是协作者") from exc
+    return ChannelBindingManagerRead(
+        user_id=manager.user_id,
+        name=_user_display_name(db, manager.user_id, tenant_id),
+        granted_at=manager.granted_at.isoformat(),
+        granted_by_user_id=manager.granted_by_user_id,
+        granted_by_name=_user_display_name(db, manager.granted_by_user_id, tenant_id),
+    )
+
+
+@router.delete("/{binding_id}/managers/{user_id}", status_code=204)
+def remove_channel_binding_manager(
+    binding_id: str,
+    user_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> Response:
+    """移除协作者(仅创建者+admin):软撤销(revoked_at),保留审计。"""
+    ensure_current_user_tenant(tenant_id, current_user)
+    binding = _get_binding(db, tenant_id, binding_id)
+    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    row = db.exec(
+        select(ChannelBindingManager).where(
+            ChannelBindingManager.binding_id == binding.id,
+            ChannelBindingManager.user_id == user_id,
+            ChannelBindingManager.revoked_at.is_(None),
+        )
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="协作者不存在或已移除")
+    row.revoked_at = utc_now()
+    db.add(row)
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/{binding_id}/toggle-status", response_model=ChannelBindingRead)
+def toggle_channel_binding_status(
+    binding_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> ChannelBindingRead:
+    """切换渠道启停(创建者/admin/协作者可)。
+
+    active -> disabled(停用,quiesce 长连接);
+    disabled/pending/expired -> active(启用,有凭证则恢复长连接)。
+    """
+    ensure_current_user_tenant(tenant_id, current_user)
+    binding = _get_binding(db, tenant_id, binding_id)
+    _ensure_binding_manager(
+        db, tenant_id, binding, current_user, action=_MANAGER_ACTION_TOGGLE_STATUS
+    )
+    target_status = "disabled" if binding.status == "active" else "active"
+    expected_revision = binding.config_revision
+    channel = binding.channel
+    should_run = bool(binding.status == "active" and binding.credentials_enc)
+    db.rollback()
+    with binding_lifecycle_lock(binding_id):
+        binding = _get_binding(db, tenant_id, binding_id)
+        _ensure_revision(binding, expected_revision)
+        if target_status == "disabled":
+            _quiesce_binding_or_409(channel, binding_id, should_run=should_run)
+        try:
+            binding = _get_binding(db, tenant_id, binding_id)
+            _ensure_revision(binding, expected_revision)
+            binding.status = target_status
+            binding.updated_at = utc_now()
+            db.add(binding)
+            db.commit()
+            db.refresh(binding)
+        except Exception:
+            db.rollback()
+            if target_status == "disabled":
+                _resume_binding(channel, binding_id, start=should_run)
+            raise
+        if target_status == "disabled":
+            _resume_binding(channel, binding_id, start=False)
+        elif binding.credentials_enc:
+            _resume_binding(channel, binding_id, start=True)
+    return channel_binding_read(db, binding, current_user)
+
+
 @router.post("/{binding_id}/wechat/qrcode", response_model=ChannelQRCodeRead)
 def create_wechat_qrcode(
     binding_id: str,
@@ -682,7 +974,7 @@ def create_wechat_qrcode(
 ) -> ChannelQRCodeRead:
     ensure_current_user_tenant(tenant_id, current_user)
     binding = _get_binding(db, tenant_id, binding_id)
-    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    _ensure_binding_manager(db, tenant_id, binding, current_user, action=_MANAGER_ACTION_CREDENTIALS)
     # 官方协议:local_token_list 带上本地已有 bot_token(最多 10 个),支持旧凭证续绑
     local_tokens: list[str] = []
     if binding.credentials_enc:
@@ -762,7 +1054,7 @@ def poll_wechat_qrcode_status(
 ) -> ChannelQRCodeStatusRead:
     ensure_current_user_tenant(tenant_id, current_user)
     binding = _get_binding(db, tenant_id, binding_id)
-    _ensure_binding_manager(db, tenant_id, binding, current_user)
+    _ensure_binding_manager(db, tenant_id, binding, current_user, action=_MANAGER_ACTION_CREDENTIALS)
     redirect_baseurl = str((binding.config_json or {}).get("qrcode_redirect_baseurl") or "").strip()
     has_credentials = bool(binding.credentials_enc)
     db.rollback()
@@ -802,7 +1094,7 @@ def poll_wechat_qrcode_status(
         if has_credentials:
             binding = _get_binding(db, tenant_id, binding_id)
             binding = _activate_binding_with_existing_credentials(db, binding)
-            return ChannelQRCodeStatusRead(status="confirmed", binding=channel_binding_read(db, binding))
+            return ChannelQRCodeStatusRead(status="confirmed", binding=channel_binding_read(db, binding, current_user))
         return ChannelQRCodeStatusRead(status=status)
     if status != "confirmed":
         # wait/scaned/expired/need_verifycode/verify_code_blocked 等原样透传
@@ -873,7 +1165,7 @@ def poll_wechat_qrcode_status(
             _resume_binding(channel, binding_id, start=should_run)
             raise
         _resume_binding(channel, binding_id, start=True)
-    return ChannelQRCodeStatusRead(status=status, binding=channel_binding_read(db, binding))
+    return ChannelQRCodeStatusRead(status=status, binding=channel_binding_read(db, binding, current_user))
 
 
 @router.post("/{binding_id}/wecom/credentials", response_model=ChannelBindingRead)
@@ -886,7 +1178,7 @@ def save_wecom_credentials(
     """保存企微智能机器人凭证(bot_id + secret),激活绑定并拉起长连接。"""
     ensure_current_user_tenant(request.tenant_id, current_user)
     binding = _get_binding(db, request.tenant_id, binding_id)
-    _ensure_binding_manager(db, request.tenant_id, binding, current_user)
+    _ensure_binding_manager(db, request.tenant_id, binding, current_user, action=_MANAGER_ACTION_CREDENTIALS)
     if binding.channel != "wecom":
         raise HTTPException(status_code=400, detail="该绑定不是企业微信渠道")
     bot_id = request.bot_id.strip()
@@ -976,7 +1268,7 @@ def save_wecom_credentials(
             _resume_binding(channel, binding_id, start=should_run)
             raise
         _resume_binding(channel, binding_id, start=True)
-    return channel_binding_read(db, binding)
+    return channel_binding_read(db, binding, current_user)
 
 
 @router.post("/{binding_id}/feishu/credentials", response_model=ChannelBindingRead)
@@ -989,7 +1281,7 @@ def save_feishu_credentials(
     """Validate and save Feishu app credentials, then start its long connection."""
     ensure_current_user_tenant(request.tenant_id, current_user)
     binding = _get_binding(db, request.tenant_id, binding_id)
-    _ensure_binding_manager(db, request.tenant_id, binding, current_user)
+    _ensure_binding_manager(db, request.tenant_id, binding, current_user, action=_MANAGER_ACTION_CREDENTIALS)
     if binding.channel != "feishu":
         raise HTTPException(status_code=400, detail="该绑定不是飞书渠道")
     app_id = request.app_id.strip()
@@ -1058,7 +1350,7 @@ def save_feishu_credentials(
             _resume_binding(channel, binding_id, start=should_run)
             raise
         _resume_binding(channel, binding_id, start=True)
-    return channel_binding_read(db, binding)
+    return channel_binding_read(db, binding, current_user)
 
 
 @router.post("/{binding_id}/dingtalk/credentials", response_model=ChannelBindingRead)
@@ -1071,7 +1363,7 @@ def save_dingtalk_credentials(
     """Validate and save DingTalk Stream credentials, then start its connector."""
     ensure_current_user_tenant(request.tenant_id, current_user)
     binding = _get_binding(db, request.tenant_id, binding_id)
-    _ensure_binding_manager(db, request.tenant_id, binding, current_user)
+    _ensure_binding_manager(db, request.tenant_id, binding, current_user, action=_MANAGER_ACTION_CREDENTIALS)
     if binding.channel != "dingtalk":
         raise HTTPException(status_code=400, detail="该绑定不是钉钉渠道")
     client_id = request.client_id.strip()
@@ -1131,7 +1423,7 @@ def save_dingtalk_credentials(
             _resume_binding(binding.channel, binding_id, start=should_run)
             raise
         _resume_binding(binding.channel, binding_id, start=True)
-    return channel_binding_read(db, binding)
+    return channel_binding_read(db, binding, current_user)
 
 
 @router.get("/delivery-audit", response_model=ChannelDeliveryPage)

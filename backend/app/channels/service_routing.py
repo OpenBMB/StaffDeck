@@ -24,6 +24,7 @@ def help_text(channel: str) -> str:
         "/员工 查看可调度员工列表\n"
         "/切换 <名字> 切换到指定员工\n"
         "/当前 查看当前员工\n"
+        "/回复反馈 <内容> 回复人工转接通知\n"
         f"/绑定 <绑定码> 把{label}账号绑定到你的 StaffDeck 账号\n"
         f"/解绑 解除{label}账号与 StaffDeck 账号的绑定\n"
         "/帮助 查看本说明"
@@ -36,7 +37,7 @@ HELP_TEXT = help_text("wechat")
 
 @dataclass
 class ChannelCommand:
-    kind: str  # list/current/help/switch
+    kind: str  # list/current/help/switch/bind/unbind/handoff_reply
     query: str = ""  # switch 的目标名字(可为空)
 
 
@@ -60,6 +61,9 @@ def parse_command(text: str) -> ChannelCommand | None:
             return ChannelCommand(kind="bind", query=body[len(prefix):].strip())
     if lowered.startswith("切换"):
         return ChannelCommand(kind="switch", query=body[len("切换"):].strip())
+    for prefix in ("回复反馈", "handoff_reply"):
+        if lowered.startswith(prefix):
+            return ChannelCommand(kind="handoff_reply", query=body[len(prefix):].strip())
     if body and " " not in body and "\n" not in body:
         # /<名字> 直达
         return ChannelCommand(kind="switch", query=body)

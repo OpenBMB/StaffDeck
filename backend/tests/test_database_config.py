@@ -1,15 +1,169 @@
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 from app import paths
+from app.db import database
 from app.db.database import (
     _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID,
     _MODEL_API_PROTOCOLS_MIGRATION_ID,
     _migrate_default_model_output_limit,
+    _migrate_knowledge_base_schema,
     _migrate_model_api_protocols,
     _normalize_database_url,
 )
+
+
+def test_sqlite_startup_migration_adds_display_name_login_index(
+    monkeypatch, tmp_path
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-users.db'}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE users (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    username VARCHAR NOT NULL,
+                    display_name VARCHAR,
+                    role VARCHAR NOT NULL DEFAULT 'member',
+                    source VARCHAR NOT NULL DEFAULT 'web',
+                    password_hash VARCHAR NOT NULL
+                )
+                """
+            )
+        )
+
+    monkeypatch.setattr(database, "engine", engine)
+
+    database._migrate_sqlite_skill_schema()
+    database._migrate_sqlite_skill_schema()
+
+    display_name_indexes = [
+        index
+        for index in inspect(engine).get_indexes("users")
+        if index["name"] == "ix_users_tenant_id_display_name"
+    ]
+    assert display_name_indexes == [
+        {
+            "name": "ix_users_tenant_id_display_name",
+            "column_names": ["tenant_id", "display_name"],
+            "unique": 0,
+            "dialect_options": {},
+        }
+    ]
+
+
+def test_knowledge_base_migration_accepts_existing_noncanonical_version_id(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'knowledge-version.db'}")
+    child_tables = (
+        "knowledge_documents",
+        "knowledge_buckets",
+        "knowledge_chunks",
+        "knowledge_concepts",
+        "knowledge_discovery_suggestions",
+        "knowledge_ingest_jobs",
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE knowledge_bases (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    status VARCHAR NOT NULL,
+                    capability_scope VARCHAR NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE knowledge_base_versions (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    knowledge_base_id VARCHAR NOT NULL,
+                    version VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    status VARCHAR NOT NULL,
+                    capability_scope VARCHAR NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    UNIQUE (tenant_id, knowledge_base_id, version)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO knowledge_bases
+                    (id, tenant_id, name, status, capability_scope, metadata_json)
+                VALUES ('kb_preset_sales_001', 'tenant_demo', 'Sales', 'active', 'general', '{}')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO knowledge_base_versions
+                    (id, tenant_id, knowledge_base_id, version, name, status,
+                     capability_scope, metadata_json)
+                VALUES (
+                    'legacy-version-id', 'tenant_demo', 'kb_preset_sales_001',
+                    '1.0.0', 'Sales', 'active', 'general', '{}'
+                )
+                """
+            )
+        )
+        for table_name in child_tables:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE {table_name} (
+                        id VARCHAR PRIMARY KEY,
+                        tenant_id VARCHAR NOT NULL,
+                        knowledge_base_id VARCHAR,
+                        knowledge_base_version_id VARCHAR
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    f"""
+                    INSERT INTO {table_name}
+                        (id, tenant_id, knowledge_base_id, knowledge_base_version_id)
+                    VALUES (:id, 'tenant_demo', 'kb_preset_sales_001', NULL)
+                    """
+                ),
+                {"id": f"{table_name}-row"},
+            )
+
+        tables = {"knowledge_bases", "knowledge_base_versions", *child_tables}
+        _migrate_knowledge_base_schema(conn, inspect(conn), tables)
+        _migrate_knowledge_base_schema(conn, inspect(conn), tables)
+
+        versions = conn.execute(
+            text(
+                "SELECT id FROM knowledge_base_versions "
+                "WHERE knowledge_base_id = 'kb_preset_sales_001' AND version = '1.0.0'"
+            )
+        ).scalars().all()
+        assert versions == ["legacy-version-id"]
+        for table_name in child_tables:
+            assert conn.execute(
+                text(f"SELECT knowledge_base_version_id FROM {table_name}")
+            ).scalar_one() == "legacy-version-id"
 
 
 def test_relative_sqlite_url_resolves_under_backend_dir() -> None:

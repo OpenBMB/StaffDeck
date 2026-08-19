@@ -265,6 +265,40 @@ def test_windows_restore_command_detection() -> None:
     assert desktop_launcher._is_windows_restore_command(0x0002, 0xF120) is False
 
 
+@pytest.mark.parametrize(
+    ("width", "height", "expected"),
+    [
+        (1280, 800, (360, 768, 660, 32)),
+        (900, 600, (360, 568, 280, 32)),
+        (60, 8, (60, 0, 0, 8)),
+    ],
+)
+def test_macos_drag_region_stays_on_safe_top_edge(
+    width: float,
+    height: float,
+    expected: tuple[float, float, float, float],
+) -> None:
+    assert desktop_launcher._macos_drag_region_frame(width, height) == expected
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "expected"),
+    [
+        (360, 768, True),
+        (1019, 799, True),
+        (359, 795, False),
+        (500, 767, False),
+        (1020, 795, False),
+    ],
+)
+def test_macos_drag_region_excludes_traffic_lights_and_web_controls(
+    x: float,
+    y: float,
+    expected: bool,
+) -> None:
+    assert desktop_launcher._point_is_in_macos_drag_region(x, y, 1280, 800) is expected
+
+
 def test_macos_window_embeds_local_ui() -> None:
     events: dict[str, object] = {}
 
@@ -279,10 +313,20 @@ def test_macos_window_embeds_local_ui() -> None:
 
         def initWithContentRect_styleMask_backing_defer_(self, frame, style, backing, defer):
             events["window_init"] = (frame, style, backing, defer)
+            events["window"] = self
             return self
 
         def setTitle_(self, title):
             events["title"] = title
+
+        def setTitleVisibility_(self, visibility):
+            events["title_visibility"] = visibility
+
+        def setTitlebarAppearsTransparent_(self, transparent):
+            events["titlebar_transparent"] = transparent
+
+        def setTitlebarSeparatorStyle_(self, style):
+            events["titlebar_separator_style"] = style
 
         def setMinSize_(self, size):
             events["min_size"] = size
@@ -294,13 +338,22 @@ def test_macos_window_embeds_local_ui() -> None:
             events["centered"] = True
 
         def contentView(self):
-            return FakeContentView()
+            return events.get("content_view", FakeContentView())
 
         def setContentView_(self, view):
             events["content_view"] = view
 
         def makeKeyAndOrderFront_(self, sender):
             events["ordered_front"] = sender
+
+        def performZoom_(self, sender):
+            events["zoom_sender"] = sender
+
+        def performWindowDragWithEvent_(self, event):
+            events["drag_event"] = event
+
+        def sendEvent_(self, event):
+            events["forwarded_event"] = event
 
     class FakeWebView:
         @classmethod
@@ -313,6 +366,13 @@ def test_macos_window_embeds_local_ui() -> None:
 
         def setAutoresizingMask_(self, mask):
             events["autoresizing_mask"] = mask
+
+        def bounds(self):
+            return type(
+                "Bounds",
+                (),
+                {"size": type("Size", (), {"width": 1280, "height": 800})()},
+            )()
 
         def loadRequest_(self, request):
             events["request"] = request
@@ -329,10 +389,14 @@ def test_macos_window_embeds_local_ui() -> None:
 
     class FakeAppKit:
         NSWindow = FakeWindow
+        NSEventTypeLeftMouseDown = 1
         NSWindowStyleMaskTitled = 1
         NSWindowStyleMaskClosable = 2
         NSWindowStyleMaskMiniaturizable = 4
         NSWindowStyleMaskResizable = 8
+        NSWindowStyleMaskFullSizeContentView = 16
+        NSWindowTitleHidden = 1
+        NSWindowTitlebarSeparatorStyleNone = 0
         NSBackingStoreBuffered = 2
         NSViewWidthSizable = 2
         NSViewHeightSizable = 16
@@ -352,21 +416,68 @@ def test_macos_window_embeds_local_ui() -> None:
     class FakeWebKit:
         WKWebView = FakeWebView
 
-    window, webview = desktop_launcher._create_macos_webview_window(
-        FakeAppKit,
-        FakeFoundation,
-        FakeWebKit,
-        "http://127.0.0.1:5173/chat/",
-    )
+    original_window_class = desktop_launcher._MACOS_WINDOW_CLASS
+    desktop_launcher._MACOS_WINDOW_CLASS = None
+    try:
+        window, webview = desktop_launcher._create_macos_webview_window(
+            FakeAppKit,
+            FakeFoundation,
+            FakeWebKit,
+            "http://127.0.0.1:5173/chat/",
+        )
+    finally:
+        desktop_launcher._MACOS_WINDOW_CLASS = original_window_class
 
     assert isinstance(window, FakeWindow)
     assert isinstance(webview, FakeWebView)
     assert webview is events["content_view"]
     assert events["request"] == "request:url:http://127.0.0.1:5173/chat/"
     assert events["title"] == "StaffDeck"
+    assert events["window_init"][1] & FakeAppKit.NSWindowStyleMaskFullSizeContentView
+    assert events["title_visibility"] == FakeAppKit.NSWindowTitleHidden
+    assert events["titlebar_transparent"] is True
+    assert events["titlebar_separator_style"] == FakeAppKit.NSWindowTitlebarSeparatorStyleNone
     assert events["min_size"] == (900, 600)
     assert events["released_when_closed"] is False
     assert events["centered"] is True
+
+    point = type("Point", (), {"x": 500, "y": 795})()
+    drag_event = type(
+        "Event",
+        (),
+        {
+            "type": lambda self: FakeAppKit.NSEventTypeLeftMouseDown,
+            "locationInWindow": lambda self: point,
+            "clickCount": lambda self: 1,
+        },
+    )()
+    window.sendEvent_(drag_event)
+    assert events["drag_event"] is drag_event
+
+    zoom_event = type(
+        "Event",
+        (),
+        {
+            "type": lambda self: FakeAppKit.NSEventTypeLeftMouseDown,
+            "locationInWindow": lambda self: point,
+            "clickCount": lambda self: 2,
+        },
+    )()
+    window.sendEvent_(zoom_event)
+    assert events["zoom_sender"] is window
+
+    web_control_point = type("Point", (), {"x": 100, "y": 795})()
+    web_event = type(
+        "Event",
+        (),
+        {
+            "type": lambda self: FakeAppKit.NSEventTypeLeftMouseDown,
+            "locationInWindow": lambda self: web_control_point,
+            "clickCount": lambda self: 1,
+        },
+    )()
+    window.sendEvent_(web_event)
+    assert events["forwarded_event"] is web_event
 
 
 def test_macos_main_menu_routes_edit_shortcuts_through_responder_chain() -> None:

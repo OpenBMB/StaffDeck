@@ -26,6 +26,10 @@ DEFAULT_PORT_RANGE_START = 5173
 DEFAULT_PORT_RANGE_END = 5199
 _MACOS_DELEGATE_REF = None
 _MACOS_INSTANCE_LOCK_HANDLE = None
+_MACOS_WINDOW_CLASS = None
+MACOS_DRAG_REGION_LEFT_INSET = 360
+MACOS_DRAG_REGION_RIGHT_INSET = 260
+MACOS_DRAG_REGION_HEIGHT = 32
 STAFFDECK_ICON_PNG = ("packaging", "assets", "staffdeck.png")
 LARK_PACKAGING_SMOKE_IMPORTS = (
     ("lark_channel", "EventDispatcherHandler"),
@@ -405,6 +409,26 @@ def _serve(cfg: dict) -> None:
     uvicorn.run(cfg["app"], host=cfg["host"], port=cfg["port"], log_level="info")
 
 
+def _macos_drag_region_frame(width: float, height: float) -> tuple[float, float, float, float]:
+    """Keep native dragging on the empty top center without covering web controls."""
+    origin_x = min(width, MACOS_DRAG_REGION_LEFT_INSET)
+    right_edge = max(origin_x, width - MACOS_DRAG_REGION_RIGHT_INSET)
+    return (
+        origin_x,
+        max(0, height - MACOS_DRAG_REGION_HEIGHT),
+        max(0, right_edge - origin_x),
+        min(height, MACOS_DRAG_REGION_HEIGHT),
+    )
+
+
+def _point_is_in_macos_drag_region(x: float, y: float, width: float, height: float) -> bool:
+    origin_x, origin_y, region_width, region_height = _macos_drag_region_frame(width, height)
+    return (
+        origin_x <= x < origin_x + region_width
+        and origin_y <= y < origin_y + region_height
+    )
+
+
 def preload_server_app(cfg: dict) -> None:
     app_ref = cfg.get("app")
     if not isinstance(app_ref, str):
@@ -418,19 +442,62 @@ def preload_server_app(cfg: dict) -> None:
 
 def _create_macos_webview_window(AppKit, Foundation, WebKit, target: str):
     """Create the native macOS window used by both arm64 and x86_64 bundles."""
+    try:
+        import objc
+    except ImportError:
+        objc = None
+    objc_super = (
+        objc.super
+        if objc is not None and isinstance(AppKit.NSWindow, objc.objc_class)
+        else None
+    )
+
+    global _MACOS_WINDOW_CLASS
+    if _MACOS_WINDOW_CLASS is None:
+
+        class StaffDeckWindow(AppKit.NSWindow):
+            def sendEvent_(self, event):  # noqa: N802
+                if event.type() == AppKit.NSEventTypeLeftMouseDown:
+                    location = event.locationInWindow()
+                    size = self.contentView().bounds().size
+                    if _point_is_in_macos_drag_region(
+                        location.x,
+                        location.y,
+                        size.width,
+                        size.height,
+                    ):
+                        if event.clickCount() == 2:
+                            self.performZoom_(self)
+                        else:
+                            self.performWindowDragWithEvent_(event)
+                        return
+                if objc_super is not None:
+                    objc_super(StaffDeckWindow, self).sendEvent_(event)
+                else:
+                    AppKit.NSWindow.sendEvent_(self, event)
+
+        _MACOS_WINDOW_CLASS = StaffDeckWindow
+
     style = (
         AppKit.NSWindowStyleMaskTitled
         | AppKit.NSWindowStyleMaskClosable
         | AppKit.NSWindowStyleMaskMiniaturizable
         | AppKit.NSWindowStyleMaskResizable
+        | AppKit.NSWindowStyleMaskFullSizeContentView
     )
-    window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+    window = _MACOS_WINDOW_CLASS.alloc().initWithContentRect_styleMask_backing_defer_(
         AppKit.NSMakeRect(0, 0, 1280, 800),
         style,
         AppKit.NSBackingStoreBuffered,
         False,
     )
     window.setTitle_(APP_NAME)
+    window.setTitleVisibility_(AppKit.NSWindowTitleHidden)
+    window.setTitlebarAppearsTransparent_(True)
+    if hasattr(window, "setTitlebarSeparatorStyle_"):
+        window.setTitlebarSeparatorStyle_(
+            getattr(AppKit, "NSWindowTitlebarSeparatorStyleNone", 0)
+        )
     window.setMinSize_(AppKit.NSMakeSize(900, 600))
     window.setReleasedWhenClosed_(False)
     window.center()
@@ -442,6 +509,7 @@ def _create_macos_webview_window(AppKit, Foundation, WebKit, target: str):
         raise RuntimeError(f"Invalid StaffDeck window URL: {target!r}")
     webview.loadRequest_(Foundation.NSURLRequest.requestWithURL_(page_url))
     window.setContentView_(webview)
+
     window.makeKeyAndOrderFront_(None)
     return window, webview
 

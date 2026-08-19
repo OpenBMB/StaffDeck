@@ -27,7 +27,10 @@ class Tenant(SQLModel, table=True):
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("tenant_id", "username", name="uq_user_tenant_username"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "username", name="uq_user_tenant_username"),
+        Index("ix_users_tenant_id_display_name", "tenant_id", "display_name"),
+    )
 
     id: str = Field(default_factory=lambda: new_id("user"), primary_key=True)
     tenant_id: str = Field(index=True)
@@ -873,6 +876,28 @@ class ChannelBindingAgent(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ChannelBindingManager(SQLModel, table=True):
+    """渠道绑定协作者:创建者/admin 显式授权的非创建者,可凭证/挂载/启停但不能删除。
+
+    同一 (binding, user) 仅一行;移除即软撤销(revoked_at),重新添加复活该行,
+    保留最近一次授权/撤销记录用于审计。删除渠道绑定级联清空协作者行。
+    """
+
+    __tablename__ = "channel_binding_managers"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "user_id", name="uq_channel_binding_manager"),
+        Index("ix_channel_binding_managers_tenant_user", "tenant_id", "user_id"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("chbm"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    binding_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    granted_by_user_id: str
+    granted_at: datetime = Field(default_factory=utc_now)
+    revoked_at: Optional[datetime] = None
+
+
 class ChannelConvState(SQLModel, table=True):
     """路由指针：每个 (binding, external_conv_id) 会话的当前员工。"""
 
@@ -1036,6 +1061,9 @@ class HumanHandoffRequest(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     answered_at: Optional[datetime] = None
+    # 飞书 handoff_notice 投递成功后回写的飞书 message_id;阶段 4 据此关联处理人回复。
+    # 网页触发的 handoff 无此字段(为空),不影响现有网页回复链路。
+    notify_message_id: Optional[str] = Field(default=None, index=True)
 
 
 class ScheduledTask(SQLModel, table=True):

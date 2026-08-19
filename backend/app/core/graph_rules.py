@@ -23,6 +23,8 @@ class GraphRules:
             "retry_policy": node.get("retry_policy") or {},
             "metadata": node.get("metadata") or {},
             "sub_sop_id": node.get("sub_sop_id"),
+            # handoff 节点可指定处理人;未指定时回退到渠道默认/owner/admin。
+            "assignee_user_id": node.get("assignee_user_id"),
         }
 
     @staticmethod
@@ -301,3 +303,104 @@ class GraphRules:
         return all(
             action in terminal_actions or action.startswith("call_tool:") for action in actions
         )
+
+    @classmethod
+    def is_handoff_node(cls, node: dict[str, Any]) -> bool:
+        node_type = str(node.get("type") or "").strip()
+        if node_type == "handoff":
+            return True
+        return "handoff_human" in cls.step_actions(node)
+
+    @classmethod
+    def find_handoff_node_id(
+        cls,
+        content: dict[str, Any],
+        active_step_id: str | None = None,
+    ) -> str | None:
+        """查找 SOP 中从当前节点可达的 handoff 节点。
+
+        优先从 active_step_id 出发沿 edges BFS,仅在目标唯一时返回 handoff 节点。
+        若 active_step_id 为空或无可达 handoff 节点,回退到 start_node_id 做 BFS。
+        若仍无结果,回退到 nodes 数组中第一个 handoff 节点(兼容无 edges 的简单 SOP)。
+
+        BFS 分两阶段:
+        1. 仅沿无条件边(condition 为空/default/else)搜索,避免误入未命中的条件分支;
+        2. 若未命中,沿所有边搜索(含条件边);多个 handoff 可达时返回 None,
+           由调用方要求显式目标,避免猜错条件分支。
+        """
+        nodes = cls.nodes(content)
+        nodes_by_id = {
+            str(node.get("node_id") or ""): node for node in nodes if node.get("node_id")
+        }
+        outgoing = cls.outgoing_edges(content)
+
+        def _bfs(start: str | None, unconditional_only: bool) -> list[str]:
+            if not start or start not in nodes_by_id:
+                return []
+            visited: set[str] = set()
+            queue: list[str] = [start]
+            handoff_ids: list[str] = []
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                visited.add(current)
+                node = nodes_by_id.get(current)
+                if node and cls.is_handoff_node(node):
+                    handoff_ids.append(current)
+                    continue
+                for edge in outgoing.get(current, []):
+                    next_id = str(edge.get("next_node_id") or "").strip()
+                    if not next_id or next_id in visited:
+                        continue
+                    if unconditional_only and cls.edge_condition(edge) not in {
+                        "",
+                        "default",
+                        "else",
+                    }:
+                        continue
+                    queue.append(next_id)
+            return handoff_ids
+
+        def _unique_bfs(start: str | None, unconditional_only: bool) -> tuple[str | None, bool]:
+            matches = _bfs(start, unconditional_only)
+            return (matches[0], False) if len(matches) == 1 else (None, len(matches) > 1)
+
+        # 1a. 从当前节点沿无条件边 BFS
+        if active_step_id:
+            found, ambiguous = _unique_bfs(active_step_id, unconditional_only=True)
+            if found:
+                return found
+            if ambiguous:
+                return None
+        # 1b. 从 start_node_id 沿无条件边 BFS
+        start = str(content.get("start_node_id") or "").strip()
+        if start and start != active_step_id:
+            found, ambiguous = _unique_bfs(start, unconditional_only=True)
+            if found:
+                return found
+            if ambiguous:
+                return None
+        # 2a. 从当前节点沿所有边 BFS(含条件边)
+        if active_step_id:
+            found, ambiguous = _unique_bfs(active_step_id, unconditional_only=False)
+            if found:
+                return found
+            if ambiguous:
+                return None
+        # 2b. 从 start_node_id 沿所有边 BFS
+        if start and start != active_step_id:
+            found, ambiguous = _unique_bfs(start, unconditional_only=False)
+            if found:
+                return found
+            if ambiguous:
+                return None
+        # 3. 仅无 edges 的旧 SOP 回退到数组顺序。
+        if outgoing:
+            return None
+        for node in nodes:
+            if cls.is_handoff_node(node):
+                node_id = str(node.get("node_id") or "").strip()
+                if node_id:
+                    return node_id
+        return None

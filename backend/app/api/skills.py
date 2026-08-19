@@ -193,6 +193,37 @@ def list_skills(
     return [skill_read(row, stats, recent_stats) for row in rows]
 
 
+def _validate_handoff_assignees(db: Session, content: SkillCard, tenant_id: str) -> None:
+    """校验 SOP 人工节点的 assignee_user_id:必须存在、同租户、source='web'(内部成员)。"""
+    assignee_ids = {
+        node.assignee_user_id
+        for node in content.nodes
+        if node.assignee_user_id and node.assignee_user_id.strip()
+    }
+    if not assignee_ids:
+        return
+    rows = db.exec(
+        select(User).where(
+            User.tenant_id == tenant_id,
+            User.id.in_(assignee_ids),
+        )
+    ).all()
+    found_ids = {row.id for row in rows}
+    internal_ids = {row.id for row in rows if row.source == "web"}
+    missing = assignee_ids - found_ids
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"人工节点处理人不存在或不在当前租户: {', '.join(sorted(missing))}",
+        )
+    non_internal = assignee_ids - internal_ids
+    if non_internal:
+        raise HTTPException(
+            status_code=400,
+            detail=f"人工节点处理人必须是内部成员(web 账号),不可使用渠道客户或群聊虚拟账号: {', '.join(sorted(non_internal))}",
+        )
+
+
 @router.post("", response_model=SkillRead)
 def create_skill(
     request: SkillCreateRequest,
@@ -210,6 +241,7 @@ def create_skill(
         raise HTTPException(status_code=409, detail="Skill ID already exists for this tenant")
     normalized_content, _warnings = skill_card_with_unique_step_ids(request.content)
     content = normalized_content.model_dump()
+    _validate_handoff_assignees(db, normalized_content, request.tenant_id)
     agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
     try:
         validate_sop_nesting(
@@ -303,6 +335,7 @@ def update_skill(
         raise HTTPException(status_code=400, detail="SOP skill_id cannot be modified")
     row = _get_skill(db, request.tenant_id, skill_id)
     normalized_content, _warnings = skill_card_with_unique_step_ids(request.content)
+    _validate_handoff_assignees(db, normalized_content, request.tenant_id)
     agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
     try:
         validate_sop_nesting(

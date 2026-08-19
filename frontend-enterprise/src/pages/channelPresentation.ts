@@ -1,3 +1,5 @@
+import type { ChannelBindingRead } from '../types';
+
 export type ChannelPresentation = {
   name: string;
   identifierLabel: string;
@@ -50,4 +52,24 @@ export function getChannelPresentation(channel: string, configuredName?: string)
       preset?.disconnectDescription ||
       `断开后${name}接入将停止服务，需要重新配置该渠道才能恢复；对话记录保留。确定断开接入吗？`,
   };
+}
+
+export const ROLE_LABEL: Record<string, string> = {
+  admin: '管理员',
+  owner: '拥有者',
+  collaborator: '协作者',
+};
+
+/** 仅创建者与管理员可删除渠道绑定/管理协作者名单 */
+export function canDeleteBinding(binding: Pick<ChannelBindingRead, 'my_role'>): boolean {
+  return binding.my_role === 'owner' || binding.my_role === 'admin';
+}
+
+/** 创建者/管理员/协作者可配置凭证、管理挂载员工、启停渠道 */
+export function canManageBinding(binding: Pick<ChannelBindingRead, 'my_role'>): boolean {
+  return (
+    binding.my_role === 'owner' ||
+    binding.my_role === 'admin' ||
+    binding.my_role === 'collaborator'
+  );
 }

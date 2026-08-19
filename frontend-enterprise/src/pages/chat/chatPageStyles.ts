@@ -22,7 +22,7 @@ export const CHAT_ICON_BUTTON_CLASS =
 // ---------------------------------------------------------------------------
 export const CHAT_MAIN_CLASS = 'flex min-h-0 min-w-0 flex-col bg-[#fcfcfc]';
 export const CHAT_HEADER_CLASS =
-  'flex h-[56px] shrink-0 items-center justify-between gap-[12px] border-b border-[#f4f4f4] pl-[18px] pr-[24px]';
+  'flex h-[88px] shrink-0 items-center justify-between gap-[12px] border-b border-[#f4f4f4] pt-[32px] pl-[18px] pr-[24px]';
 export const CHAT_HEADER_TITLE_STACK_CLASS = 'flex min-w-0 items-end gap-[8px]';
 export const CHAT_HEADER_TITLE_NAME_CLASS = 'truncate text-[14px] capitalize text-[#18181a]';
 export const CHAT_HEADER_TITLE_META_CLASS = 'shrink-0 truncate text-[10px] text-[#757f9c]';

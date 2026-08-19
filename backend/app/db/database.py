@@ -135,6 +135,13 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'member'"))
             if "source" not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN source VARCHAR NOT NULL DEFAULT 'web'"))
+            if "display_name" in user_columns:
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_users_tenant_id_display_name "
+                        "ON users(tenant_id, display_name)"
+                    )
+                )
             _migrate_user_source_backfill(conn)
 
         if "sessions" in tables:
@@ -245,6 +252,21 @@ def _migrate_sqlite_skill_schema() -> None:
                     text(
                         "ALTER TABLE channel_inbound_events ADD COLUMN "
                         "processor_lease_expires_at DATETIME"
+                    )
+                )
+
+        if "human_handoff_requests" in tables:
+            handoff_columns = {
+                column["name"] for column in inspector.get_columns("human_handoff_requests")
+            }
+            if "notify_message_id" not in handoff_columns:
+                conn.execute(
+                    text("ALTER TABLE human_handoff_requests ADD COLUMN notify_message_id VARCHAR")
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_human_handoff_requests_notify_message_id "
+                        "ON human_handoff_requests(notify_message_id)"
                     )
                 )
 
@@ -1993,15 +2015,33 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                     {"tenant_id": tenant_id, "knowledge_base_id": _default_knowledge_base_id(tenant_id)},
                 )
 
+    resolved_version_ids: dict[str, str] = {}
     if "knowledge_base_versions" in tables and "knowledge_bases" in tables:
         knowledge_bases = conn.execute(text("SELECT * FROM knowledge_bases")).mappings().all()
         for row in knowledge_bases:
-            version_id = _knowledge_base_version_id(str(row["id"]), "1.0.0")
+            knowledge_base_id = str(row["id"])
+            version_id = _knowledge_base_version_id(knowledge_base_id, "1.0.0")
             existing = conn.execute(
-                text("SELECT id FROM knowledge_base_versions WHERE id = :id"),
-                {"id": version_id},
+                text(
+                    """
+                    SELECT id FROM knowledge_base_versions
+                    WHERE id = :id
+                       OR (
+                            tenant_id = :tenant_id
+                            AND knowledge_base_id = :knowledge_base_id
+                            AND version = '1.0.0'
+                       )
+                    """
+                ),
+                {
+                    "id": version_id,
+                    "tenant_id": row["tenant_id"],
+                    "knowledge_base_id": knowledge_base_id,
+                },
             ).first()
-            if not existing:
+            if existing:
+                version_id = str(existing[0])
+            else:
                 conn.execute(
                     text(
                         """
@@ -2019,7 +2059,7 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                     {
                         "id": version_id,
                         "tenant_id": row["tenant_id"],
-                        "knowledge_base_id": row["id"],
+                        "knowledge_base_id": knowledge_base_id,
                         "name": row["name"],
                         "description": row.get("description"),
                         "status": row.get("status") or "active",
@@ -2031,6 +2071,7 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                         "metadata_json": row.get("metadata_json") or "{}",
                     },
                 )
+            resolved_version_ids[knowledge_base_id] = version_id
 
     for table_name in table_names:
         if table_name not in tables:
@@ -2063,7 +2104,10 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                 ),
                 {
                     "knowledge_base_id": knowledge_base_id,
-                    "version_id": _knowledge_base_version_id(knowledge_base_id, "1.0.0"),
+                    "version_id": resolved_version_ids.get(
+                        knowledge_base_id,
+                        _knowledge_base_version_id(knowledge_base_id, "1.0.0"),
+                    ),
                 },
             )
 

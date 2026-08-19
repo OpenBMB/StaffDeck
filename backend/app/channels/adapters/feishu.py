@@ -462,6 +462,71 @@ class FeishuAdapter:
             body={"content": json.dumps(card_json, ensure_ascii=False)},
         )
 
+    def resolve_open_id_by_mobile_or_email(
+        self,
+        binding: ChannelBinding,
+        *,
+        mobile: str | None = None,
+        email: str | None = None,
+    ) -> str | None:
+        """飞书通讯录反查 open_id(方案 B):POST /contactv3/users/batch_get_id。
+
+        需要应用具备 contact:user.id:readonly 或 contact:user.base:readonly 权限。
+        传入手机号或邮箱,返回首个命中用户的 open_id;未命中或无权限返回 None。
+        """
+        mobiles = [str(mobile).strip()] if mobile and str(mobile).strip() else []
+        emails = [str(email).strip()] if email and str(email).strip() else []
+        if not mobiles and not emails:
+            return None
+        body: dict[str, Any] = {}
+        if mobiles:
+            body["mobiles"] = mobiles
+        if emails:
+            body["emails"] = emails
+        try:
+            data = self._request(
+                binding,
+                "POST",
+                f"{FEISHU_API_BASE}/contact/v3/users/batch_get_id",
+                params={"user_id_type": "open_id"},
+                body=body,
+            )
+        except Exception:
+            return None
+        user_list = (data.get("data") or {}).get("user_list") or []
+        for item in user_list:
+            open_id = str(item.get("user_id") or "").strip()
+            if open_id:
+                return open_id
+        return None
+
+    def get_user_name(
+        self,
+        binding: ChannelBinding,
+        open_id: str,
+    ) -> str | None:
+        """通过 open_id 查询飞书用户真实姓名: GET /contact/v3/users/{open_id}。
+
+        需要应用具备 contact:user.base:readonly 权限。
+        返回 name 字段;无权限或未命中返回 None。
+        """
+        open_id = str(open_id or "").strip()
+        if not open_id or open_id.startswith("group:"):
+            return None
+        try:
+            data = self._request(
+                binding,
+                "GET",
+                f"{FEISHU_API_BASE}/contact/v3/users/{open_id}",
+                params={"user_id_type": "open_id"},
+                body=None,
+            )
+        except Exception:
+            return None
+        user = (data.get("data") or {}).get("user") or {}
+        name = str(user.get("name") or "").strip()
+        return name or None
+
     def send(
         self,
         binding: ChannelBinding,
@@ -469,7 +534,7 @@ class FeishuAdapter:
         text: str,
         *,
         idempotency_key: str | None = None,
-    ) -> None:
+    ) -> str | None:
         key = str(idempotency_key or "").strip()
         if not str(text or "").strip():
             raise FeishuPermanentError("飞书投递文本不能为空")
@@ -488,6 +553,9 @@ class FeishuAdapter:
                 chunks = [text]
         else:
             chunks = split_channel_text(text)
+        # 透传 _post 返回的飞书 message_id,供 outbox 回写 handoff.notify_message_id
+        # (阶段 4 关联回复)。多 chunk 时取最后一条(即完整消息的末段)的 message_id。
+        created_message_id: str | None = None
         for index, chunk in enumerate(chunks):
             if use_rich:
                 post_content = render_feishu_post(parse_markdown(chunk))
@@ -504,7 +572,7 @@ class FeishuAdapter:
                 }
             if message_id:
                 body["reply_in_thread"] = bool(target.get("reply_in_thread"))
-                self._post(
+                data = self._post(
                     binding,
                     f"{FEISHU_API_BASE}/im/v1/messages/{message_id}/reply",
                     params=None,
@@ -512,12 +580,14 @@ class FeishuAdapter:
                 )
             else:
                 body["receive_id"] = receive_id
-                self._post(
+                data = self._post(
                     binding,
                     f"{FEISHU_API_BASE}/im/v1/messages",
                     params={"receive_id_type": receive_id_type},
                     body=body,
                 )
+            created_message_id = str((data.get("data") or {}).get("message_id") or "").strip() or None
+        return created_message_id
 
     def start_ingress(self, binding_id: str) -> None:
         from app.channels import get_feishu_process_manager

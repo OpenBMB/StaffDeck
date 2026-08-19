@@ -106,7 +106,7 @@ class RecordingAgentLoop:
     calls: list = []
     reply_text = "自动回复"
 
-    def __init__(self, db):
+    def __init__(self, db, *, event_sink=None):
         self.db = db
 
     def handle_turn(self, request):
