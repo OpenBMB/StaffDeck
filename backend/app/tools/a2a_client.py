@@ -10,6 +10,8 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+
+from app.net_proxy import httpx_proxy_kwargs
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -217,7 +219,9 @@ class A2AClient:
             return
         card_url = self._agent_card_url()
         try:
-            with httpx.Client(timeout=min(self.timeout_seconds, 15.0)) as client:
+            with httpx.Client(
+                timeout=min(self.timeout_seconds, 15.0), **httpx_proxy_kwargs(self.endpoint_url)
+            ) as client:
                 response = client.get(card_url, headers=self.headers)
                 response.raise_for_status()
                 card = response.json()
@@ -346,7 +350,7 @@ class A2AClient:
         last: dict[str, Any] | None = None
         accumulated_task: dict[str, Any] | None = None
         timeout = max(deadline - time.monotonic(), 0.1)
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, **httpx_proxy_kwargs(self.endpoint_url)) as client:
             with client.stream("POST", self.endpoint_url, headers=headers, json=payload) as response:
                 response.raise_for_status()
                 for event_id, data in _iter_sse(response.iter_lines()):
@@ -379,7 +383,7 @@ class A2AClient:
 
     def _rpc(self, method: str, params: dict[str, Any], *, deadline: float) -> dict[str, Any]:
         timeout = max(deadline - time.monotonic(), 0.1)
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, **httpx_proxy_kwargs(self.endpoint_url)) as client:
             response = client.post(
                 self.endpoint_url,
                 headers=self.headers,
