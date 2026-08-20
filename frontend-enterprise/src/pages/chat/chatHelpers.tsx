@@ -185,13 +185,25 @@ export type MarkdownRenderOptions = {
   renderInternalLink?: (link: { label: string; href: string; key: string }) => ReactNode;
 };
 
+const SIGNED_RPS_LINK_PATTERN = /^fsstore:\/\/staffdeck-rps\/signed\/([A-Za-z0-9_-]{16,128})$/;
+const CUSTOM_PROTOCOL_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+
+function signedRpsDownloadHref(href: string): string | null {
+  const match = href.match(SIGNED_RPS_LINK_PATTERN);
+  return match ? `/api/rps/download/${match[1]}` : null;
+}
+
+function markdownLinkLabel(value: string): string {
+  return value.replace(/\\([\\[\]])/g, '$1');
+}
+
 export function renderInlineMarkdown(
   text: string,
   keyPrefix: string,
   options: MarkdownRenderOptions = {},
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]*\]\([^\)\n]+\))/g;
+  const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[(?:\\.|[^\]\\\n])*\]\([^\)\n]+\))/g;
   let cursor = 0;
   let index = 0;
   let match: RegExpExecArray | null;
@@ -207,22 +219,35 @@ export function renderInlineMarkdown(
     } else if (token.startsWith('**') && token.endsWith('**')) {
       nodes.push(<strong key={key}>{renderInlineMarkdown(token.slice(2, -2), key, options)}</strong>);
     } else {
-      const image = token.match(/^!\[([^\]]*)\]\(([^\)\n]+)\)$/);
+      const image = token.match(/^!\[((?:\\.|[^\]\\\n])*)\]\(([^\)\n]+)\)$/);
       if (image) {
-        nodes.push(<span key={key}>{image[1] || '图片'}</span>);
+        nodes.push(<span key={key}>{markdownLinkLabel(image[1]) || '图片'}</span>);
         cursor = match.index + token.length;
         index += 1;
         continue;
       }
-      const link = token.match(/^\[([^\]]*)\]\(([^\)\n]+)\)$/);
+      const link = token.match(/^\[((?:\\.|[^\]\\\n])*)\]\(([^\)\n]+)\)$/);
       if (link) {
         const href = link[2].trim();
-        const label = link[1] || href;
-        if (/^https?:\/\//i.test(href)) {
+        const label = markdownLinkLabel(link[1]) || href;
+        const signedRpsHref = signedRpsDownloadHref(href);
+        if (signedRpsHref) {
+          nodes.push(
+            <a key={key} href={signedRpsHref} download rel="noreferrer">
+              {label}
+            </a>,
+          );
+        } else if (/^https?:\/\//i.test(href)) {
           nodes.push(
             <a key={key} href={href} target="_blank" rel="noreferrer">
               {label}
             </a>,
+          );
+        } else if (CUSTOM_PROTOCOL_PATTERN.test(href)) {
+          nodes.push(
+            <span key={key} className="md-link-label" title={href}>
+              {label}
+            </span>,
           );
         } else if (options.renderInternalLink) {
           nodes.push(options.renderInternalLink({ label, href, key }));

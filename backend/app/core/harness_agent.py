@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import is_dataclass, replace
+import hashlib
 import json
 import time
 from typing import Any, Literal
@@ -251,7 +252,11 @@ class HarnessTaskAgent:
                         "role": "assistant",
                         "action": "tool",
                         "tool_name": tool_name,
-                        "arguments": action.arguments,
+                        "arguments": _transcript_action_arguments(
+                            requirement,
+                            tool_name,
+                            action.arguments,
+                        ),
                     },
                     {
                         "role": "tool",
@@ -323,6 +328,50 @@ class HarnessTaskAgent:
             action_count=max_actions,
             error={"code": "ACTION_BUDGET_EXHAUSTED"},
         )
+
+
+
+def _transcript_action_arguments(
+    requirement: TaskRequirement,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep private RPS draft prose out of later model turns.
+
+    The draft files are merged at the trusted Harness-to-MCP boundary. Repeating
+    their contents in the transcript would recreate the oversized JSON prompt
+    that this file-handle workflow is meant to avoid.
+    """
+    if not _is_xiaoming_rps_draft_write(requirement, tool_name, arguments):
+        return arguments
+    content = str(arguments.get("content") or "")
+    return {
+        "path": str(arguments.get("path") or ""),
+        "create_parents": bool(arguments.get("create_parents")),
+        "content_summary": {
+            "bytes": len(content.encode("utf-8")),
+            "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        },
+    }
+
+
+def _is_xiaoming_rps_draft_write(
+    requirement: TaskRequirement,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> bool:
+    if (
+        requirement.agent_id != "agent_4a018d61af2f4589"
+        or tool_name != "write_file"
+        or str(requirement.sop_context.get("skill_id") or "") != "rps_registration"
+        or str((requirement.sop_context.get("step") or {}).get("node_id") or "")
+        != "edit_and_build"
+    ):
+        return False
+    path = str(arguments.get("path") or "").replace("\\", "/")
+    return path.startswith(".harness/rps-drafts/") or path.startswith(
+        "/workspace/.harness/rps-drafts/"
+    )
 
 
 def _activate_described_capabilities(
@@ -489,8 +538,14 @@ def _bounded_capability_result(
     tool_name: str,
     result: dict[str, Any],
     *,
-    max_chars: int = 12_000,
+    max_chars: int | None = None,
 ) -> dict[str, Any]:
+    if max_chars is None:
+        max_chars = (
+            50_000
+            if tool_name == "data_analyze" or tool_name.endswith(".data_analyze")
+            else 12_000
+        )
     payload = {
         "tool_name": tool_name,
         "success": bool(result.get("success")),

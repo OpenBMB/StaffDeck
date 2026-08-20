@@ -79,6 +79,12 @@ def test_write_read_edit_and_info_are_hash_guarded_and_atomic(tmp_path: Path) ->
     assert info["sha256"] == edited["sha256"]
 
 
+def test_default_read_limit_matches_the_single_file_limit() -> None:
+    limits = HarnessLimits()
+
+    assert limits.max_read_bytes == limits.max_file_bytes == 10 * 1024 * 1024
+
+
 def test_artifacts_are_published_explicitly_with_safe_metadata(tmp_path: Path) -> None:
     executor, context = _harness(tmp_path)
     _execute(

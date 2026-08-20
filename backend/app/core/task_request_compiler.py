@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from app.db.models import ChatSession, Skill
 from app.session.session_schema import PlannedTaskFrame
-
 
 CapabilityKind = Literal[
     "general_skill",
@@ -54,9 +54,11 @@ class CapabilityManifest(BaseModel):
 
 class TaskRequirement(BaseModel):
     task_frame_id: str
+    agent_id: str = ""
     kind: Literal["sop", "conversation"]
     goal: str
     source_user_message: str = ""
+    execution_constraints: str = ""
     requirements: list[str] = Field(default_factory=list)
     sop_context: dict[str, Any] = Field(default_factory=dict)
     required_slots: list[str] = Field(default_factory=list)
@@ -106,6 +108,7 @@ class TaskRequestCompiler:
         prior_task_results: list[dict[str, Any]] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         source_user_message: str | None = None,
+        execution_constraints: str | None = None,
     ) -> TaskRequirement:
         current_node = _current_node(skill, frame.target_step_id or session.active_step_id)
         expected_fields = _text_list((current_node or {}).get("expected_user_info"))
@@ -144,11 +147,22 @@ class TaskRequestCompiler:
             current_node,
             manifest,
         )
+        visualization_capability = _required_visualization_capability(
+            goal=goal,
+            requirements=requirements,
+            source_user_message=source_user_message,
+            execution_constraints=execution_constraints,
+            manifest=manifest,
+        )
+        if visualization_capability:
+            required_capability_names = _unique(
+                [*required_capability_names, visualization_capability]
+            )
         if required_capability_names:
             completion_criteria = _unique(
                 [
                     *completion_criteria,
-                    "成功调用当前 SOP 节点标记为强制执行的能力："
+                    "成功调用当前任务标记为强制执行的能力："
                     + "、".join(required_capability_names),
                 ]
             )
@@ -161,9 +175,11 @@ class TaskRequestCompiler:
             )
         return TaskRequirement(
             task_frame_id=str(frame.task_id or ""),
+            agent_id=str(session.agent_id or ""),
             kind=frame.kind,
             goal=goal,
             source_user_message=str(source_user_message or "").strip()[:4_000],
+            execution_constraints=str(execution_constraints or "").strip()[:20_000],
             requirements=requirements or [goal],
             sop_context=_sop_context(skill, current_node),
             required_slots=required_slots,
@@ -247,6 +263,74 @@ def _required_step_capabilities(
     if required_knowledge_base_ids:
         required.append("knowledge_search")
     return _unique(required), required_knowledge_base_ids
+
+
+_VISUAL_DIRECTIVE_PATTERN = re.compile(
+    r"chart_generate|生图|"
+    r"(?:生成|绘制|制作|输出|提供|交付|展示).{0,12}(?:可视化(?:图表)?|图表|图像|图片)|"
+    r"(?:必须|务必|每次|至少).{0,16}(?:可视化(?:图表)?|图表|图像|图片)|"
+    r"\b(?:generate|create|render|plot|provide)\b.{0,40}"
+    r"\b(?:chart|graph|visuali[sz]ation|plot|image)\b",
+    re.IGNORECASE,
+)
+_VISUAL_NEGATION_PATTERN = re.compile(
+    r"(?:不要|不得|无需|不用|禁止|避免)[^，。；;\n]{0,12}$",
+    re.IGNORECASE,
+)
+_ANALYSIS_CONSTRAINT_PATTERN = re.compile(
+    r"每次(?:数据|财务|文件|报表)?分析(?:任务|工作)?|"
+    r"(?:数据|财务|文件|报表)分析(?:任务|工作)",
+    re.IGNORECASE,
+)
+_ANALYSIS_CONTEXT_PATTERN = re.compile(
+    r"分析|数据|财报|年报|报表|excel|csv|pdf|spreadsheet|financial|analysis|analy[sz]e",
+    re.IGNORECASE,
+)
+
+
+def _required_visualization_capability(
+    *,
+    goal: str,
+    requirements: list[str],
+    source_user_message: str | None,
+    execution_constraints: str | None,
+    manifest: CapabilityManifest,
+) -> str | None:
+    task_text = "\n".join(
+        [
+            str(goal or ""),
+            *requirements,
+            str(source_user_message or ""),
+        ]
+    )
+    constraints = str(execution_constraints or "")
+    task_requires_visualization = _contains_visual_directive(task_text)
+    constraint_requires_visualization = _contains_visual_directive(constraints)
+    if (
+        constraint_requires_visualization
+        and _ANALYSIS_CONSTRAINT_PATTERN.search(constraints)
+        and not _ANALYSIS_CONTEXT_PATTERN.search(task_text)
+    ):
+        constraint_requires_visualization = False
+    if not task_requires_visualization and not constraint_requires_visualization:
+        return None
+
+    descriptors = [*manifest.available, *manifest.catalog]
+    for descriptor in descriptors:
+        name = str(descriptor.name or "").strip()
+        if descriptor.kind == "tool" and (
+            name == "chart_generate" or name.endswith(".chart_generate")
+        ):
+            return name
+    return None
+
+
+def _contains_visual_directive(text: str) -> bool:
+    for match in _VISUAL_DIRECTIVE_PATTERN.finditer(str(text or "")):
+        prefix = text[max(0, match.start() - 16) : match.start()]
+        if not _VISUAL_NEGATION_PATTERN.search(prefix):
+            return True
+    return False
 
 
 def _transitions(skill: Skill | None, current_node: dict[str, Any] | None) -> list[dict[str, Any]]:

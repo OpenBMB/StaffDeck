@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import inspect
 import json
@@ -68,9 +69,16 @@ from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
 
 
-_INLINE_JSON_TOOL_RESULT_MAX_CHARS = 2_000
+_INLINE_JSON_TOOL_RESULT_MAX_CHARS = 50_000
 _INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
+_INTERNAL_RPS_DRAFT_DIRECTORY = ".harness/rps-drafts"
 _SANDBOX_JSON_FILE_KIND = "sandbox_json_file"
+_TOOL_SIDE_EFFECT_SCHEMA_KEY = "x-staffdeck-side-effect"
+_MCP_WORKSPACE_FILE_TRANSFER_SCHEMA_KEY = "x-staffdeck-workspace-file-transfer"
+_XIAOMING_AGENT_ID = "agent_4a018d61af2f4589"
+_RPS_SKILL_ID = "rps_registration"
+_RPS_BUILD_TOOL_ID = "tool_83337016feb94138"
+_RPS_BUILD_TOOL_NAME = "rps_mcp.registration_folder_build"
 
 
 class HarnessCapabilityInvoker:
@@ -182,6 +190,7 @@ class HarnessCapabilityInvoker:
                 "CAPABILITY_AUTHORIZATION_REVOKED",
                 "该能力在当前 HarnessRun 执行前已被撤权、归档或改为不可用。",
             )
+        side_effect = self._external_tool_side_effect(descriptor)
         self._raise_if_cancelled()
         logical_action_key = self._logical_action_key(
             descriptor,
@@ -258,10 +267,9 @@ class HarnessCapabilityInvoker:
             result = _failure("HARNESS_TOOL_ERROR", str(exc))
         if result.get("success") is True:
             invocation.status = "completed"
-        elif _failure_was_not_sent(result):
-            # Configuration/authorization failures are known to occur before
-            # the external side effect. Release the stable claim so a later
-            # turn can retry after the configuration is repaired.
+        elif side_effect == "read" or _failure_was_not_sent(result):
+            # Read-only failures and pre-send validation failures have a known
+            # outcome. Release any stable claim so corrected arguments can retry.
             invocation.status = "failed"
             invocation.logical_action_key = None
         else:
@@ -344,6 +352,17 @@ class HarnessCapabilityInvoker:
             separators=(",", ":"),
         )
         return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _external_tool_side_effect(
+        self,
+        descriptor: CapabilityDescriptor,
+    ) -> str | None:
+        if descriptor.kind != "tool":
+            return None
+        tool = self.db.get(Tool, descriptor.capability_id)
+        if tool is None or tool.tenant_id != self.tenant_id:
+            return None
+        return _tool_side_effect(tool)
 
     def _replay_or_block(
         self,
@@ -969,6 +988,19 @@ class HarnessCapabilityInvoker:
                 arguments,
                 schema=(tool.input_schema if isinstance(tool.input_schema, dict) else None),
             )
+            if tool.tool_type == "mcp":
+                resolved_arguments = self._resolve_mcp_workspace_file(
+                    resolved_arguments,
+                    schema=(
+                        tool.input_schema
+                        if isinstance(tool.input_schema, dict)
+                        else None
+                    ),
+                )
+                resolved_arguments = self._resolve_xiaoming_rps_draft_files(
+                    tool,
+                    resolved_arguments,
+                )
         except HarnessExecutionError as exc:
             return _failure(
                 exc.error.code,
@@ -1039,6 +1071,275 @@ class HarnessCapabilityInvoker:
             "sha256": stored_data.get("sha256"),
         }
         return payload
+
+    def _resolve_mcp_workspace_file(
+        self,
+        arguments: dict[str, Any],
+        *,
+        schema: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(schema, dict)
+            or schema.get(_MCP_WORKSPACE_FILE_TRANSFER_SCHEMA_KEY) is not True
+        ):
+            return arguments
+        raw_path = arguments.get("file_path")
+        if raw_path is None:
+            return arguments
+        file_path = str(raw_path).strip()
+        prefix = f"{SANDBOX_WORKSPACE}/"
+        if not file_path.startswith(prefix):
+            raise HarnessExecutionError(
+                "MCP_FILE_PATH_OUTSIDE_WORKSPACE",
+                "MCP 文件参数必须使用当前 TaskFrame 的 /workspace 沙箱路径。",
+                retryable=True,
+            )
+        properties = schema.get("properties")
+        if not isinstance(properties, dict) or not {
+            "file_path",
+            "filename",
+            "content_base64",
+        }.issubset(properties):
+            raise HarnessExecutionError(
+                "MCP_WORKSPACE_TRANSFER_UNSUPPORTED",
+                "该 MCP 工具未声明安全的 workspace 文件传递协议。",
+            )
+        if (
+            arguments.get("content_text") is not None
+            or arguments.get("content_base64") is not None
+        ):
+            raise HarnessExecutionError(
+                "MCP_FILE_TRANSFER_CONFLICT",
+                "file_path 不能与内联文件内容同时提供。",
+                retryable=True,
+            )
+        relative_path = file_path[len(prefix) :]
+        try:
+            opened = open_harness_artifact(self.workspace_root, relative_path)
+        except HarnessArtifactAccessError as exc:
+            raise HarnessExecutionError(
+                "MCP_WORKSPACE_FILE_UNAVAILABLE",
+                "MCP 要读取的 workspace 文件不存在或不可安全读取。",
+                retryable=True,
+                details={"sandbox_path": file_path},
+            ) from exc
+        try:
+            if opened.size > self._file_context.limits.max_file_bytes:
+                raise HarnessExecutionError(
+                    "MCP_WORKSPACE_FILE_TOO_LARGE",
+                    "MCP 要读取的 workspace 文件超过当前 Harness 单文件上限。",
+                    details={
+                        "sandbox_path": file_path,
+                        "actual_bytes": opened.size,
+                        "max_bytes": self._file_context.limits.max_file_bytes,
+                    },
+                )
+            content = b"".join(opened.iter_bytes())
+        finally:
+            opened.close()
+        resolved = dict(arguments)
+        resolved.pop("file_path", None)
+        resolved["filename"] = opened.filename
+        resolved["content_base64"] = base64.b64encode(content).decode("ascii")
+        return resolved
+
+    def _resolve_xiaoming_rps_draft_files(
+        self,
+        tool: Tool,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Merge small private RPS draft files at the trusted MCP boundary."""
+        if not self._is_xiaoming_rps_build(tool):
+            return arguments
+        raw_paths = arguments.get("draft_sections_files")
+        if raw_paths is None:
+            return arguments
+        if not isinstance(raw_paths, list) or not raw_paths:
+            raise HarnessExecutionError(
+                "INVALID_RPS_DRAFT_FILES",
+                "draft_sections_files 必须包含至少一个当前任务的草案 JSON 文件。",
+                retryable=True,
+            )
+        if len(raw_paths) > 21:
+            raise HarnessExecutionError(
+                "RPS_DRAFT_FILE_LIMIT_EXCEEDED",
+                "RPS 草案最多接受 21 个分段文件，每个文件最多 2 个章节。",
+                details={"actual_files": len(raw_paths), "max_files": 21},
+            )
+        inline_drafts = arguments.get("draft_sections")
+        if inline_drafts not in (None, {}):
+            raise HarnessExecutionError(
+                "RPS_DRAFT_SOURCE_CONFLICT",
+                "draft_sections_files 不能与内联 draft_sections 同时提供。",
+                retryable=True,
+            )
+
+        schema = tool.input_schema if isinstance(tool.input_schema, dict) else {}
+        allowed_codes = {
+            str(code).strip()
+            for code in schema.get("x-rps-draft-section-codes") or []
+            if str(code).strip()
+        }
+        chapter_map = schema.get("x-rps-draft-chapter-map")
+        if not allowed_codes or not isinstance(chapter_map, dict):
+            raise HarnessExecutionError(
+                "RPS_DRAFT_SCHEMA_INVALID",
+                "RPS 草案工具未配置有效的产品章节白名单。",
+            )
+        normalized_chapter_map = {
+            str(code).strip(): str(chapter).strip()
+            for code, chapter in chapter_map.items()
+            if str(code).strip() and str(chapter).strip()
+        }
+        if set(normalized_chapter_map) != allowed_codes:
+            raise HarnessExecutionError(
+                "RPS_DRAFT_SCHEMA_INVALID",
+                "RPS 草案工具的章节白名单与章节映射不一致。",
+            )
+
+        drafts: dict[str, str] = {}
+        total_draft_chars = 0
+        seen_paths: set[str] = set()
+        for raw_path in raw_paths:
+            relative_path = self._rps_draft_relative_path(raw_path)
+            if relative_path in seen_paths:
+                raise HarnessExecutionError(
+                    "RPS_DRAFT_FILE_DUPLICATE",
+                    "draft_sections_files 不得重复引用同一草案文件。",
+                    retryable=True,
+                )
+            seen_paths.add(relative_path)
+            try:
+                opened = open_harness_artifact(self.workspace_root, relative_path)
+            except HarnessArtifactAccessError as exc:
+                raise HarnessExecutionError(
+                    "RPS_DRAFT_FILE_UNAVAILABLE",
+                    "RPS 草案文件不存在或不可安全读取。",
+                    retryable=True,
+                    details={"sandbox_path": _sandbox_path(relative_path)},
+                ) from exc
+            try:
+                if opened.size > 100 * 1024:
+                    raise HarnessExecutionError(
+                        "RPS_DRAFT_FILE_TOO_LARGE",
+                        "单个 RPS 草案文件不得超过 100 KiB。",
+                        details={
+                            "sandbox_path": _sandbox_path(relative_path),
+                            "actual_bytes": opened.size,
+                            "max_bytes": 100 * 1024,
+                        },
+                    )
+                raw = b"".join(opened.iter_bytes())
+            finally:
+                opened.close()
+            try:
+                part = json.loads(raw.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise HarnessExecutionError(
+                    "INVALID_RPS_DRAFT_FILE",
+                    "RPS 草案文件必须是 UTF-8 编码的 JSON 对象。",
+                    retryable=True,
+                    details={"sandbox_path": _sandbox_path(relative_path)},
+                ) from exc
+            if not isinstance(part, dict) or not part or len(part) > 2:
+                raise HarnessExecutionError(
+                    "INVALID_RPS_DRAFT_FILE",
+                    "每个 RPS 草案文件必须包含 1 至 2 个章节正文。",
+                    retryable=True,
+                    details={"sandbox_path": _sandbox_path(relative_path)},
+                )
+            for raw_code, raw_body in part.items():
+                code = str(raw_code).strip()
+                if code not in allowed_codes:
+                    raise HarnessExecutionError(
+                        "RPS_DRAFT_CODE_NOT_ALLOWED",
+                        "RPS 草案文件包含不在产品章节白名单中的 code。",
+                        details={"code": code},
+                    )
+                if code in drafts:
+                    raise HarnessExecutionError(
+                        "RPS_DRAFT_CODE_DUPLICATE",
+                        "同一 RPS 产品章节只能在一个草案文件中出现一次。",
+                        details={"code": code},
+                    )
+                if not isinstance(raw_body, str) or not raw_body.strip():
+                    raise HarnessExecutionError(
+                        "INVALID_RPS_DRAFT_FILE",
+                        "每个 RPS 章节正文必须是非空字符串。",
+                        retryable=True,
+                        details={"code": code},
+                    )
+                if len(raw_body) > 12_000:
+                    raise HarnessExecutionError(
+                        "RPS_DRAFT_SECTION_TOO_LARGE",
+                        "单个 RPS 章节正文不得超过 12,000 个字符。",
+                        details={"code": code, "actual_chars": len(raw_body)},
+                    )
+                total_draft_chars += len(raw_body)
+                if total_draft_chars > 120_000:
+                    raise HarnessExecutionError(
+                        "RPS_DRAFT_TOTAL_TOO_LARGE",
+                        "本次 RPS 构建提交的草案正文不得超过 120,000 个字符。",
+                        details={"actual_chars": total_draft_chars, "max_chars": 120_000},
+                    )
+                drafts[code] = raw_body
+
+        required_codes = _selected_rps_draft_codes(
+            arguments.get("rps_scope"),
+            normalized_chapter_map,
+        )
+        missing_codes = sorted(required_codes - set(drafts))
+        excluded_codes = sorted(set(drafts) - required_codes)
+        if excluded_codes:
+            raise HarnessExecutionError(
+                "RPS_DRAFT_SCOPE_MISMATCH",
+                "RPS 草案文件包含当前 rps_scope 未选择的产品章节。",
+                retryable=True,
+                details={"excluded_codes": excluded_codes},
+            )
+        if missing_codes:
+            raise HarnessExecutionError(
+                "DRAFTS_INCOMPLETE",
+                "RPS 产品章节尚未全部起草完成，不能构建文件夹。",
+                retryable=True,
+                details={"missing_codes": missing_codes},
+            )
+        resolved = dict(arguments)
+        resolved.pop("draft_sections_files", None)
+        resolved["draft_sections"] = drafts
+        return resolved
+
+    def _is_xiaoming_rps_build(self, tool: Tool) -> bool:
+        return (
+            self.agent_id == _XIAOMING_AGENT_ID
+            and self.active_skill_id == _RPS_SKILL_ID
+            and str(self.active_step_id or "") == "edit_and_build"
+            and tool.id == _RPS_BUILD_TOOL_ID
+            and tool.name == _RPS_BUILD_TOOL_NAME
+        )
+
+    def _rps_draft_relative_path(self, raw_path: object) -> str:
+        file_path = str(raw_path or "").strip().replace("\\", "/")
+        prefix = f"{SANDBOX_WORKSPACE}/"
+        if not file_path.startswith(prefix):
+            raise HarnessExecutionError(
+                "RPS_DRAFT_PATH_OUTSIDE_WORKSPACE",
+                "RPS 草案文件必须使用当前 TaskFrame 的 /workspace 路径。",
+                retryable=True,
+            )
+        relative_path = file_path[len(prefix) :]
+        expected_prefix = f"{_INTERNAL_RPS_DRAFT_DIRECTORY}/"
+        if (
+            not relative_path.startswith(expected_prefix)
+            or "/" in relative_path[len(expected_prefix) :]
+            or not relative_path.endswith(".json")
+        ):
+            raise HarnessExecutionError(
+                "RPS_DRAFT_PATH_INVALID",
+                "RPS 草案文件必须位于 /workspace/.harness/rps-drafts/ 且使用 .json 扩展名。",
+                retryable=True,
+            )
+        return relative_path
 
     def _resolve_json_tool_result_references(
         self,
@@ -1154,6 +1455,37 @@ class HarnessCapabilityInvoker:
         if self.step_deadline_monotonic is None:
             return None
         return max(self.step_deadline_monotonic - time.monotonic(), 0.1)
+
+
+
+def _selected_rps_draft_codes(
+    rps_scope: object,
+    chapter_map: dict[str, str],
+) -> set[str]:
+    scope = rps_scope if isinstance(rps_scope, dict) else {}
+    raw_requested = scope.get("chapters") or scope.get("include") or []
+    if not raw_requested:
+        return set(chapter_map)
+    if not isinstance(raw_requested, list):
+        raise HarnessExecutionError(
+            "RPS_SCOPE_INVALID",
+            "rps_scope.chapters 或 rps_scope.include 必须是章节名称数组。",
+            retryable=True,
+        )
+    wanted = {str(item).strip() for item in raw_requested if str(item).strip()}
+    selected = {
+        code
+        for code, chapter in chapter_map.items()
+        if chapter in wanted or chapter.split()[0] in wanted
+    }
+    if not selected:
+        raise HarnessExecutionError(
+            "RPS_SCOPE_INVALID",
+            "rps_scope 未匹配任何 RPS 产品章节。",
+            retryable=True,
+            details={"requested_chapters": sorted(wanted)},
+        )
+    return selected
 
 
 def _workspace_root(
@@ -1287,7 +1619,25 @@ def _failure_was_not_sent(result: dict[str, Any]) -> bool:
         "CAPABILITY_NOT_ACTIVATED",
         "CAPABILITY_NOT_AVAILABLE",
         "INVALID_ARGUMENTS",
+        "MCP_FILE_PATH_OUTSIDE_WORKSPACE",
+        "MCP_FILE_TRANSFER_CONFLICT",
+        "MCP_WORKSPACE_FILE_TOO_LARGE",
+        "MCP_WORKSPACE_FILE_UNAVAILABLE",
+        "MCP_WORKSPACE_TRANSFER_UNSUPPORTED",
     }
+
+
+def _tool_side_effect(tool: Tool) -> str:
+    schema = tool.input_schema if isinstance(tool.input_schema, dict) else {}
+    declared = str(schema.get(_TOOL_SIDE_EFFECT_SCHEMA_KEY) or "").strip().lower()
+    if declared in {"read", "write", "delete"}:
+        return declared
+    method = str(tool.method or "").upper()
+    if method == "GET":
+        return "read"
+    if method == "DELETE":
+        return "delete"
+    return "write"
 
 
 def _replayed_result(invocation: HarnessInvocationRecord) -> dict[str, Any]:

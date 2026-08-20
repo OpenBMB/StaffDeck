@@ -14,7 +14,7 @@ JsonObject: TypeAlias = Mapping[str, JsonValue]
 class HarnessLimits:
     """Resource limits enforced for one isolated Harness workspace."""
 
-    max_read_bytes: int = 1024 * 1024
+    max_read_bytes: int = 10 * 1024 * 1024
     max_file_bytes: int = 10 * 1024 * 1024
     max_workspace_bytes: int = 100 * 1024 * 1024
     max_entries: int = 1000

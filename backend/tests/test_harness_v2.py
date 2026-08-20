@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import sys
 from copy import deepcopy
@@ -34,6 +35,7 @@ from app.core.harness_capability_invoker import (
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_v2_engine import (
     HarnessV2Engine,
+    _append_html_report_download_links,
     _globalize_citations,
     _prior_result,
     _with_recoverable_first_session,
@@ -85,7 +87,7 @@ from app.session.session_schema import (
 )
 from app.session.attachment_store import stage_chat_attachment
 from app.skills.skill_schema import SkillCapabilityRefs
-from app.tools.tool_schema import ToolResult
+from app.tools.tool_schema import ToolError, ToolResult
 
 
 def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
@@ -635,6 +637,41 @@ def test_sop_step_result_keeps_capability_output_for_the_next_step() -> None:
             "data": {"text": "merchant=M1"},
         }
     ]
+
+
+def test_html_report_download_link_is_appended_once_and_rejects_invalid_urls() -> None:
+    download_url = "fsstore://staffdeck-rps/signed/HF-JfAAFb8SNVsGvGZzh9A"
+    published = TaskExecutionResult(
+        task_frame_id="task-html-report",
+        status="completed",
+        capability_results=[
+            {
+                "tool_name": "analytics.html_report_publish",
+                "success": True,
+                "data": {
+                    "artifact_name": "季度[交互]报告.html",
+                    "download_url": download_url,
+                },
+            }
+        ],
+    )
+
+    appended = _append_html_report_download_links("报告已生成。", [published])
+    assert appended == (
+        "报告已生成。\n\n"
+        f"[季度\\[交互\\]报告.html]({download_url})"
+    )
+    assert _append_html_report_download_links(appended, [published]) == appended
+    code_only = f"`[伪链接]({download_url})`"
+    assert _append_html_report_download_links(code_only, [published]) == (
+        f"{code_only}\n\n[季度\\[交互\\]报告.html]({download_url})"
+    )
+
+    invalid = published.model_copy(deep=True)
+    invalid.capability_results[0]["data"]["download_url"] = (
+        "fsstore://staffdeck-rps/signed/short"
+    )
+    assert _append_html_report_download_links("报告已生成。", [invalid]) == "报告已生成。"
 
 
 def test_attachments_are_materialized_inside_only_the_task_workspace(
@@ -1302,12 +1339,8 @@ def test_large_external_json_result_uses_sandbox_reference_and_auto_resolves(
             "required": ["results_02"],
         },
     )
-    large_data = {
-        "rows": [
-            {"id": index, "value": f"row-{index}-" + ("x" * 40)}
-            for index in range(100)
-        ]
-    }
+    large_data = {"value": "x" * 49_989}
+    inline_data = {"value": "x" * 49_988}
     sink_arguments: list[dict[str, object]] = []
 
     def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
@@ -1317,7 +1350,7 @@ def test_large_external_json_result_uses_sandbox_reference_and_auto_resolves(
             return ToolResult(
                 tool_name=tool_call.name,
                 success=True,
-                data={"ok": True},
+                data=inline_data,
             )
         sink_arguments.append(tool_call.arguments)
         return ToolResult(
@@ -1369,11 +1402,18 @@ def test_large_external_json_result_uses_sandbox_reference_and_auto_resolves(
             call_id="hcall-small",
         )
         reference = large_result["data"]
-        read_result = invoker._invoke_file(
-            "read_file",
-            {"path": reference["sandbox_path"]},
-            call_id="hcall-read",
-        )
+        read_chunks: list[str] = []
+        offset = 0
+        while True:
+            read_result = invoker._invoke_file(
+                "read_file",
+                {"path": reference["sandbox_path"], "offset": offset},
+                call_id=f"hcall-read-{offset}",
+            )
+            read_chunks.append(read_result["data"]["content"])
+            if not read_result["data"]["truncated"]:
+                break
+            offset = read_result["data"]["next_offset"]
         sink_result = invoker._invoke_external_tool(
             sink_tool.id,
             metadata(sink_tool),
@@ -1389,12 +1429,604 @@ def test_large_external_json_result_uses_sandbox_reference_and_auto_resolves(
         "/workspace/.harness/tool-results/hcall-large.json"
     )
     assert set(reference) == {"kind", "sandbox_path", "size", "sha256"}
-    assert json.loads(read_result["data"]["content"]) == large_data
-    assert small_result["data"] == {"ok": True}
+    assert json.loads("".join(read_chunks)) == large_data
+    assert small_result["data"] == inline_data
     assert sink_result["data"] == {"accepted": True}
     assert len(sink_arguments) == 1
     assert json.loads(str(sink_arguments[0]["results_02"])) == large_data
     assert artifacts == []
+
+
+
+def test_xiaoming_rps_draft_files_merge_at_mcp_boundary(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    tool = Tool(
+        id="tool_83337016feb94138",
+        tenant_id="tenant-demo",
+        name="rps_mcp.registration_folder_build",
+        tool_type="mcp",
+        method="POST",
+        url="mcp://rps_mcp/registration_folder_build",
+        input_schema={
+            "type": "object",
+            "properties": {"draft_sections_files": {"type": "array"}},
+            "x-rps-draft-section-codes": ["CH1.5", "CH2.2"],
+            "x-rps-draft-chapter-map": {
+                "CH1.5": "CH1 监管信息",
+                "CH2.2": "CH2 综述资料",
+            },
+        },
+    )
+    received: list[dict[str, object]] = []
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        received.append(tool_call.arguments)
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=True,
+            data={"status": "ready"},
+        )
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(tool)
+        db.commit()
+        skill = Skill(
+            id="skill-rps-private",
+            tenant_id="tenant-demo",
+            skill_id="rps_registration",
+            name="RPS",
+            status="published",
+            content_json={},
+        )
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(agent_id="agent_4a018d61af2f4589"),
+            task_frame_id="task-rps-drafts",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=skill,
+            active_step_id="edit_and_build",
+            agent_id="agent_4a018d61af2f4589",
+        )
+        draft_dir = invoker.workspace_root / ".harness" / "rps-drafts"
+        draft_dir.mkdir(parents=True)
+        (draft_dir / "part-01.json").write_text(
+            json.dumps({"CH1.5": "产品列表正文"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (draft_dir / "part-02.json").write_text(
+            json.dumps({"CH2.2": "申报综述正文"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        result = invoker._invoke_external_tool(
+            tool.id,
+            {"source_tool_name": tool.name, "content_digest": tool_snapshot_digest(db, tool)},
+            tool.name,
+            {
+                "draft_sections": {},
+                "draft_sections_files": [
+                    "/workspace/.harness/rps-drafts/part-01.json",
+                    "/workspace/.harness/rps-drafts/part-02.json",
+                ],
+                "rps_scope": {"chapters": ["CH1", "CH2"]},
+            },
+            call_id="hcall-rps-build",
+        )
+
+    assert result["success"] is True
+    assert received == [
+        {
+            "draft_sections": {"CH1.5": "产品列表正文", "CH2.2": "申报综述正文"},
+            "rps_scope": {"chapters": ["CH1", "CH2"]},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("drafts", "arguments", "error_code"),
+    [
+        (
+            {"part-01.json": {"CH1.5": "产品列表正文"}},
+            {"rps_scope": {"chapters": ["CH1", "CH2"]}},
+            "DRAFTS_INCOMPLETE",
+        ),
+        (
+            {
+                "part-01.json": {"CH1.5": "产品列表正文"},
+                "part-02.json": {"CH1.5": "重复正文", "CH2.2": "申报综述正文"},
+            },
+            {"rps_scope": {"chapters": ["CH1", "CH2"]}},
+            "RPS_DRAFT_CODE_DUPLICATE",
+        ),
+    ],
+)
+def test_xiaoming_rps_draft_files_reject_invalid_or_incomplete_input(
+    tmp_path,
+    monkeypatch,
+    drafts,
+    arguments,
+    error_code,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    tool = Tool(
+        id="tool_83337016feb94138",
+        tenant_id="tenant-demo",
+        name="rps_mcp.registration_folder_build",
+        tool_type="mcp",
+        method="POST",
+        url="mcp://rps_mcp/registration_folder_build",
+        input_schema={
+            "type": "object",
+            "x-rps-draft-section-codes": ["CH1.5", "CH2.2"],
+            "x-rps-draft-chapter-map": {
+                "CH1.5": "CH1 监管信息",
+                "CH2.2": "CH2 综述资料",
+            },
+        },
+    )
+    calls = 0
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        nonlocal calls
+        calls += 1
+        return ToolResult(tool_name=tool_call.name, success=True, data={})
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(tool)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(agent_id="agent_4a018d61af2f4589"),
+            task_frame_id="task-rps-invalid",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=Skill(
+                id="skill-rps-private",
+                tenant_id="tenant-demo",
+                skill_id="rps_registration",
+                name="RPS",
+                status="published",
+                content_json={},
+            ),
+            active_step_id="edit_and_build",
+            agent_id="agent_4a018d61af2f4589",
+        )
+        draft_dir = invoker.workspace_root / ".harness" / "rps-drafts"
+        draft_dir.mkdir(parents=True)
+        for filename, content in drafts.items():
+            (draft_dir / filename).write_text(
+                json.dumps(content, ensure_ascii=False), encoding="utf-8"
+            )
+        result = invoker._invoke_external_tool(
+            tool.id,
+            {"source_tool_name": tool.name, "content_digest": tool_snapshot_digest(db, tool)},
+            tool.name,
+            {
+                "draft_sections_files": [
+                    f"/workspace/.harness/rps-drafts/{filename}"
+                    for filename in drafts
+                ],
+                **arguments,
+            },
+            call_id="hcall-rps-invalid",
+        )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == error_code
+    assert calls == 0
+
+
+def test_xiaoming_rps_draft_files_reject_workspace_escape_and_do_not_apply_to_other_agent(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    tool = Tool(
+        id="tool_83337016feb94138",
+        tenant_id="tenant-demo",
+        name="rps_mcp.registration_folder_build",
+        tool_type="mcp",
+        method="POST",
+        url="mcp://rps_mcp/registration_folder_build",
+        input_schema={
+            "type": "object",
+            "x-rps-draft-section-codes": ["CH1.5"],
+            "x-rps-draft-chapter-map": {"CH1.5": "CH1 监管信息"},
+        },
+    )
+    received: list[dict[str, object]] = []
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        received.append(tool_call.arguments)
+        return ToolResult(tool_name=tool_call.name, success=True, data={})
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(tool)
+        db.commit()
+        skill = Skill(
+            id="skill-rps-private",
+            tenant_id="tenant-demo",
+            skill_id="rps_registration",
+            name="RPS",
+            status="published",
+            content_json={},
+        )
+        xiaoming = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(agent_id="agent_4a018d61af2f4589"),
+            task_frame_id="task-rps-path",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=skill,
+            active_step_id="edit_and_build",
+            agent_id="agent_4a018d61af2f4589",
+        )
+        rejected = xiaoming._invoke_external_tool(
+            tool.id,
+            {"source_tool_name": tool.name, "content_digest": tool_snapshot_digest(db, tool)},
+            tool.name,
+            {"draft_sections_files": ["/workspace/other.json"]},
+            call_id="hcall-rps-path",
+        )
+        other = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(id="session-other", agent_id="agent-other"),
+            task_frame_id="task-rps-other",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=skill,
+            active_step_id="edit_and_build",
+            agent_id="agent-other",
+        )
+        passthrough = other._invoke_external_tool(
+            tool.id,
+            {"source_tool_name": tool.name, "content_digest": tool_snapshot_digest(db, tool)},
+            tool.name,
+            {"draft_sections_files": ["/workspace/other.json"]},
+            call_id="hcall-rps-other",
+        )
+
+    assert rejected["success"] is False
+    assert rejected["error"]["code"] == "RPS_DRAFT_PATH_INVALID"
+    assert passthrough["success"] is True
+    assert received == [{"draft_sections_files": ["/workspace/other.json"]}]
+
+
+def test_xiaoming_rps_draft_write_is_summarized_in_harness_transcript() -> None:
+    requirement = TaskRequirement(
+        task_frame_id="task-rps-transcript",
+        agent_id="agent_4a018d61af2f4589",
+        kind="sop",
+        goal="起草 RPS 产品章节",
+        sop_context={
+            "skill_id": "rps_registration",
+            "step": {"node_id": "edit_and_build"},
+        },
+    )
+    content = '{"CH1.5":"产品列表正文"}'
+    summarized = harness_agent_module._transcript_action_arguments(
+        requirement,
+        "write_file",
+        {
+            "path": "/workspace/.harness/rps-drafts/part-01.json",
+            "content": content,
+            "create_parents": True,
+        },
+    )
+    unaffected = harness_agent_module._transcript_action_arguments(
+        requirement.model_copy(update={"agent_id": "agent-other"}),
+        "write_file",
+        {
+            "path": "/workspace/.harness/rps-drafts/part-01.json",
+            "content": content,
+        },
+    )
+
+    assert summarized["path"] == "/workspace/.harness/rps-drafts/part-01.json"
+    assert summarized["content_summary"]["bytes"] == len(content.encode("utf-8"))
+    assert "content" not in summarized
+    assert content not in json.dumps(summarized, ensure_ascii=False)
+    assert unaffected["content"] == content
+
+
+def test_mcp_workspace_file_is_transferred_without_exposing_the_host_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    raw_pdf = b"%PDF-1.7\n" + b"x" * (1024 * 1024)
+    attachment = stage_chat_attachment(
+        ChatAttachmentRead(
+            id="large-pdf",
+            filename="report.pdf",
+            content_type="application/pdf",
+            size=len(raw_pdf),
+            kind="pdf",
+            text="extracted report text",
+        ),
+        raw_pdf,
+        tenant_id="tenant-demo",
+        user_id="user-demo",
+    )
+    descriptors = materialize_task_attachments(
+        [attachment],
+        tenant_id="tenant-demo",
+        user_id="user-demo",
+        session_id="session-demo",
+        task_frame_id="task-mcp-file",
+    )
+    tool = Tool(
+        id="tool-data-analyze",
+        tenant_id="tenant-demo",
+        name="111.data_analyze",
+        tool_type="mcp",
+        method="POST",
+        url="mcp://111/data_analyze",
+        input_schema={
+            "type": "object",
+            "x-staffdeck-side-effect": "read",
+            "x-staffdeck-workspace-file-transfer": True,
+            "properties": {
+                "file_path": {"type": "string"},
+                "filename": {"type": "string"},
+                "content_text": {"type": "string"},
+                "content_base64": {"type": "string"},
+            },
+        },
+    )
+    received: list[dict[str, object]] = []
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        received.append(tool_call.arguments)
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=True,
+            data={"accepted": True},
+        )
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(tool)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(id="session-demo", user_id="user-demo"),
+            task_frame_id="task-mcp-file",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        metadata = {
+            "source_tool_name": tool.name,
+            "content_digest": tool_snapshot_digest(db, tool),
+        }
+        original = invoker._invoke_external_tool(
+            tool.id,
+            metadata,
+            tool.name,
+            {"file_path": descriptors[0]["sandbox_path"]},
+            call_id="hcall-pdf",
+        )
+        extracted = invoker._invoke_external_tool(
+            tool.id,
+            metadata,
+            tool.name,
+            {"file_path": descriptors[0]["extracted_text_path"]},
+            call_id="hcall-text",
+        )
+        missing = invoker._invoke_external_tool(
+            tool.id,
+            metadata,
+            tool.name,
+            {"file_path": "/workspace/attachments/missing.pdf"},
+            call_id="hcall-missing",
+        )
+
+    assert descriptors[0]["materialized"] is True
+    assert original["success"] is True
+    assert extracted["success"] is True
+    assert len(received) == 2
+    assert received[0]["filename"].startswith("large-pdf-")
+    assert received[0]["filename"].endswith("-report.pdf")
+    assert "file_path" not in received[0]
+    assert base64.b64decode(str(received[0]["content_base64"])) == raw_pdf
+    assert base64.b64decode(str(received[1]["content_base64"])) == b"extracted report text"
+    assert str(invoker.workspace_root) not in json.dumps(received, ensure_ascii=False)
+    assert missing["error"]["code"] == "MCP_WORKSPACE_FILE_UNAVAILABLE"
+    assert missing["error"]["retryable"] is True
+
+
+def test_read_only_mcp_failure_is_finalized_and_can_retry(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    tool = Tool(
+        id="tool-read-only-data-analyze",
+        tenant_id="tenant-demo",
+        name="111.data_analyze",
+        tool_type="mcp",
+        method="POST",
+        url="mcp://111/data_analyze",
+        input_schema={
+            "type": "object",
+            "x-staffdeck-side-effect": "read",
+        },
+    )
+    attempts = 0
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        nonlocal attempts
+        attempts += 1
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=False,
+            error=ToolError(
+                code="MCP_ERROR",
+                message='{"error":"FileNotFoundError","message":"file not found"}',
+            ),
+        )
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant-demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent-overall",
+                tenant_id="tenant-demo",
+                name="整体智能体",
+                is_overall=True,
+            )
+        )
+        db.add(tool)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant-demo", "tool", tool.id)
+        db.commit()
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant-demo",
+            None,
+            None,
+            None,
+        )
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-read-only-retry",
+            model_config=_model_config(),
+            manifest=manifest,
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+
+        first = invoker.invoke(tool.name, {"source_type": "document"})
+        second = invoker.invoke(tool.name, {"source_type": "document"})
+        records = db.exec(
+            select(HarnessInvocationRecord).where(
+                HarnessInvocationRecord.task_id == "task-read-only-retry"
+            )
+        ).all()
+
+    assert first["error"]["code"] == "MCP_ERROR"
+    assert second["error"]["code"] == "MCP_ERROR"
+    assert attempts == 2
+    assert [record.status for record in records] == ["failed", "failed"]
+    assert all(record.logical_action_key is None for record in records)
+    assert all(record.finished_at is not None for record in records)
+    assert all(
+        result["error"]["code"] != "TOOL_CALL_OUTCOME_UNKNOWN"
+        for result in (first, second)
+    )
+
+
+def test_read_only_mcp_success_replays_without_reexecuting(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    tool = Tool(
+        id="tool-read-only-data-analyze-success",
+        tenant_id="tenant-demo",
+        name="111.data_analyze",
+        tool_type="mcp",
+        method="POST",
+        url="mcp://111/data_analyze",
+        input_schema={
+            "type": "object",
+            "x-staffdeck-side-effect": "read",
+        },
+    )
+    attempts = 0
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        nonlocal attempts
+        attempts += 1
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=True,
+            data={"rows": [{"page": 1}]},
+        )
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant-demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent-overall",
+                tenant_id="tenant-demo",
+                name="整体智能体",
+                is_overall=True,
+            )
+        )
+        db.add(tool)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant-demo", "tool", tool.id)
+        db.commit()
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant-demo",
+            None,
+            None,
+            None,
+        )
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-read-only-replay",
+            model_config=_model_config(),
+            manifest=manifest,
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        arguments = {"source_type": "document", "row_offset": 0}
+
+        first = invoker.invoke(tool.name, arguments)
+        second = invoker.invoke(tool.name, arguments)
+        records = db.exec(
+            select(HarnessInvocationRecord).where(
+                HarnessInvocationRecord.task_id == "task-read-only-replay"
+            )
+        ).all()
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert second["idempotent_replay"] is True
+    assert second["data"]["idempotent_replay"] is True
+    assert attempts == 1
+    assert len(records) == 1
+    assert records[0].status == "completed"
+    assert records[0].logical_action_key
+    assert records[0].finished_at is not None
 
 
 def test_external_idempotency_key_is_stable_per_task_not_entire_session(

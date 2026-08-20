@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
+import json
+import re
 import time
+from copy import deepcopy
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
-from app.core.capability_manifest import CapabilityManifestBuilder
-from app.core.capability_discovery import project_capability_manifest
 from app.core.cancellation import is_chat_turn_cancelled
+from app.core.capability_discovery import project_capability_manifest
+from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.harness_agent import (
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
@@ -20,14 +22,14 @@ from app.core.harness_attachments import (
     validated_task_image_payloads,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
-from app.core.harness_session_lock import (
-    acquire_harness_session,
-    release_harness_session,
-)
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
     HarnessSessionLeaseToken,
+)
+from app.core.harness_session_lock import (
+    acquire_harness_session,
+    release_harness_session,
 )
 from app.core.harness_turn_store import HarnessTurnStore
 from app.core.task_frame_store import (
@@ -56,6 +58,14 @@ from app.session.session_schema import (
     ChatTurnResponse,
     StepAgentResult,
     TurnPlan,
+)
+
+_SIGNED_RPS_DOWNLOAD_URL_PATTERN = re.compile(
+    r"^fsstore://staffdeck-rps/signed/[A-Za-z0-9_-]{16,128}$"
+)
+_ECHARTS_BLOCK_PATTERN = re.compile(
+    r"```echarts[ \t]*\r?\n(?P<option>.*?)\r?\n```",
+    re.DOTALL,
 )
 
 
@@ -417,6 +427,8 @@ class HarnessV2Engine:
         )
         self._renew_session_lease()
         reply, citations = compact_knowledge_citation_labels(reply, citations)
+        reply = _append_echarts_blocks(reply, execution_results)
+        reply = _append_html_report_download_links(reply, execution_results)
         artifacts = _aggregate_artifacts(execution_results)
         assistant_metadata: dict[str, Any] = {
             "execution_engine": "harness_v2",
@@ -514,12 +526,15 @@ class HarnessV2Engine:
         self.active_frame_id = row.id
         self.active_frame_lease_owner = row.lease_owner
         self.active_frame_attempt_no = row.attempt_no
-        attachment_descriptors = materialize_task_attachments(
-            request.attachments,
-            tenant_id=request.tenant_id,
-            session_id=session.id,
-            task_frame_id=row.task_id,
-            user_id=request.user_id or "",
+        attachment_descriptors = _task_attachment_descriptors(
+            row,
+            materialize_task_attachments(
+                request.attachments,
+                tenant_id=request.tenant_id,
+                session_id=session.id,
+                task_frame_id=row.task_id,
+                user_id=request.user_id or "",
+            ),
         )
         image_payloads = validated_task_image_payloads(request.attachments)
         step_timeout_seconds = (
@@ -544,6 +559,10 @@ class HarnessV2Engine:
         remaining_actions = max_actions
         results: list[TaskExecutionResult] = []
         last_step_result = StepAgentResult()
+        execution_constraints = self.owner._get_persona_prompt(
+            request.tenant_id,
+            session.agent_id,
+        )
 
         while remaining_actions > 0:
             self._raise_if_cancelled(request, session)
@@ -575,6 +594,7 @@ class HarnessV2Engine:
                 ],
                 attachment_descriptors,
                 source_user_message=_source_user_message(self.db, row),
+                execution_constraints=execution_constraints,
             )
             self.store.save_requirement(
                 row,
@@ -1234,6 +1254,112 @@ def _globalize_citations(
     return citations
 
 
+def _append_html_report_download_links(
+    reply: str,
+    results: list[TaskExecutionResult],
+) -> str:
+    updated = reply
+    for result in results:
+        for capability_result in result.capability_results:
+            tool_name = str(capability_result.get("tool_name") or "").strip()
+            if not (
+                tool_name == "html_report_publish"
+                or tool_name.endswith(".html_report_publish")
+            ):
+                continue
+            if capability_result.get("success") is not True:
+                continue
+            data = capability_result.get("data")
+            if not isinstance(data, dict):
+                continue
+            download_url = str(data.get("download_url") or "").strip()
+            if not _SIGNED_RPS_DOWNLOAD_URL_PATTERN.fullmatch(download_url):
+                continue
+            artifact_name = _safe_markdown_label(data.get("artifact_name"))
+            if not artifact_name or _has_markdown_link_target(updated, download_url):
+                continue
+            separator = "\n\n" if updated.strip() else ""
+            updated = f"{updated.rstrip()}{separator}[{artifact_name}]({download_url})"
+    return updated
+
+
+def _append_echarts_blocks(
+    reply: str,
+    results: list[TaskExecutionResult],
+) -> str:
+    updated = reply.rstrip()
+    delivered = {
+        identity
+        for match in _ECHARTS_BLOCK_PATTERN.finditer(reply)
+        if (identity := _echarts_option_identity(match.group("option"))) is not None
+    }
+    for result in results:
+        for capability_result in result.capability_results:
+            tool_name = str(capability_result.get("tool_name") or "").strip()
+            if not (
+                tool_name == "chart_generate"
+                or tool_name.endswith(".chart_generate")
+            ):
+                continue
+            if capability_result.get("success") is not True:
+                continue
+            block = str(capability_result.get("data") or "").strip()
+            match = _ECHARTS_BLOCK_PATTERN.fullmatch(block)
+            if match is None:
+                continue
+            identity = _echarts_option_identity(match.group("option"))
+            if identity is None or identity in delivered:
+                continue
+            separator = "\n\n" if updated else ""
+            updated = f"{updated}{separator}{block}"
+            delivered.add(identity)
+    return updated
+
+
+def _echarts_option_identity(option: str) -> str | None:
+    try:
+        parsed = json.loads(option)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    try:
+        return json.dumps(
+            parsed,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_markdown_label(value: object) -> str:
+    text = "".join(
+        character if character.isprintable() else " "
+        for character in str(value or "")
+    )
+    normalized = " ".join(text.split())[:180]
+    return (
+        normalized.replace("\\", "\\\\")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+    )
+
+
+def _has_markdown_link_target(reply: str, target: str) -> bool:
+    searchable = re.sub(r"```.*?```", "", reply, flags=re.DOTALL)
+    searchable = re.sub(r"`[^`\r\n]*`", "", searchable)
+    escaped_target = re.escape(target)
+    pattern = re.compile(
+        rf"(?<!!)\[(?:\\.|[^\]\\\r\n])*\]"
+        rf"\(\s*(?:{escaped_target}|<{escaped_target}>)"
+        r"(?:\s+[\"'][^)\r\n]*[\"'])?\s*\)"
+    )
+    return pattern.search(searchable) is not None
+
+
 def _citation_identity(citation: dict[str, Any]) -> str:
     for field in ("concept_id", "chunk_id"):
         value = str(citation.get(field) or "").strip()
@@ -1256,7 +1382,14 @@ def _aggregate_artifacts(
         for artifact in result.artifacts:
             identity = "|".join(
                 str(artifact.get(field) or "")
-                for field in ("type", "task_frame_id", "path", "handoff_id")
+                for field in (
+                    "type",
+                    "task_frame_id",
+                    "path",
+                    "handoff_id",
+                    "token",
+                    "package_id",
+                )
             )
             if not identity.strip("|") or identity in seen:
                 continue
@@ -1411,6 +1544,23 @@ def _source_user_message(db: Any, row: HarnessTaskFrameRecord) -> str:
     if message is None or message.role != "user":
         return ""
     return str(message.content or "").strip()
+
+
+def _task_attachment_descriptors(
+    row: HarnessTaskFrameRecord,
+    current: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if current:
+        return current
+    requirement = (
+        row.task_requirement_json
+        if isinstance(row.task_requirement_json, dict)
+        else {}
+    )
+    persisted = requirement.get("attachments")
+    if not isinstance(persisted, list):
+        return []
+    return [dict(item) for item in persisted if isinstance(item, dict)]
 
 
 def _skill_step_timeout_seconds(skill: Skill | None) -> int | None:

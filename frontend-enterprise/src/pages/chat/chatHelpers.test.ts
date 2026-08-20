@@ -104,6 +104,54 @@ describe('chat history consumer contract', () => {
     );
   });
 
+  it('turns signed RPS fsstore links into same-origin downloads', () => {
+    const rendered = renderToStaticMarkup(
+      createElement(
+        'div',
+        null,
+        ...renderInlineMarkdown(
+          '[申报\\[草案\\].zip](fsstore://staffdeck-rps/signed/HF-JfAAFb8SNVsGvGZzh9A)',
+          'test-rps',
+        ),
+      ),
+    );
+
+    expect(rendered).toContain(
+      '<a href="/api/rps/download/HF-JfAAFb8SNVsGvGZzh9A" download="" rel="noreferrer">申报[草案].zip</a>',
+    );
+    expect(rendered).not.toContain('fsstore://');
+  });
+
+  it('does not delegate invalid or unrelated custom protocols', () => {
+    let delegatedLinks = 0;
+    const rendered = renderToStaticMarkup(
+      createElement(
+        'div',
+        null,
+        ...renderInlineMarkdown(
+          [
+            '[短 token](fsstore://staffdeck-rps/signed/short)',
+            '[其他存储](fsstore://other-store/signed/HF-JfAAFb8SNVsGvGZzh9A)',
+            '[其他协议](custom-store://signed/HF-JfAAFb8SNVsGvGZzh9A)',
+            '[内部页面](/sessions/1)',
+          ].join(' '),
+          'test-custom-protocol',
+          {
+            renderInternalLink: ({ label, href, key }) => {
+              delegatedLinks += 1;
+              return createElement('a', { key, href: `#${href}` }, label);
+            },
+          },
+        ),
+      ),
+    );
+
+    expect(delegatedLinks).toBe(1);
+    expect(rendered).toContain('<a href="#/sessions/1">内部页面</a>');
+    expect(rendered).not.toContain('/api/rps/download/');
+    expect(rendered.match(/href=/g)).toHaveLength(1);
+  });
+
   it('keeps only inline citations, deduplicates content, and orders labels', () => {
     const item = message({
       metadata: {

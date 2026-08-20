@@ -12,10 +12,13 @@ from app.core.harness_session_cleanup import (
     harness_task_workspace_path,
 )
 from app.harness import (
+    HarnessArtifactAccessError,
     HarnessExecutor,
+    HarnessLimits,
     HarnessToolCall,
     HarnessToolContext,
     build_file_tool_registry,
+    snapshot_harness_workspace,
 )
 from app.session.attachments import (
     IMAGE_DATA_URL_LIMIT_BYTES,
@@ -92,7 +95,12 @@ def materialize_task_attachments(
             sandbox_path = sandbox_attachment_path(attachment, index)
             relative_path = sandbox_path.removeprefix("/workspace/")
             try:
-                _write_workspace_bytes(workspace, relative_path, staged_data)
+                _write_workspace_bytes(
+                    workspace,
+                    relative_path,
+                    staged_data,
+                    limits=context.limits,
+                )
                 descriptor.update(
                     {
                         "workspace_path": sandbox_path,
@@ -102,7 +110,7 @@ def materialize_task_attachments(
                         "note": "原始附件已写入当前 TaskFrame 沙箱。",
                     }
                 )
-            except OSError as exc:
+            except (HarnessArtifactAccessError, OSError) as exc:
                 descriptor.update(
                     {
                         "materialized": False,
@@ -331,7 +339,25 @@ def _descriptor_image_attachment(
         return None
 
 
-def _write_workspace_bytes(workspace: Path, relative_path: str, data: bytes) -> None:
+def _write_workspace_bytes(
+    workspace: Path,
+    relative_path: str,
+    data: bytes,
+    *,
+    limits: HarnessLimits,
+) -> None:
+    if len(data) > limits.max_file_bytes:
+        raise OSError("attachment exceeds the Harness single-file limit")
+    workspace.mkdir(parents=True, exist_ok=True)
+    if workspace.is_symlink():
+        raise OSError("Harness workspace root cannot be a symbolic link")
+    snapshot = snapshot_harness_workspace(workspace, max_entries=limits.max_entries)
+    if relative_path not in snapshot and len(snapshot) >= limits.max_entries:
+        raise OSError("attachment exceeds the Harness workspace entry limit")
+    existing_size = snapshot.get(relative_path, (0, 0, 0, 0))[2]
+    workspace_size = sum(identity[2] for identity in snapshot.values())
+    if workspace_size - existing_size + len(data) > limits.max_workspace_bytes:
+        raise OSError("attachment exceeds the Harness workspace limit")
     destination = workspace.joinpath(*relative_path.split("/"))
     destination.parent.mkdir(parents=True, exist_ok=True)
     resolved_parent = destination.parent.resolve(strict=True)
