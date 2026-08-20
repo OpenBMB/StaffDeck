@@ -591,6 +591,14 @@ def test_sync_is_idempotent_and_updates_schema() -> None:
 def test_discover_saved_server_marks_imported() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_overall",
+                tenant_id="tenant_demo",
+                name="整体智能体",
+                is_overall=True,
+            )
+        )
         db.commit()
 
         server = create_mcp_server(
@@ -621,6 +629,76 @@ def test_discover_saved_server_marks_imported() -> None:
         assert by_name["echo"].imported is True
         assert by_name["echo"].tool_id is not None
         assert by_name["sum"].imported is False
+
+
+def test_discover_saved_server_marks_imported_in_current_employee_scope() -> None:
+    """全局存在不等于员工已导入；员工同步后才应出现在 SOP 能力目录。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_employee",
+                tenant_id="tenant_demo",
+                name="数字员工",
+                is_overall=False,
+            )
+        )
+        db.commit()
+
+        server = create_mcp_server(
+            MCPServerCreateRequest(
+                tenant_id="tenant_demo",
+                name="builtin_demo",
+                connection=MCPServerConnection(transport="builtin"),
+            ),
+            db,
+            _admin_user(),
+        )
+        sync_request = MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"])
+        sync_mcp_tools(server.id, sync_request, db, current_user=_admin_user())
+
+        before = discover_mcp_tools(
+            server.id,
+            MCPDiscoverRequest(tenant_id="tenant_demo"),
+            db,
+            _admin_user(),
+            agent_id="agent_employee",
+        )
+        before_echo = {tool.name: tool for tool in before.tools}["echo"]
+        assert before_echo.imported is False
+        assert before_echo.tool_id is None
+        assert list_tools(
+            tenant_id="tenant_demo",
+            bucket=None,
+            agent_id="agent_employee",
+            db=db,
+        ) == []
+
+        sync_mcp_tools(
+            server.id,
+            sync_request,
+            db,
+            agent_id="agent_employee",
+            current_user=_admin_user(),
+        )
+
+        after = discover_mcp_tools(
+            server.id,
+            MCPDiscoverRequest(tenant_id="tenant_demo"),
+            db,
+            _admin_user(),
+            agent_id="agent_employee",
+        )
+        after_echo = {tool.name: tool for tool in after.tools}["echo"]
+        assert after_echo.imported is True
+        assert after_echo.tool_id is not None
+        visible = list_tools(
+            tenant_id="tenant_demo",
+            bucket=None,
+            agent_id="agent_employee",
+            db=db,
+        )
+        assert [tool.name for tool in visible] == ["builtin_demo.echo"]
 
 
 def test_delete_mcp_server_removes_tools() -> None:

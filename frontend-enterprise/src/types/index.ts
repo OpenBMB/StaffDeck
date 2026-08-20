@@ -397,7 +397,7 @@ export type ToolRead = {
   description?: string;
   capability_scope?: CapabilityScope;
   bucket: string;
-  tool_type: 'http' | 'mcp' | string;
+  tool_type: 'http' | 'a2a' | 'mcp' | string;
   method: string;
   url: string;
   headers: Record<string, unknown>;
@@ -414,6 +414,43 @@ export type ToolRead = {
   metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+};
+
+export type A2ATaskEventRead = {
+  sequence: number;
+  event_type: string;
+  data: Record<string, unknown>;
+  created_at: string;
+};
+
+export type A2ATaskRunRead = {
+  id: string;
+  direction: string;
+  remote_task_id?: string | null;
+  context_id?: string | null;
+  codex_session_id?: string | null;
+  status: string;
+  endpoint_url: string;
+  protocol_version: string;
+  cancel_requested: boolean;
+  recovery_attempts: number;
+  artifacts: Record<string, unknown>[];
+  error: Record<string, unknown>;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  updated_at: string;
+  events: A2ATaskEventRead[];
+};
+
+export type CodexA2AAdapterRead = {
+  enabled: boolean;
+  endpoint_url: string;
+  agent_card_url: string;
+  command: string;
+  workspace_root: string;
+  timeout_seconds: number;
+  token_configured: boolean;
 };
 
 export type MCPTransport = 'stdio' | 'streamable_http' | 'sse' | 'builtin';

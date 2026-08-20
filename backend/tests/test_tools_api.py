@@ -14,14 +14,25 @@ from app.api.tools import (
     _normalize_probe_url,
     _read_execution_policy,
     _tool_config,
+    cancel_a2a_task_run,
     delete_tool,
+    get_codex_a2a_adapter,
+    list_a2a_task_runs,
     list_tools,
 )
 from app.api.tools import (
     probe_tool as _probe_tool,
 )
 from app.config import get_settings
-from app.db.models import AgentProfile, AgentResourceBinding, Tenant, Tool, User
+from app.db.models import (
+    A2ATaskEvent,
+    A2ATaskRun,
+    AgentProfile,
+    AgentResourceBinding,
+    Tenant,
+    Tool,
+    User,
+)
 from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
 from app.tools.tool_schema import ToolExecutionPolicy, ToolProbeRequest
 
@@ -66,6 +77,89 @@ def test_delete_tool_removes_tenant_tool() -> None:
         assert db.get(Tool, tool.id) is None
 
 
+def test_a2a_run_listing_includes_events_and_cancel_is_persisted() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+            )
+        )
+        tool = Tool(
+            id="tool_a2a",
+            tenant_id="tenant_demo",
+            name="codex.remote",
+            display_name="Codex",
+            tool_type="a2a",
+            method="POST",
+            url="https://codex.example.test/api/a2a",
+        )
+        db.add(tool)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "tool", tool.id, "active")
+        run = A2ATaskRun(
+            id="a2arun_demo",
+            tenant_id="tenant_demo",
+            tool_id=tool.id,
+            endpoint_url=tool.url,
+            remote_task_id="remote_1",
+            status="working",
+            artifacts_json=[{"name": "report.md"}],
+        )
+        db.add(run)
+        db.add(
+            A2ATaskEvent(
+                tenant_id="tenant_demo",
+                run_id=run.id,
+                sequence=1,
+                event_type="task.created",
+                data_json={"status": "working"},
+            )
+        )
+        db.commit()
+
+        rows = list_a2a_task_runs(tool.id, "tenant_demo", None, 20, db)
+
+        assert len(rows) == 1
+        assert rows[0].remote_task_id == "remote_1"
+        assert rows[0].artifacts == [{"name": "report.md"}]
+        assert [(event.sequence, event.event_type) for event in rows[0].events] == [
+            (1, "task.created")
+        ]
+
+        cancelled = cancel_a2a_task_run(
+            tool.id,
+            run.id,
+            "tenant_demo",
+            None,
+            db,
+            _admin_user(),
+        )
+
+        assert cancelled.cancel_requested is True
+        assert db.get(A2ATaskRun, run.id).cancel_requested is True
+
+
+def test_codex_a2a_adapter_status_never_returns_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.api.tools.get_settings",
+        lambda: SimpleNamespace(
+            codex_a2a_enabled=True,
+            codex_a2a_command="codex",
+            codex_a2a_workspace_root="/srv/codex",
+            codex_a2a_timeout_seconds=1800.0,
+            codex_a2a_token="secret-token",
+        ),
+    )
+
+    result = get_codex_a2a_adapter()
+
+    assert result.enabled is True
+    assert result.command == "codex"
+    assert result.token_configured is True
+    assert "token" not in result.model_dump(exclude={"token_configured"})
+
+
 def test_tool_config_namespaces_execution_and_preserves_existing_policy() -> None:
     created = _tool_config(
         {"tool": "sum"},
@@ -87,12 +181,12 @@ def test_tool_config_namespaces_execution_and_preserves_existing_policy() -> Non
 
 def test_tool_config_rejects_untyped_execution_and_reads_invalid_legacy_safely() -> None:
     config = _tool_config(
-        {"tool": "sum", "execution": {"timeout_seconds": 999}},
+        {"tool": "sum", "execution": {"timeout_seconds": 3601}},
         None,
     )
 
     assert config == {"tool": "sum"}
-    assert _read_execution_policy({"execution": {"timeout_seconds": 999}}) is None
+    assert _read_execution_policy({"execution": {"timeout_seconds": 3601}}) is None
 
 
 def test_delete_tool_is_tenant_scoped() -> None:
