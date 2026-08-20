@@ -16,11 +16,18 @@ const OUTLINE_BUTTON_CLASS =
   'h-8 gap-1 rounded-[10px] border-[#e3e7f1] px-5 text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] hover:text-[#18181a]';
 
 const REQUIRED_PERMISSIONS = [
+  '获取通讯录基本信息（contact:contact.base:readonly）',
+  '获取用户基本信息（contact:user.base:readonly）',
+  '通过手机号或邮箱获取用户 ID（contact:user.id:readonly）',
+  '获取群组中其他机器人和用户@当前机器人的消息（im:message.group_at_msg.include_bot:readonly）',
+  '获取群组中用户@机器人消息（im:message.group_at_msg:readonly）',
+  '获取群组中所有消息（敏感权限）（im:message.group_msg）',
+  '获取群组中用户和机器人发送的消息（im:message.group_msg.include_bot:read）',
   '读取用户发给机器人的单聊消息（im:message.p2p_msg:readonly）',
-  '接收群聊中 @ 机器人消息事件（im:message.group_at_msg:readonly）',
-  '以应用的身份发消息（im:message:send_as_bot）',
   '查看消息表情回复（im:message.reactions:read）',
   '发送、删除消息表情回复（im:message.reactions:write_only）',
+  '获取单聊、群组消息（im:message:readonly）',
+  '以应用的身份发消息（im:message:send_as_bot）',
 ];
 
 const REMOVABLE_PERMISSIONS = [
@@ -30,7 +37,6 @@ const REMOVABLE_PERMISSIONS = [
   '飞书人事（企业版）-员工 数据权限范围',
   '飞书人事（企业版）-待入职人员 数据权限范围',
   '妙记-妙记基本信息 数据权限范围',
-  '通讯录权限范围 / 获取用户 user ID / 读取群内全部消息的敏感权限',
 ];
 
 function FeishuPermissionHint() {
@@ -50,7 +56,7 @@ function FeishuPermissionHint() {
                 </button>
               </TooltipTrigger>
               <TooltipContent side="top" align="start" className="max-w-[340px]">
-                这个飞书接入只需要机器人消息收发和 reaction 能力；其余权限一般可以不加，尤其是任务、邮箱、人事、妙记和通讯录相关权限。
+                这个飞书接入需要通讯录基础信息、机器人消息收发和 reaction 能力；其余权限一般可以不加，尤其是任务、邮箱、人事和妙记相关权限。
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
