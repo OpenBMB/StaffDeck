@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import Engine, inspect, text
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
@@ -64,6 +64,41 @@ def init_db() -> None:
     _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
     _migrate_sqlite_skill_schema()
+    _purge_orphaned_chat_sessions()
+
+
+def _purge_orphaned_chat_sessions() -> None:
+    """清理孤儿会话:团队/员工已被删除但会话残留(级联清理上线前的历史数据)。"""
+    from app.db.models import AgentProfile, ChatSession, Team
+    from app.session.cleanup import (
+        purge_chat_session_records,
+        remove_chat_session_workspace,
+    )
+
+    with Session(engine) as db:
+        referenced = db.exec(
+            select(ChatSession).where(
+                ChatSession.team_id.is_not(None) | ChatSession.agent_id.is_not(None)
+            )
+        ).all()
+        if not referenced:
+            return
+        team_ids = {team_id for team_id in db.exec(select(Team.id)).all()}
+        agent_ids = {agent_id for agent_id in db.exec(select(AgentProfile.id)).all()}
+        orphaned = [
+            session
+            for session in referenced
+            if (session.team_id and session.team_id not in team_ids)
+            or (session.agent_id and session.agent_id not in agent_ids)
+        ]
+        if not orphaned:
+            return
+        workspace_keys = [(session.tenant_id, session.id) for session in orphaned]
+        for session in orphaned:
+            purge_chat_session_records(db, session)
+        db.commit()
+        for tenant_id, session_id in workspace_keys:
+            remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
 
 
 def _configure_sqlite_runtime() -> None:
