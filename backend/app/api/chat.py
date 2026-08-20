@@ -23,11 +23,7 @@ from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
 from app.core.capability_manifest import CapabilityManifestBuilder
-from app.core.harness_session_cleanup import (
-    harness_task_workspace_path,
-    remove_harness_session_workspace,
-    stage_harness_session_record_deletion,
-)
+from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_turn_store import HarnessTurnStore
 from app.core.slash_commands import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
@@ -69,6 +65,10 @@ from app.security.tenant import ensure_tenant
 from app.session.attachments import (
     parse_chat_attachment,
     validate_chat_turn_attachments,
+)
+from app.session.cleanup import (
+    purge_chat_session_records,
+    remove_chat_session_workspace,
 )
 from app.session.helpers import public_session
 from app.session.message_visibility import (
@@ -2105,46 +2105,9 @@ def delete_chat_session(
 ) -> dict[str, str]:
     _ensure_request_tenant(tenant_id, current_user)
     row = _get_user_chat_session(db, tenant_id, current_user.id, session_id)
-    messages = db.exec(
-        select(Message).where(Message.tenant_id == tenant_id, Message.session_id == session_id)
-    ).all()
-    events = db.exec(
-        select(AgentEvent).where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == session_id)
-    ).all()
-    feedback_rows = db.exec(
-        select(MessageFeedback).where(MessageFeedback.tenant_id == tenant_id, MessageFeedback.session_id == session_id)
-    ).all()
-    skill_feedback_rows = db.exec(
-        select(SkillFeedback).where(SkillFeedback.tenant_id == tenant_id, SkillFeedback.session_id == session_id)
-    ).all()
-    stage_harness_session_record_deletion(
-        db,
-        tenant_id=tenant_id,
-        session_id=session_id,
-    )
-    for message in messages:
-        db.delete(message)
-    for event in events:
-        db.delete(event)
-    for feedback in feedback_rows:
-        db.delete(feedback)
-    for feedback in skill_feedback_rows:
-        db.delete(feedback)
-    db.delete(row)
+    purge_chat_session_records(db, row)
     db.commit()
-    try:
-        remove_harness_session_workspace(
-            tenant_id=tenant_id,
-            session_id=session_id,
-            db=db,
-        )
-    except OSError:
-        logger.warning(
-            "Failed to remove Harness workspace for tenant=%s session=%s",
-            tenant_id,
-            session_id,
-            exc_info=True,
-        )
+    remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
     return {"status": "deleted"}
 
 

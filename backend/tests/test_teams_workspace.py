@@ -16,7 +16,7 @@ from app.api import chat as chat_api
 from app.api import teams as teams_api
 from app.core import AgentLoop
 from app.db import database
-from app.db.models import ChatSession, TeamTask, TeamWakeEvent, User
+from app.db.models import ChatSession, Message, TeamTask, TeamWakeEvent, User
 from app.session.session_schema import ChatTurnRequest, ChatTurnResponse, SessionPublic
 from app.teams.schema import TeamTLChatRequest, TeamTLSessionRequest
 from app.teams.service import create_team, set_leader
@@ -186,6 +186,44 @@ def test_global_list_contains_team_group_but_hides_internal_team_sessions() -> N
         team_read = chat_api.get_chat_session(tl.session_id, "tenant_demo", admin, db)
         assert team_read.team_id == team.id
         assert team_read.team_name == team.name
+
+
+def test_delete_team_purges_team_chat_sessions() -> None:
+    """删除团队后,团队会话及其消息不再出现在对话端列表。"""
+    with _test_session() as db:
+        team = _seed_team(db)
+        admin = _admin_user()
+        plain = ChatSession(
+            id="session_plain_survivor",
+            tenant_id="tenant_demo",
+            user_id=admin.id,
+            agent_id="agent_tl",
+            title="普通会话",
+            status="active",
+        )
+        db.add(plain)
+        db.commit()
+        tl = teams_api.tl_session_endpoint(
+            team.id, TeamTLSessionRequest(tenant_id="tenant_demo"), db, admin
+        )
+        db.add(
+            Message(
+                id="msg_team_1",
+                tenant_id="tenant_demo",
+                session_id=tl.session_id,
+                role="user",
+                content="团队消息",
+            )
+        )
+        db.commit()
+
+        assert teams_api.delete_team_endpoint(team.id, "tenant_demo", db, admin) == {"ok": True}
+
+        assert db.get(ChatSession, tl.session_id) is None
+        assert db.exec(select(Message).where(Message.session_id == tl.session_id)).all() == []
+        reads = {item.id for item in chat_api.list_chat_sessions("tenant_demo", admin, db)}
+        assert tl.session_id not in reads
+        assert plain.id in reads
 
 
 def test_tl_chat_session_carries_team_id(monkeypatch: pytest.MonkeyPatch) -> None:
