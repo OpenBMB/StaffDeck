@@ -1897,3 +1897,27 @@ def test_validate_handoff_assignees_rejects_channel_customer() -> None:
         with pytest.raises(HTTPException) as exc_info:
             _validate_handoff_assignees(db, _handoff_skill_card("user_channel"), "tenant_demo")
         assert exc_info.value.status_code == 400
+
+
+def test_validate_handoff_assignees_rejects_non_feishu_channel() -> None:
+    """渠道转接通知仅实现飞书:钉钉渠道即使身份已绑定也拒绝。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="dingtalk",
+                external_account_scope="",
+                external_user_id="staff_owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_handoff_assignees(
+                db, _handoff_skill_card("user_owner", "dingtalk"), "tenant_demo"
+            )
+        assert exc_info.value.status_code == 400
+        assert "仅支持飞书" in exc_info.value.detail

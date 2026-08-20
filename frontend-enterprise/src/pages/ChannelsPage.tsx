@@ -52,6 +52,7 @@ import type {
   TeamRead,
 } from '../types';
 import { formatHandoffAssigneeValue, parseHandoffAssigneeValue } from '../lib/handoff-assignee';
+import { feishuAppIdFromIdentityScope } from '../lib/identity-scope';
 import WechatSetup from './channels/WechatSetup';
 import WecomSetup from './channels/WecomSetup';
 import FeishuSetup from './channels/FeishuSetup';
@@ -283,17 +284,30 @@ export default function ChannelsPage({
       (item.external_account_scope || '') === (binding?.identity_scope_key || ''),
   );
   const bindingScope = binding?.identity_scope_key || '';
-  const identityBoundUsers = tenantUsers.filter((user) =>
-    user.channel_identities?.some(
-      (identity) =>
-        identity.channel === binding?.channel &&
-        (identity.external_account_scope || '') === bindingScope,
-    ),
+  // 已绑定集合只统计内部成员:渠道懒建账号(外部客户)自带指向自己的身份,
+  // 不应计入"邀请成员绑定"的绑定状态。展示与邀请下拉都排除当前用户——
+  // 自己的绑定在上方"身份绑定"区有专门入口(绑定/解绑),避免同一人出现两次。
+  const identityBoundInternalUserIds = new Set(
+    tenantUsers
+      .filter(
+        (user) =>
+          (!user.source || user.source === 'web') &&
+          user.channel_identities?.some(
+            (identity) =>
+              identity.channel === binding?.channel &&
+              (identity.external_account_scope || '') === bindingScope,
+          ),
+      )
+      .map((user) => user.id),
+  );
+  const identityBoundUsers = tenantUsers.filter(
+    (user) => identityBoundInternalUserIds.has(user.id) && user.id !== currentUser?.id,
   );
   const identityUnboundUsers = tenantUsers.filter(
     (user) =>
       (!user.source || user.source === 'web') &&
-      !identityBoundUsers.some((bound) => bound.id === user.id),
+      user.id !== currentUser?.id &&
+      !identityBoundInternalUserIds.has(user.id),
   );
   const bindCodeChannelName = binding
     ? channelName(binding.channel)
@@ -415,6 +429,10 @@ export default function ChannelsPage({
     const scope = identity.external_account_scope || '';
     if (!scope) return channelName(identity.channel);
     if (binding?.corp_id && scope === binding.corp_id) return `企业： ${scope}`;
+    // 飞书 scope 是"app:{长度}:{appId}:tenant:{长度}:{tenantKey}"技术键,
+    // 解析出 appId 展示,避免把整段内部键暴露给用户。
+    const feishuAppId = feishuAppIdFromIdentityScope(scope);
+    if (feishuAppId) return `飞书应用： ${feishuAppId}`;
     return `Bot: ${scope}`;
   }
 
@@ -1003,7 +1021,7 @@ export default function ChannelsPage({
           <div className="flex min-w-0 flex-col gap-[4px]">
             <span className="text-[13px] font-semibold text-[#18181a]">默认人工处理人</span>
             <span className="text-[12px] leading-[1.6] text-[#858b9c]">
-              SOP 人工节点未指定处理人时，转交给此用户；选择带渠道标注的选项会通过对应渠道转接。未配置时回退到数字员工负责人或管理员。
+              SOP 人工节点未指定处理人时，转交给此用户；选择带渠道标注的选项会通过对应渠道转接（当前仅支持飞书）。未配置时回退到数字员工负责人或管理员。
             </span>
           </div>
           <div className="flex items-center gap-[8px]">
@@ -1032,6 +1050,9 @@ export default function ChannelsPage({
                 <SelectItem value="__none__">未配置</SelectItem>
                 {tenantUsers.filter((user) => !user.source || user.source === 'web').flatMap((user) => {
                   const name = user.display_name || user.username || user.id;
+                  // 渠道转接通知运行时仅实现飞书私聊,渠道标注选项只对飞书绑定生成
+                  // (后端同样拒绝其他渠道的保存)。
+                  const channelVariantAvailable = binding.channel === 'feishu';
                   const scope = binding.identity_scope_key || '';
                   const matchingIdentity = user.channel_identities?.find(
                     (ci) => ci.channel === binding.channel && (ci.external_account_scope || '') === scope,
@@ -1045,7 +1066,7 @@ export default function ChannelsPage({
                     binding.default_handoff_assignee_user_id === user.id
                     && binding.default_handoff_assignee_channel === binding.channel
                   );
-                  if (matchingIdentity || channelVariantConfigured) {
+                  if (channelVariantAvailable && (matchingIdentity || channelVariantConfigured)) {
                     const channelLabel = _CHANNEL_LABELS[binding.channel] || binding.channel;
                     items.push(
                       <SelectItem key={`${user.id}::${binding.channel}`} value={`${user.id}::${binding.channel}`}>

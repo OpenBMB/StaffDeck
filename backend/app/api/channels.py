@@ -62,7 +62,6 @@ from app.channels.schema import (
 from app.channels.service_identity import (
     IdentityScopeConflict,
     external_account_key,
-    external_account_scope,
     legacy_external_account_keys,
     migrate_scope_for_binding,
     scope_from_config,
@@ -505,16 +504,28 @@ def list_my_identity_bindings(
         )
         .order_by(ChannelIdentity.channel)
     ).all()
-    return [
-        MyIdentityBindingRead(
-            channel=row.channel,
-            external_user_id=row.external_user_id,
-            display_name=row.display_name,
-            bound_at=row.updated_at.isoformat(),
-            external_account_scope=row.external_account_scope,
+    # 返回行都指向当前账号,display_name 应始终是当前账号名;历史绑定残留的
+    # 旧名(如懒建期占位名"飞书用户 xxx")在读取时自愈回写,不待重新绑定。
+    account_name = str(current_user.display_name or current_user.username or "").strip()
+    result: list[MyIdentityBindingRead] = []
+    for row in rows:
+        display_name = row.display_name
+        if account_name and display_name != account_name:
+            row.display_name = account_name
+            row.updated_at = utc_now()
+            db.add(row)
+            display_name = account_name
+        result.append(
+            MyIdentityBindingRead(
+                channel=row.channel,
+                external_user_id=row.external_user_id,
+                display_name=display_name,
+                bound_at=row.updated_at.isoformat(),
+                external_account_scope=row.external_account_scope,
+            )
         )
-        for row in rows
-    ]
+    db.commit()
+    return result
 
 
 @router.delete("/my-identity-bindings/{channel}", status_code=204)
@@ -597,8 +608,9 @@ def update_channel_binding_agents(
         # 团队绑定的接待员工由团队现任 TL 决定,不允许整表替换员工挂载
         raise HTTPException(status_code=400, detail="团队绑定的渠道不支持修改员工挂载")
     # 校验默认人工处理人:传入非 None 且非空时,用户必须存在且属于当前租户的内部成员。
-    # 通知渠道为 None/"web" 时仅走网页端收件箱;指定绑定渠道(如 feishu)时,
-    # 该成员必须已在当前绑定作用域绑定非群聊渠道身份,保证渠道转接可达。
+    # 通知渠道为 None/"web" 时仅走网页端收件箱;指定绑定渠道时,当前仅支持飞书
+    # (渠道转接通知只实现了飞书私聊),且该成员必须已在当前绑定作用域绑定
+    # 非群聊渠道身份,保证渠道转接可达。
     handoff_assignee = request.default_handoff_assignee_user_id
     handoff_channel = request.default_handoff_assignee_channel
     if handoff_assignee != "unchanged" and handoff_assignee:
@@ -615,18 +627,20 @@ def update_channel_binding_agents(
                     status_code=400,
                     detail="默认人工处理人的转接渠道必须是当前绑定渠道",
                 )
-            if binding.channel == "feishu":
-                identity_scope = binding.identity_scope_key
-                if not identity_scope:
-                    config = dict(binding.config_json or {})
-                    app_id = str(config.get("app_id") or "").strip()
-                    tenant_key = str(binding.provider_tenant_key or "").strip()
-                    if app_id and tenant_key:
-                        from app.channels.service_feishu_inbox import feishu_identity_scope
+            if binding.channel != "feishu":
+                raise HTTPException(
+                    status_code=400,
+                    detail="人工转接通知当前仅支持飞书渠道,请选择网页端或飞书渠道",
+                )
+            identity_scope = binding.identity_scope_key
+            if not identity_scope:
+                config = dict(binding.config_json or {})
+                app_id = str(config.get("app_id") or "").strip()
+                tenant_key = str(binding.provider_tenant_key or "").strip()
+                if app_id and tenant_key:
+                    from app.channels.service_feishu_inbox import feishu_identity_scope
 
-                        identity_scope = feishu_identity_scope(app_id, tenant_key)
-            else:
-                identity_scope = external_account_scope(db, binding)
+                    identity_scope = feishu_identity_scope(app_id, tenant_key)
             reachable = db.exec(
                 select(ChannelIdentity).where(
                     ChannelIdentity.tenant_id == tenant_id,

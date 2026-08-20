@@ -1422,6 +1422,58 @@ def test_put_binding_default_handoff_assignee_unchanged_by_default() -> None:
     assert payload["default_handoff_assignee_user_id"] == "user_owner"
 
 
+def test_put_non_feishu_default_handoff_assignee_channel_rejected() -> None:
+    """渠道转接通知仅实现飞书:钉钉绑定即使处理人已绑定钉钉身份也拒绝保存。"""
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="dingtalk",
+            status="active",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        # 处理人已绑定当前钉钉账号的非群聊身份(可达性本身没问题)
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="dingtalk",
+                external_account_scope="",
+                external_user_id="staff_owner",
+                display_name="Owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+        binding_id = binding.id
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "dingtalk",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 400
+    assert "仅支持飞书" in response.json()["detail"]
+
+    # 网页端选项不受影响
+    web_variant = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "web",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert web_variant.status_code == 200
+    assert web_variant.json()["default_handoff_assignee_channel"] == "web"
+
+
 # ---------- 分页 ----------
 
 

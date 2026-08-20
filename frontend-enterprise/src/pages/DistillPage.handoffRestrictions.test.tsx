@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { applyNodeTypeChange, filterActionOptionsForNodeType } from './DistillPage';
+import { applyNodeTypeChange, filterActionOptionsForNodeType, handoffAssigneeUserOptions } from './DistillPage';
 
 describe('SOP node handoff restrictions', () => {
   it('strips handoff actions and assignee when the node type leaves handoff', () => {
@@ -62,6 +62,30 @@ describe('SOP node handoff restrictions', () => {
     expect(filterActionOptionsForNodeType(options, 'handoff')).toEqual(options);
     expect(filterActionOptionsForNodeType(options, '')).toEqual([
       { value: 'answer_user', label: '回复用户' },
+    ]);
+  });
+});
+
+describe('handoffAssigneeUserOptions channel variants', () => {
+  it('only offers feishu channel variants and skips other channels', () => {
+    const options = handoffAssigneeUserOptions([
+      {
+        id: 'user-1',
+        username: 'alice',
+        channel_identities: [
+          { channel: 'feishu', external_user_id: 'ou_1' },
+          { channel: 'dingtalk', external_user_id: 'staff_1' },
+          { channel: 'wecom', external_user_id: 'wecom_1' },
+        ],
+      },
+      { id: 'user-2', username: 'bob', source: 'web' },
+      { id: 'user-3', username: 'lazy', source: 'feishu' },
+    ]);
+
+    expect(options).toEqual([
+      { value: 'user-1', label: 'alice（网页端）' },
+      { value: 'user-1::feishu', label: 'alice（飞书）' },
+      { value: 'user-2', label: 'bob（网页端）' },
     ]);
   });
 });

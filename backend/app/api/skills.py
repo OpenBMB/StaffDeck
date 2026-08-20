@@ -198,8 +198,8 @@ def _validate_handoff_assignees(db: Session, content: SkillCard, tenant_id: str)
     """校验 SOP 人工节点的处理人:必须存在、同租户、source='web'(内部成员)。
 
     assignee_notify_channel 为 None 时按默认投递(网页收件箱,可达则渠道通知);
-    为 "web" 时仅网页端;为具体渠道(如 "feishu")时该成员必须已在对应渠道
-    绑定非群聊身份,否则渠道转接不可达。
+    为 "web" 时仅网页端;为具体渠道时当前仅支持 "feishu"(渠道转接通知只实现
+    了飞书私聊),且该成员必须已绑定飞书非群聊身份,否则渠道转接不可达。
     """
     assignee_specs = {
         (node.assignee_user_id.strip(), str(node.assignee_notify_channel or "").strip())
@@ -236,6 +236,14 @@ def _validate_handoff_assignees(db: Session, content: SkillCard, tenant_id: str)
     }
     if not channel_specs:
         return
+    # 渠道转接通知目前仅实现飞书私聊(钉钉/企微/微信适配器只能回会话内消息,
+    # 无法主动私聊处理人),其余渠道一律拒绝,避免"配置成功但收不到通知"。
+    unsupported = sorted({channel for _, channel in channel_specs if channel != "feishu"})
+    if unsupported:
+        raise HTTPException(
+            status_code=400,
+            detail=f"人工节点处理人通知渠道当前仅支持飞书: {', '.join(unsupported)}",
+        )
     channel_user_ids = {user_id for user_id, _ in channel_specs}
     identities = db.exec(
         select(ChannelIdentity).where(
