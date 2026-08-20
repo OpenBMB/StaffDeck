@@ -2969,5 +2969,79 @@
   "内部执行记录已归档": "Internal execution records archived",
   "正在整理采购清单": "Organizing the purchase list",
   "正在生成回复": "Generating reply",
-  "团队任务:整理采购清单": "Team task: Organize purchase list"
+  "团队任务:整理采购清单": "Team task: Organize purchase list",
+  "微信客服": "WeChat Customer Service",
+  "客服账号 ID": "Customer Service Account ID",
+  "微信客服用户": "WeChat Customer Service User",
+  "通过微信客服 API 接入外部用户咨询，并由数字员工自动回复。": "Connect external customer inquiries through the WeChat Customer Service API and reply automatically with a digital employee.",
+  "断开后微信客服将停止接收和回复咨询；对话记录保留。确定断开接入吗？": "After disconnecting, WeChat Customer Service will stop receiving and replying to inquiries. Conversation history will be retained. Disconnect now?",
+  "微信客服应用 Secret": "WeChat Customer Service App Secret",
+  "回调 Token": "Callback Token",
+  "回调 URL 已复制": "Callback URL copied",
+  "微信客服 API 已连接到数字员工": "WeChat Customer Service API connected to the digital employee",
+  "保存微信客服凭证失败": "Failed to save WeChat Customer Service credentials",
+  "微信客服回调 URL": "WeChat Customer Service Callback URL",
+  "在微信客服后台开启 API，填入此 URL，并在下方填写同一组 Token 与 EncodingAESKey。": "Enable the API in WeChat Customer Service, enter this URL, and provide the same Token and EncodingAESKey below.",
+  "客服账号：": "Customer service account:",
+  "企业 ID：": "Enterprise ID:",
+  "保存并验证": "Save and Verify",
+  "验证中": "Verifying",
+  "咨询链接已生成并复制": "Consultation link generated and copied",
+  "生成咨询链接失败": "Failed to generate consultation link",
+  "生成中": "Generating",
+  "生成咨询链接": "Generate Consultation Link"
+  ,"请先填写企业 ID": "Enter the enterprise ID first"
+  ,"回调配置已生成": "Callback configuration generated"
+  ,"生成回调配置失败": "Failed to generate callback configuration"
+  ,"先生成回调配置，将 URL、Token、EncodingAESKey 填入微信客服后台；后台创建 API 后再回来填写 Secret 和客服账号 ID。": "Generate the callback configuration first, enter its URL, Token, and EncodingAESKey in WeChat Customer Service, then return to enter the Secret and account ID after creating the API."
+  ,"生成回调配置": "Generate Callback Configuration"
+  ,"请先将以下 Token 和 EncodingAESKey 填入微信客服后台，完成 API 创建：": "Enter the following Token and EncodingAESKey in WeChat Customer Service to create the API:"
+   ,"回调已准备，请填写微信客服后台返回的 Secret；保存后选择已有客服账号或创建新账号。": "The callback is ready. Enter the Secret from WeChat Customer Service, then select an existing account or create a new one."
+   ,"Secret 已保存": "Secret saved"
+  ,"重新配置 Secret": "Reconfigure Secret"
+  ,"必须先选择已有客服账号或创建新账号，绑定完成后才会接收业务回调。": "Select an existing customer service account or create a new one before business callbacks are accepted."
+  ,"加载客服账号失败": "Failed to load customer service accounts"
+  ,"客服账号已绑定": "Customer service account bound"
+  ,"绑定客服账号失败": "Failed to bind customer service account"
+  ,"请输入客服账号名称": "Enter a customer service account name"
+  ,"客服账号已创建并绑定": "Customer service account created and bound"
+  ,"创建客服账号失败": "Failed to create customer service account"
+  ,"加载中": "Loading"
+  ,"选择已有客服账号": "Select Existing Account"
+  ,"新客服账号名称": "New customer service account name"
+  ,"创建并绑定": "Create and Bind"
+  ,"请先上传客服头像": "Upload a customer service avatar first"
+  ,"客服头像上传成功": "Customer service avatar uploaded"
+  ,"上传客服头像失败": "Failed to upload customer service avatar"
+  ,"客服头像仅支持 JPG 或 PNG": "Customer service avatars must be JPG or PNG"
+  ,"客服头像不能超过 2MB": "Customer service avatars cannot exceed 2 MB"
+  ,"上传中": "Uploading"
+  ,"上传客服头像": "Upload customer service avatar"
+  ,"配置详情": "Configuration Details"
+  ,"选择": "Select"
+  ,"关闭": "Close"
+  ,"扫码使用": "Scan to Use"
+  ,"分享链接": "Share Link"
+  ,"已绑定客服账号": "Bound customer service accounts"
+  ,"客服账号 ID：": "Customer service account ID:"
+  ,"绑定渠道：": "Bound channel:"
+  ,"未绑定": "Not bound"
+  ,"已绑定客服账号：": "Bound customer service accounts:"
+  ,"客服二维码": "Customer service QR code"
+  ,"客服二维码已生成": "Customer service QR code generated"
+  ,"绑定数字员工：": "Bound digital employee:"
+  ,"绑定团队：": "Bound team:"
+  ,"咨询链接已生成": "Consultation link generated"
+  ,"咨询链接已复制": "Consultation link copied"
+  ,"复制咨询链接失败": "Failed to copy consultation link"
+  ,"客服账号已更新": "Customer service account updated"
+  ,"修改客服账号失败": "Failed to update customer service account"
+  ,"确定删除这个微信客服账号吗？删除后微信客服后台账号也会被删除。": "Delete this WeChat Customer Service account? It will also be deleted from WeChat Customer Service."
+  ,"删除客服账号失败": "Failed to delete customer service account"
+  ,"客服账号已删除": "Customer service account deleted"
+  ,"编辑": "Edit"
+  ,"删除": "Delete"
+  ,"保存": "Save"
+  ,"取消": "Cancel"
+  ,"更换头像（可选）": "Change avatar (optional)"
 }

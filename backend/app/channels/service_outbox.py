@@ -7,6 +7,9 @@ from datetime import timedelta
 from sqlalchemy import func, or_, update
 from sqlmodel import Session, select
 
+from app.channels.adapters.base import channel_reaction_token
+from app.channels.service_durable_inbox import reaction_target
+from app.channels.service_identity import external_account_scope
 from app.config import get_settings
 from app.db import engine
 from app.db.models import (
@@ -20,9 +23,6 @@ from app.db.models import (
     new_id,
     utc_now,
 )
-from app.channels.adapters.base import channel_reaction_token
-from app.channels.service_durable_inbox import reaction_target
-from app.channels.service_identity import external_account_scope
 from app.session.origin import PILOTDECK_GROUP_CHAT_CHANNEL
 
 logger = logging.getLogger(__name__)
@@ -193,6 +193,8 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
             return
         if binding.channel == "feishu":
             valid_target = bool(target.get("message_id") or target.get("receive_id"))
+        elif binding.channel == "wechat_kf":
+            valid_target = bool(target.get("to_user_id") and target.get("open_kfid"))
         else:
             valid_target = bool(target.get("to_user_id") and target.get("context_token"))
         if not valid_target:

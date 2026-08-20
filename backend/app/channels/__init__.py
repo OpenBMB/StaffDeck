@@ -133,9 +133,10 @@ def channel_services_enabled() -> bool:
 
 def _ensure_adapters_registered() -> None:
     # 各适配器模块导入即自注册(模块级 register_channel_adapter)
-    import app.channels.adapters.feishu  # noqa: F401
     import app.channels.adapters.dingtalk  # noqa: F401
+    import app.channels.adapters.feishu  # noqa: F401
     import app.channels.adapters.wechat  # noqa: F401
+    import app.channels.adapters.wechat_kf  # noqa: F401
     import app.channels.adapters.wecom  # noqa: F401
 
 

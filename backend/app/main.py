@@ -26,6 +26,7 @@ from app.api import (
     tools,
     traces,
     ui_config,
+    wechat_kf,
 )
 from app.async_jobs import shutdown_async_jobs, start_async_jobs
 from app.channels import start_channel_services, stop_channel_services
@@ -121,6 +122,7 @@ app.include_router(scheduled_tasks.chat_router)
 app.include_router(scheduled_tasks.chat_draft_router)
 app.include_router(ui_config.enterprise_router)
 app.include_router(channels.router)
+app.include_router(wechat_kf.router)
 app.include_router(teams.router)
 app.include_router(teams.threads_router)
 app.include_router(tools.router)

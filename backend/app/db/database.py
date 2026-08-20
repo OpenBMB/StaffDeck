@@ -9,6 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
+from app.db.models import new_id, utc_now
 
 
 def _normalize_database_url(url: str) -> str:
@@ -97,6 +98,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_feishu_channel_schema(conn, tables)
         _migrate_channel_inbound_run_schema(conn, tables)
         _migrate_channel_bind_code_constraints(conn, tables)
+        _migrate_wechat_kf_accounts(conn, tables)
         _migrate_capability_scope_schema(conn, inspector, tables)
         _migrate_harness_v2_schema(conn, inspector, tables)
 
@@ -958,6 +960,74 @@ def _migrate_channel_bindings_multi(conn, inspector, tables: set[str]) -> None:
         text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
         {"id": _CHANNEL_BINDINGS_MULTI_MIGRATION_ID},
     )
+
+
+def _migrate_wechat_kf_accounts(conn, tables: set[str]) -> None:
+    """Add the per-客服账号 routing table for multi-account WeChat客服 bindings."""
+    if "wechat_kf_accounts" in tables:
+        return
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS wechat_kf_accounts (
+                id VARCHAR PRIMARY KEY,
+                tenant_id VARCHAR NOT NULL,
+                binding_id VARCHAR NOT NULL,
+                open_kfid VARCHAR NOT NULL,
+                name VARCHAR NOT NULL DEFAULT '',
+                agent_id VARCHAR,
+                team_id VARCHAR,
+                status VARCHAR NOT NULL DEFAULT 'active',
+                sync_cursor VARCHAR NOT NULL DEFAULT '',
+                last_error VARCHAR,
+                last_sync_at DATETIME,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                CONSTRAINT uq_wechat_kf_account_binding_kfid UNIQUE (binding_id, open_kfid),
+                CONSTRAINT uq_wechat_kf_account_tenant_kfid UNIQUE (tenant_id, open_kfid)
+            )
+            """
+        )
+    )
+    if "channel_bindings" in tables:
+        rows = conn.execute(
+            text(
+                "SELECT id, tenant_id, agent_id, team_id, config_json "
+                "FROM channel_bindings WHERE channel = 'wechat_kf'"
+            )
+        ).mappings().all()
+        for row in rows:
+            config = _json_object(row["config_json"])
+            open_kfid = str(config.get("open_kfid") or "").strip()
+            if not open_kfid:
+                continue
+            now = utc_now()
+            conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO wechat_kf_accounts "
+                    "(id, tenant_id, binding_id, open_kfid, agent_id, team_id, "
+                    "status, sync_cursor, created_at, updated_at) "
+                    "VALUES (:id, :tenant_id, :binding_id, :open_kfid, :agent_id, "
+                    ":team_id, 'active', '', :created_at, :updated_at)"
+                ),
+                {
+                    "id": new_id("wka"),
+                    "tenant_id": row["tenant_id"],
+                    "binding_id": row["id"],
+                    "open_kfid": open_kfid,
+                    "agent_id": row["agent_id"] if not row["team_id"] else None,
+                    "team_id": row["team_id"],
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+    for column in ("tenant_id", "binding_id", "open_kfid", "agent_id", "team_id", "status"):
+        conn.execute(
+            text(
+                f"CREATE INDEX IF NOT EXISTS ix_wechat_kf_accounts_{column} "
+                f"ON wechat_kf_accounts ({column})"
+            )
+        )
 
 
 def _channel_account_key_from_row(channel: str, config: object) -> str | None:
