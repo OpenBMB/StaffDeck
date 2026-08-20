@@ -1195,7 +1195,8 @@ def _validate_path_token(token: str) -> None:
         if PureWindowsPath(candidate).drive:
             raise _command_denied("Drive-qualified paths are not allowed.")
         if normalized.startswith("/") or normalized.startswith("~"):
-            raise _command_denied("Absolute and home-relative paths are not allowed.")
+            if not _is_sandbox_workspace_path(normalized):
+                raise _command_denied("Absolute and home-relative paths are not allowed.")
         if ".." in PurePosixPath(normalized).parts:
             raise _command_denied("Parent-directory traversal is not allowed.")
         if ".harness-trash" in PurePosixPath(normalized).parts:
@@ -1203,6 +1204,16 @@ def _validate_path_token(token: str) -> None:
         slash_index = normalized.find("/")
         if slash_index > 0 and normalized[:slash_index].startswith("-"):
             raise _command_denied("Options containing absolute paths are not allowed.")
+
+
+def _is_sandbox_workspace_path(normalized: str) -> bool:
+    """Only the stable /workspace root is addressable by absolute path.
+
+    ``_command_for_sandbox_workspace`` rewrites ``/workspace`` to the task
+    workspace at execution time, so allowing this prefix is equivalent to a
+    relative path inside the sandbox; every other absolute path stays denied.
+    """
+    return normalized == "/workspace" or normalized.startswith("/workspace/")
 
 
 def _is_shell_operator(token: str) -> bool:

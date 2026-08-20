@@ -210,6 +210,40 @@ def test_non_mount_sandbox_rewrites_model_visible_workspace_paths() -> None:
     assert command_module._command_for_sandbox_workspace(command, "bubblewrap") == command
 
 
+def test_validate_path_token_allows_sandbox_workspace_prefix() -> None:
+    # /workspace is the stable model-visible workspace; it is rewritten to the
+    # task workspace at execution time, so the prefix is allowed. Anything else
+    # absolute stays denied.
+    for token in (
+        "/workspace",
+        "/workspace/attachments/a.png",
+        "/workspace/.harness/rps-drafts/CH2.4.1.json",
+    ):
+        command_module._validate_path_token(token)  # must not raise
+
+    for token in (
+        "/etc/passwd",
+        "/tmp/outside.txt",
+        "~/hostfile",
+        "/var/log/messages",
+    ):
+        with pytest.raises(HarnessExecutionError) as denied:
+            command_module._validate_path_token(token)
+        assert denied.value.error.code == "COMMAND_DENIED"
+
+
+def test_exec_command_accepts_sandbox_workspace_absolute_path(tmp_path: Path) -> None:
+    # The validator runs before sandbox startup; assert a /workspace absolute
+    # path passes validation and only fails later on sandbox availability, not
+    # on COMMAND_DENIED.
+    result = _execute(
+        tmp_path,
+        {"command": "find /workspace -maxdepth 1 -type f | head"},
+    )
+
+    assert result.error is None or result.error.code != "COMMAND_DENIED"
+
+
 def test_exec_command_validates_every_line_of_multiline_script(tmp_path: Path) -> None:
     result = _execute(
         tmp_path,
