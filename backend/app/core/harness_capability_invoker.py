@@ -70,6 +70,8 @@ from app.tools.tool_schema import ToolCall
 
 
 _INLINE_JSON_TOOL_RESULT_MAX_CHARS = 50_000
+_RPS_EVIDENCE_MAX_CHARS = 46_000
+_RPS_EVIDENCE_TEXT_MAX_CHARS = 8_000
 _INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
 _INTERNAL_RPS_DRAFT_DIRECTORY = ".harness/rps-drafts"
 _SANDBOX_JSON_FILE_KIND = "sandbox_json_file"
@@ -77,6 +79,11 @@ _TOOL_SIDE_EFFECT_SCHEMA_KEY = "x-staffdeck-side-effect"
 _MCP_WORKSPACE_FILE_TRANSFER_SCHEMA_KEY = "x-staffdeck-workspace-file-transfer"
 _XIAOMING_AGENT_ID = "agent_4a018d61af2f4589"
 _RPS_SKILL_ID = "rps_registration"
+_RPS_EVIDENCE_STEP_ID = "retrieve_evidence"
+_RPS_EVIDENCE_TOOL_NAMES = {
+    "rps_mcp.remote_rag_search",
+    "rps_mcp.rps_rag_retrieval",
+}
 _RPS_BUILD_TOOL_ID = "tool_83337016feb94138"
 _RPS_BUILD_TOOL_NAME = "rps_mcp.registration_folder_build"
 
@@ -1019,6 +1026,8 @@ class HarnessCapabilityInvoker:
         payload = result.model_dump(mode="json")
         if payload.get("success") is not True:
             return payload
+        if self._is_xiaoming_rps_evidence(source_tool_name):
+            payload["data"] = _project_rps_evidence_payload(payload.get("data"))
         data = payload.get("data")
         if not isinstance(data, (dict, list)):
             return payload
@@ -1071,6 +1080,14 @@ class HarnessCapabilityInvoker:
             "sha256": stored_data.get("sha256"),
         }
         return payload
+
+    def _is_xiaoming_rps_evidence(self, tool_name: str) -> bool:
+        return (
+            self.agent_id == _XIAOMING_AGENT_ID
+            and self.active_skill_id == _RPS_SKILL_ID
+            and str(self.active_step_id or "") == _RPS_EVIDENCE_STEP_ID
+            and tool_name in _RPS_EVIDENCE_TOOL_NAMES
+        )
 
     def _resolve_mcp_workspace_file(
         self,
@@ -1456,6 +1473,94 @@ class HarnessCapabilityInvoker:
             return None
         return max(self.step_deadline_monotonic - time.monotonic(), 0.1)
 
+
+
+def _project_rps_evidence_payload(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return data
+    if isinstance(data.get("results"), list) or isinstance(data.get("chunks"), list):
+        return _project_rps_evidence_with_limit(data)
+    nested = data.get("data")
+    if isinstance(nested, dict) and isinstance(nested.get("chunks"), list):
+        projected = dict(data)
+        projected["data"] = _project_rps_evidence_with_limit(nested)
+        return projected
+    return data
+
+
+def _project_rps_evidence_with_limit(data: dict[str, Any]) -> dict[str, Any]:
+    for text_limit in (
+        _RPS_EVIDENCE_TEXT_MAX_CHARS,
+        4_000,
+        2_000,
+        1_000,
+        500,
+    ):
+        projected = _project_rps_evidence_once(data, text_limit=text_limit)
+        try:
+            size = len(
+                json.dumps(
+                    projected,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                )
+            )
+        except (TypeError, ValueError):
+            return data
+        if size <= _RPS_EVIDENCE_MAX_CHARS:
+            return projected
+    return data
+
+
+def _project_rps_evidence_once(
+    data: dict[str, Any],
+    *,
+    text_limit: int,
+) -> dict[str, Any]:
+    projected = dict(data)
+    for collection_name, body_key, prefix in (
+        ("results", "text", "text"),
+        ("chunks", "content", "content"),
+    ):
+        collection = data.get(collection_name)
+        if not isinstance(collection, list):
+            continue
+        projected[collection_name] = [
+            _project_rps_evidence_item(
+                item,
+                body_key=body_key,
+                prefix=prefix,
+                text_limit=text_limit,
+            )
+            for item in collection
+        ]
+    return projected
+
+
+def _project_rps_evidence_item(
+    item: Any,
+    *,
+    body_key: str,
+    prefix: str,
+    text_limit: int,
+) -> Any:
+    if not isinstance(item, dict):
+        return item
+    body = item.get(body_key)
+    if not isinstance(body, str) or len(body) <= text_limit:
+        return item
+    marker = "\n[…证据正文已由可信边界裁剪…]\n"
+    available_chars = max(text_limit - len(marker), 2)
+    head_chars = max(1, (available_chars * 3) // 4)
+    tail_chars = max(1, available_chars - head_chars)
+    clipped = body[:head_chars] + marker + body[-tail_chars:]
+    projected = dict(item)
+    projected[body_key] = clipped
+    projected[f"{prefix}_truncated"] = True
+    projected[f"{prefix}_original_chars"] = len(body)
+    projected[f"{prefix}_sha256"] = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return projected
 
 
 def _selected_rps_draft_codes(

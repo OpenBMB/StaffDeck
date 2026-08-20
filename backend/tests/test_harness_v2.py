@@ -1438,7 +1438,240 @@ def test_large_external_json_result_uses_sandbox_reference_and_auto_resolves(
 
 
 
-def test_xiaoming_rps_draft_files_merge_at_mcp_boundary(tmp_path, monkeypatch) -> None:
+def test_xiaoming_rps_remote_evidence_is_clipped_with_metadata_preserved(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    tool = Tool(
+        id="tool-rps-remote-evidence",
+        tenant_id="tenant-demo",
+        name="rps_mcp.remote_rag_search",
+        tool_type="mcp",
+        method="POST",
+        url="mcp://rps_mcp/remote_rag_search",
+    )
+    original_text = "法规正文开头\n" + ("中间条款内容。" * 20_000) + "\n法规正文结尾"
+    original = {
+        "success": True,
+        "request_id": "RPS-TEST-retrieve",
+        "results": [
+            {
+                "chunk_id": "chunk-1",
+                "text": original_text,
+                "title": "医疗器械注册与备案管理办法",
+                "doc_no": "总局令第47号",
+                "effective_from": "2021-10-01",
+                "source_url": "https://example.test/regulation",
+                "doc_id": "doc-1",
+                "rps_node": "1",
+                "metadata_verified": True,
+            }
+        ],
+        "citations": [{"citation_id": "c1", "title": "医疗器械注册与备案管理办法"}],
+    }
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        return ToolResult(tool_name=tool_call.name, success=True, data=original)
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(tool)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(agent_id="agent_4a018d61af2f4589"),
+            task_frame_id="task-rps-evidence-clip",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=Skill(
+                id="skill-rps-private",
+                tenant_id="tenant-demo",
+                skill_id="rps_registration",
+                name="RPS",
+                status="published",
+                content_json={},
+            ),
+            active_step_id="retrieve_evidence",
+            agent_id="agent_4a018d61af2f4589",
+        )
+        result = invoker._invoke_external_tool(
+            tool.id,
+            {"source_tool_name": tool.name, "content_digest": tool_snapshot_digest(db, tool)},
+            tool.name,
+            {"request_id": "RPS-TEST-retrieve"},
+            call_id="hcall-rps-evidence-clip",
+        )
+
+    projected = result["data"]
+    item = projected["results"][0]
+    serialized_size = len(json.dumps(projected, ensure_ascii=False, separators=(",", ":")))
+    assert result["success"] is True
+    assert serialized_size <= 50_000
+    assert item["title"] == original["results"][0]["title"]
+    assert item["doc_no"] == original["results"][0]["doc_no"]
+    assert item["source_url"] == original["results"][0]["source_url"]
+    assert item["text_truncated"] is True
+    assert item["text_original_chars"] == len(original_text)
+    assert len(item["text"]) <= 8_000
+    assert item["text"].startswith("法规正文开头")
+    assert item["text"].endswith("法规正文结尾")
+    assert len(item["text_sha256"]) == 64
+    assert "sandbox_json_file" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_xiaoming_rps_retrieval_evidence_clips_nested_chunks(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    tool = Tool(
+        id="tool-rps-retrieval-evidence",
+        tenant_id="tenant-demo",
+        name="rps_mcp.rps_rag_retrieval",
+        tool_type="mcp",
+        method="POST",
+        url="mcp://rps_mcp/rps_rag_retrieval",
+    )
+    content = "章节开始\n" + ("检索证据。" * 4_000) + "\n章节结束"
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=True,
+            data={
+                "success": True,
+                "data": {
+                    "chunks": [
+                        {
+                            "id": "chunk-legacy",
+                            "content": content,
+                            "document_keyword": "法规文档",
+                            "dataset_id": "dataset-1",
+                        }
+                    ],
+                    "returned": 1,
+                },
+                "error": None,
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(tool)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(agent_id="agent_4a018d61af2f4589"),
+            task_frame_id="task-rps-retrieval-clip",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=Skill(
+                id="skill-rps-private",
+                tenant_id="tenant-demo",
+                skill_id="rps_registration",
+                name="RPS",
+                status="published",
+                content_json={},
+            ),
+            active_step_id="retrieve_evidence",
+            agent_id="agent_4a018d61af2f4589",
+        )
+        result = invoker._invoke_external_tool(
+            tool.id,
+            {"source_tool_name": tool.name, "content_digest": tool_snapshot_digest(db, tool)},
+            tool.name,
+            {"question": "医疗器械注册要求"},
+            call_id="hcall-rps-retrieval-clip",
+        )
+
+    chunk = result["data"]["data"]["chunks"][0]
+    assert result["success"] is True
+    assert chunk["document_keyword"] == "法规文档"
+    assert chunk["content_truncated"] is True
+    assert chunk["content_original_chars"] == len(content)
+    assert len(chunk["content"]) <= 8_000
+    assert chunk["content"].startswith("章节开始")
+    assert chunk["content"].endswith("章节结束")
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "skill_id", "step_id", "tool_name"),
+    [
+        ("agent-other", "rps_registration", "retrieve_evidence", "rps_mcp.remote_rag_search"),
+        ("agent_4a018d61af2f4589", "other_skill", "retrieve_evidence", "rps_mcp.remote_rag_search"),
+        ("agent_4a018d61af2f4589", "rps_registration", "edit_and_build", "rps_mcp.remote_rag_search"),
+        ("agent_4a018d61af2f4589", "rps_registration", "retrieve_evidence", "other.read_tool"),
+    ],
+)
+def test_rps_evidence_projection_is_strictly_scoped(
+    tmp_path,
+    monkeypatch,
+    agent_id,
+    skill_id,
+    step_id,
+    tool_name,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    tool = Tool(
+        id="tool-rps-scope",
+        tenant_id="tenant-demo",
+        name=tool_name,
+        tool_type="mcp",
+        method="POST",
+        url="mcp://rps_mcp/search",
+    )
+    original_text = "正文开头" + ("原始证据。" * 2_000) + "正文结尾"
+    original = {"results": [{"title": "法规", "text": original_text}]}
+
+    def fake_execute(_self, _tenant_id, tool_call, **_kwargs):  # noqa: ANN001
+        return ToolResult(tool_name=tool_call.name, success=True, data=original)
+
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        fake_execute,
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(tool)
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(agent_id=agent_id),
+            task_frame_id="task-rps-scope",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=Skill(
+                id="skill-rps-scope",
+                tenant_id="tenant-demo",
+                skill_id=skill_id,
+                name="Scope",
+                status="published",
+                content_json={},
+            ),
+            active_step_id=step_id,
+            agent_id=agent_id,
+        )
+        result = invoker._invoke_external_tool(
+            tool.id,
+            {"source_tool_name": tool.name, "content_digest": tool_snapshot_digest(db, tool)},
+            tool.name,
+            {},
+            call_id="hcall-rps-scope",
+        )
+
+    assert result["success"] is True
+    assert result["data"] == original
+
+
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
     tool = Tool(
         id="tool_83337016feb94138",
