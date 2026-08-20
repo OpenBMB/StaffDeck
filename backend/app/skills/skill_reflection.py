@@ -17,6 +17,9 @@ RUBRIC_LABELS: dict[str, str] = {
     "adaptive_progression": "自适应推进",
     "tool_grounding": "工具依据",
     "tool_call_format": "工具调用格式",
+    "graph_integrity": "图结构完整性",
+    "nested_sop_grounding": "子 SOP 依据",
+    "capability_policy": "能力可见性与强制执行",
     "side_effect_confirmation": "副作用确认",
     "interruption_and_recovery": "中断恢复",
 }
@@ -85,7 +88,10 @@ def reflect_skill_response_stream(
 
     for round_index in range(1, MAX_REFLECTION_ROUNDS + 1):
         yield _status_event(f"正在校验技能结果（{round_index}/{MAX_REFLECTION_ROUNDS}）")
-        yield _status_event("校验范围：来源一致性、闭环能力、自适应推进、工具依据、工具调用格式、副作用确认、中断恢复")
+        yield _status_event(
+            "校验范围：来源一致性、闭环能力、自适应推进、图结构、子 SOP、"
+            "能力策略、工具依据、副作用确认、中断恢复"
+        )
         try:
             review = _model_review(
                 client,

@@ -8,11 +8,16 @@ import {
 
 import avatarAfterSales from './assets/staffdeck/staffdeck-avatar-after-sales.png';
 import avatarCommerce from './assets/staffdeck/staffdeck-avatar-commerce.png';
+import avatarData from './assets/staffdeck/staffdeck-avatar-data.png';
 import avatarDefault from './assets/staffdeck/staffdeck-avatar-default.png';
 import avatarKnowledge from './assets/staffdeck/staffdeck-avatar-knowledge.png';
+import avatarMarketing from './assets/staffdeck/staffdeck-avatar-marketing.png';
 import avatarOps from './assets/staffdeck/staffdeck-avatar-ops.png';
 import avatarOverall from './assets/staffdeck/staffdeck-avatar-overall.png';
+import avatarProcurement from './assets/staffdeck/staffdeck-avatar-procurement.png';
+import avatarProject from './assets/staffdeck/staffdeck-avatar-project.png';
 import avatarQuality from './assets/staffdeck/staffdeck-avatar-quality.png';
+import avatarSales from './assets/staffdeck/staffdeck-avatar-sales.png';
 import avatarService from './assets/staffdeck/staffdeck-avatar-service.png';
 
 export type EmployeeProfile = {
@@ -62,6 +67,11 @@ export const EMPLOYEE_AVATAR_PRESETS: EmployeeAvatarPreset[] = [
   { key: 'commerce-compass', label: '财务员工', text: '财', tone: 'blue' },
   { key: 'ops-grid', label: '人事员工', text: '人', tone: 'ink' },
   { key: 'quality-star', label: '法务员工', text: '法', tone: 'gold' },
+  { key: 'sales-handshake', label: '销售员工', text: '销', tone: 'cobalt' },
+  { key: 'marketing-spark', label: '市场员工', text: '市', tone: 'coral' },
+  { key: 'procurement-check', label: '采购员工', text: '采', tone: 'forest' },
+  { key: 'project-board', label: '项目管理员工', text: '项', tone: 'charcoal' },
+  { key: 'data-insight', label: '数据分析员工', text: '数', tone: 'navy' },
 ];
 
 export const DEFAULT_AVATAR_PRESET = 'service-orbit';
@@ -73,6 +83,11 @@ const PRESET_AVATAR_IMAGES: Record<string, string> = {
   'commerce-compass': avatarCommerce,
   'ops-grid': avatarOps,
   'quality-star': avatarQuality,
+  'sales-handshake': avatarSales,
+  'marketing-spark': avatarMarketing,
+  'procurement-check': avatarProcurement,
+  'project-board': avatarProject,
+  'data-insight': avatarData,
   overall: avatarOverall,
 };
 
@@ -132,6 +147,61 @@ export const EMPLOYEE_TEMPLATES: EmployeeTemplate[] = [
     workStyles: ['证据优先', '口径统一', '风险克制'],
     expertiseTags: ['报销核对', '预算口径', '数据复盘'],
     workModes: ['查规则', '核凭证', '给结论'],
+  },
+  {
+    key: 'sales-advisor',
+    roleName: '客户拓展顾问',
+    avatarText: '销',
+    avatarTone: 'cobalt',
+    avatarPreset: 'sales-handshake',
+    description: '围绕客户需求澄清、商机推进和沟通准备提供结构化建议，帮助销售团队形成下一步行动，并在信息不足或需要承诺时明确提示人工确认。',
+    workStyles: ['目标清晰', '审慎承诺'],
+    expertiseTags: ['需求澄清', '商机推进', '客户沟通'],
+    workModes: ['问答', '流程引导'],
+  },
+  {
+    key: 'marketing-planner',
+    roleName: '市场内容策划',
+    avatarText: '市',
+    avatarTone: 'coral',
+    avatarPreset: 'marketing-spark',
+    description: '协助梳理市场目标、受众和渠道，形成内容策划简报与发布检查清单，避免虚构数据、未授权素材和未经确认的对外承诺。',
+    workStyles: ['受众导向', '事实审慎'],
+    expertiseTags: ['内容策划', '活动简报', '发布检查'],
+    workModes: ['问答', '内容规划'],
+  },
+  {
+    key: 'procurement-coordinator',
+    roleName: '采购协同专员',
+    avatarText: '采',
+    avatarTone: 'forest',
+    avatarPreset: 'procurement-check',
+    description: '帮助员工准备采购需求、供应商比较维度和审批材料，强调需求可比、职责分离与留痕，不替代有权限的采购或审批人员作出承诺。',
+    workStyles: ['合规优先', '信息可追溯'],
+    expertiseTags: ['采购需求', '供应商比较', '审批准备'],
+    workModes: ['问答', '流程引导'],
+  },
+  {
+    key: 'project-manager',
+    roleName: '项目推进经理',
+    avatarText: '项',
+    avatarTone: 'charcoal',
+    avatarPreset: 'project-board',
+    description: '协助团队拆解目标、里程碑、责任人和风险，输出可执行的推进清单，遇到跨团队冲突或范围变化时提示升级决策。',
+    workStyles: ['行动导向', '风险透明'],
+    expertiseTags: ['里程碑', '风险跟踪', '协作推进'],
+    workModes: ['问答', '项目梳理'],
+  },
+  {
+    key: 'data-analyst',
+    roleName: '经营分析师',
+    avatarText: '数',
+    avatarTone: 'navy',
+    avatarPreset: 'data-insight',
+    description: '帮助业务人员定义指标口径、分析周期和对比维度，给出可复核的分析框架，明确区分已知事实、计算结果与推测。',
+    workStyles: ['口径严谨', '结论可追溯'],
+    expertiseTags: ['指标口径', '趋势分析', '经营复盘'],
+    workModes: ['问答', '分析框架'],
   },
 ];
 

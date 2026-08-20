@@ -8,7 +8,7 @@ from app.capability_scope import CapabilityScope
 
 
 class ToolExecutionPolicy(BaseModel):
-    timeout_seconds: float = Field(ge=1, le=300)
+    timeout_seconds: float = Field(ge=1, le=3600)
 
 
 class ToolCreateRequest(BaseModel):

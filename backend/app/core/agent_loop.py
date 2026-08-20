@@ -15,6 +15,8 @@ from app.channels.service_outbox import stage_channel_delivery
 from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled
 from app.core.conversation_context import build_conversation_context
+from app.core.conversation_projection import ConversationProjection
+from app.core.graph_rules import GraphRules
 from app.core.harness_agent import HarnessExecutionCancelled
 from app.core.harness_session_lock import HarnessSessionBusy
 from app.core.harness_turn_store import HarnessTurnConflict
@@ -24,9 +26,6 @@ from app.core.harness_v2_engine import (
     get_or_create_harness_session,
 )
 from app.core.human_handoff_service import HumanHandoffService
-from app.core.conversation_projection import ConversationProjection
-from app.core.graph_rules import GraphRules
-from app.core.turn_finalizer import TurnFinalizer
 from app.core.response_generator import (
     ResponseGenerator,
     format_runtime_failure_reply,
@@ -34,8 +33,10 @@ from app.core.response_generator import (
 )
 from app.core.skill_runtime import SkillRuntime
 from app.core.slash_commands import SlashCommandError
+from app.core.turn_finalizer import TurnFinalizer
 from app.db.models import (
     AgentProfile,
+    ChannelBinding,
     ChatSession,
     HarnessTurnRecord,
     HumanHandoffRequest,
@@ -89,6 +90,18 @@ def _knowledge_scope_ids(
         singular = scope.get(singular_key)
         values = [singular] if singular else []
     return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def _find_handoff_node_id_in_skill(
+    skill: Skill, active_step_id: str | None = None
+) -> str | None:
+    """查找 SOP 中从当前节点可达的 handoff 节点。
+
+    使用 GraphRules.find_handoff_node_id 做基于 edges 的 BFS,
+    优先返回从 active_step_id 可达的 handoff 节点,而非数组顺序的第一个。
+    """
+    content = skill.content_json or {}
+    return GraphRules.find_handoff_node_id(content, active_step_id)
 
 
 def _agent_identity_prompt(agent: AgentProfile) -> str:
@@ -483,9 +496,36 @@ class AgentLoop:
         if not skill:
             return False
         current_step = self._current_skill_step(skill, active_step_id)
-        if not current_step:
+        return bool(current_step and self._step_declares_human_handoff(current_step))
+
+    def _maybe_route_to_handoff_node(
+        self, chat_session: ChatSession, active_skill: Skill | None
+    ) -> bool:
+        """当 step_result.handoff=True 但当前 step 不声明 handoff 时,
+        查找 SOP 中的 handoff 节点并路由到它。这使得后续的
+        _create_human_handoff_request 能从 handoff 节点读取 assignee_user_id。
+
+        返回 True 表示已路由到 handoff 节点。
+        """
+        if not active_skill or not chat_session.active_skill_id:
             return False
-        return self._step_declares_human_handoff(current_step)
+        current_step = self._current_skill_step(
+            active_skill, chat_session.active_step_id
+        )
+        if current_step and self._step_declares_human_handoff(current_step):
+            return False
+        handoff_step_id = _find_handoff_node_id_in_skill(
+            active_skill, chat_session.active_step_id
+        )
+        if not handoff_step_id:
+            return False
+        self._change_active_step(
+            chat_session.tenant_id,
+            chat_session,
+            handoff_step_id,
+            reason="handoff_node_routed_by_step_result",
+        )
+        return True
 
     def _step_declares_human_handoff(self, step: dict[str, Any]) -> bool:
         node_type = str(step.get("type") or "").strip()
@@ -669,6 +709,7 @@ class AgentLoop:
             step_result,
             tool_result,
             current_step_allows_handoff=self._current_step_allows_human_handoff,
+            route_to_handoff_node=self._maybe_route_to_handoff_node,
             create_handoff=self._create_human_handoff_request,
             record_event=self.events.record,
             should_complete=self._should_complete_skill,
@@ -682,18 +723,83 @@ class AgentLoop:
         active_skill: Skill | None,
         step_result: StepAgentResult,
     ) -> HumanHandoffRequest:
-        return HumanHandoffService(self.db, self.events).create(
+        # SOP 节点指定的处理人:从当前 step 的 assignee_user_id 字段读取
+        # (handoff 类型节点或 allowed_actions 含 handoff_human 的节点可配置)。
+        step_assignee_user_id: str | None = None
+        current_step = (
+            self._current_skill_step(active_skill, chat_session.active_step_id)
+            if active_skill
+            else None
+        )
+        if isinstance(current_step, dict):
+            step_assignee_user_id = (
+                str(current_step.get("assignee_user_id") or "").strip() or None
+            )
+        # 当前渠道默认处理人:从会话所属 binding 的 config_json 读取。
+        binding_default_assignee_user_id = self._binding_default_handoff_assignee(
+            tenant_id, chat_session
+        )
+        handoff = HumanHandoffService(self.db, self.events).create(
             tenant_id,
             chat_session,
             step_result,
-            current_step_resolver=lambda: (
-                self._current_skill_step(active_skill, chat_session.active_step_id)
-                if active_skill
-                else None
-            ),
+            current_step_resolver=lambda: current_step,
             assignee_resolver=self._human_handoff_assignee_user_id,
             context_summary=self._human_handoff_context_summary,
             pending_question=self._human_handoff_pending_question,
+            step_assignee_user_id=step_assignee_user_id,
+            binding_default_assignee_user_id=binding_default_assignee_user_id,
+        )
+        # 给 assignee 发飞书私聊通知(经会话所属 binding 投递)。失败仅记日志,
+        # 不影响 handoff 主流程(网页收件箱仍可兜底)。
+        self._maybe_notify_handoff_assignee_on_feishu(tenant_id, chat_session, handoff)
+        return handoff
+
+    def _binding_default_handoff_assignee(
+        self,
+        tenant_id: str,
+        chat_session: ChatSession,
+    ) -> str | None:
+        """会话所属渠道绑定配置的默认人工处理人。
+
+        从 ChatSession.channel_binding_id 反查 binding(而非 agent 挂载列表取首个),
+        读取 config_json.default_handoff_assignee_user_id。无 binding 或未配置返回 None。
+        """
+        if not chat_session.channel_binding_id:
+            return None
+        binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
+        if not binding or binding.tenant_id != tenant_id:
+            return None
+        config = binding.config_json if isinstance(binding.config_json, dict) else {}
+        value = str(config.get("default_handoff_assignee_user_id") or "").strip()
+        return value or None
+
+    def _maybe_notify_handoff_assignee_on_feishu(
+        self,
+        tenant_id: str,
+        chat_session: ChatSession,
+        handoff: HumanHandoffRequest,
+    ) -> None:
+        from app.channels.service_outbox import notify_handoff_assignee
+
+        # 通知用 binding 必须是会话所属 binding(用户消息进来的那个),
+        # 而非从 agent 挂载列表取首个 active 飞书绑定。
+        if not chat_session.channel_binding_id:
+            return
+        binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
+        if (
+            not binding
+            or binding.tenant_id != tenant_id
+            or binding.channel != "feishu"
+            or binding.status != "active"
+        ):
+            return
+        notify_handoff_assignee(
+            self.db,
+            binding,
+            handoff,
+            handoff.pending_question or "",
+            handoff.context_summary or "",
         )
 
     def _apply_step_result(

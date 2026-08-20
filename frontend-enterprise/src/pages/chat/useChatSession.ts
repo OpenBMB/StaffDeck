@@ -1294,6 +1294,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
             outputLanguage: line.outputLanguage || undefined,
             outputTitle: line.outputTitle || undefined,
             state: line.state,
+            depth: typeof line.depth === 'number' ? line.depth : undefined,
             collapsible: Boolean(line.collapsible || line.code || line.output),
           }));
           let mergedTrace = mergeTurnTraceSnapshot(turnTraceRef.current.get(row.turn_id), {

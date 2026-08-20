@@ -14,12 +14,11 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, update
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
 from app.agents.branching import model_for_agent, visible_published_skills
-from app.skills.nesting import discoverable_sops
 from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
@@ -36,6 +35,7 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
+    HarnessTurnRecord,
     HarnessTaskFrameRecord,
     HumanHandoffRequest,
     Message,
@@ -88,6 +88,7 @@ from app.session.session_schema import (
     MessageFeedbackRequest,
     MessageRead,
 )
+from app.skills.nesting import discoverable_sops
 from app.teams.service import get_team_leader
 from app.teams.wakeup import build_tl_chat_context, process_tl_reply
 
@@ -453,6 +454,60 @@ def _normalized_session_event_payload(row: AgentEvent) -> dict[str, object]:
     return normalized
 
 
+def _apply_handoff_reply(
+    db: Session,
+    row: HumanHandoffRequest,
+    reply: str,
+    *,
+    answered_by_user_id: str | None,
+    source: str = "web",
+) -> None:
+    """把一条 pending handoff 置为 answered 并触发 SOP 恢复。
+
+    供网页 API(reply_human_handoff)与飞书 intake 回复分支复用。
+    调用前需已完成权限校验与状态校验;本函数负责落库 + 事件 + 异步恢复。
+    source: "web" 或 "feishu",由调用方显式指定(不再靠 user_id 前缀推断)。
+    """
+    now = utc_now()
+    row.status = "answered"
+    row.human_reply = reply
+    row.answered_at = now
+    row.updated_at = now
+    row.resume_payload_json = {
+        **(row.resume_payload_json or {}),
+        "answered_by_user_id": answered_by_user_id,
+    }
+    db.add(row)
+
+    chat_session = db.get(ChatSession, row.session_id)
+    if chat_session and chat_session.tenant_id == row.tenant_id:
+        chat_session.status = "active"
+        chat_session.awaiting_input_json = None
+        chat_session.summary = f"最近回复：{reply[:120]}"
+        chat_session.updated_at = now
+        db.add(chat_session)
+    db.add(
+        AgentEvent(
+            tenant_id=row.tenant_id,
+            session_id=row.session_id,
+            event_type="human_handoff_answered",
+            payload_json={
+                "handoff_id": row.id,
+                "agent_id": row.agent_id,
+                "trigger_skill_id": row.trigger_skill_id,
+                "trigger_step_id": row.trigger_step_id,
+                "answered_by_user_id": answered_by_user_id,
+                "reply_preview": reply[:180],
+                "source": source,
+            },
+            created_at=now,
+        )
+    )
+    db.commit()
+    db.refresh(row)
+    _resume_human_handoff_async(row.id)
+
+
 def _resume_human_handoff_async(handoff_id: str) -> None:
     thread = threading.Thread(target=_resume_human_handoff_worker, args=(handoff_id,), daemon=True)
     thread.start()
@@ -500,11 +555,9 @@ def _resume_human_handoff_worker(handoff_id: str) -> None:
                 debug=False,
             )
             AgentLoop(db).handle_turn(request)
-            metadata = dict(handoff.metadata_json or {})
-            metadata["resume_finished_at"] = utc_now().isoformat()
-            handoff.metadata_json = metadata
-            db.add(handoff)
-            db.commit()
+            # resume turn 完成后不再写 resume_finished_at 标记:
+            # _inject_handoff_context 已改为用 request.channel == "human_handoff_resume"
+            # 判定 resume turn,时序可靠,无需事后标记。
     except Exception as exc:
         with Session(engine) as db:
             handoff = db.get(HumanHandoffRequest, handoff_id)
@@ -1457,6 +1510,13 @@ def _persist_chat_turn_cancelled(
         if not matches_message and not matches_client_turn:
             continue
         if event.event_type == "stream_cancelled":
+            _cancel_harness_turn_receipt(
+                db,
+                tenant_id,
+                chat_session.id,
+                message_id,
+                client_turn_id,
+            )
             return _ensure_cancelled_assistant_message(
                 db,
                 tenant_id,
@@ -1468,6 +1528,17 @@ def _persist_chat_turn_cancelled(
         return False
 
     now = utc_now()
+    receipt_cancelled = _cancel_harness_turn_receipt(
+        db,
+        tenant_id,
+        chat_session.id,
+        message_id,
+        client_turn_id,
+    )
+    if receipt_cancelled is False:
+        # Normal completion already owns the terminal receipt. Do not append a
+        # contradictory cancellation event/message after that linearization.
+        return False
     db.add(
         AgentEvent(
             tenant_id=tenant_id,
@@ -1496,6 +1567,60 @@ def _persist_chat_turn_cancelled(
     chat_session.updated_at = now
     db.add(chat_session)
     return True
+
+
+def _cancel_harness_turn_receipt(
+    db: Session,
+    tenant_id: str,
+    session_id: str,
+    user_message_id: str,
+    client_turn_id: str,
+) -> bool | None:
+    """Fence the worker in the same transaction as the cancellation event."""
+
+    identities = {value for value in (user_message_id, client_turn_id) if value}
+    if not identities:
+        return None
+    matching = db.exec(
+        select(HarnessTurnRecord).where(
+            HarnessTurnRecord.tenant_id == tenant_id,
+            HarnessTurnRecord.session_id == session_id,
+            (
+                HarnessTurnRecord.client_turn_id.in_(identities)
+                | HarnessTurnRecord.user_message_id.in_(identities)
+            ),
+        )
+    ).first()
+    if matching is None:
+        return None
+    if matching.status == "cancelled":
+        return True
+    if matching.status != "started":
+        return False
+    now = utc_now()
+    result = db.exec(
+        update(HarnessTurnRecord)
+        .where(
+            HarnessTurnRecord.tenant_id == tenant_id,
+            HarnessTurnRecord.session_id == session_id,
+            HarnessTurnRecord.status == "started",
+            (
+                HarnessTurnRecord.client_turn_id.in_(identities)
+                | HarnessTurnRecord.user_message_id.in_(identities)
+            ),
+        )
+        .values(
+            status="cancelled",
+            error_json={
+                "code": "CANCELLED",
+                "message": "用户取消了当前 Harness 执行。",
+            },
+            finished_at=now,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return getattr(result, "rowcount", 0) == 1
 
 
 def _ensure_cancelled_assistant_message(
@@ -2239,38 +2364,9 @@ def reply_human_handoff(
     if not chat_session or chat_session.tenant_id != request.tenant_id:
         raise HTTPException(status_code=409, detail="Original handoff session is not available")
 
-    now = utc_now()
-    row.status = "answered"
-    row.human_reply = reply
-    row.answered_at = now
-    row.updated_at = now
-    row.resume_payload_json = {**(row.resume_payload_json or {}), "answered_by_user_id": current_user.id}
-    db.add(row)
-
-    chat_session.status = "active"
-    chat_session.awaiting_input_json = None
-    chat_session.summary = f"最近回复：{reply[:120]}"
-    chat_session.updated_at = now
-    db.add(chat_session)
-    db.add(
-        AgentEvent(
-            tenant_id=request.tenant_id,
-            session_id=row.session_id,
-            event_type="human_handoff_answered",
-            payload_json={
-                "handoff_id": row.id,
-                "agent_id": row.agent_id,
-                "trigger_skill_id": row.trigger_skill_id,
-                "trigger_step_id": row.trigger_step_id,
-                "answered_by_user_id": current_user.id,
-                "reply_preview": reply[:180],
-            },
-            created_at=now,
-        )
+    _apply_handoff_reply(
+        db, row, reply, answered_by_user_id=current_user.id, source="web"
     )
-    db.commit()
-    db.refresh(row)
-    _resume_human_handoff_async(row.id)
     return human_handoff_read(row)
 
 

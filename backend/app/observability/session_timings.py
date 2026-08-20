@@ -9,8 +9,15 @@ from app.db.models import AgentEvent
 
 @dataclass(frozen=True)
 class _ModelSpan:
+    span_id: str
     operation: str
     model_name: str
+    task_frame_id: str
+    iteration: str
+    request_attempt: int
+    request_max_attempts: int
+    json_attempt: int
+    json_max_attempts: int
     started_ms: float
     finished_ms: float
     duration_ms: float
@@ -108,6 +115,8 @@ def enrich_turn_traces_with_timings(
             if model_names:
                 line["model_names"] = model_names
 
+        _project_harness_model_calls(lines, spans)
+
         trace_started = _iso_ms(trace.get("started_at"))
         trace_finished = _iso_ms(trace.get("completed_at"))
         if trace_started is not None and trace_finished is not None:
@@ -131,6 +140,136 @@ def enrich_turn_traces_with_timings(
             if model_call_count > 0:
                 trace["model_call_count"] = model_call_count
     return traces
+
+
+def _project_harness_model_calls(
+    lines: list[dict[str, Any]],
+    spans: list[_ModelSpan],
+) -> None:
+    """Render every Harness decision call once, under its TaskFrame.
+
+    New spans carry ``task_frame_id`` and ``iteration`` explicitly.  The
+    positional fallback keeps historical traces useful without pretending that
+    a parent/action window is an individual model call.
+    """
+    harness_spans = [span for span in spans if span.operation == "harness.task_action"]
+    if not harness_spans:
+        return
+
+    action_rows: list[tuple[int, str, str, dict[str, Any]]] = []
+    for index, line in enumerate(lines):
+        line_id = str(line.get("id") or "")
+        parsed = _harness_action_line_key(line_id)
+        if parsed is None:
+            continue
+        frame_id, iteration = parsed
+        line["depth"] = 1
+        action_rows.append((index, frame_id, iteration, line))
+
+    if not action_rows:
+        return
+
+    scoped: dict[tuple[str, str], list[_ModelSpan]] = {}
+    unscoped: list[_ModelSpan] = []
+    for span in harness_spans:
+        if span.task_frame_id and span.iteration:
+            scoped.setdefault((span.task_frame_id, span.iteration), []).append(span)
+        else:
+            unscoped.append(span)
+
+    assigned: dict[int, list[_ModelSpan]] = {}
+    for index, frame_id, iteration, _line in action_rows:
+        matches = scoped.get((frame_id, iteration), [])
+        if matches:
+            assigned[index] = matches
+
+    # Older durable events predate explicit span correlation.  Their Harness
+    # action events and task-action spans are both sequential, so pair only the
+    # still-unassigned rows in order.
+    remaining_rows = [row for row in action_rows if row[0] not in assigned]
+    for row, span in zip(remaining_rows, unscoped, strict=False):
+        assigned.setdefault(row[0], []).append(span)
+
+    projected: list[dict[str, Any]] = []
+    for index, frame_id, iteration, line in action_rows:
+        matches = assigned.get(index, [])
+        if not matches:
+            continue
+        # The action row represents the state transition/tool execution.  Its
+        # old model timing was an inferred aggregate and would duplicate the
+        # exact child calls below.
+        line.pop("model_duration_ms", None)
+        line.pop("model_names", None)
+        line.pop("model_call_count", None)
+        if line_id := str(line.get("id") or ""):
+            if line_id.startswith("harness_finish_"):
+                line.pop("duration_ms", None)
+
+        for call_index, span in enumerate(matches, start=1):
+            suffix = f"-{call_index}" if len(matches) > 1 else ""
+            projected.append(
+                {
+                    "_insert_before": index,
+                    "id": f"harness_model_{frame_id}_{iteration}{suffix}_{span.span_id}",
+                    "kind": "thinking",
+                    "text": _harness_model_call_text(line, iteration, call_index, len(matches)),
+                    "detail": _harness_model_call_detail(span),
+                    "state": "completed",
+                    "depth": 1,
+                    "model_duration_ms": round(span.duration_ms, 3),
+                    "model_names": [span.model_name] if span.model_name else [],
+                    "model_call_count": 1,
+                }
+            )
+
+    if not projected:
+        return
+    by_index: dict[int, list[dict[str, Any]]] = {}
+    for child in projected:
+        insert_before = int(child.pop("_insert_before"))
+        by_index.setdefault(insert_before, []).append(child)
+    rebuilt: list[dict[str, Any]] = []
+    for index, line in enumerate(lines):
+        rebuilt.extend(by_index.get(index, []))
+        rebuilt.append(line)
+    lines[:] = rebuilt
+
+
+def _harness_action_line_key(line_id: str) -> tuple[str, str] | None:
+    for prefix in ("harness_action_", "harness_finish_"):
+        if not line_id.startswith(prefix):
+            continue
+        payload = line_id.removeprefix(prefix)
+        frame_id, separator, iteration = payload.rpartition("_")
+        if separator and frame_id and iteration:
+            return frame_id, iteration
+    return None
+
+
+def _harness_model_call_text(
+    action_line: dict[str, Any],
+    iteration: str,
+    call_index: int,
+    call_count: int,
+) -> str:
+    action_text = str(action_line.get("text") or "")
+    if action_line.get("kind") == "tool" or "能力调用" in action_text:
+        decision = "决定调用能力"
+    elif action_text == "整理任务结果":
+        decision = "决定完成任务"
+    else:
+        decision = "模型决策"
+    retry = f"（尝试 {call_index}/{call_count}）" if call_count > 1 else ""
+    return f"第 {iteration} 轮{decision}{retry}"
+
+
+def _harness_model_call_detail(span: _ModelSpan) -> str:
+    parts = ["Harness 模型决策"]
+    if span.json_max_attempts > 1:
+        parts.append(f"JSON 尝试 {span.json_attempt}/{span.json_max_attempts}")
+    if span.request_max_attempts > 1:
+        parts.append(f"请求尝试 {span.request_attempt}/{span.request_max_attempts}")
+    return " · ".join(parts)
 
 
 def _turn_aliases(events: list[AgentEvent]) -> dict[str, str]:
@@ -180,10 +319,17 @@ def _model_spans_by_turn(
             started_ms = finished_ms - duration_ms
         spans_by_turn.setdefault(turn_id, []).append(
             _ModelSpan(
+                span_id=str(payload.get("span_id") or event.id).strip(),
                 operation=str(payload.get("operation") or "llm.request"),
                 model_name=str(
                     payload.get("model_name") or payload.get("model") or ""
                 ).strip(),
+                task_frame_id=str(payload.get("task_frame_id") or "").strip(),
+                iteration=str(payload.get("iteration") or "").strip(),
+                request_attempt=_positive_int(payload.get("attempt"), default=1),
+                request_max_attempts=_positive_int(payload.get("max_attempts"), default=1),
+                json_attempt=_positive_int(payload.get("json_attempt"), default=1),
+                json_max_attempts=_positive_int(payload.get("json_max_attempts"), default=1),
                 started_ms=started_ms,
                 finished_ms=finished_ms,
                 duration_ms=duration_ms or max(0.0, finished_ms - started_ms),
@@ -485,3 +631,10 @@ def _float_ms(value: object) -> float:
         return max(0.0, float(value or 0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _positive_int(value: object, *, default: int) -> int:
+    try:
+        return max(1, int(value or default))
+    except (TypeError, ValueError):
+        return default

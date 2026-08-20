@@ -16,6 +16,7 @@ from sqlmodel import Session, select
 
 from app.agents.branching import model_for_agent, visible_published_skills
 from app.core import AgentLoop
+from app.core.harness_turn_store import HarnessTurnConflict
 from app.db import engine
 from app.db.models import (
     AgentEvent,
@@ -51,6 +52,8 @@ DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_TASK_TIME = "09:00"
 LEASE_SECONDS = 15 * 60
 WORKER_SLEEP_SECONDS = 5
+MISFIRE_GRACE_SECONDS = max(30, WORKER_SLEEP_SECONDS * 2)
+CONFLICT_RETRY_SECONDS = 15
 SCHEDULE_TYPES = {"once", "daily", "weekly", "monthly"}
 SOP_VERSION_POLICIES = {"latest", "pinned"}
 SOP_SNAPSHOT_METADATA_KEY = "_sop_snapshot"
@@ -308,11 +311,28 @@ def detect_scheduled_task_draft(
 
 def due_scheduled_tasks(db: Session, now: datetime | None = None, limit: int = 10) -> list[ScheduledTask]:
     now = now or utc_now()
+    db.exec(
+        update(ScheduledTask)
+        .where(
+            ScheduledTask.status == "active",
+            ScheduledTask.end_at != None,  # noqa: E711
+            ScheduledTask.end_at < now,  # type: ignore[operator]
+        )
+        .values(
+            status="completed",
+            next_run_at=None,
+            lease_owner=None,
+            lease_until=None,
+            updated_at=now,
+        )
+    )
+    db.commit()
     candidate_ids = db.exec(
         select(ScheduledTask.id)
         .where(
             ScheduledTask.status == "active",
             ScheduledTask.next_run_at <= now,  # type: ignore[operator]
+            or_(ScheduledTask.end_at == None, ScheduledTask.end_at >= now),  # noqa: E711
             or_(ScheduledTask.lease_until == None, ScheduledTask.lease_until < now),  # noqa: E711
         )
         .order_by(ScheduledTask.next_run_at)
@@ -327,6 +347,7 @@ def due_scheduled_tasks(db: Session, now: datetime | None = None, limit: int = 1
                 ScheduledTask.id == task_id,
                 ScheduledTask.status == "active",
                 ScheduledTask.next_run_at <= now,  # type: ignore[operator]
+                or_(ScheduledTask.end_at == None, ScheduledTask.end_at >= now),  # noqa: E711
                 or_(ScheduledTask.lease_until == None, ScheduledTask.lease_until < now),  # noqa: E711
             )
             .values(
@@ -355,6 +376,9 @@ def execute_scheduled_task(
     manual: bool = False,
 ) -> ScheduledTaskRun:
     scheduled_for = scheduled_for or task.next_run_at or utc_now()
+    skipped = _skip_misfired_run(db, task, scheduled_for, manual)
+    if skipped is not None:
+        return skipped
     run = _prepare_scheduled_task_run(db, task, scheduled_for, manual)
     if run.status != "running" or not run.session_id:
         return run
@@ -369,6 +393,9 @@ def start_scheduled_task_async(
     manual: bool = False,
 ) -> ScheduledTaskRun:
     scheduled_for = scheduled_for or task.next_run_at or utc_now()
+    skipped = _skip_misfired_run(db, task, scheduled_for, manual)
+    if skipped is not None:
+        return skipped
     run = _prepare_scheduled_task_run(db, task, scheduled_for, manual)
     if run.status == "running" and run.session_id:
         threading.Thread(
@@ -392,6 +419,15 @@ def _prepare_scheduled_task_run(
         )
     ).first()
     if existing:
+        if existing.status == "retrying":
+            existing.status = "running"
+            existing.error = None
+            existing.started_at = utc_now()
+            existing.finished_at = None
+            existing.updated_at = utc_now()
+            db.add(existing)
+            db.commit()
+            db.refresh(existing)
         return existing
     if task.concurrency_policy == "forbid":
         running = db.exec(
@@ -438,6 +474,37 @@ def _prepare_scheduled_task_run(
     db.refresh(session)
     run.session_id = session.id
     run.updated_at = utc_now()
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def _skip_misfired_run(
+    db: Session,
+    task: ScheduledTask,
+    scheduled_for: datetime,
+    manual: bool,
+) -> ScheduledTaskRun | None:
+    if manual or task.misfire_policy != "skip":
+        return None
+    if scheduled_for >= utc_now() - timedelta(seconds=MISFIRE_GRACE_SECONDS):
+        return None
+    existing = db.exec(
+        select(ScheduledTaskRun).where(
+            ScheduledTaskRun.scheduled_task_id == task.id,
+            ScheduledTaskRun.scheduled_for == scheduled_for,
+        )
+    ).first()
+    if existing:
+        return existing
+    run = _create_run(db, task, scheduled_for, "skipped")
+    run.error = "计划执行时间已超过补偿窗口，已按 skip 策略跳过。"
+    run.finished_at = utc_now()
+    _finish_task_schedule(db, task, scheduled_for, "skipped", manual=False)
+    task.lease_owner = None
+    task.lease_until = None
+    db.add(task)
     db.add(run)
     db.commit()
     db.refresh(run)
@@ -491,6 +558,12 @@ def _execute_prepared_scheduled_task(
         run.trace_json = dict(outcome["trace"])
         run.finished_at = utc_now()
         _finish_task_schedule(db, task, run.scheduled_for, run.status, manual)
+    except HarnessTurnConflict as exc:
+        run.status = "retrying"
+        run.error = str(exc)
+        run.finished_at = None
+        if not manual:
+            task.next_run_at = utc_now() + timedelta(seconds=CONFLICT_RETRY_SECONDS)
     except Exception as exc:
         run.status = "failed"
         run.error = str(exc)
@@ -734,6 +807,23 @@ def _record_scheduled_task_stream_event(
         data = {"value": data}
     payload = dict(data)
     payload.setdefault("sessionId", session_id)
+    receipt = db.exec(
+        select(HarnessTurnRecord).where(
+            HarnessTurnRecord.tenant_id == run.tenant_id,
+            HarnessTurnRecord.session_id == session_id,
+            HarnessTurnRecord.client_turn_id == run.id,
+        )
+    ).first()
+    turn_id = str(
+        payload.get("turn_id")
+        or payload.get("turnId")
+        or payload.get("user_message_id")
+        or (receipt.user_message_id if receipt else "")
+    ).strip()
+    if turn_id:
+        payload.setdefault("turn_id", turn_id)
+        payload.setdefault("user_message_id", turn_id)
+    payload.setdefault("client_turn_id", run.id)
     db.add(
         AgentEvent(
             tenant_id=run.tenant_id,
@@ -743,6 +833,9 @@ def _record_scheduled_task_stream_event(
                 "run_id": run.id,
                 "seq": seq,
                 "event": event,
+                "turn_id": turn_id or None,
+                "user_message_id": turn_id or None,
+                "client_turn_id": run.id,
                 "data": payload,
             },
             created_at=utc_now(),
@@ -955,7 +1048,10 @@ def _finish_task_schedule(db: Session, task: ScheduledTask, scheduled_for: datet
     task.last_status = status
     task.run_count += 1
     if not manual:
-        next_run = compute_next_run_at(task, after=scheduled_for + timedelta(seconds=1))
+        schedule_after = scheduled_for + timedelta(seconds=1)
+        if task.misfire_policy in {"coalesce", "skip"}:
+            schedule_after = max(schedule_after, now)
+        next_run = compute_next_run_at(task, after=schedule_after)
         if task.max_runs is not None and task.run_count >= task.max_runs:
             task.status = "completed"
             task.next_run_at = None

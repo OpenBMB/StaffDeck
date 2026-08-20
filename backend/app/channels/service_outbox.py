@@ -7,6 +7,9 @@ from datetime import timedelta
 from sqlalchemy import func, or_, update
 from sqlmodel import Session, select
 
+from app.channels.adapters.base import channel_reaction_token
+from app.channels.service_durable_inbox import reaction_target
+from app.channels.service_identity import external_account_scope
 from app.config import get_settings
 from app.db import engine
 from app.db.models import (
@@ -16,13 +19,12 @@ from app.db.models import (
     ChannelIdentity,
     ChannelInboundEvent,
     ChatSession,
+    HumanHandoffRequest,
     Message,
+    User,
     new_id,
     utc_now,
 )
-from app.channels.adapters.base import channel_reaction_token
-from app.channels.service_durable_inbox import reaction_target
-from app.channels.service_identity import external_account_scope
 from app.session.origin import PILOTDECK_GROUP_CHAT_CHANNEL
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,10 @@ _NON_DELIVERY_CHANNELS = {
     PILOTDECK_GROUP_CHAT_CHANNEL,
     "skill_test",
 }
+# handoff 问题描述里要过滤掉的内部 slot 键。
+_INTERNAL_SLOT_KEYS = frozenset(
+    {"handoff_confirmed", "message_content", "_tool_results"}
+)
 
 
 def _stage_failed_delivery(
@@ -51,9 +57,11 @@ def _stage_failed_delivery(
     binding_id: str,
     target: dict,
     error: str,
+    idempotency_key: str | None = None,
 ) -> None:
+    stable_key = idempotency_key or message.id
     existing = db.exec(
-        select(ChannelDelivery).where(ChannelDelivery.idempotency_key == message.id)
+        select(ChannelDelivery).where(ChannelDelivery.idempotency_key == stable_key)
     ).first()
     if existing:
         return
@@ -69,9 +77,27 @@ def _stage_failed_delivery(
             status="failed",
             next_attempt_at=None,
             last_error=error,
-            idempotency_key=message.id,
+            idempotency_key=stable_key,
         )
     )
+
+
+def _message_client_turn_id(db: Session, message: Message) -> str:
+    metadata = message.metadata_json or {}
+    user_message_id = str(metadata.get("user_message_id") or "").strip()
+    user_message = db.get(Message, user_message_id) if user_message_id else None
+    return str(
+        ((user_message.metadata_json or {}) if user_message else {}).get("client_turn_id")
+        or metadata.get("client_turn_id")
+        or ""
+    ).strip()
+
+
+def _reply_idempotency_key(db: Session, binding_id: str, message: Message) -> str:
+    client_turn_id = _message_client_turn_id(db, message)
+    if client_turn_id:
+        return f"channel-reply:{binding_id}:{client_turn_id}"
+    return message.id
 
 
 def _immutable_delivery_target(
@@ -80,25 +106,20 @@ def _immutable_delivery_target(
     chat_session: ChatSession,
     message: Message,
 ) -> dict:
-    if binding.channel != "feishu":
-        return dict(chat_session.channel_target_json or {})
-    metadata = message.metadata_json or {}
-    user_message_id = str(metadata.get("user_message_id") or "").strip()
-    user_message = db.get(Message, user_message_id) if user_message_id else None
-    client_turn_id = str(
-        ((user_message.metadata_json or {}) if user_message else {}).get("client_turn_id")
-        or metadata.get("client_turn_id")
-        or ""
-    ).strip()
+    client_turn_id = _message_client_turn_id(db, message)
     if not client_turn_id:
-        return {}
+        # Legacy sessions may not carry a turn id. Snapshot the target at staging time;
+        # delivery workers must never read the mutable session target later.
+        return dict(chat_session.channel_target_json or {})
     event = db.exec(
         select(ChannelInboundEvent).where(
             ChannelInboundEvent.binding_id == binding.id,
             ChannelInboundEvent.event_id == client_turn_id,
         )
     ).first()
-    return dict(event.target_json or {}) if event else {}
+    if event:
+        return dict(event.target_json or {})
+    return dict(chat_session.channel_target_json or {})
 
 
 def _find_active_binding_for_agent(db: Session, chat_session: ChatSession) -> ChannelBinding | None:
@@ -190,8 +211,11 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
             db.add(chat_session)
             db.flush()
         target = _immutable_delivery_target(db, binding, chat_session, message)
+        idempotency_key = _reply_idempotency_key(db, binding.id, message)
         existing = db.exec(
-            select(ChannelDelivery).where(ChannelDelivery.idempotency_key == message.id)
+            select(ChannelDelivery).where(
+                ChannelDelivery.idempotency_key == idempotency_key
+            )
         ).first()
         if existing:
             return
@@ -207,6 +231,7 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
                 binding_id=binding.id,
                 target=target,
                 error="delivery_target_missing",
+                idempotency_key=idempotency_key,
             )
             return
         db.add(
@@ -220,7 +245,7 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
                 text=message.content,
                 status="pending",
                 next_attempt_at=utc_now(),
-                idempotency_key=message.id,
+                idempotency_key=idempotency_key,
             )
         )
     except Exception:
@@ -261,6 +286,7 @@ def _claim_delivery(
     now,
     reaction_lane: bool,
 ) -> ChannelDelivery | None:
+    owner = new_id("delivery-owner")
     claim = (
         update(ChannelDelivery)
         .where(
@@ -275,6 +301,8 @@ def _claim_delivery(
             first_attempt_at=func.coalesce(ChannelDelivery.first_attempt_at, now),
             # 标记领取时刻:_reset_stuck_deliveries 据此区分在飞与卡死(120s 阈值)
             sending_since=now,
+            delivery_owner=owner,
+            delivery_generation=ChannelDelivery.delivery_generation + 1,
             updated_at=now,
         )
     )
@@ -287,6 +315,39 @@ def _claim_delivery(
     if result.rowcount != 1:
         return None
     return db.get(ChannelDelivery, delivery_id)
+
+
+def _finish_delivery_claim(
+    db: Session,
+    delivery: ChannelDelivery,
+    *,
+    status: str,
+    last_error: str | None,
+    next_attempt_at=None,
+    delivered_at=None,
+) -> bool:
+    """Commit a delivery outcome only for the worker generation that owns it."""
+    result = db.exec(
+        update(ChannelDelivery)
+        .where(
+            ChannelDelivery.id == delivery.id,
+            ChannelDelivery.status == "sending",
+            ChannelDelivery.delivery_owner == delivery.delivery_owner,
+            ChannelDelivery.delivery_generation == delivery.delivery_generation,
+        )
+        .values(
+            status=status,
+            last_error=last_error,
+            next_attempt_at=next_attempt_at,
+            delivered_at=delivered_at,
+            sending_since=None,
+            delivery_owner=None,
+            updated_at=utc_now(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return result.rowcount == 1
 
 
 def _reaction_event_for_delivery(
@@ -411,31 +472,31 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
         or (binding.status != "active" and not allow_inactive_reaction)
     )
     if invalid_binding:
-        delivery.status = "failed"
-        delivery.last_error = "渠道绑定不存在或已停用"
-        delivery.sending_since = None
-        delivery.updated_at = utc_now()
-        db.add(delivery)
-        db.commit()
+        _finish_delivery_claim(
+            db,
+            delivery,
+            status="failed",
+            last_error="渠道绑定不存在或已停用",
+        )
         return
     reaction_event = None
     if delivery.kind in _REACTION_KINDS:
         if not channel_reaction_token(binding.channel):
-            delivery.status = "failed"
-            delivery.last_error = "reaction 渠道无效"
-            delivery.next_attempt_at = None
-            delivery.updated_at = utc_now()
-            db.add(delivery)
-            db.commit()
+            _finish_delivery_claim(
+                db,
+                delivery,
+                status="failed",
+                last_error="reaction 渠道无效",
+            )
             return
         reaction_event = _reaction_event_for_delivery(db, delivery, binding.channel)
         if not reaction_event:
-            delivery.status = "failed"
-            delivery.last_error = "reaction 事件边界无效"
-            delivery.next_attempt_at = None
-            delivery.updated_at = utc_now()
-            db.add(delivery)
-            db.commit()
+            _finish_delivery_claim(
+                db,
+                delivery,
+                status="failed",
+                last_error="reaction 事件边界无效",
+            )
             return
     if (
         binding.channel == "feishu"
@@ -445,12 +506,12 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
         and (utc_now() - delivery.first_attempt_at).total_seconds()
         > _FEISHU_DEDUP_RECOVERY_SECONDS
     ):
-        delivery.status = "failed"
-        delivery.last_error = "remote_state_unknown"
-        delivery.next_attempt_at = None
-        delivery.updated_at = utc_now()
-        db.add(delivery)
-        db.commit()
+        _finish_delivery_claim(
+            db,
+            delivery,
+            status="failed",
+            last_error="remote_state_unknown",
+        )
         return
     if delivery.kind == "reply":
         chat_session = db.get(ChatSession, delivery.session_id)
@@ -464,17 +525,17 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
             or chat_session.channel_account_key != binding.external_account_key
         )
         if invalid_session:
-            delivery.status = "failed"
-            delivery.last_error = "渠道会话与绑定账号不一致"
-            delivery.next_attempt_at = None
-            delivery.sending_since = None
-            delivery.updated_at = utc_now()
-            db.add(delivery)
-            db.commit()
+            _finish_delivery_claim(
+                db,
+                delivery,
+                status="failed",
+                last_error="渠道会话与绑定账号不一致",
+            )
             return
     try:
         adapter = get_channel_adapter(binding.channel)
         target = dict(delivery.target_json or {})
+        sent_message_id: str | None = None
         if delivery.kind == "reaction_add":
             add_reaction = getattr(adapter, "add_reaction", None)
             if not callable(add_reaction):
@@ -508,33 +569,36 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
                 reaction_event.updated_at = utc_now()
                 db.add(reaction_event)
         else:
-            adapter.send(
+            sent_message_id = adapter.send(
                 binding,
                 target,
                 delivery.text,
                 idempotency_key=delivery.idempotency_key,
             )
     except Exception as exc:
-        delivery.last_error = str(exc)[:500]
+        last_error = str(exc)[:500]
         retryable = bool(getattr(exc, "retryable", True))
         if not retryable or delivery.attempts >= settings.channel_delivery_max_attempts:
-            delivery.status = "failed"
-            delivery.next_attempt_at = None
+            status = "failed"
+            next_attempt_at = None
         else:
             delay = min(2**delivery.attempts, 300)
-            delivery.status = "pending"
-            delivery.next_attempt_at = utc_now() + timedelta(seconds=delay)
-        delivery.updated_at = utc_now()
-        db.add(delivery)
-        db.commit()
+            status = "pending"
+            next_attempt_at = utc_now() + timedelta(seconds=delay)
+        _finish_delivery_claim(
+            db,
+            delivery,
+            status=status,
+            last_error=last_error,
+            next_attempt_at=next_attempt_at,
+        )
         logger.warning("渠道投递失败(第 %s 次) delivery=%s: %s", delivery.attempts, delivery.id, exc)
         return
-    delivery.status = "delivered"
-    delivery.delivered_at = utc_now()
-    delivery.last_error = None
-    delivery.sending_since = None
-    delivery.updated_at = utc_now()
-    db.add(delivery)
+    # handoff_notice 投递成功后,把飞书返回的 message_id 回写到 delivery 与关联的
+    # HumanHandoffRequest.notify_message_id,阶段 4 据此关联处理人的飞书回复。
+    if delivery.kind == "handoff_notice" and sent_message_id:
+        delivery.message_id = sent_message_id
+        _write_handoff_notify_message_id(db, delivery, sent_message_id)
     if channel_reaction_token(binding.channel) and delivery.kind not in _REACTION_KINDS:
         event = _reaction_event_for_delivery(db, delivery, binding.channel)
         target = delivery.target_json or {}
@@ -543,7 +607,13 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
         )
         if event and is_final:
             _stage_reaction_removal(db, delivery, event)
-    db.commit()
+    _finish_delivery_claim(
+        db,
+        delivery,
+        status="delivered",
+        last_error=None,
+        delivered_at=utc_now(),
+    )
 
 
 def cleanup_channel_reactions_before_binding_delete(
@@ -635,23 +705,23 @@ def _reset_stuck_deliveries(db: Session, *, reaction_lane: bool = False) -> None
         statement = statement.where(ChannelDelivery.kind.notin_(_REACTION_KINDS))
     stuck = db.exec(statement).all()
     for row in stuck:
-        binding = db.get(ChannelBinding, row.binding_id)
-        if (
-            binding
-            and binding.channel == "feishu"
-            and row.kind not in _REACTION_KINDS
-            and row.first_attempt_at is not None
-            and (now - row.first_attempt_at).total_seconds()
-            > _FEISHU_DEDUP_RECOVERY_SECONDS
-        ):
+        # A reply send that outlived its lease has an unknown remote outcome. Replaying it
+        # is not safe for providers that do not offer a verifiable idempotent receipt.
+        if row.kind not in _REACTION_KINDS:
             row.status = "failed"
             row.last_error = "remote_state_unknown"
             row.next_attempt_at = None
+            row.delivery_owner = None
+            row.delivery_generation += 1
             row.updated_at = now
             db.add(row)
             continue
+        # Reaction adapters have explicit recovery semantics (lookup or idempotent attach),
+        # so a new generation may safely take over.
         row.status = "pending"
         row.sending_since = None
+        row.delivery_owner = None
+        row.delivery_generation += 1
         row.next_attempt_at = now
         row.updated_at = now
         db.add(row)
@@ -810,3 +880,203 @@ def notify_binding_creator(db: Session, binding: ChannelBinding, text: str) -> N
         db.commit()
     except Exception:
         logger.exception("渠道告警投递登记失败 binding=%s", binding.id)
+
+
+def _resolve_assignee_feishu_open_id(
+    db: Session,
+    binding: ChannelBinding,
+    assignee_user_id: str | None,
+) -> str | None:
+    """确定 handoff assignee 的飞书 open_id。
+
+    主链路:用当前 binding 的 external_account_scope 查 ChannelIdentity
+    (staffdeck_user_id → external_user_id),保证跨 binding/scope 隔离。
+    未命中返回 None(由调用方兜底,网页收件箱仍可用)。
+
+    注:手机号/邮箱反查需要 User 表存储手机号/邮箱,当前 User 模型无此字段,
+    故反查 fallback 暂不启用;待前端用户档案补齐后可在此接入。
+    """
+    scope = external_account_scope(db, binding)
+    if assignee_user_id:
+        identity = db.exec(
+            select(ChannelIdentity).where(
+                ChannelIdentity.tenant_id == binding.tenant_id,
+                ChannelIdentity.channel == "feishu",
+                ChannelIdentity.external_account_scope == scope,
+                ChannelIdentity.staffdeck_user_id == assignee_user_id,
+            )
+        ).first()
+        if identity and identity.external_user_id:
+            return identity.external_user_id
+    return None
+
+
+def _write_handoff_notify_message_id(
+    db: Session,
+    delivery: ChannelDelivery,
+    message_id: str,
+) -> None:
+    """handoff_notice 投递成功后,把飞书 message_id 回写到关联的 HumanHandoffRequest。
+
+    delivery.target_json.handoff_id 指向待更新的 handoff;阶段 4 据此关联处理人回复。
+    """
+    target = delivery.target_json or {}
+    handoff_id = str(target.get("handoff_id") or "").strip()
+    if not handoff_id:
+        return
+    handoff = db.get(HumanHandoffRequest, handoff_id)
+    if not handoff or handoff.tenant_id != delivery.tenant_id:
+        return
+    handoff.notify_message_id = message_id
+    handoff.updated_at = utc_now()
+    db.add(handoff)
+
+
+def _resolve_inquirer_display_name(
+    db: Session,
+    session: ChatSession,
+    binding: ChannelBinding,
+) -> str:
+    """查找提问人显示名:优先 ChannelIdentity.display_name,回退 User.display_name。"""
+    if not session.user_id:
+        return ""
+    scope = external_account_scope(db, binding)
+    identity = db.exec(
+        select(ChannelIdentity).where(
+            ChannelIdentity.staffdeck_user_id == session.user_id,
+            ChannelIdentity.channel == binding.channel,
+            ChannelIdentity.external_account_scope == scope,
+        )
+    ).first()
+    if identity and identity.display_name:
+        return identity.display_name.strip()
+    user = db.get(User, session.user_id)
+    if user:
+        return str(user.display_name or user.username or "").strip()
+    return ""
+
+
+def _build_handoff_problem_description(
+    db: Session,
+    handoff: HumanHandoffRequest,
+    binding: ChannelBinding,
+) -> str:
+    """构造给处理人看的问题描述:提问人 + 用户原始消息 + 已收集 slots + step 名称。
+
+    找不到 session/message 时回退到 handoff.pending_question。
+    """
+    parts: list[str] = []
+    # step name
+    metadata = handoff.metadata_json or {}
+    step = metadata.get("step") if isinstance(metadata, dict) else None
+    if isinstance(step, dict):
+        step_name = str(step.get("name") or "").strip()
+        if step_name:
+            parts.append(f"[{step_name}]")
+    # 提问人 + 用户最后一条消息 + slots
+    session = db.get(ChatSession, handoff.session_id)
+    if session:
+        inquirer = _resolve_inquirer_display_name(db, session, binding)
+        if inquirer:
+            parts.append(f"提问人:{inquirer}")
+        user_msg = db.exec(
+            select(Message)
+            .where(
+                Message.session_id == handoff.session_id,
+                Message.role == "user",
+            )
+            .order_by(Message.created_at.desc())
+        ).first()
+        if user_msg and user_msg.content.strip():
+            parts.append(user_msg.content.strip()[:300])
+        slots = session.slots_json or {}
+        if isinstance(slots, dict) and slots:
+            slot_lines = [
+                f"  {k}: {v}"
+                for k, v in slots.items()
+                if v and k not in _INTERNAL_SLOT_KEYS
+            ]
+            if slot_lines:
+                parts.append("已收集信息:\n" + "\n".join(slot_lines))
+    if not parts:
+        fallback = (handoff.pending_question or "").strip()
+        if fallback:
+            return fallback[:600]
+        return "当前 SOP 需要人工确认后继续执行。"
+    return "\n".join(parts)
+
+
+def notify_handoff_assignee(
+    db: Session,
+    binding: ChannelBinding,
+    handoff: HumanHandoffRequest,
+    pending_question: str,
+    context_summary: str,
+) -> None:
+    """转人工时给 assignee 发飞书私聊通知(kind=handoff_notice)。
+
+    主链路:assignee_user_id → 当前 binding scope 下的 ChannelIdentity → open_id。
+    无可用 open_id 时跳过(网页收件箱兜底)。任何异常仅记日志,不影响 handoff 主流程。
+    """
+    try:
+        existing_notice = db.exec(
+            select(ChannelDelivery).where(
+                ChannelDelivery.tenant_id == binding.tenant_id,
+                ChannelDelivery.binding_id == binding.id,
+                ChannelDelivery.kind == "handoff_notice",
+                ChannelDelivery.session_id == f"handoff:{handoff.id}",
+            )
+        ).first()
+        if existing_notice:
+            return
+        open_id = _resolve_assignee_feishu_open_id(
+            db, binding, handoff.assignee_user_id
+        )
+        if not open_id:
+            logger.info(
+                "飞书 handoff 通知跳过:assignee 无可用 open_id handoff=%s binding=%s",
+                handoff.id,
+                binding.id,
+            )
+            return
+        # assignee 显示名:从 User 表取,无则空
+        assignee = db.get(User, handoff.assignee_user_id) if handoff.assignee_user_id else None
+        name = ""
+        if assignee:
+            name = str(assignee.display_name or assignee.username or "").strip()
+        problem_description = _build_handoff_problem_description(db, handoff, binding)
+        text_parts = [
+            f"【人工介入转接】{'已转接给真人员工 ' + name if name else '有一条人工介入待处理'}",
+            "",
+            "问题:" + problem_description,
+        ]
+        if context_summary:
+            text_parts.append("")
+            text_parts.append("上下文:")
+            text_parts.append(context_summary[:800])
+        text_parts.append("")
+        text_parts.append("如要回复本条消息，请在开头加上 /回复反馈 然后输入答复内容。")
+        text = "\n".join(text_parts)
+        target = {
+            "receive_id_type": "open_id",
+            "receive_id": open_id,
+            "handoff_id": handoff.id,
+        }
+        db.add(
+            ChannelDelivery(
+                tenant_id=binding.tenant_id,
+                binding_id=binding.id,
+                session_id=f"handoff:{handoff.id}",
+                message_id=None,
+                target_json=target,
+                kind="handoff_notice",
+                text=text,
+                status="pending",
+                next_attempt_at=utc_now(),
+                idempotency_key=new_id("hnotice"),
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("飞书 handoff 通知登记失败 handoff=%s binding=%s", handoff.id, binding.id)

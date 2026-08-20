@@ -9,8 +9,10 @@ from sqlmodel import Session, select
 
 from app.agents.branching import model_for_agent
 from app.channels.service_routing import (
+    compare_and_set_current_agent,
     manual_pin_active,
     mounted_agents,
+    route_revision,
     set_current_agent,
 )
 from app.channels.service_session import find_channel_session
@@ -174,6 +176,12 @@ def maybe_auto_route(
         return None
     if manual_pin_active(db, binding, external_conv_id):
         return None
+    inspected_route = route_revision(db, binding, external_conv_id)
+    if not inspected_route:
+        set_current_agent(db, binding, external_conv_id, current_agent_id)
+        inspected_route = route_revision(db, binding, external_conv_id)
+    if not inspected_route or inspected_route[0] != current_agent_id:
+        return None
     threshold = (
         SOP_ACTIVE_CONFIDENCE_THRESHOLD
         if current_session and current_session.active_skill_id
@@ -190,7 +198,18 @@ def maybe_auto_route(
         threshold=threshold,
     )
     if decision.switched:
-        set_current_agent(db, binding, external_conv_id, decision.agent_id)
+        switched = compare_and_set_current_agent(
+            db,
+            binding,
+            external_conv_id,
+            expected_agent_id=current_agent_id,
+            expected_revision=inspected_route[1],
+            agent_id=decision.agent_id,
+        )
+        if not switched:
+            decision.agent_id = current_agent_id
+            decision.switched = False
+            decision.error = "route_changed_during_classification"
     return decision
 
 

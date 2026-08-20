@@ -9,6 +9,7 @@ from app import paths
 from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
 from app.skills.llm_limits import skill_model_config
+from app.skills.nesting import validate_sop_nesting
 from app.skills.skill_reflection import reflect_skill_response, reflect_skill_response_stream
 from app.skills.skill_schema import SkillCard, SkillRewriteRequest, SkillRewriteResponse
 from app.skills.skill_distiller import (
@@ -29,6 +30,7 @@ BASIC_FIELDS = {
     "business_domain",
     "description",
     "capability_scope",
+    "step_timeout_seconds",
     "trigger_intents",
     "user_utterance_examples",
     "goal",
@@ -50,7 +52,9 @@ NODE_FIELDS = {
     "retry_policy",
     "metadata",
     "sub_sop_id",
+    "capability_refs",
 }
+GRAPH_FIELDS = {"edges", "start_node_id", "terminal_node_ids"}
 
 
 class SkillEditor:
@@ -139,6 +143,24 @@ class SkillEditor:
             "target_label": request.target_label,
             "conversation": request.conversation[-12:],
             "available_tools": request.available_tools,
+            "available_sops": [
+                {
+                    key: item.get(key)
+                    for key in (
+                        "skill_id",
+                        "name",
+                        "description",
+                        "capability_scope",
+                        "status",
+                        "nested_sop_ids",
+                        "selectable",
+                        "unavailable_reason",
+                    )
+                    if key in item
+                }
+                for item in request.available_sops
+                if isinstance(item, dict)
+            ],
         }
 
     def _normalize_response(
@@ -154,7 +176,12 @@ class SkillEditor:
             else raw
         )
         candidate = SkillCard.model_validate(draft)
-        merged = _merge_targets(request.current_skill, candidate, target_paths)
+        merged = _merge_targets(
+            request.current_skill,
+            candidate,
+            target_paths,
+            allow_graph_changes=_response_requests_graph_change(raw, target_paths),
+        )
         merged_data = merged.model_dump(mode="json")
         raw_tool_mentions = raw.get("tool_mentions") if isinstance(raw.get("tool_mentions"), list) else raw.get("tool_suggestions")
         tool_resolutions = _normalize_tool_suggestions(raw_tool_mentions, request, [])
@@ -167,6 +194,11 @@ class SkillEditor:
             merged_data["nodes"] = nodes
             merged = SkillCard.model_validate(merged_data)
         merged, id_warnings = skill_card_with_unique_step_ids(merged)
+        validate_sop_nesting(
+            merged.skill_id,
+            merged.model_dump(mode="json"),
+            request.available_sops,
+        )
         assistant_message = str(raw.get("assistant_message") or "已完成选中部分的改写。").strip()
         warnings = [str(item) for item in raw.get("warnings", []) if str(item).strip()]
         warnings.extend(warning for warning in id_warnings if warning not in warnings)
@@ -178,9 +210,15 @@ class SkillEditor:
             if warning not in warnings:
                 warnings.append(warning)
         warnings = _compact_warnings(warnings)
-        changed_paths = [str(item) for item in raw.get("changed_paths", []) if str(item).strip()]
-        if not changed_paths and merged.model_dump() != request.current_skill.model_dump():
-            changed_paths = _changed_paths(request.current_skill, merged)
+        reported_paths = [
+            str(item) for item in raw.get("changed_paths", []) if str(item).strip()
+        ]
+        detected_paths = (
+            _changed_paths(request.current_skill, merged)
+            if merged.model_dump() != request.current_skill.model_dump()
+            else []
+        )
+        changed_paths = list(dict.fromkeys([*reported_paths, *detected_paths]))
         if missing_tool_names:
             tool_resolutions = _normalize_tool_suggestions(raw_tool_mentions, request, missing_tool_names)
         warnings = _compact_warnings([*warnings, *_tool_resolution_warnings(tool_resolutions)])
@@ -247,6 +285,10 @@ def _patch_allowed(data: dict[str, Any], path: str, target_paths: list[str]) -> 
         return _patch_path_is_known(data, path)
     if _basic_patch_field(path):
         return "basic" in target_paths
+    if path in GRAPH_FIELDS:
+        return "graph" in target_paths or any(
+            _is_node_target(target) for target in target_paths
+        )
     if path == "nodes":
         return any(_is_node_target(target) for target in target_paths)
     node_index = _patch_node_index(data, path)
@@ -258,7 +300,11 @@ def _patch_allowed(data: dict[str, Any], path: str, target_paths: list[str]) -> 
 
 
 def _patch_path_is_known(data: dict[str, Any], path: str) -> bool:
-    return bool(_basic_patch_field(path)) or path == "nodes" or _patch_node_index(data, path) is not None
+    return (
+        bool(_basic_patch_field(path))
+        or path in {*GRAPH_FIELDS, "nodes"}
+        or _patch_node_index(data, path) is not None
+    )
 
 
 def _apply_patch(data: dict[str, Any], path: str, value: Any) -> bool:
@@ -268,6 +314,15 @@ def _apply_patch(data: dict[str, Any], path: str, value: Any) -> bool:
         return True
     if path == "nodes" and isinstance(value, list):
         data["nodes"] = value
+        return True
+    if path == "edges" and isinstance(value, list):
+        data["edges"] = value
+        return True
+    if path == "start_node_id" and isinstance(value, str):
+        data["start_node_id"] = value
+        return True
+    if path == "terminal_node_ids" and isinstance(value, list):
+        data["terminal_node_ids"] = value
         return True
     node_index = _patch_node_index(data, path)
     if node_index is None:
@@ -311,7 +366,13 @@ def _patch_node_field(path: str) -> str | None:
     return field if field in NODE_FIELDS else None
 
 
-def _merge_targets(current: SkillCard, candidate: SkillCard, target_paths: list[str]) -> SkillCard:
+def _merge_targets(
+    current: SkillCard,
+    candidate: SkillCard,
+    target_paths: list[str],
+    *,
+    allow_graph_changes: bool = False,
+) -> SkillCard:
     if "all" in target_paths:
         return candidate
     if _has_node_structure_change(current, candidate, target_paths):
@@ -331,6 +392,8 @@ def _merge_targets(current: SkillCard, candidate: SkillCard, target_paths: list[
     merged = current
     for path in target_paths:
         merged = _merge_target(merged, candidate, path)
+    if allow_graph_changes:
+        merged = _merge_graph_topology(merged, candidate)
     return merged
 
 
@@ -348,6 +411,28 @@ def _has_node_structure_change(current: SkillCard, candidate: SkillCard, target_
 
 def _is_node_target(path: str) -> bool:
     return path.startswith("nodes.") or path.startswith("nodes[")
+
+
+def _response_requests_graph_change(raw: dict[str, Any], target_paths: list[str]) -> bool:
+    if "all" in target_paths or "graph" in target_paths:
+        return True
+    if "graph" in [str(item) for item in raw.get("changed_paths", [])]:
+        return True
+    patches = raw.get("patches")
+    return isinstance(patches, list) and any(
+        isinstance(item, dict) and str(item.get("path") or "") in GRAPH_FIELDS
+        for item in patches
+    )
+
+
+def _merge_graph_topology(current: SkillCard, candidate: SkillCard) -> SkillCard:
+    current_data = current.model_dump(mode="json")
+    candidate_data = candidate.model_dump(mode="json")
+    if not any(current_data.get(field) != candidate_data.get(field) for field in GRAPH_FIELDS):
+        return current
+    for field in GRAPH_FIELDS:
+        current_data[field] = candidate_data.get(field)
+    return SkillCard.model_validate(current_data)
 
 
 def _merge_target(current: SkillCard, candidate: SkillCard, target_path: str) -> SkillCard:
@@ -411,6 +496,8 @@ def _changed_paths(previous: SkillCard, next_skill: SkillCard) -> list[str]:
     changed: list[str] = []
     if any(previous_data.get(field) != next_data.get(field) for field in BASIC_FIELDS):
         changed.append("basic")
+    if any(previous_data.get(field) != next_data.get(field) for field in GRAPH_FIELDS):
+        changed.append("graph")
     previous_nodes = [node for node in previous_data.get("nodes", []) if isinstance(node, dict)]
     next_nodes = [node for node in next_data.get("nodes", []) if isinstance(node, dict)]
     for index in range(max(len(previous_nodes), len(next_nodes))):

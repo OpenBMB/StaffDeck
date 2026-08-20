@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends
+from sqlalchemy import or_, update
 from sqlmodel import Session, select
 
 from app.async_jobs import enqueue_async_job
@@ -274,16 +275,50 @@ def enqueue_webhook_deliveries(delivery_ids: list[str]) -> None:
 
 def deliver_webhook(delivery_id: str) -> None:
     with Session(engine) as db:
+        owner = f"whlease_{secrets.token_hex(12)}"
+        now = utc_now()
+        claim = db.exec(
+            update(WebhookDelivery)
+            .where(
+                WebhookDelivery.id == delivery_id,
+                WebhookDelivery.status.in_(["queued", "retrying", "sending"]),
+                or_(
+                    WebhookDelivery.next_attempt_at.is_(None),
+                    WebhookDelivery.next_attempt_at <= now,
+                ),
+                or_(
+                    WebhookDelivery.lease_expires_at.is_(None),
+                    WebhookDelivery.lease_expires_at <= now,
+                ),
+            )
+            .values(
+                status="sending",
+                delivery_owner=owner,
+                lease_expires_at=now
+                + timedelta(seconds=get_settings().public_api_webhook_timeout_seconds + 30),
+                updated_at=now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if getattr(claim, "rowcount", 0) != 1:
+            db.rollback()
+            return
+        db.commit()
         delivery = db.get(WebhookDelivery, delivery_id)
-        if not delivery or delivery.status in {"delivered", "abandoned"}:
+        if delivery is None:
             return
         endpoint = db.get(WebhookEndpoint, delivery.endpoint_id)
         if not endpoint or endpoint.status != "active":
-            delivery.status = "abandoned"
-            delivery.last_error = "Webhook endpoint is inactive"
-            delivery.updated_at = utc_now()
-            db.add(delivery)
-            db.commit()
+            _finish_webhook_delivery(
+                db,
+                delivery,
+                owner,
+                {
+                    "status": "abandoned",
+                    "last_error": "Webhook endpoint is inactive",
+                    "next_attempt_at": None,
+                },
+            )
             return
         body = json.dumps(delivery.payload_json, ensure_ascii=False, separators=(",", ":"))
         timestamp = str(int(datetime_now_timestamp()))
@@ -314,9 +349,49 @@ def deliver_webhook(delivery_id: str) -> None:
                 _schedule_retry(delivery, f"HTTP {response.status_code}")
         except Exception as exc:  # noqa: BLE001 - persisted delivery boundary.
             _schedule_retry(delivery, str(exc))
-        delivery.updated_at = utc_now()
-        db.add(delivery)
-        db.commit()
+        _finish_webhook_delivery(
+            db,
+            delivery,
+            owner,
+            {
+                "status": delivery.status,
+                "attempt_count": delivery.attempt_count,
+                "next_attempt_at": delivery.next_attempt_at,
+                "last_status_code": delivery.last_status_code,
+                "last_error": delivery.last_error,
+                "delivered_at": delivery.delivered_at,
+            },
+        )
+
+
+def _finish_webhook_delivery(
+    db: Session,
+    delivery: WebhookDelivery,
+    owner: str,
+    values: dict[str, object],
+) -> bool:
+    """Fence completion so an expired/duplicate worker cannot overwrite it."""
+
+    result = db.exec(
+        update(WebhookDelivery)
+        .where(
+            WebhookDelivery.id == delivery.id,
+            WebhookDelivery.status == "sending",
+            WebhookDelivery.delivery_owner == owner,
+        )
+        .values(
+            **values,
+            delivery_owner=None,
+            lease_expires_at=None,
+            updated_at=utc_now(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if getattr(result, "rowcount", 0) != 1:
+        db.rollback()
+        return False
+    db.commit()
+    return True
 
 
 def _schedule_retry(delivery: WebhookDelivery, error: str) -> None:

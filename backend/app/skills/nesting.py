@@ -41,13 +41,13 @@ def nested_sop_ids(content: dict[str, Any]) -> list[str]:
 def validate_sop_nesting(
     skill_id: str,
     content: dict[str, Any],
-    available: Iterable[Skill],
+    available: Iterable[Skill | dict[str, Any]],
 ) -> None:
-    contents = {
-        row.skill_id: deepcopy(row.content_json or {})
-        for row in available
-        if row.status in {"published", "active"} or row.skill_id == skill_id
-    }
+    contents: dict[str, dict[str, Any]] = {}
+    for row in available:
+        row_id, row_status, row_content = _available_sop_parts(row)
+        if row_id and (row_status in {"published", "active"} or row_id == skill_id):
+            contents[row_id] = deepcopy(row_content)
     contents[skill_id] = deepcopy(content)
 
     def visit(current_id: str, path: list[str]) -> None:
@@ -67,6 +67,24 @@ def validate_sop_nesting(
             visit(child_id, [*path, child_id])
 
     visit(skill_id, [skill_id])
+
+
+def _available_sop_parts(
+    row: Skill | dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    if isinstance(row, Skill):
+        return row.skill_id, row.status, row.content_json or {}
+    content = row.get("content")
+    if not isinstance(content, dict):
+        content = {
+            "capability_scope": row.get("capability_scope"),
+            "nodes": row.get("nodes") if isinstance(row.get("nodes"), list) else [],
+        }
+    return (
+        str(row.get("skill_id") or "").strip(),
+        str(row.get("status") or "published").strip(),
+        content,
+    )
 
 
 def expand_sop_for_execution(skill: Skill, available: Iterable[Skill]) -> Skill:

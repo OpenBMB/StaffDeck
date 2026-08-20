@@ -1,0 +1,3783 @@
+{
+  "source": {
+    "exported_at": "2026-08-18T00:00:00Z",
+    "original_creator": "staffdeck",
+    "source_db": "generated_seed_fixture",
+    "source_host": "local"
+  },
+  "selected_agent_names": [
+    "销售",
+    "市场",
+    "采购",
+    "项目管理",
+    "数据分析"
+  ],
+  "agent_profiles": [
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "围绕客户需求澄清、商机推进和沟通准备提供结构化建议，帮助销售团队形成下一步行动，并在信息不足或需要承诺时明确提示人工确认。",
+      "id": "agent_preset_sales_001",
+      "is_overall": 0,
+      "metadata_json": {
+        "avatar_kind": "preset",
+        "avatar_preset": "sales-handshake",
+        "avatar_text": "销",
+        "avatar_tone": "cobalt",
+        "blank_onboarding": true,
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "creator_name": "admin",
+        "expertise_tags": [
+          "需求澄清",
+          "商机推进",
+          "客户沟通"
+        ],
+        "onboarded_at": "2026-08-18",
+        "owner_display_name": "admin",
+        "owner_user_id": "user_5435589cfa8d4669",
+        "owner_username": "admin",
+        "role_key": "sales-advisor",
+        "role_name": "客户拓展顾问",
+        "system_prompt_summary": "围绕客户需求澄清、商机推进和沟通准备提供结构化建议，帮助销售团队形成下一步行动，并在信息不足或需要承诺时明确提示人工确认。",
+        "work_modes": [
+          "问答",
+          "流程引导"
+        ],
+        "work_styles": [
+          "目标清晰",
+          "审慎承诺"
+        ]
+      },
+      "name": "销售",
+      "persona_prompt": null,
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "协助梳理市场目标、受众和渠道，形成内容策划简报与发布检查清单，避免虚构数据、未授权素材和未经确认的对外承诺。",
+      "id": "agent_preset_marketing_001",
+      "is_overall": 0,
+      "metadata_json": {
+        "avatar_kind": "preset",
+        "avatar_preset": "marketing-spark",
+        "avatar_text": "市",
+        "avatar_tone": "coral",
+        "blank_onboarding": true,
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "creator_name": "admin",
+        "expertise_tags": [
+          "内容策划",
+          "活动简报",
+          "发布检查"
+        ],
+        "onboarded_at": "2026-08-18",
+        "owner_display_name": "admin",
+        "owner_user_id": "user_5435589cfa8d4669",
+        "owner_username": "admin",
+        "role_key": "marketing-planner",
+        "role_name": "市场内容策划",
+        "system_prompt_summary": "协助梳理市场目标、受众和渠道，形成内容策划简报与发布检查清单，避免虚构数据、未授权素材和未经确认的对外承诺。",
+        "work_modes": [
+          "问答",
+          "内容规划"
+        ],
+        "work_styles": [
+          "受众导向",
+          "事实审慎"
+        ]
+      },
+      "name": "市场",
+      "persona_prompt": null,
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "帮助员工准备采购需求、供应商比较维度和审批材料，强调需求可比、职责分离与留痕，不替代有权限的采购或审批人员作出承诺。",
+      "id": "agent_preset_procurement_001",
+      "is_overall": 0,
+      "metadata_json": {
+        "avatar_kind": "preset",
+        "avatar_preset": "procurement-check",
+        "avatar_text": "采",
+        "avatar_tone": "forest",
+        "blank_onboarding": true,
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "creator_name": "admin",
+        "expertise_tags": [
+          "采购需求",
+          "供应商比较",
+          "审批准备"
+        ],
+        "onboarded_at": "2026-08-18",
+        "owner_display_name": "admin",
+        "owner_user_id": "user_5435589cfa8d4669",
+        "owner_username": "admin",
+        "role_key": "procurement-coordinator",
+        "role_name": "采购协同专员",
+        "system_prompt_summary": "帮助员工准备采购需求、供应商比较维度和审批材料，强调需求可比、职责分离与留痕，不替代有权限的采购或审批人员作出承诺。",
+        "work_modes": [
+          "问答",
+          "流程引导"
+        ],
+        "work_styles": [
+          "合规优先",
+          "信息可追溯"
+        ]
+      },
+      "name": "采购",
+      "persona_prompt": null,
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "协助团队拆解目标、里程碑、责任人和风险，输出可执行的推进清单，遇到跨团队冲突或范围变化时提示升级决策。",
+      "id": "agent_preset_project_001",
+      "is_overall": 0,
+      "metadata_json": {
+        "avatar_kind": "preset",
+        "avatar_preset": "project-board",
+        "avatar_text": "项",
+        "avatar_tone": "charcoal",
+        "blank_onboarding": true,
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "creator_name": "admin",
+        "expertise_tags": [
+          "里程碑",
+          "风险跟踪",
+          "协作推进"
+        ],
+        "onboarded_at": "2026-08-18",
+        "owner_display_name": "admin",
+        "owner_user_id": "user_5435589cfa8d4669",
+        "owner_username": "admin",
+        "role_key": "project-manager",
+        "role_name": "项目推进经理",
+        "system_prompt_summary": "协助团队拆解目标、里程碑、责任人和风险，输出可执行的推进清单，遇到跨团队冲突或范围变化时提示升级决策。",
+        "work_modes": [
+          "问答",
+          "项目梳理"
+        ],
+        "work_styles": [
+          "行动导向",
+          "风险透明"
+        ]
+      },
+      "name": "项目管理",
+      "persona_prompt": null,
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "帮助业务人员定义指标口径、分析周期和对比维度，给出可复核的分析框架，明确区分已知事实、计算结果与推测。",
+      "id": "agent_preset_data_001",
+      "is_overall": 0,
+      "metadata_json": {
+        "avatar_kind": "preset",
+        "avatar_preset": "data-insight",
+        "avatar_text": "数",
+        "avatar_tone": "navy",
+        "blank_onboarding": true,
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "creator_name": "admin",
+        "expertise_tags": [
+          "指标口径",
+          "趋势分析",
+          "经营复盘"
+        ],
+        "onboarded_at": "2026-08-18",
+        "owner_display_name": "admin",
+        "owner_user_id": "user_5435589cfa8d4669",
+        "owner_username": "admin",
+        "role_key": "data-analyst",
+        "role_name": "经营分析师",
+        "system_prompt_summary": "帮助业务人员定义指标口径、分析周期和对比维度，给出可复核的分析框架，明确区分已知事实、计算结果与推测。",
+        "work_modes": [
+          "问答",
+          "分析框架"
+        ],
+        "work_styles": [
+          "口径严谨",
+          "结论可追溯"
+        ]
+      },
+      "name": "数据分析",
+      "persona_prompt": null,
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    }
+  ],
+  "knowledge_bases": [
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "销售客户沟通与商机推进通用演示指南",
+      "id": "kb_preset_sales_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "created_from_agent": true,
+        "created_from_document_upload": true,
+        "creator_name": "admin",
+        "owner_agent_id": "agent_preset_sales_001",
+        "scope": "agent_private",
+        "source_filename": "销售-客户拓展通用指南.md",
+        "visibility": "agent_private"
+      },
+      "name": "销售-客户拓展通用指南",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "市场内容策划与发布检查通用演示指南",
+      "id": "kb_preset_marketing_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "created_from_agent": true,
+        "created_from_document_upload": true,
+        "creator_name": "admin",
+        "owner_agent_id": "agent_preset_marketing_001",
+        "scope": "agent_private",
+        "source_filename": "市场-内容策划通用指南.md",
+        "visibility": "agent_private"
+      },
+      "name": "市场-内容策划通用指南",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "采购需求准备与供应商比较通用演示指南",
+      "id": "kb_preset_procurement_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "created_from_agent": true,
+        "created_from_document_upload": true,
+        "creator_name": "admin",
+        "owner_agent_id": "agent_preset_procurement_001",
+        "scope": "agent_private",
+        "source_filename": "采购-协同流程通用指南.md",
+        "visibility": "agent_private"
+      },
+      "name": "采购-协同流程通用指南",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "项目计划、风险与协作推进通用演示指南",
+      "id": "kb_preset_project_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "created_from_agent": true,
+        "created_from_document_upload": true,
+        "creator_name": "admin",
+        "owner_agent_id": "agent_preset_project_001",
+        "scope": "agent_private",
+        "source_filename": "项目管理-推进通用指南.md",
+        "visibility": "agent_private"
+      },
+      "name": "项目管理-推进通用指南",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "经营指标定义与分析表达通用演示指南",
+      "id": "kb_preset_data_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "created_from_agent": true,
+        "created_from_document_upload": true,
+        "creator_name": "admin",
+        "owner_agent_id": "agent_preset_data_001",
+        "scope": "agent_private",
+        "source_filename": "数据分析-经营分析通用指南.md",
+        "visibility": "agent_private"
+      },
+      "name": "数据分析-经营分析通用指南",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    }
+  ],
+  "knowledge_base_versions": [
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "销售客户沟通与商机推进通用演示指南",
+      "id": "kbver_kb_preset_sales_001_1_0_0",
+      "knowledge_base_id": "kb_preset_sales_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_sales_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "name": "销售-客户拓展通用指南",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "市场内容策划与发布检查通用演示指南",
+      "id": "kbver_kb_preset_marketing_001_1_0_0",
+      "knowledge_base_id": "kb_preset_marketing_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_marketing_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "name": "市场-内容策划通用指南",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "采购需求准备与供应商比较通用演示指南",
+      "id": "kbver_kb_preset_procurement_001_1_0_0",
+      "knowledge_base_id": "kb_preset_procurement_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_procurement_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "name": "采购-协同流程通用指南",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "项目计划、风险与协作推进通用演示指南",
+      "id": "kbver_kb_preset_project_001_1_0_0",
+      "knowledge_base_id": "kb_preset_project_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_project_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "name": "项目管理-推进通用指南",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "经营指标定义与分析表达通用演示指南",
+      "id": "kbver_kb_preset_data_001_1_0_0",
+      "knowledge_base_id": "kb_preset_data_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_data_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "name": "数据分析-经营分析通用指南",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    }
+  ],
+  "knowledge_documents": [
+    {
+      "bucket_count": 1,
+      "chunk_count": 1,
+      "created_at": "2026-08-18 00:00:00.000000",
+      "error": null,
+      "file_type": "md",
+      "filename": "销售-客户拓展通用指南.md",
+      "id": "kdoc_preset_sales_001",
+      "knowledge_base_id": "kb_preset_sales_001",
+      "knowledge_base_version_id": "kbver_kb_preset_sales_001_1_0_0",
+      "metadata_json": {
+        "char_count": 228,
+        "created_by": "admin",
+        "owner_agent_id": "agent_preset_sales_001",
+        "source_filename": "销售-客户拓展通用指南.md"
+      },
+      "status": "ready",
+      "tenant_id": "tenant_demo",
+      "title": "销售-客户拓展通用指南",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_count": 1,
+      "chunk_count": 1,
+      "created_at": "2026-08-18 00:00:00.000000",
+      "error": null,
+      "file_type": "md",
+      "filename": "市场-内容策划通用指南.md",
+      "id": "kdoc_preset_marketing_001",
+      "knowledge_base_id": "kb_preset_marketing_001",
+      "knowledge_base_version_id": "kbver_kb_preset_marketing_001_1_0_0",
+      "metadata_json": {
+        "char_count": 225,
+        "created_by": "admin",
+        "owner_agent_id": "agent_preset_marketing_001",
+        "source_filename": "市场-内容策划通用指南.md"
+      },
+      "status": "ready",
+      "tenant_id": "tenant_demo",
+      "title": "市场-内容策划通用指南",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_count": 1,
+      "chunk_count": 1,
+      "created_at": "2026-08-18 00:00:00.000000",
+      "error": null,
+      "file_type": "md",
+      "filename": "采购-协同流程通用指南.md",
+      "id": "kdoc_preset_procurement_001",
+      "knowledge_base_id": "kb_preset_procurement_001",
+      "knowledge_base_version_id": "kbver_kb_preset_procurement_001_1_0_0",
+      "metadata_json": {
+        "char_count": 237,
+        "created_by": "admin",
+        "owner_agent_id": "agent_preset_procurement_001",
+        "source_filename": "采购-协同流程通用指南.md"
+      },
+      "status": "ready",
+      "tenant_id": "tenant_demo",
+      "title": "采购-协同流程通用指南",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_count": 1,
+      "chunk_count": 1,
+      "created_at": "2026-08-18 00:00:00.000000",
+      "error": null,
+      "file_type": "md",
+      "filename": "项目管理-推进通用指南.md",
+      "id": "kdoc_preset_project_001",
+      "knowledge_base_id": "kb_preset_project_001",
+      "knowledge_base_version_id": "kbver_kb_preset_project_001_1_0_0",
+      "metadata_json": {
+        "char_count": 220,
+        "created_by": "admin",
+        "owner_agent_id": "agent_preset_project_001",
+        "source_filename": "项目管理-推进通用指南.md"
+      },
+      "status": "ready",
+      "tenant_id": "tenant_demo",
+      "title": "项目管理-推进通用指南",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_count": 1,
+      "chunk_count": 1,
+      "created_at": "2026-08-18 00:00:00.000000",
+      "error": null,
+      "file_type": "md",
+      "filename": "数据分析-经营分析通用指南.md",
+      "id": "kdoc_preset_data_001",
+      "knowledge_base_id": "kb_preset_data_001",
+      "knowledge_base_version_id": "kbver_kb_preset_data_001_1_0_0",
+      "metadata_json": {
+        "char_count": 231,
+        "created_by": "admin",
+        "owner_agent_id": "agent_preset_data_001",
+        "source_filename": "数据分析-经营分析通用指南.md"
+      },
+      "status": "ready",
+      "tenant_id": "tenant_demo",
+      "title": "数据分析-经营分析通用指南",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    }
+  ],
+  "knowledge_buckets": [
+    {
+      "bucket_key": "bucket_sales_opportunity",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_sales_001",
+      "id": "kbucket_preset_sales_001",
+      "knowledge_base_id": "kb_preset_sales_001",
+      "knowledge_base_version_id": "kbver_kb_preset_sales_001_1_0_0",
+      "metadata_json": {
+        "section_id": "sec_1",
+        "section_order": 1
+      },
+      "summary": "客户拓展先确认客户目标、使用场景、关键角色与决策节奏，再记录当前阶段、风险和下一步行动。",
+      "tenant_id": "tenant_demo",
+      "title": "客户需求与商机推进",
+      "token_estimate": 180,
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_key": "bucket_marketing_brief",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_marketing_001",
+      "id": "kbucket_preset_marketing_001",
+      "knowledge_base_id": "kb_preset_marketing_001",
+      "knowledge_base_version_id": "kbver_kb_preset_marketing_001_1_0_0",
+      "metadata_json": {
+        "section_id": "sec_1",
+        "section_order": 1
+      },
+      "summary": "内容策划从目标、受众、核心信息、渠道和衡量方式五个维度形成简报，发布前核对事实、素材授权和审批状态。",
+      "tenant_id": "tenant_demo",
+      "title": "内容策划与发布检查",
+      "token_estimate": 180,
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_key": "bucket_procurement_request",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_procurement_001",
+      "id": "kbucket_preset_procurement_001",
+      "knowledge_base_id": "kb_preset_procurement_001",
+      "knowledge_base_version_id": "kbver_kb_preset_procurement_001_1_0_0",
+      "metadata_json": {
+        "section_id": "sec_1",
+        "section_order": 1
+      },
+      "summary": "采购需求应说明用途、规格、数量、预算范围和期望时间，供应商比较需使用一致口径并保留审批与沟通记录。",
+      "tenant_id": "tenant_demo",
+      "title": "采购需求与供应商比较",
+      "token_estimate": 180,
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_key": "bucket_project_delivery",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_project_001",
+      "id": "kbucket_preset_project_001",
+      "knowledge_base_id": "kb_preset_project_001",
+      "knowledge_base_version_id": "kbver_kb_preset_project_001_1_0_0",
+      "metadata_json": {
+        "section_id": "sec_1",
+        "section_order": 1
+      },
+      "summary": "项目推进应明确目标、范围、里程碑、责任人和验收条件，持续记录风险、依赖、变更与决策。",
+      "tenant_id": "tenant_demo",
+      "title": "项目计划与风险跟踪",
+      "token_estimate": 180,
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_key": "bucket_data_analysis",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_data_001",
+      "id": "kbucket_preset_data_001",
+      "knowledge_base_id": "kb_preset_data_001",
+      "knowledge_base_version_id": "kbver_kb_preset_data_001_1_0_0",
+      "metadata_json": {
+        "section_id": "sec_1",
+        "section_order": 1
+      },
+      "summary": "经营分析先定义指标口径、时间范围、数据粒度和对比基准，再呈现趋势、异常、限制与建议验证动作。",
+      "tenant_id": "tenant_demo",
+      "title": "指标口径与经营分析",
+      "token_estimate": 180,
+      "updated_at": "2026-08-18 00:00:00.000000"
+    }
+  ],
+  "knowledge_chunks": [
+    {
+      "bucket_id": "kbucket_preset_sales_001",
+      "chunk_index": 0,
+      "content": "# 客户需求与商机推进\n\n1. 先确认客户希望解决的问题、使用场景、涉及角色和期望结果。\n2. 区分已确认事实、客户假设和内部判断，不补写未知的预算或决策信息。\n3. 用统一阶段记录商机：初步接触、需求澄清、方案沟通、商务确认或暂缓。\n4. 每次沟通后记录关键结论、异议、责任人和有日期的下一步。\n5. 涉及价格、交付范围、法律条款或服务承诺时，必须交由有权限人员确认后再对外表达。",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_sales_001",
+      "id": "kchunk_preset_sales_001",
+      "knowledge_base_id": "kb_preset_sales_001",
+      "knowledge_base_version_id": "kbver_kb_preset_sales_001_1_0_0",
+      "metadata_json": {
+        "section_id": "sec_1",
+        "section_title": "客户需求与商机推进"
+      },
+      "source_ref": "销售-客户拓展通用指南.md / 客户需求与商机推进 / evidence 1",
+      "summary": "客户拓展先澄清问题、场景、角色和目标，按统一阶段记录事实、风险与下一步，承诺事项必须人工确认。",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_id": "kbucket_preset_marketing_001",
+      "chunk_index": 0,
+      "content": "# 内容策划与发布检查\n\n1. 简报需包含业务目标、目标受众、核心信息、使用渠道、发布时间和衡量方式。\n2. 内容应围绕一个主要行动设计，并根据渠道调整长度和表达。\n3. 数据、客户案例和产品能力必须有可核验来源；未知信息使用待确认标记。\n4. 发布前检查品牌用语、素材授权、敏感信息、链接和必要审批。\n5. 发布后按预先约定的指标复盘，不把相关性直接表述为因果关系。",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_marketing_001",
+      "id": "kchunk_preset_marketing_001",
+      "knowledge_base_id": "kb_preset_marketing_001",
+      "knowledge_base_version_id": "kbver_kb_preset_marketing_001_1_0_0",
+      "metadata_json": {
+        "section_id": "sec_1",
+        "section_title": "内容策划与发布检查"
+      },
+      "source_ref": "市场-内容策划通用指南.md / 内容策划与发布检查 / evidence 1",
+      "summary": "市场简报围绕目标、受众、信息、渠道和衡量方式组织，发布前核验事实、授权、敏感信息和审批。",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_id": "kbucket_preset_procurement_001",
+      "chunk_index": 0,
+      "content": "# 采购需求与供应商比较\n\n1. 需求申请应说明用途、规格、数量、预算范围、期望到位时间和验收标准。\n2. 如有可替代方案，应区分必要条件与偏好条件，避免为单一供应商定制不必要门槛。\n3. 比较供应商时使用相同口径，至少考虑总成本、交付、质量、服务和风险。\n4. 需求提出、方案比较、审批和验收应由适当角色分别承担并保留记录。\n5. 未完成授权前不得代表公司确认采购、付款或长期合作承诺。",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_procurement_001",
+      "id": "kchunk_preset_procurement_001",
+      "knowledge_base_id": "kb_preset_procurement_001",
+      "knowledge_base_version_id": "kbver_kb_preset_procurement_001_1_0_0",
+      "metadata_json": {
+        "section_id": "sec_1",
+        "section_title": "采购需求与供应商比较"
+      },
+      "source_ref": "采购-协同流程通用指南.md / 采购需求与供应商比较 / evidence 1",
+      "summary": "采购需求须完整描述用途、规格、数量、预算、时间和验收标准，并用一致口径比较供应商、保留审批记录。",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_id": "kbucket_preset_project_001",
+      "chunk_index": 0,
+      "content": "# 项目计划与风险跟踪\n\n1. 启动时明确目标、范围、不在范围内事项、关键角色和验收条件。\n2. 里程碑应对应可验证的交付物，并标记责任人、计划日期和依赖。\n3. 每次同步更新已完成事项、下一步、阻塞项、风险和待决策事项。\n4. 范围、资源或日期发生变化时记录影响，并由有权限的负责人确认调整。\n5. 对跨团队依赖设置明确的交付接口和升级路径，不以模糊的“跟进中”作为结果。",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_project_001",
+      "id": "kchunk_preset_project_001",
+      "knowledge_base_id": "kb_preset_project_001",
+      "knowledge_base_version_id": "kbver_kb_preset_project_001_1_0_0",
+      "metadata_json": {
+        "section_id": "sec_1",
+        "section_title": "项目计划与风险跟踪"
+      },
+      "source_ref": "项目管理-推进通用指南.md / 项目计划与风险跟踪 / evidence 1",
+      "summary": "项目推进需明确范围、里程碑、责任人、依赖和验收条件，持续记录风险、变更及需要升级的决策。",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "bucket_id": "kbucket_preset_data_001",
+      "chunk_index": 0,
+      "content": "# 指标口径与经营分析\n\n1. 分析前定义指标名称、业务含义、计算公式、数据粒度、时间范围和排除项。\n2. 对比应使用一致口径，并明确环比、同比、目标值或分组基准。\n3. 输出先陈述数据事实，再说明可能原因和需要进一步验证的假设。\n4. 对缺失值、异常值、口径变化和样本偏差给出显式提示。\n5. 建议应对应可验证的行动与后续指标，不在没有证据时给出确定性因果结论。",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_data_001",
+      "id": "kchunk_preset_data_001",
+      "knowledge_base_id": "kb_preset_data_001",
+      "knowledge_base_version_id": "kbver_kb_preset_data_001_1_0_0",
+      "metadata_json": {
+        "section_id": "sec_1",
+        "section_title": "指标口径与经营分析"
+      },
+      "source_ref": "数据分析-经营分析通用指南.md / 指标口径与经营分析 / evidence 1",
+      "summary": "经营分析先固定指标、时间、粒度和对比口径，再区分事实、假设与限制，形成可验证的后续动作。",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    }
+  ],
+  "knowledge_concepts": [],
+  "knowledge_discovery_suggestions": [],
+  "knowledge_ingest_jobs": [
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_sales_001",
+      "error": null,
+      "filename": "销售-客户拓展通用指南.md",
+      "finished_at": "2026-08-18 00:00:01.000000",
+      "id": "kjob_preset_sales_001",
+      "knowledge_base_id": "kb_preset_sales_001",
+      "knowledge_base_version_id": "kbver_kb_preset_sales_001_1_0_0",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "creator_name": "admin",
+        "ingest_steps": [
+          {
+            "key": "queued",
+            "label": "排队中",
+            "progress": 0.0,
+            "status": "done"
+          },
+          {
+            "key": "parsing",
+            "label": "解析原始资料",
+            "progress": 0.08,
+            "status": "done"
+          },
+          {
+            "key": "normalizing",
+            "label": "规范化 Source",
+            "progress": 0.16,
+            "status": "done"
+          },
+          {
+            "key": "documenting",
+            "label": "写入 Source Document",
+            "progress": 0.24,
+            "status": "done"
+          },
+          {
+            "key": "bucketing",
+            "label": "规划 Wiki 页面",
+            "progress": 0.36,
+            "status": "done"
+          },
+          {
+            "key": "bucket_writing",
+            "label": "写入 OKF Wiki",
+            "progress": 0.48,
+            "status": "done"
+          },
+          {
+            "key": "chunking",
+            "label": "生成引用来源",
+            "progress": 0.62,
+            "status": "done"
+          },
+          {
+            "key": "summarizing",
+            "label": "刷新 PageIndex",
+            "progress": 0.74,
+            "status": "done"
+          },
+          {
+            "key": "discovering",
+            "label": "发现 SOP/工具",
+            "progress": 0.88,
+            "status": "done"
+          },
+          {
+            "key": "done",
+            "label": "完成入库",
+            "progress": 1.0,
+            "status": "done"
+          }
+        ],
+        "metadata": {},
+        "stage_detail": "完成入库：1 个 Wiki 页面，1 个内部索引，1 个引用来源",
+        "stage_label": "完成入库",
+        "stage_stats": {
+          "bucket_count": 1,
+          "chunk_count": 1,
+          "concept_count": 0
+        },
+        "title": "销售-客户拓展通用指南"
+      },
+      "progress": 1.0,
+      "stage": "done",
+      "started_at": "2026-08-18 00:00:00.000000",
+      "status": "succeeded",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:01.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_marketing_001",
+      "error": null,
+      "filename": "市场-内容策划通用指南.md",
+      "finished_at": "2026-08-18 00:00:01.000000",
+      "id": "kjob_preset_marketing_001",
+      "knowledge_base_id": "kb_preset_marketing_001",
+      "knowledge_base_version_id": "kbver_kb_preset_marketing_001_1_0_0",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "creator_name": "admin",
+        "ingest_steps": [
+          {
+            "key": "queued",
+            "label": "排队中",
+            "progress": 0.0,
+            "status": "done"
+          },
+          {
+            "key": "parsing",
+            "label": "解析原始资料",
+            "progress": 0.08,
+            "status": "done"
+          },
+          {
+            "key": "normalizing",
+            "label": "规范化 Source",
+            "progress": 0.16,
+            "status": "done"
+          },
+          {
+            "key": "documenting",
+            "label": "写入 Source Document",
+            "progress": 0.24,
+            "status": "done"
+          },
+          {
+            "key": "bucketing",
+            "label": "规划 Wiki 页面",
+            "progress": 0.36,
+            "status": "done"
+          },
+          {
+            "key": "bucket_writing",
+            "label": "写入 OKF Wiki",
+            "progress": 0.48,
+            "status": "done"
+          },
+          {
+            "key": "chunking",
+            "label": "生成引用来源",
+            "progress": 0.62,
+            "status": "done"
+          },
+          {
+            "key": "summarizing",
+            "label": "刷新 PageIndex",
+            "progress": 0.74,
+            "status": "done"
+          },
+          {
+            "key": "discovering",
+            "label": "发现 SOP/工具",
+            "progress": 0.88,
+            "status": "done"
+          },
+          {
+            "key": "done",
+            "label": "完成入库",
+            "progress": 1.0,
+            "status": "done"
+          }
+        ],
+        "metadata": {},
+        "stage_detail": "完成入库：1 个 Wiki 页面，1 个内部索引，1 个引用来源",
+        "stage_label": "完成入库",
+        "stage_stats": {
+          "bucket_count": 1,
+          "chunk_count": 1,
+          "concept_count": 0
+        },
+        "title": "市场-内容策划通用指南"
+      },
+      "progress": 1.0,
+      "stage": "done",
+      "started_at": "2026-08-18 00:00:00.000000",
+      "status": "succeeded",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:01.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_procurement_001",
+      "error": null,
+      "filename": "采购-协同流程通用指南.md",
+      "finished_at": "2026-08-18 00:00:01.000000",
+      "id": "kjob_preset_procurement_001",
+      "knowledge_base_id": "kb_preset_procurement_001",
+      "knowledge_base_version_id": "kbver_kb_preset_procurement_001_1_0_0",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "creator_name": "admin",
+        "ingest_steps": [
+          {
+            "key": "queued",
+            "label": "排队中",
+            "progress": 0.0,
+            "status": "done"
+          },
+          {
+            "key": "parsing",
+            "label": "解析原始资料",
+            "progress": 0.08,
+            "status": "done"
+          },
+          {
+            "key": "normalizing",
+            "label": "规范化 Source",
+            "progress": 0.16,
+            "status": "done"
+          },
+          {
+            "key": "documenting",
+            "label": "写入 Source Document",
+            "progress": 0.24,
+            "status": "done"
+          },
+          {
+            "key": "bucketing",
+            "label": "规划 Wiki 页面",
+            "progress": 0.36,
+            "status": "done"
+          },
+          {
+            "key": "bucket_writing",
+            "label": "写入 OKF Wiki",
+            "progress": 0.48,
+            "status": "done"
+          },
+          {
+            "key": "chunking",
+            "label": "生成引用来源",
+            "progress": 0.62,
+            "status": "done"
+          },
+          {
+            "key": "summarizing",
+            "label": "刷新 PageIndex",
+            "progress": 0.74,
+            "status": "done"
+          },
+          {
+            "key": "discovering",
+            "label": "发现 SOP/工具",
+            "progress": 0.88,
+            "status": "done"
+          },
+          {
+            "key": "done",
+            "label": "完成入库",
+            "progress": 1.0,
+            "status": "done"
+          }
+        ],
+        "metadata": {},
+        "stage_detail": "完成入库：1 个 Wiki 页面，1 个内部索引，1 个引用来源",
+        "stage_label": "完成入库",
+        "stage_stats": {
+          "bucket_count": 1,
+          "chunk_count": 1,
+          "concept_count": 0
+        },
+        "title": "采购-协同流程通用指南"
+      },
+      "progress": 1.0,
+      "stage": "done",
+      "started_at": "2026-08-18 00:00:00.000000",
+      "status": "succeeded",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:01.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_project_001",
+      "error": null,
+      "filename": "项目管理-推进通用指南.md",
+      "finished_at": "2026-08-18 00:00:01.000000",
+      "id": "kjob_preset_project_001",
+      "knowledge_base_id": "kb_preset_project_001",
+      "knowledge_base_version_id": "kbver_kb_preset_project_001_1_0_0",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "creator_name": "admin",
+        "ingest_steps": [
+          {
+            "key": "queued",
+            "label": "排队中",
+            "progress": 0.0,
+            "status": "done"
+          },
+          {
+            "key": "parsing",
+            "label": "解析原始资料",
+            "progress": 0.08,
+            "status": "done"
+          },
+          {
+            "key": "normalizing",
+            "label": "规范化 Source",
+            "progress": 0.16,
+            "status": "done"
+          },
+          {
+            "key": "documenting",
+            "label": "写入 Source Document",
+            "progress": 0.24,
+            "status": "done"
+          },
+          {
+            "key": "bucketing",
+            "label": "规划 Wiki 页面",
+            "progress": 0.36,
+            "status": "done"
+          },
+          {
+            "key": "bucket_writing",
+            "label": "写入 OKF Wiki",
+            "progress": 0.48,
+            "status": "done"
+          },
+          {
+            "key": "chunking",
+            "label": "生成引用来源",
+            "progress": 0.62,
+            "status": "done"
+          },
+          {
+            "key": "summarizing",
+            "label": "刷新 PageIndex",
+            "progress": 0.74,
+            "status": "done"
+          },
+          {
+            "key": "discovering",
+            "label": "发现 SOP/工具",
+            "progress": 0.88,
+            "status": "done"
+          },
+          {
+            "key": "done",
+            "label": "完成入库",
+            "progress": 1.0,
+            "status": "done"
+          }
+        ],
+        "metadata": {},
+        "stage_detail": "完成入库：1 个 Wiki 页面，1 个内部索引，1 个引用来源",
+        "stage_label": "完成入库",
+        "stage_stats": {
+          "bucket_count": 1,
+          "chunk_count": 1,
+          "concept_count": 0
+        },
+        "title": "项目管理-推进通用指南"
+      },
+      "progress": 1.0,
+      "stage": "done",
+      "started_at": "2026-08-18 00:00:00.000000",
+      "status": "succeeded",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:01.000000"
+    },
+    {
+      "created_at": "2026-08-18 00:00:00.000000",
+      "document_id": "kdoc_preset_data_001",
+      "error": null,
+      "filename": "数据分析-经营分析通用指南.md",
+      "finished_at": "2026-08-18 00:00:01.000000",
+      "id": "kjob_preset_data_001",
+      "knowledge_base_id": "kb_preset_data_001",
+      "knowledge_base_version_id": "kbver_kb_preset_data_001_1_0_0",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "creator_name": "admin",
+        "ingest_steps": [
+          {
+            "key": "queued",
+            "label": "排队中",
+            "progress": 0.0,
+            "status": "done"
+          },
+          {
+            "key": "parsing",
+            "label": "解析原始资料",
+            "progress": 0.08,
+            "status": "done"
+          },
+          {
+            "key": "normalizing",
+            "label": "规范化 Source",
+            "progress": 0.16,
+            "status": "done"
+          },
+          {
+            "key": "documenting",
+            "label": "写入 Source Document",
+            "progress": 0.24,
+            "status": "done"
+          },
+          {
+            "key": "bucketing",
+            "label": "规划 Wiki 页面",
+            "progress": 0.36,
+            "status": "done"
+          },
+          {
+            "key": "bucket_writing",
+            "label": "写入 OKF Wiki",
+            "progress": 0.48,
+            "status": "done"
+          },
+          {
+            "key": "chunking",
+            "label": "生成引用来源",
+            "progress": 0.62,
+            "status": "done"
+          },
+          {
+            "key": "summarizing",
+            "label": "刷新 PageIndex",
+            "progress": 0.74,
+            "status": "done"
+          },
+          {
+            "key": "discovering",
+            "label": "发现 SOP/工具",
+            "progress": 0.88,
+            "status": "done"
+          },
+          {
+            "key": "done",
+            "label": "完成入库",
+            "progress": 1.0,
+            "status": "done"
+          }
+        ],
+        "metadata": {},
+        "stage_detail": "完成入库：1 个 Wiki 页面，1 个内部索引，1 个引用来源",
+        "stage_label": "完成入库",
+        "stage_stats": {
+          "bucket_count": 1,
+          "chunk_count": 1,
+          "concept_count": 0
+        },
+        "title": "数据分析-经营分析通用指南"
+      },
+      "progress": 1.0,
+      "stage": "done",
+      "started_at": "2026-08-18 00:00:00.000000",
+      "status": "succeeded",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:01.000000"
+    }
+  ],
+  "skills": [
+    {
+      "business_domain": "销售与客户拓展",
+      "content_json": {
+        "business_domain": "销售与客户拓展",
+        "description": "收集客户与商机背景，依据通用指南形成沟通准备和下一步行动。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "信息收集完成",
+            "next_node_id": "n2_guide",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "澄清客户需求和商机阶段",
+          "输出有责任人和时间点的下一步",
+          "避免未经授权的对外承诺"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充或更正客户信息，并基于最新上下文继续。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "客户需求澄清与推进",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "customer_need",
+              "customer_context",
+              "opportunity_stage"
+            ],
+            "instruction": "提取客户要解决的问题、使用场景和当前商机阶段。用户已提供的信息不得重复追问；缺失时一次只询问最影响下一步的内容。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集客户与商机信息",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库，输出需求摘要、待验证问题、沟通建议、下一步责任人与建议时间。不得编造预算、联系人或承诺；涉及价格、交付和合同承诺时提示由有权限人员确认。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "形成推进建议",
+            "node_id": "n2_guide",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "customer_need",
+          "customer_context",
+          "opportunity_stage"
+        ],
+        "response_rules": [
+          "区分已确认事实、假设和待确认事项。",
+          "必须给出可执行的下一步，不以请稍候作为最终回复。"
+        ],
+        "skill_id": "sales_opportunity_guidance",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "customer_context",
+            "customer_need",
+            "opportunity_stage"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_guide"
+        ],
+        "trigger_intents": [
+          "梳理客户需求",
+          "准备客户沟通",
+          "推进销售商机"
+        ],
+        "user_utterance_examples": [
+          "帮我梳理一下这个客户的需求",
+          "下一次客户沟通应该确认什么",
+          "这个商机怎么推进"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "收集客户与商机背景，依据通用指南形成沟通准备和下一步行动。",
+      "id": "skill_preset_sales_001",
+      "name": "客户需求澄清与推进",
+      "skill_id": "sales_opportunity_guidance",
+      "status": "published",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "business_domain": "市场与内容策划",
+      "content_json": {
+        "business_domain": "市场与内容策划",
+        "description": "将业务目标转化为可审核、可发布的内容策划简报。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "简报信息完整",
+            "next_node_id": "n2_brief",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "明确目标受众与核心信息",
+          "形成渠道适配的内容简报",
+          "完成事实和发布风险检查"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许随时调整目标、受众或渠道。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "市场内容策划简报",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "campaign_objective",
+              "audience",
+              "channel"
+            ],
+            "instruction": "提取业务目标、目标受众、发布渠道和用户已给出的约束。不得重复询问已满足的信息。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集内容简报信息",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出目标、受众洞察、核心信息、内容结构、渠道建议、衡量指标和发布前检查项。未知事实使用待确认标记，不得虚构数据或素材授权。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成内容策划简报",
+            "node_id": "n2_brief",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "campaign_objective",
+          "audience",
+          "channel"
+        ],
+        "response_rules": [
+          "所有数据和案例必须标明来源或待确认。",
+          "输出必须包含发布前检查项。"
+        ],
+        "skill_id": "marketing_content_brief",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "audience",
+            "campaign_objective",
+            "channel"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_brief"
+        ],
+        "trigger_intents": [
+          "策划市场内容",
+          "准备活动文案",
+          "生成内容简报"
+        ],
+        "user_utterance_examples": [
+          "帮我做一份活动内容简报",
+          "这篇内容发布前要检查什么",
+          "面向新客户的内容怎么策划"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "将业务目标转化为可审核、可发布的内容策划简报。",
+      "id": "skill_preset_marketing_001",
+      "name": "市场内容策划简报",
+      "skill_id": "marketing_content_brief",
+      "status": "published",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "business_domain": "采购与供应协同",
+      "content_json": {
+        "business_domain": "采购与供应协同",
+        "description": "将采购需求整理为可比较、可审批的需求说明。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "需求信息完整",
+            "next_node_id": "n2_checklist",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "补齐采购需求要素",
+          "给出供应商比较维度",
+          "提示审批与职责分离要求"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充规格、数量、预算和时间约束。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "采购需求准备与比较",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "item_or_service",
+              "quantity_or_scope",
+              "needed_by"
+            ],
+            "instruction": "提取采购对象、数量或范围、期望时间，以及已给出的规格、预算和验收条件。已满足的信息不得重复追问。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集采购需求",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出需求摘要、缺失项、供应商比较表头、审批材料和风险提示。不得代替采购或审批人确认订单、付款或合作承诺。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成采购准备清单",
+            "node_id": "n2_checklist",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "item_or_service",
+          "quantity_or_scope",
+          "needed_by"
+        ],
+        "response_rules": [
+          "供应商必须在相同口径下比较。",
+          "未经授权不得作出采购或付款承诺。"
+        ],
+        "skill_id": "procurement_request_checklist",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "item_or_service",
+            "needed_by",
+            "quantity_or_scope"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_checklist"
+        ],
+        "trigger_intents": [
+          "准备采购申请",
+          "比较供应商",
+          "梳理采购需求"
+        ],
+        "user_utterance_examples": [
+          "我要采购一批办公设备",
+          "帮我列供应商比较维度",
+          "采购申请还缺什么信息"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "将采购需求整理为可比较、可审批的需求说明。",
+      "id": "skill_preset_procurement_001",
+      "name": "采购需求准备与比较",
+      "skill_id": "procurement_request_checklist",
+      "status": "published",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "business_domain": "项目与交付管理",
+      "content_json": {
+        "business_domain": "项目与交付管理",
+        "description": "将项目目标和当前状态整理为里程碑、风险与行动清单。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "项目信息完整",
+            "next_node_id": "n2_plan",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "明确项目目标和验收条件",
+          "形成里程碑与责任人清单",
+          "暴露风险、依赖和待决策事项"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许随时更新范围、里程碑、阻塞和负责人。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "项目推进计划整理",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "project_goal",
+              "current_stage",
+              "known_blockers"
+            ],
+            "instruction": "提取项目目标、当前阶段、已有里程碑、责任人和阻塞项。用户已提供的信息不得重复追问。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集项目状态",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出目标与范围、里程碑表、行动项、风险与依赖、待决策事项。对范围或日期变化标记影响和所需确认人，不把跟进中作为最终结果。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成推进计划",
+            "node_id": "n2_plan",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "project_goal",
+          "current_stage",
+          "known_blockers"
+        ],
+        "response_rules": [
+          "每个行动项应尽量包含责任人和时间点。",
+          "范围、资源和日期变化必须明确影响与决策需求。"
+        ],
+        "skill_id": "project_delivery_plan",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "current_stage",
+            "known_blockers",
+            "project_goal"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_plan"
+        ],
+        "trigger_intents": [
+          "梳理项目计划",
+          "跟踪项目风险",
+          "准备项目周报"
+        ],
+        "user_utterance_examples": [
+          "帮我拆一下项目里程碑",
+          "这个项目有哪些风险",
+          "把当前进度整理成行动清单"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "将项目目标和当前状态整理为里程碑、风险与行动清单。",
+      "id": "skill_preset_project_001",
+      "name": "项目推进计划整理",
+      "skill_id": "project_delivery_plan",
+      "status": "published",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "business_domain": "经营与数据分析",
+      "content_json": {
+        "business_domain": "经营与数据分析",
+        "description": "将业务问题转化为口径明确、结论可复核的分析框架。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "分析问题明确",
+            "next_node_id": "n2_framework",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "定义指标和时间口径",
+          "选择合理对比维度",
+          "区分事实、假设和数据限制"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充指标定义、时间范围或分析维度。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "经营指标分析框架",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "business_question",
+              "metric",
+              "period"
+            ],
+            "instruction": "提取业务问题、指标、时间范围及用户已给出的对比维度。若指标口径不明确，优先询问计算定义和粒度。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集分析需求",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出指标定义、所需字段、对比方案、分析步骤、限制和结果表达模板。没有实际数据时不得生成虚假数值或确定性因果结论。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成分析框架",
+            "node_id": "n2_framework",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "business_question",
+          "metric",
+          "period"
+        ],
+        "response_rules": [
+          "所有结论必须标明数据事实、推测或待验证假设。",
+          "没有实际数据时只提供分析框架，不生成虚假数值。"
+        ],
+        "skill_id": "business_metric_analysis",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "business_question",
+            "metric",
+            "period"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_framework"
+        ],
+        "trigger_intents": [
+          "分析经营指标",
+          "定义数据口径",
+          "准备业务复盘"
+        ],
+        "user_utterance_examples": [
+          "帮我分析本月转化率",
+          "这个指标口径怎么定义",
+          "给我一个经营复盘框架"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "将业务问题转化为口径明确、结论可复核的分析框架。",
+      "id": "skill_preset_data_001",
+      "name": "经营指标分析框架",
+      "skill_id": "business_metric_analysis",
+      "status": "published",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    }
+  ],
+  "skill_versions": [
+    {
+      "business_domain": "销售与客户拓展",
+      "content_json": {
+        "business_domain": "销售与客户拓展",
+        "description": "收集客户与商机背景，依据通用指南形成沟通准备和下一步行动。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "信息收集完成",
+            "next_node_id": "n2_guide",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "澄清客户需求和商机阶段",
+          "输出有责任人和时间点的下一步",
+          "避免未经授权的对外承诺"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充或更正客户信息，并基于最新上下文继续。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "客户需求澄清与推进",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "customer_need",
+              "customer_context",
+              "opportunity_stage"
+            ],
+            "instruction": "提取客户要解决的问题、使用场景和当前商机阶段。用户已提供的信息不得重复追问；缺失时一次只询问最影响下一步的内容。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集客户与商机信息",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库，输出需求摘要、待验证问题、沟通建议、下一步责任人与建议时间。不得编造预算、联系人或承诺；涉及价格、交付和合同承诺时提示由有权限人员确认。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "形成推进建议",
+            "node_id": "n2_guide",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "customer_need",
+          "customer_context",
+          "opportunity_stage"
+        ],
+        "response_rules": [
+          "区分已确认事实、假设和待确认事项。",
+          "必须给出可执行的下一步，不以请稍候作为最终回复。"
+        ],
+        "skill_id": "sales_opportunity_guidance",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "customer_context",
+            "customer_need",
+            "opportunity_stage"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_guide"
+        ],
+        "trigger_intents": [
+          "梳理客户需求",
+          "准备客户沟通",
+          "推进销售商机"
+        ],
+        "user_utterance_examples": [
+          "帮我梳理一下这个客户的需求",
+          "下一次客户沟通应该确认什么",
+          "这个商机怎么推进"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "收集客户与商机背景，依据通用指南形成沟通准备和下一步行动。",
+      "id": "skillver_preset_sales_001_1_0_0",
+      "name": "客户需求澄清与推进",
+      "skill_id": "sales_opportunity_guidance",
+      "status": "published",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "business_domain": "市场与内容策划",
+      "content_json": {
+        "business_domain": "市场与内容策划",
+        "description": "将业务目标转化为可审核、可发布的内容策划简报。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "简报信息完整",
+            "next_node_id": "n2_brief",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "明确目标受众与核心信息",
+          "形成渠道适配的内容简报",
+          "完成事实和发布风险检查"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许随时调整目标、受众或渠道。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "市场内容策划简报",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "campaign_objective",
+              "audience",
+              "channel"
+            ],
+            "instruction": "提取业务目标、目标受众、发布渠道和用户已给出的约束。不得重复询问已满足的信息。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集内容简报信息",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出目标、受众洞察、核心信息、内容结构、渠道建议、衡量指标和发布前检查项。未知事实使用待确认标记，不得虚构数据或素材授权。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成内容策划简报",
+            "node_id": "n2_brief",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "campaign_objective",
+          "audience",
+          "channel"
+        ],
+        "response_rules": [
+          "所有数据和案例必须标明来源或待确认。",
+          "输出必须包含发布前检查项。"
+        ],
+        "skill_id": "marketing_content_brief",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "audience",
+            "campaign_objective",
+            "channel"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_brief"
+        ],
+        "trigger_intents": [
+          "策划市场内容",
+          "准备活动文案",
+          "生成内容简报"
+        ],
+        "user_utterance_examples": [
+          "帮我做一份活动内容简报",
+          "这篇内容发布前要检查什么",
+          "面向新客户的内容怎么策划"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "将业务目标转化为可审核、可发布的内容策划简报。",
+      "id": "skillver_preset_marketing_001_1_0_0",
+      "name": "市场内容策划简报",
+      "skill_id": "marketing_content_brief",
+      "status": "published",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "business_domain": "采购与供应协同",
+      "content_json": {
+        "business_domain": "采购与供应协同",
+        "description": "将采购需求整理为可比较、可审批的需求说明。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "需求信息完整",
+            "next_node_id": "n2_checklist",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "补齐采购需求要素",
+          "给出供应商比较维度",
+          "提示审批与职责分离要求"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充规格、数量、预算和时间约束。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "采购需求准备与比较",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "item_or_service",
+              "quantity_or_scope",
+              "needed_by"
+            ],
+            "instruction": "提取采购对象、数量或范围、期望时间，以及已给出的规格、预算和验收条件。已满足的信息不得重复追问。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集采购需求",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出需求摘要、缺失项、供应商比较表头、审批材料和风险提示。不得代替采购或审批人确认订单、付款或合作承诺。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成采购准备清单",
+            "node_id": "n2_checklist",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "item_or_service",
+          "quantity_or_scope",
+          "needed_by"
+        ],
+        "response_rules": [
+          "供应商必须在相同口径下比较。",
+          "未经授权不得作出采购或付款承诺。"
+        ],
+        "skill_id": "procurement_request_checklist",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "item_or_service",
+            "needed_by",
+            "quantity_or_scope"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_checklist"
+        ],
+        "trigger_intents": [
+          "准备采购申请",
+          "比较供应商",
+          "梳理采购需求"
+        ],
+        "user_utterance_examples": [
+          "我要采购一批办公设备",
+          "帮我列供应商比较维度",
+          "采购申请还缺什么信息"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "将采购需求整理为可比较、可审批的需求说明。",
+      "id": "skillver_preset_procurement_001_1_0_0",
+      "name": "采购需求准备与比较",
+      "skill_id": "procurement_request_checklist",
+      "status": "published",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "business_domain": "项目与交付管理",
+      "content_json": {
+        "business_domain": "项目与交付管理",
+        "description": "将项目目标和当前状态整理为里程碑、风险与行动清单。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "项目信息完整",
+            "next_node_id": "n2_plan",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "明确项目目标和验收条件",
+          "形成里程碑与责任人清单",
+          "暴露风险、依赖和待决策事项"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许随时更新范围、里程碑、阻塞和负责人。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "项目推进计划整理",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "project_goal",
+              "current_stage",
+              "known_blockers"
+            ],
+            "instruction": "提取项目目标、当前阶段、已有里程碑、责任人和阻塞项。用户已提供的信息不得重复追问。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集项目状态",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出目标与范围、里程碑表、行动项、风险与依赖、待决策事项。对范围或日期变化标记影响和所需确认人，不把跟进中作为最终结果。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成推进计划",
+            "node_id": "n2_plan",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "project_goal",
+          "current_stage",
+          "known_blockers"
+        ],
+        "response_rules": [
+          "每个行动项应尽量包含责任人和时间点。",
+          "范围、资源和日期变化必须明确影响与决策需求。"
+        ],
+        "skill_id": "project_delivery_plan",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "current_stage",
+            "known_blockers",
+            "project_goal"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_plan"
+        ],
+        "trigger_intents": [
+          "梳理项目计划",
+          "跟踪项目风险",
+          "准备项目周报"
+        ],
+        "user_utterance_examples": [
+          "帮我拆一下项目里程碑",
+          "这个项目有哪些风险",
+          "把当前进度整理成行动清单"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "将项目目标和当前状态整理为里程碑、风险与行动清单。",
+      "id": "skillver_preset_project_001_1_0_0",
+      "name": "项目推进计划整理",
+      "skill_id": "project_delivery_plan",
+      "status": "published",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "business_domain": "经营与数据分析",
+      "content_json": {
+        "business_domain": "经营与数据分析",
+        "description": "将业务问题转化为口径明确、结论可复核的分析框架。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "分析问题明确",
+            "next_node_id": "n2_framework",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "定义指标和时间口径",
+          "选择合理对比维度",
+          "区分事实、假设和数据限制"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充指标定义、时间范围或分析维度。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "经营指标分析框架",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "business_question",
+              "metric",
+              "period"
+            ],
+            "instruction": "提取业务问题、指标、时间范围及用户已给出的对比维度。若指标口径不明确，优先询问计算定义和粒度。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集分析需求",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出指标定义、所需字段、对比方案、分析步骤、限制和结果表达模板。没有实际数据时不得生成虚假数值或确定性因果结论。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成分析框架",
+            "node_id": "n2_framework",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "business_question",
+          "metric",
+          "period"
+        ],
+        "response_rules": [
+          "所有结论必须标明数据事实、推测或待验证假设。",
+          "没有实际数据时只提供分析框架，不生成虚假数值。"
+        ],
+        "skill_id": "business_metric_analysis",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "business_question",
+            "metric",
+            "period"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_framework"
+        ],
+        "trigger_intents": [
+          "分析经营指标",
+          "定义数据口径",
+          "准备业务复盘"
+        ],
+        "user_utterance_examples": [
+          "帮我分析本月转化率",
+          "这个指标口径怎么定义",
+          "给我一个经营复盘框架"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "description": "将业务问题转化为口径明确、结论可复核的分析框架。",
+      "id": "skillver_preset_data_001_1_0_0",
+      "name": "经营指标分析框架",
+      "skill_id": "business_metric_analysis",
+      "status": "published",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    }
+  ],
+  "tools": [],
+  "general_skills": [],
+  "agent_resource_bindings": [
+    {
+      "agent_id": "agent_preset_sales_001",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentres_preset_sales_kb_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_sales_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "resource_id": "kb_preset_sales_001",
+      "resource_type": "knowledge_base",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_sales_001",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentres_preset_sales_skill_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_sales_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "resource_id": "skill_preset_sales_001",
+      "resource_type": "skill",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_marketing_001",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentres_preset_marketing_kb_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_marketing_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "resource_id": "kb_preset_marketing_001",
+      "resource_type": "knowledge_base",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_marketing_001",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentres_preset_marketing_skill_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_marketing_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "resource_id": "skill_preset_marketing_001",
+      "resource_type": "skill",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_procurement_001",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentres_preset_procurement_kb_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_procurement_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "resource_id": "kb_preset_procurement_001",
+      "resource_type": "knowledge_base",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_procurement_001",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentres_preset_procurement_skill_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_procurement_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "resource_id": "skill_preset_procurement_001",
+      "resource_type": "skill",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_project_001",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentres_preset_project_kb_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_project_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "resource_id": "kb_preset_project_001",
+      "resource_type": "knowledge_base",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_project_001",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentres_preset_project_skill_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_project_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "resource_id": "skill_preset_project_001",
+      "resource_type": "skill",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_data_001",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentres_preset_data_kb_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_data_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "resource_id": "kb_preset_data_001",
+      "resource_type": "knowledge_base",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_data_001",
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentres_preset_data_skill_001",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_preset_data_001",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "resource_id": "skill_preset_data_001",
+      "resource_type": "skill",
+      "status": "active",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    }
+  ],
+  "agent_skill_branches": [
+    {
+      "agent_id": "agent_preset_sales_001",
+      "base_version": "1.0.0",
+      "content_json": {
+        "business_domain": "销售与客户拓展",
+        "description": "收集客户与商机背景，依据通用指南形成沟通准备和下一步行动。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "信息收集完成",
+            "next_node_id": "n2_guide",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "澄清客户需求和商机阶段",
+          "输出有责任人和时间点的下一步",
+          "避免未经授权的对外承诺"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充或更正客户信息，并基于最新上下文继续。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "客户需求澄清与推进",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "customer_need",
+              "customer_context",
+              "opportunity_stage"
+            ],
+            "instruction": "提取客户要解决的问题、使用场景和当前商机阶段。用户已提供的信息不得重复追问；缺失时一次只询问最影响下一步的内容。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集客户与商机信息",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库，输出需求摘要、待验证问题、沟通建议、下一步责任人与建议时间。不得编造预算、联系人或承诺；涉及价格、交付和合同承诺时提示由有权限人员确认。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "形成推进建议",
+            "node_id": "n2_guide",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "customer_need",
+          "customer_context",
+          "opportunity_stage"
+        ],
+        "response_rules": [
+          "区分已确认事实、假设和待确认事项。",
+          "必须给出可执行的下一步，不以请稍候作为最终回复。"
+        ],
+        "skill_id": "sales_opportunity_guidance",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "customer_context",
+            "customer_need",
+            "opportunity_stage"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_guide"
+        ],
+        "trigger_intents": [
+          "梳理客户需求",
+          "准备客户沟通",
+          "推进销售商机"
+        ],
+        "user_utterance_examples": [
+          "帮我梳理一下这个客户的需求",
+          "下一次客户沟通应该确认什么",
+          "这个商机怎么推进"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "head_version": "1.0.0",
+      "id": "agentbranch_agent_preset_sales_001_sales_opportunity_guidance",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "created_from_agent": true,
+        "creator_name": "admin",
+        "owner_agent_id": "agent_preset_sales_001",
+        "owner_display_name": "admin",
+        "owner_user_id": "user_5435589cfa8d4669",
+        "owner_username": "admin",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "skill_id": "sales_opportunity_guidance",
+      "source_skill_id": "skill_preset_sales_001",
+      "status": "active",
+      "sync_state": "synced",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_marketing_001",
+      "base_version": "1.0.0",
+      "content_json": {
+        "business_domain": "市场与内容策划",
+        "description": "将业务目标转化为可审核、可发布的内容策划简报。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "简报信息完整",
+            "next_node_id": "n2_brief",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "明确目标受众与核心信息",
+          "形成渠道适配的内容简报",
+          "完成事实和发布风险检查"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许随时调整目标、受众或渠道。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "市场内容策划简报",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "campaign_objective",
+              "audience",
+              "channel"
+            ],
+            "instruction": "提取业务目标、目标受众、发布渠道和用户已给出的约束。不得重复询问已满足的信息。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集内容简报信息",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出目标、受众洞察、核心信息、内容结构、渠道建议、衡量指标和发布前检查项。未知事实使用待确认标记，不得虚构数据或素材授权。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成内容策划简报",
+            "node_id": "n2_brief",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "campaign_objective",
+          "audience",
+          "channel"
+        ],
+        "response_rules": [
+          "所有数据和案例必须标明来源或待确认。",
+          "输出必须包含发布前检查项。"
+        ],
+        "skill_id": "marketing_content_brief",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "audience",
+            "campaign_objective",
+            "channel"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_brief"
+        ],
+        "trigger_intents": [
+          "策划市场内容",
+          "准备活动文案",
+          "生成内容简报"
+        ],
+        "user_utterance_examples": [
+          "帮我做一份活动内容简报",
+          "这篇内容发布前要检查什么",
+          "面向新客户的内容怎么策划"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "head_version": "1.0.0",
+      "id": "agentbranch_agent_preset_marketing_001_marketing_content_brief",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "created_from_agent": true,
+        "creator_name": "admin",
+        "owner_agent_id": "agent_preset_marketing_001",
+        "owner_display_name": "admin",
+        "owner_user_id": "user_5435589cfa8d4669",
+        "owner_username": "admin",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "skill_id": "marketing_content_brief",
+      "source_skill_id": "skill_preset_marketing_001",
+      "status": "active",
+      "sync_state": "synced",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_procurement_001",
+      "base_version": "1.0.0",
+      "content_json": {
+        "business_domain": "采购与供应协同",
+        "description": "将采购需求整理为可比较、可审批的需求说明。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "需求信息完整",
+            "next_node_id": "n2_checklist",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "补齐采购需求要素",
+          "给出供应商比较维度",
+          "提示审批与职责分离要求"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充规格、数量、预算和时间约束。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "采购需求准备与比较",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "item_or_service",
+              "quantity_or_scope",
+              "needed_by"
+            ],
+            "instruction": "提取采购对象、数量或范围、期望时间，以及已给出的规格、预算和验收条件。已满足的信息不得重复追问。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集采购需求",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出需求摘要、缺失项、供应商比较表头、审批材料和风险提示。不得代替采购或审批人确认订单、付款或合作承诺。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成采购准备清单",
+            "node_id": "n2_checklist",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "item_or_service",
+          "quantity_or_scope",
+          "needed_by"
+        ],
+        "response_rules": [
+          "供应商必须在相同口径下比较。",
+          "未经授权不得作出采购或付款承诺。"
+        ],
+        "skill_id": "procurement_request_checklist",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "item_or_service",
+            "needed_by",
+            "quantity_or_scope"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_checklist"
+        ],
+        "trigger_intents": [
+          "准备采购申请",
+          "比较供应商",
+          "梳理采购需求"
+        ],
+        "user_utterance_examples": [
+          "我要采购一批办公设备",
+          "帮我列供应商比较维度",
+          "采购申请还缺什么信息"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "head_version": "1.0.0",
+      "id": "agentbranch_agent_preset_procurement_001_procurement_request_checklist",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "created_from_agent": true,
+        "creator_name": "admin",
+        "owner_agent_id": "agent_preset_procurement_001",
+        "owner_display_name": "admin",
+        "owner_user_id": "user_5435589cfa8d4669",
+        "owner_username": "admin",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "skill_id": "procurement_request_checklist",
+      "source_skill_id": "skill_preset_procurement_001",
+      "status": "active",
+      "sync_state": "synced",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_project_001",
+      "base_version": "1.0.0",
+      "content_json": {
+        "business_domain": "项目与交付管理",
+        "description": "将项目目标和当前状态整理为里程碑、风险与行动清单。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "项目信息完整",
+            "next_node_id": "n2_plan",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "明确项目目标和验收条件",
+          "形成里程碑与责任人清单",
+          "暴露风险、依赖和待决策事项"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许随时更新范围、里程碑、阻塞和负责人。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "项目推进计划整理",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "project_goal",
+              "current_stage",
+              "known_blockers"
+            ],
+            "instruction": "提取项目目标、当前阶段、已有里程碑、责任人和阻塞项。用户已提供的信息不得重复追问。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集项目状态",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出目标与范围、里程碑表、行动项、风险与依赖、待决策事项。对范围或日期变化标记影响和所需确认人，不把跟进中作为最终结果。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成推进计划",
+            "node_id": "n2_plan",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "project_goal",
+          "current_stage",
+          "known_blockers"
+        ],
+        "response_rules": [
+          "每个行动项应尽量包含责任人和时间点。",
+          "范围、资源和日期变化必须明确影响与决策需求。"
+        ],
+        "skill_id": "project_delivery_plan",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "current_stage",
+            "known_blockers",
+            "project_goal"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_plan"
+        ],
+        "trigger_intents": [
+          "梳理项目计划",
+          "跟踪项目风险",
+          "准备项目周报"
+        ],
+        "user_utterance_examples": [
+          "帮我拆一下项目里程碑",
+          "这个项目有哪些风险",
+          "把当前进度整理成行动清单"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "head_version": "1.0.0",
+      "id": "agentbranch_agent_preset_project_001_project_delivery_plan",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "created_from_agent": true,
+        "creator_name": "admin",
+        "owner_agent_id": "agent_preset_project_001",
+        "owner_display_name": "admin",
+        "owner_user_id": "user_5435589cfa8d4669",
+        "owner_username": "admin",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "skill_id": "project_delivery_plan",
+      "source_skill_id": "skill_preset_project_001",
+      "status": "active",
+      "sync_state": "synced",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "agent_id": "agent_preset_data_001",
+      "base_version": "1.0.0",
+      "content_json": {
+        "business_domain": "经营与数据分析",
+        "description": "将业务问题转化为口径明确、结论可复核的分析框架。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "分析问题明确",
+            "next_node_id": "n2_framework",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "定义指标和时间口径",
+          "选择合理对比维度",
+          "区分事实、假设和数据限制"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充指标定义、时间范围或分析维度。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "经营指标分析框架",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "business_question",
+              "metric",
+              "period"
+            ],
+            "instruction": "提取业务问题、指标、时间范围及用户已给出的对比维度。若指标口径不明确，优先询问计算定义和粒度。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集分析需求",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出指标定义、所需字段、对比方案、分析步骤、限制和结果表达模板。没有实际数据时不得生成虚假数值或确定性因果结论。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成分析框架",
+            "node_id": "n2_framework",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "business_question",
+          "metric",
+          "period"
+        ],
+        "response_rules": [
+          "所有结论必须标明数据事实、推测或待验证假设。",
+          "没有实际数据时只提供分析框架，不生成虚假数值。"
+        ],
+        "skill_id": "business_metric_analysis",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "business_question",
+            "metric",
+            "period"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_framework"
+        ],
+        "trigger_intents": [
+          "分析经营指标",
+          "定义数据口径",
+          "准备业务复盘"
+        ],
+        "user_utterance_examples": [
+          "帮我分析本月转化率",
+          "这个指标口径怎么定义",
+          "给我一个经营复盘框架"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "head_version": "1.0.0",
+      "id": "agentbranch_agent_preset_data_001_business_metric_analysis",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_by_display_name": "admin",
+        "created_by_user_id": "user_5435589cfa8d4669",
+        "created_by_username": "admin",
+        "created_from_agent": true,
+        "creator_name": "admin",
+        "owner_agent_id": "agent_preset_data_001",
+        "owner_display_name": "admin",
+        "owner_user_id": "user_5435589cfa8d4669",
+        "owner_username": "admin",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "skill_id": "business_metric_analysis",
+      "source_skill_id": "skill_preset_data_001",
+      "status": "active",
+      "sync_state": "synced",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000"
+    }
+  ],
+  "agent_skill_branch_versions": [
+    {
+      "agent_id": "agent_preset_sales_001",
+      "base_version": "1.0.0",
+      "change_summary": "初始化分支",
+      "content_json": {
+        "business_domain": "销售与客户拓展",
+        "description": "收集客户与商机背景，依据通用指南形成沟通准备和下一步行动。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "信息收集完成",
+            "next_node_id": "n2_guide",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "澄清客户需求和商机阶段",
+          "输出有责任人和时间点的下一步",
+          "避免未经授权的对外承诺"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充或更正客户信息，并基于最新上下文继续。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "客户需求澄清与推进",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "customer_need",
+              "customer_context",
+              "opportunity_stage"
+            ],
+            "instruction": "提取客户要解决的问题、使用场景和当前商机阶段。用户已提供的信息不得重复追问；缺失时一次只询问最影响下一步的内容。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集客户与商机信息",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库，输出需求摘要、待验证问题、沟通建议、下一步责任人与建议时间。不得编造预算、联系人或承诺；涉及价格、交付和合同承诺时提示由有权限人员确认。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "形成推进建议",
+            "node_id": "n2_guide",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "customer_need",
+          "customer_context",
+          "opportunity_stage"
+        ],
+        "response_rules": [
+          "区分已确认事实、假设和待确认事项。",
+          "必须给出可执行的下一步，不以请稍候作为最终回复。"
+        ],
+        "skill_id": "sales_opportunity_guidance",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "customer_context",
+            "customer_need",
+            "opportunity_stage"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_guide"
+        ],
+        "trigger_intents": [
+          "梳理客户需求",
+          "准备客户沟通",
+          "推进销售商机"
+        ],
+        "user_utterance_examples": [
+          "帮我梳理一下这个客户的需求",
+          "下一次客户沟通应该确认什么",
+          "这个商机怎么推进"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentbranchver_agent_preset_sales_001_sales_opportunity_guidance_1_0_0",
+      "skill_id": "sales_opportunity_guidance",
+      "source_skill_id": "skill_preset_sales_001",
+      "status": "active",
+      "sync_state": "synced",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "agent_id": "agent_preset_marketing_001",
+      "base_version": "1.0.0",
+      "change_summary": "初始化分支",
+      "content_json": {
+        "business_domain": "市场与内容策划",
+        "description": "将业务目标转化为可审核、可发布的内容策划简报。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "简报信息完整",
+            "next_node_id": "n2_brief",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "明确目标受众与核心信息",
+          "形成渠道适配的内容简报",
+          "完成事实和发布风险检查"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许随时调整目标、受众或渠道。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "市场内容策划简报",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "campaign_objective",
+              "audience",
+              "channel"
+            ],
+            "instruction": "提取业务目标、目标受众、发布渠道和用户已给出的约束。不得重复询问已满足的信息。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集内容简报信息",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出目标、受众洞察、核心信息、内容结构、渠道建议、衡量指标和发布前检查项。未知事实使用待确认标记，不得虚构数据或素材授权。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成内容策划简报",
+            "node_id": "n2_brief",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "campaign_objective",
+          "audience",
+          "channel"
+        ],
+        "response_rules": [
+          "所有数据和案例必须标明来源或待确认。",
+          "输出必须包含发布前检查项。"
+        ],
+        "skill_id": "marketing_content_brief",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "audience",
+            "campaign_objective",
+            "channel"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_brief"
+        ],
+        "trigger_intents": [
+          "策划市场内容",
+          "准备活动文案",
+          "生成内容简报"
+        ],
+        "user_utterance_examples": [
+          "帮我做一份活动内容简报",
+          "这篇内容发布前要检查什么",
+          "面向新客户的内容怎么策划"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentbranchver_agent_preset_marketing_001_marketing_content_brief_1_0_0",
+      "skill_id": "marketing_content_brief",
+      "source_skill_id": "skill_preset_marketing_001",
+      "status": "active",
+      "sync_state": "synced",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "agent_id": "agent_preset_procurement_001",
+      "base_version": "1.0.0",
+      "change_summary": "初始化分支",
+      "content_json": {
+        "business_domain": "采购与供应协同",
+        "description": "将采购需求整理为可比较、可审批的需求说明。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "需求信息完整",
+            "next_node_id": "n2_checklist",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "补齐采购需求要素",
+          "给出供应商比较维度",
+          "提示审批与职责分离要求"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充规格、数量、预算和时间约束。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "采购需求准备与比较",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "item_or_service",
+              "quantity_or_scope",
+              "needed_by"
+            ],
+            "instruction": "提取采购对象、数量或范围、期望时间，以及已给出的规格、预算和验收条件。已满足的信息不得重复追问。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集采购需求",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出需求摘要、缺失项、供应商比较表头、审批材料和风险提示。不得代替采购或审批人确认订单、付款或合作承诺。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成采购准备清单",
+            "node_id": "n2_checklist",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "item_or_service",
+          "quantity_or_scope",
+          "needed_by"
+        ],
+        "response_rules": [
+          "供应商必须在相同口径下比较。",
+          "未经授权不得作出采购或付款承诺。"
+        ],
+        "skill_id": "procurement_request_checklist",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "item_or_service",
+            "needed_by",
+            "quantity_or_scope"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_checklist"
+        ],
+        "trigger_intents": [
+          "准备采购申请",
+          "比较供应商",
+          "梳理采购需求"
+        ],
+        "user_utterance_examples": [
+          "我要采购一批办公设备",
+          "帮我列供应商比较维度",
+          "采购申请还缺什么信息"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentbranchver_agent_preset_procurement_001_procurement_request_checklist_1_0_0",
+      "skill_id": "procurement_request_checklist",
+      "source_skill_id": "skill_preset_procurement_001",
+      "status": "active",
+      "sync_state": "synced",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "agent_id": "agent_preset_project_001",
+      "base_version": "1.0.0",
+      "change_summary": "初始化分支",
+      "content_json": {
+        "business_domain": "项目与交付管理",
+        "description": "将项目目标和当前状态整理为里程碑、风险与行动清单。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "项目信息完整",
+            "next_node_id": "n2_plan",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "明确项目目标和验收条件",
+          "形成里程碑与责任人清单",
+          "暴露风险、依赖和待决策事项"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许随时更新范围、里程碑、阻塞和负责人。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "项目推进计划整理",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "project_goal",
+              "current_stage",
+              "known_blockers"
+            ],
+            "instruction": "提取项目目标、当前阶段、已有里程碑、责任人和阻塞项。用户已提供的信息不得重复追问。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集项目状态",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出目标与范围、里程碑表、行动项、风险与依赖、待决策事项。对范围或日期变化标记影响和所需确认人，不把跟进中作为最终结果。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成推进计划",
+            "node_id": "n2_plan",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "project_goal",
+          "current_stage",
+          "known_blockers"
+        ],
+        "response_rules": [
+          "每个行动项应尽量包含责任人和时间点。",
+          "范围、资源和日期变化必须明确影响与决策需求。"
+        ],
+        "skill_id": "project_delivery_plan",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "current_stage",
+            "known_blockers",
+            "project_goal"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_plan"
+        ],
+        "trigger_intents": [
+          "梳理项目计划",
+          "跟踪项目风险",
+          "准备项目周报"
+        ],
+        "user_utterance_examples": [
+          "帮我拆一下项目里程碑",
+          "这个项目有哪些风险",
+          "把当前进度整理成行动清单"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentbranchver_agent_preset_project_001_project_delivery_plan_1_0_0",
+      "skill_id": "project_delivery_plan",
+      "source_skill_id": "skill_preset_project_001",
+      "status": "active",
+      "sync_state": "synced",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    },
+    {
+      "agent_id": "agent_preset_data_001",
+      "base_version": "1.0.0",
+      "change_summary": "初始化分支",
+      "content_json": {
+        "business_domain": "经营与数据分析",
+        "description": "将业务问题转化为口径明确、结论可复核的分析框架。",
+        "edges": [
+          {
+            "condition": "default",
+            "label": "分析问题明确",
+            "next_node_id": "n2_framework",
+            "priority": 1,
+            "source_node_id": "n1_collect"
+          }
+        ],
+        "goal": [
+          "定义指标和时间口径",
+          "选择合理对比维度",
+          "区分事实、假设和数据限制"
+        ],
+        "interruption_policy": {
+          "allow_interrupt": "true",
+          "description": "允许补充指标定义、时间范围或分析维度。",
+          "strategy": "resume_from_last_state"
+        },
+        "name": "经营指标分析框架",
+        "nodes": [
+          {
+            "allowed_actions": [
+              "extract_slots"
+            ],
+            "condition": null,
+            "expected_user_info": [
+              "business_question",
+              "metric",
+              "period"
+            ],
+            "instruction": "提取业务问题、指标、时间范围及用户已给出的对比维度。若指标口径不明确，优先询问计算定义和粒度。",
+            "knowledge_scope": {},
+            "metadata": {},
+            "name": "收集分析需求",
+            "node_id": "n1_collect",
+            "optional": false,
+            "retry_policy": {
+              "max_retries": 3,
+              "strategy": "ask_missing"
+            },
+            "type": "collect_info"
+          },
+          {
+            "allowed_actions": [
+              "answer_user"
+            ],
+            "condition": null,
+            "expected_user_info": [],
+            "instruction": "依据绑定知识库输出指标定义、所需字段、对比方案、分析步骤、限制和结果表达模板。没有实际数据时不得生成虚假数值或确定性因果结论。",
+            "knowledge_scope": {
+              "resource_types": [
+                "knowledge_base"
+              ]
+            },
+            "metadata": {},
+            "name": "生成分析框架",
+            "node_id": "n2_framework",
+            "optional": false,
+            "retry_policy": {},
+            "type": "response"
+          }
+        ],
+        "required_info": [
+          "business_question",
+          "metric",
+          "period"
+        ],
+        "response_rules": [
+          "所有结论必须标明数据事实、推测或待验证假设。",
+          "没有实际数据时只提供分析框架，不生成虚假数值。"
+        ],
+        "skill_id": "business_metric_analysis",
+        "slot_filling_policy": {
+          "description": "每轮提取全部已出现信息并跳过已满足项。",
+          "enabled": true,
+          "extract_scope": "all_skill_expected_user_info",
+          "multi_slot_per_turn": true,
+          "skip_satisfied_steps": true,
+          "target_info": [
+            "business_question",
+            "metric",
+            "period"
+          ]
+        },
+        "start_node_id": "n1_collect",
+        "terminal_node_ids": [
+          "n2_framework"
+        ],
+        "trigger_intents": [
+          "分析经营指标",
+          "定义数据口径",
+          "准备业务复盘"
+        ],
+        "user_utterance_examples": [
+          "帮我分析本月转化率",
+          "这个指标口径怎么定义",
+          "给我一个经营复盘框架"
+        ],
+        "version": "1.0.0"
+      },
+      "created_at": "2026-08-18 00:00:00.000000",
+      "id": "agentbranchver_agent_preset_data_001_business_metric_analysis_1_0_0",
+      "skill_id": "business_metric_analysis",
+      "source_skill_id": "skill_preset_data_001",
+      "status": "active",
+      "sync_state": "synced",
+      "tenant_id": "tenant_demo",
+      "updated_at": "2026-08-18 00:00:00.000000",
+      "version": "1.0.0"
+    }
+  ]
+}

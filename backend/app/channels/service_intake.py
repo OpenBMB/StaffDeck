@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+from datetime import timedelta
 
 from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
@@ -43,6 +44,7 @@ from app.db.models import (
     ChannelIdentity,
     ChannelInboundEvent,
     ChatSession,
+    HumanHandoffRequest,
     MemoryRecord,
     Message,
     Team,
@@ -57,6 +59,8 @@ logger = logging.getLogger(__name__)
 
 ERROR_NOTICE_TEXT = "处理出错，请稍后再试。"
 INTERRUPTED_NOTICE_TEXT = "上一条消息处理中断，请重新发送。"
+# handoff_reply 命令成功时返回此哨兵,跳过通用 _stage_notice(已自行创建 handoff_ack)
+_HANDOFF_REPLY_HANDLED: object = object()
 _DEDUP_LOOKBACK = 50
 _processor_run_pid: int | None = None
 _processor_run_id: str | None = None
@@ -67,6 +71,11 @@ _staged_inbound_wake = threading.Event()
 _binding_intake_condition = threading.Condition()
 _binding_intake_active: dict[str, int] = {}
 _binding_intake_paused: set[str] = set()
+_INBOUND_LEASE_SECONDS = 15 * 60
+
+
+def _inbound_lease_deadline():
+    return utc_now() + timedelta(seconds=_INBOUND_LEASE_SECONDS)
 
 
 def current_processor_run_id() -> str:
@@ -160,8 +169,17 @@ def _claim_stale_event(db: Session, event_id: str) -> bool:
                 ChannelInboundEvent.processor_run_id.is_(None),
                 ChannelInboundEvent.processor_run_id != run_id,
             ),
+            or_(
+                ChannelInboundEvent.processor_run_id.is_(None),
+                ChannelInboundEvent.processor_lease_expires_at.is_(None),
+                ChannelInboundEvent.processor_lease_expires_at <= utc_now(),
+            ),
         )
-        .values(processor_run_id=run_id, updated_at=utc_now())
+        .values(
+            processor_run_id=run_id,
+            processor_lease_expires_at=_inbound_lease_deadline(),
+            updated_at=utc_now(),
+        )
     )
     db.commit()
     return result.rowcount == 1
@@ -181,11 +199,44 @@ def claim_staged_inbound(event_id: str, *, db_engine=None) -> bool:
             .values(
                 status="processing",
                 processor_run_id=current_processor_run_id(),
+                processor_lease_expires_at=_inbound_lease_deadline(),
                 updated_at=utc_now(),
             )
         )
         db.commit()
         return result.rowcount == 1
+
+
+def _finish_owned_inbound(
+    db: Session,
+    event_id: str,
+    *,
+    status: str,
+    error: str | None = None,
+    processed: bool = False,
+) -> bool:
+    """Finish/release an inbound event only while this process still owns its lease."""
+    values = {
+        "status": status,
+        "error": error,
+        "processor_run_id": None,
+        "processor_lease_expires_at": None,
+        "updated_at": utc_now(),
+    }
+    if processed:
+        values["processed_at"] = utc_now()
+    result = db.exec(
+        update(ChannelInboundEvent)
+        .where(
+            ChannelInboundEvent.id == event_id,
+            ChannelInboundEvent.status == "processing",
+            ChannelInboundEvent.processor_run_id == current_processor_run_id(),
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return result.rowcount == 1
 
 
 def pause_binding_intake(binding_id: str, timeout_seconds: float = 5.0) -> bool:
@@ -236,7 +287,11 @@ def _release_stale_event_claim(db_engine, event_id: str) -> None:
                 ChannelInboundEvent.status == "processing",
                 ChannelInboundEvent.processor_run_id == run_id,
             )
-            .values(processor_run_id=None, updated_at=utc_now())
+            .values(
+                processor_run_id=None,
+                processor_lease_expires_at=None,
+                updated_at=utc_now(),
+            )
         )
         db.commit()
 
@@ -257,7 +312,11 @@ def _release_stale_event_claim_by_key(
                 ChannelInboundEvent.status == "processing",
                 ChannelInboundEvent.processor_run_id == run_id,
             )
-            .values(processor_run_id=None, updated_at=utc_now())
+            .values(
+                processor_run_id=None,
+                processor_lease_expires_at=None,
+                updated_at=utc_now(),
+            )
         )
         db.commit()
 
@@ -451,6 +510,49 @@ def _stage_notice(
             idempotency_key=idempotency_key or new_id("chnotice"),
         )
     )
+
+
+_NEGATIVE_NAME_CACHE_TTL = 300  # 5 minutes
+_negative_name_cache: dict[str, float] = {}
+_negative_name_cache_lock = threading.Lock()
+
+
+def _build_name_resolver(binding: ChannelBinding):
+    """返回一个 name_resolver 回调,用于向渠道 API 查询用户真实姓名。
+
+    仅飞书渠道支持;其他渠道返回 None。
+    对查询返回 None 的 open_id 做负缓存(_NEGATIVE_NAME_CACHE_TTL 秒),
+    避免每条消息都同步请求飞书 Contact API。
+    """
+    if binding.channel != "feishu":
+        return None
+
+    def _resolve(open_id: str) -> str | None:
+        now = time.time()
+        with _negative_name_cache_lock:
+            expiry = _negative_name_cache.get(open_id)
+            if expiry and now < expiry:
+                return None
+        try:
+            from app.channels.adapters.feishu import FeishuAdapter
+
+            adapter = FeishuAdapter()
+            name = adapter.get_user_name(binding, open_id)
+            if name:
+                with _negative_name_cache_lock:
+                    _negative_name_cache.pop(open_id, None)
+                return name
+            # 负缓存:TTL 内不再重试
+            with _negative_name_cache_lock:
+                _negative_name_cache[open_id] = now + _NEGATIVE_NAME_CACHE_TTL
+            return None
+        except Exception:
+            logger.debug("feishu get_user_name failed for %s", open_id, exc_info=True)
+            with _negative_name_cache_lock:
+                _negative_name_cache[open_id] = now + _NEGATIVE_NAME_CACHE_TTL
+            return None
+
+    return _resolve
 
 
 def _valid_notice_target(channel: str, target: dict) -> bool:
@@ -711,6 +813,245 @@ def _normalize_compat(binding: ChannelBinding, raw: dict) -> ChannelInbound | No
     return adapter.normalize(raw)
 
 
+def _feishu_reply_message_ids(inbound: ChannelInbound) -> list[str]:
+    """Return direct-parent and topic-root ids for reliable handoff matching."""
+    ids: list[str] = []
+    parent_id = str(inbound.parent_id or "").strip()
+    if parent_id:
+        ids.append(parent_id)
+    raw_message = (inbound.raw or {}).get("message")
+    if isinstance(raw_message, dict):
+        root_id = str(raw_message.get("root_id") or "").strip()
+        if root_id and root_id not in ids:
+            ids.append(root_id)
+    return ids
+
+
+def _try_handle_feishu_handoff_reply(
+    db: Session,
+    binding: ChannelBinding,
+    inbound: ChannelInbound,
+    event: ChannelInboundEvent,
+    target: dict,
+) -> bool:
+    """飞书 handoff 回复分支:处理人回复通知消息即完成人工答复。
+
+    匹配条件:飞书 p2p 消息的 parent_id == 某 pending handoff 的 notify_message_id,
+    且发送者 open_id == 该 handoff 对应 handoff_notice 投递的 receive_id(严格校验
+    发送者就是实际通知目标,防止转发/截图场景下的越权回复)。
+    命中则复用 _apply_handoff_reply 置 answered + 恢复 SOP,并给处理人回一条确认。
+    返回 True 表示已处理(短路 process_inbound);False 表示非 handoff 回复,继续正常流程。
+    """
+    reply_ids = _feishu_reply_message_ids(inbound)
+    if not reply_ids:
+        return False
+    handoff = db.exec(
+        select(HumanHandoffRequest).where(
+            HumanHandoffRequest.notify_message_id.in_(reply_ids),
+            HumanHandoffRequest.status == "pending",
+        )
+    ).first()
+    if not handoff or handoff.tenant_id != binding.tenant_id:
+        return False
+    # 严格校验发送者 == 通知目标:查该 handoff 对应的 handoff_notice 投递,
+    # 其 target_json.receive_id 必须等于 inbound.from_user_id。
+    notice = db.exec(
+        select(ChannelDelivery).where(
+            ChannelDelivery.tenant_id == binding.tenant_id,
+            ChannelDelivery.binding_id == binding.id,
+            ChannelDelivery.kind == "handoff_notice",
+            ChannelDelivery.session_id == f"handoff:{handoff.id}",
+            ChannelDelivery.message_id.in_(reply_ids),
+            ChannelDelivery.status == "delivered",
+        )
+    ).first()
+    if not notice:
+        return False
+    notice_target = notice.target_json or {}
+    notice_receive_id = str(notice_target.get("receive_id") or "").strip()
+    if not notice_receive_id or notice_receive_id != inbound.from_user_id:
+        return False
+    reply_text = (inbound.text or "").strip()
+    if not reply_text:
+        return False
+    # assignee 的 StaffDeck 用户 id:从 ChannelIdentity 反查(同 binding scope)。
+    scope = external_account_scope(db, binding)
+    identity = db.exec(
+        select(ChannelIdentity).where(
+            ChannelIdentity.tenant_id == binding.tenant_id,
+            ChannelIdentity.channel == "feishu",
+            ChannelIdentity.external_account_scope == scope,
+            ChannelIdentity.external_user_id == inbound.from_user_id,
+        )
+    ).first()
+    answered_by = identity.staffdeck_user_id if identity else handoff.assignee_user_id
+    from app.api.chat import _apply_handoff_reply
+
+    _apply_handoff_reply(
+        db,
+        handoff,
+        reply_text,
+        answered_by_user_id=answered_by,
+        source="feishu",
+    )
+    # 给处理人回一条确认(经 outbox 投递)
+    db.add(
+        ChannelDelivery(
+            tenant_id=binding.tenant_id,
+            binding_id=binding.id,
+            session_id=f"handoff:{handoff.id}",
+            message_id=None,
+            target_json={
+                "receive_id_type": "open_id",
+                "receive_id": inbound.from_user_id,
+            },
+            kind="handoff_ack",
+            text=f"已收到你的回复，正在恢复 SOP 执行。回复预览：{reply_text[:120]}",
+            status="pending",
+            next_attempt_at=utc_now(),
+            idempotency_key=new_id("hreplyack"),
+        )
+    )
+    event.status = "done"
+    event.processed_at = utc_now()
+    event.updated_at = utc_now()
+    db.add(event)
+    db.commit()
+    logger.info(
+        "飞书 handoff 回复命中 handoff=%s assignee=%s",
+        handoff.id,
+        answered_by,
+    )
+    return True
+
+
+def _run_handoff_reply_command(
+    db: Session,
+    binding: ChannelBinding,
+    inbound: ChannelInbound,
+    command: ChannelCommand,
+) -> str:
+    """/回复反馈 指令处理:处理人通过飞书发送 /回复反馈 <内容> 回复人工转接通知。
+
+    匹配策略(按优先级):
+    1. 引用通知(parent_id):按 handoff.notify_message_id == parent_id 精确匹配。
+    2. 非引用:查发送者在当前 binding scope 下的 ChannelIdentity → staffdeck_user_id,
+       再查该 user 名下 status=pending 的 handoff。恰好一个时直接使用;多个时拒绝,
+       提示处理人回复对应通知消息。
+    命中后复用 _apply_handoff_reply 置 answered + 恢复 SOP,并给处理人回确认。
+    无 ChannelIdentity 时拒绝。
+    """
+    reply_text = command.query.strip()
+    if not reply_text:
+        return (
+            "用法：/回复反馈 <答复内容>\n"
+            "回复内容将作为人工答复并恢复 SOP 执行。"
+        )
+    # 查发送者身份(用当前 binding scope 隔离)
+    scope = external_account_scope(db, binding)
+    identity = db.exec(
+        select(ChannelIdentity).where(
+            ChannelIdentity.tenant_id == binding.tenant_id,
+            ChannelIdentity.channel == binding.channel,
+            ChannelIdentity.external_account_scope == scope,
+            ChannelIdentity.external_user_id == inbound.from_user_id,
+        )
+    ).first()
+    assignee_user_id = identity.staffdeck_user_id if identity else None
+    if not assignee_user_id:
+        return (
+            "未找到待处理的人工转接请求。"
+            "或当前飞书账号未绑定到 StaffDeck 处理人身份。"
+        )
+
+    handoff: HumanHandoffRequest | None = None
+    # 策略 1:引用通知 — 按 parent_id -> notify_message_id 精确匹配
+    reply_ids = _feishu_reply_message_ids(inbound)
+    if reply_ids:
+        handoff = db.exec(
+            select(HumanHandoffRequest).where(
+                HumanHandoffRequest.tenant_id == binding.tenant_id,
+                HumanHandoffRequest.notify_message_id.in_(reply_ids),
+                HumanHandoffRequest.status == "pending",
+            )
+        ).first()
+        if not handoff:
+            return "未找到该引用消息对应的待处理人工转接请求。"
+        notice = db.exec(
+            select(ChannelDelivery).where(
+                ChannelDelivery.tenant_id == binding.tenant_id,
+                ChannelDelivery.binding_id == binding.id,
+                ChannelDelivery.kind == "handoff_notice",
+                ChannelDelivery.session_id == f"handoff:{handoff.id}",
+                ChannelDelivery.message_id.in_(reply_ids),
+                ChannelDelivery.status == "delivered",
+            )
+        ).first()
+        notice_target = notice.target_json if notice else {}
+        if (
+            not notice
+            or str(notice_target.get("receive_id") or "").strip()
+            != inbound.from_user_id
+            or handoff.assignee_user_id != assignee_user_id
+        ):
+            # 同时校验通知实际目标与当前 StaffDeck 身份，防止引用或身份变更后越权。
+            return "该人工转接请求不是分配给你的，无法代为回复。"
+
+    # 策略 2:非引用 — 按 assignee 查 pending handoff
+    if not handoff:
+        pending = db.exec(
+            select(HumanHandoffRequest).where(
+                HumanHandoffRequest.tenant_id == binding.tenant_id,
+                HumanHandoffRequest.assignee_user_id == assignee_user_id,
+                HumanHandoffRequest.status == "pending",
+            ).order_by(HumanHandoffRequest.created_at.desc())
+        ).all()
+        if not pending:
+            return "未找到待处理的人工转接请求。可能已被处理或已过期。"
+        if len(pending) > 1:
+            return (
+                "你有多个待处理的人工转接请求，请直接回复对应的通知消息"
+                "以指定要回复的请求。"
+            )
+        handoff = pending[0]
+
+    from app.api.chat import _apply_handoff_reply
+
+    answered_by = assignee_user_id or handoff.assignee_user_id
+    _apply_handoff_reply(
+        db,
+        handoff,
+        reply_text,
+        answered_by_user_id=answered_by,
+        source="feishu",
+    )
+    # 给处理人回一条确认(经 outbox 投递)
+    db.add(
+        ChannelDelivery(
+            tenant_id=binding.tenant_id,
+            binding_id=binding.id,
+            session_id=f"handoff:{handoff.id}",
+            message_id=None,
+            target_json={
+                "receive_id_type": "open_id",
+                "receive_id": inbound.from_user_id,
+            },
+            kind="handoff_ack",
+            text=f"已收到你的回复，正在恢复 SOP 执行。回复预览：{reply_text[:120]}",
+            status="pending",
+            next_attempt_at=utc_now(),
+            idempotency_key=new_id("hreplyack"),
+        )
+    )
+    db.commit()
+    logger.info(
+        "/回复反馈 命中 handoff=%s from=%s",
+        handoff.id,
+        inbound.from_user_id,
+    )
+    return _HANDOFF_REPLY_HANDLED
+
+
 def process_inbound(
     binding: ChannelBinding,
     msg: dict | ChannelInbound,
@@ -761,6 +1102,7 @@ def process_inbound(
                 target_json=target,
                 status="processing",
                 processor_run_id=current_processor_run_id(),
+                processor_lease_expires_at=_inbound_lease_deadline(),
             )
             db.add(event)
             try:
@@ -838,25 +1180,42 @@ def process_inbound(
         if command:
             if command.kind in {"bind", "unbind"}:
                 reply = _run_bind_command(db, binding, inbound, command)
+            elif command.kind == "handoff_reply":
+                reply = _run_handoff_reply_command(db, binding, inbound, command)
             elif binding.team_id:
                 # 团队绑定:消息直路由团队 TL,员工列表/切换等指令无意义
                 reply = "该渠道已接入团队，消息由团队 TL 统一接收，员工切换类指令不可用。"
             else:
                 reply = run_command(db, binding, inbound.external_conv_id, command)
-            _stage_notice(
-                db,
-                binding,
-                inbound.external_conv_id,
-                target,
-                reply,
-                final_for_event=True,
-            )
+            # handoff_reply 成功时已自行创建 handoff_ack 投递,跳过通用 notice 避免重复
+            if reply is not _HANDOFF_REPLY_HANDLED:
+                _stage_notice(
+                    db,
+                    binding,
+                    inbound.external_conv_id,
+                    target,
+                    reply,
+                    final_for_event=True,
+                )
             event.status = "done"
             event.processed_at = utc_now()
             event.updated_at = utc_now()
             db.add(event)
             db.commit()
             return False
+
+        # 阶段 4:飞书 handoff 回复分支。处理人直接回复飞书通知消息(parent_id ==
+        # handoff.notify_message_id)即完成人工答复,无需打开网页。必须在身份解析之后
+        # 才能校验发送者==assignee,但为避免与正常会话锚定耦合,这里先做轻量匹配,
+        # 命中则短路返回(不走 AgentLoop)。
+        if (
+            binding.channel == "feishu"
+            and not inbound.is_group
+            and inbound.parent_id
+            and not command
+        ):
+            if _try_handle_feishu_handoff_reply(db, binding, inbound, event, target):
+                return False
 
         external_id, display_name = external_identity_for_message(
             binding.channel,
@@ -866,7 +1225,13 @@ def process_inbound(
             account_scope=scope,
         )
         user = resolve_or_provision_user(
-            db, binding.tenant_id, binding.channel, external_id, display_name, scope
+            db,
+            binding.tenant_id,
+            binding.channel,
+            external_id,
+            display_name,
+            scope,
+            name_resolver=_build_name_resolver(binding),
         )
         # 先在仍保持原 external_conv_id 的历史会话中去重。身份不一致会在后续
         # session 创建时隔离旧会话，若等隔离后再查会漏掉已落库的 turn。
@@ -1067,12 +1432,14 @@ def process_inbound(
                 chat_session = db.get(ChatSession, session_id)
                 if not event or not chat_session:
                     return False
-                event.status = "failed"
-                event.error = str(exc)[:500]
-                event.updated_at = utc_now()
-                db.add(event)
-                _stage_error_notice(db, binding, chat_session)
-                db.commit()
+                if _finish_owned_inbound(
+                    db,
+                    event_id,
+                    status="failed",
+                    error=str(exc)[:500],
+                ):
+                    _stage_error_notice(db, binding, chat_session)
+                    db.commit()
                 return False
             else:
                 if trace_streamer:
@@ -1100,27 +1467,32 @@ def process_inbound(
                 # channel turn. Persist an explicit terminal notice for this
                 # delivery (which also removes the processing reaction), then
                 # release the inbox row for a later retry.
-                event.status = "received"
-                event.processor_run_id = None
-                event.error = response_reply[:500]
-                event.updated_at = utc_now()
-                db.add(event)
-                _stage_notice(
+                if _finish_owned_inbound(
                     db,
-                    binding,
-                    str(inbound.external_conv_id or ""),
-                    dict(event.target_json or {}),
-                    response_reply,
-                    final_for_event=True,
-                    idempotency_key=f"channel-runtime-conflict:{binding.id}:{event.event_id}",
-                )
-                db.commit()
+                    event_id,
+                    status="received",
+                    error=response_reply[:500],
+                ):
+                    _stage_notice(
+                        db,
+                        binding,
+                        str(inbound.external_conv_id or ""),
+                        dict(event.target_json or {}),
+                        response_reply,
+                        final_for_event=True,
+                        idempotency_key=(
+                            f"channel-runtime-conflict:{binding.id}:{event.event_id}"
+                        ),
+                    )
+                    db.commit()
                 return False
-            event.status = "done"
-            event.processed_at = utc_now()
-            event.updated_at = utc_now()
-            db.add(event)
-            db.commit()
+            if not _finish_owned_inbound(
+                db,
+                event_id,
+                status="done",
+                processed=True,
+            ):
+                return False
             if team is not None:
                 # TL 回复后处理:解析派任务块并创建任务(与主聊天端同语义);
                 # 后处理失败不影响本轮回复
@@ -1168,6 +1540,7 @@ def process_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
                 .values(
                     status="received",
                     processor_run_id=None,
+                    processor_lease_expires_at=None,
                     updated_at=utc_now(),
                 )
             )
@@ -1360,61 +1733,52 @@ def _decode_and_validate_staged_event(
 
 def _recover_stale_durable_event(event_pk: str, *, db_engine=None) -> bool:
     use_engine = db_engine or engine
-    run_id = current_processor_run_id()
     with Session(use_engine) as db:
         event = db.get(ChannelInboundEvent, event_pk)
         binding = db.get(ChannelBinding, event.binding_id) if event else None
         if not event or not binding or event.status != "processing":
             return False
+        if not _claim_stale_event(db, event_pk):
+            return False
+        event = db.get(ChannelInboundEvent, event_pk)
         try:
             inbound = _decode_and_validate_staged_event(event, binding)
         except ValueError as exc:
-            event.status = "failed"
-            event.error = str(exc)[:500]
-            event.updated_at = utc_now()
-            db.add(event)
-            db.commit()
+            _finish_owned_inbound(
+                db,
+                event_pk,
+                status="failed",
+                error=str(exc)[:500],
+            )
             return False
         turn_message = _find_turn_user_message_in_conv(
             db, binding, inbound.external_conv_id, inbound.event_id
         )
         if turn_message:
-            if not _claim_stale_event(db, event_pk):
-                return False
-            event = db.get(ChannelInboundEvent, event_pk)
             if _turn_reply_exists(db, binding, turn_message):
-                event.status = "done"
-                event.error = None
-                event.processed_at = utc_now()
-            else:
-                event.status = "failed"
-                event.error = "process_exit_incomplete_turn"
-                _stage_interrupted_notice(
+                _finish_owned_inbound(
                     db,
-                    binding,
-                    turn_message.session_id,
-                    dict(event.target_json or {}),
-                    inbound.event_id,
+                    event_pk,
+                    status="done",
+                    processed=True,
                 )
-            event.updated_at = utc_now()
-            db.add(event)
-            db.commit()
+            else:
+                if _finish_owned_inbound(
+                    db,
+                    event_pk,
+                    status="failed",
+                    error="process_exit_incomplete_turn",
+                ):
+                    _stage_interrupted_notice(
+                        db,
+                        binding,
+                        turn_message.session_id,
+                        dict(event.target_json or {}),
+                        inbound.event_id,
+                    )
+                    db.commit()
             return False
-        released = db.exec(
-            update(ChannelInboundEvent)
-            .where(
-                ChannelInboundEvent.id == event_pk,
-                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
-                ChannelInboundEvent.status == "processing",
-                or_(
-                    ChannelInboundEvent.processor_run_id.is_(None),
-                    ChannelInboundEvent.processor_run_id != run_id,
-                ),
-            )
-            .values(status="received", processor_run_id=None, updated_at=utc_now())
-        )
-        db.commit()
-        if released.rowcount != 1:
+        if not _finish_owned_inbound(db, event_pk, status="received"):
             return False
     return process_staged_inbound(event_pk, db_engine=use_engine)
 
@@ -1434,6 +1798,11 @@ def sweep_stale_inbound_events(*, db_engine=None) -> int:
                 or_(
                     ChannelInboundEvent.processor_run_id.is_(None),
                     ChannelInboundEvent.processor_run_id != run_id,
+                ),
+                or_(
+                    ChannelInboundEvent.processor_run_id.is_(None),
+                    ChannelInboundEvent.processor_lease_expires_at.is_(None),
+                    ChannelInboundEvent.processor_lease_expires_at <= utc_now(),
                 ),
             )
         ).all()

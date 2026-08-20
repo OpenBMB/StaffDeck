@@ -1,4 +1,5 @@
 from app.core.graph_rules import GraphRules
+from app.skills.skill_schema import SkillCard, SkillGraphNode
 
 
 def _graph() -> dict:
@@ -106,4 +107,173 @@ def test_graph_runtime_legacy_node_defaults_and_dangling_edges() -> None:
         "knowledge_scope": {},
         "retry_policy": {},
         "metadata": {},
+        "sub_sop_id": None,
+        "assignee_user_id": None,
     }
+
+
+def test_find_handoff_node_id_bfs_from_active_step() -> None:
+    """Should find the handoff node reachable from active_step_id, not array order."""
+    content = {
+        "start_node_id": "intake",
+        "nodes": [
+            {"node_id": "intake", "allowed_actions": ["continue_flow"]},
+            {"node_id": "handoff_a", "type": "handoff", "allowed_actions": ["handoff_human"]},
+            {"node_id": "handoff_b", "type": "handoff", "allowed_actions": ["handoff_human"]},
+        ],
+        "edges": [
+            {"source_node_id": "intake", "next_node_id": "handoff_b"},
+            # handoff_a is NOT reachable from intake
+        ],
+    }
+    assert GraphRules.find_handoff_node_id(content, "intake") == "handoff_b"
+
+
+def test_find_handoff_node_id_fallback_to_start_when_no_active_step() -> None:
+    """Without active_step_id, should BFS from start_node_id."""
+    content = {
+        "start_node_id": "start",
+        "nodes": [
+            {"node_id": "start", "allowed_actions": ["continue_flow"]},
+            {"node_id": "mid", "allowed_actions": ["continue_flow"]},
+            {"node_id": "handoff_a", "type": "handoff", "allowed_actions": ["handoff_human"]},
+        ],
+        "edges": [
+            {"source_node_id": "start", "next_node_id": "mid"},
+            {"source_node_id": "mid", "next_node_id": "handoff_a"},
+        ],
+    }
+    assert GraphRules.find_handoff_node_id(content, None) == "handoff_a"
+
+
+def test_find_handoff_node_id_fallback_to_array_order_without_edges() -> None:
+    """With no edges, should fall back to array order."""
+    content = {
+        "start_node_id": "start",
+        "nodes": [
+            {"node_id": "start", "allowed_actions": ["continue_flow"]},
+            {"node_id": "handoff_a", "type": "handoff"},
+            {"node_id": "handoff_b", "type": "handoff"},
+        ],
+        "edges": [],
+    }
+    assert GraphRules.find_handoff_node_id(content, "start") == "handoff_a"
+
+
+def test_find_handoff_node_id_detects_handoff_human_action() -> None:
+    """Should detect handoff nodes by allowed_actions containing handoff_human."""
+    content = {
+        "start_node_id": "start",
+        "nodes": [
+            {"node_id": "start", "allowed_actions": ["continue_flow"]},
+            {"node_id": "custom_node", "allowed_actions": ["handoff_human"]},
+        ],
+        "edges": [
+            {"source_node_id": "start", "next_node_id": "custom_node"},
+        ],
+    }
+    assert GraphRules.find_handoff_node_id(content, "start") == "custom_node"
+
+
+def test_find_handoff_node_id_prefers_unconditional_path_over_conditional() -> None:
+    """Should prefer handoff reachable via unconditional edge over conditional edge.
+
+    当当前节点有两条出边:无条件边指向 handoff_a,条件边指向 handoff_b,
+    BFS 第一阶段(仅无条件边)应返回 handoff_a,不会误入条件分支。
+    """
+    content = {
+        "start_node_id": "decision",
+        "nodes": [
+            {"node_id": "decision", "allowed_actions": ["continue_flow"]},
+            {"node_id": "handoff_a", "type": "handoff"},
+            {"node_id": "handoff_b", "type": "handoff"},
+        ],
+        "edges": [
+            {"source_node_id": "decision", "next_node_id": "handoff_a", "priority": 2},
+            {"source_node_id": "decision", "next_node_id": "handoff_b", "condition": "故障未解决", "priority": 1},
+        ],
+    }
+    # unconditional handoff_a should be preferred even though handoff_b has higher priority
+    assert GraphRules.find_handoff_node_id(content, "decision") == "handoff_a"
+
+
+def test_find_handoff_node_id_falls_back_to_conditional_edges() -> None:
+    """When no unconditional path reaches a handoff node, should follow conditional edges."""
+    content = {
+        "start_node_id": "intake",
+        "nodes": [
+            {"node_id": "intake", "allowed_actions": ["continue_flow"]},
+            {"node_id": "triage", "allowed_actions": ["continue_flow"]},
+            {"node_id": "handoff_b", "type": "handoff"},
+        ],
+        "edges": [
+            {"source_node_id": "intake", "next_node_id": "triage", "condition": "需要分诊"},
+            {"source_node_id": "triage", "next_node_id": "handoff_b"},
+        ],
+    }
+    # intake → triage is conditional, but phase 2 (all edges) should find handoff_b
+    assert GraphRules.find_handoff_node_id(content, "intake") == "handoff_b"
+
+
+def test_find_handoff_node_id_rejects_ambiguous_conditional_branches() -> None:
+    content = {
+        "start_node_id": "decision",
+        "nodes": [
+            {"node_id": "decision", "allowed_actions": ["continue_flow"]},
+            {"node_id": "sales_handoff", "type": "handoff"},
+            {"node_id": "support_handoff", "type": "handoff"},
+        ],
+        "edges": [
+            {
+                "source_node_id": "decision",
+                "next_node_id": "sales_handoff",
+                "condition": "售前咨询",
+            },
+            {
+                "source_node_id": "decision",
+                "next_node_id": "support_handoff",
+                "condition": "售后故障",
+            },
+        ],
+    }
+
+    assert GraphRules.find_handoff_node_id(content, "decision") is None
+
+
+def test_skill_graph_node_preserves_assignee_user_id() -> None:
+    """SkillGraphNode schema should preserve assignee_user_id through Pydantic round-trip."""
+    node = SkillGraphNode(
+        node_id="handoff_node",
+        type="handoff",
+        name="转人工",
+        assignee_user_id="user_abc",
+    )
+    dumped = node.model_dump()
+    assert dumped["assignee_user_id"] == "user_abc"
+
+    node_empty = SkillGraphNode(node_id="collect", name="收集")
+    assert node_empty.assignee_user_id is None
+    assert node_empty.model_dump()["assignee_user_id"] is None
+
+
+def test_skill_card_round_trip_with_assignee_user_id() -> None:
+    """Full SkillCard validation should preserve assignee_user_id on handoff nodes."""
+    card = SkillCard(
+        skill_id="test_sop",
+        name="测试SOP",
+        start_node_id="start",
+        terminal_node_ids=["handoff"],
+        nodes=[
+            SkillGraphNode(node_id="start", name="开始"),
+            SkillGraphNode(
+                node_id="handoff",
+                type="handoff",
+                name="转人工",
+                assignee_user_id="user_specialist",
+            ),
+        ],
+        edges=[{"source_node_id": "start", "next_node_id": "handoff"}],
+    )
+    dumped = card.model_dump()
+    handoff_node = next(n for n in dumped["nodes"] if n["node_id"] == "handoff")
+    assert handoff_node["assignee_user_id"] == "user_specialist"

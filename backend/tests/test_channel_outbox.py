@@ -277,6 +277,47 @@ def test_staging_is_idempotent_per_message() -> None:
         assert len(db.exec(select(ChannelDelivery)).all()) == 1
 
 
+def test_staging_is_idempotent_per_inbound_turn() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        chat_session = _channel_session(binding)
+        user_message = Message(
+            id="msg_user_turn",
+            tenant_id=binding.tenant_id,
+            session_id=chat_session.id,
+            role="user",
+            content="hello",
+            metadata_json={"client_turn_id": "event_turn_1"},
+        )
+        first = _assistant_message(chat_session.id, "msg_assistant_first")
+        first.metadata_json = {"user_message_id": user_message.id}
+        duplicate_projection = _assistant_message(chat_session.id, "msg_assistant_second")
+        duplicate_projection.metadata_json = {"user_message_id": user_message.id}
+        event = ChannelInboundEvent(
+            tenant_id=binding.tenant_id,
+            binding_id=binding.id,
+            channel=binding.channel,
+            event_id="event_turn_1",
+            target_json={"to_user_id": "u1", "context_token": "ctx_turn_1"},
+        )
+        db.add(chat_session)
+        db.add(user_message)
+        db.add(first)
+        db.add(duplicate_projection)
+        db.add(event)
+        db.commit()
+
+        stage_channel_delivery(db, chat_session, first)
+        stage_channel_delivery(db, chat_session, duplicate_projection)
+        db.commit()
+
+        deliveries = db.exec(select(ChannelDelivery)).all()
+        assert len(deliveries) == 1
+        assert deliveries[0].idempotency_key == f"channel-reply:{binding.id}:event_turn_1"
+        assert deliveries[0].target_json["context_token"] == "ctx_turn_1"
+
+
 def test_channel_staging_failure_propagates() -> None:
     class BrokenDb:
         def exec(self, _statement):
@@ -486,8 +527,10 @@ def test_daemon_resets_stuck_sending() -> None:
     run_delivery_daemon(once=True, db_engine=engine)
     with Session(engine) as db:
         delivery = db.get(ChannelDelivery, delivery_id)
-        assert delivery.status == "delivered"
-        assert delivery.attempts == 4
+        assert delivery.status == "failed"
+        assert delivery.last_error == "remote_state_unknown"
+        assert delivery.attempts == 3
+        assert adapter.sent == []
 
 
 def test_daemon_fails_delivery_for_inactive_binding() -> None:
@@ -1341,12 +1384,12 @@ def test_reset_stuck_only_resets_stale_sending() -> None:
         fresh = db.get(ChannelDelivery, fresh_id)
         assert fresh.status == "sending"
         assert fresh.sending_since is not None
-        # 陈旧与空 sending_since 重置回 pending
+        # 陈旧与空 sending_since 的远端结果不可判定，禁止自动重发。
         for row_id in (stale_id, empty_id):
             row = db.get(ChannelDelivery, row_id)
-            assert row.status == "pending"
-            assert row.sending_since is None
-            assert row.next_attempt_at is not None
+            assert row.status == "failed"
+            assert row.last_error == "remote_state_unknown"
+            assert row.next_attempt_at is None
 
 
 # ---------- 创建者告警会话限定 binding ----------

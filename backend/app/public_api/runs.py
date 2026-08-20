@@ -8,7 +8,6 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy import or_
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
@@ -116,7 +115,24 @@ def _job_actor(db: Session, job: APIJob):
     return credential, actor
 
 
-def _latest_artifacts(db: Session, tenant_id: str, session_id: str) -> list[dict[str, Any]]:
+def _message_matches_run(message: Message, client_turn_id: str, turn_id: str | None) -> bool:
+    metadata = dict(message.metadata_json or {})
+    identities = {
+        str(metadata.get("client_turn_id") or "").strip(),
+        str(metadata.get("turn_id") or "").strip(),
+        str(metadata.get("user_message_id") or "").strip(),
+    }
+    identities.discard("")
+    return client_turn_id in identities or bool(turn_id and turn_id in identities)
+
+
+def _latest_artifacts(
+    db: Session,
+    tenant_id: str,
+    session_id: str,
+    client_turn_id: str,
+    turn_id: str | None,
+) -> list[dict[str, Any]]:
     rows = db.exec(
         select(Message).where(
             Message.tenant_id == tenant_id,
@@ -126,6 +142,8 @@ def _latest_artifacts(db: Session, tenant_id: str, session_id: str) -> list[dict
     ).all()
     artifacts: list[dict[str, Any]] = []
     for row in rows:
+        if not _message_matches_run(row, client_turn_id, turn_id):
+            continue
         for artifact in (row.metadata_json or {}).get("harness_artifacts") or []:
             if isinstance(artifact, dict):
                 artifacts.append(_redact(dict(artifact)))
@@ -180,12 +198,7 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
         attachments=attachments,
         channel="public_api",
     )
-    latest = db.exec(
-        select(AgentEvent)
-        .where(AgentEvent.tenant_id == job.tenant_id, AgentEvent.session_id == session_id)
-        .order_by(AgentEvent.created_at.desc(), AgentEvent.id.desc())
-    ).first()
-    cursor = (latest.created_at, latest.id) if latest else None
+    seen_event_ids: set[str] = set()
     worker_done = threading.Event()
     worker_result: dict[str, Any] = {}
 
@@ -209,10 +222,10 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
     thread.start()
     while not worker_done.is_set():
         ensure_not_cancelled(db, job)
-        cursor = _relay_agent_events(db, job, session_id, cursor)
+        _relay_agent_events(db, job, session_id, seen_event_ids)
         worker_done.wait(0.1)
     thread.join(timeout=1)
-    _relay_agent_events(db, job, session_id, cursor)
+    _relay_agent_events(db, job, session_id, seen_event_ids)
     if "error" in worker_result:
         raise worker_result["error"]
     result = ChatTurnResponse.model_validate(worker_result.get("response"))
@@ -244,7 +257,7 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
         )
         .order_by(HarnessInvocationRecord.created_at)
     ).all() if frames else []
-    assistant = db.exec(
+    assistants = db.exec(
         select(Message)
         .where(
             Message.tenant_id == job.tenant_id,
@@ -252,7 +265,15 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
             Message.role == "assistant",
         )
         .order_by(Message.created_at.desc())
-    ).first()
+    ).all()
+    assistant = next(
+        (
+            row
+            for row in assistants
+            if _message_matches_run(row, job.id, source_turn_id)
+        ),
+        None,
+    )
     assistant_metadata = dict(assistant.metadata_json or {}) if assistant else {}
     return {
         "run_id": job.id,
@@ -285,7 +306,13 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
         ],
         "awaiting_input": state.get("awaiting_input"),
         "session_state": state,
-        "artifacts": _latest_artifacts(db, job.tenant_id, session_id),
+        "artifacts": _latest_artifacts(
+            db,
+            job.tenant_id,
+            session_id,
+            job.id,
+            source_turn_id,
+        ),
     }
 
 
@@ -293,26 +320,42 @@ def _relay_agent_events(
     db: Session,
     job: APIJob,
     session_id: str,
-    cursor: tuple[Any, str] | None,
-) -> tuple[Any, str] | None:
-    statement = select(AgentEvent).where(
-        AgentEvent.tenant_id == job.tenant_id,
-        AgentEvent.session_id == session_id,
-    )
-    if cursor:
-        statement = statement.where(
-            or_(
-                AgentEvent.created_at > cursor[0],
-                (AgentEvent.created_at == cursor[0]) & (AgentEvent.id > cursor[1]),
-            )
+    seen_event_ids: set[str],
+) -> None:
+    rows = db.exec(
+        select(AgentEvent)
+        .where(
+            AgentEvent.tenant_id == job.tenant_id,
+            AgentEvent.session_id == session_id,
         )
-    rows = db.exec(statement.order_by(AgentEvent.created_at, AgentEvent.id)).all()
+        .order_by(AgentEvent.created_at, AgentEvent.id)
+    ).all()
+    turn = db.exec(
+        select(HarnessTurnRecord).where(
+            HarnessTurnRecord.tenant_id == job.tenant_id,
+            HarnessTurnRecord.session_id == session_id,
+            HarnessTurnRecord.client_turn_id == job.id,
+        )
+    ).first()
+    source_turn_id = turn.user_message_id if turn else None
     for event in rows:
+        if event.id in seen_event_ids:
+            continue
+        seen_event_ids.add(event.id)
+        payload = dict(event.payload_json or {})
+        identities = {
+            str(payload.get("client_turn_id") or "").strip(),
+            str(payload.get("turn_id") or "").strip(),
+            str(payload.get("user_message_id") or "").strip(),
+        }
+        identities.discard("")
+        if job.id not in identities and not (source_turn_id and source_turn_id in identities):
+            continue
         public_type = _TRACE_EVENT_MAP.get(event.event_type)
         if public_type:
-            event_data = _redact(dict(event.payload_json or {}))
+            event_data = _redact(payload)
             if public_type == "run.output.completed":
-                assistant = db.exec(
+                assistants = db.exec(
                     select(Message)
                     .where(
                         Message.tenant_id == job.tenant_id,
@@ -320,7 +363,15 @@ def _relay_agent_events(
                         Message.role == "assistant",
                     )
                     .order_by(Message.created_at.desc())
-                ).first()
+                ).all()
+                assistant = next(
+                    (
+                        row
+                        for row in assistants
+                        if _message_matches_run(row, job.id, source_turn_id)
+                    ),
+                    None,
+                )
                 citations = (
                     list((assistant.metadata_json or {}).get("knowledge_citations") or [])
                     if assistant
@@ -334,8 +385,6 @@ def _relay_agent_events(
                 event_type=public_type,
                 event_data=event_data,
             )
-        cursor = (event.created_at, event.id)
-    return cursor
 
 
 @router.post("/agents/{agent_id}/runs", response_model=dict, status_code=202)

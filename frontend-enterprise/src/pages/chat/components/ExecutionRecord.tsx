@@ -95,7 +95,11 @@ export default function ExecutionRecord({
       {expanded && details.length > 0 && (
         <div className={CHAT_TRACE_DETAILS_CLASS}>
           {details.map((line) => (
-            <div key={line.id} className={CHAT_TRACE_LINE_CLASS}>
+            <div
+              key={line.id}
+              className={CHAT_TRACE_LINE_CLASS}
+              style={line.depth ? { marginLeft: `${Math.min(line.depth, 3) * 20}px` } : undefined}
+            >
               <CotTraceIcon name={traceLineIconName(line)} />
               <span className={CHAT_TRACE_LINE_CONTENT_CLASS}>
                 <span

@@ -11,6 +11,7 @@ from app.db import get_session
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
+    ChannelIdentity,
     ChannelDelivery,
     ChannelInboundEvent,
     Message,
@@ -1202,6 +1203,151 @@ def test_put_binding_empty_update_400() -> None:
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 400
+
+
+def test_put_binding_default_handoff_assignee() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    # 设置默认人工处理人
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": "user_owner"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_handoff_assignee_user_id"] == "user_owner"
+    assert payload["default_handoff_assignee_name"] == "owner"
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id).config_json[
+            "default_handoff_assignee_user_id"
+        ] == "user_owner"
+
+    # 清空
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": None},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_handoff_assignee_user_id"] is None
+    with Session(engine) as db:
+        config = db.get(ChannelBinding, binding_id).config_json or {}
+        assert not config.get("default_handoff_assignee_user_id")
+
+
+def test_put_binding_default_handoff_assignee_rejects_unknown_user() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": "user_nonexistent"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 400
+
+
+def test_put_binding_default_handoff_assignee_rejects_channel_customer() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    with Session(engine) as db:
+        db.add(
+            User(
+                id="user_channel_customer",
+                tenant_id="tenant_demo",
+                username="feishu_customer",
+                source="feishu",
+                password_hash="x",
+            )
+        )
+        db.commit()
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": "user_channel_customer"},
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 400
+
+
+def test_put_feishu_default_handoff_assignee_requires_bound_identity() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="feishu",
+            status="active",
+            identity_scope_key="cli_feishu:tenant_a",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.commit()
+        db.refresh(binding)
+        binding_id = binding.id
+    client = _make_client(engine)
+
+    unbound = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": "user_owner"},
+        headers=_auth(users["owner"]),
+    )
+    assert unbound.status_code == 400
+
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="cli_feishu:tenant_a",
+                external_user_id="ou_owner",
+                display_name="Owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+    reachable = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": "user_owner"},
+        headers=_auth(users["owner"]),
+    )
+    assert reachable.status_code == 200
+
+
+def test_put_binding_default_handoff_assignee_unchanged_by_default() -> None:
+    """不传 default_handoff_assignee_user_id 时,现有值保持不动。"""
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    # 先设置
+    client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": "user_owner"},
+        headers=_auth(users["owner"]),
+    )
+    # 再更新 auto_route,不传 default_handoff_assignee_user_id
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"auto_route": False},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_handoff_assignee_user_id"] == "user_owner"
 
 
 # ---------- 分页 ----------

@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime
 import json
+from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, TypeVar
+from typing import Any, TypeVar
 
 from sqlmodel import Session, SQLModel, select
 
-from app.capability_scope import normalize_capability_scope
 from app.agents.branching import (
     agent_private_metadata,
     ensure_open_gallery_binding,
     open_gallery_metadata,
 )
+from app.capability_scope import normalize_capability_scope
 from app.db.models import (
     AgentKnowledgeBranch,
     AgentProfile,
@@ -35,15 +36,28 @@ from app.db.models import (
     utc_now,
 )
 
-
 TENANT_ID = "tenant_demo"
 ADMIN_USER_ID = "admin"
 ADMIN_USERNAME = "admin"
 ADMIN_DISPLAY_NAME = "Administrator"
 SEED_SOURCE = "staffdeck_admin_gallery_seed"
 FIXTURE_PATH = Path(__file__).resolve().parent / "seed_fixtures" / "staffdeck_admin_gallery_seed.json"
+EXPANDED_FIXTURE_PATH = (
+    Path(__file__).resolve().parent / "seed_fixtures" / "staffdeck_expanded_gallery_seed.json"
+)
 
-SELECTED_AGENT_NAMES = {"IT", "人事", "法务", "行政", "财务"}
+SELECTED_AGENT_NAMES = {
+    "IT",
+    "人事",
+    "法务",
+    "行政",
+    "财务",
+    "销售",
+    "市场",
+    "采购",
+    "项目管理",
+    "数据分析",
+}
 USER_EDITABLE_AGENT_METADATA_KEYS = {
     "avatar_image",
     "avatar_kind",
@@ -59,9 +73,9 @@ ModelT = TypeVar("ModelT", bound=SQLModel)
 def seed_staffdeck_admin_gallery(session: Session) -> None:
     """Seed the curated StaffDeck gallery package as admin-owned resources."""
 
-    if not FIXTURE_PATH.exists():
+    data = _load_seed_fixtures((FIXTURE_PATH, EXPANDED_FIXTURE_PATH))
+    if not data:
         return
-    data = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
     id_maps: dict[str, dict[str, str]] = {
         "agent": {},
         "skill": {},
@@ -102,6 +116,18 @@ def seed_staffdeck_admin_gallery(session: Session) -> None:
     session.flush()
     _publish_gallery_resources(session, id_maps)
     _sync_seed_agents_to_current_admin(session, id_maps)
+
+
+def _load_seed_fixtures(paths: Iterable[Path]) -> JsonDict:
+    merged: JsonDict = {}
+    for path in paths:
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+        for key, value in fixture.items():
+            if isinstance(value, list):
+                merged.setdefault(key, []).extend(value)
+            elif key not in merged:
+                merged[key] = value
+    return merged
 
 
 def _seed_agents(session: Session, rows: Iterable[JsonDict], id_maps: dict[str, dict[str, str]]) -> None:

@@ -515,7 +515,7 @@ function CollapsedSidebar({
   const primaryItems = primaryNavItems(isAdmin);
 
   return (
-    <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[16px] py-[10px]">
+    <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[16px] pt-[42px] pb-[10px]">
       <div className="flex w-full flex-col items-center gap-[10px]">
         <button type="button" title="开放广场" className="flex items-center justify-center p-[10px]">
           <BrandLogo markOnly />
@@ -653,7 +653,7 @@ function ManagementSidebar({
   return (
     <Sidebar collapsible="icon" className={SIDEBAR_SHELL_CLASS}>
       <div className="flex h-full w-(--sidebar-width) shrink-0 flex-col">
-      <SidebarHeader className="gap-[24px] px-[20px] pt-[10px] group-data-[collapsible=icon]:px-[20px]">
+      <SidebarHeader className="gap-[24px] px-[20px] pt-[42px] group-data-[collapsible=icon]:px-[20px]">
         <div className="flex items-center justify-between">
           <button type="button" title="开放广场">
             <BrandLogo wordmarkClassName="group-data-[collapsible=icon]:hidden" />
@@ -1118,7 +1118,7 @@ function CollapsedChatSidebar({
   'sessions' | 'sessionsLoading' | 'agents' | 'scopeTeams' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onNewConversation' | 'onOpenGallery' | 'galleryActive' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
 > & { onToggle: () => void }) {
   return (
-    <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[20px] py-[10px]">
+    <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[20px] pt-[42px] pb-[10px]">
       <div className="flex w-full flex-col items-center gap-[10px]">
         <button type="button" title="数字员工广场" onClick={onOpenGallery} className="flex items-center justify-center p-[10px]">
           <BrandLogo markOnly />
@@ -1319,7 +1319,7 @@ function ChatSidebarVariant({
   return (
     <Sidebar collapsible="icon" className={SIDEBAR_SHELL_CLASS}>
       <div className="flex h-full w-(--sidebar-width) shrink-0 flex-col">
-        <SidebarHeader className="gap-[24px] px-[20px] pt-[10px]">
+        <SidebarHeader className="gap-[24px] px-[20px] pt-[42px]">
           <div className="flex items-center justify-between">
             <button type="button" title="数字员工广场" onClick={onOpenGallery}>
               <BrandLogo />

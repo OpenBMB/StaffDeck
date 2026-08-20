@@ -28,6 +28,7 @@ from app.api import (
     ui_config,
 )
 from app.async_jobs import shutdown_async_jobs, start_async_jobs
+from app.a2a import recover_codex_a2a_tasks, router as a2a_router, stop_codex_a2a_tasks
 from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
 from app.db import engine, init_db
@@ -38,6 +39,7 @@ from app.public_api.maintenance import start_public_api_maintenance, stop_public
 from app.public_api.webhooks import enqueue_due_webhook_deliveries
 from app.runtime_lock import acquire_runtime_instance_lock, release_runtime_instance_lock
 from app.scheduled_tasks.worker import start_background_worker, stop_background_worker
+from app.tools.a2a_recovery import recover_a2a_client_tasks
 from app.teams.sweeper import start_timeout_sweeper, stop_timeout_sweeper
 from app.version import app_version
 
@@ -68,6 +70,8 @@ def on_startup() -> None:
         init_db()
         with Session(engine) as db:
             seed_demo_data(db)
+        recover_codex_a2a_tasks()
+        recover_a2a_client_tasks()
         start_background_worker()
         start_channel_services()
         start_timeout_sweeper()
@@ -86,6 +90,7 @@ def on_startup() -> None:
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     try:
+        stop_codex_a2a_tasks()
         stop_public_api_maintenance()
         stop_channel_services()
         stop_background_worker()
@@ -128,6 +133,7 @@ app.include_router(tools.mcp_router)
 app.include_router(sessions.router)
 app.include_router(traces.router)
 app.include_router(mock.router)
+app.include_router(a2a_router)
 
 if settings.public_api_enabled:
     app.mount("/api/v1", create_public_api_app())

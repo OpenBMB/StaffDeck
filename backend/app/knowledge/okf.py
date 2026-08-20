@@ -468,8 +468,7 @@ def render_okf_markdown(frontmatter: dict[str, Any], body: str) -> str:
 
 def normalize_concept_id(value: str) -> str:
     text = value.strip().replace("\\", "/").strip("/")
-    if text.endswith(".md"):
-        text = text[:-3]
+    text = text.removesuffix(".md")
     parts = [safe_path_segment(part) for part in text.split("/") if part.strip()]
     return "/".join(part for part in parts if part)
 
@@ -796,7 +795,7 @@ def _query_tokens(query: str) -> list[str]:
             for size in (4, 3, 2):
                 if len(text) <= size:
                     continue
-                tokens.extend(text[index : index + size] for index in range(0, len(text) - size + 1))
+                tokens.extend(text[index : index + size] for index in range(len(text) - size + 1))
     seen: set[str] = set()
     unique_tokens: list[str] = []
     for token in tokens:
