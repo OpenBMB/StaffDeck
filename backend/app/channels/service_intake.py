@@ -735,9 +735,11 @@ def _bind_external_identity(
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
     _reset_bind_failures(binding.tenant_id, binding.channel, scope, external_id)
 
-    # ① 身份指针改指码主账号(无记录则新建)
+    # ① 身份指针改指码主账号(无记录则新建);显示名同步为码主账号名,
+    # 避免残留懒建期占位名(如"飞书用户 xxx")在绑定列表里显示成另一个身份。
     if identity:
         identity.staffdeck_user_id = owner.id
+        identity.display_name = owner.display_name or owner.username
         identity.updated_at = utc_now()
     else:
         identity = ChannelIdentity(
@@ -746,7 +748,7 @@ def _bind_external_identity(
             external_account_scope=scope,
             external_user_id=external_id,
             staffdeck_user_id=owner.id,
-            display_name=owner.display_name,
+            display_name=owner.display_name or owner.username,
         )
     db.add(identity)
     # ② 历史迁移:原懒建账号名下的渠道会话与全部记忆迁到码主账号

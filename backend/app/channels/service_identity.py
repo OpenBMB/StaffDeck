@@ -297,6 +297,8 @@ def unbind_external_identity(
         db.add(lazy)
         db.flush()
     identity.staffdeck_user_id = lazy.id
+    # 显示名同步回懒建账号,避免残留原绑定账号名
+    identity.display_name = lazy.display_name or lazy.username
     identity.updated_at = utc_now()
     db.add(identity)
 
