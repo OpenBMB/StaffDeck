@@ -50,6 +50,33 @@ class HarnessAction(BaseModel):
     task_summary: str = ""
 
 
+def _normalize_harness_action(raw: Any) -> dict[str, Any]:
+    """Tolerate models that omit the ``action`` envelope field.
+
+    Some providers occasionally return a bare tool payload (``tool_name`` +
+    ``arguments``) or a finish-like payload (``status``/``reply_fragment``)
+    without the required ``action`` discriminator. Infer the discriminator
+    from the payload shape; security checks (frozen capability allowlist,
+    argument validation) still run unchanged after normalization.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    if "action" in raw:
+        return raw
+    normalized = dict(raw)
+    if normalized.get("tool_name"):
+        normalized["action"] = "tool"
+        return normalized
+    if (
+        normalized.get("status")
+        or "reply_fragment" in normalized
+        or "task_summary" in normalized
+    ):
+        normalized["action"] = "finish"
+        return normalized
+    return raw
+
+
 class HarnessTaskAgent:
     """Runs one isolated TaskRequirement without outer conversation messages."""
 
@@ -112,7 +139,9 @@ class HarnessTaskAgent:
                         system_prompt,
                         payload,
                     )
-                action = HarnessAction.model_validate(raw)
+                action = HarnessAction.model_validate(
+                    _normalize_harness_action(raw)
+                )
             except (ValidationError, LLMError) as exc:
                 if _deadline_expired(step_deadline_monotonic):
                     return _step_timeout_result(

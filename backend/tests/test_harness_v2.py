@@ -4237,3 +4237,36 @@ def _model_config() -> ModelConfig:
         api_key_encrypted="test",
         model="test-model",
     )
+
+
+def test_normalize_harness_action_infers_tool_discriminator() -> None:
+    normalized = harness_agent_module._normalize_harness_action(
+        {"tool_name": "knowledge_search", "arguments": {"query": "法规"}}
+    )
+    assert normalized["action"] == "tool"
+    assert normalized["tool_name"] == "knowledge_search"
+
+    normalized = harness_agent_module._normalize_harness_action(
+        {
+            "status": "completed",
+            "reply_fragment": "已完成",
+            "next_step_id": "retrieve_evidence",
+        }
+    )
+    assert normalized["action"] == "finish"
+    assert normalized["status"] == "completed"
+
+
+def test_normalize_harness_action_preserves_explicit_and_foreign_shapes() -> None:
+    # Explicit discriminator is never touched.
+    raw = {"action": "tool", "tool_name": "read_file", "arguments": {}}
+    assert harness_agent_module._normalize_harness_action(raw) is raw
+
+    # Non-dict and ambiguous payloads are left for pydantic to reject.
+    assert harness_agent_module._normalize_harness_action(["not", "a", "dict"]) == [
+        "not",
+        "a",
+        "dict",
+    ]
+    ambiguous = {"arguments": {}}
+    assert harness_agent_module._normalize_harness_action(ambiguous) is ambiguous
