@@ -725,7 +725,9 @@ class AgentLoop:
     ) -> HumanHandoffRequest:
         # SOP 节点指定的处理人:从当前 step 的 assignee_user_id 字段读取
         # (handoff 类型节点或 allowed_actions 含 handoff_human 的节点可配置)。
+        # assignee_notify_channel 指定投递渠道:None=默认;"web"=仅网页端;绑定渠道=按渠道转接。
         step_assignee_user_id: str | None = None
+        step_notify_channel: str | None = None
         current_step = (
             self._current_skill_step(active_skill, chat_session.active_step_id)
             if active_skill
@@ -735,9 +737,12 @@ class AgentLoop:
             step_assignee_user_id = (
                 str(current_step.get("assignee_user_id") or "").strip() or None
             )
+            step_notify_channel = (
+                str(current_step.get("assignee_notify_channel") or "").strip() or None
+            )
         # 当前渠道默认处理人:从会话所属 binding 的 config_json 读取。
-        binding_default_assignee_user_id = self._binding_default_handoff_assignee(
-            tenant_id, chat_session
+        binding_default_assignee_user_id, binding_default_notify_channel = (
+            self._binding_default_handoff_assignee(tenant_id, chat_session)
         )
         handoff = HumanHandoffService(self.db, self.events).create(
             tenant_id,
@@ -749,6 +754,8 @@ class AgentLoop:
             pending_question=self._human_handoff_pending_question,
             step_assignee_user_id=step_assignee_user_id,
             binding_default_assignee_user_id=binding_default_assignee_user_id,
+            step_notify_channel=step_notify_channel,
+            binding_default_notify_channel=binding_default_notify_channel,
         )
         # 给 assignee 发飞书私聊通知(经会话所属 binding 投递)。失败仅记日志,
         # 不影响 handoff 主流程(网页收件箱仍可兜底)。
@@ -759,20 +766,24 @@ class AgentLoop:
         self,
         tenant_id: str,
         chat_session: ChatSession,
-    ) -> str | None:
-        """会话所属渠道绑定配置的默认人工处理人。
+    ) -> tuple[str | None, str | None]:
+        """会话所属渠道绑定配置的默认人工处理人及其通知渠道。
 
         从 ChatSession.channel_binding_id 反查 binding(而非 agent 挂载列表取首个),
-        读取 config_json.default_handoff_assignee_user_id。无 binding 或未配置返回 None。
+        读取 config_json.default_handoff_assignee_user_id 与
+        default_handoff_assignee_channel。无 binding 或未配置返回 (None, None)。
         """
         if not chat_session.channel_binding_id:
-            return None
+            return None, None
         binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
         if not binding or binding.tenant_id != tenant_id:
-            return None
+            return None, None
         config = binding.config_json if isinstance(binding.config_json, dict) else {}
         value = str(config.get("default_handoff_assignee_user_id") or "").strip()
-        return value or None
+        if not value:
+            return None, None
+        channel = str(config.get("default_handoff_assignee_channel") or "").strip()
+        return value, (channel or None)
 
     def _maybe_notify_handoff_assignee_on_feishu(
         self,
@@ -793,6 +804,12 @@ class AgentLoop:
             or binding.channel != "feishu"
             or binding.status != "active"
         ):
+            return
+        # 处理人投递渠道偏好:"web" 仅走网页收件箱;指定了其他渠道(非当前 feishu)
+        # 时无法经当前 binding 投递,同样跳过。未指定(None)保持默认:可达则通知。
+        metadata = handoff.metadata_json if isinstance(handoff.metadata_json, dict) else {}
+        notify_channel = str(metadata.get("assignee_notify_channel") or "").strip()
+        if notify_channel and notify_channel != binding.channel:
             return
         notify_handoff_assignee(
             self.db,

@@ -11,6 +11,7 @@ from app.api.chat import _active_skill_context_for_assistant_message, _active_sk
 from app.api.skills import (
     _extract_uploaded_skill_file,
     _skill_stats,
+    _validate_handoff_assignees,
     create_skill,
     draft_skill,
     distill_skill,
@@ -22,7 +23,7 @@ from app.api.skills import (
     update_skill,
 )
 from app.agents.branching import ensure_open_gallery_binding, visible_published_skills
-from app.db.models import AgentEvent, AgentProfile, Message, Skill, SkillFeedback, SkillVersion, Tenant, Tool, User
+from app.db.models import AgentEvent, AgentProfile, ChannelIdentity, Message, Skill, SkillFeedback, SkillVersion, Tenant, Tool, User
 from app.db.models import ModelConfig
 from app.skills.skill_distiller import SkillDistiller
 from app.skills.skill_editor import SkillEditor
@@ -1823,3 +1824,76 @@ def _test_session():
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+def _handoff_skill_card(
+    assignee_user_id: str | None,
+    assignee_notify_channel: str | None = None,
+) -> SkillCard:
+    card = _skill_card().model_copy(deep=True)
+    card.nodes[1].type = "handoff"
+    card.nodes[1].assignee_user_id = assignee_user_id
+    card.nodes[1].assignee_notify_channel = assignee_notify_channel
+    return card
+
+
+def test_validate_handoff_assignees_accepts_internal_and_bound_channel_variants() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="",
+                external_user_id="ou_owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner"), "tenant_demo")
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "web"), "tenant_demo")
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo")
+
+
+def test_validate_handoff_assignees_rejects_unbound_channel_variant() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        # 仅群聊虚拟身份不算有效渠道绑定
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="",
+                external_user_id="group:chat_1",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_handoff_assignees(
+                db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo"
+            )
+        assert exc_info.value.status_code == 400
+
+
+def test_validate_handoff_assignees_rejects_channel_customer() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            User(
+                id="user_channel",
+                tenant_id="tenant_demo",
+                username="feishu_customer",
+                source="feishu",
+                password_hash="x",
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_handoff_assignees(db, _handoff_skill_card("user_channel"), "tenant_demo")
+        assert exc_info.value.status_code == 400

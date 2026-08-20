@@ -545,11 +545,14 @@ def _resume_human_handoff_worker(handoff_id: str) -> None:
             )
             db.commit()
 
+            # 会话属主是恢复请求的权威 user:渠道身份重绑(懒建账号→web 账号)会迁移
+            # session.user_id,而 handoff.requester_user_id 是创建时的快照,可能已过期;
+            # 优先旧快照会触发 harness 的 session-user 围栏校验失败。
             request = ChatTurnRequest(
                 tenant_id=handoff.tenant_id,
                 session_id=handoff.session_id,
                 agent_id=handoff.agent_id or chat_session.agent_id,
-                user_id=handoff.requester_user_id or chat_session.user_id or "",
+                user_id=chat_session.user_id or handoff.requester_user_id or None,
                 message=handoff.human_reply,
                 channel="human_handoff_resume",
                 debug=False,

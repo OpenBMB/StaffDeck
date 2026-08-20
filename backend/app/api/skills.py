@@ -35,6 +35,7 @@ from app.db.models import (
     AgentEvent,
     AgentResourceBinding,
     AgentSkillBranchVersion,
+    ChannelIdentity,
     ModelConfig,
     Skill,
     SkillFeedback,
@@ -194,14 +195,20 @@ def list_skills(
 
 
 def _validate_handoff_assignees(db: Session, content: SkillCard, tenant_id: str) -> None:
-    """校验 SOP 人工节点的 assignee_user_id:必须存在、同租户、source='web'(内部成员)。"""
-    assignee_ids = {
-        node.assignee_user_id
+    """校验 SOP 人工节点的处理人:必须存在、同租户、source='web'(内部成员)。
+
+    assignee_notify_channel 为 None 时按默认投递(网页收件箱,可达则渠道通知);
+    为 "web" 时仅网页端;为具体渠道(如 "feishu")时该成员必须已在对应渠道
+    绑定非群聊身份,否则渠道转接不可达。
+    """
+    assignee_specs = {
+        (node.assignee_user_id.strip(), str(node.assignee_notify_channel or "").strip())
         for node in content.nodes
         if node.assignee_user_id and node.assignee_user_id.strip()
     }
-    if not assignee_ids:
+    if not assignee_specs:
         return
+    assignee_ids = {user_id for user_id, _ in assignee_specs}
     rows = db.exec(
         select(User).where(
             User.tenant_id == tenant_id,
@@ -222,6 +229,32 @@ def _validate_handoff_assignees(db: Session, content: SkillCard, tenant_id: str)
             status_code=400,
             detail=f"人工节点处理人必须是内部成员(web 账号),不可使用渠道客户或群聊虚拟账号: {', '.join(sorted(non_internal))}",
         )
+    channel_specs = {
+        (user_id, channel)
+        for user_id, channel in assignee_specs
+        if channel and channel != "web"
+    }
+    if not channel_specs:
+        return
+    channel_user_ids = {user_id for user_id, _ in channel_specs}
+    identities = db.exec(
+        select(ChannelIdentity).where(
+            ChannelIdentity.tenant_id == tenant_id,
+            ChannelIdentity.staffdeck_user_id.in_(channel_user_ids),
+            ~ChannelIdentity.external_user_id.startswith("group:"),
+        )
+    ).all()
+    bound_channels_by_user: dict[str, set[str]] = {}
+    for identity in identities:
+        bound_channels_by_user.setdefault(identity.staffdeck_user_id, set()).add(
+            identity.channel
+        )
+    for user_id, channel in sorted(channel_specs):
+        if channel not in bound_channels_by_user.get(user_id, set()):
+            raise HTTPException(
+                status_code=400,
+                detail=f"人工节点处理人未绑定 {channel} 渠道身份,无法按该渠道转接: {user_id}",
+            )
 
 
 @router.post("", response_model=SkillRead)

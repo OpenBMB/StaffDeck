@@ -321,6 +321,78 @@ def test_assignee_falls_back_to_owner_then_admin() -> None:
         assert handoff.assignee_user_id == "admin_user"
 
 
+def test_assignee_notify_channel_follows_selected_assignee() -> None:
+    """投递渠道随命中的处理人配置走,并写入 handoff metadata 供通知网关判断。"""
+    from app.core.human_handoff_service import HumanHandoffService
+    from app.session.session_schema import StepAgentResult
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        db.add(AgentProfile(id="agent_demo", tenant_id="tenant_demo", name="IT"))
+        db.commit()
+
+        service = HumanHandoffService(db, FakeEvents())
+
+        def _make_session(session_id: str) -> ChatSession:
+            row = ChatSession(
+                id=session_id,
+                tenant_id="tenant_demo",
+                agent_id="agent_demo",
+                status="active",
+            )
+            db.add(row)
+            db.commit()
+            return row
+
+        # 节点指定网页端:渠道偏好应为 "web"
+        web_handoff = service.create(
+            "tenant_demo",
+            _make_session("session_notify_web"),
+            StepAgentResult(),
+            current_step_resolver=lambda: {"name": "转人工"},
+            assignee_resolver=lambda *_: "admin_user",
+            context_summary=lambda _: "",
+            pending_question=lambda *_: "问题",
+            step_assignee_user_id="assignee_user",
+            step_notify_channel="web",
+            binding_default_assignee_user_id="admin_user",
+            binding_default_notify_channel="feishu",
+        )
+        assert web_handoff.assignee_user_id == "assignee_user"
+        assert web_handoff.metadata_json["assignee_notify_channel"] == "web"
+
+        # 节点失效时回退渠道默认:渠道偏好取渠道默认的配置
+        binding_handoff = service.create(
+            "tenant_demo",
+            _make_session("session_notify_binding"),
+            StepAgentResult(),
+            current_step_resolver=lambda: {"name": "转人工"},
+            assignee_resolver=lambda *_: "admin_user",
+            context_summary=lambda _: "",
+            pending_question=lambda *_: "问题",
+            step_assignee_user_id="deleted_user",
+            step_notify_channel="feishu",
+            binding_default_assignee_user_id="assignee_user",
+            binding_default_notify_channel="feishu",
+        )
+        assert binding_handoff.assignee_user_id == "assignee_user"
+        assert binding_handoff.metadata_json["assignee_notify_channel"] == "feishu"
+
+        # 全部未配置时无渠道偏好(默认投递)
+        fallback_handoff = service.create(
+            "tenant_demo",
+            _make_session("session_notify_fallback"),
+            StepAgentResult(),
+            current_step_resolver=lambda: {"name": "转人工"},
+            assignee_resolver=lambda *_: "admin_user",
+            context_summary=lambda _: "",
+            pending_question=lambda *_: "问题",
+        )
+        assert fallback_handoff.assignee_user_id == "admin_user"
+        assert fallback_handoff.metadata_json["assignee_notify_channel"] is None
+
+
 def test_handoff_metadata_no_longer_contains_contact_target() -> None:
     """确认 metadata_json 不再写入 contact_target 字段。"""
     from app.core.human_handoff_service import HumanHandoffService
