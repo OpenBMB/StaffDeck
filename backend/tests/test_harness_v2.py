@@ -55,6 +55,7 @@ from app.core.task_request_compiler import (
 )
 from app.core.turn_planner import TurnPlanner
 from app.db.models import (
+    AgentEvent,
     AgentProfile,
     ChatSession,
     GeneralSkill,
@@ -74,6 +75,7 @@ from app.db.models import (
 from app.general_skills.schema import GeneralSkillRunResponse
 from app.harness.errors import HarnessExecutionError
 from app.knowledge.schema import KnowledgeSearchResponse
+from app.observability.event_log import EventLog
 from app.scheduled_tasks.service import (
     _finish_task_schedule,
     _prepare_scheduled_task_run,
@@ -3980,6 +3982,80 @@ def _test_engine():
     )
     SQLModel.metadata.create_all(engine)
     return engine
+
+
+def test_activate_frame_records_skill_call_events_for_stats() -> None:
+    """新发起/恢复的 SOP TaskFrame 要落 skill_started/skill_resumed 事件。
+
+    SOP 调用次数统计只认这两个事件(legacy 运行时移除后一度不再产生,
+    管理端调用次数永远是 0)。continue_active 继续执行不计新调用。
+    """
+
+    class _StubRuntime:
+        def __init__(self) -> None:
+            self.restored: list[dict[str, object]] = []
+
+        def restore_task_frame(self, session: ChatSession, frame: dict[str, object]) -> None:
+            self.restored.append(frame)
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant-demo", name="Demo"))
+        db.add(_chat_session())
+        db.commit()
+
+        stub_runtime = _StubRuntime()
+        harness_engine = HarnessV2Engine.__new__(HarnessV2Engine)
+        harness_engine.events = EventLog(db)
+        harness_engine.owner = SimpleNamespace(runtime=stub_runtime)
+
+        skill = _refund_skill()
+        db.add(skill)
+        db.commit()
+
+        def _frame_record(decision: str) -> HarnessTaskFrameRecord:
+            return HarnessTaskFrameRecord(
+                tenant_id="tenant-demo",
+                session_id="session-1",
+                source_turn_id="turn-1",
+                task_id=f"task-{decision}",
+                kind="sop",
+                decision=decision,
+                status="queued",
+                skill_id="refund",
+                step_id="collect",
+                sequence=1,
+            )
+
+        session = db.get(ChatSession, "session-1")
+
+        # 新任务 → skill_started
+        assert harness_engine._activate_frame(session, _frame_record("start_new_task"), [skill])
+        # 恢复挂起任务 → skill_resumed
+        assert harness_engine._activate_frame(session, _frame_record("switch_to_pending"), [skill])
+        # 继续当前任务 → 不落事件
+        assert harness_engine._activate_frame(session, _frame_record("continue_active"), [skill])
+        # 非 SOP 帧 → 不落事件
+        conversation = _frame_record("answer_only")
+        conversation.kind = "conversation"
+        assert harness_engine._activate_frame(session, conversation, [skill]) is None
+        db.commit()
+
+        events = db.exec(
+            select(AgentEvent).where(
+                AgentEvent.event_type.in_(["skill_started", "skill_resumed"])  # type: ignore[attr-defined]
+            )
+        ).all()
+        by_task = {str(event.payload_json.get("task_frame_id")): event for event in events}
+        assert set(by_task) == {"task-start_new_task", "task-switch_to_pending"}
+        assert [(by_task[task].event_type, by_task[task].payload_json["to_skill_id"], by_task[task].payload_json["to_skill_version"]) for task in ("task-start_new_task", "task-switch_to_pending")] == [
+            ("skill_started", "refund", "1.0.0"),
+            ("skill_resumed", "refund", "1.0.0"),
+        ]
+        # 事件 payload 保持旧结构,统计读取方按 to_skill_id 计数
+        assert by_task["task-start_new_task"].payload_json["from_skill_id"] is None
+        # 每次激活都恢复了任务帧
+        assert len(stub_runtime.restored) == 3
 
 
 def _chat_session(**updates: object) -> ChatSession:

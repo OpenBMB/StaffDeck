@@ -1144,6 +1144,7 @@ class HarnessV2Engine:
         )
         if active_skill is None:
             return None
+        self._record_skill_activation_event(session, row, active_skill)
         self.owner.runtime.restore_task_frame(
             session,
             {
@@ -1155,6 +1156,45 @@ class HarnessV2Engine:
             },
         )
         return active_skill
+
+    def _record_skill_activation_event(
+        self,
+        session: ChatSession,
+        row: HarnessTaskFrameRecord,
+        skill: Skill,
+    ) -> None:
+        """新发起/恢复 SOP 的 TaskFrame 落一条运行时事件。
+
+        SOP 调用次数统计(api/skills._skill_stats)只认 skill_started /
+        skill_resumed 事件;legacy 运行时移除后这两个事件不再产生,导致
+        管理端调用次数永远是 0。这里在新任务(start_new_task)与恢复
+        挂起任务(switch_to_pending)被调度时补记,payload 保持旧结构
+        (to_skill_id/to_skill_version/from_skill_id/from_step_id),
+        继续执行的 continue_active 不计新调用。
+        """
+        if row.decision == "start_new_task":
+            event_type = "skill_started"
+        elif row.decision == "switch_to_pending":
+            event_type = "skill_resumed"
+        else:
+            return
+        payload = {
+            "decision": row.decision,
+            "from_skill_id": session.active_skill_id,
+            "to_skill_id": skill.skill_id,
+            "from_skill_version": None,
+            "to_skill_version": skill.version,
+            "from_step_id": session.active_step_id,
+            "to_step_id": row.step_id,
+            "execution_engine": "harness_v2",
+            "task_frame_id": row.task_id,
+        }
+        self.events.record(
+            session.tenant_id,
+            session.id,
+            event_type,
+            payload,
+        )
 
     def _restore_visible_active_frame(
         self,
