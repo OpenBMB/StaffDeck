@@ -409,6 +409,12 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
         or (binding.status != "active" and not allow_inactive_reaction)
     )
     if invalid_binding:
+        logger.error(
+            "渠道投递绑定无效 delivery=%s binding=%s channel=%s",
+            delivery.id,
+            delivery.binding_id,
+            binding.channel if binding else None,
+        )
         delivery.status = "failed"
         delivery.last_error = "渠道绑定不存在或已停用"
         delivery.sending_since = None
@@ -462,6 +468,13 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
             or chat_session.channel_account_key != binding.external_account_key
         )
         if invalid_session:
+            logger.error(
+                "渠道投递会话账号不一致 delivery=%s binding=%s session=%s target=%s",
+                delivery.id,
+                binding.id,
+                delivery.session_id,
+                delivery.target_json,
+            )
             delivery.status = "failed"
             delivery.last_error = "渠道会话与绑定账号不一致"
             delivery.next_attempt_at = None

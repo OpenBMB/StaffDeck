@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import struct
 import xml.etree.ElementTree as ET
 
@@ -25,6 +26,8 @@ from app.db import engine
 from app.db.models import ChannelBinding, WeChatKfAccount, utc_now
 
 router = APIRouter(prefix="/api/channels/wechat-kf", tags=["wechat-kf"])
+
+logger = logging.getLogger(__name__)
 
 
 def _callback_signature(token: str, timestamp: str, nonce: str, ciphertext: str) -> str:
@@ -126,6 +129,17 @@ def _save_account_cursor(account_id: str, cursor: str) -> None:
         db.commit()
 
 
+def _save_account_error(account_id: str, error: str) -> None:
+    with Session(engine) as db:
+        account = db.get(WeChatKfAccount, account_id)
+        if not account:
+            return
+        account.last_error = error[:500]
+        account.updated_at = utc_now()
+        db.add(account)
+        db.commit()
+
+
 @router.post("/{binding_id}/callback")
 async def receive_callback(
     binding_id: str,
@@ -138,6 +152,7 @@ async def receive_callback(
     if not all((msg_signature, timestamp, nonce)):
         raise HTTPException(status_code=400, detail="缺少微信客服回调参数")
     binding, credentials = _callback_binding(binding_id, allow_pending=True)
+    logger.info("微信客服回调收到 binding=%s", binding_id)
     try:
         envelope = ET.fromstring(await request.body())
     except ET.ParseError as exc:
@@ -181,6 +196,11 @@ async def receive_callback(
                 )
             ).first()
         if not account:
+            logger.warning(
+                "微信客服账号未绑定 binding=%s open_kfid=%s",
+                binding.id,
+                open_kfid,
+            )
             raise HTTPException(status_code=403, detail="该客服账号尚未绑定 StaffDeck 渠道")
         adapter = get_channel_adapter("wechat_kf")
         if not isinstance(adapter, WeChatKfAdapter):
@@ -190,15 +210,39 @@ async def receive_callback(
         scope = f"{corp_id}:{open_kfid}" if corp_id else external_account_scope(None, binding)
         staged = False
         for _ in range(20):
-            data = adapter.sync_messages(
-                binding,
-                callback_token=callback_token,
-                cursor=cursor,
-                open_kfid=open_kfid,
+            try:
+                data = adapter.sync_messages(
+                    binding,
+                    callback_token=callback_token,
+                    cursor=cursor,
+                    open_kfid=open_kfid,
+                )
+            except Exception as exc:
+                _save_account_error(account.id, str(exc))
+                logger.exception(
+                    "微信客服 sync_msg 失败 binding=%s open_kfid=%s",
+                    binding.id,
+                    open_kfid,
+                )
+                raise
+            logger.info(
+                "微信客服 sync_msg 成功 binding=%s open_kfid=%s messages=%s has_more=%s",
+                binding.id,
+                open_kfid,
+                len(data.get("msg_list") or []),
+                data.get("has_more"),
             )
             for raw in data.get("msg_list") or []:
                 inbound = normalize_wechat_kf_message(raw, account_scope=scope)
                 if inbound is None:
+                    logger.info(
+                        "微信客服消息跳过 binding=%s open_kfid=%s msgid=%s msgtype=%s origin=%s",
+                        binding.id,
+                        open_kfid,
+                        raw.get("msgid"),
+                        raw.get("msgtype"),
+                        raw.get("origin"),
+                    )
                     continue
                 result = stage_wechat_kf_inbound(
                     db_engine=engine,
@@ -207,8 +251,25 @@ async def receive_callback(
                     account_scope=scope,
                     inbound=inbound,
                 )
-                if result.disposition == StageDisposition.NACK:
+                if result.disposition not in {
+                    StageDisposition.STAGED,
+                    StageDisposition.DUPLICATE,
+                }:
+                    logger.error(
+                        "微信客服消息暂存失败 binding=%s open_kfid=%s event=%s error=%s",
+                        binding.id,
+                        open_kfid,
+                        inbound.event_id,
+                        result.error_code,
+                    )
                     raise HTTPException(status_code=503, detail="微信客服消息暂存失败")
+                logger.info(
+                    "微信客服消息已暂存 binding=%s open_kfid=%s event=%s disposition=%s",
+                    binding.id,
+                    open_kfid,
+                    inbound.event_id,
+                    result.disposition,
+                )
                 staged = staged or result.disposition == StageDisposition.STAGED
             next_cursor = str(data.get("next_cursor") or cursor)
             if next_cursor:

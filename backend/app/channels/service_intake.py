@@ -1393,7 +1393,12 @@ def _decode_and_validate_staged_event(
 
         inbound = decode_replay_envelope(payload)
         scope = str((account or {}).get("scope") or "").strip()
-        if not scope or external_account_scope(None, binding) != scope:
+        expected_scope = external_account_scope(None, binding)
+        if binding.channel == "wechat_kf":
+            corp_id = str((binding.config_json or {}).get("corp_id") or "").strip()
+            open_kfid = str(inbound.to_user_id or "").strip()
+            expected_scope = f"{corp_id}:{open_kfid}" if corp_id and open_kfid else expected_scope
+        if not scope or expected_scope != scope:
             raise ValueError("replay_account_mismatch")
         return inbound
     raise ValueError("unsupported_envelope_channel")

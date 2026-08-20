@@ -170,6 +170,49 @@ def test_wechat_kf_callback_syncs_and_stages_customer_message(monkeypatch) -> No
         assert account.sync_cursor == "cursor-1"
 
 
+def test_wechat_kf_replay_accepts_account_scope(monkeypatch) -> None:
+    client, db_engine, binding_id, token, aes_key, corp_id = _client(monkeypatch)
+    open_kfid = "wk1234567890"
+    with Session(db_engine) as db:
+        event = ChannelInboundEvent(
+            tenant_id="tenant_demo",
+            binding_id=binding_id,
+            channel="wechat_kf",
+            event_id="replay-msg",
+            payload_json={
+                "schema_version": 1,
+                "account": {"scope": f"{corp_id}:{open_kfid}"},
+                "inbound": {
+                    "channel": "wechat_kf",
+                    "event_id": "replay-msg",
+                    "from_user_id": "external-1",
+                    "to_user_id": open_kfid,
+                    "session_id": "external-1",
+                    "group_id": "",
+                    "context_token": open_kfid,
+                    "text": "你好",
+                    "is_group": False,
+                    "raw": {},
+                    "sender_name": "",
+                    "account_scope": f"{corp_id}:{open_kfid}",
+                    "attachments": [],
+                },
+            },
+            target_json={"to_user_id": "external-1", "open_kfid": open_kfid},
+            status="received",
+        )
+        db.add(event)
+        db.commit()
+        event_id = event.id
+
+    from app.channels.service_intake import _decode_and_validate_staged_event
+
+    with Session(db_engine) as db:
+        row = db.get(ChannelInboundEvent, event_id)
+        binding = db.get(ChannelBinding, binding_id)
+        assert _decode_and_validate_staged_event(row, binding).to_user_id == open_kfid
+
+
 def test_wechat_kf_callback_rejects_unbound_account(monkeypatch) -> None:
     client, db_engine, binding_id, token, aes_key, corp_id = _client(monkeypatch)
     with Session(db_engine) as db:
