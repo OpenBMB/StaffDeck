@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.config import get_settings
-from app.db.models import ChannelBinding, Skill
+from app.db.models import ChannelBinding, GeneralSkill, Skill, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +35,48 @@ class _SinkEvent:
         self.created_at = datetime.now(tz=UTC)
 
 
-def _load_skill_names(db, tenant_id: str) -> dict[str, str]:
+def _load_skill_trace_names(
+    db, tenant_id: str
+) -> tuple[dict[str, str], dict[str, dict[str, str]], dict[str, str]]:
     from sqlmodel import select
 
     rows = db.exec(select(Skill).where(Skill.tenant_id == tenant_id)).all()
-    return {row.skill_id: row.name for row in rows}
+    skill_names: dict[str, str] = {}
+    step_names: dict[str, dict[str, str]] = {}
+    for row in rows:
+        skill_names[row.skill_id] = row.name
+        content = row.content_json if isinstance(row.content_json, dict) else {}
+        steps: dict[str, str] = {}
+        for node in content.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("node_id") or "").strip()
+            node_name = str(node.get("name") or "").strip()
+            if node_id and node_name:
+                steps[node_id] = node_name
+        if steps:
+            step_names[row.skill_id] = steps
+    tool_names = _load_tool_display_names(db, tenant_id)
+    return skill_names, step_names, tool_names
+
+
+def _load_tool_display_names(db, tenant_id: str) -> dict[str, str]:
+    from sqlmodel import select
+
+    tool_names: dict[str, str] = {}
+    for row in db.exec(select(Tool).where(Tool.tenant_id == tenant_id)).all():
+        display = str(row.display_name or "").strip()
+        if not display:
+            display = str(row.description or "").strip()
+        name = str(row.name or "").strip()
+        if name and display:
+            tool_names[name] = display
+    for row in db.exec(select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id)).all():
+        slug = str(row.slug or "").strip()
+        name = str(row.name or "").strip()
+        if slug and name:
+            tool_names[f"general_skill.{slug}"] = name
+    return tool_names
 
 
 class FeishuTraceStreamer:
@@ -69,6 +106,8 @@ class FeishuTraceStreamer:
         *,
         adapter: Any | None = None,
         skill_names: dict[str, str] | None = None,
+        step_names: dict[str, dict[str, str]] | None = None,
+        tool_names: dict[str, str] | None = None,
         db=None,
         min_update_interval: float = _MIN_UPDATE_INTERVAL,
     ) -> None:
@@ -77,11 +116,14 @@ class FeishuTraceStreamer:
         self._turn_id = str(turn_id or "").strip()
         self._adapter = adapter
         self._skill_names = dict(skill_names or {})
+        self._step_names = dict(step_names or {})
+        self._tool_names = dict(tool_names or {})
         self._db = db
         self._min_update_interval = max(0.1, float(min_update_interval))
         self._message_id: str | None = None
         self._lines: list[dict] = []
         self._skill_hint: str | None = None
+        self._names_loaded = False
         self._lock = threading.Lock()
         self._last_update_at = 0.0
         self._dirty = False
@@ -157,13 +199,34 @@ class FeishuTraceStreamer:
         return self._adapter
 
     def _ensure_skill_names(self) -> dict[str, str]:
-        if self._skill_names or self._db is None:
-            return self._skill_names
+        self._ensure_trace_names()
+        return self._skill_names
+
+    def _ensure_step_names(self) -> dict[str, dict[str, str]]:
+        self._ensure_trace_names()
+        return self._step_names
+
+    def _ensure_tool_names(self) -> dict[str, str]:
+        self._ensure_trace_names()
+        return self._tool_names
+
+    def _ensure_trace_names(self) -> None:
+        if self._db is None or self._names_loaded:
+            return
         try:
-            self._skill_names = _load_skill_names(self._db, self._binding.tenant_id)
+            skill_names, step_names, tool_names = _load_skill_trace_names(
+                self._db, self._binding.tenant_id
+            )
         except Exception:
             logger.exception("飞书 trace 流式器加载技能名称失败 tenant=%s", self._binding.tenant_id)
-        return self._skill_names
+            return
+        self._names_loaded = True
+        if not self._skill_names:
+            self._skill_names = skill_names
+        if not self._step_names:
+            self._step_names = step_names
+        if not self._tool_names:
+            self._tool_names = tool_names
 
     # ---- 生命周期 ----
 
@@ -234,7 +297,13 @@ class FeishuTraceStreamer:
         from app.api.chat import _event_trace_lines
 
         sink_event = _SinkEvent(event_type, payload)
-        lines = _event_trace_lines(sink_event, self._ensure_skill_names(), self._skill_hint)
+        lines = _event_trace_lines(
+            sink_event,
+            self._ensure_skill_names(),
+            self._skill_hint,
+            self._ensure_step_names(),
+            self._ensure_tool_names(),
+        )
         if not lines:
             skill_context = _skill_context_from_payload(event_type, payload, self._skill_hint)
             if skill_context:

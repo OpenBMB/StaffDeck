@@ -3,8 +3,12 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
+
 from app.channels.adapters.feishu import FeishuPermanentError
 from app.channels.feishu_trace import FeishuTraceStreamer, _SinkEvent, is_feishu_trace_enabled
+from app.db.models import Skill, Tenant, Tool
 
 
 def _binding(channel: str = "feishu", config: dict | None = None) -> SimpleNamespace:
@@ -304,3 +308,202 @@ def test_finish_then_worker_delivers_final_state() -> None:
     assert len(adapter.update_calls) >= 1
     last_card = adapter.update_calls[-1]["card"]
     assert last_card["header"]["template"] == "green"
+
+
+def _card_texts(adapter: FakeAdapter) -> str:
+    card = adapter.update_calls[-1]["card"]
+    return "\n".join(el["text"]["content"] for el in card["elements"])
+
+
+def test_card_renders_readable_step_and_status_labels() -> None:
+    """飞书卡片应展示用户可读的步骤名与状态，而不是 step id / 状态码。"""
+    adapter = FakeAdapter()
+    streamer = FeishuTraceStreamer(
+        _binding(),
+        {"message_id": "om_source"},
+        "turn_1",
+        adapter=adapter,
+        skill_names={"skill_refund": "售后退款流程"},
+        step_names={
+            "skill_refund": {
+                "handoff_to_repair_specialist": "转交维修专员",
+                "reply_final_result": "反馈最终结果",
+            }
+        },
+    )
+    streamer.start()
+    _wait_for_card(streamer)
+    streamer.on_event(
+        "skill_step_changed",
+        {"turn_id": "t1", "to_skill_id": "skill_refund", "to_step_id": "handoff_to_repair_specialist"},
+    )
+    streamer.on_event(
+        "task_frame_finished",
+        {"turn_id": "t1", "status": "handoff", "action_count": 3},
+    )
+    streamer.finish()
+    _wait_for_worker_done(streamer)
+
+    joined = _card_texts(adapter)
+    assert "step handoff_to_repair_specialist" not in joined
+    assert "当前步骤 转交维修专员" in joined
+    assert "已转人工处理" in joined
+    assert "状态 handoff" not in joined
+
+
+def test_card_falls_back_to_readable_labels_for_unknown_step_ids() -> None:
+    """技能卡片查不到步骤名时，也应对常见 step id 给出可读文案。"""
+    adapter = FakeAdapter()
+    streamer = FeishuTraceStreamer(
+        _binding(),
+        {"message_id": "om_source"},
+        "turn_1",
+        adapter=adapter,
+        skill_names={"skill_refund": "售后退款流程"},
+    )
+    streamer.start()
+    _wait_for_card(streamer)
+    streamer.on_event(
+        "skill_step_changed",
+        {"turn_id": "t1", "to_skill_id": "skill_refund", "to_step_id": "handoff_to_repair_specialist"},
+    )
+    streamer.on_event(
+        "task_frame_started",
+        {"turn_id": "t1", "kind": "sop", "step_id": "reply_final_result"},
+    )
+    streamer.finish()
+    _wait_for_worker_done(streamer)
+
+    joined = _card_texts(adapter)
+    assert "handoff_to_repair_specialist" not in joined
+    assert "当前步骤 转人工处理" in joined
+    assert "当前环节 反馈最终结果" in joined
+
+
+def test_card_renders_tool_display_names_and_readable_completion_reason() -> None:
+    """能力调用应展示中文能力名；skill_completed 的 reason 不应裸露英文码。"""
+    adapter = FakeAdapter()
+    streamer = FeishuTraceStreamer(
+        _binding(),
+        {"message_id": "om_source"},
+        "turn_1",
+        adapter=adapter,
+        skill_names={"skill_refund": "售后退款流程"},
+        step_names={"skill_refund": {}},
+        tool_names={"hr.balance_query": "假期考勤查询"},
+    )
+    streamer.start()
+    _wait_for_card(streamer)
+    streamer.on_event(
+        "harness_action_created",
+        {"turn_id": "t1", "task_frame_id": "f1", "iteration": 1, "action": "tool", "tool_name": "hr.balance_query"},
+    )
+    streamer.on_event(
+        "harness_tool_completed",
+        {
+            "turn_id": "t1",
+            "task_frame_id": "f1",
+            "iteration": 1,
+            "tool_name": "hr.balance_query",
+            "success": True,
+        },
+    )
+    streamer.on_event(
+        "harness_tool_completed",
+        {
+            "turn_id": "t1",
+            "task_frame_id": "f1",
+            "iteration": 2,
+            "tool_name": "capability_describe",
+            "success": True,
+        },
+    )
+    streamer.on_event(
+        "skill_completed",
+        {"turn_id": "t1", "skill_id": "skill_refund", "reason": "step_completed"},
+    )
+    streamer.finish()
+    _wait_for_worker_done(streamer)
+
+    joined = _card_texts(adapter)
+    assert "能力调用完成 假期考勤查询" in joined
+    assert "hr.balance_query" not in joined
+    assert "能力调用完成 查看能力详情" in joined
+    assert "capability_describe" not in joined
+    assert "完成流程 售后退款流程" in joined
+    assert "step_completed" not in joined
+    assert "全部步骤已完成" in joined
+
+
+def test_streamer_loads_step_names_from_db() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_a", name="Demo"))
+        db.add(
+            Skill(
+                tenant_id="tenant_a",
+                skill_id="skill_refund",
+                name="售后退款流程",
+                content_json={
+                    "nodes": [
+                        {"node_id": "collect_order_info", "name": "收集订单信息"},
+                        {"node_id": "reply_final_result", "name": "反馈最终结果"},
+                    ]
+                },
+            )
+        )
+        db.add(
+            Tool(
+                tenant_id="tenant_a",
+                name="hr.balance_query",
+                display_name="假期考勤查询",
+                description="查询假期余额与考勤记录",
+                tool_type="http",
+                method="POST",
+                url="https://example.com/api/hr/balance_query",
+            )
+        )
+        db.commit()
+
+        adapter = FakeAdapter()
+        streamer = FeishuTraceStreamer(
+            _binding(),
+            {"message_id": "om_source"},
+            "turn_1",
+            adapter=adapter,
+            db=db,
+        )
+        streamer.start()
+        _wait_for_card(streamer)
+        streamer.on_event(
+            "skill_step_changed",
+            {"turn_id": "t1", "to_skill_id": "skill_refund", "to_step_id": "collect_order_info"},
+        )
+        streamer.on_event(
+            "task_frame_finished",
+            {"turn_id": "t1", "status": "completed", "action_count": 2},
+        )
+        streamer.on_event(
+            "harness_tool_completed",
+            {
+                "turn_id": "t1",
+                "task_frame_id": "f1",
+                "iteration": 1,
+                "tool_name": "hr.balance_query",
+                "success": True,
+            },
+        )
+        streamer.finish()
+        _wait_for_worker_done(streamer)
+
+        joined = _card_texts(adapter)
+        assert "当前步骤 收集订单信息" in joined
+        assert "collect_order_info" not in joined
+        assert "任务执行完成" in joined
+        assert "能力调用完成 假期考勤查询" in joined
+        assert "hr.balance_query" not in joined
