@@ -594,11 +594,13 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
         )
         logger.warning("渠道投递失败(第 %s 次) delivery=%s: %s", delivery.attempts, delivery.id, exc)
         return
-    # handoff_notice 投递成功后,把飞书返回的 message_id 回写到 delivery 与关联的
-    # HumanHandoffRequest.notify_message_id,阶段 4 据此关联处理人的飞书回复。
-    if delivery.kind == "handoff_notice" and sent_message_id:
+    # handoff_notice/handoff_ack 投递成功后,把飞书返回的 message_id 回写到 delivery;
+    # handoff_notice 额外同步到 HumanHandoffRequest.notify_message_id。阶段 4 据此
+    # 关联处理人的飞书引用回复(含对确认消息的再次回复)。
+    if delivery.kind in {"handoff_notice", "handoff_ack"} and sent_message_id:
         delivery.message_id = sent_message_id
-        _write_handoff_notify_message_id(db, delivery, sent_message_id)
+        if delivery.kind == "handoff_notice":
+            _write_handoff_notify_message_id(db, delivery, sent_message_id)
     if channel_reaction_token(binding.channel) and delivery.kind not in _REACTION_KINDS:
         event = _reaction_event_for_delivery(db, delivery, binding.channel)
         target = delivery.target_json or {}
@@ -1071,7 +1073,9 @@ def _build_handoff_problem_description(
         if fallback:
             return fallback[:600]
         return "当前 SOP 需要人工确认后继续执行。"
-    return "\n".join(parts)
+    # 截断保证整条通知(含上下文摘要)不超过渠道单条消息上限:超限会拆分多条,
+    # 处理人引用回复时只有末条消息 id 可关联,拆分会破坏引用回复匹配。
+    return "\n".join(parts)[:600]
 
 
 def notify_handoff_assignee(
@@ -1133,7 +1137,7 @@ def notify_handoff_assignee(
             text_parts.append("上下文:")
             text_parts.append(context_summary[:800])
         text_parts.append("")
-        text_parts.append("如要回复本条消息，请在开头加上 /回复反馈 然后输入答复内容。")
+        text_parts.append("如需答复，请直接回复本条消息（引用后输入答复内容）；也可发送 /回复反馈 <答复内容>。")
         text = "\n".join(text_parts)
         build_target = _HANDOFF_NOTIFY_TARGET_BUILDERS[binding.channel]
         target = build_target(external_user_id, handoff.id)
