@@ -264,6 +264,20 @@ curl.exe http://127.0.0.1:5173/api/health
 
 外部业务系统可以通过员工级 API Key 调用数字员工、持续会话、Harness v2 Run、SOP、知识、技能、工具和定时任务。完整的鉴权边界、接口清单、SSE、Webhook 与调用示例见 [数字员工开放 API v1](docs/open-api-v1.md)。
 
+## 正向代理（企业私有化部署）
+
+企业内网访问外网需要正向代理时，在 `backend/.env` 配置三项即可，全栈（模型调用、工具/MCP、微信/企微/飞书/钉钉渠道、沙箱内技能代码、pip 依赖安装）自动生效：
+
+```dotenv
+HTTP_PROXY="http://proxy.corp.example:8080"
+HTTPS_PROXY="http://proxy.corp.example:8080"
+NO_PROXY=".corp.example"   # 绕过名单:域名后缀/精确主机/*;内网 IP 与 localhost 恒自动直连,无需列入
+```
+
+- **内网模型服务不会被代理出去**:`10./172.16./192.168./127.` 私网地址与无点主机名恒直连；内网域名只写一次后缀（如 `.corp.example`）即覆盖全部子域名；
+- 显式配置优先于系统环境变量；未配置时沿用进程环境变量（httpx trust_env、websockets、pip 均识别）;
+- 沙箱网络策略为 allowlist 时，代理主机会自动并入允许域。
+
 ## 项目结构
 
 ```text

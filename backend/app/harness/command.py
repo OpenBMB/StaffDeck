@@ -530,6 +530,12 @@ def _write_srt_settings(
         domains: list[str] = []
     elif network_mode == "allowlist":
         domains = [item.strip() for item in allowed_domains if item.strip()]
+        # 配置正向代理后,沙箱内外网流量须经代理:代理主机自动并入允许域
+        from app.net_proxy import proxy_host_for_allowlist
+
+        proxy_host = proxy_host_for_allowlist()
+        if proxy_host and proxy_host not in domains:
+            domains.append(proxy_host)
     else:
         if not _srt_supports_allow_all():
             raise HarnessExecutionError(
@@ -804,6 +810,8 @@ def _bubblewrap_argv(
         if key in {
             "ARGUMENTS", "QUERY", "SKILL_WORKSPACE", "ARTIFACT_DIR", "SKILL_SLUG", "SKILL_NAME",
             "USER_ID", "SKILL_FILES_JSON", "SSL_CERT_FILE", "PIP_CERT",
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "no_proxy",
         }
     }
     for key, value in allowed_env.items():
@@ -844,6 +852,8 @@ def _managed_process_environment(env: dict[str, str] | None) -> dict[str, str]:
             "PATH", "HOME", "PWD", "TMPDIR", "LANG", "LC_ALL",
             "ARGUMENTS", "QUERY", "SKILL_WORKSPACE", "ARTIFACT_DIR", "SKILL_SLUG",
             "SKILL_NAME", "USER_ID", "SKILL_FILES_JSON", "SSL_CERT_FILE", "PIP_CERT",
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "no_proxy",
         }
     }
     return {**baseline, **allowed}

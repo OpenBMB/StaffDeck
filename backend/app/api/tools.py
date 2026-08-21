@@ -76,6 +76,7 @@ from app.tools.tool_schema import (
     ToolTestRequest,
     ToolUpdateRequest,
 )
+from app.net_proxy import httpx_proxy_kwargs
 
 router = APIRouter(prefix="/api/enterprise/tools", tags=["enterprise:tools"])
 mcp_router = APIRouter(prefix="/api/enterprise/mcp-servers", tags=["enterprise:mcp-servers"])
@@ -321,7 +322,7 @@ def probe_tool(
     )
     timeout_seconds = _probe_timeout_seconds(request)
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        with httpx.Client(timeout=timeout_seconds, **httpx_proxy_kwargs(url)) as client:
             if request.method.upper() == "GET":
                 request_url, request_kwargs = prepare_get_request(url, request.sample_arguments)
                 response = client.request(

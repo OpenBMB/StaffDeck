@@ -14,6 +14,7 @@ from typing import Any, TextIO
 import httpx
 
 from app.security.managed_subprocess import ManagedProcess, ManagedProcessError
+from app.net_proxy import httpx_proxy_kwargs
 from app.tools.mcp_builtin import (
     BuiltinMCPError,
     builtin_mcp_tool_definitions,
@@ -572,7 +573,10 @@ class _HttpSession(_MCPSession):
         self._session_id: str | None = None
 
     def __enter__(self) -> "_HttpSession":
-        self._client = httpx.Client(timeout=self.timeout_seconds)
+        self._client = httpx.Client(
+            timeout=self.timeout_seconds,
+            **httpx_proxy_kwargs(str(self.config.get("url") or self.config.get("endpoint") or "")),
+        )
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -665,7 +669,10 @@ class _SseSession(_MCPSession):
         self._next_id = 0
 
     def __enter__(self) -> "_SseSession":
-        self._client = httpx.Client(timeout=httpx.Timeout(self.timeout_seconds, read=None))
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(self.timeout_seconds, read=None),
+            **httpx_proxy_kwargs(str(self.config.get("url") or self.config.get("endpoint") or "")),
+        )
         url = str(self.config.get("url") or self.config.get("endpoint") or "").strip()
         if not url:
             raise MCPClientError("SSE MCP 连接缺少 url/endpoint。")

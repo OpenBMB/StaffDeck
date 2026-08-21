@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     general_skill_pip_index_url: str = ""
     general_skill_pip_timeout_seconds: int = 180
     general_skill_network_install: bool = True
+    # 正向代理(企业私有化外网出口):显式配置后启动期收敛进进程环境,
+    # httpx/websockets/pip 全栈生效;内网地址(私网 IP/localhost)恒直连
+    http_proxy: str = ""
+    https_proxy: str = ""
+    # 绕过名单(逗号分隔):支持 精确主机 / .域名后缀 / *.域名后缀 / * 全部直连
+    no_proxy: str = ""
     channel_secret: str = ""
     staffdeck_role: str = "all"
     wechat_ilink_base_url: str = "https://ilinkai.weixin.qq.com"

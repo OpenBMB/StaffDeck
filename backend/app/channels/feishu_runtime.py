@@ -353,7 +353,14 @@ def run_feishu_runtime(spec, control, watchdog) -> None:
             control.emit("DISCONNECTED")
             return await super()._disconnect_and_reconnect(expected_conn=expected_conn)
 
-    client = ProductionClient(app_id, app_secret, event_handler=dispatcher)
+    # 正向代理:显式配置走 proxy_url,否则 trust_env_proxy=True 读环境变量(含 NO_PROXY 绕过)
+    from app.net_proxy import proxy_for_url
+
+    feishu_proxy = proxy_for_url("https://open.feishu.cn")
+    client_kwargs = (
+        {"proxy_url": feishu_proxy} if feishu_proxy else {"trust_env_proxy": True}
+    )
+    client = ProductionClient(app_id, app_secret, event_handler=dispatcher, **client_kwargs)
 
     def request_stop() -> None:
         async def shutdown() -> None:
