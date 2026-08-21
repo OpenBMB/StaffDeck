@@ -298,6 +298,25 @@ def test_wechat_kf_normalizes_image_and_file_messages() -> None:
     assert file.attachments[0].download_params["provider_max_bytes"] == 20 * 1024 * 1024
 
 
+def test_wechat_kf_file_metadata_uses_provider_name_and_mime() -> None:
+    inbound = normalize_wechat_kf_message(
+        {
+            "msgid": "file-1",
+            "open_kfid": "wk-1",
+            "external_userid": "external-1",
+            "origin": 3,
+            "msgtype": "file",
+            "file": {"media_id": "media-file", "name": "报告.docx"},
+        }
+    )
+    assert inbound is not None
+    attachment = inbound.attachments[0]
+    assert attachment.filename == "报告.docx"
+    assert attachment.content_type == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+
 def test_wechat_kf_normalizes_mixed_message() -> None:
     inbound = normalize_wechat_kf_message(
         {
@@ -357,7 +376,11 @@ def test_wechat_kf_downloads_binary_media(monkeypatch) -> None:
 
     class FakeResponse:
         def __init__(self):
-            self.headers = {"content-type": "application/pdf", "content-length": "7"}
+            self.headers = {
+                "content-type": "application/octet-stream",
+                "content-disposition": "attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.docx",
+                "content-length": "7",
+            }
 
         def __enter__(self):
             return self
@@ -396,6 +419,10 @@ def test_wechat_kf_downloads_binary_media(monkeypatch) -> None:
         }
     ).attachments[0]
     assert adapter.download_media(binding, attachment) == b"payload"
+    assert attachment.filename == "报告.docx"
+    assert attachment.content_type == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
 
 
 def test_wechat_kf_download_rejects_json_error(monkeypatch) -> None:

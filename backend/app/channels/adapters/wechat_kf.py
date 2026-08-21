@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
+import re
 import threading
 import time
+from pathlib import PurePath
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 
@@ -160,14 +164,19 @@ def _wechat_kf_attachments(
             )
         ]
     filename = str(
-        info.get("filename") or info.get("file_name") or f"{message_id}.bin"
+        info.get("filename")
+        or info.get("file_name")
+        or info.get("name")
+        or f"{message_id}.bin"
     ).strip()
+    content_type = str(info.get("content_type") or info.get("mime_type") or "").strip()
+    content_type = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     return [
         ChannelInboundAttachment(
             media_id=media_id,
             kind="file",
             filename=filename,
-            content_type="application/octet-stream",
+            content_type=content_type,
             download_params={
                 "media_id": media_id,
                 "provider_max_bytes": WECOM_KF_FILE_MAX_BYTES,
@@ -191,6 +200,21 @@ def _split_utf8_text(text: str, limit: int = TEXT_LIMIT_BYTES) -> list[str]:
     if current:
         chunks.append("".join(current))
     return chunks
+
+
+def _filename_from_content_disposition(value: str) -> str:
+    """Extract and normalize a provider filename without allowing path components."""
+    if not value:
+        return ""
+    match = re.search(
+        r"filename\*=UTF-8''([^;]+)|filename=\"?([^;\"]+)",
+        value,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    filename = unquote((match.group(1) or match.group(2) or "").strip()).strip()
+    return PurePath(filename).name[:255]
 
 
 class WeChatKfAdapter:
@@ -252,6 +276,17 @@ class WeChatKfAdapter:
             ) as response:
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "")
+                content_disposition = response.headers.get("content-disposition", "")
+                response_filename = _filename_from_content_disposition(content_disposition)
+                if response_filename:
+                    attachment.filename = response_filename
+                if content_type and "application/octet-stream" not in content_type.lower():
+                    attachment.content_type = content_type.split(";", 1)[0].strip()
+                elif attachment.filename:
+                    attachment.content_type = (
+                        mimetypes.guess_type(attachment.filename)[0]
+                        or attachment.content_type
+                    )
                 content_length = int(response.headers.get("content-length") or 0)
                 if content_length > limit:
                     raise ValueError(f"微信客服附件超过大小上限: size>{limit}")
