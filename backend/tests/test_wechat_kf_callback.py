@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import struct
 
 import pytest
@@ -171,7 +172,7 @@ def test_wechat_kf_callback_syncs_and_stages_customer_message(monkeypatch) -> No
 
 
 def test_wechat_kf_replay_accepts_account_scope(monkeypatch) -> None:
-    client, db_engine, binding_id, token, aes_key, corp_id = _client(monkeypatch)
+    _client_instance, db_engine, binding_id, _token, _aes_key, corp_id = _client(monkeypatch)
     open_kfid = "wk1234567890"
     with Session(db_engine) as db:
         event = ChannelInboundEvent(
@@ -254,6 +255,185 @@ def test_wechat_kf_normalize_ignores_servicer_messages() -> None:
         "text": {"content": "人工回复"},
     }
     assert normalize_wechat_kf_message(raw) is None
+
+
+def test_wechat_kf_normalizes_image_and_file_messages() -> None:
+    image = normalize_wechat_kf_message(
+        {
+            "msgid": "image-1",
+            "open_kfid": "wk-1",
+            "external_userid": "external-1",
+            "origin": 3,
+            "msgtype": "image",
+            "image": {"media_id": "media-image"},
+        }
+    )
+    assert image is not None
+    assert image.text == ""
+    assert image.attachments[0].kind == "image"
+    assert image.attachments[0].media_id == "media-image"
+    assert image.attachments[0].download_params["provider_max_bytes"] == 2 * 1024 * 1024
+
+    file = normalize_wechat_kf_message(
+        {
+            "msgid": "file-1",
+            "open_kfid": "wk-1",
+            "external_userid": "external-1",
+            "origin": 3,
+            "msgtype": "file",
+            "file": {"media_id": "media-file", "filename": "报价单.pdf"},
+        }
+    )
+    assert file is not None
+    assert file.attachments[0].kind == "file"
+    assert file.attachments[0].filename == "报价单.pdf"
+    assert file.attachments[0].download_params["provider_max_bytes"] == 20 * 1024 * 1024
+
+
+def test_wechat_kf_normalizes_mixed_message() -> None:
+    inbound = normalize_wechat_kf_message(
+        {
+            "msgid": "mixed-1",
+            "open_kfid": "wk-1",
+            "external_userid": "external-1",
+            "origin": 3,
+            "msgtype": "mixed",
+            "mixed": {
+                "msg_item": [
+                    {"msgtype": "text", "text": {"content": "请查收"}},
+                    {"msgtype": "file", "file": {"media_id": "media-file", "filename": "a.txt"}},
+                ]
+            },
+        }
+    )
+    assert inbound is not None
+    assert inbound.text == "请查收"
+    assert [item.kind for item in inbound.attachments] == ["file"]
+
+
+def test_wechat_kf_replay_restores_attachment_dataclass() -> None:
+    from app.channels.service_wechat_kf_inbox import decode_replay_envelope
+
+    inbound = decode_replay_envelope(
+        {
+            "schema_version": 1,
+            "account": {"scope": "corp:wk-1"},
+            "inbound": {
+                "channel": "wechat_kf",
+                "event_id": "file-1",
+                "from_user_id": "external-1",
+                "to_user_id": "wk-1",
+                "session_id": "external-1",
+                "group_id": "",
+                "context_token": "wk-1",
+                "text": "",
+                "is_group": False,
+                "raw": {},
+                "account_scope": "corp:wk-1",
+                "attachments": [{"media_id": "media-file", "kind": "file", "filename": "a.txt"}],
+            },
+        }
+    )
+    assert inbound.attachments[0].media_id == "media-file"
+
+
+def test_wechat_kf_downloads_binary_media(monkeypatch) -> None:
+    adapter = WeChatKfAdapter()
+    binding = ChannelBinding(
+        tenant_id="tenant_demo",
+        agent_id="agent_1",
+        channel="wechat_kf",
+        config_json={"corp_id": "ww-1"},
+    )
+    monkeypatch.setattr(adapter._tokens, "get", lambda _binding: "token")
+
+    class FakeResponse:
+        def __init__(self):
+            self.headers = {"content-type": "application/pdf", "content-length": "7"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self, _size):
+            return iter([b"payload"])
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def stream(self, method, url, *, params):
+            assert method == "GET"
+            assert url.endswith("/media/get")
+            assert params == {"access_token": "token", "media_id": "media-file"}
+            return FakeResponse()
+
+    monkeypatch.setattr("app.channels.adapters.wechat_kf.httpx.Client", lambda **_kwargs: FakeClient())
+    attachment = normalize_wechat_kf_message(
+        {
+            "msgid": "file-1",
+            "open_kfid": "wk-1",
+            "external_userid": "external-1",
+            "origin": 3,
+            "msgtype": "file",
+            "file": {"media_id": "media-file", "filename": "a.txt"},
+        }
+    ).attachments[0]
+    assert adapter.download_media(binding, attachment) == b"payload"
+
+
+def test_wechat_kf_download_rejects_json_error(monkeypatch) -> None:
+    adapter = WeChatKfAdapter()
+    binding = ChannelBinding(tenant_id="t", agent_id="a", channel="wechat_kf")
+    monkeypatch.setattr(adapter._tokens, "get", lambda _binding: "token")
+
+    class FakeResponse:
+        def __init__(self):
+            self.headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self, _size):
+            return iter([json.dumps({"errcode": 40001, "errmsg": "bad media"}).encode()])
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def stream(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("app.channels.adapters.wechat_kf.httpx.Client", lambda **_kwargs: FakeClient())
+    attachment = normalize_wechat_kf_message(
+        {
+            "msgid": "image-1",
+            "open_kfid": "wk-1",
+            "external_userid": "external-1",
+            "origin": 3,
+            "msgtype": "image",
+            "image": {"media_id": "media-image"},
+        }
+    ).attachments[0]
+    with pytest.raises(Exception, match="bad media"):
+        adapter.download_media(binding, attachment)
 
 
 def test_wechat_kf_adapter_sends_text_with_stable_msgid(monkeypatch) -> None:

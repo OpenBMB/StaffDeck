@@ -10,14 +10,18 @@ import httpx
 
 from app.channels.adapters.base import (
     ChannelInbound,
+    ChannelInboundAttachment,
     register_channel_adapter,
 )
 from app.channels.crypto import decrypt_channel_secret
+from app.channels.media import MAX_CHANNEL_MEDIA_BYTES
 from app.db.models import ChannelBinding
 
 WECOM_API_BASE = "https://qyapi.weixin.qq.com/cgi-bin"
 TOKEN_REFRESH_SKEW_SECONDS = 300
 TEXT_LIMIT_BYTES = 2048
+WECOM_KF_IMAGE_MAX_BYTES = 2 * 1024 * 1024
+WECOM_KF_FILE_MAX_BYTES = 20 * 1024 * 1024
 
 
 class WeChatKfPermanentError(RuntimeError):
@@ -97,10 +101,25 @@ def normalize_wechat_kf_message(
     msg_type = str(raw.get("msgtype") or "").strip()
     if not msg_id or not external_userid or not open_kfid:
         return None
-    if msg_type != "text":
-        return None
-    text = str((raw.get("text") or {}).get("content") or "").strip()
-    if not text:
+    text = ""
+    attachments: list[ChannelInboundAttachment] = []
+    if msg_type == "text":
+        text = str((raw.get("text") or {}).get("content") or "").strip()
+    elif msg_type in {"image", "file"}:
+        attachments = _wechat_kf_attachments(raw, msg_id, msg_type)
+    elif msg_type == "mixed":
+        mixed = raw.get("mixed") or {}
+        for item in mixed.get("msg_item") or []:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("msgtype") or "").strip()
+            if item_type == "text":
+                value = str((item.get("text") or {}).get("content") or "").strip()
+                if value:
+                    text = f"{text}\n{value}".strip() if text else value
+            elif item_type in {"image", "file"}:
+                attachments.extend(_wechat_kf_attachments(item, msg_id, item_type))
+    if not text and not attachments:
         return None
     return ChannelInbound(
         channel="wechat_kf",
@@ -114,7 +133,47 @@ def normalize_wechat_kf_message(
         is_group=False,
         raw=raw,
         account_scope=account_scope,
+        attachments=attachments,
     )
+
+
+def _wechat_kf_attachments(
+    raw: dict[str, Any], message_id: str, msg_type: str
+) -> list[ChannelInboundAttachment]:
+    info = raw.get(msg_type) or {}
+    if not isinstance(info, dict):
+        return []
+    media_id = str(info.get("media_id") or info.get("file_id") or "").strip()
+    if not media_id:
+        return []
+    if msg_type == "image":
+        return [
+            ChannelInboundAttachment(
+                media_id=media_id,
+                kind="image",
+                filename=f"{message_id}.jpg",
+                content_type="image/jpeg",
+                download_params={
+                    "media_id": media_id,
+                    "provider_max_bytes": WECOM_KF_IMAGE_MAX_BYTES,
+                },
+            )
+        ]
+    filename = str(
+        info.get("filename") or info.get("file_name") or f"{message_id}.bin"
+    ).strip()
+    return [
+        ChannelInboundAttachment(
+            media_id=media_id,
+            kind="file",
+            filename=filename,
+            content_type="application/octet-stream",
+            download_params={
+                "media_id": media_id,
+                "provider_max_bytes": WECOM_KF_FILE_MAX_BYTES,
+            },
+        )
+    ]
 
 
 def _split_utf8_text(text: str, limit: int = TEXT_LIMIT_BYTES) -> list[str]:
@@ -165,6 +224,63 @@ class WeChatKfAdapter:
             if errcode in {45009, 45011}:
                 error.retryable = True
             raise error
+        return data
+
+    def download_media(
+        self,
+        binding: ChannelBinding,
+        attachment: ChannelInboundAttachment,
+        *,
+        max_bytes: int = 0,
+    ) -> bytes:
+        """Download a customer image/file through the WeChat customer-service API."""
+        media_id = str(
+            attachment.download_params.get("media_id") or attachment.media_id
+        ).strip()
+        if not media_id:
+            raise WeChatKfPermanentError("微信客服附件缺少 media_id")
+        provider_limit = int(
+            attachment.download_params.get("provider_max_bytes") or MAX_CHANNEL_MEDIA_BYTES
+        )
+        limit = min(max_bytes or MAX_CHANNEL_MEDIA_BYTES, provider_limit)
+        token = self._tokens.get(binding)
+        try:
+            with httpx.Client(timeout=20.0) as client, client.stream(
+                "GET",
+                f"{WECOM_API_BASE}/media/get",
+                params={"access_token": token, "media_id": media_id},
+            ) as response:
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                content_length = int(response.headers.get("content-length") or 0)
+                if content_length > limit:
+                    raise ValueError(f"微信客服附件超过大小上限: size>{limit}")
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in response.iter_bytes(64 * 1024):
+                    total += len(chunk)
+                    if total > limit:
+                        raise ValueError(f"微信客服附件超过大小上限: size>{limit}")
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+        except (httpx.HTTPError, ValueError) as exc:
+            if isinstance(exc, ValueError) and "超过大小上限" in str(exc):
+                raise
+            raise WeChatKfTransientError("下载微信客服附件失败") from exc
+        if "application/json" in content_type.lower():
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError as exc:
+                raise WeChatKfTransientError("微信客服附件下载响应无效") from exc
+            errcode = int(payload.get("errcode") or 0)
+            if errcode in {40014, 42001}:
+                self._tokens.invalidate(binding)
+                raise WeChatKfTransientError("微信客服 access_token 已失效")
+            raise WeChatKfPermanentError(
+                f"下载微信客服附件失败: {payload.get('errmsg') or errcode}"
+            )
+        if not data:
+            raise WeChatKfTransientError("微信客服附件下载内容为空")
         return data
 
     def sync_messages(

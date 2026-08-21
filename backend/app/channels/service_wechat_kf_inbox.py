@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import Session, select
 
-from app.channels.adapters.base import ChannelInbound
+from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
 from app.channels.service_durable_inbox import StageDisposition, StageResult
 from app.db.models import ChannelBinding, ChannelInboundEvent, new_id
 
@@ -30,6 +30,18 @@ def decode_replay_envelope(payload: object) -> ChannelInbound:
     allowed_fields = set(ChannelInbound.__dataclass_fields__)
     if not isinstance(normalized, dict) or not set(normalized) <= allowed_fields:
         raise ValueError("invalid_envelope_inbound")
+    raw_attachments = normalized.get("attachments") or []
+    if not isinstance(raw_attachments, list):
+        raise ValueError("invalid_envelope_attachments")  # noqa: TRY004
+    if any(not isinstance(attachment, dict) for attachment in raw_attachments):
+        raise ValueError("invalid_envelope_attachments")
+    try:
+        normalized = dict(normalized)
+        normalized["attachments"] = [
+            ChannelInboundAttachment(**attachment) for attachment in raw_attachments
+        ]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid_envelope_attachments") from exc
     try:
         inbound = ChannelInbound(**normalized)
     except (TypeError, ValueError) as exc:
