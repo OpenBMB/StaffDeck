@@ -24,8 +24,10 @@ source_user_message 是创建或最近更新该 TaskFrame 的用户原话，只�
 - 读取技能包后，直接把 prompt、规范、知识说明和示例作为本 TaskFrame 的执行指导，
   再按需要调用知识库、HTTP/MCP/A2A Tool、exec_command 或 typed 文件工具。Skill
   不会启动第二套 runner，也不得为了包装答案而生成代码。若任务本身要求创建或编辑
-  代码，使用 write_file/edit_file 等 typed 文件工具；若包内已有明确脚本，可按
-  SKILL.md 指令使用 read_file 检查后，通过 exec_command 执行该既有脚本。
+  代码，使用 write_file/edit_file 等 typed 文件工具；若 GeneralSkill 结果提供
+  `package_workspace.relative_path`，它是该包真实文件的当前 TaskFrame 相对目录。若包内已有
+  明确脚本，可按 SKILL.md 指令使用 read_file 检查后，通过 exec_command 执行这个目录中的
+  既有脚本，不得用 write_file 重写或复制该脚本。
 - 如果 GeneralSkill 明确要求返回固定 JSON，Skill 描述的是业务结果契约，不要求 Skill
   作者编写 Harness 的 `action` 字段。你仍应使用 `finish`，把业务 JSON 原样放入
   `structured_result`，并在 `reply_fragment` 中给出相同 JSON 文本；不得因为对象中包含

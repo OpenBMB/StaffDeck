@@ -42,6 +42,10 @@ from app.db.models import (
     new_id,
     utc_now,
 )
+from app.general_skills.package_materialization import (
+    materialize_general_skill_package,
+    skill_package_directory_name,
+)
 from app.harness import (
     HarnessArtifactAccessError,
     HarnessExecutor,
@@ -53,8 +57,8 @@ from app.harness import (
     register_command_tools,
     snapshot_harness_workspace,
 )
-from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
+from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
@@ -62,9 +66,9 @@ from app.knowledge.service import KnowledgeService
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
 
-
 _INLINE_JSON_TOOL_RESULT_MAX_CHARS = 2_000
 _INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
+_INTERNAL_SKILL_PACKAGE_DIRECTORY = ".harness/skill_packages"
 _SANDBOX_JSON_FILE_KIND = "sandbox_json_file"
 
 
@@ -712,6 +716,15 @@ class HarnessCapabilityInvoker:
         metadata: dict[str, Any],
         query: str,
     ) -> dict[str, Any]:
+        package = package_from_row(skill)
+        package_relative_path = (
+            Path(_INTERNAL_SKILL_PACKAGE_DIRECTORY)
+            / skill_package_directory_name(skill.slug, package.digest)
+        ).as_posix()
+        materialize_general_skill_package(
+            skill,
+            self.workspace_root / package_relative_path,
+        )
         return {
             "success": True,
             "data": {
@@ -720,11 +733,17 @@ class HarnessCapabilityInvoker:
                 "operation": "read",
                 "query": query,
                 "package": _skill_package_preview(skill),
+                "package_workspace": {
+                    "relative_path": package_relative_path,
+                    "sandbox_path": _sandbox_path(package_relative_path),
+                    "entrypoint": package.entrypoint,
+                },
                 "notice": (
-                    "技能包说明已加载到当前隔离 Harness transcript；"
-                    "请由 AgentLoop 直接应用其中的 prompt、规则和示例，并按任务需要调用"
-                    "知识库、原装 Tool、exec_command 或 typed 文件工具；Skill 本身不会"
-                    "生成临时代码或启动第二套 runner。"
+                    "技能包说明已加载到当前隔离 Harness transcript，且真实包文件已物化到"
+                    "当前 TaskFrame。请直接使用 package_workspace.relative_path 下的文件，"
+                    "按任务需要调用知识库、原装 Tool、exec_command 或 typed 文件工具；"
+                    "不要用 write_file 重写技能包中的脚本。技能本身不会生成临时代码，"
+                    "也不会启动第二套 runner。"
                 ),
             },
         }
