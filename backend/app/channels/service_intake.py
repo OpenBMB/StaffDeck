@@ -735,9 +735,11 @@ def _bind_external_identity(
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
     _reset_bind_failures(binding.tenant_id, binding.channel, scope, external_id)
 
-    # ① 身份指针改指码主账号(无记录则新建)
+    # ① 身份指针改指码主账号(无记录则新建);显示名同步为码主账号名,
+    # 避免残留懒建期占位名(如"飞书用户 xxx")在绑定列表里显示成另一个身份。
     if identity:
         identity.staffdeck_user_id = owner.id
+        identity.display_name = owner.display_name or owner.username
         identity.updated_at = utc_now()
     else:
         identity = ChannelIdentity(
@@ -746,7 +748,7 @@ def _bind_external_identity(
             external_account_scope=scope,
             external_user_id=external_id,
             staffdeck_user_id=owner.id,
-            display_name=owner.display_name,
+            display_name=owner.display_name or owner.username,
         )
     db.add(identity)
     # ② 历史迁移:原懒建账号名下的渠道会话与全部记忆迁到码主账号
@@ -827,6 +829,39 @@ def _feishu_reply_message_ids(inbound: ChannelInbound) -> list[str]:
     return ids
 
 
+def _stage_feishu_assignee_reply(
+    db: Session,
+    binding: ChannelBinding,
+    inbound: ChannelInbound,
+    event: ChannelInboundEvent,
+    session_id: str,
+    text: str,
+) -> None:
+    """给处理人回一条 handoff 流程消息并结束入站事件(经 outbox 投递)。"""
+    db.add(
+        ChannelDelivery(
+            tenant_id=binding.tenant_id,
+            binding_id=binding.id,
+            session_id=session_id,
+            message_id=None,
+            target_json={
+                "receive_id_type": "open_id",
+                "receive_id": inbound.from_user_id,
+            },
+            kind="handoff_ack",
+            text=text,
+            status="pending",
+            next_attempt_at=utc_now(),
+            idempotency_key=new_id("hreplyack"),
+        )
+    )
+    event.status = "done"
+    event.processed_at = utc_now()
+    event.updated_at = utc_now()
+    db.add(event)
+    db.commit()
+
+
 def _try_handle_feishu_handoff_reply(
     db: Session,
     binding: ChannelBinding,
@@ -834,46 +869,68 @@ def _try_handle_feishu_handoff_reply(
     event: ChannelInboundEvent,
     target: dict,
 ) -> bool:
-    """飞书 handoff 回复分支:处理人回复通知消息即完成人工答复。
+    """飞书 handoff 回复分支:处理人引用回复通知消息即完成人工答复,无需指令前缀。
 
-    匹配条件:飞书 p2p 消息的 parent_id == 某 pending handoff 的 notify_message_id,
-    且发送者 open_id == 该 handoff 对应 handoff_notice 投递的 receive_id(严格校验
+    匹配条件:飞书 p2p 消息引用的 parent_id/root_id 命中本 binding 已投递的
+    handoff_notice/handoff_ack,且发送者 open_id == 投递目标 receive_id(严格校验
     发送者就是实际通知目标,防止转发/截图场景下的越权回复)。
-    命中则复用 _apply_handoff_reply 置 answered + 恢复 SOP,并给处理人回一条确认。
+    - 引用待处理通知:复用 _apply_handoff_reply 置 answered + 恢复 SOP,并回确认。
+    - 引用已处理的通知/确认消息:回提示并消费该消息,不进入数字员工会话,
+      避免处理人误触发与数字员工的新对话。
     返回 True 表示已处理(短路 process_inbound);False 表示非 handoff 回复,继续正常流程。
     """
     reply_ids = _feishu_reply_message_ids(inbound)
     if not reply_ids:
         return False
-    handoff = db.exec(
-        select(HumanHandoffRequest).where(
-            HumanHandoffRequest.notify_message_id.in_(reply_ids),
-            HumanHandoffRequest.status == "pending",
-        )
-    ).first()
-    if not handoff or handoff.tenant_id != binding.tenant_id:
-        return False
-    # 严格校验发送者 == 通知目标:查该 handoff 对应的 handoff_notice 投递,
-    # 其 target_json.receive_id 必须等于 inbound.from_user_id。
-    notice = db.exec(
+    delivery = db.exec(
         select(ChannelDelivery).where(
             ChannelDelivery.tenant_id == binding.tenant_id,
             ChannelDelivery.binding_id == binding.id,
-            ChannelDelivery.kind == "handoff_notice",
-            ChannelDelivery.session_id == f"handoff:{handoff.id}",
+            ChannelDelivery.kind.in_(("handoff_notice", "handoff_ack")),
             ChannelDelivery.message_id.in_(reply_ids),
             ChannelDelivery.status == "delivered",
         )
     ).first()
-    if not notice:
+    if not delivery:
         return False
-    notice_target = notice.target_json or {}
-    notice_receive_id = str(notice_target.get("receive_id") or "").strip()
-    if not notice_receive_id or notice_receive_id != inbound.from_user_id:
+    delivery_target = delivery.target_json or {}
+    delivery_receive_id = str(delivery_target.get("receive_id") or "").strip()
+    if not delivery_receive_id or delivery_receive_id != inbound.from_user_id:
+        return False
+    handoff_id = str(delivery_target.get("handoff_id") or "").strip()
+    if not handoff_id and str(delivery.session_id or "").startswith("handoff:"):
+        handoff_id = str(delivery.session_id).split(":", 1)[1].strip()
+    handoff = db.get(HumanHandoffRequest, handoff_id) if handoff_id else None
+    if not handoff or handoff.tenant_id != binding.tenant_id:
         return False
     reply_text = (inbound.text or "").strip()
+    if handoff.status != "pending":
+        # 引用的是已处理/已失效的通知或确认消息:消费并提示,不进入数字员工会话。
+        _stage_feishu_assignee_reply(
+            db,
+            binding,
+            inbound,
+            event,
+            delivery.session_id,
+            "该人工转接请求已处理，无需再次回复。",
+        )
+        logger.info(
+            "飞书 handoff 回复命中已处理 handoff=%s from=%s",
+            handoff.id,
+            inbound.from_user_id,
+        )
+        return True
     if not reply_text:
-        return False
+        # 引用通知但无文本(纯图片等):提示用文字答复,不进入数字员工会话。
+        _stage_feishu_assignee_reply(
+            db,
+            binding,
+            inbound,
+            event,
+            delivery.session_id,
+            "请以文字内容回复本条通知消息，作为人工答复。",
+        )
+        return True
     # assignee 的 StaffDeck 用户 id:从 ChannelIdentity 反查(同 binding scope)。
     scope = external_account_scope(db, binding)
     identity = db.exec(
@@ -895,28 +952,14 @@ def _try_handle_feishu_handoff_reply(
         source="feishu",
     )
     # 给处理人回一条确认(经 outbox 投递)
-    db.add(
-        ChannelDelivery(
-            tenant_id=binding.tenant_id,
-            binding_id=binding.id,
-            session_id=f"handoff:{handoff.id}",
-            message_id=None,
-            target_json={
-                "receive_id_type": "open_id",
-                "receive_id": inbound.from_user_id,
-            },
-            kind="handoff_ack",
-            text=f"已收到你的回复，正在恢复 SOP 执行。回复预览：{reply_text[:120]}",
-            status="pending",
-            next_attempt_at=utc_now(),
-            idempotency_key=new_id("hreplyack"),
-        )
+    _stage_feishu_assignee_reply(
+        db,
+        binding,
+        inbound,
+        event,
+        delivery.session_id,
+        f"已收到你的回复，正在恢复 SOP 执行。回复预览：{reply_text[:120]}",
     )
-    event.status = "done"
-    event.processed_at = utc_now()
-    event.updated_at = utc_now()
-    db.add(event)
-    db.commit()
     logger.info(
         "飞书 handoff 回复命中 handoff=%s assignee=%s",
         handoff.id,
@@ -945,7 +988,8 @@ def _run_handoff_reply_command(
     if not reply_text:
         return (
             "用法：/回复反馈 <答复内容>\n"
-            "回复内容将作为人工答复并恢复 SOP 执行。"
+            "回复内容将作为人工答复并恢复 SOP 执行。\n"
+            "也可以直接回复（引用）人工转接通知消息进行答复。"
         )
     # 查发送者身份(用当前 binding scope 隔离)
     scope = external_account_scope(db, binding)
@@ -1204,10 +1248,9 @@ def process_inbound(
             db.commit()
             return False
 
-        # 阶段 4:飞书 handoff 回复分支。处理人直接回复飞书通知消息(parent_id ==
-        # handoff.notify_message_id)即完成人工答复,无需打开网页。必须在身份解析之后
-        # 才能校验发送者==assignee,但为避免与正常会话锚定耦合,这里先做轻量匹配,
-        # 命中则短路返回(不走 AgentLoop)。
+        # 阶段 4:飞书 handoff 回复分支。处理人用飞书"回复"功能引用通知消息即可
+        # 完成人工答复,无需 /回复反馈 前缀;引用已处理的通知/确认消息时回提示。
+        # 两种情况均短路返回(不走 AgentLoop),不会触发处理人与数字员工的新对话。
         if (
             binding.channel == "feishu"
             and not inbound.is_group

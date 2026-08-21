@@ -321,6 +321,78 @@ def test_assignee_falls_back_to_owner_then_admin() -> None:
         assert handoff.assignee_user_id == "admin_user"
 
 
+def test_assignee_notify_channel_follows_selected_assignee() -> None:
+    """投递渠道随命中的处理人配置走,并写入 handoff metadata 供通知网关判断。"""
+    from app.core.human_handoff_service import HumanHandoffService
+    from app.session.session_schema import StepAgentResult
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        db.add(AgentProfile(id="agent_demo", tenant_id="tenant_demo", name="IT"))
+        db.commit()
+
+        service = HumanHandoffService(db, FakeEvents())
+
+        def _make_session(session_id: str) -> ChatSession:
+            row = ChatSession(
+                id=session_id,
+                tenant_id="tenant_demo",
+                agent_id="agent_demo",
+                status="active",
+            )
+            db.add(row)
+            db.commit()
+            return row
+
+        # 节点指定网页端:渠道偏好应为 "web"
+        web_handoff = service.create(
+            "tenant_demo",
+            _make_session("session_notify_web"),
+            StepAgentResult(),
+            current_step_resolver=lambda: {"name": "转人工"},
+            assignee_resolver=lambda *_: "admin_user",
+            context_summary=lambda _: "",
+            pending_question=lambda *_: "问题",
+            step_assignee_user_id="assignee_user",
+            step_notify_channel="web",
+            binding_default_assignee_user_id="admin_user",
+            binding_default_notify_channel="feishu",
+        )
+        assert web_handoff.assignee_user_id == "assignee_user"
+        assert web_handoff.metadata_json["assignee_notify_channel"] == "web"
+
+        # 节点失效时回退渠道默认:渠道偏好取渠道默认的配置
+        binding_handoff = service.create(
+            "tenant_demo",
+            _make_session("session_notify_binding"),
+            StepAgentResult(),
+            current_step_resolver=lambda: {"name": "转人工"},
+            assignee_resolver=lambda *_: "admin_user",
+            context_summary=lambda _: "",
+            pending_question=lambda *_: "问题",
+            step_assignee_user_id="deleted_user",
+            step_notify_channel="feishu",
+            binding_default_assignee_user_id="assignee_user",
+            binding_default_notify_channel="feishu",
+        )
+        assert binding_handoff.assignee_user_id == "assignee_user"
+        assert binding_handoff.metadata_json["assignee_notify_channel"] == "feishu"
+
+        # 全部未配置时无渠道偏好(默认投递)
+        fallback_handoff = service.create(
+            "tenant_demo",
+            _make_session("session_notify_fallback"),
+            StepAgentResult(),
+            current_step_resolver=lambda: {"name": "转人工"},
+            assignee_resolver=lambda *_: "admin_user",
+            context_summary=lambda _: "",
+            pending_question=lambda *_: "问题",
+        )
+        assert fallback_handoff.assignee_user_id == "admin_user"
+        assert fallback_handoff.metadata_json["assignee_notify_channel"] is None
+
+
 def test_handoff_metadata_no_longer_contains_contact_target() -> None:
     """确认 metadata_json 不再写入 contact_target 字段。"""
     from app.core.human_handoff_service import HumanHandoffService
@@ -479,6 +551,9 @@ def test_notify_handoff_assignee_stages_handoff_notice_delivery() -> None:
         assert delivery.target_json["handoff_id"] == "handoff_demo"
         assert "指派人" in delivery.text  # User.display_name
         assert "网络故障" in delivery.text
+        # 通知优先引导直接引用回复,不再强制 /回复反馈 前缀
+        assert "直接回复本条消息" in delivery.text
+        assert "/回复反馈" in delivery.text  # 前缀指令仍作为备选保留
         assert delivery.status == "pending"
 
 
@@ -548,6 +623,396 @@ def test_write_handoff_notify_message_id_persists_message_id() -> None:
         refreshed = db.get(HumanHandoffRequest, "handoff_write")
         assert refreshed is not None
         assert refreshed.notify_message_id == "om_notify_123"
+
+
+def test_delivery_daemon_persists_message_id_for_notice_and_ack() -> None:
+    """handoff_notice/handoff_ack 投递成功后回写 message_id,供引用回复关联。"""
+    from app.channels.adapters.base import get_channel_adapter, register_channel_adapter
+    from app.channels.service_outbox import run_delivery_daemon
+
+    class ReplyableFakeAdapter:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        def send(self, binding, target, text, *, idempotency_key=None):
+            message_id = f"om_sent_{len(self.sent) + 1}"
+            self.sent.append(message_id)
+            return message_id
+
+        def start_ingress(self, binding_id: str) -> None: ...
+
+        def stop_ingress(self, binding_id: str) -> None: ...
+
+    import app.channels.adapters.feishu  # noqa: F401  确保真实适配器已注册
+
+    original = get_channel_adapter("feishu")
+    fake = ReplyableFakeAdapter()
+    register_channel_adapter("feishu", fake)
+    try:
+        engine = _test_engine()
+        with Session(engine) as db:
+            _seed_tenant(db)
+            binding = _feishu_binding()
+            handoff = _pending_handoff(handoff_id="handoff_wb")
+            db.add(binding)
+            db.add(handoff)
+            db.add(
+                ChannelDelivery(
+                    tenant_id="tenant_demo",
+                    binding_id=binding.id,
+                    session_id="handoff:handoff_wb",
+                    kind="handoff_notice",
+                    text="通知",
+                    target_json={
+                        "receive_id_type": "open_id",
+                        "receive_id": "ou_assignee",
+                        "handoff_id": "handoff_wb",
+                    },
+                    status="pending",
+                    next_attempt_at=utc_now(),
+                    idempotency_key="wb_notice",
+                )
+            )
+            db.add(
+                ChannelDelivery(
+                    tenant_id="tenant_demo",
+                    binding_id=binding.id,
+                    session_id="handoff:handoff_wb",
+                    kind="handoff_ack",
+                    text="已收到你的回复",
+                    target_json={
+                        "receive_id_type": "open_id",
+                        "receive_id": "ou_assignee",
+                    },
+                    status="pending",
+                    next_attempt_at=utc_now(),
+                    idempotency_key="wb_ack",
+                )
+            )
+            db.commit()
+
+        run_delivery_daemon(once=True, db_engine=engine)
+
+        with Session(engine) as db:
+            deliveries = db.exec(select(ChannelDelivery)).all()
+            by_kind = {row.kind: row for row in deliveries}
+            assert by_kind["handoff_notice"].status == "delivered"
+            assert by_kind["handoff_notice"].message_id == "om_sent_1"
+            assert by_kind["handoff_ack"].status == "delivered"
+            assert by_kind["handoff_ack"].message_id == "om_sent_2"
+            refreshed = db.get(HumanHandoffRequest, "handoff_wb")
+            assert refreshed is not None
+            assert refreshed.notify_message_id == "om_sent_1"
+    finally:
+        register_channel_adapter("feishu", original)
+
+
+# ---------------------------------------------------------------------------
+# 通用渠道 handoff 通知:wecom 投递 + binding 解析
+# ---------------------------------------------------------------------------
+
+
+def _wecom_binding(
+    *,
+    binding_id: str = "binding_wecom",
+    scope: str = "corp_1",
+) -> ChannelBinding:
+    return ChannelBinding(
+        id=binding_id,
+        tenant_id="tenant_demo",
+        agent_id="agent_demo",
+        channel="wecom",
+        status="active",
+        config_json={"corp_id": scope, "bot_id": "bot_1"},
+        external_account_key="wecom:corp:6:corp_1:bot:5:bot_1",
+        identity_scope_key=scope,
+    )
+
+
+def test_notify_handoff_assignee_stages_wecom_delivery_with_chat_id() -> None:
+    """企微绑定:按 binding scope 解析非群聊身份,target 用 to_user_id(chatid)。"""
+    from app.channels.service_outbox import notify_handoff_assignee
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _wecom_binding()
+        db.add(binding)
+        db.add(
+            _channel_identity(
+                channel="wecom",
+                external_user_id="staff_assignee",
+                scope="corp_1",
+            )
+        )
+        db.add(_pending_handoff())
+        db.commit()
+
+        notify_handoff_assignee(db, binding, _pending_handoff(), "网络故障", "user: 网络断了")
+        deliveries = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "handoff_notice")
+        ).all()
+        assert len(deliveries) == 1
+        delivery = deliveries[0]
+        assert delivery.binding_id == "binding_wecom"
+        assert delivery.target_json["to_user_id"] == "staff_assignee"
+        assert delivery.target_json["handoff_id"] == "handoff_demo"
+        assert "指派人" in delivery.text
+        assert delivery.status == "pending"
+
+
+def test_notify_handoff_assignee_skips_when_identity_scope_mismatches() -> None:
+    """scope 级隔离:assignee 身份挂在其他企微企业 scope 下时跳过(网页收件箱兜底)。"""
+    from app.channels.service_outbox import notify_handoff_assignee
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _wecom_binding(scope="corp_1")
+        db.add(binding)
+        # assignee 只在另一个企业(corp_2)绑定过身份
+        db.add(
+            _channel_identity(
+                channel="wecom",
+                external_user_id="staff_other_org",
+                scope="corp_2",
+            )
+        )
+        db.add(_pending_handoff())
+        db.commit()
+
+        notify_handoff_assignee(db, binding, _pending_handoff(), "问题", "")
+        deliveries = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "handoff_notice")
+        ).all()
+        assert deliveries == []
+
+
+def test_notify_handoff_assignee_skips_unsupported_private_message_channel() -> None:
+    """钉钉不支持主动私聊:即使身份可达也不登记投递。"""
+    from app.channels.service_outbox import notify_handoff_assignee
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = ChannelBinding(
+            id="binding_dingtalk",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            channel="dingtalk",
+            status="active",
+            config_json={"client_id": "cli_d"},
+        )
+        db.add(binding)
+        db.add(
+            _channel_identity(
+                channel="dingtalk",
+                external_user_id="staff_assignee",
+                scope="",
+            )
+        )
+        db.add(_pending_handoff())
+        db.commit()
+
+        notify_handoff_assignee(db, binding, _pending_handoff(), "问题", "")
+        deliveries = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.kind == "handoff_notice")
+        ).all()
+        assert deliveries == []
+
+
+def test_resolve_handoff_notify_binding_finds_active_employee_binding() -> None:
+    from app.channels.service_outbox import resolve_handoff_notify_binding
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        active = _feishu_binding(binding_id="binding_active", app_id="cli_active")
+        disabled = _feishu_binding(binding_id="binding_disabled", app_id="cli_disabled")
+        disabled.status = "disabled"
+        team = _feishu_binding(binding_id="binding_team", app_id="cli_team")
+        team.team_id = "team_1"
+        db.add(active)
+        db.add(disabled)
+        db.add(team)
+        db.commit()
+
+        assert resolve_handoff_notify_binding(db, "tenant_demo", "feishu").id == "binding_active"
+        assert resolve_handoff_notify_binding(db, "tenant_demo", "wecom") is None
+        assert resolve_handoff_notify_binding(db, "tenant_demo", "web") is None
+        assert resolve_handoff_notify_binding(db, "tenant_demo", "") is None
+
+
+# ---------------------------------------------------------------------------
+# AgentLoop 通知路由:按 notify_channel 解析 binding,不再 feishu 硬编码
+# ---------------------------------------------------------------------------
+
+
+class _RecordingOutbox:
+    """替身 notify_handoff_assignee:记录被调用的 binding,便于断言路由结果。"""
+
+    def __init__(self) -> None:
+        self.calls: list[ChannelBinding] = []
+
+    def __call__(self, db, binding, handoff, pending_question, context_summary) -> None:
+        self.calls.append(binding)
+
+
+def _loop_with_session(db: Session, chat_session: ChatSession):
+    from app.core.agent_loop import AgentLoop
+
+    return AgentLoop(db), chat_session
+
+
+def test_agent_loop_notify_routes_declared_channel_to_matching_binding() -> None:
+    """偏好 feishu 但会话在企微:回退到租户内 feishu active binding 投递。"""
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        feishu = _feishu_binding(binding_id="binding_feishu", app_id="cli_a")
+        wecom = _wecom_binding()
+        db.add(feishu)
+        db.add(wecom)
+        agent = AgentProfile(id="agent_demo", tenant_id="tenant_demo", name="demo", config_json={})
+        db.add(agent)
+        session = ChatSession(
+            id="session_demo",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            user_id="admin_user",
+            channel="wecom",
+            channel_binding_id="binding_wecom",
+        )
+        db.add(session)
+        db.add(
+            _pending_handoff(metadata={"assignee_notify_channel": "feishu"})
+        )
+        db.commit()
+
+        recorder = _RecordingOutbox()
+        import app.channels.service_outbox as outbox_mod
+
+        original = outbox_mod.notify_handoff_assignee
+        outbox_mod.notify_handoff_assignee = recorder
+        try:
+            loop, chat_session = _loop_with_session(db, session)
+            loop._maybe_notify_handoff_assignee("tenant_demo", chat_session, _pending_handoff(
+                metadata={"assignee_notify_channel": "feishu"}
+            ))
+        finally:
+            outbox_mod.notify_handoff_assignee = original
+
+        assert [binding.id for binding in recorder.calls] == ["binding_feishu"]
+
+
+def test_agent_loop_notify_prefers_session_binding_when_channel_matches() -> None:
+    """偏好 wecom 且会话就在 wecom binding:直接用会话所属 binding。"""
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        wecom_session = _wecom_binding(binding_id="binding_wecom_session", scope="corp_session")
+        wecom_session.external_account_key = "wecom:corp:12:corp_session:bot:5:bot_1"
+        wecom_other = _wecom_binding(binding_id="binding_wecom_other", scope="corp_other")
+        wecom_other.external_account_key = "wecom:corp:10:corp_other:bot:5:bot_1"
+        db.add(wecom_session)
+        db.add(wecom_other)
+        agent = AgentProfile(id="agent_demo", tenant_id="tenant_demo", name="demo", config_json={})
+        db.add(agent)
+        session = ChatSession(
+            id="session_demo",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            user_id="admin_user",
+            channel="wecom",
+            channel_binding_id="binding_wecom_session",
+        )
+        db.add(session)
+        db.commit()
+
+        recorder = _RecordingOutbox()
+        import app.channels.service_outbox as outbox_mod
+
+        original = outbox_mod.notify_handoff_assignee
+        outbox_mod.notify_handoff_assignee = recorder
+        try:
+            loop, chat_session = _loop_with_session(db, session)
+            loop._maybe_notify_handoff_assignee("tenant_demo", chat_session, _pending_handoff(
+                metadata={"assignee_notify_channel": "wecom"}
+            ))
+        finally:
+            outbox_mod.notify_handoff_assignee = original
+
+        assert [binding.id for binding in recorder.calls] == ["binding_wecom_session"]
+
+
+def test_agent_loop_notify_skips_web_preference_and_missing_binding() -> None:
+    """"web" 偏好仅网页收件箱;指定渠道租户内无 active 绑定时跳过且不抛错。"""
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        agent = AgentProfile(id="agent_demo", tenant_id="tenant_demo", name="demo", config_json={})
+        db.add(agent)
+        session = ChatSession(
+            id="session_demo",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            user_id="admin_user",
+        )
+        db.add(session)
+        db.commit()
+
+        recorder = _RecordingOutbox()
+        import app.channels.service_outbox as outbox_mod
+
+        original = outbox_mod.notify_handoff_assignee
+        outbox_mod.notify_handoff_assignee = recorder
+        try:
+            loop, chat_session = _loop_with_session(db, session)
+            loop._maybe_notify_handoff_assignee(
+                "tenant_demo", chat_session, _pending_handoff(metadata={"assignee_notify_channel": "web"})
+            )
+            # 租户内无 feishu active 绑定:静默跳过,不调用 notify
+            loop._maybe_notify_handoff_assignee(
+                "tenant_demo", chat_session, _pending_handoff(metadata={"assignee_notify_channel": "feishu"})
+            )
+        finally:
+            outbox_mod.notify_handoff_assignee = original
+
+        assert recorder.calls == []
+
+
+def test_agent_loop_notify_default_uses_session_binding_when_supported() -> None:
+    """无偏好(默认):会话所属 binding 渠道支持私聊通知即投递(企微也走)。"""
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        wecom = _wecom_binding()
+        db.add(wecom)
+        agent = AgentProfile(id="agent_demo", tenant_id="tenant_demo", name="demo", config_json={})
+        db.add(agent)
+        session = ChatSession(
+            id="session_demo",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            user_id="admin_user",
+            channel="wecom",
+            channel_binding_id="binding_wecom",
+        )
+        db.add(session)
+        db.commit()
+
+        recorder = _RecordingOutbox()
+        import app.channels.service_outbox as outbox_mod
+
+        original = outbox_mod.notify_handoff_assignee
+        outbox_mod.notify_handoff_assignee = recorder
+        try:
+            loop, chat_session = _loop_with_session(db, session)
+            loop._maybe_notify_handoff_assignee("tenant_demo", chat_session, _pending_handoff(metadata={}))
+        finally:
+            outbox_mod.notify_handoff_assignee = original
+
+        assert [binding.id for binding in recorder.calls] == ["binding_wecom"]
 
 
 # ---------------------------------------------------------------------------
@@ -887,6 +1352,298 @@ def test_try_handle_feishu_handoff_reply_rejects_when_no_notice_delivery() -> No
         intake_mod.external_account_scope = lambda _db, _b: ""
         try:
             assert _try_handle_feishu_handoff_reply(db, binding, inbound, event, {}) is False
+        finally:
+            intake_mod.external_account_scope = original
+
+
+def test_try_handle_feishu_handoff_reply_consumes_already_answered_notice(monkeypatch) -> None:
+    """引用已答复的通知再回复:消费并提示已处理,不落入数字员工会话。"""
+    import app.channels.service_intake as intake_mod
+    from app.channels.service_intake import _try_handle_feishu_handoff_reply
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding, handoff, inbound, event = _seed_handoff_reply_scenario(db)
+        handoff.status = "answered"
+        handoff.human_reply = "首次答复"
+        db.add(handoff)
+        db.commit()
+
+        original = intake_mod.external_account_scope
+        intake_mod.external_account_scope = lambda _db, _b: ""
+        try:
+            applied: list[tuple] = []
+
+            def fake_apply(db_arg, row, reply, *, answered_by_user_id, source="web"):
+                applied.append((row.id, reply))
+
+            import app.api.chat as chat_api
+
+            monkeypatch.setattr(chat_api, "_apply_handoff_reply", fake_apply)
+
+            handled = _try_handle_feishu_handoff_reply(db, binding, inbound, event, {})
+            assert handled is True
+            assert applied == []
+            refreshed = db.get(HumanHandoffRequest, handoff.id)
+            assert refreshed.status == "answered"
+            assert refreshed.human_reply == "首次答复"
+            assert event.status == "done"
+            acks = db.exec(
+                select(ChannelDelivery).where(ChannelDelivery.kind == "handoff_ack")
+            ).all()
+            assert len(acks) == 1
+            assert "已处理" in acks[0].text
+        finally:
+            intake_mod.external_account_scope = original
+
+
+def test_try_handle_feishu_handoff_reply_consumes_reply_to_ack_message(monkeypatch) -> None:
+    """引用 handoff_ack 确认消息再回复:提示已处理,不落入数字员工会话。"""
+    import app.channels.service_intake as intake_mod
+    from app.channels.service_intake import _try_handle_feishu_handoff_reply
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding, handoff, _inbound_notice_reply, _event_notice = _seed_handoff_reply_scenario(db)
+        handoff.status = "answered"
+        handoff.human_reply = "首次答复"
+        db.add(handoff)
+        # 确认消息已投递,处理人转而引用它继续补充
+        db.add(ChannelDelivery(
+            tenant_id="tenant_demo",
+            binding_id=binding.id,
+            session_id=f"handoff:{handoff.id}",
+            message_id="om_ack_1",
+            kind="handoff_ack",
+            text="已收到你的回复",
+            target_json={
+                "receive_id_type": "open_id",
+                "receive_id": "ou_assignee",
+            },
+            status="delivered",
+            idempotency_key="ack_k",
+        ))
+        db.commit()
+        inbound = _inbound(
+            event_id="om_reply_ack",
+            from_user_id="ou_assignee",
+            text="再补充一点",
+            parent_id="om_ack_1",
+        )
+        event = _inbound_event(event_id="om_reply_ack", binding_id=binding.id)
+        db.add(event)
+        db.commit()
+
+        original = intake_mod.external_account_scope
+        intake_mod.external_account_scope = lambda _db, _b: ""
+        try:
+            applied: list[tuple] = []
+
+            def fake_apply(db_arg, row, reply, *, answered_by_user_id, source="web"):
+                applied.append((row.id, reply))
+
+            import app.api.chat as chat_api
+
+            monkeypatch.setattr(chat_api, "_apply_handoff_reply", fake_apply)
+
+            handled = _try_handle_feishu_handoff_reply(db, binding, inbound, event, {})
+            assert handled is True
+            assert applied == []
+            assert db.get(HumanHandoffRequest, handoff.id).human_reply == "首次答复"
+            assert event.status == "done"
+            acks = db.exec(
+                select(ChannelDelivery).where(ChannelDelivery.kind == "handoff_ack")
+            ).all()
+            assert len(acks) == 2  # 已投递的确认 + 新提示
+            assert any("已处理" in ack.text for ack in acks if ack.message_id is None)
+        finally:
+            intake_mod.external_account_scope = original
+
+
+def test_process_inbound_quote_reply_without_prefix_answers_handoff(monkeypatch) -> None:
+    """端到端:处理人引用通知消息直接回复(无前缀)即完成答复,不创建新会话。"""
+    import app.channels.service_intake as intake_mod
+    from app.channels.service_intake import process_inbound
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _feishu_binding()
+        db.add(binding)
+        db.add(_channel_identity(external_user_id="ou_assignee"))
+        db.add(AgentProfile(id="agent_demo", tenant_id="tenant_demo", name="数字员工A"))
+        session = ChatSession(
+            id="session_demo",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            status="handoff",
+        )
+        handoff = _pending_handoff(
+            notify_message_id="om_notice_e2e",
+            assignee_user_id="assignee_user",
+        )
+        db.add(session)
+        db.add(handoff)
+        db.add(ChannelDelivery(
+            tenant_id="tenant_demo",
+            binding_id=binding.id,
+            session_id=f"handoff:{handoff.id}",
+            message_id="om_notice_e2e",
+            kind="handoff_notice",
+            text="通知",
+            target_json={
+                "receive_id_type": "open_id",
+                "receive_id": "ou_assignee",
+                "handoff_id": handoff.id,
+            },
+            status="delivered",
+            idempotency_key="notice_e2e",
+        ))
+        db.commit()
+
+        original = intake_mod.external_account_scope
+        intake_mod.external_account_scope = lambda _db, _b: ""
+        try:
+            applied: list[tuple] = []
+
+            def fake_apply(db_arg, row, reply, *, answered_by_user_id, source="web"):
+                row.status = "answered"
+                row.human_reply = reply
+                row.answered_at = utc_now()
+                db_arg.add(row)
+                db_arg.commit()
+                applied.append((row.id, reply, source))
+
+            import app.api.chat as chat_api
+
+            monkeypatch.setattr(chat_api, "_apply_handoff_reply", fake_apply)
+
+            inbound = ChannelInbound(
+                channel="feishu",
+                event_id="om_reply_e2e",
+                from_user_id="ou_assignee",
+                to_user_id="ou_bot",
+                session_id="ou_assignee",
+                group_id="",
+                context_token="om_reply_e2e",
+                text="已修复网络",
+                is_group=False,
+                raw={"message": {"parent_id": "om_notice_e2e", "root_id": ""}},
+                parent_id="om_notice_e2e",
+            )
+            executed = process_inbound(binding, inbound, db_engine=engine)
+            assert executed is False  # 未进入 AgentLoop 对话轮
+            assert applied == [(handoff.id, "已修复网络", "feishu")]
+
+            db.expire_all()
+            refreshed = db.get(HumanHandoffRequest, handoff.id)
+            assert refreshed.status == "answered"
+            assert refreshed.human_reply == "已修复网络"
+            acks = db.exec(
+                select(ChannelDelivery).where(ChannelDelivery.kind == "handoff_ack")
+            ).all()
+            assert len(acks) == 1
+            assert "已收到你的回复" in acks[0].text
+            # 关键回归:不触发处理人与数字员工的新对话(仅存在原 handoff 会话)
+            sessions = db.exec(select(ChatSession)).all()
+            assert [s.id for s in sessions] == ["session_demo"]
+            from app.db.models import ChannelInboundEvent
+
+            events = db.exec(
+                select(ChannelInboundEvent).where(
+                    ChannelInboundEvent.event_id == "om_reply_e2e"
+                )
+            ).all()
+            assert [e.status for e in events] == ["done"]
+        finally:
+            intake_mod.external_account_scope = original
+
+
+def test_process_inbound_quote_reply_to_answered_notice_consumes_without_new_session(
+    monkeypatch,
+) -> None:
+    """端到端:引用已答复的通知回复被消费,不创建处理人与数字员工的新会话。"""
+    import app.channels.service_intake as intake_mod
+    from app.channels.service_intake import process_inbound
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _feishu_binding()
+        db.add(binding)
+        db.add(_channel_identity(external_user_id="ou_assignee"))
+        db.add(AgentProfile(id="agent_demo", tenant_id="tenant_demo", name="数字员工A"))
+        session = ChatSession(
+            id="session_demo",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            status="handoff",
+        )
+        handoff = _pending_handoff(
+            notify_message_id="om_notice_e2e",
+            assignee_user_id="assignee_user",
+        )
+        handoff.status = "answered"
+        handoff.human_reply = "首次答复"
+        db.add(session)
+        db.add(handoff)
+        db.add(ChannelDelivery(
+            tenant_id="tenant_demo",
+            binding_id=binding.id,
+            session_id=f"handoff:{handoff.id}",
+            message_id="om_notice_e2e",
+            kind="handoff_notice",
+            text="通知",
+            target_json={
+                "receive_id_type": "open_id",
+                "receive_id": "ou_assignee",
+                "handoff_id": handoff.id,
+            },
+            status="delivered",
+            idempotency_key="notice_e2e",
+        ))
+        db.commit()
+
+        original = intake_mod.external_account_scope
+        intake_mod.external_account_scope = lambda _db, _b: ""
+        try:
+            applied: list[tuple] = []
+
+            def fake_apply(db_arg, row, reply, *, answered_by_user_id, source="web"):
+                applied.append((row.id, reply))
+
+            import app.api.chat as chat_api
+
+            monkeypatch.setattr(chat_api, "_apply_handoff_reply", fake_apply)
+
+            inbound = ChannelInbound(
+                channel="feishu",
+                event_id="om_reply_late",
+                from_user_id="ou_assignee",
+                to_user_id="ou_bot",
+                session_id="ou_assignee",
+                group_id="",
+                context_token="om_reply_late",
+                text="又补充了一点",
+                is_group=False,
+                raw={"message": {"parent_id": "om_notice_e2e", "root_id": ""}},
+                parent_id="om_notice_e2e",
+            )
+            executed = process_inbound(binding, inbound, db_engine=engine)
+            assert executed is False
+            assert applied == []
+            db.expire_all()
+            refreshed = db.get(HumanHandoffRequest, handoff.id)
+            assert refreshed.human_reply == "首次答复"
+            acks = db.exec(
+                select(ChannelDelivery).where(ChannelDelivery.kind == "handoff_ack")
+            ).all()
+            assert len(acks) == 1
+            assert "已处理" in acks[0].text
+            sessions = db.exec(select(ChatSession)).all()
+            assert [s.id for s in sessions] == ["session_demo"]
         finally:
             intake_mod.external_account_scope = original
 

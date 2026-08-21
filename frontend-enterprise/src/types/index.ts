@@ -14,6 +14,8 @@ export type SkillGraphNode = Record<string, unknown> & {
   sub_sop_id?: string | null;
   /** 人工节点指定处理人（handoff / handoff_human 节点）。 */
   assignee_user_id?: string | null;
+  /** 处理人投递渠道:null=默认;'web'=仅网页端;'feishu' 等绑定渠道=按该渠道转接。 */
+  assignee_notify_channel?: string | null;
 };
 
 export type SkillCard = {
@@ -931,6 +933,8 @@ export type ChannelBindingRead = {
   /** 渠道默认人工处理人（SOP 节点未指定 assignee 时回退到此值）。 */
   default_handoff_assignee_user_id?: string | null;
   default_handoff_assignee_name?: string | null;
+  /** 处理人投递渠道:null=默认;'web'=仅网页端;'feishu' 等绑定渠道=按该渠道转接。 */
+  default_handoff_assignee_channel?: string | null;
   identity_scope_key?: string | null;
   /** 当前请求者对该绑定的管理角色:admin/owner/collaborator;无关系时为 null */
   my_role?: string | null;

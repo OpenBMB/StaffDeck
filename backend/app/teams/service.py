@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 
 from app.db.models import (
     AgentProfile,
+    ChatSession,
     Team,
     TeamBlackboardEntry,
     TeamMember,
@@ -18,6 +19,10 @@ from app.db.models import (
     TeamTaskEvent,
     TeamWakeEvent,
     utc_now,
+)
+from app.session.cleanup import (
+    purge_chat_session_records,
+    remove_chat_session_workspace,
 )
 
 TEAM_MEMBER_ROLES = {"leader", "member"}
@@ -372,7 +377,7 @@ def create_team(
 
 
 def delete_team(db: Session, team: Team) -> None:
-    """删除团队并级联清理成员/任务/竞标/审计/唤醒事件/黑板。"""
+    """删除团队并级联清理成员/任务/竞标/审计/唤醒事件/黑板/团队会话。"""
     members = list_team_members(db, team.id)
     tasks = list(db.exec(select(TeamTask).where(TeamTask.team_id == team.id)).all())
     bids = list(db.exec(select(TeamTaskBid).where(TeamTaskBid.team_id == team.id)).all())
@@ -381,10 +386,18 @@ def delete_team(db: Session, team: Team) -> None:
     entries = list(
         db.exec(select(TeamBlackboardEntry).where(TeamBlackboardEntry.team_id == team.id)).all()
     )
+    sessions = list(
+        db.exec(select(ChatSession).where(ChatSession.team_id == team.id)).all()
+    )
+    workspace_keys = [(session.tenant_id, session.id) for session in sessions]
     for row in [*members, *tasks, *bids, *events, *wakes, *entries]:
         db.delete(row)
+    for session in sessions:
+        purge_chat_session_records(db, session)
     db.delete(team)
     db.commit()
+    for tenant_id, session_id in workspace_keys:
+        remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
 
 
 def _ensure_team_agent(db: Session, team: Team, agent_id: str) -> AgentProfile:

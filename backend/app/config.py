@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # 一张独立卡片展示智能体每一步（SOP/工具/知识检索），与正文回复互不影响。
     # 仅影响飞书渠道；关闭时退化为仅发最终回复。
     channel_feishu_trace_enabled: bool = True
+    # 飞书 trace 卡片 SOP 紧凑展示开关：开启后匹配 SOP（判断意图/进入流程）之后的
+    # 中间步骤不再逐行展示，仅显示"翻书动画 + 正在推进SOP"，等待用户补充信息时
+    # 定格为"📖 流程已暂停"，SOP 结束时定格为"✅ 流程已结束"。设为 False 可整体
+    # 回滚为逐行展示的旧样式；binding 的 config_json.compact_trace=false 可对单个
+    # 绑定回滚。
+    channel_feishu_trace_compact_sop: bool = True
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),

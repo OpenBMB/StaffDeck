@@ -23,7 +23,9 @@ import { Button as UIButton } from '@/components/ui/button';
 
 import { api, TENANT_ID } from '../api/client';
 
-const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信' };
+const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信', web: '网页端' };
+// 渠道转接通知运行时已支持飞书/企微私聊;钉钉/微信适配器只能回会话内消息,不在此列。
+const HANDOFF_NOTIFY_CHANNELS = new Set(['feishu', 'wecom']);
 import IconAdd from '../assets/icons/add.svg?react';
 import IconAlignJustify from '../assets/icons/align-justify.svg?react';
 import IconChat from '../assets/icons/chat.svg?react';
@@ -51,6 +53,8 @@ import type {
   PagedResponse,
   TeamRead,
 } from '../types';
+import { formatHandoffAssigneeValue, parseHandoffAssigneeValue } from '../lib/handoff-assignee';
+import { feishuAppIdFromIdentityScope } from '../lib/identity-scope';
 import WechatSetup from './channels/WechatSetup';
 import WecomSetup from './channels/WecomSetup';
 import FeishuSetup from './channels/FeishuSetup';
@@ -282,17 +286,30 @@ export default function ChannelsPage({
       (item.external_account_scope || '') === (binding?.identity_scope_key || ''),
   );
   const bindingScope = binding?.identity_scope_key || '';
-  const identityBoundUsers = tenantUsers.filter((user) =>
-    user.channel_identities?.some(
-      (identity) =>
-        identity.channel === binding?.channel &&
-        (identity.external_account_scope || '') === bindingScope,
-    ),
+  // 已绑定集合只统计内部成员:渠道懒建账号(外部客户)自带指向自己的身份,
+  // 不应计入"邀请成员绑定"的绑定状态。展示与邀请下拉都排除当前用户——
+  // 自己的绑定在上方"身份绑定"区有专门入口(绑定/解绑),避免同一人出现两次。
+  const identityBoundInternalUserIds = new Set(
+    tenantUsers
+      .filter(
+        (user) =>
+          (!user.source || user.source === 'web') &&
+          user.channel_identities?.some(
+            (identity) =>
+              identity.channel === binding?.channel &&
+              (identity.external_account_scope || '') === bindingScope,
+          ),
+      )
+      .map((user) => user.id),
+  );
+  const identityBoundUsers = tenantUsers.filter(
+    (user) => identityBoundInternalUserIds.has(user.id) && user.id !== currentUser?.id,
   );
   const identityUnboundUsers = tenantUsers.filter(
     (user) =>
       (!user.source || user.source === 'web') &&
-      !identityBoundUsers.some((bound) => bound.id === user.id),
+      user.id !== currentUser?.id &&
+      !identityBoundInternalUserIds.has(user.id),
   );
   const bindCodeChannelName = binding
     ? channelName(binding.channel)
@@ -414,6 +431,10 @@ export default function ChannelsPage({
     const scope = identity.external_account_scope || '';
     if (!scope) return channelName(identity.channel);
     if (binding?.corp_id && scope === binding.corp_id) return `企业： ${scope}`;
+    // 飞书 scope 是"app:{长度}:{appId}:tenant:{长度}:{tenantKey}"技术键,
+    // 解析出 appId 展示,避免把整段内部键暴露给用户。
+    const feishuAppId = feishuAppIdFromIdentityScope(scope);
+    if (feishuAppId) return `飞书应用： ${feishuAppId}`;
     return `Bot: ${scope}`;
   }
 
@@ -701,13 +722,18 @@ export default function ChannelsPage({
     }
   }
 
-  async function saveHandoffAssignee(userId: string | null) {
+  async function saveHandoffAssignee(value: string) {
     if (!binding || handoffAssigneeSaving) return;
+    const { userId, channel } = parseHandoffAssigneeValue(value === '__none__' ? '' : value);
     setHandoffAssigneeSaving(true);
     try {
       const updated = await api.put<ChannelBindingRead>(
         `/api/enterprise/channels/${binding.id}?tenant_id=${TENANT_ID}`,
-        { tenant_id: TENANT_ID, default_handoff_assignee_user_id: userId },
+        {
+          tenant_id: TENANT_ID,
+          default_handoff_assignee_user_id: userId || null,
+          default_handoff_assignee_channel: userId ? channel : null,
+        },
       );
       setBindings((current) =>
         current.map((item) => (item.id === updated.id ? updated : item)),
@@ -997,42 +1023,60 @@ export default function ChannelsPage({
           <div className="flex min-w-0 flex-col gap-[4px]">
             <span className="text-[13px] font-semibold text-[#18181a]">默认人工处理人</span>
             <span className="text-[12px] leading-[1.6] text-[#858b9c]">
-              SOP 人工节点未指定处理人时，转交给此用户。未配置时回退到数字员工负责人或管理员。
+              SOP 人工节点未指定处理人时，转交给此用户；选择带渠道标注的选项会通过对应渠道转接（当前支持飞书/企业微信）。未配置时回退到数字员工负责人或管理员。
             </span>
           </div>
           <div className="flex items-center gap-[8px]">
             {binding.default_handoff_assignee_name && (
               <span className="text-[12px] text-[#858b9c]">
                 当前：{binding.default_handoff_assignee_name}
+                {`（${_CHANNEL_LABELS[binding.default_handoff_assignee_channel || 'web'] || _CHANNEL_LABELS.web}）`}
               </span>
             )}
             <Select
-              value={binding.default_handoff_assignee_user_id || '__none__'}
+              value={
+                binding.default_handoff_assignee_user_id
+                  ? formatHandoffAssigneeValue(
+                    binding.default_handoff_assignee_user_id,
+                    binding.default_handoff_assignee_channel,
+                  )
+                  : '__none__'
+              }
               disabled={handoffAssigneeSaving}
-              onValueChange={(value) => void saveHandoffAssignee(value === '__none__' ? null : value)}
+              onValueChange={(value) => void saveHandoffAssignee(value)}
             >
               <SelectTrigger className="h-[32px] w-[160px] text-[12px]">
                 <SelectValue placeholder="选择处理人" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__none__">未配置</SelectItem>
-                {tenantUsers.filter((user) => !user.source || user.source === 'web').map((user) => {
+                {tenantUsers.filter((user) => !user.source || user.source === 'web').flatMap((user) => {
+                  const name = user.display_name || user.username || user.id;
+                  // 渠道转接通知运行时已支持飞书/企微私聊,渠道标注选项对支持
+                  // 私聊通知的绑定渠道生成(后端同样拒绝其他渠道)。
+                  const channelVariantAvailable = HANDOFF_NOTIFY_CHANNELS.has(binding.channel);
                   const scope = binding.identity_scope_key || '';
                   const matchingIdentity = user.channel_identities?.find(
                     (ci) => ci.channel === binding.channel && (ci.external_account_scope || '') === scope,
                   );
-                  if (binding.channel === 'feishu' && !matchingIdentity) return null;
-                  const channelLabel = matchingIdentity
-                    ? ` (${_CHANNEL_LABELS[matchingIdentity.channel] || matchingIdentity.channel} 可达)`
-                    : user.channel_identities?.[0]
-                      ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
-                      : '';
-                  const name = user.display_name || user.username || user.id;
-                  return (
+                  const items = [
                     <SelectItem key={user.id} value={user.id}>
-                      {name}{channelLabel}
-                    </SelectItem>
+                      {`${name}（${_CHANNEL_LABELS.web}）`}
+                    </SelectItem>,
+                  ];
+                  const channelVariantConfigured = (
+                    binding.default_handoff_assignee_user_id === user.id
+                    && binding.default_handoff_assignee_channel === binding.channel
                   );
+                  if (channelVariantAvailable && (matchingIdentity || channelVariantConfigured)) {
+                    const channelLabel = _CHANNEL_LABELS[binding.channel] || binding.channel;
+                    items.push(
+                      <SelectItem key={`${user.id}::${binding.channel}`} value={`${user.id}::${binding.channel}`}>
+                        {`${name}（${channelLabel}）`}
+                      </SelectItem>,
+                    );
+                  }
+                  return items;
                 })}
               </SelectContent>
             </Select>

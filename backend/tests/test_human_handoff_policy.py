@@ -787,6 +787,59 @@ def test_handoff_resume_worker_continues_original_session_once(monkeypatch):
         assert events[0].payload_json["handoff_id"] == "handoff_worker"
 
 
+def test_handoff_resume_worker_prefers_session_user_after_rebind(monkeypatch):
+    """渠道身份重绑后 session.user_id 已迁移,handoff.requester_user_id 是过期快照。
+
+    resume 请求必须以会话属主为准,否则触发 harness 的 session-user 围栏校验
+    (HARNESS_V2_ERROR: Harness session user does not match the request)。
+    """
+    engine = _test_engine()
+    handled_requests: list[ChatTurnRequest] = []
+
+    class FakeAgentLoop:
+        def __init__(self, db: Session) -> None:
+            self.db = db
+
+        def handle_turn(self, request: ChatTurnRequest) -> None:
+            handled_requests.append(request)
+
+    monkeypatch.setattr(chat_api, "engine", engine)
+    monkeypatch.setattr(chat_api, "AgentLoop", FakeAgentLoop)
+    with Session(engine) as db:
+        _admin, user, _other = _seed_handoff_users(db)
+        # 会话属主已被迁移到 admin(重绑后);handoff 快照仍是旧的懒建账号 user。
+        db.add(
+            ChatSession(
+                id="session_rebind",
+                tenant_id="tenant_demo",
+                user_id="admin_user",
+                agent_id="agent_demo",
+                status="active",
+            )
+        )
+        db.add(
+            HumanHandoffRequest(
+                id="handoff_rebind",
+                tenant_id="tenant_demo",
+                session_id="session_rebind",
+                agent_id="agent_demo",
+                requester_user_id=user.id,
+                assignee_user_id="admin_user",
+                trigger_skill_id="manual_skill",
+                trigger_step_id="manual_review",
+                pending_question="请人工确认",
+                status="answered",
+                human_reply="人工答复：继续执行后续流程",
+            )
+        )
+        db.commit()
+
+    chat_api._resume_human_handoff_worker("handoff_rebind")
+
+    assert len(handled_requests) == 1
+    assert handled_requests[0].user_id == "admin_user"
+
+
 def test_handoff_resume_worker_persists_failed_resume(monkeypatch):
     engine = _test_engine()
 

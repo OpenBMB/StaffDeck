@@ -23,11 +23,7 @@ from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
 from app.core.capability_manifest import CapabilityManifestBuilder
-from app.core.harness_session_cleanup import (
-    harness_task_workspace_path,
-    remove_harness_session_workspace,
-    stage_harness_session_record_deletion,
-)
+from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_turn_store import HarnessTurnStore
 from app.core.slash_commands import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
@@ -69,6 +65,10 @@ from app.security.tenant import ensure_tenant
 from app.session.attachments import (
     parse_chat_attachment,
     validate_chat_turn_attachments,
+)
+from app.session.cleanup import (
+    purge_chat_session_records,
+    remove_chat_session_workspace,
 )
 from app.session.helpers import public_session
 from app.session.message_visibility import (
@@ -545,11 +545,14 @@ def _resume_human_handoff_worker(handoff_id: str) -> None:
             )
             db.commit()
 
+            # 会话属主是恢复请求的权威 user:渠道身份重绑(懒建账号→web 账号)会迁移
+            # session.user_id,而 handoff.requester_user_id 是创建时的快照,可能已过期;
+            # 优先旧快照会触发 harness 的 session-user 围栏校验失败。
             request = ChatTurnRequest(
                 tenant_id=handoff.tenant_id,
                 session_id=handoff.session_id,
                 agent_id=handoff.agent_id or chat_session.agent_id,
-                user_id=handoff.requester_user_id or chat_session.user_id or "",
+                user_id=chat_session.user_id or handoff.requester_user_id or None,
                 message=handoff.human_reply,
                 channel="human_handoff_resume",
                 debug=False,
@@ -2102,46 +2105,9 @@ def delete_chat_session(
 ) -> dict[str, str]:
     _ensure_request_tenant(tenant_id, current_user)
     row = _get_user_chat_session(db, tenant_id, current_user.id, session_id)
-    messages = db.exec(
-        select(Message).where(Message.tenant_id == tenant_id, Message.session_id == session_id)
-    ).all()
-    events = db.exec(
-        select(AgentEvent).where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == session_id)
-    ).all()
-    feedback_rows = db.exec(
-        select(MessageFeedback).where(MessageFeedback.tenant_id == tenant_id, MessageFeedback.session_id == session_id)
-    ).all()
-    skill_feedback_rows = db.exec(
-        select(SkillFeedback).where(SkillFeedback.tenant_id == tenant_id, SkillFeedback.session_id == session_id)
-    ).all()
-    stage_harness_session_record_deletion(
-        db,
-        tenant_id=tenant_id,
-        session_id=session_id,
-    )
-    for message in messages:
-        db.delete(message)
-    for event in events:
-        db.delete(event)
-    for feedback in feedback_rows:
-        db.delete(feedback)
-    for feedback in skill_feedback_rows:
-        db.delete(feedback)
-    db.delete(row)
+    purge_chat_session_records(db, row)
     db.commit()
-    try:
-        remove_harness_session_workspace(
-            tenant_id=tenant_id,
-            session_id=session_id,
-            db=db,
-        )
-    except OSError:
-        logger.warning(
-            "Failed to remove Harness workspace for tenant=%s session=%s",
-            tenant_id,
-            session_id,
-            exc_info=True,
-        )
+    remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
     return {"status": "deleted"}
 
 
@@ -3061,7 +3027,157 @@ def _general_skill_trace_output(payload: dict, phase: str) -> dict[str, str]:
     return {}
 
 
-def _harness_event_trace_line(event: AgentEvent) -> dict | None:
+_FRAME_STATUS_TEXTS = {
+    "completed": "任务执行完成",
+    "awaiting_user": "等待用户补充信息",
+    "handoff": "已转人工处理",
+    "action_budget": "本轮处理已达上限",
+    "failed": "任务执行失败",
+    "blocked": "暂时无法继续处理",
+    "cancelled": "任务已取消",
+}
+
+_SKILL_STATE_LABELS = {
+    "suspended": "挂起SOP",
+    "pending": "等待SOP",
+    "select": "选择SOP",
+    "switch": "切换SOP",
+    "resume": "恢复SOP",
+    "advance": "推进SOP",
+}
+
+_SKILL_STATE_LABELS_FRIENDLY = {
+    "suspended": "已暂停",
+    "pending": "排队处理",
+    "select": "进入流程",
+    "switch": "切换流程",
+    "resume": "恢复流程",
+    "advance": "推进流程",
+}
+
+_SKILL_EVENT_LABELS = {
+    "skill_started": "选择SOP",
+    "skill_resumed": "恢复SOP",
+    "skill_step_changed": "推进SOP",
+}
+
+_SKILL_EVENT_LABELS_FRIENDLY = {
+    "skill_started": "进入流程",
+    "skill_resumed": "恢复流程",
+    "skill_step_changed": "推进流程",
+}
+
+_STEP_EXACT_LABELS = {
+    "end": "流程结束",
+    "start": "开始处理",
+    "reply_final_result": "反馈最终结果",
+}
+
+# 内置能力与文件/命令工具的中文名（不走 tools 表的保留能力）。
+_RESERVED_TOOL_LABELS = {
+    "capability_search": "检索可用能力",
+    "capability_describe": "查看能力详情",
+    "knowledge_search": "检索知识库",
+    "exec_command": "执行命令",
+    "read_file": "读取文件",
+    "extract_document_text": "提取文档内容",
+    "write_file": "写入文件",
+    "edit_file": "编辑文件",
+    "list_directory": "查看目录",
+    "glob": "查找文件",
+    "grep": "搜索文件内容",
+    "file_info": "查看文件信息",
+    "publish_artifact": "发布产物",
+    "mkdir": "创建目录",
+    "delete_file": "删除文件",
+    "move_file": "移动文件",
+    "copy_file": "复制文件",
+}
+
+_SKILL_COMPLETED_REASON_LABELS = {
+    "step_completed": "全部步骤已完成",
+    "stale_terminal_state": "会话状态已更新，流程自动结束",
+}
+
+
+def _resolve_tool_label(tool_name: str, tool_names: dict[str, str] | None) -> str:
+    tool_name = str(tool_name or "").strip()
+    if not tool_name:
+        return ""
+    if tool_names is None:
+        return tool_name
+    return tool_names.get(tool_name) or _RESERVED_TOOL_LABELS.get(tool_name, tool_name)
+
+
+def _fallback_step_label(step_id: str) -> str | None:
+    normalized = step_id.strip().lower().replace("-", "_")
+    if not normalized:
+        return None
+    exact = _STEP_EXACT_LABELS.get(normalized)
+    if exact:
+        return exact
+    tokens = [token for token in normalized.split("_") if token]
+
+    def has_word(*roots: str) -> bool:
+        return any(
+            token == root or token.startswith(root)
+            for token in tokens
+            for root in roots
+        )
+
+    if has_word("handoff", "escalate", "manual", "human"):
+        return "转人工处理"
+    if has_word("final", "last") and has_word("reply", "answer", "result", "feedback"):
+        return "反馈最终结果"
+    if has_word("collect", "gather"):
+        return "收集需要的信息"
+    if has_word("confirm", "verify", "validate", "check"):
+        return "核对信息"
+    if has_word("identify", "recognize", "detect", "intent"):
+        return "识别用户需求"
+    if has_word("summarize", "summary", "recap"):
+        return "总结处理情况"
+    if has_word("schedule", "remind", "appointment", "reservation"):
+        return "安排提醒"
+    if has_word("apolog", "comfort", "soothe"):
+        return "安抚用户"
+    if has_word("reply", "answer", "respond", "feedback", "notify", "inform", "send", "message"):
+        return "反馈处理结果"
+    if has_word("end", "finish", "close", "done", "complete"):
+        return "流程结束"
+    if has_word("start", "begin", "init"):
+        return "开始处理"
+    return None
+
+
+def _resolve_step_label(
+    step_id: str,
+    step_names: dict[str, dict[str, str]] | None,
+    skill_id: str | None = None,
+) -> str:
+    step_id = str(step_id or "").strip()
+    if not step_id:
+        return ""
+    if step_names is None:
+        return step_id
+    scoped = step_names.get(skill_id or "") or {}
+    label = scoped.get(step_id)
+    if not label:
+        for steps in step_names.values():
+            label = steps.get(step_id)
+            if label:
+                break
+    if not label:
+        label = _fallback_step_label(step_id)
+    return label or step_id
+
+
+def _harness_event_trace_line(
+    event: AgentEvent,
+    skill_hint: str | None = None,
+    step_names: dict[str, dict[str, str]] | None = None,
+    tool_names: dict[str, str] | None = None,
+) -> dict | None:
     payload = event.payload_json or {}
     event_type = event.event_type
     frame_id = str(payload.get("task_frame_id") or event.id).strip()
@@ -3071,20 +3187,25 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
     if event_type == "task_frame_started":
         kind = str(payload.get("kind") or "conversation").strip()
         step_id = str(payload.get("step_id") or "").strip()
-        detail_parts = [
-            "SOP TaskFrame" if kind == "sop" else "对话 TaskFrame",
-            f"步骤 {step_id}" if step_id else "",
-            (
-                f"单步上限 {payload.get('step_timeout_seconds')} 秒"
-                if payload.get("step_timeout_seconds")
-                else ""
-            ),
-            (
-                f"Harness 最多 {payload.get('harness_max_actions')} 轮"
-                if payload.get("harness_max_actions")
-                else ""
-            ),
-        ]
+        if step_names is None:
+            detail_parts = [
+                "SOP TaskFrame" if kind == "sop" else "对话 TaskFrame",
+                f"步骤 {step_id}" if step_id else "",
+                (
+                    f"单步上限 {payload.get('step_timeout_seconds')} 秒"
+                    if payload.get("step_timeout_seconds")
+                    else ""
+                ),
+                (
+                    f"Harness 最多 {payload.get('harness_max_actions')} 轮"
+                    if payload.get("harness_max_actions")
+                    else ""
+                ),
+            ]
+        else:
+            detail_parts = [
+                f"当前环节 {_resolve_step_label(step_id, step_names, skill_hint)}" if step_id else "",
+            ]
         return {
             "id": f"harness_frame_{frame_id}",
             "kind": "skill" if kind == "sop" else "decision",
@@ -3096,24 +3217,32 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
         status = str(payload.get("status") or "completed").strip()
         action_count = payload.get("action_count")
         failed = status in {"failed", "blocked", "cancelled"}
-        detail_parts = [
-            f"状态 {status}",
-            f"执行 {action_count} 个动作" if isinstance(action_count, int) else "",
-        ]
+        if step_names is None:
+            text = "任务执行失败" if failed else "任务执行完成"
+            detail_parts = [
+                f"状态 {status}",
+                f"执行 {action_count} 个动作" if isinstance(action_count, int) else "",
+            ]
+        else:
+            text = _FRAME_STATUS_TEXTS.get(status, "任务执行失败" if failed else "任务执行完成")
+            detail_parts = [
+                f"共执行 {action_count} 个操作" if isinstance(action_count, int) else "",
+            ]
         return {
             "id": f"harness_frame_{frame_id}",
             "kind": "decision",
-            "text": "任务执行失败" if failed else "任务执行完成",
+            "text": text,
             "detail": " · ".join(part for part in detail_parts if part) or None,
             "state": "failed" if failed else "completed",
         }
     if event_type == "harness_action_created":
         action = str(payload.get("action") or "").strip()
         if action == "tool":
+            display_tool_name = _resolve_tool_label(tool_name, tool_names)
             return {
                 "id": f"harness_action_{frame_id}_{iteration or event.id}",
                 "kind": "tool",
-                "text": f"调用能力 {tool_name}" if tool_name else "调用能力",
+                "text": f"调用能力 {display_tool_name}" if display_tool_name else "调用能力",
                 "detail": f"第 {iteration} 个动作" if iteration else None,
                 "state": "running",
             }
@@ -3152,6 +3281,7 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
         )
         result_payload = payload.get("result")
         output = _trace_payload_text(result_payload)
+        display_tool_name = _resolve_tool_label(tool_name, tool_names)
         mcp_app = (
             result_payload.get("mcp_app")
             if isinstance(result_payload, dict)
@@ -3162,10 +3292,10 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
             "id": f"harness_action_{frame_id}_{iteration or event.id}",
             "kind": "tool",
             "text": (
-                f"能力调用完成 {tool_name}"
-                if success and tool_name
-                else f"能力调用失败 {tool_name}"
-                if tool_name
+                f"能力调用完成 {display_tool_name}"
+                if success and display_tool_name
+                else f"能力调用失败 {display_tool_name}"
+                if display_tool_name
                 else "能力调用完成"
                 if success
                 else "能力调用失败"
@@ -3357,8 +3487,14 @@ def _with_scheduled_draft_message_traces(traces: list[dict], messages: list[Mess
     return next_traces
 
 
-def _event_trace_lines(event: AgentEvent, skill_names: dict[str, str], skill_hint: str | None = None) -> list[dict]:
-    line = _event_trace_line(event, skill_names, skill_hint)
+def _event_trace_lines(
+    event: AgentEvent,
+    skill_names: dict[str, str],
+    skill_hint: str | None = None,
+    step_names: dict[str, dict[str, str]] | None = None,
+    tool_names: dict[str, str] | None = None,
+) -> list[dict]:
+    line = _event_trace_line(event, skill_names, skill_hint, step_names, tool_names)
     if not line:
         return []
     lines = line if isinstance(line, list) else [line]
@@ -3413,7 +3549,11 @@ def _event_trace_icon(event: AgentEvent, line: dict) -> str:
 
 
 def _event_trace_line(
-    event: AgentEvent, skill_names: dict[str, str], skill_hint: str | None = None
+    event: AgentEvent,
+    skill_names: dict[str, str],
+    skill_hint: str | None = None,
+    step_names: dict[str, dict[str, str]] | None = None,
+    tool_names: dict[str, str] | None = None,
 ) -> dict | list[dict] | None:
     payload = event.payload_json or {}
     if event.event_type in {
@@ -3424,7 +3564,12 @@ def _event_trace_line(
         "harness_tool_completed",
         "harness_step_timeout",
     }:
-        return _harness_event_trace_line(event)
+        return _harness_event_trace_line(
+            event,
+            skill_hint=skill_hint,
+            step_names=step_names,
+            tool_names=tool_names,
+        )
     if event.event_type == "stream_status":
         phase = str(payload.get("phase") or "").strip()
         text = str(payload.get("text") or "").strip()
@@ -3628,11 +3773,11 @@ def _event_trace_line(
             name = str(entry.get("name") or skill_id).strip()
             state = str(entry.get("state") or "active").strip()
             if state == "suspended":
-                label = "挂起SOP"
+                label_key = "suspended"
             elif state == "pending":
-                label = "等待SOP"
+                label_key = "pending"
             elif runtime_decision in {"start_skill", "start_new_task"}:
-                label = "选择SOP"
+                label_key = "select"
             elif runtime_decision == "suspend_current_and_start_new_skill" or (
                 runtime_decision
                 in {"answer_related_question_then_resume", "answer_chitchat_then_resume"}
@@ -3640,19 +3785,30 @@ def _event_trace_line(
                 and to_skill_id
                 and from_skill_id != to_skill_id
             ):
-                label = "切换SOP"
+                label_key = "switch"
             elif runtime_decision == "exit_current_skill":
-                label = "恢复SOP"
+                label_key = "resume"
             else:
-                label = "推进SOP"
+                label_key = "advance"
+            state_labels = (
+                _SKILL_STATE_LABELS_FRIENDLY
+                if step_names is not None
+                else _SKILL_STATE_LABELS
+            )
+            label = state_labels[label_key]
             step_id = str(entry.get("stepId") or "").strip()
+            step_label = (
+                _resolve_step_label(step_id, step_names, skill_id)
+                if step_names is not None and step_id
+                else step_id
+            )
             state_key = step_id or str(index)
             lines.append(
                 {
                     "id": f"skill_state_{skill_id}_{state}_{state_key}",
                     "kind": "skill",
                     "text": f"{label} {name}",
-                    "detail": f"当前步骤 {step_id}" if step_id else None,
+                    "detail": f"当前步骤 {step_label}" if step_id else None,
                     "state": "completed" if state == "suspended" else "running",
                 }
             )
@@ -3673,6 +3829,13 @@ def _event_trace_line(
         tool_call = payload.get("tool_call") if isinstance(payload.get("tool_call"), dict) else {}
         knowledge_query = payload.get("knowledge_query") if isinstance(payload.get("knowledge_query"), dict) else {}
         next_step_id = str(payload.get("next_step_id") or "").strip()
+        if next_step_id:
+            if step_names is None:
+                next_step_part = f"下一节点 {next_step_id}"
+            else:
+                next_step_part = f"下一步 {_resolve_step_label(next_step_id, step_names, skill_hint)}"
+        else:
+            next_step_part = ""
         reply = str(payload.get("reply") or "").strip()
         raw_tool_name = tool_call.get("name") if isinstance(tool_call, dict) else ""
         raw_knowledge_query = knowledge_query.get("query") if isinstance(knowledge_query, dict) else ""
@@ -3681,7 +3844,7 @@ def _event_trace_line(
         detail = " · ".join(
             part
             for part in (
-                f"下一节点 {next_step_id}" if next_step_id else "",
+                next_step_part,
                 f"查询：{knowledge_query_text}" if knowledge_query_text else "",
                 reply[:80] if not tool_name and not knowledge_query_text and reply else "",
             )
@@ -3723,16 +3886,26 @@ def _event_trace_line(
         skill_id = to_skill_id or from_skill_id or (skill_hint or "")
         if not skill_id:
             return None
-        label = {
-            "skill_started": "选择SOP",
-            "skill_resumed": "恢复SOP",
-            "skill_step_changed": "推进SOP",
-        }[event.event_type]
+        event_labels = (
+            _SKILL_EVENT_LABELS_FRIENDLY
+            if step_names is not None
+            else _SKILL_EVENT_LABELS
+        )
+        label = event_labels[event.event_type]
         detail_parts = []
         if from_skill_id and from_skill_id != to_skill_id:
-            detail_parts.append(f"from {skill_names.get(from_skill_id, from_skill_id)}")
+            from_name = skill_names.get(from_skill_id, from_skill_id)
+            detail_parts.append(
+                f"原流程 {from_name}" if step_names is not None else f"from {from_name}"
+            )
         if payload.get("to_step_id"):
-            detail_parts.append(f"step {payload['to_step_id']}")
+            to_step_id = str(payload["to_step_id"])
+            if step_names is None:
+                detail_parts.append(f"step {to_step_id}")
+            else:
+                detail_parts.append(
+                    f"当前步骤 {_resolve_step_label(to_step_id, step_names, skill_id)}"
+                )
         step_id = str(payload.get("to_step_id") or payload.get("from_step_id") or "").strip()
         state_key = step_id or "0"
         return {
@@ -3744,11 +3917,15 @@ def _event_trace_line(
         }
     if event.event_type == "skill_completed":
         skill_id = str(payload.get("skill_id") or "")
+        prefix = "完成流程" if step_names is not None else "完成SOP"
+        reason = str(payload.get("reason") or "").strip()
+        if step_names is not None:
+            reason = _SKILL_COMPLETED_REASON_LABELS.get(reason, reason)
         return {
             "id": f"skill_{event.id}",
             "kind": "skill",
-            "text": f"完成SOP {skill_names.get(skill_id, skill_id)}" if skill_id else "完成SOP",
-            "detail": str(payload.get("reason") or "") or None,
+            "text": f"{prefix} {skill_names.get(skill_id, skill_id)}" if skill_id else prefix,
+            "detail": reason or None,
             "state": "completed",
         }
     if event.event_type == "tool_call_started":
@@ -3854,7 +4031,11 @@ def _event_trace_line(
             "id": "reflection",
             "kind": "decision",
             "text": "反思后继续尝试" if needs_retry else "反思通过",
-            "detail": _reflection_trace_detail(payload),
+            "detail": _reflection_trace_detail(
+                payload,
+                step_names=step_names,
+                skill_hint=skill_hint,
+            ),
             "state": "completed",
         }
     if event.event_type == "reflection_skipped":
@@ -3870,10 +4051,11 @@ def _event_trace_line(
         target_tool = str(payload.get("target_tool_name") or "").strip()
         target_skill = str(payload.get("target_skill_id") or "").strip()
         target = target_tool or skill_names.get(target_skill, target_skill)
+        target_kind = "工具" if mode == "tool" else ("流程" if step_names is not None else "SOP")
         return {
             "id": "reflection",
             "kind": "decision",
-            "text": f"重试{ '工具' if mode == 'tool' else 'SOP' } {target}".strip(),
+            "text": f"重试{target_kind} {target}".strip(),
             "detail": str(payload.get("reason") or "") or None,
             "state": "completed",
         }
@@ -3903,12 +4085,23 @@ def _tool_trace_detail(payload: dict) -> str | None:
     return text or None
 
 
-def _reflection_trace_detail(payload: dict) -> str | None:
+def _reflection_trace_detail(
+    payload: dict,
+    step_names: dict[str, dict[str, str]] | None = None,
+    skill_hint: str | None = None,
+) -> str | None:
+    target_step_id = str(payload.get("target_step_id") or "").strip()
+    if not target_step_id:
+        step_part = ""
+    elif step_names is None:
+        step_part = f"步骤 {target_step_id}"
+    else:
+        step_part = f"步骤 {_resolve_step_label(target_step_id, step_names, skill_hint)}"
     parts = [
         str(payload.get("reason") or "").strip(),
         f"工具 {payload['target_tool_name']}" if payload.get("target_tool_name") else "",
         f"技能 {payload['target_skill_id']}" if payload.get("target_skill_id") else "",
-        f"步骤 {payload['target_step_id']}" if payload.get("target_step_id") else "",
+        step_part,
     ]
     text = " · ".join(part for part in parts if part)
     return text or None

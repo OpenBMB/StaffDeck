@@ -77,6 +77,7 @@ import { cn } from '@/lib/utils';
 import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
 import { subscribeEnterpriseCapabilityCatalogRefresh } from '@/lib/capability-catalog-events';
 import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
+import { formatHandoffAssigneeValue, parseHandoffAssigneeValue } from '@/lib/handoff-assignee';
 import type { EnterpriseAuthUser } from '../auth';
 import {
   ACTION_EMPTY_CLASS,
@@ -491,8 +492,42 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
   },
 ];
 const DISTILL_REWRITE_MODEL_STORAGE_KEY = 'skill-distill-rewrite-model';
-const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信' };
+const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信', web: '网页端' };
 const UNASSIGNED_USER_VALUE = '__unassigned__';
+// 渠道转接通知运行时已支持飞书/企微私聊,处理人选项提供对应渠道标注
+// (后端同样拒绝其他渠道)。钉钉/微信适配器只能回会话内消息,不在此列。
+const HANDOFF_NOTIFY_CHANNELS = new Set(['feishu', 'wecom']);
+
+type HandoffAssigneeUser = {
+  id: string;
+  username: string;
+  display_name?: string;
+  source?: string;
+  channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }>;
+};
+
+export function handoffAssigneeUserOptions(tenantUsers: HandoffAssigneeUser[]): SelectOption[] {
+  // 内部成员一律可选(网页端投递);已绑定支持渠道身份的成员追加"姓名（渠道）"选项,
+  // 选中后运行时按该渠道转接。其他渠道身份不生成选项(通知未实现),
+  // 渠道懒建账号(渠道客户/群聊)也不进入处理人选项。
+  const options: SelectOption[] = [];
+  tenantUsers.filter((user) => !user.source || user.source === 'web').forEach((user) => {
+    const name = user.display_name || user.username || user.id;
+    options.push({ value: user.id, label: `${name}（${_CHANNEL_LABELS.web}）` });
+    const channels = new Set<string>();
+    (user.channel_identities || []).forEach((identity) => {
+      const channel = String(identity.channel || '').trim();
+      if (channel && HANDOFF_NOTIFY_CHANNELS.has(channel)) channels.add(channel);
+    });
+    channels.forEach((channel) => {
+      options.push({
+        value: `${user.id}::${channel}`,
+        label: `${name}（${_CHANNEL_LABELS[channel] || channel}）`,
+      });
+    });
+  });
+  return options;
+}
 
 type DistillCacheSnapshot = {
   draft: SkillCard | null;
@@ -3278,7 +3313,13 @@ function SkillSource({
       onEdit(next, stepTargetPath(index));
       return;
     }
-    if (CAPABILITY_REFERENCE_FIELDS.includes(nodeField)) {
+    if (nodeField === 'assignee_user_id') {
+      const { userId, channel } = parseHandoffAssigneeValue(String(listValue));
+      currentNode.assignee_user_id = userId || null;
+      currentNode.assignee_notify_channel = userId ? channel : null;
+    } else if (nodeField === 'type') {
+      applyNodeTypeChange(currentNode, String(listValue));
+    } else if (CAPABILITY_REFERENCE_FIELDS.includes(nodeField)) {
       const currentRefs = nodeCapabilityRefs(currentNode);
       currentNode.capability_refs = updateCapabilityRefs(
         currentRefs,
@@ -3576,13 +3617,7 @@ function SkillSource({
     }));
   const tenantUserOptions: SelectOption[] = [
     { value: UNASSIGNED_USER_VALUE, label: '未指定（使用渠道默认）' },
-    ...tenantUsers.filter((user) => !user.source || user.source === 'web').map((user) => {
-      const channelLabel = user.channel_identities?.[0]
-        ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
-        : '';
-      const name = user.display_name || user.username || user.id;
-      return { value: user.id, label: `${name}${channelLabel}` };
-    }),
+    ...handoffAssigneeUserOptions(tenantUsers),
   ];
 
   return (
@@ -3641,9 +3676,9 @@ function SkillSource({
           const path = stepTargetPath(index);
           const outgoingEdges = edgeMap[stepId] || [];
           const isSubflow = String(step.type || '') === 'subflow';
-          const isHandoffNode =
-            String(step.type || '') === 'handoff' ||
-            asStringList(step.allowed_actions).includes('handoff_human');
+          // 处理人仅对 handoff 节点有意义;转人工动作只允许出现在 handoff 节点上,
+          // 回复/收集等其他节点一律不展示处理人与转人工动作。
+          const isHandoffNode = String(step.type || '') === 'handoff';
           const nodeState = [
             stepId === startNodeId ? '起始节点' : '',
             Boolean(step.optional) ? '可选' : '必选',
@@ -3703,7 +3738,7 @@ function SkillSource({
                       <>
                         <EditableSourceTextLine label={fieldLabel('instruction')} value={String(step.instruction || '')} multiline collapsible onChange={(value) => editStep(index, 'instruction', value)} />
                         <EditableSourceListLine label={fieldLabel('expected_user_info')} values={asStringList(step.expected_user_info)} onChange={(value) => editStep(index, 'expected_user_info', value)} />
-                        <EditableSourceActionLine values={asStringList(step.allowed_actions)} options={actionOptions} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} onChange={(value) => editStep(index, 'allowed_actions', value)} />
+                        <EditableSourceActionLine values={asStringList(step.allowed_actions)} options={filterActionOptionsForNodeType(actionOptions, String(step.type || ''))} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} onChange={(value) => editStep(index, 'allowed_actions', value)} />
                         <EditableCapabilityReferencesLine label="SOP 技能" values={asStringList(step.general_skill_ids)} requiredValues={asStringList(step.required_general_skill_ids)} options={generalSkillOptions} emptyText="未指定技能" onChange={(value) => editStep(index, 'general_skill_ids', value)} onRequiredChange={(value) => editStep(index, 'required_general_skill_ids', value)} />
                         <EditableCapabilityReferencesLine label="SOP 工具" values={asStringList(step.tool_ids)} requiredValues={asStringList(step.required_tool_ids)} options={toolOptions} emptyText="未指定工具" onChange={(value) => editStep(index, 'tool_ids', value)} onRequiredChange={(value) => editStep(index, 'required_tool_ids', value)} />
                         <EditableCapabilityReferencesLine label="SOP 知识库" values={asStringList(step.knowledge_base_ids)} requiredValues={asStringList(step.required_knowledge_base_ids)} options={knowledgeBaseOptions} emptyText="未指定知识库" onChange={(value) => editStep(index, 'knowledge_base_ids', value)} onRequiredChange={(value) => editStep(index, 'required_knowledge_base_ids', value)} />
@@ -3712,7 +3747,14 @@ function SkillSource({
                     {isHandoffNode && (
                       <EditableSourceSelectLine
                         label="处理人"
-                        value={String(step.assignee_user_id || UNASSIGNED_USER_VALUE)}
+                        value={
+                          step.assignee_user_id
+                            ? formatHandoffAssigneeValue(
+                              String(step.assignee_user_id),
+                              String(step.assignee_notify_channel || ''),
+                            )
+                            : UNASSIGNED_USER_VALUE
+                        }
                         options={tenantUserOptions}
                         onChange={(value) => editStep(
                           index,
@@ -3856,6 +3898,11 @@ function SkillFlow({
     return { value: nodeId, label: `Node ${index + 1} · ${String(node.name || nodeId)}` };
   });
   const actionOptions = buildActionOptions(toolDescriptions, toolStatuses, nodes);
+  // 流程视图当前选中的节点在非 handoff 类型下不提供转人工动作
+  const selectedNodeType = selectedNodeIndex === null
+    ? ''
+    : String(nodes[selectedNodeIndex]?.type || '');
+  const inspectorActionOptions = filterActionOptionsForNodeType(actionOptions, selectedNodeType);
   const generalSkillOptions: CapabilityReferenceOption[] = generalSkills.map((item) => ({
     value: item.id,
     label: item.name || item.slug,
@@ -3889,13 +3936,7 @@ function SkillFlow({
     }));
   const tenantUserOptions: SelectOption[] = [
     { value: UNASSIGNED_USER_VALUE, label: '未指定（使用渠道默认）' },
-    ...tenantUsers.filter((user) => !user.source || user.source === 'web').map((user) => {
-      const channelLabel = user.channel_identities?.[0]
-        ? ` (${_CHANNEL_LABELS[user.channel_identities[0].channel] || user.channel_identities[0].channel})`
-        : '';
-      const name = user.display_name || user.username || user.id;
-      return { value: user.id, label: `${name}${channelLabel}` };
-    }),
+    ...handoffAssigneeUserOptions(tenantUsers),
   ];
 
   const editFlowNode = (
@@ -3941,6 +3982,12 @@ function SkillFlow({
       }));
       if (next.start_node_id === previousId) next.start_node_id = nextId;
       next.terminal_node_ids = asStringList(next.terminal_node_ids).map((nodeId) => (nodeId === previousId ? nextId : nodeId));
+    } else if (nodeField === 'assignee_user_id') {
+      const { userId, channel } = parseHandoffAssigneeValue(String(listValue));
+      currentNode.assignee_user_id = userId || null;
+      currentNode.assignee_notify_channel = userId ? channel : null;
+    } else if (nodeField === 'type') {
+      applyNodeTypeChange(currentNode, String(listValue));
     } else if (CAPABILITY_REFERENCE_FIELDS.includes(nodeField)) {
       const currentRefs = nodeCapabilityRefs(currentNode);
       currentNode.capability_refs = updateCapabilityRefs(
@@ -4785,7 +4832,7 @@ function SkillFlow({
             nodeOptions={nodeOptions}
             outgoingEdges={selectedNodeId ? edgeMap[selectedNodeId] || [] : []}
             terminal={selectedNodeId ? terminalSet.has(selectedNodeId) : false}
-            actionOptions={actionOptions}
+            actionOptions={inspectorActionOptions}
             toolDescriptions={toolDescriptions}
             toolStatuses={toolStatuses}
             generalSkillOptions={generalSkillOptions}
@@ -4959,9 +5006,9 @@ function SkillFlowInspector({
     terminal ? '终止节点' : '流程节点',
   ].join(' · ');
   const isSubflow = String(node.type || '') === 'subflow';
-  const isHandoffNode =
-    String(node.type || '') === 'handoff' ||
-    asStringList(node.allowed_actions).includes('handoff_human');
+  // 处理人仅对 handoff 节点有意义;转人工动作只允许出现在 handoff 节点上,
+  // 回复/收集等其他节点一律不展示处理人与转人工动作。
+  const isHandoffNode = String(node.type || '') === 'handoff';
   return (
     <aside className={FLOW_INSPECTOR_CLASS} aria-label={`编辑节点 ${String(node.name || nodeId)}`}>
       <div className={FLOW_INSPECTOR_HEADER_CLASS}>
@@ -4994,7 +5041,14 @@ function SkillFlowInspector({
             {isHandoffNode && (
               <EditableSourceSelectLine
                 label="处理人"
-                value={String(node.assignee_user_id || UNASSIGNED_USER_VALUE)}
+                value={
+                  node.assignee_user_id
+                    ? formatHandoffAssigneeValue(
+                      String(node.assignee_user_id),
+                      String(node.assignee_notify_channel || ''),
+                    )
+                    : UNASSIGNED_USER_VALUE
+                }
                 options={tenantUserOptions}
                 onChange={(value) => onEditNode(
                   nodeIndex,
@@ -5243,6 +5297,8 @@ function skillGraphSteps(skill: SkillCard): Array<Record<string, unknown>> {
         retry_policy: isRecord(node.retry_policy) ? node.retry_policy : {},
         metadata: isRecord(node.metadata) ? node.metadata : {},
         sub_sop_id: stringValue(node.sub_sop_id, ''),
+        assignee_user_id: stringValue(node.assignee_user_id, ''),
+        assignee_notify_channel: stringValue(node.assignee_notify_channel, ''),
       };
     });
   }
@@ -7297,6 +7353,7 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
   const condition = extractJsonStringField(fragment, 'condition') || '';
   const subSopId = extractJsonStringField(fragment, 'sub_sop_id') || '';
   const assigneeUserId = extractJsonStringField(fragment, 'assignee_user_id') || '';
+  const assigneeNotifyChannel = extractJsonStringField(fragment, 'assignee_notify_channel') || '';
   const expectedUserInfo = extractJsonStringArrayField(fragment, 'expected_user_info') || [];
   const allowedActions = extractJsonStringArrayField(fragment, 'allowed_actions') || [];
   const generalSkillIds = extractJsonStringArrayField(fragment, 'general_skill_ids') || [];
@@ -7339,6 +7396,7 @@ function parseNodeFragment(fragment: string, index: number): Record<string, unkn
     retry_policy: {},
     metadata: {},
     assignee_user_id: assigneeUserId || null,
+    assignee_notify_channel: assigneeNotifyChannel || null,
   };
 }
 
@@ -7346,6 +7404,7 @@ function normalizeNodePreview(node: Record<string, unknown>, index = 0): Record<
   const nodeId = stringValue(node.node_id, `node_${index + 1}`);
   const capabilityRefs = nodeCapabilityRefs(node);
   const assigneeUserId = stringValue(node.assignee_user_id, '');
+  const assigneeNotifyChannel = stringValue(node.assignee_notify_channel, '');
   return {
     node_id: nodeId,
     type: stringValue(node.type, 'collect_info'),
@@ -7361,6 +7420,7 @@ function normalizeNodePreview(node: Record<string, unknown>, index = 0): Record<
     metadata: isRecord(node.metadata) ? node.metadata : {},
     sub_sop_id: stringValue(node.sub_sop_id, ''),
     assignee_user_id: assigneeUserId || null,
+    assignee_notify_channel: assigneeNotifyChannel || null,
   };
 }
 
@@ -7559,6 +7619,28 @@ function asStringList(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String);
   if (typeof value === 'string' && value.trim()) return [value];
   return [];
+}
+
+export function applyNodeTypeChange(
+  node: Record<string, unknown>,
+  nextType: string,
+): Record<string, unknown> {
+  const type = String(nextType || 'collect_info');
+  node.type = type;
+  // 类型切换离开 handoff 时清理转人工专属配置:动作与处理人只属于 handoff 节点
+  if (type !== 'handoff') {
+    node.allowed_actions = asStringList(node.allowed_actions)
+      .filter((action) => action !== 'handoff_human');
+    node.assignee_user_id = null;
+    node.assignee_notify_channel = null;
+  }
+  return node;
+}
+
+export function filterActionOptionsForNodeType(options: SelectOption[], type: string): SelectOption[] {
+  // 转人工动作只允许出现在 handoff 节点上
+  if (String(type || '') === 'handoff') return options;
+  return options.filter((option) => option.value !== 'handoff_human');
 }
 
 function hasSelectedText(): boolean {
