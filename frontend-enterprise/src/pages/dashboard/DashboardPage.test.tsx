@@ -63,6 +63,7 @@ describe('DashboardPage team scope compatibility', () => {
       if (url.includes('/work-record')) {
         return jsonResponse({ reply_stats: { total: 0, today: 0, by_day: {} }, events: [] });
       }
+      if (url.includes('/evolution/proposals')) return jsonResponse([]);
       if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
       if (url.includes('/api/enterprise/feedback/summary')) {
         return jsonResponse({ total_feedback: 0, up_count: 0, down_count: 0, bucket_counts: [] });
