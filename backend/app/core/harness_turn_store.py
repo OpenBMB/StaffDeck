@@ -101,9 +101,46 @@ class HarnessTurnStore:
         now = utc_now()
         self._fenced_update(
             record,
+            # ``started`` remains accepted for compatibility with non-projecting
+            # callers; the Harness v2 response path always reserves
+            # ``finalizing`` first.
+            expected_statuses=("started", "finalizing"),
             values={
                 "status": "completed",
                 "response_json": response.model_dump(mode="json"),
+                "finished_at": now,
+                "updated_at": now,
+            },
+        )
+
+    def begin_completion(self, record: HarnessTurnRecord | None) -> None:
+        """Acquire the durable right to publish the normal terminal reply."""
+
+        if record is None:
+            return
+        self._fenced_update(
+            record,
+            expected_statuses=("started",),
+            values={"status": "finalizing", "updated_at": utc_now()},
+        )
+
+    def cancel(
+        self,
+        record: HarnessTurnRecord | None,
+        *,
+        message: str = "用户取消了当前 Harness 执行。",
+    ) -> bool:
+        """Atomically make cancellation the terminal owner for a receipt."""
+
+        if record is None:
+            return False
+        now = utc_now()
+        return self._try_fenced_update(
+            record,
+            expected_statuses=("started",),
+            values={
+                "status": "cancelled",
+                "error_json": {"code": "CANCELLED", "message": message},
                 "finished_at": now,
                 "updated_at": now,
             },
@@ -117,11 +154,12 @@ class HarnessTurnStore:
         code: str,
         message: str,
     ) -> None:
-        if record is None or record.status != "started":
+        if record is None or record.status not in {"started", "finalizing"}:
             return
         now = utc_now()
         self._fenced_update(
             record,
+            expected_statuses=("started", "finalizing"),
             values={
                 "status": status,
                 "error_json": {
@@ -160,7 +198,7 @@ class HarnessTurnStore:
                 record=existing,
                 replay=ChatTurnResponse.model_validate(existing.response_json),
             )
-        if existing.status == "started":
+        if existing.status in {"started", "finalizing"}:
             state = (
                 "仍在执行"
                 if existing.lease_expires_at > utc_now()
@@ -177,13 +215,29 @@ class HarnessTurnStore:
         self,
         record: HarnessTurnRecord,
         *,
+        expected_statuses: tuple[str, ...] = ("started",),
         values: dict[str, Any],
     ) -> None:
+        if self._try_fenced_update(
+            record,
+            expected_statuses=expected_statuses,
+            values=values,
+        ):
+            return
+        raise HarnessTurnConflict("Harness turn receipt 已由其他执行者更新。")
+
+    def _try_fenced_update(
+        self,
+        record: HarnessTurnRecord,
+        *,
+        expected_statuses: tuple[str, ...],
+        values: dict[str, Any],
+    ) -> bool:
         result = self.db.exec(
             update(HarnessTurnRecord)
             .where(
                 HarnessTurnRecord.id == record.id,
-                HarnessTurnRecord.status == "started",
+                HarnessTurnRecord.status.in_(expected_statuses),
                 HarnessTurnRecord.lease_owner == record.lease_owner,
             )
             .values(**values)
@@ -191,11 +245,11 @@ class HarnessTurnStore:
         )
         if getattr(result, "rowcount", 0) != 1:
             self.db.rollback()
-            raise HarnessTurnConflict(
-                "Harness turn receipt 已由其他执行者更新。"
-            )
+            self.db.refresh(record)
+            return False
         self.db.commit()
         self.db.refresh(record)
+        return True
 
 
 def _request_digest(request: ChatTurnRequest) -> str:

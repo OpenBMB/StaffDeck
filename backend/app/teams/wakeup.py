@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from typing import Literal
 
 from sqlalchemy import update
@@ -13,6 +14,7 @@ from app.db.models import (
     ChatSession,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
+    Message,
     Team,
     TeamTask,
     TeamTaskBid,
@@ -33,7 +35,6 @@ from app.teams.service import (
     candidate_hp,
     get_team_leader,
     list_team_members,
-    looks_like_dispatch_intent,
     member_concurrency,
     open_tasks_summary,
     parse_bid,
@@ -45,15 +46,25 @@ from app.teams.service import (
     record_task_event,
     select_bid_candidates,
     team_roster_lines,
+    task_activation_state,
     write_blackboard_entries,
 )
 
 TL_ASSIGNMENT_INSTRUCTION = (
     "派发任务的唯一方式是输出一个围栏代码块 ```json,内容形如:"
-    '{"team_tasks": [{"title": "任务标题", "description": "任务描述", '
-    '"assignee_agent_id": "成员的 agent_id"}]}。'
+    '{"team_tasks": [{"client_ref": "稳定的本批任务引用", "title": "任务标题", '
+    '"description": "任务描述", "assignee_agent_id": "成员的 agent_id", '
+    '"depends_on": ["同一批前置任务的 client_ref"], '
+    '"activation_condition": {"type": "all_succeeded"}}]}。'
     "assignee_agent_id 必须来自上面的花名册;可以一次派多个任务。"
     "省略 assignee_agent_id 即把任务投入任务池,由成员竞标、你裁决后中标者执行。"
+    "存在真实执行前置关系时才填写 depends_on;系统会登记被阻塞任务,前置条件满足后才唤醒。"
+    "activation_condition.type 支持 all_succeeded(默认)、any_succeeded、all_terminal、"
+    "minimum_succeeded;minimum_succeeded 需同时给 minimum 正整数。"
+    "不要为了表达先后叙述而制造不必要的依赖,互不依赖的任务应并行执行。"
+    "如果执行前还缺少用户必须补充的信息,先向用户提问,本轮不要输出 team_tasks。"
+    "后续阶段依赖前置任务结果时必须填写 depends_on,不得把尚未满足条件的未来阶段"
+    "创建成可立即唤醒的独立任务。"
     "注意:只有输出该 JSON 代码块,任务才会被真正创建并交给成员执行;"
     "只用自然语言宣布『已派发』是无效的,系统不会创建任何任务。"
     "如果只是与人讨论、不需要派任务,就不要输出该代码块。"
@@ -64,12 +75,6 @@ TL_REVIEW_INSTRUCTION = (
     '{"team_review": {"verdict": "approve", "comment": "验收意见"}}。'
     "verdict 只能是 approve(通过)/ rework(退回重做)/ escalate(升级给人处理)。"
     "注意:只有输出该 JSON 代码块,验收结论才会生效;口头宣布结论是无效的。"
-)
-
-TL_ASSIGNMENT_REPAIR_MESSAGE = (
-    "系统提示:你的上一条回复没有包含规定的 ```json 任务代码块,因此没有创建任何任务。"
-    "如果你刚才的意图是派发任务,请立即输出规定的 JSON 代码块(可只输出代码块);"
-    "如果不需要派发任务,请回复「无需派任务」。"
 )
 
 TL_REVIEW_REPAIR_MESSAGE = (
@@ -507,6 +512,28 @@ def collect_turn_reply_fragments(
     return fragments
 
 
+@dataclass(frozen=True)
+class TeamAgentTurnResult:
+    reply: str
+    message_id: str | None
+    metadata: dict
+    citations: list
+    artifacts: list
+
+
+def _coerce_team_turn_result(value: TeamAgentTurnResult | str) -> TeamAgentTurnResult:
+    """Keep test/custom executors compatible while the canonical result is structured."""
+    if isinstance(value, TeamAgentTurnResult):
+        return value
+    return TeamAgentTurnResult(
+        reply=str(value or ""),
+        message_id=None,
+        metadata={},
+        citations=[],
+        artifacts=[],
+    )
+
+
 def run_agent_turn(
     db: Session,
     *,
@@ -518,8 +545,8 @@ def run_agent_turn(
     interaction_mode: Literal["team_task", "team_tl"],
     client_turn_id: str | None = None,
     allow_needs_input: bool = False,
-) -> str:
-    """在独立会话里执行一轮 agent turn,返回回复文本;执行失败抛异常。
+) -> TeamAgentTurnResult:
+    """在独立会话里执行一轮 agent turn，并复用单聊落库消息作为结果源。
 
     allow_needs_input=True 时,turn 落在 awaiting_user/needs_input 不抛异常,
     由调用方决定如何安置(如成员任务转人工补充信息)。
@@ -549,7 +576,21 @@ def run_agent_turn(
     )
     if outcome == "needs_input" and not allow_needs_input:
         raise RuntimeError("agent 需要补充信息才能继续,当前场景不支持挂起等待。")
-    return result.reply
+    assistant_message = db.exec(
+        select(Message)
+        .where(Message.session_id == session_id, Message.role == "assistant")
+        .order_by(Message.created_at.desc())
+    ).first()
+    metadata = dict(assistant_message.metadata_json or {}) if assistant_message is not None else {}
+    citations = metadata.get("knowledge_citations")
+    artifacts = metadata.get("harness_artifacts") or metadata.get("artifacts")
+    return TeamAgentTurnResult(
+        reply=result.reply,
+        message_id=assistant_message.id if assistant_message is not None else None,
+        metadata=metadata,
+        citations=list(citations) if isinstance(citations, list) else [],
+        artifacts=list(artifacts) if isinstance(artifacts, list) else [],
+    )
 
 
 def execute_wake_event(db: Session, event: TeamWakeEvent) -> TeamWakeEvent:
@@ -605,6 +646,9 @@ def execute_wake_event(db: Session, event: TeamWakeEvent) -> TeamWakeEvent:
             _release_member_slot(team.id, agent.id)
             # 执行额度随终态释放,出队拉起该成员最老的排队唤醒
             _drain_member_queue(db, team, agent.id)
+        if team is not None:
+            # 任一唤醒都可能让前置任务进入成功、失败或恢复等待状态；统一重算依赖图。
+            activate_ready_tasks(db, team)
     return event
 
 
@@ -661,7 +705,7 @@ def _execute_member_task(db: Session, event: TeamWakeEvent, team: Team, agent: A
     )
     db.commit()
     message = build_member_task_message(db, team, task, rework=rework)
-    reply = run_agent_turn(
+    turn_result = _coerce_team_turn_result(run_agent_turn(
         db,
         team=team,
         agent=agent,
@@ -670,7 +714,8 @@ def _execute_member_task(db: Session, event: TeamWakeEvent, team: Team, agent: A
         message=message,
         interaction_mode="team_task",
         allow_needs_input=True,
-    )
+    ))
+    reply = turn_result.reply
     outcome = _team_harness_outcome(
         db,
         tenant_id=team.tenant_id,
@@ -680,6 +725,10 @@ def _execute_member_task(db: Session, event: TeamWakeEvent, team: Team, agent: A
     task.report_json = {
         "summary": reply[:500],
         "full_reply": reply,
+        "message_id": turn_result.message_id,
+        "metadata": turn_result.metadata,
+        "citations": turn_result.citations,
+        "artifacts": turn_result.artifacts,
         "finished_at": utc_now().isoformat(),
     }
     if outcome == "needs_input":
@@ -777,7 +826,7 @@ def _execute_tl_review(db: Session, event: TeamWakeEvent, team: Team, agent: Age
     db.add(session)
     db.commit()
     message = build_tl_review_message(db, team, task)
-    reply = run_agent_turn(
+    reply = _coerce_team_turn_result(run_agent_turn(
         db,
         team=team,
         agent=agent,
@@ -785,7 +834,7 @@ def _execute_tl_review(db: Session, event: TeamWakeEvent, team: Team, agent: Age
         wake_event_id=event.id,
         message=message,
         interaction_mode="team_tl",
-    )
+    )).reply
     verdict = parse_tl_review(reply)
     if verdict is None:
         # 最终回复被 ResponseGenerator 改写时,JSON 块可能只存在于 frame 级输出
@@ -811,7 +860,7 @@ def _execute_tl_review(db: Session, event: TeamWakeEvent, team: Team, agent: Age
             payload={"wake_event_id": event.id},
         )
         db.commit()
-        repair_reply = run_agent_turn(
+        repair_reply = _coerce_team_turn_result(run_agent_turn(
             db,
             team=team,
             agent=agent,
@@ -820,7 +869,7 @@ def _execute_tl_review(db: Session, event: TeamWakeEvent, team: Team, agent: Age
             client_turn_id=f"{event.id}-repair",
             message=f"{message}\n\n{TL_REVIEW_REPAIR_MESSAGE}",
             interaction_mode="team_tl",
-        )
+        )).reply
         verdict = parse_tl_review(repair_reply)
         if verdict is None:
             for fragment in collect_turn_reply_fragments(
@@ -1225,7 +1274,7 @@ def _execute_bid_request(
     db.add(session)
     db.commit()
     message = build_bid_request_message(db, team, task, agent, round_=round_)
-    reply = run_agent_turn(
+    reply = _coerce_team_turn_result(run_agent_turn(
         db,
         team=team,
         agent=agent,
@@ -1233,7 +1282,7 @@ def _execute_bid_request(
         wake_event_id=event.id,
         message=message,
         interaction_mode="team_task",
-    )
+    )).reply
     bid = parse_bid(reply)
     if bid is None:
         # 最终回复被 ResponseGenerator 改写时,竞标块可能只存在于 frame 级输出
@@ -1397,7 +1446,7 @@ def _execute_bid_score(
     db.add(session)
     db.commit()
     message = build_bid_score_message(db, team, task, round_bids, round_=round_)
-    reply = run_agent_turn(
+    reply = _coerce_team_turn_result(run_agent_turn(
         db,
         team=team,
         agent=agent,
@@ -1405,7 +1454,7 @@ def _execute_bid_score(
         wake_event_id=event.id,
         message=message,
         interaction_mode="team_tl",
-    )
+    )).reply
     scores = _parse_bid_scores_with_fragments(
         db,
         team=team,
@@ -1426,7 +1475,7 @@ def _execute_bid_score(
             payload={"wake_event_id": event.id, "round": round_},
         )
         db.commit()
-        repair_reply = run_agent_turn(
+        repair_reply = _coerce_team_turn_result(run_agent_turn(
             db,
             team=team,
             agent=agent,
@@ -1435,7 +1484,7 @@ def _execute_bid_score(
             client_turn_id=f"{event.id}-repair",
             message=f"{message}\n\n{TL_BID_SCORE_REPAIR_MESSAGE}",
             interaction_mode="team_tl",
-        )
+        )).reply
         scores = _parse_bid_scores_with_fragments(
             db,
             team=team,
@@ -1537,7 +1586,7 @@ def _execute_bid_award(
     db.add(session)
     db.commit()
     message = build_bid_judge_message(db, team, task, bids, alive)
-    reply = run_agent_turn(
+    reply = _coerce_team_turn_result(run_agent_turn(
         db,
         team=team,
         agent=agent,
@@ -1545,7 +1594,7 @@ def _execute_bid_award(
         wake_event_id=event.id,
         message=message,
         interaction_mode="team_tl",
-    )
+    )).reply
     award = _parse_bid_award_with_fragments(
         db,
         team=team,
@@ -1566,7 +1615,7 @@ def _execute_bid_award(
             payload={"wake_event_id": event.id},
         )
         db.commit()
-        repair_reply = run_agent_turn(
+        repair_reply = _coerce_team_turn_result(run_agent_turn(
             db,
             team=team,
             agent=agent,
@@ -1575,7 +1624,7 @@ def _execute_bid_award(
             client_turn_id=f"{event.id}-repair",
             message=f"{message}\n\n{TL_BID_JUDGE_REPAIR_MESSAGE}",
             interaction_mode="team_tl",
-        )
+        )).reply
         award = _parse_bid_award_with_fragments(
             db,
             team=team,
@@ -1650,8 +1699,8 @@ def process_tl_reply(
 ) -> list[TeamTask]:
     """TL 对话轮次后处理:解析派任务块并创建任务(直派唤醒/投池竞标)。
 
-    最终回复被 ResponseGenerator 改写时回退 frame 级 reply_fragment;
-    意在派发但未输出代码块时,带完整上下文补一次格式纠错 turn。
+    最终回复被 ResponseGenerator 改写时回退 frame 级 reply_fragment。
+    只有模型显式输出任务 JSON 才创建任务;自然语言不会触发隐藏补写或成员唤醒。
     返回本次创建的任务列表(纯对话时为空)。
     """
     leader = get_team_leader(db, team.id)
@@ -1672,52 +1721,113 @@ def process_tl_reply(
             assignments = parse_tl_task_assignments(fragment)
             if assignments:
                 break
-    if not assignments and looks_like_dispatch_intent(user_message, reply):
-        # TL 口头声称派发但未输出 JSON 代码块:带完整上下文补一次格式纠错 turn
-        repair_turn = ChatTurnRequest(
-            tenant_id=team.tenant_id,
-            session_id=session.id,
-            agent_id=tl_agent.id,
-            client_turn_id=new_id("teamturn"),
-            user_id=user.id,
-            message=TL_ASSIGNMENT_REPAIR_MESSAGE,
-            context_injection=build_tl_chat_message(db, team, user_message),
-            message_visibility="internal",
-            channel="team",
-            interaction_mode="team_tl",
-        )
-        repair_reply = AgentLoop(db).handle_turn(repair_turn).reply or ""
-        repair_assignments = parse_tl_task_assignments(repair_reply)
-        if not repair_assignments:
-            for fragment in collect_turn_reply_fragments(
-                db,
-                tenant_id=team.tenant_id,
-                session_id=session.id,
-                client_turn_id=repair_turn.client_turn_id,
-            ):
-                repair_assignments = parse_tl_task_assignments(fragment)
-                if repair_assignments:
-                    break
-        if repair_assignments:
-            assignments = repair_assignments
     member_ids = {item.agent_id for item in list_team_members(db, team.id)}
+    prepared: list[tuple[dict, str, str]] = []
+    reference_ids: dict[str, str] = {}
+    duplicate_reference = False
+    for index, item in enumerate(assignments, 1):
+        assignee = str(item.get("assignee_agent_id") or "")
+        if assignee and assignee not in member_ids:
+            continue
+        client_ref = str(item.get("client_ref") or f"task_{index}").strip()
+        if not client_ref:
+            continue
+        if client_ref in reference_ids:
+            duplicate_reference = True
+            break
+        task_id = new_id("team_task")
+        reference_ids[client_ref] = task_id
+        prepared.append((item, client_ref, task_id))
+
+    known_tasks = {
+        row.id: row
+        for row in db.exec(select(TeamTask).where(TeamTask.team_id == team.id)).all()
+    }
+    dependency_map: dict[str, list[str]] = {
+        task_id: list(row.depends_on_task_ids_json or []) for task_id, row in known_tasks.items()
+    }
+    normalized: list[tuple[dict, str, str, list[str], dict]] = []
+    graph_invalid = duplicate_reference
+    for item, client_ref, task_id in prepared:
+        dependencies: list[str] = []
+        invalid = False
+        for reference in item.get("depends_on") or []:
+            dependency_id = reference_ids.get(str(reference))
+            if not dependency_id:
+                invalid = True
+                break
+            if dependency_id not in dependencies:
+                dependencies.append(dependency_id)
+        for dependency_id in item.get("depends_on_task_ids") or []:
+            dependency = known_tasks.get(str(dependency_id))
+            if dependency is None:
+                invalid = True
+                break
+            if dependency.id not in dependencies:
+                dependencies.append(dependency.id)
+        if invalid or task_id in dependencies:
+            graph_invalid = True
+            break
+        condition = dict(item.get("activation_condition") or {})
+        condition_type = str(condition.get("type") or "all_succeeded")
+        if condition_type not in {
+            "all_succeeded",
+            "any_succeeded",
+            "all_terminal",
+            "minimum_succeeded",
+        }:
+            condition_type = "all_succeeded"
+        condition["type"] = condition_type
+        if condition_type == "minimum_succeeded":
+            try:
+                condition["minimum"] = max(
+                    1,
+                    min(len(dependencies), int(condition.get("minimum") or 1)),
+                )
+            except (TypeError, ValueError):
+                condition["minimum"] = 1
+        dependency_map[task_id] = dependencies
+        normalized.append((item, client_ref, task_id, dependencies, condition))
+
+    def has_cycle() -> bool:
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(task_id: str) -> bool:
+            if task_id in visiting:
+                return True
+            if task_id in visited:
+                return False
+            visiting.add(task_id)
+            for dependency_id in dependency_map.get(task_id, []):
+                if visit(dependency_id):
+                    return True
+            visiting.remove(task_id)
+            visited.add(task_id)
+            return False
+
+        return any(visit(task_id) for task_id in dependency_map)
+
+    if graph_invalid or len(normalized) != len(prepared) or has_cycle():
+        return []
+
     created: list[TeamTask] = []
     wake_ids: list[str] = []
     bidding_tasks: list[TeamTask] = []
-    for item in assignments:
+    for item, client_ref, task_id, dependencies, condition in normalized:
         assignee = item.get("assignee_agent_id") or ""
-        if assignee and assignee not in member_ids:
-            # TL 指派的 agent 不在花名册:跳过,不建任务
-            continue
         task = TeamTask(
+            id=task_id,
             team_id=team.id,
             tenant_id=team.tenant_id,
             title=item["title"],
             description=item.get("description"),
-            status="pending",
+            status="blocked" if dependencies else "pending",
             created_by_user_id=user.id,
             created_by_tl=True,
             assignee_agent_id=assignee or None,
+            depends_on_task_ids_json=dependencies,
+            activation_condition_json=condition if dependencies else {},
         )
         db.add(task)
         db.flush()
@@ -1728,9 +1838,25 @@ def process_tl_reply(
             actor_type="agent",
             actor_id=tl_agent.id,
             event_type="task_created",
-            payload={"title": task.title, "assignee_agent_id": assignee or None},
+            payload={
+                "title": task.title,
+                "client_ref": client_ref,
+                "assignee_agent_id": assignee or None,
+                "depends_on_task_ids": dependencies,
+                "activation_condition": condition if dependencies else {},
+            },
         )
-        if assignee:
+        if dependencies:
+            record_task_event(
+                db,
+                team_id=team.id,
+                task_id=task.id,
+                actor_type="system",
+                actor_id=None,
+                event_type="task_blocked",
+                payload={"depends_on_task_ids": dependencies, "activation_condition": condition},
+            )
+        elif assignee:
             wake = enqueue_wake_event(
                 db,
                 team=team,
@@ -1746,8 +1872,69 @@ def process_tl_reply(
     db.commit()
     for task in created:
         db.refresh(task)
+    # 依赖也可以引用此前已经完成的任务；建图后立即求一次 ready 集合，
+    # 不能要求等到下一次无关唤醒才解除阻塞。
+    activate_ready_tasks(db, team)
     for wake_id in wake_ids:
         start_wakeup_async(wake_id)
     for task in bidding_tasks:
         start_bidding(db, team, task)
     return created
+
+
+def activate_ready_tasks(db: Session, team: Team) -> list[TeamTask]:
+    """按固定点求值激活依赖图中的 ready 集合，并传播不可满足状态。"""
+    activated: list[TeamTask] = []
+    wake_ids: list[str] = []
+    bidding_tasks: list[TeamTask] = []
+    while True:
+        changed = False
+        blocked = db.exec(
+            select(TeamTask).where(TeamTask.team_id == team.id, TeamTask.status == "blocked")
+        ).all()
+        for task in blocked:
+            state = task_activation_state(db, task)
+            if state == "blocked":
+                continue
+            changed = True
+            if state == "impossible":
+                apply_task_transition(
+                    db,
+                    task,
+                    "escalated",
+                    actor_type="system",
+                    actor_id=None,
+                    event_type="task_dependency_failed",
+                    payload={"depends_on_task_ids": list(task.depends_on_task_ids_json or [])},
+                )
+                continue
+            apply_task_transition(
+                db,
+                task,
+                "pending",
+                actor_type="system",
+                actor_id=None,
+                event_type="task_dependencies_satisfied",
+                payload={"depends_on_task_ids": list(task.depends_on_task_ids_json or [])},
+            )
+            activated.append(task)
+            if task.assignee_agent_id:
+                wake = enqueue_wake_event(
+                    db,
+                    team=team,
+                    target_agent_id=task.assignee_agent_id,
+                    trigger_type="task_assigned",
+                    payload={"task_id": task.id},
+                )
+                wake_ids.append(wake.id)
+            else:
+                bidding_tasks.append(task)
+        if not changed:
+            break
+        db.flush()
+    db.commit()
+    for wake_id in wake_ids:
+        start_wakeup_async(wake_id)
+    for task in bidding_tasks:
+        start_bidding(db, team, task)
+    return activated

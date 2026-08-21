@@ -60,6 +60,15 @@ afterEach(() => {
 });
 
 describe('ChatHeader team badge', () => {
+  it('keeps header controls below the native desktop drag region', () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([team])));
+    const { container } = renderHeader(buildChat({ title: '计划讨论' }));
+    const headerClassName = container.firstElementChild?.className || '';
+
+    expect(headerClassName).toContain('h-[88px]');
+    expect(headerClassName).toContain('pt-[32px]');
+  });
+
   it('shows the team name and group-chat badge when present', () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([team])));
     renderHeader(buildChat({ title: '计划讨论', team_id: 'team-1', team_name: '增长团队' }));

@@ -8,7 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.api import teams as teams_api
 from app.core import AgentLoop
 from app.db.models import AgentProfile, Team, TeamTask, TeamWakeEvent, Tenant, User
-from app.session.session_schema import ChatTurnResponse, SessionPublic
+from app.session.session_schema import ChatTurnRequest, ChatTurnResponse, SessionPublic
 from app.teams import wakeup
 from app.teams.schema import (
     ReviewOverrideRequest,
@@ -27,6 +27,7 @@ from app.teams.service import (
     parse_tl_review,
     parse_tl_task_assignments,
     set_leader,
+    task_activation_state,
 )
 from app.teams.wakeup import claim_wake_event, enqueue_wake_event, execute_wake_event
 
@@ -299,6 +300,26 @@ def test_parse_tl_task_assignments_ok() -> None:
     ]
 
 
+def test_parse_tl_task_assignments_keeps_dependency_graph_fields() -> None:
+    reply = (
+        '```json\n{"team_tasks": ['
+        '{"client_ref": "source", "title": "收集资料", '
+        '"assignee_agent_id": "agent_worker"}, '
+        '{"client_ref": "summary", "title": "汇总结论", '
+        '"assignee_agent_id": "agent_worker2", "depends_on": ["source"], '
+        '"activation_condition": {"type": "minimum_succeeded", "minimum": 1}}'
+        "]}\n```"
+    )
+
+    assert parse_tl_task_assignments(reply)[1] == {
+        "client_ref": "summary",
+        "title": "汇总结论",
+        "assignee_agent_id": "agent_worker2",
+        "depends_on": ["source"],
+        "activation_condition": {"type": "minimum_succeeded", "minimum": 1},
+    }
+
+
 def test_parse_tl_task_assignments_no_block_or_bad_json() -> None:
     assert parse_tl_task_assignments("随便聊聊,没有代码块") == []
     assert parse_tl_task_assignments('```json\n{"team_tasks": [坏掉的\n```') == []
@@ -367,6 +388,238 @@ def test_tl_chat_creates_tasks_and_wakes(monkeypatch: pytest.MonkeyPatch) -> Non
         # 审计流水
         detail = teams_api.get_team_task(team.id, task.id, "tenant_demo", db, _admin_user())
         assert [item.event_type for item in detail.events] == ["task_created"]
+
+
+def test_tl_chat_does_not_repair_natural_language_into_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缺少执行输入时的澄清回复不能被关键词启发式转换成成员任务。"""
+    with _test_session() as db:
+        team = _seed_team(db)
+        started = _stub_start_wakeup(monkeypatch)
+        requests: list[ChatTurnRequest] = []
+
+        def fake_handle_turn(self, request):
+            requests.append(request)
+            return ChatTurnResponse(
+                reply=(
+                    "收到，我负责商品比价与购买，行政负责后续报销。"
+                    "请问您具体想购买什么商品？"
+                ),
+                session_id=request.session_id,
+                session_state=SessionPublic(
+                    session_id=request.session_id,
+                    tenant_id=request.tenant_id,
+                    awaiting_input={"question": "具体想购买什么商品？"},
+                ),
+            )
+
+        monkeypatch.setattr(AgentLoop, "handle_turn", fake_handle_turn)
+        response = teams_api.tl_chat_endpoint(
+            team.id,
+            TeamTLChatRequest(
+                tenant_id="tenant_demo",
+                message="我想买个东西，然后行政帮我报销一下",
+            ),
+            db,
+            _admin_user(),
+        )
+
+        assert len(requests) == 1
+        assert response.created_tasks == []
+        assert db.exec(select(TeamTask)).all() == []
+        assert db.exec(select(TeamWakeEvent)).all() == []
+        assert started == []
+
+
+def test_tl_chat_blocks_dependent_tasks_until_predecessor_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        add_member(db, team, agent_id="agent_worker2")
+        started = _stub_start_wakeup(monkeypatch)
+
+        def fake_handle_turn(self, request):
+            reply = (
+                "已按依赖关系安排。\n"
+                '```json\n{"team_tasks": ['
+                '{"client_ref": "collect", "title": "收集资料", '
+                '"assignee_agent_id": "agent_worker"}, '
+                '{"client_ref": "publish", "title": "发布报告", '
+                '"assignee_agent_id": "agent_worker2", "depends_on": ["collect"], '
+                '"activation_condition": {"type": "all_succeeded"}}'
+                "]}\n```"
+            )
+            return ChatTurnResponse(
+                reply=reply,
+                session_id=request.session_id,
+                session_state=SessionPublic(
+                    session_id=request.session_id, tenant_id=request.tenant_id
+                ),
+            )
+
+        monkeypatch.setattr(AgentLoop, "handle_turn", fake_handle_turn)
+        response = teams_api.tl_chat_endpoint(
+            team.id,
+            TeamTLChatRequest(tenant_id="tenant_demo", message="先收集资料，再发布报告"),
+            db,
+            _admin_user(),
+        )
+        by_title = {item.title: item for item in response.created_tasks}
+        source = db.get(TeamTask, by_title["收集资料"].id)
+        dependent = db.get(TeamTask, by_title["发布报告"].id)
+        assert source is not None and dependent is not None
+        assert source.status == "pending"
+        assert dependent.status == "blocked"
+        assert dependent.depends_on_task_ids_json == [source.id]
+        assert len(started) == 1
+
+        for status in ("in_progress", "review", "done"):
+            apply_task_transition(
+                db,
+                source,
+                status,
+                actor_type="agent",
+                actor_id="agent_worker",
+                event_type=f"test_{status}",
+            )
+        db.commit()
+        activated = wakeup.activate_ready_tasks(db, team)
+        db.refresh(dependent)
+
+        assert [task.id for task in activated] == [dependent.id]
+        assert dependent.status == "pending"
+        assert len(started) == 2
+        wakes = [
+            item
+            for item in db.exec(select(TeamWakeEvent)).all()
+            if item.payload_json.get("task_id") == dependent.id
+        ]
+        assert len(wakes) == 1
+
+
+def test_tl_chat_rejects_cyclic_dependency_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        started = _stub_start_wakeup(monkeypatch)
+
+        def fake_handle_turn(self, request):
+            return ChatTurnResponse(
+                reply=(
+                    '```json\n{"team_tasks": ['
+                    '{"client_ref": "a", "title": "A", "depends_on": ["b"]}, '
+                    '{"client_ref": "b", "title": "B", "depends_on": ["a"]}'
+                    "]}\n```"
+                ),
+                session_id=request.session_id,
+                session_state=SessionPublic(
+                    session_id=request.session_id, tenant_id=request.tenant_id
+                ),
+            )
+
+        monkeypatch.setattr(AgentLoop, "handle_turn", fake_handle_turn)
+        response = teams_api.tl_chat_endpoint(
+            team.id,
+            TeamTLChatRequest(tenant_id="tenant_demo", message="创建循环任务"),
+            db,
+            _admin_user(),
+        )
+
+        assert response.created_tasks == []
+        assert db.exec(select(TeamTask)).all() == []
+        assert db.exec(select(TeamWakeEvent)).all() == []
+        assert started == []
+
+
+def test_tl_chat_rejects_duplicate_dependency_references(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        started = _stub_start_wakeup(monkeypatch)
+
+        def fake_handle_turn(self, request):
+            return ChatTurnResponse(
+                reply=(
+                    '```json\n{"team_tasks": ['
+                    '{"client_ref": "shared", "title": "A"}, '
+                    '{"client_ref": "shared", "title": "B"}'
+                    "]}\n```"
+                ),
+                session_id=request.session_id,
+                session_state=SessionPublic(
+                    session_id=request.session_id, tenant_id=request.tenant_id
+                ),
+            )
+
+        monkeypatch.setattr(AgentLoop, "handle_turn", fake_handle_turn)
+        response = teams_api.tl_chat_endpoint(
+            team.id,
+            TeamTLChatRequest(tenant_id="tenant_demo", message="创建两项任务"),
+            db,
+            _admin_user(),
+        )
+
+        assert response.created_tasks == []
+        assert db.exec(select(TeamTask)).all() == []
+        assert db.exec(select(TeamWakeEvent)).all() == []
+        assert started == []
+
+
+@pytest.mark.parametrize(
+    ("condition", "source_statuses", "needs_input", "expected"),
+    [
+        ({"type": "all_succeeded"}, ["done", "done"], [False, False], "ready"),
+        ({"type": "any_succeeded"}, ["done", "in_progress"], [False, False], "ready"),
+        (
+            {"type": "minimum_succeeded", "minimum": 2},
+            ["done", "done", "in_progress"],
+            [False, False, False],
+            "ready",
+        ),
+        ({"type": "all_terminal"}, ["done", "escalated"], [False, False], "ready"),
+        ({"type": "all_succeeded"}, ["done", "escalated"], [False, False], "impossible"),
+        ({"type": "all_terminal"}, ["done", "escalated"], [False, True], "blocked"),
+    ],
+)
+def test_task_activation_state_supports_generic_fan_in_conditions(
+    condition: dict[str, object],
+    source_statuses: list[str],
+    needs_input: list[bool],
+    expected: str,
+) -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        sources: list[TeamTask] = []
+        for index, (status, waiting) in enumerate(
+            zip(source_statuses, needs_input, strict=True),
+            1,
+        ):
+            source = TeamTask(
+                team_id=team.id,
+                tenant_id=team.tenant_id,
+                title=f"前置任务 {index}",
+                status=status,
+                created_by_user_id="user_admin",
+                created_by_tl=True,
+                report_json={"needs_input": True} if waiting else {},
+            )
+            db.add(source)
+            db.flush()
+            sources.append(source)
+        dependent = TeamTask(
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            title="汇聚任务",
+            status="blocked",
+            created_by_user_id="user_admin",
+            created_by_tl=True,
+            depends_on_task_ids_json=[item.id for item in sources],
+            activation_condition_json=condition,
+        )
+        db.add(dependent)
+        db.flush()
+
+        assert task_activation_state(db, dependent) == expected
 
 
 def test_tl_chat_requires_leader() -> None:

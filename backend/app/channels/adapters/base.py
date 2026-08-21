@@ -87,6 +87,10 @@ class ChannelInbound:
     sender_name: str = ""
     # 渠道账号作用域:wechat 置空;wecom 为 corp_id/bot_id/binding.id(intake 以绑定配置为准重算)
     account_scope: str = ""
+    # 被回复消息的渠道侧 id(飞书 p2p 回复事件中的 parent_id/root_id)。
+    # 用于阶段 4:处理人回复飞书 handoff 通知消息时,据此关联到 handoff.notify_message_id。
+    # 无回复关系时为空。wechat/wecom 暂不捕获。
+    parent_id: str = ""
     # 入站附件列表(图片/文件);空列表表示纯文本消息。
     # 不落库,仅在 intake 调用 attachment_bridge 时使用。
     attachments: list[ChannelInboundAttachment] = field(default_factory=list)
@@ -118,7 +122,9 @@ class ChannelAdapter(Protocol):
         text: str,
         *,
         idempotency_key: str | None = None,
-    ) -> None: ...
+    ) -> str | None: ...
+    # 返回值:投递消息在渠道侧的 id(如飞书 message_id),供调用方关联回复;
+    # 不支持返回 id 的适配器(wechat/wecom)返回 None。
 
     def start_ingress(self, binding_id: str) -> None: ...
 

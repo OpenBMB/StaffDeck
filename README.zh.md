@@ -306,9 +306,10 @@ StaffDeck/
 
 # 💬 联系我们
 - 关于技术问题及功能请求，请提交 [GitHub Issues](https://github.com/OpenBMB/StaffDeck/issues)。
-- 商业合作，请联系：
+- 商业授权请填写[飞书问卷](https://modelbest.feishu.cn/share/base/form/shrcnLAF6EpCi8lXhTS3VYnWc4g)
+- 为了商业合作，请联系：
   ```
-  business@modelbest.cn
+  agentverse@modelbest.cn
   ```
 - 欢迎加入我们的社区与我们交流：
 

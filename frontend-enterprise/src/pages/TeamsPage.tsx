@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, MessageCircle } from 'lucide-react';
 
 import {
   Badge,
@@ -157,6 +157,7 @@ export default function TeamsPage({
   const [description, setDescription] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<TeamRead | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [startingTeamId, setStartingTeamId] = useState('');
   const [expandedTeams, setExpandedTeams] = useState<Set<string> | null>(null);
   const navigate = useNavigate();
 
@@ -250,6 +251,23 @@ export default function TeamsPage({
     }
     const base = `${EnterpriseRoute.Teams}/${thread.team_id}`;
     navigate(thread.task_id ? `${base}?task=${thread.task_id}` : base);
+  }
+
+  async function startTeamChat(team: TeamRead) {
+    if (startingTeamId) return;
+    setStartingTeamId(team.id);
+    try {
+      const result = await api.post<{ session_id: string }>(
+        `/api/enterprise/teams/${team.id}/tl/session`,
+        { tenant_id: TENANT_ID },
+      );
+      if (!result.session_id) throw new Error('未返回团队群聊');
+      navigate(`${EnterpriseRoute.Chat}/${result.session_id}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '开始团队对话失败');
+    } finally {
+      setStartingTeamId('');
+    }
   }
 
   async function createTeam() {
@@ -430,21 +448,36 @@ export default function TeamsPage({
                     </span>
                   )}
                 </div>
-                <div className="flex items-center justify-between border-t border-[#f2f4f8] pt-[10px]">
+                <div className="flex items-center justify-between gap-[10px] border-t border-[#f2f4f8] pt-[10px]">
                   <span className="min-w-0 truncate text-[12px] text-[#757f9c]">
                     {`项目领导：${leader?.agent_name || '未设置'}`}
                   </span>
-                  <button
-                    type="button"
-                    aria-label={`删除团队 ${team.name}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setDeleteTarget(team);
-                    }}
-                    className="inline-grid size-[28px] shrink-0 place-items-center rounded-[8px] text-[#c3c9d6] transition-colors hover:bg-[#fce7e7] hover:text-[#f5483b]"
-                  >
-                    <IconTrash className="size-[14px]" />
-                  </button>
+                  <div className="flex shrink-0 items-center gap-[4px]">
+                    <button
+                      type="button"
+                      aria-label={`开始与团队 ${team.name} 对话`}
+                      disabled={Boolean(startingTeamId)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void startTeamChat(team);
+                      }}
+                      className="inline-flex h-[30px] items-center gap-[5px] rounded-[9px] bg-[#18181a] px-[10px] text-[11px] text-white transition-colors hover:bg-[#303030] disabled:cursor-wait disabled:opacity-50"
+                    >
+                      <MessageCircle className="size-[13px]" />
+                      {startingTeamId === team.id ? '进入中…' : '开始对话'}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`删除团队 ${team.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setDeleteTarget(team);
+                      }}
+                      className="inline-grid size-[28px] shrink-0 place-items-center rounded-[8px] text-[#c3c9d6] transition-colors hover:bg-[#fce7e7] hover:text-[#f5483b]"
+                    >
+                      <IconTrash className="size-[14px]" />
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

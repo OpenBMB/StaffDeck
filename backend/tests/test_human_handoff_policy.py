@@ -17,8 +17,8 @@ from app.db.models import (
     User,
     utc_now,
 )
-from app.session.slot_policy import strip_router_generated_message_slots
 from app.session.session_schema import ChatTurnRequest, RouterDecision, StepAgentResult
+from app.session.slot_policy import strip_router_generated_message_slots
 
 
 class FakeEvents:
@@ -182,6 +182,65 @@ def test_handoff_assignee_falls_back_to_tenant_admin_before_requester():
         assert loop._human_handoff_assignee_user_id("tenant_demo", None, user.id) == admin.id
 
 
+def test_handoff_assignee_skips_invalid_agent_owner_metadata():
+    engine = _test_engine()
+    with Session(engine) as db:
+        admin, user, _other = _seed_handoff_users(db)
+        db.add(Tenant(id="tenant_other", name="Other"))
+        db.add(
+            User(
+                id="other_tenant_user",
+                tenant_id="tenant_other",
+                username="other_tenant_user",
+                password_hash="x",
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_invalid_owner",
+                tenant_id="tenant_demo",
+                name="invalid owner",
+                metadata_json={
+                    "owner_user_id": "deleted_user",
+                    "created_by_user_id": "other_tenant_user",
+                },
+            )
+        )
+        db.commit()
+
+        loop = AgentLoop.__new__(AgentLoop)
+        loop.db = db
+
+        assert (
+            loop._human_handoff_assignee_user_id(
+                "tenant_demo", "agent_invalid_owner", user.id
+            )
+            == admin.id
+        )
+
+
+def test_handoff_assignee_does_not_fall_back_to_channel_customer():
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        customer = User(
+            id="channel_customer",
+            tenant_id="tenant_demo",
+            username="feishu_customer",
+            source="feishu",
+            password_hash="x",
+        )
+        db.add(customer)
+        db.commit()
+
+        loop = AgentLoop.__new__(AgentLoop)
+        loop.db = db
+
+        assert loop._human_handoff_assignee_user_id(
+            "tenant_demo", None, customer.id
+        ) is None
+
+
 def test_handoff_assignee_uses_requester_when_no_owner_or_admin_exists():
     engine = _test_engine()
     with Session(engine) as db:
@@ -220,7 +279,15 @@ def test_handoff_finalize_creates_pending_request_for_declared_step():
                     content="我要转人工处理订单 A001",
                 )
             ],
-        ]
+        ],
+        get_rows={
+            (User, "user_demo"): User(
+                id="user_demo",
+                tenant_id="tenant_demo",
+                username="user_demo",
+                password_hash="x",
+            )
+        },
     )
     loop.db = db
     loop.events = FakeEvents()
@@ -712,7 +779,9 @@ def test_handoff_resume_worker_continues_original_session_once(monkeypatch):
         assert handoff is not None
         assert handoff.status == "answered"
         assert handoff.metadata_json["resume_started_at"]
-        assert handoff.metadata_json["resume_finished_at"]
+        # resume_finished_at 标记已移除:_inject_handoff_context 改用
+        # request.channel == "human_handoff_resume" 判定 resume turn,
+        # 不再依赖事后写入的标记(原实现时序 bug 导致注入永远 miss)。
         events = db.exec(select(AgentEvent).where(AgentEvent.event_type == "human_handoff_resume_started")).all()
         assert len(events) == 1
         assert events[0].payload_json["handoff_id"] == "handoff_worker"

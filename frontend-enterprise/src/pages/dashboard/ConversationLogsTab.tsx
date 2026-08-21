@@ -887,14 +887,23 @@ function FeedbackTraceBlock({ trace }: { trace: TurnTraceRead }) {
       </div>
       <div className="feedback-trace-lines">
         {lines.map((line) => (
-          <div key={line.id} className={`feedback-trace-line ${line.kind} ${line.state}`}>
+          <div
+            key={line.id}
+            className={`feedback-trace-line ${line.kind} ${line.state}`}
+            style={line.depth ? { marginLeft: `${Math.min(line.depth, 3) * 22}px` } : undefined}
+          >
             <span className="feedback-trace-icon">{traceLineIcon(line.kind)}</span>
             <span className="feedback-trace-content">
               <span className="feedback-trace-title-row">
                 <span className="feedback-trace-text">{line.text}</span>
                 {(typeof line.duration_ms === 'number' || typeof line.model_duration_ms === 'number') && (
                   <span className="feedback-trace-timing">
-                    {timingText(line.duration_ms, line.model_duration_ms, undefined, line.model_names)}
+                    {timingText(
+                      line.duration_ms,
+                      line.model_duration_ms,
+                      line.model_call_count,
+                      line.model_names,
+                    )}
                   </span>
                 )}
               </span>

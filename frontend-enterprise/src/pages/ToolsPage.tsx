@@ -2,12 +2,13 @@ import { ApiOutlined, CheckOutlined, ExperimentOutlined, ToolOutlined } from '..
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Copy, FlaskConical, Users } from 'lucide-react';
+import { Activity, Copy, FlaskConical, RotateCcw, TerminalSquare, Users, XCircle } from 'lucide-react';
 import { pinyin } from 'pinyin-pro';
 
 import { api, TENANT_ID } from '../api/client';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
+import CapabilityScopeLoading from '@/components/CapabilityScopeLoading';
 import {
   CapabilityScopeBadge,
   CapabilityScopeControl,
@@ -37,6 +38,7 @@ import {
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
+import { announceEnterpriseCapabilityCatalogChange } from '@/lib/capability-catalog-events';
 import {
   MENU_CONTENT_CLASS,
   MENU_ITEM_CLASS,
@@ -69,7 +71,9 @@ import { isTeamScope, readEmployeeScope } from '../lib/agent-scope-storage';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import type {
   AgentProfileRead,
+  A2ATaskRunRead,
   CapabilityScope,
+  CodexA2AAdapterRead,
   ToolRead,
   MCPServerRead,
   MCPServerConnection,
@@ -277,6 +281,10 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       const agentSuffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
       await api.delete(`/api/enterprise/tools/${row.id}?tenant_id=${TENANT_ID}${agentSuffix}`);
       notify.success(isOverallAgent ? '已删除工具' : '已从当前员工移除');
+      announceEnterpriseCapabilityCatalogChange({
+        resourceType: 'tool',
+        agentId: agentId || undefined,
+      });
       setDeleteTarget(null);
       await load();
     } catch (error) {
@@ -313,6 +321,10 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
         `/api/enterprise/mcp-servers/${row.id}?tenant_id=${TENANT_ID}${agentQuery}&remove_tools=true`,
       );
       notify.success(isOverallAgent ? '已删除' : '已从当前员工移除');
+      announceEnterpriseCapabilityCatalogChange({
+        resourceType: 'tool',
+        agentId: agentId || undefined,
+      });
       setServerDeleteTarget(null);
       void load();
     } catch (error) {
@@ -403,6 +415,10 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       const importedCount = result.imported?.length || 0;
       const missingCount = result.missing?.length || 0;
       notify.success(`已复制 ${importedCount} 个工具${missingCount ? `，${missingCount} 个未复制` : ''}`);
+      announceEnterpriseCapabilityCatalogChange({
+        resourceType: 'tool',
+        agentId: agentId || undefined,
+      });
       setImportOpen(false);
       if (targetAgentId !== agentId) {
         window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, targetAgentId);
@@ -673,6 +689,8 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
   const listEmptyText = isOverallAgent
     ? canManageCurrentScope ? '暂无工具，点击「新增」创建一个吧' : '暂无工具'
     : '当前员工暂无工具';
+
+  if (!agentScopeLoaded) return <CapabilityScopeLoading />;
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
@@ -1080,6 +1098,10 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
         ? await api.put<ToolRead>(`/api/enterprise/tools/${toolId}${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, payload)
         : await api.post<ToolRead>(`/api/enterprise/tools${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, payload);
       notify.success('已保存');
+      announceEnterpriseCapabilityCatalogChange({
+        resourceType: 'tool',
+        agentId: readEmployeeScope() || undefined,
+      });
       setTool(saved);
       setValues(toolToFormValues(saved));
       if (!isEdit) {
@@ -1315,8 +1337,105 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
         </SectionCard>
         {tool && <SavedToolTestCard tool={tool} standalone />}
       </div>
+      {tool?.tool_type === 'a2a' && <A2ARunsPanel tool={tool} />}
     </div>
   );
+}
+
+const A2A_TERMINAL_STATES = new Set(['completed', 'failed', 'canceled', 'cancelled', 'rejected']);
+
+function A2ARunsPanel({ tool }: { tool: ToolRead }) {
+  const [runs, setRuns] = useState<A2ATaskRunRead[]>([]);
+  const [adapter, setAdapter] = useState<CodexA2AAdapterRead | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const agentQuery = currentAgentQuery();
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [nextRuns, nextAdapter] = await Promise.all([
+        api.get<A2ATaskRunRead[]>(`/api/enterprise/tools/${tool.id}/a2a-runs?tenant_id=${TENANT_ID}${agentQuery}&limit=20`),
+        api.get<CodexA2AAdapterRead>(`/api/enterprise/tools/a2a/codex-adapter?tenant_id=${TENANT_ID}${agentQuery}`),
+      ]);
+      setRuns(nextRuns);
+      setAdapter(nextAdapter);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '加载 A2A 任务记录失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+    // Tool identity is the stable boundary for this panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool.id]);
+
+  async function cancel(run: A2ATaskRunRead) {
+    try {
+      await api.post(`/api/enterprise/tools/${tool.id}/a2a-runs/${run.id}:cancel?tenant_id=${TENANT_ID}${agentQuery}`, {});
+      notify.success('已提交取消请求');
+      await load();
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '取消 A2A 任务失败');
+    }
+  }
+
+  const codexEndpoint = adapter ? new URL(adapter.endpoint_url, window.location.origin).toString() : '';
+  const isCodexConnection = Boolean(codexEndpoint && tool.url.replace(/\/$/, '') === codexEndpoint.replace(/\/$/, ''));
+
+  return (
+    <SectionCard
+      className="mt-[20px]"
+      title={<span className="flex items-center gap-[8px]"><Activity className="size-[16px]" />A2A 持久化任务</span>}
+      extra={<UIButton variant="ghost" size="sm" onClick={() => void load()} disabled={loading}><RotateCcw className={cn('size-[14px]', loading && 'animate-spin')} />刷新</UIButton>}
+      loading={loading && runs.length === 0}
+      bodyClassName="flex flex-col gap-[14px]"
+    >
+      <div className={cn('grid gap-[12px] rounded-[14px] border p-[16px] md:grid-cols-[minmax(0,1fr)_auto]', isCodexConnection ? 'border-emerald-200 bg-emerald-50/60' : 'border-sky-200 bg-sky-50/50')}>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-[8px]">
+            <TerminalSquare className="size-[16px]" />
+            <strong className="text-[13px] text-[#2f3442]">{isCodexConnection ? 'Codex CLI Adapter' : '标准 A2A Agent'}</strong>
+            {isCodexConnection && <StatusBadge tone={adapter?.enabled ? 'green' : 'red'}>{adapter?.enabled ? '已连接' : '未启用'}</StatusBadge>}
+          </div>
+          <p className="mt-[7px] font-mono text-[11px] leading-[17px] break-all text-[#687083]">{tool.url}</p>
+          {isCodexConnection && adapter && <p className="mt-[4px] text-[11px] text-[#687083]">命令 {adapter.command} · 最长 {adapter.timeout_seconds}s · {adapter.token_configured ? '已配置凭证' : '无凭证'}</p>}
+        </div>
+        <div className="flex items-center gap-[8px] text-[11px] text-[#687083]"><span className="size-[7px] rounded-full bg-emerald-400" />任务、事件和产物均持久化</div>
+      </div>
+
+      {runs.length === 0 ? (
+        <div className="rounded-[14px] border border-dashed border-[#dfe3ea] px-[20px] py-[28px] text-center text-[12px] text-[#858b9c]">尚无 A2A 调用记录。测试或正式调用后，长任务状态会保留在这里。</div>
+      ) : runs.map((run) => {
+        const open = expanded === run.id;
+        const terminal = A2A_TERMINAL_STATES.has(run.status);
+        return (
+          <div key={run.id} className="overflow-hidden rounded-[14px] border border-[#e4e7ec] bg-white shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
+            <button type="button" className="flex w-full items-center gap-[12px] px-[16px] py-[14px] text-left hover:bg-[#fafbfc]" onClick={() => setExpanded(open ? null : run.id)}>
+              <span className={cn('size-[9px] shrink-0 rounded-full', run.status === 'completed' ? 'bg-emerald-400' : run.status === 'failed' ? 'bg-red-400' : terminal ? 'bg-slate-400' : 'animate-pulse bg-sky-400')} />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-[10px] gap-y-[4px]"><strong className="text-[13px] text-[#2f3442]">{a2aStatusLabel(run.status)}</strong><span className="font-mono text-[11px] text-[#858b9c]">{run.remote_task_id || run.id}</span></div>
+                <p className="mt-[3px] text-[11px] text-[#858b9c]">更新于 {formatDateTime(run.updated_at)} · {run.events.length} 个事件 · {run.artifacts.length} 个产物{run.recovery_attempts ? ` · 恢复 ${run.recovery_attempts} 次` : ''}</p>
+              </div>
+              {!terminal && <UIButton variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); void cancel(run); }}><XCircle className="size-[13px]" />取消</UIButton>}
+              <IconChevronDown className={cn('size-[14px] text-[#858b9c] transition-transform', open && 'rotate-180')} />
+            </button>
+            {open && <div className="grid gap-[14px] border-t border-[#eceef1] bg-[#fafbfc] p-[16px] lg:grid-cols-2">
+              <div><span className={SUBSECTION_TITLE_CLASS}>事件时间线</span><div className="mt-[10px] flex max-h-[280px] flex-col gap-[8px] overflow-auto pr-[4px]">{run.events.map((event) => <div key={`${run.id}-${event.sequence}`} className="grid grid-cols-[34px_minmax(0,1fr)] gap-[8px] text-[11px]"><span className="font-mono text-[#9aa0af]">#{event.sequence}</span><div><strong className="text-[#464c5e]">{event.event_type}</strong><span className="ml-[8px] text-[#9aa0af]">{formatDateTime(event.created_at)}</span></div></div>)}</div></div>
+              <div className="flex flex-col gap-[10px]"><span className={SUBSECTION_TITLE_CLASS}>持久化状态</span><CodeBlock className="max-h-[280px] whitespace-pre-wrap wrap-break-word" code={formatJson({ task_id: run.remote_task_id, context_id: run.context_id, codex_session_id: run.codex_session_id, status: run.status, cancel_requested: run.cancel_requested, artifacts: run.artifacts, error: run.error })} language="json" /></div>
+            </div>}
+          </div>
+        );
+      })}
+    </SectionCard>
+  );
+}
+
+function a2aStatusLabel(status: string): string {
+  return ({ submitted: '已提交', working: '执行中', running: '执行中', completed: '已完成', failed: '失败', canceled: '已取消', cancelled: '已取消', rejected: '已拒绝', 'input-required': '等待输入' } as Record<string, string>)[status] || status;
 }
 
 type McpFormValues = {
@@ -1458,6 +1577,10 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
         ? await api.put<MCPServerRead>(`/api/enterprise/mcp-servers/${serverId}`, built.payload)
         : await api.post<MCPServerRead>('/api/enterprise/mcp-servers', built.payload);
       notify.success('已保存');
+      announceEnterpriseCapabilityCatalogChange({
+        resourceType: 'tool',
+        agentId: readEmployeeScope() || undefined,
+      });
       setServer(saved);
       setValues(serverToFormValues(saved));
       if (!isEdit) {
@@ -1475,8 +1598,9 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
     if (!built) return;
     setDiscovering(true);
     try {
+      const agentQuery = currentAgentQuery();
       const response = server
-        ? await api.post<MCPDiscoverResponse>(`/api/enterprise/mcp-servers/${server.id}/discover`, {
+        ? await api.post<MCPDiscoverResponse>(`/api/enterprise/mcp-servers/${server.id}/discover${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, {
             tenant_id: TENANT_ID,
             connection: built.connection,
             apps_mode: values.apps_mode,
@@ -1524,6 +1648,10 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
         return;
       }
       notify.success(`同步完成：新增 ${response.imported.length}，更新 ${response.updated.length}`);
+      announceEnterpriseCapabilityCatalogChange({
+        resourceType: 'tool',
+        agentId: readEmployeeScope() || undefined,
+      });
       try {
         const refreshed = await api.get<MCPServerRead>(
           `/api/enterprise/mcp-servers/${server.id}?tenant_id=${TENANT_ID}`,
@@ -1929,20 +2057,18 @@ function ToolFormFields({
         </Field>
       </div>
 
-      {values.tool_type === 'a2a' && <Field label="A2A 配置 JSON" htmlFor="tool-a2a-config" hint='可配置 a2a_version 与 accepted_output_modes；默认使用 JSON-RPC 2.0 SendMessage。'>
-        <Textarea id="tool-a2a-config" rows={4} className={MONO_INPUT_CLASS} value={values.mcp_config} onChange={(event) => setField('mcp_config', event.target.value)} placeholder={'{\n  "a2a_version": "1.0",\n  "accepted_output_modes": ["text/plain", "application/json"]\n}'} />
-      </Field>}
+      {values.tool_type === 'a2a' && <A2AConnectionFields values={values} setField={setField} />}
 
       <Field
         label="调用超时上限（秒）"
         htmlFor="tool-timeout-seconds"
-        hint="每个工具独立生效，支持 1–300 秒；HTTP、MCP 和对话 Harness 调用均使用此值。"
+        hint="每个工具独立生效，支持 1–3600 秒；A2A 长任务会在此时间内持续订阅或轮询。"
       >
         <Input
           id="tool-timeout-seconds"
           type="number"
           min={1}
-          max={300}
+          max={3600}
           step={1}
           value={values.timeout_seconds}
           onChange={(event) => {
@@ -2018,6 +2144,67 @@ function ToolFormFields({
       </div>
     </div>
   );
+}
+
+function A2AConnectionFields({
+  values,
+  setField,
+}: {
+  values: ToolFormValues;
+  setField: <K extends keyof ToolFormValues>(name: K, value: ToolFormValues[K]) => void;
+}) {
+  const [adapter, setAdapter] = useState<CodexA2AAdapterRead | null>(null);
+  const config = safeJsonObject(values.mcp_config);
+  const updateConfig = (patch: Record<string, unknown>) => {
+    setField('mcp_config', JSON.stringify({ ...config, ...patch }, null, 2));
+  };
+
+  useEffect(() => {
+    api.get<CodexA2AAdapterRead>(`/api/enterprise/tools/a2a/codex-adapter?tenant_id=${TENANT_ID}${currentAgentQuery()}`)
+      .then(setAdapter)
+      .catch(() => setAdapter(null));
+  }, []);
+
+  const useCodex = () => {
+    if (!adapter) return;
+    setField('url', new URL(adapter.endpoint_url, window.location.origin).toString());
+    updateConfig({
+      agent_card_url: new URL(adapter.agent_card_url, window.location.origin).toString(),
+      discover_agent_card: true,
+      require_agent_card: true,
+      streaming: true,
+      subscribe: true,
+      a2a_version: '1.0',
+      accepted_output_modes: ['text/plain', 'application/json', 'application/octet-stream'],
+    });
+    setField('timeout_seconds', Math.min(3600, Math.max(1, adapter.timeout_seconds)));
+  };
+
+  return (
+    <div className="flex flex-col gap-[14px] rounded-[14px] border border-sky-200 bg-sky-50/40 p-[16px]">
+      <div className="flex flex-wrap items-start justify-between gap-[12px]">
+        <div><p className="text-[13px] font-semibold text-[#2f3442]">A2A 长任务连接</p><p className="mt-[4px] text-[11px] leading-[17px] text-[#687083]">自动发现 Agent Card；优先流式订阅，断线后回退轮询。任务、事件和产物由 StaffDeck 持久化。</p></div>
+        {adapter && <UIButton type="button" variant="outline" size="sm" onClick={useCodex} disabled={!adapter.enabled}><TerminalSquare className="size-[14px]" />{adapter.enabled ? '连接本机 Codex' : 'Codex Adapter 未启用'}</UIButton>}
+      </div>
+      <div className="grid gap-[12px] md:grid-cols-2">
+        <SwitchRowCompact label="发现 Agent Card" hint="读取 /.well-known/agent-card.json" checked={config.discover_agent_card !== false} onChange={(checked) => updateConfig({ discover_agent_card: checked })} />
+        <SwitchRowCompact label="强制 Agent Card" hint="发现失败时终止而非继续尝试" checked={config.require_agent_card === true} onChange={(checked) => updateConfig({ require_agent_card: checked })} />
+        <SwitchRowCompact label="流式消息" hint="优先 SendStreamingMessage" checked={config.streaming !== false} onChange={(checked) => updateConfig({ streaming: checked })} />
+        <SwitchRowCompact label="订阅远程任务" hint="工作中任务使用 SubscribeToTask" checked={config.subscribe !== false} onChange={(checked) => updateConfig({ subscribe: checked })} />
+      </div>
+      <div className="grid gap-[12px] md:grid-cols-2">
+        <Field label="Agent Card URL（可选）" htmlFor="tool-a2a-card-url"><Input id="tool-a2a-card-url" value={String(config.agent_card_url || '')} placeholder="https://agent.example.com/.well-known/agent-card.json" onChange={(event) => updateConfig({ agent_card_url: event.target.value })} /></Field>
+        <Field label="轮询间隔（秒）" htmlFor="tool-a2a-poll"><Input id="tool-a2a-poll" type="number" min={0.1} max={30} step={0.1} value={Number(config.poll_interval_seconds || 0.5)} onChange={(event) => updateConfig({ poll_interval_seconds: Number(event.target.value) || 0.5 })} /></Field>
+      </div>
+      <Field label="高级配置 JSON" htmlFor="tool-a2a-config" hint="保留协议扩展字段；结构化选项会同步写入这里。">
+        <Textarea id="tool-a2a-config" rows={7} className={MONO_INPUT_CLASS} value={values.mcp_config} onChange={(event) => setField('mcp_config', event.target.value)} placeholder={'{\n  "a2a_version": "1.0",\n  "subscribe": true\n}'} />
+      </Field>
+    </div>
+  );
+}
+
+function SwitchRowCompact({ label, hint, checked, onChange }: { label: string; hint: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return <label className="flex min-h-[58px] items-center justify-between gap-[12px] rounded-[12px] border border-white bg-white/80 px-[13px] py-[10px]"><span><span className="block text-[12px] font-medium text-[#464c5e]">{label}</span><span className="mt-[2px] block text-[10px] leading-[15px] text-[#858b9c]">{hint}</span></span><Switch checked={checked} onCheckedChange={onChange} /></label>;
 }
 
 function ToolProbeCard({ values }: { values: ToolFormValues }) {
@@ -2243,7 +2430,7 @@ function buildToolPayload(values: ToolFormValues) {
       auth: parseJson(values.auth, {}),
       mcp_config: values.tool_type === 'mcp' || values.tool_type === 'a2a' ? parseJson(values.mcp_config, {}) : {},
       execution_policy: {
-        timeout_seconds: Math.max(1, Math.min(300, Number(values.timeout_seconds) || 8)),
+        timeout_seconds: Math.max(1, Math.min(3600, Number(values.timeout_seconds) || 8)),
       },
       input_schema: parseJson(values.input_schema, {}),
       output_schema: parseJson(values.output_schema, {}),
@@ -2273,6 +2460,17 @@ function buildBucketStats(rows: ToolRead[]) {
 function parseJson<T>(value: string, fallback: T): T {
   if (!value) return fallback;
   return JSON.parse(value) as T;
+}
+
+function safeJsonObject(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function formatJson(value: unknown): string {

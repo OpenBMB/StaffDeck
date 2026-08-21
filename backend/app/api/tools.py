@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.agents.branching import (
@@ -22,6 +23,8 @@ from app.config import get_settings
 from app.capability_scope import normalize_capability_scope
 from app.db import get_session
 from app.db.models import (
+    A2ATaskEvent,
+    A2ATaskRun,
     AgentEvent,
     AgentProfile,
     AgentResourceBinding,
@@ -77,6 +80,43 @@ from app.tools.tool_schema import (
 router = APIRouter(prefix="/api/enterprise/tools", tags=["enterprise:tools"])
 mcp_router = APIRouter(prefix="/api/enterprise/mcp-servers", tags=["enterprise:mcp-servers"])
 MCP_APP_RESOURCE_MAX_BYTES = 10 * 1024 * 1024
+
+
+class A2ATaskEventRead(BaseModel):
+    sequence: int
+    event_type: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class A2ATaskRunRead(BaseModel):
+    id: str
+    direction: str
+    remote_task_id: str | None = None
+    context_id: str | None = None
+    codex_session_id: str | None = None
+    status: str
+    endpoint_url: str
+    protocol_version: str
+    cancel_requested: bool
+    recovery_attempts: int
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    error: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    updated_at: str
+    events: list[A2ATaskEventRead] = Field(default_factory=list)
+
+
+class CodexA2AAdapterRead(BaseModel):
+    enabled: bool
+    endpoint_url: str
+    agent_card_url: str
+    command: str
+    workspace_root: str
+    timeout_seconds: float
+    token_configured: bool
 
 
 def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
@@ -318,6 +358,97 @@ def probe_tool(
 
 
 @router.get(
+    "/a2a/codex-adapter",
+    response_model=CodexA2AAdapterRead,
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
+def get_codex_a2a_adapter() -> CodexA2AAdapterRead:
+    settings = get_settings()
+    return CodexA2AAdapterRead(
+        enabled=bool(settings.codex_a2a_enabled),
+        endpoint_url="/api/a2a/codex",
+        agent_card_url="/.well-known/agent-card.json",
+        command=settings.codex_a2a_command,
+        workspace_root=settings.codex_a2a_workspace_root,
+        timeout_seconds=settings.codex_a2a_timeout_seconds,
+        token_configured=bool(settings.codex_a2a_token),
+    )
+
+
+@router.get(
+    "/{tool_id}/a2a-runs",
+    response_model=list[A2ATaskRunRead],
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
+def list_a2a_task_runs(
+    tool_id: str,
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_session),
+) -> list[A2ATaskRunRead]:
+    row = _get_tool(db, tenant_id, tool_id)
+    _ensure_tool_visible(db, tenant_id, row, agent_id)
+    if row.tool_type != "a2a":
+        raise HTTPException(status_code=400, detail="仅 A2A 工具包含持久化任务记录")
+    runs = list(
+        db.exec(
+            select(A2ATaskRun)
+            .where(
+                A2ATaskRun.tenant_id == tenant_id,
+                A2ATaskRun.tool_id == tool_id,
+            )
+            .order_by(A2ATaskRun.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+    if not runs:
+        return []
+    events_by_run: dict[str, list[A2ATaskEventRead]] = {run.id: [] for run in runs}
+    events = list(
+        db.exec(
+            select(A2ATaskEvent)
+            .where(A2ATaskEvent.run_id.in_([run.id for run in runs]))
+            .order_by(A2ATaskEvent.run_id, A2ATaskEvent.sequence)
+        ).all()
+    )
+    for event in events:
+        events_by_run.setdefault(event.run_id, []).append(
+            A2ATaskEventRead(
+                sequence=event.sequence,
+                event_type=event.event_type,
+                data=dict(event.data_json or {}),
+                created_at=event.created_at.isoformat(),
+            )
+        )
+    return [_a2a_task_run_read(run, events_by_run.get(run.id, [])) for run in runs]
+
+
+@router.post("/{tool_id}/a2a-runs/{run_id}:cancel", response_model=A2ATaskRunRead)
+def cancel_a2a_task_run(
+    tool_id: str,
+    run_id: str,
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> A2ATaskRunRead:
+    row = _get_tool(db, tenant_id, tool_id)
+    ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
+    _ensure_tool_visible(db, tenant_id, row, agent_id)
+    run = db.get(A2ATaskRun, run_id)
+    if run is None or run.tenant_id != tenant_id or run.tool_id != tool_id:
+        raise HTTPException(status_code=404, detail="A2A 任务不存在")
+    if run.status not in {"completed", "failed", "canceled", "cancelled", "rejected"}:
+        run.cancel_requested = True
+        run.updated_at = utc_now()
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+    return _a2a_task_run_read(run, [])
+
+
+@router.get(
     "/{tool_id}", response_model=ToolRead, dependencies=[Depends(require_agent_scope_viewer)]
 )
 def get_tool(
@@ -468,6 +599,31 @@ def _get_tool(db: Session, tenant_id: str, tool_id: str) -> Tool:
     if not row or row.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Tool not found")
     return row
+
+
+def _a2a_task_run_read(
+    run: A2ATaskRun,
+    events: list[A2ATaskEventRead],
+) -> A2ATaskRunRead:
+    return A2ATaskRunRead(
+        id=run.id,
+        direction=run.direction,
+        remote_task_id=run.remote_task_id,
+        context_id=run.context_id,
+        codex_session_id=run.codex_session_id,
+        status=run.status,
+        endpoint_url=run.endpoint_url,
+        protocol_version=run.protocol_version,
+        cancel_requested=run.cancel_requested,
+        recovery_attempts=run.recovery_attempts,
+        artifacts=list(run.artifacts_json or []),
+        error=dict(run.error_json or {}),
+        created_at=run.created_at.isoformat(),
+        started_at=run.started_at.isoformat() if run.started_at else None,
+        finished_at=run.finished_at.isoformat() if run.finished_at else None,
+        updated_at=run.updated_at.isoformat(),
+        events=events,
+    )
 
 
 def _visible_tool_rows(
@@ -965,10 +1121,13 @@ def discover_mcp_tools(
     request: MCPDiscoverRequest,
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    agent_id: str | None = None,
 ) -> MCPDiscoverResponse:
-    """已保存 Server：拉取 tools/list，并标注哪些已导入为 Tool。"""
+    """已保存 Server：拉取 tools/list，并按当前员工范围标注已导入工具。"""
     row = _get_mcp_server(db, request.tenant_id, server_id)
     ensure_open_gallery_admin(request.tenant_id, current_user)
+    if agent_id and get_agent(db, request.tenant_id, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
     connection = request.connection or _server_connection(row)
     response = _discover_response(
         connection,
@@ -981,14 +1140,27 @@ def discover_mcp_tools(
         db.add(row)
         db.commit()
         existing = _server_tools_by_leaf_name(db, server_id)
+        visible_tool_ids = {
+            tool.id
+            for tool in visible_tool_rows(
+                db,
+                request.tenant_id,
+                agent_id,
+                include_inactive=True,
+            )
+        }
         for tool in response.tools:
             match = existing.get(tool.name)
-            if match is not None:
+            if match is not None and match.id in visible_tool_ids:
                 tool.imported = True
                 tool.tool_id = match.id
                 tool.enabled = match.enabled
                 tool.capability_scope = normalize_capability_scope(match.capability_scope)
             else:
+                # 同一 MCP 子工具可能已导入广场或其他员工，但尚未绑定到当前员工。
+                # 对当前范围仍应显示为“未导入”，这样同步操作会复用现有 Tool 行并补齐绑定。
+                tool.imported = False
+                tool.tool_id = None
                 tool.capability_scope = normalize_capability_scope(row.capability_scope)
     return response
 

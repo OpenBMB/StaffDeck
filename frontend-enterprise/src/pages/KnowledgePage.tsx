@@ -23,6 +23,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError, TENANT_ID } from '../api/client';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
+import CapabilityScopeLoading from '@/components/CapabilityScopeLoading';
 import {
   CapabilityScopeBadge,
   CapabilityScopeControl,
@@ -389,6 +390,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
     } catch (error) {
       clearKnowledgeViewState();
       notify.error(error instanceof Error ? error.message : '加载员工失败');
+      setAgentScopeLoaded(true);
     }
   }
 
@@ -1091,6 +1093,8 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       </div>
     </article>
   );
+
+  if (!agentScopeLoaded) return <CapabilityScopeLoading />;
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>

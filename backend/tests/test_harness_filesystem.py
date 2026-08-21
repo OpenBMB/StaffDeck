@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
@@ -121,31 +123,173 @@ def test_artifacts_are_published_explicitly_with_safe_metadata(tmp_path: Path) -
     ) == "NOT_FOUND"
 
 
-@pytest.mark.parametrize(
-    ("path", "expected_code"),
-    [
-        ("../outside.txt", "INVALID_PATH"),
-        ("/tmp/outside.txt", "INVALID_PATH"),
-        ("C:\\outside.txt", "INVALID_PATH"),
-        (".harness-trash/secret", "RESERVED_PATH"),
-    ],
-)
-def test_all_paths_are_confined_to_workspace(
-    tmp_path: Path,
-    path: str,
-    expected_code: str,
-) -> None:
+def test_extract_document_text_persists_docx_for_bounded_reading(tmp_path: Path) -> None:
+    executor, context = _harness(tmp_path)
+    context.workspace_root.mkdir(parents=True)
+    document = BytesIO()
+    with ZipFile(document, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+              <Default Extension="xml" ContentType="application/xml"/>
+              <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+            </Types>""",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+            </Relationships>""",
+        )
+        archive.writestr(
+            "word/document.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+              <w:body><w:p><w:r><w:t>合同审查内容</w:t></w:r></w:p></w:body>
+            </w:document>""",
+        )
+    source = context.workspace_root / "attachments" / "contract.docx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(document.getvalue())
+
+    extracted = _execute(
+        executor,
+        context,
+        "extract_document_text",
+        {"path": "/workspace/attachments/contract.docx"},
+    )
+
+    assert extracted["source_path"] == "attachments/contract.docx"
+    assert extracted["extracted_text_path"] == (
+        "attachments/contract.docx.extracted.txt"
+    )
+    assert extracted["format"] == "docx"
+    read = _execute(
+        executor,
+        context,
+        "read_file",
+        {"path": extracted["extracted_text_path"]},
+    )
+    assert "合同审查内容" in str(read["content"])
+
+
+def test_extract_document_text_rejects_unsupported_binary(tmp_path: Path) -> None:
+    executor, context = _harness(tmp_path)
+    context.workspace_root.mkdir(parents=True)
+    (context.workspace_root / "unknown.bin").write_bytes(b"\x00\x01")
+
+    error = _execute_failure(
+        executor,
+        context,
+        "extract_document_text",
+        {"path": "unknown.bin"},
+    )
+
+    assert error == "DOCUMENT_EXTRACTION_FAILED"
+
+
+def test_harness_internal_trash_remains_reserved(tmp_path: Path) -> None:
     executor, context = _harness(tmp_path)
 
     code = _execute_failure(
         executor,
         context,
         "write_file",
-        {"path": path, "content": "denied", "create_parents": True},
+        {"path": ".harness-trash/secret", "content": "denied", "create_parents": True},
     )
 
-    assert code == expected_code
-    assert not (tmp_path / "outside.txt").exists()
+    assert code == "RESERVED_PATH"
+
+
+def test_typed_file_tools_accept_absolute_and_parent_paths(tmp_path: Path) -> None:
+    executor, context = _harness(tmp_path)
+    context.workspace_root.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+
+    written = _execute(
+        executor,
+        context,
+        "write_file",
+        {"path": "../outside.txt", "content": "alpha\n", "create_parents": True},
+    )
+    assert written["path"] == str(outside)
+    assert outside.read_text(encoding="utf-8") == "alpha\n"
+
+    read = _execute(executor, context, "read_file", {"path": str(outside)})
+    assert read["content"] == "alpha\n"
+    edited = _execute(
+        executor,
+        context,
+        "edit_file",
+        {"path": str(outside), "old_text": "alpha", "new_text": "beta"},
+    )
+    assert edited["path"] == str(outside)
+
+    external_directory = tmp_path / "external"
+    _execute(executor, context, "mkdir", {"path": str(external_directory)})
+    copied_path = external_directory / "copied.txt"
+    _execute(
+        executor,
+        context,
+        "copy_file",
+        {"source_path": str(outside), "destination_path": str(copied_path)},
+    )
+    moved_path = external_directory / "moved.txt"
+    _execute(
+        executor,
+        context,
+        "move_file",
+        {"source_path": str(copied_path), "destination_path": str(moved_path)},
+    )
+
+    listing = _execute(
+        executor,
+        context,
+        "list_directory",
+        {"path": str(external_directory)},
+    )
+    assert [entry["path"] for entry in listing["entries"]] == [str(moved_path)]
+    matches = _execute(
+        executor,
+        context,
+        "glob",
+        {"path": str(external_directory), "pattern": "*.txt"},
+    )
+    assert [entry["path"] for entry in matches["matches"]] == [str(moved_path)]
+    grep = _execute(
+        executor,
+        context,
+        "grep",
+        {"path": str(external_directory), "pattern": "beta"},
+    )
+    assert grep["matches"][0]["path"] == str(moved_path)
+    info = _execute(executor, context, "file_info", {"path": str(moved_path)})
+    assert info["type"] == "file"
+
+    deleted = _execute(executor, context, "delete_file", {"path": str(moved_path)})
+    assert deleted["path"] == str(moved_path)
+    assert deleted["recoverable"] is True
+    assert not moved_path.exists()
+
+
+def test_external_file_can_be_staged_as_downloadable_artifact(tmp_path: Path) -> None:
+    executor, context = _harness(tmp_path)
+    external = tmp_path / "outside-report.txt"
+    external.write_text("ready", encoding="utf-8")
+
+    published = _execute(
+        executor,
+        context,
+        "publish_artifact",
+        {"path": str(external), "display_name": "report.txt"},
+    )
+
+    staged = context.workspace_root / str(published["path"])
+    assert staged.read_text(encoding="utf-8") == "ready"
+    assert published["display_name"] == "report.txt"
 
 
 def test_symlink_targets_and_symlink_ancestors_are_rejected(tmp_path: Path) -> None:

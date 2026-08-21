@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import or_, update
 from sqlmodel import Session, select
 
 from app.async_jobs import enqueue_async_job
@@ -35,6 +36,7 @@ from app.public_api.webhooks import (
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 JobHandler = Callable[[Session, APIJob], dict[str, Any]]
 _handlers: dict[str, JobHandler] = {}
+JOB_LEASE_SECONDS = 15 * 60
 
 
 def register_job_handler(kind: str) -> Callable[[JobHandler], JobHandler]:
@@ -303,80 +305,156 @@ def _reconcile_terminal_run_sessions(db: Session) -> None:
         )
 
 
+def _claim_job(db: Session, job_id: str, owner: str) -> APIJob | None:
+    """Claim one durable execution generation; duplicate workers lose the CAS."""
+
+    now = utc_now()
+    result = db.exec(
+        update(APIJob)
+        .where(
+            APIJob.id == job_id,
+            or_(
+                APIJob.status == "queued",
+                (APIJob.status == "running") & APIJob.execution_owner.is_(None),
+            ),
+        )
+        .values(
+            status="running",
+            stage="starting",
+            execution_owner=owner,
+            execution_generation=APIJob.execution_generation + 1,
+            lease_expires_at=now + timedelta(seconds=JOB_LEASE_SECONDS),
+            started_at=now,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if getattr(result, "rowcount", 0) != 1:
+        db.rollback()
+        return None
+    db.commit()
+    return db.get(APIJob, job_id)
+
+
+def _terminalize_job(
+    db: Session,
+    job: APIJob,
+    *,
+    owner: str,
+    generation: int,
+    status: str,
+    stage: str,
+    result_json: dict[str, Any] | None = None,
+    error_json: dict[str, Any] | None = None,
+    retryable: bool = False,
+) -> APIJob | None:
+    """Publish a terminal job state only from the currently claimed worker."""
+
+    now = utc_now()
+    values: dict[str, Any] = {
+        "status": status,
+        "stage": stage,
+        "retryable": retryable,
+        "finished_at": now,
+        "updated_at": now,
+        "execution_owner": None,
+        "lease_expires_at": None,
+    }
+    if result_json is not None:
+        values.update(result_json=result_json, progress=1.0, error_json={})
+    if error_json is not None:
+        values["error_json"] = error_json
+    update_result = db.exec(
+        update(APIJob)
+        .where(
+            APIJob.id == job.id,
+            APIJob.status == "running",
+            APIJob.execution_owner == owner,
+            APIJob.execution_generation == generation,
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    if getattr(update_result, "rowcount", 0) != 1:
+        db.rollback()
+        return None
+    db.expire_all()
+    return db.get(APIJob, job.id)
+
+
+def _emit_terminal_job_event(
+    db: Session,
+    job: APIJob,
+    *,
+    status: str,
+    error: dict[str, Any] | None = None,
+) -> None:
+    _finalize_run_session(db, job, terminal_status=status, error=error)
+    event_data = dict(error or {"job_id": job.id})
+    emit_job_event(db, job, f"{job.kind}.{status}", event_data)
+    _commit_and_dispatch(db)
+
+
 def run_job(job_id: str) -> None:
     with Session(engine) as db:
-        job = db.get(APIJob, job_id)
-        if not job or job.status not in {"queued", "running"}:
+        owner = new_id("apijoblease")
+        job = _claim_job(db, job_id, owner)
+        if job is None:
             return
+        generation = job.execution_generation
         handler = _handlers.get(job.kind)
-        if handler is None:
-            job.status = "failed"
-            job.stage = "failed"
-            job.error_json = {"code": "JOB_HANDLER_MISSING", "message": job.kind}
-            job.finished_at = utc_now()
-            _finalize_run_session(
-                db,
-                job,
-                terminal_status="failed",
-                error=dict(job.error_json),
-            )
-            emit_job_event(db, job, "job.failed", dict(job.error_json))
-            _commit_and_dispatch(db)
-            return
-        job.status = "running"
-        job.stage = "starting"
-        job.started_at = job.started_at or utc_now()
-        job.updated_at = utc_now()
         emit_job_event(db, job, f"{job.kind}.started", {"job_id": job.id})
         _commit_and_dispatch(db)
         try:
+            if handler is None:
+                raise RuntimeError(f"JOB_HANDLER_MISSING:{job.kind}")
             if job.cancel_requested:
                 raise JobCancelled()
             result = handler(db, job)
             db.refresh(job)
             if job.cancel_requested:
                 raise JobCancelled()
-            job.result_json = result
-            job.status = "succeeded"
-            job.stage = "completed"
-            job.progress = 1.0
-            job.error_json = {}
-            job.retryable = False
-            job.finished_at = utc_now()
-            job.updated_at = utc_now()
-            _finalize_run_session(db, job, terminal_status="succeeded")
-            emit_job_event(db, job, f"{job.kind}.succeeded", {"job_id": job.id})
-            _commit_and_dispatch(db)
+            terminal = _terminalize_job(
+                db,
+                job,
+                owner=owner,
+                generation=generation,
+                status="succeeded",
+                stage="completed",
+                result_json=result,
+            )
+            if terminal is not None:
+                _emit_terminal_job_event(db, terminal, status="succeeded")
         except JobCancelled:
-            job.status = "cancelled"
-            job.stage = "cancelled"
-            job.finished_at = utc_now()
-            job.updated_at = utc_now()
-            _finalize_run_session(db, job, terminal_status="cancelled")
-            emit_job_event(db, job, f"{job.kind}.cancelled", {"job_id": job.id})
-            _commit_and_dispatch(db)
+            terminal = _terminalize_job(
+                db,
+                job,
+                owner=owner,
+                generation=generation,
+                status="cancelled",
+                stage="cancelled",
+            )
+            if terminal is not None:
+                _emit_terminal_job_event(db, terminal, status="cancelled")
         except Exception as exc:  # noqa: BLE001 - persisted public job boundary.
             db.rollback()
             job = db.get(APIJob, job_id)
-            if not job:
+            if job is None:
                 return
-            job.status = "failed"
-            job.stage = "failed"
-            job.retryable = True
-            job.error_json = {
-                "code": "JOB_EXECUTION_FAILED",
-                "message": str(exc)[:2000],
-            }
-            job.finished_at = utc_now()
-            job.updated_at = utc_now()
-            _finalize_run_session(
+            code = "JOB_HANDLER_MISSING" if str(exc).startswith("JOB_HANDLER_MISSING:") else "JOB_EXECUTION_FAILED"
+            error = {"code": code, "message": str(exc)[:2000]}
+            terminal = _terminalize_job(
                 db,
                 job,
-                terminal_status="failed",
-                error=dict(job.error_json),
+                owner=owner,
+                generation=generation,
+                status="failed",
+                stage="failed",
+                error_json=error,
+                retryable=code != "JOB_HANDLER_MISSING",
             )
-            emit_job_event(db, job, f"{job.kind}.failed", dict(job.error_json))
-            _commit_and_dispatch(db)
+            if terminal is not None:
+                _emit_terminal_job_event(db, terminal, status="failed", error=error)
 
 
 class JobCancelled(Exception):
@@ -512,23 +590,44 @@ def recover_public_jobs() -> None:
     with Session(engine) as db:
         running = db.exec(select(APIJob).where(APIJob.status == "running")).all()
         for job in running:
-            job.status = "failed"
-            job.stage = "interrupted"
-            job.retryable = True
-            job.error_json = {
+            error = {
                 "code": "SERVICE_RESTARTED",
                 "message": "The service restarted while the job was running.",
             }
-            job.finished_at = utc_now()
-            job.updated_at = utc_now()
+            now = utc_now()
+            # Incrementing the generation fences an old in-process worker that
+            # returns after startup recovery has published this terminal state.
+            db.exec(
+                update(APIJob)
+                .where(
+                    APIJob.id == job.id,
+                    APIJob.status == "running",
+                    APIJob.execution_generation == job.execution_generation,
+                )
+                .values(
+                    status="failed",
+                    stage="interrupted",
+                    retryable=True,
+                    error_json=error,
+                    finished_at=now,
+                    updated_at=now,
+                    execution_owner=None,
+                    execution_generation=job.execution_generation + 1,
+                    lease_expires_at=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            db.expire_all()
+            recovered = db.get(APIJob, job.id)
+            if recovered is None or recovered.status != "failed":
+                continue
             _finalize_run_session(
                 db,
-                job,
+                recovered,
                 terminal_status="failed",
-                error=dict(job.error_json),
+                error=error,
             )
-            db.add(job)
-            emit_job_event(db, job, f"{job.kind}.failed", dict(job.error_json))
+            emit_job_event(db, recovered, f"{recovered.kind}.failed", error)
         _reconcile_terminal_run_sessions(db)
         queued = db.exec(select(APIJob).where(APIJob.status == "queued")).all()
         _commit_and_dispatch(db)

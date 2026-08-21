@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Crown } from 'lucide-react';
+import { Crown, MessageCircle } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import {
@@ -170,6 +170,7 @@ export default function TeamDetailPage({
   const [configTaskTimeout, setConfigTaskTimeout] = useState('30');
   const [configBidRounds, setConfigBidRounds] = useState('1');
   const [savingConfig, setSavingConfig] = useState(false);
+  const [startingChat, setStartingChat] = useState(false);
   const [promotingEntryId, setPromotingEntryId] = useState<string | null>(null);
   const openedTaskParamRef = useRef<string | null>(null);
 
@@ -335,6 +336,23 @@ export default function TeamDetailPage({
       notify.error(error instanceof Error ? error.message : '创建任务失败');
     } finally {
       setCreatingTask(false);
+    }
+  }
+
+  async function startTeamChat() {
+    if (!teamId || startingChat) return;
+    setStartingChat(true);
+    try {
+      const result = await api.post<{ session_id: string }>(
+        `/api/enterprise/teams/${teamId}/tl/session`,
+        { tenant_id: TENANT_ID },
+      );
+      if (!result.session_id) throw new Error('未返回团队群聊');
+      navigate(`${EnterpriseRoute.Chat}/${result.session_id}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '开始团队对话失败');
+    } finally {
+      setStartingChat(false);
     }
   }
 
@@ -657,7 +675,7 @@ export default function TeamDetailPage({
         description={team?.description || undefined}
       />
 
-      <div className="mt-[16px]">
+      <div className="mt-[16px] flex items-center justify-between gap-[12px]">
         <Button
           type="button"
           variant="outline"
@@ -665,6 +683,15 @@ export default function TeamDetailPage({
           className="h-[32px] rounded-[10px] border-[#e3e7f1] px-[12px] text-[12px] font-normal text-[#464c5e]"
         >
           返回团队列表
+        </Button>
+        <Button
+          type="button"
+          disabled={startingChat || !team}
+          onClick={() => void startTeamChat()}
+          className="h-[34px] gap-[6px] rounded-[10px] bg-[#18181a] px-[14px] text-[12px] font-normal text-white hover:bg-[#303030]"
+        >
+          <MessageCircle className="size-[14px]" />
+          {startingChat ? '进入中…' : '开始对话'}
         </Button>
       </div>
 

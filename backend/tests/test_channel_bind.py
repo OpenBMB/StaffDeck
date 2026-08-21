@@ -1,5 +1,5 @@
-from datetime import timedelta
 import threading
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import text as sa_text
@@ -254,9 +254,21 @@ def test_list_users_hides_channel_accounts_by_default() -> None:
     engine = _test_engine()
     with Session(engine) as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
-        admin = User(id="admin_user", tenant_id="tenant_demo", username="admin", role="admin", password_hash="x")
+        admin = User(
+            id="admin_user",
+            tenant_id="tenant_demo",
+            username="admin",
+            role="admin",
+            password_hash="x",
+        )
         db.add(admin)
-        db.add(User(id="u_web", tenant_id="tenant_demo", username="zhangsan", password_hash="x"))
+        member = User(
+            id="u_web",
+            tenant_id="tenant_demo",
+            username="zhangsan",
+            password_hash="x",
+        )
+        db.add(member)
         db.add(
             User(
                 id="u_lazy",
@@ -264,6 +276,26 @@ def test_list_users_hides_channel_accounts_by_default() -> None:
                 username=channel_username("tenant_demo", "wechat", "user_ab12cd34@im.wechat"),
                 source="wechat",
                 password_hash="x",
+            )
+        )
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="app_1",
+                external_user_id="ou_member",
+                staffdeck_user_id=member.id,
+                display_name="张三",
+            )
+        )
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="app_1",
+                external_user_id="group:chat_1",
+                staffdeck_user_id=member.id,
+                display_name="测试群",
             )
         )
         db.commit()
@@ -280,6 +312,15 @@ def test_list_users_hides_channel_accounts_by_default() -> None:
         }
         lazy_row = next(row for row in all_rows if row.id == "u_lazy")
         assert lazy_row.source == "wechat"
+
+        member_rows = list_users(
+            "tenant_demo", include_channel=True, current_user=member, db=db
+        )
+        assert {row.id for row in member_rows} == {"admin_user", "u_web"}
+        member_read = next(row for row in member_rows if row.id == member.id)
+        assert [identity.external_user_id for identity in member_read.channel_identities or []] == [
+            "ou_member"
+        ]
 
 
 # ---------- bind-code 生成 ----------

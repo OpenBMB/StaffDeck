@@ -135,6 +135,28 @@ describe('TeamsPage', () => {
       expect(String(deleteCall?.[0])).toContain('/api/enterprise/teams/team-1');
     });
   });
+
+  it('starts the persistent team conversation from the management card', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/tl/session') && init?.method === 'POST') {
+        return jsonResponse({ session_id: 'team-session-1' });
+      }
+      if (url.includes('/team-threads')) return jsonResponse([]);
+      return jsonResponse(url.includes('/teams') ? [team] : []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderTeamsWithRoutes();
+    await user.click(await screen.findByRole('button', { name: '开始与团队 增长团队 对话' }));
+
+    expect((await screen.findByTestId('location')).textContent).toBe('/workspace/chat/team-session-1');
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/enterprise/teams/team-1/tl/session'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
 });
 
 const threads: TeamThreadRead[] = [

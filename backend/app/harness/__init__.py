@@ -27,6 +27,7 @@ from app.harness.contracts import (
 from app.harness.errors import HarnessExecutionError
 from app.harness.executor import HarnessExecutor
 from app.harness.filesystem import (
+    ExtractDocumentTextArguments,
     PublishArtifactArguments,
     build_file_tool_registry,
     publish_artifact,
@@ -36,6 +37,7 @@ from app.harness.registry import HarnessRegistry
 
 __all__ = [
     "ExecCommandArguments",
+    "ExtractDocumentTextArguments",
     "HarnessArtifactAccessError",
     "HarnessWorkspaceSnapshot",
     "HarnessExecutionError",

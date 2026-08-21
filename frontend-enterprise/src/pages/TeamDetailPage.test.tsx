@@ -321,6 +321,20 @@ describe('TeamDetailPage', () => {
     expect(screen.queryByLabelText('团队群聊')).toBeNull();
   });
 
+  it('starts the persistent team conversation from team details', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubDetailFetch({ onTlSession: () => ({ session_id: 'team-session-2' }) });
+    renderDetail();
+
+    await user.click(await screen.findByRole('button', { name: '开始对话' }));
+
+    expect((await screen.findByTestId('location')).textContent).toBe('/workspace/chat/team-session-2');
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/enterprise/teams/team-1/tl/session'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   it('renders blackboard entries pinned first with tags and sources', async () => {
     stubDetailFetch({
       entries: [

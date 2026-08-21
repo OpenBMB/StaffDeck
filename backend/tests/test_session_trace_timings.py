@@ -64,6 +64,8 @@ def test_enterprise_trace_timings_include_each_step_and_model_time() -> None:
             started_after_ms=2200,
             duration_ms=900,
             operation="harness.task_action",
+            task_frame_id="task_demo",
+            iteration=1,
         ),
         _event(
             "harness_action_created",
@@ -99,6 +101,8 @@ def test_enterprise_trace_timings_include_each_step_and_model_time() -> None:
             started_after_ms=5100,
             duration_ms=800,
             operation="harness.task_action",
+            task_frame_id="task_demo",
+            iteration=2,
         ),
         _event(
             "harness_action_created",
@@ -146,9 +150,22 @@ def test_enterprise_trace_timings_include_each_step_and_model_time() -> None:
     assert lines["harness_frame_task_demo"]["duration_ms"] == 4000
     assert lines["harness_frame_task_demo"]["model_duration_ms"] == 2400
     assert lines["harness_action_task_demo_1"]["duration_ms"] == 2800
-    assert lines["harness_action_task_demo_1"]["model_duration_ms"] == 1600
-    assert lines["harness_finish_task_demo_2"]["duration_ms"] == 950
-    assert lines["harness_finish_task_demo_2"]["model_duration_ms"] == 800
+    assert "model_duration_ms" not in lines["harness_action_task_demo_1"]
+    assert lines["harness_action_task_demo_1"]["depth"] == 1
+    assert "duration_ms" not in lines["harness_finish_task_demo_2"]
+    assert "model_duration_ms" not in lines["harness_finish_task_demo_2"]
+    harness_model_lines = [
+        line
+        for line in trace["lines"]
+        if str(line["id"]).startswith("harness_model_task_demo_")
+    ]
+    assert [line["model_duration_ms"] for line in harness_model_lines] == [900, 800]
+    assert [line["model_call_count"] for line in harness_model_lines] == [1, 1]
+    assert [line["text"] for line in harness_model_lines] == [
+        "第 1 轮决定调用能力",
+        "第 2 轮决定完成任务",
+    ]
+    assert all(line["depth"] == 1 for line in harness_model_lines)
     assert lines["response_generation"]["duration_ms"] == 1800
     assert lines["response_generation"]["model_duration_ms"] == 1800
 
@@ -387,6 +404,8 @@ def _model_span(
     operation: str,
     turn_id: str = "turn_client",
     session_id: str = "session_demo",
+    task_frame_id: str = "",
+    iteration: int | None = None,
 ) -> AgentEvent:
     return _event(
         "llm_call_finished",
@@ -399,6 +418,8 @@ def _model_span(
             ).isoformat(),
             "duration_ms": duration_ms,
             "model_name": "GLM Test",
+            **({"task_frame_id": task_frame_id} if task_frame_id else {}),
+            **({"iteration": iteration} if iteration is not None else {}),
         },
         session_id=session_id,
     )

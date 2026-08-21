@@ -626,6 +626,7 @@ def _seed_stale_event(
     age_seconds: float,
     payload: dict | None = None,
     processor_run_id: str | None = None,
+    lease_seconds: float | None = None,
 ) -> None:
     from datetime import timedelta
 
@@ -639,6 +640,11 @@ def _seed_stale_event(
                 payload_json=payload or {},
                 status=status,
                 processor_run_id=processor_run_id,
+                processor_lease_expires_at=(
+                    utc_now() + timedelta(seconds=lease_seconds)
+                    if lease_seconds is not None
+                    else None
+                ),
                 updated_at=utc_now() - timedelta(seconds=age_seconds),
             )
         )
@@ -702,6 +708,53 @@ def test_current_run_processing_event_is_never_taken_over_by_age() -> None:
         event = db.exec(select(ChannelInboundEvent)).one()
         assert event.status == "processing"
         assert event.processor_run_id == intake_module.current_processor_run_id()
+
+
+def test_other_process_active_lease_is_not_taken_over() -> None:
+    from app.channels.service_intake import sweep_stale_inbound_events
+
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_stale_event(
+        engine,
+        binding_id,
+        "evt_active_lease",
+        status="processing",
+        age_seconds=900,
+        payload=_p2p_message("evt_active_lease"),
+        processor_run_id="other_live_process",
+        lease_seconds=600,
+    )
+
+    assert sweep_stale_inbound_events(db_engine=engine) == 0
+    assert RecordingAgentLoop.calls == []
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "processing"
+        assert event.processor_run_id == "other_live_process"
+
+
+def test_other_process_expired_lease_is_taken_over() -> None:
+    from app.channels.service_intake import sweep_stale_inbound_events
+
+    engine = _test_engine()
+    binding_id = _seed_binding(engine)
+    _seed_stale_event(
+        engine,
+        binding_id,
+        "evt_expired_lease",
+        status="processing",
+        age_seconds=900,
+        payload=_p2p_message("evt_expired_lease"),
+        processor_run_id="dead_process",
+        lease_seconds=-1,
+    )
+
+    assert sweep_stale_inbound_events(db_engine=engine) == 1
+    assert len(RecordingAgentLoop.calls) == 1
+    with Session(engine) as db:
+        event = db.exec(select(ChannelInboundEvent)).one()
+        assert event.status == "done"
 
 
 def test_stale_claim_is_released_when_recovery_logic_raises(monkeypatch) -> None:
@@ -805,7 +858,7 @@ def test_concurrent_sweeps_claim_old_event_once(tmp_path) -> None:
     with Session(engine) as db:
         event = db.exec(select(ChannelInboundEvent)).one()
         assert event.status == "done"
-        assert event.processor_run_id == intake_module.current_processor_run_id()
+        assert event.processor_run_id is None
 
 
 def test_done_event_is_never_taken_over() -> None:

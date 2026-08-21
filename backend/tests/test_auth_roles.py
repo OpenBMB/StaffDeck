@@ -83,6 +83,79 @@ def test_database_role_controls_account_management() -> None:
         assert updated.role == "member"
 
 
+def test_admin_password_update_allows_login_with_unique_display_name() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        admin = User(
+            id="admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            role="admin",
+            password_hash=hash_password("admin"),
+        )
+        member = User(
+            id="user_demo",
+            tenant_id="tenant_demo",
+            username="user_demo",
+            display_name="zongkelong",
+            role="member",
+            password_hash=hash_password("old-password"),
+        )
+        db.add(admin)
+        db.add(member)
+        db.commit()
+
+        update_user(
+            member.id,
+            UserUpdateRequest(tenant_id="tenant_demo", password="123456"),
+            admin,
+            db,
+        )
+
+        session = login(
+            LoginRequest(tenant_id="tenant_demo", username="zongkelong", password="123456"),
+            db,
+        )
+
+        assert session.user.id == member.id
+        assert session.user.username == "user_demo"
+
+
+def test_duplicate_display_name_cannot_be_used_to_login() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            User(
+                id="member_one",
+                tenant_id="tenant_demo",
+                username="member_one",
+                display_name="duplicate",
+                password_hash=hash_password("123456"),
+            )
+        )
+        db.add(
+            User(
+                id="member_two",
+                tenant_id="tenant_demo",
+                username="member_two",
+                display_name="duplicate",
+                password_hash=hash_password("123456"),
+            )
+        )
+        db.commit()
+
+        try:
+            login(
+                LoginRequest(tenant_id="tenant_demo", username="duplicate", password="123456"),
+                db,
+            )
+        except HTTPException as error:
+            assert error.status_code == 401
+            assert error.detail == "Invalid username or password"
+        else:
+            raise AssertionError("an ambiguous display name must not authenticate any account")
+
+
 def _test_session() -> Session:
     engine = create_engine(
         "sqlite://",

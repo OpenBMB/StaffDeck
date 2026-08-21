@@ -52,6 +52,9 @@ class SkillGraphNode(BaseModel):
     retry_policy: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     sub_sop_id: Optional[str] = None
+    # 人工节点指定处理人(handoff / handoff_human 节点)。None 表示未指定,
+    # 运行时回退到渠道默认处理人 → 数字员工负责人 → 租户管理员。
+    assignee_user_id: Optional[str] = None
 
 
 class SkillGraphEdge(BaseModel):
@@ -112,10 +115,21 @@ class SkillCard(BaseModel):
             if edge.next_node_id not in node_id_set:
                 raise ValueError(f"edge next_node_id references missing node: {edge.next_node_id}")
         for node in self.nodes:
-            if node.type == "subflow" and not str(node.sub_sop_id or "").strip():
-                raise ValueError(
-                    f"subflow node must reference sub_sop_id: {node.node_id}"
-                )
+            if node.type != "subflow":
+                continue
+            if not str(node.sub_sop_id or "").strip():
+                raise ValueError(f"subflow node must reference sub_sop_id: {node.node_id}")
+            # A subflow node is an orchestration boundary, not another executable
+            # TaskFrame. Keeping work on the placeholder would make the parent
+            # execute it in addition to the child SOP and could expose capabilities
+            # that the child did not declare. Normalize legacy drafts on write so
+            # the node has exactly one responsibility: enter the referenced SOP.
+            node.instruction = ""
+            node.expected_user_info = []
+            node.allowed_actions = []
+            node.knowledge_scope = {}
+            node.capability_refs = SkillCapabilityRefs()
+            node.retry_policy = {}
         return self
 
 
@@ -230,6 +244,7 @@ class SkillDistillResponse(BaseModel):
 
 class SkillRewriteRequest(BaseModel):
     tenant_id: str
+    agent_id: Optional[str] = None
     current_skill: SkillCard
     instruction: str
     model_config_id: Optional[str] = None
@@ -238,6 +253,7 @@ class SkillRewriteRequest(BaseModel):
     target_label: Optional[str] = None
     conversation: list[dict[str, str]] = Field(default_factory=list)
     available_tools: list[dict[str, Any]] = Field(default_factory=list)
+    available_sops: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SkillRewriteResponse(BaseModel):

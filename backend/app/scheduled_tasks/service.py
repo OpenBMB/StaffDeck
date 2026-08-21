@@ -14,8 +14,9 @@ from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.agents.branching import model_for_agent
+from app.agents.branching import model_for_agent, visible_published_skills
 from app.core import AgentLoop
+from app.core.harness_turn_store import HarnessTurnConflict
 from app.db import engine
 from app.db.models import (
     AgentEvent,
@@ -44,13 +45,18 @@ from app.session.session_schema import ChatTurnRequest, ChatTurnResponse
 from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
+from app.skills.nesting import SopNestingError, expand_sop_for_execution
 
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_TASK_TIME = "09:00"
 LEASE_SECONDS = 15 * 60
 WORKER_SLEEP_SECONDS = 5
+MISFIRE_GRACE_SECONDS = max(30, WORKER_SLEEP_SECONDS * 2)
+CONFLICT_RETRY_SECONDS = 15
 SCHEDULE_TYPES = {"once", "daily", "weekly", "monthly"}
+SOP_VERSION_POLICIES = {"latest", "pinned"}
+SOP_SNAPSHOT_METADATA_KEY = "_sop_snapshot"
 
 
 class ScheduledTaskAgentUnavailable(RuntimeError):
@@ -101,6 +107,8 @@ SCHEDULE_DRAFT_PROMPT = """
 
 
 def scheduled_task_read(row: ScheduledTask) -> ScheduledTaskRead:
+    metadata = dict(row.metadata_json or {})
+    metadata.pop(SOP_SNAPSHOT_METADATA_KEY, None)
     return ScheduledTaskRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -123,7 +131,7 @@ def scheduled_task_read(row: ScheduledTask) -> ScheduledTaskRead:
         last_status=row.last_status,
         run_count=row.run_count,
         source_session_id=row.source_session_id,
-        metadata=row.metadata_json or {},
+        metadata=metadata,
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
@@ -178,7 +186,12 @@ def create_scheduled_task(
         max_runs=request.max_runs,
         end_at=end_at,
         source_session_id=request.source_session_id,
-        metadata_json=request.metadata or {},
+        metadata_json=_prepare_scheduled_task_sop_metadata(
+            db,
+            request.tenant_id,
+            request.agent_id,
+            request.metadata,
+        ),
         created_at=now,
         updated_at=now,
     )
@@ -198,9 +211,11 @@ def update_scheduled_task(
     current_user: User,
 ) -> ScheduledTask:
     _ensure_task_access(row, current_user)
+    agent_changed = False
     if request.agent_id is not None and request.agent_id != row.agent_id:
         _ensure_agent_access(db, request.tenant_id, request.agent_id, current_user)
         row.agent_id = request.agent_id
+        agent_changed = True
     if request.title is not None:
         row.title = _nonempty(request.title, "自动任务名称不能为空", 80)
     if request.prompt is not None:
@@ -227,7 +242,20 @@ def update_scheduled_task(
     if request.end_at is not None:
         row.end_at = parse_user_datetime(request.end_at, row.timezone) if request.end_at else None
     if request.metadata is not None:
-        row.metadata_json = request.metadata
+        row.metadata_json = _prepare_scheduled_task_sop_metadata(
+            db,
+            row.tenant_id,
+            row.agent_id,
+            request.metadata,
+            existing=None if agent_changed else row.metadata_json,
+        )
+    elif agent_changed:
+        row.metadata_json = _prepare_scheduled_task_sop_metadata(
+            db,
+            row.tenant_id,
+            row.agent_id,
+            row.metadata_json,
+        )
     row.updated_at = utc_now()
     row.next_run_at = compute_next_run_at(row, after=utc_now()) if row.status == "active" else None
     db.add(row)
@@ -283,11 +311,28 @@ def detect_scheduled_task_draft(
 
 def due_scheduled_tasks(db: Session, now: datetime | None = None, limit: int = 10) -> list[ScheduledTask]:
     now = now or utc_now()
+    db.exec(
+        update(ScheduledTask)
+        .where(
+            ScheduledTask.status == "active",
+            ScheduledTask.end_at != None,  # noqa: E711
+            ScheduledTask.end_at < now,  # type: ignore[operator]
+        )
+        .values(
+            status="completed",
+            next_run_at=None,
+            lease_owner=None,
+            lease_until=None,
+            updated_at=now,
+        )
+    )
+    db.commit()
     candidate_ids = db.exec(
         select(ScheduledTask.id)
         .where(
             ScheduledTask.status == "active",
             ScheduledTask.next_run_at <= now,  # type: ignore[operator]
+            or_(ScheduledTask.end_at == None, ScheduledTask.end_at >= now),  # noqa: E711
             or_(ScheduledTask.lease_until == None, ScheduledTask.lease_until < now),  # noqa: E711
         )
         .order_by(ScheduledTask.next_run_at)
@@ -302,6 +347,7 @@ def due_scheduled_tasks(db: Session, now: datetime | None = None, limit: int = 1
                 ScheduledTask.id == task_id,
                 ScheduledTask.status == "active",
                 ScheduledTask.next_run_at <= now,  # type: ignore[operator]
+                or_(ScheduledTask.end_at == None, ScheduledTask.end_at >= now),  # noqa: E711
                 or_(ScheduledTask.lease_until == None, ScheduledTask.lease_until < now),  # noqa: E711
             )
             .values(
@@ -330,6 +376,9 @@ def execute_scheduled_task(
     manual: bool = False,
 ) -> ScheduledTaskRun:
     scheduled_for = scheduled_for or task.next_run_at or utc_now()
+    skipped = _skip_misfired_run(db, task, scheduled_for, manual)
+    if skipped is not None:
+        return skipped
     run = _prepare_scheduled_task_run(db, task, scheduled_for, manual)
     if run.status != "running" or not run.session_id:
         return run
@@ -344,6 +393,9 @@ def start_scheduled_task_async(
     manual: bool = False,
 ) -> ScheduledTaskRun:
     scheduled_for = scheduled_for or task.next_run_at or utc_now()
+    skipped = _skip_misfired_run(db, task, scheduled_for, manual)
+    if skipped is not None:
+        return skipped
     run = _prepare_scheduled_task_run(db, task, scheduled_for, manual)
     if run.status == "running" and run.session_id:
         threading.Thread(
@@ -367,6 +419,15 @@ def _prepare_scheduled_task_run(
         )
     ).first()
     if existing:
+        if existing.status == "retrying":
+            existing.status = "running"
+            existing.error = None
+            existing.started_at = utc_now()
+            existing.finished_at = None
+            existing.updated_at = utc_now()
+            db.add(existing)
+            db.commit()
+            db.refresh(existing)
         return existing
     if task.concurrency_policy == "forbid":
         running = db.exec(
@@ -419,6 +480,37 @@ def _prepare_scheduled_task_run(
     return run
 
 
+def _skip_misfired_run(
+    db: Session,
+    task: ScheduledTask,
+    scheduled_for: datetime,
+    manual: bool,
+) -> ScheduledTaskRun | None:
+    if manual or task.misfire_policy != "skip":
+        return None
+    if scheduled_for >= utc_now() - timedelta(seconds=MISFIRE_GRACE_SECONDS):
+        return None
+    existing = db.exec(
+        select(ScheduledTaskRun).where(
+            ScheduledTaskRun.scheduled_task_id == task.id,
+            ScheduledTaskRun.scheduled_for == scheduled_for,
+        )
+    ).first()
+    if existing:
+        return existing
+    run = _create_run(db, task, scheduled_for, "skipped")
+    run.error = "计划执行时间已超过补偿窗口，已按 skip 策略跳过。"
+    run.finished_at = utc_now()
+    _finish_task_schedule(db, task, scheduled_for, "skipped", manual=False)
+    task.lease_owner = None
+    task.lease_until = None
+    db.add(task)
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
 def _execute_prepared_scheduled_task_in_background(task_id: str, run_id: str, manual: bool) -> None:
     with Session(engine) as db:
         task = db.get(ScheduledTask, task_id)
@@ -448,6 +540,8 @@ def _execute_prepared_scheduled_task(
             message=automatic_task_message(task),
             channel="scheduled_task",
             interaction_mode="scheduled_task",
+            forced_sop_id=_scheduled_task_sop_id(task),
+            forced_sop_snapshot=_scheduled_task_sop_snapshot(task),
             client_timezone=task.timezone,
         )
         result: ChatTurnResponse | None = None
@@ -464,6 +558,12 @@ def _execute_prepared_scheduled_task(
         run.trace_json = dict(outcome["trace"])
         run.finished_at = utc_now()
         _finish_task_schedule(db, task, run.scheduled_for, run.status, manual)
+    except HarnessTurnConflict as exc:
+        run.status = "retrying"
+        run.error = str(exc)
+        run.finished_at = None
+        if not manual:
+            task.next_run_at = utc_now() + timedelta(seconds=CONFLICT_RETRY_SECONDS)
     except Exception as exc:
         run.status = "failed"
         run.error = str(exc)
@@ -707,6 +807,23 @@ def _record_scheduled_task_stream_event(
         data = {"value": data}
     payload = dict(data)
     payload.setdefault("sessionId", session_id)
+    receipt = db.exec(
+        select(HarnessTurnRecord).where(
+            HarnessTurnRecord.tenant_id == run.tenant_id,
+            HarnessTurnRecord.session_id == session_id,
+            HarnessTurnRecord.client_turn_id == run.id,
+        )
+    ).first()
+    turn_id = str(
+        payload.get("turn_id")
+        or payload.get("turnId")
+        or payload.get("user_message_id")
+        or (receipt.user_message_id if receipt else "")
+    ).strip()
+    if turn_id:
+        payload.setdefault("turn_id", turn_id)
+        payload.setdefault("user_message_id", turn_id)
+    payload.setdefault("client_turn_id", run.id)
     db.add(
         AgentEvent(
             tenant_id=run.tenant_id,
@@ -716,6 +833,9 @@ def _record_scheduled_task_stream_event(
                 "run_id": run.id,
                 "seq": seq,
                 "event": event,
+                "turn_id": turn_id or None,
+                "user_message_id": turn_id or None,
+                "client_turn_id": run.id,
                 "data": payload,
             },
             created_at=utc_now(),
@@ -728,6 +848,84 @@ def _record_scheduled_task_stream_event(
 
 def automatic_task_message(task: ScheduledTask) -> str:
     return task.prompt.strip() or task.title
+
+
+def _scheduled_task_sop_id(task: ScheduledTask) -> str | None:
+    metadata = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    value = str(metadata.get("sop_id") or "").strip()
+    return value or None
+
+
+def _scheduled_task_sop_snapshot(task: ScheduledTask) -> dict[str, Any] | None:
+    metadata = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    if str(metadata.get("sop_version_policy") or "latest") != "pinned":
+        return None
+    snapshot = metadata.get(SOP_SNAPSHOT_METADATA_KEY)
+    return dict(snapshot) if isinstance(snapshot, dict) else None
+
+
+def _prepare_scheduled_task_sop_metadata(
+    db: Session,
+    tenant_id: str,
+    agent_id: str,
+    incoming: dict[str, Any] | None,
+    *,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = dict(incoming or {})
+    # Internal snapshots are always produced by the server, never trusted from
+    # an API payload.
+    metadata.pop(SOP_SNAPSHOT_METADATA_KEY, None)
+    sop_id = str(metadata.get("sop_id") or "").strip()
+    if not sop_id:
+        metadata.pop("sop_id", None)
+        metadata.pop("sop_version_policy", None)
+        metadata.pop("sop_version", None)
+        return metadata
+
+    previous = dict(existing or {})
+    previous_policy = str(previous.get("sop_version_policy") or "latest")
+    requested_policy = str(
+        metadata.get("sop_version_policy")
+        or (previous_policy if str(previous.get("sop_id") or "") == sop_id else "latest")
+    ).strip()
+    policy = requested_policy if requested_policy in SOP_VERSION_POLICIES else "latest"
+    metadata["sop_id"] = sop_id
+    metadata["sop_version_policy"] = policy
+    available = visible_published_skills(db, tenant_id, agent_id)
+    selected = next((skill for skill in available if skill.skill_id == sop_id), None)
+    if selected is None:
+        raise HTTPException(status_code=400, detail="指定的 SOP 当前不可用")
+    if policy == "latest":
+        metadata.pop("sop_version", None)
+        return metadata
+
+    previous_snapshot = previous.get(SOP_SNAPSHOT_METADATA_KEY)
+    if (
+        previous_policy == "pinned"
+        and str(previous.get("sop_id") or "") == sop_id
+        and isinstance(previous_snapshot, dict)
+    ):
+        metadata["sop_version"] = str(
+            previous.get("sop_version") or previous_snapshot.get("version") or ""
+        )
+        metadata[SOP_SNAPSHOT_METADATA_KEY] = dict(previous_snapshot)
+        return metadata
+
+    try:
+        expanded = expand_sop_for_execution(selected, available)
+    except SopNestingError as exc:
+        raise HTTPException(status_code=400, detail=f"指定的 SOP 无法生成版本快照：{exc}") from exc
+    metadata["sop_version"] = selected.version
+    metadata[SOP_SNAPSHOT_METADATA_KEY] = {
+        "skill_id": selected.skill_id,
+        "version": selected.version,
+        "name": selected.name,
+        "business_domain": selected.business_domain,
+        "description": selected.description,
+        "content_json": expanded.content_json,
+    }
+    return metadata
 
 
 def compute_next_run_at(task: ScheduledTask, after: datetime | None = None) -> datetime | None:
@@ -850,7 +1048,10 @@ def _finish_task_schedule(db: Session, task: ScheduledTask, scheduled_for: datet
     task.last_status = status
     task.run_count += 1
     if not manual:
-        next_run = compute_next_run_at(task, after=scheduled_for + timedelta(seconds=1))
+        schedule_after = scheduled_for + timedelta(seconds=1)
+        if task.misfire_policy in {"coalesce", "skip"}:
+            schedule_after = max(schedule_after, now)
+        next_run = compute_next_run_at(task, after=schedule_after)
         if task.max_runs is not None and task.run_count >= task.max_runs:
             task.status = "completed"
             task.next_run_at = None

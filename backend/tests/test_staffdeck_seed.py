@@ -1,13 +1,30 @@
 from __future__ import annotations
 
-from sqlmodel import SQLModel, Session, create_engine, select
+import json
+
+import pytest
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.agents import list_agents
 from app.api.knowledge_bases import list_knowledge_bases
-from app.db.models import AgentProfile, Skill, Tenant, Tool, User
-from app.db.seed import seed_demo_data
 from app.db import staffdeck_seed
-
+from app.db.models import (
+    AgentProfile,
+    AgentResourceBinding,
+    AgentSkillBranch,
+    AgentSkillBranchVersion,
+    KnowledgeBaseVersion,
+    KnowledgeBucket,
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeIngestJob,
+    Skill,
+    Tenant,
+    Tool,
+    User,
+)
+from app.db.seed import seed_demo_data
+from app.skills.skill_schema import SkillCard
 
 EXPECTED_KNOWLEDGE_COUNTS = {
     "IT": 2,
@@ -15,6 +32,19 @@ EXPECTED_KNOWLEDGE_COUNTS = {
     "法务": 4,
     "行政": 2,
     "财务": 3,
+    "销售": 1,
+    "市场": 1,
+    "采购": 1,
+    "项目管理": 1,
+    "数据分析": 1,
+}
+
+EXPECTED_EXPANDED_EMPLOYEE_PROFILES = {
+    "销售": ("客户拓展顾问", "sales-handshake", "sales-advisor"),
+    "市场": ("市场内容策划", "marketing-spark", "marketing-planner"),
+    "采购": ("采购协同专员", "procurement-check", "procurement-coordinator"),
+    "项目管理": ("项目推进经理", "project-board", "project-manager"),
+    "数据分析": ("经营分析师", "data-insight", "data-analyst"),
 }
 
 
@@ -56,6 +86,26 @@ def test_staffdeck_seed_reads_fixture_as_utf8(monkeypatch) -> None:
     staffdeck_seed.seed_staffdeck_admin_gallery(_FlushOnlySession())
 
 
+def test_staffdeck_seed_requires_every_bundled_fixture(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError):
+        staffdeck_seed._load_seed_fixtures((tmp_path / "missing-fixture.json",))
+
+
+def test_expanded_staffdeck_skills_match_runtime_schema() -> None:
+    data = json.loads(staffdeck_seed.EXPANDED_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+    for key in (
+        "skills",
+        "skill_versions",
+        "agent_skill_branches",
+        "agent_skill_branch_versions",
+    ):
+        rows = data[key]
+        assert len(rows) == len(EXPECTED_EXPANDED_EMPLOYEE_PROFILES)
+        for row in rows:
+            SkillCard.model_validate(row["content_json"])
+
+
 def test_staffdeck_seed_exposes_selected_agents_with_knowledge_bases() -> None:
     with _seeded_session() as db:
         admin = db.exec(
@@ -88,6 +138,85 @@ def test_staffdeck_seed_exposes_selected_agents_with_knowledge_bases() -> None:
             assert len(scoped_knowledge) == expected_count
             assert all(item.document_count > 0 for item in scoped_knowledge)
             assert all(item.chunk_count > 0 for item in scoped_knowledge)
+
+
+def test_staffdeck_seed_adds_expanded_employee_profiles_idempotently() -> None:
+    with _seeded_session() as db:
+        seed_demo_data(db)
+        db.commit()
+
+        rows = db.exec(
+            select(AgentProfile).where(
+                AgentProfile.tenant_id == "tenant_demo",
+                AgentProfile.name.in_(EXPECTED_EXPANDED_EMPLOYEE_PROFILES.keys()),
+            )
+        ).all()
+
+        assert len(rows) == len(EXPECTED_EXPANDED_EMPLOYEE_PROFILES)
+        for row in rows:
+            role_name, avatar_preset, role_key = EXPECTED_EXPANDED_EMPLOYEE_PROFILES[row.name]
+            assert row.metadata_json["role_name"] == role_name
+            assert row.metadata_json["avatar_preset"] == avatar_preset
+            assert row.metadata_json["role_key"] == role_key
+            assert row.metadata_json["managed_by_seed"] is True
+
+            bindings = db.exec(
+                select(AgentResourceBinding).where(
+                    AgentResourceBinding.tenant_id == "tenant_demo",
+                    AgentResourceBinding.agent_id == row.id,
+                    AgentResourceBinding.status == "active",
+                )
+            ).all()
+            assert sorted(binding.resource_type for binding in bindings) == [
+                "knowledge_base",
+                "skill",
+            ]
+
+            knowledge_base_id = next(
+                binding.resource_id
+                for binding in bindings
+                if binding.resource_type == "knowledge_base"
+            )
+            skill_id = next(
+                binding.resource_id for binding in bindings if binding.resource_type == "skill"
+            )
+            assert len(
+                db.exec(
+                    select(KnowledgeBaseVersion).where(
+                        KnowledgeBaseVersion.knowledge_base_id == knowledge_base_id
+                    )
+                ).all()
+            ) == 1
+            for model in (
+                KnowledgeDocument,
+                KnowledgeBucket,
+                KnowledgeChunk,
+                KnowledgeIngestJob,
+            ):
+                assert len(
+                    db.exec(
+                        select(model).where(model.knowledge_base_id == knowledge_base_id)
+                    ).all()
+                ) == 1
+
+            skill = db.get(Skill, skill_id)
+            assert skill is not None
+            assert len(
+                db.exec(
+                    select(AgentSkillBranch).where(
+                        AgentSkillBranch.agent_id == row.id,
+                        AgentSkillBranch.skill_id == skill.skill_id,
+                    )
+                ).all()
+            ) == 1
+            assert len(
+                db.exec(
+                    select(AgentSkillBranchVersion).where(
+                        AgentSkillBranchVersion.agent_id == row.id,
+                        AgentSkillBranchVersion.skill_id == skill.skill_id,
+                    )
+                ).all()
+            ) == 1
 
 
 def test_staffdeck_seed_applies_reliability_defaults_to_existing_rows() -> None:

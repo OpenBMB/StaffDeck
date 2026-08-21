@@ -390,13 +390,17 @@ def execute_sop_rewrite(db: Session, job: APIJob) -> dict[str, Any]:
     update_job(db, job, stage="rewriting", progress=0.15, event_type="sop.rewrite.rewriting")
     request = SkillRewriteRequest(
         tenant_id=job.tenant_id,
+        agent_id=str(job.agent_id),
         current_skill=SkillCard.model_validate(payload["current_skill"]),
         instruction=str(payload["instruction"]),
         target_paths=list(payload.get("target_paths") or []),
         model_config_id=payload.get("model_config_id"),
     )
     model = internal_skills._get_request_model(db, job.tenant_id, request.model_config_id)
-    result = SkillEditor().rewrite(internal_skills._with_available_tools_for_rewrite(db, request), model)
+    result = SkillEditor().rewrite(
+        internal_skills._with_available_context_for_rewrite(db, request),
+        model,
+    )
     row = _new_draft(
         db,
         tenant_id=job.tenant_id,

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
 import time
+from copy import deepcopy
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
-from app.core.capability_manifest import CapabilityManifestBuilder
-from app.core.capability_discovery import project_capability_manifest
 from app.core.cancellation import is_chat_turn_cancelled
+from app.core.capability_discovery import project_capability_manifest
+from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.harness_agent import (
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
@@ -20,14 +20,14 @@ from app.core.harness_attachments import (
     validated_task_image_payloads,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
-from app.core.harness_session_lock import (
-    acquire_harness_session,
-    release_harness_session,
-)
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
     HarnessSessionLeaseToken,
+)
+from app.core.harness_session_lock import (
+    acquire_harness_session,
+    release_harness_session,
 )
 from app.core.harness_turn_store import HarnessTurnStore
 from app.core.slash_commands import (
@@ -67,6 +67,100 @@ from app.session.session_schema import (
     TurnPlan,
 )
 from app.skills.nesting import discoverable_sops, expand_visible_sops
+
+
+def _turn_skill_projection(
+    source_skills: list[Skill],
+    *,
+    interaction_mode: str,
+) -> tuple[list[Skill], list[Skill]]:
+    """Project executable and routable SOPs for every supported turn mode.
+
+    Team TL conversations already own a dedicated session, so hiding the
+    leader's SOPs here would only disable valid work; it is not required for
+    state isolation.
+    """
+
+    _ = interaction_mode
+    skills = expand_visible_sops(source_skills)
+    return skills, discoverable_sops(skills)
+
+
+def _apply_forced_sop_snapshot(
+    source_skills: list[Skill],
+    forced_sop_id: str | None,
+    snapshot: dict[str, Any] | None,
+) -> list[Skill]:
+    """Replace one currently accessible SOP with its immutable scheduled snapshot."""
+
+    target = str(forced_sop_id or "").strip()
+    if not target or not snapshot:
+        return source_skills
+    if str(snapshot.get("skill_id") or "").strip() != target:
+        raise SlashCommandError(
+            "FORCED_SOP_SNAPSHOT_INVALID",
+            "定时任务保存的 SOP 快照与指定 SOP 不一致。",
+        )
+    content = snapshot.get("content_json")
+    if not isinstance(content, dict):
+        raise SlashCommandError(
+            "FORCED_SOP_SNAPSHOT_INVALID",
+            "定时任务保存的 SOP 快照内容无效。",
+        )
+    current = next((skill for skill in source_skills if skill.skill_id == target), None)
+    if current is None:
+        # Keep the normal capability-access error from resolve_sop. A historical
+        # snapshot must never resurrect an SOP that is no longer bound/visible.
+        return source_skills
+    pinned = Skill(
+        id=current.id,
+        tenant_id=current.tenant_id,
+        skill_id=current.skill_id,
+        version=str(snapshot.get("version") or current.version),
+        name=str(snapshot.get("name") or current.name),
+        business_domain=(
+            str(snapshot.get("business_domain"))
+            if snapshot.get("business_domain") is not None
+            else current.business_domain
+        ),
+        description=(
+            str(snapshot.get("description"))
+            if snapshot.get("description") is not None
+            else current.description
+        ),
+        content_json=deepcopy(content),
+        status="published",
+        created_at=current.created_at,
+        updated_at=current.updated_at,
+    )
+    if hasattr(current, "agent_branch_meta"):
+        object.__setattr__(pinned, "agent_branch_meta", getattr(current, "agent_branch_meta"))
+    return [pinned if skill.skill_id == target else skill for skill in source_skills]
+
+
+def _turn_slash_selection(request: ChatTurnRequest) -> SlashCommandSelection | None:
+    """Resolve user slash commands and server-pinned scheduled SOPs uniformly."""
+
+    selection = parse_slash_command(request.message)
+    forced_sop_id = str(request.forced_sop_id or "").strip()
+    if forced_sop_id:
+        if selection is not None:
+            raise SlashCommandError(
+                "FORCED_SOP_COMMAND_CONFLICT",
+                "内部指定的 SOP 不能与用户斜杠指令同时使用。",
+            )
+        return SlashCommandSelection(
+            kind="sop",
+            target=forced_sop_id,
+            prompt=request.message,
+            raw=f"/sop {forced_sop_id}",
+        )
+    if selection and request.interaction_mode == "scheduled_task":
+        raise SlashCommandError(
+            "SLASH_COMMAND_MODE_CONFLICT",
+            "定时任务执行不能从任务文本解析斜杠指令，请使用结构化 SOP 选择。",
+        )
+    return selection
 
 
 class HarnessV2Engine:
@@ -150,12 +244,7 @@ class HarnessV2Engine:
             },
         )
 
-        self.slash_command = parse_slash_command(request.message)
-        if self.slash_command and request.interaction_mode == "scheduled_task":
-            raise SlashCommandError(
-                "SLASH_COMMAND_MODE_CONFLICT",
-                "斜杠能力指令不能与定时任务创建模式同时使用。",
-            )
+        self.slash_command = _turn_slash_selection(request)
         execution_message = (
             slash_command_message(self.slash_command)
             if self.slash_command
@@ -173,18 +262,23 @@ class HarnessV2Engine:
         source_skills = self.owner._list_published_skills(
             request.tenant_id, session.agent_id
         )
-        # A team TL session is a group-chat orchestration surface, not the
-        # leader employee's personal working session. Hide personal SOPs from
-        # this turn without mutating or cancelling their durable state.
-        if request.interaction_mode == "team_tl":
-            skills = []
-            routing_skills = []
-        else:
-            skills = expand_visible_sops(source_skills)
-            routing_skills = discoverable_sops(skills)
-            self.owner._drop_unavailable_skill_state(
-                request.tenant_id, session, skills
-            )
+        source_skills = _apply_forced_sop_snapshot(
+            source_skills,
+            request.forced_sop_id,
+            request.forced_sop_snapshot,
+        )
+        # Team TL conversations use a dedicated ChatSession, so the leader can
+        # safely execute their own SOPs without mutating a personal chat. Keep
+        # the same published/discoverable SOP boundary in every interaction
+        # mode; team orchestration remains an additional conversation concern,
+        # not a reason to hide the leader's executable workflow.
+        skills, routing_skills = _turn_skill_projection(
+            source_skills,
+            interaction_mode=request.interaction_mode,
+        )
+        self.owner._drop_unavailable_skill_state(
+            request.tenant_id, session, skills
+        )
         memory_context = [
             memory_read(row)
             for row in self.owner.memory.context_memories(
@@ -457,30 +551,31 @@ class HarnessV2Engine:
             strict=False,
         ):
             payload["knowledge_citations"] = list(result.citations)
+        _inject_handoff_context(self.db, session, execution_payloads, execution_results, request)
 
         # ``last_skill`` is the execution-expanded parent graph. Prefer it so a
         # nested SOP's response rules remain available after the child graph
         # reaches a terminal node. Falling back to the stored row is only
         # needed for turns that did not execute a TaskFrame.
-        response_skill = None if request.interaction_mode == "team_tl" else (
-            last_skill or self.owner._get_active_skill(
-                request.tenant_id, session.active_skill_id, session.agent_id
-            )
+        response_skill = last_skill or self.owner._get_active_skill(
+            request.tenant_id, session.active_skill_id, session.agent_id
         )
         self._renew_session_lease()
-        reply = self.owner.response_generator.generate(
-            execution_request.message,
-            session,
-            response_skill,
-            router_decision,
-            last_step_result,
-            None,
-            model_config,
-            self.owner._get_persona_prompt(request.tenant_id, session.agent_id),
-            memory_context,
-            conversation_context,
-            execution_payloads,
-        )
+        reply = _single_task_reply(execution_results)
+        if reply is None:
+            reply = self.owner.response_generator.generate(
+                execution_request.message,
+                session,
+                response_skill,
+                router_decision,
+                last_step_result,
+                None,
+                model_config,
+                self.owner._get_persona_prompt(request.tenant_id, session.agent_id),
+                memory_context,
+                conversation_context,
+                execution_payloads,
+            )
         self._renew_session_lease()
         reply, citations = compact_knowledge_citation_labels(reply, citations)
         artifacts = _aggregate_artifacts(execution_results)
@@ -500,6 +595,10 @@ class HarnessV2Engine:
             assistant_metadata["slash_command"] = self.slash_command.model_dump(
                 mode="json"
             )
+        # Cancellation and normal projection compete for this durable receipt.
+        # Only the winner may append a terminal assistant message.
+        self._raise_if_cancelled(request, session)
+        self.turn_store.begin_completion(self.turn_record)
         reply = self.owner._finalize_turn(
             session,
             request.tenant_id,
@@ -1191,6 +1290,7 @@ def _step_result(result: TaskExecutionResult) -> StepAgentResult:
         next_step_id=result.next_step_id,
         is_step_completed=result.status == "completed",
         handoff=result.status == "handoff",
+        structured_result=result.structured_result,
     )
 
 
@@ -1262,6 +1362,7 @@ def _combine_results(
             for item in results
             for capability_result in item.capability_results
         ],
+        structured_result=last.structured_result,
         artifacts=[
             artifact
             for item in results
@@ -1277,6 +1378,21 @@ def _combine_results(
         action_count=sum(item.action_count for item in results),
         error=last.error,
     )
+
+
+def _single_task_reply(results: list[TaskExecutionResult]) -> str | None:
+    """Use a lone TaskFrame's terminal reply without another model pass.
+
+    ``finish`` already asks the Harness model for the user-facing reply.  A
+    response synthesis pass is only useful when several TaskFrames must be
+    reconciled.  Empty replies still fall back to ``ResponseGenerator`` so
+    malformed or legacy execution results keep the existing recovery path.
+    """
+
+    if len(results) != 1:
+        return None
+    reply = str(results[0].reply_fragment or "").strip()
+    return reply or None
 
 
 def _response_task_payload(
@@ -1310,6 +1426,54 @@ def _response_task_payload(
         "task_summary": result.task_summary,
         "artifacts": list(result.artifacts),
     }
+
+
+def _inject_handoff_context(
+    db: object,
+    session: ChatSession,
+    payloads: list[dict[str, object]],
+    results: list[TaskExecutionResult],
+    request: ChatTurnRequest | None = None,
+) -> None:
+    """在 resume turn 执行期间注入 handoff_info(含 human_reply),供 response_generator 转述。
+
+    判定 resume turn:request.channel == "human_handoff_resume"(由 _resume_human_handoff_worker
+    传入)。此时 handoff 已 answered 且 human_reply 已落库,直接注入即可——不再依赖
+    resume_finished_at 标记(原标记在 worker 写入时机晚于 turn 执行,导致注入永远 miss)。
+    handoff 状态的 task(本轮新触发转人工)也注入 handoff_info(无 human_reply),
+    用于告知用户已转交。
+    """
+    from sqlmodel import select
+
+    from app.db.models import HumanHandoffRequest
+
+    handoff = db.exec(
+        select(HumanHandoffRequest)
+        .where(HumanHandoffRequest.session_id == session.id)
+        .order_by(HumanHandoffRequest.created_at.desc())
+    ).first()
+    if not handoff:
+        return
+    notify_message_id = handoff.notify_message_id or ""
+    human_reply = (handoff.human_reply or "").strip()
+    is_answered = handoff.status in ("answered", "resolved") and bool(human_reply)
+    # resume turn:由 worker 显式传入 channel 标识判定,时序可靠。
+    is_resume_turn = (
+        bool(request and getattr(request, "channel", "") == "human_handoff_resume")
+        and is_answered
+    )
+    for payload, result in zip(payloads, results, strict=False):
+        if is_resume_turn or payload.get("status") == "handoff":
+            pass
+        else:
+            continue
+        handoff_info: dict[str, Any] = {
+            "handoff_id": handoff.id,
+            "notified_via_feishu": bool(notify_message_id),
+        }
+        if is_answered:
+            handoff_info["human_reply"] = human_reply
+        payload["handoff_info"] = handoff_info
 
 
 def _globalize_citations(
@@ -1504,6 +1668,7 @@ def _prior_result(result: TaskExecutionResult) -> dict[str, Any]:
         "slot_updates": result.slot_updates,
         "capability_results": result.capability_results,
         "artifacts": result.artifacts,
+        "structured_result": result.structured_result,
     }
 
 
