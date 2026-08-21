@@ -192,7 +192,7 @@ class ResponseGenerator:
         return bool(
             not task_results
             and str(step_result.reply or "").strip()
-            and step_result.action in {"ask_user", "clarify"}
+            and step_result.action in {"ask_user", "clarify", "handoff"}
             and tool_result is None
             and step_result.tool_call is None
             and step_result.knowledge_query is None

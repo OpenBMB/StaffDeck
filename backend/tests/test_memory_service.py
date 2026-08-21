@@ -211,6 +211,59 @@ def test_memory_recall_excludes_summary_history() -> None:
     assert rows[0].content == "用户偏好客服回复简洁。"
 
 
+def test_memory_recall_uses_lexical_candidates_and_bounds_context() -> None:
+    with _test_session() as db:
+        db.add(
+            MemoryRecord(
+                id="memory_profile_priority",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                kind="profile",
+                content="用户姓名是张三",
+                importance=0.95,
+            )
+        )
+        db.add(
+            MemoryRecord(
+                id="memory_chinese_hit",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                kind="fact",
+                content="用户正在处理报销流程",
+                importance=0.4,
+            )
+        )
+        db.add(
+            MemoryRecord(
+                id="memory_english_hit",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                kind="preference",
+                content="User prefers VPN setup instructions in English",
+                importance=0.4,
+            )
+        )
+        for index in range(20):
+            db.add(
+                MemoryRecord(
+                    id=f"memory_bound_{index}",
+                    tenant_id="tenant_demo",
+                    user_id="user_demo",
+                    kind="fact",
+                    content=f"报销条目 {index} " + ("详细内容 " * 80),
+                    importance=0.3,
+                )
+            )
+        db.commit()
+
+        rows = MemoryService(db).recall("tenant_demo", "user_demo", "报销流程 VPN")
+
+    row_ids = {row.id for row in rows}
+    assert {"memory_profile_priority", "memory_chinese_hit", "memory_english_hit"} <= row_ids
+    assert len(rows) <= 12
+    assert sum(len(row.content) for row in rows) <= 6000
+
+
 def test_context_memories_returns_all_supported_memories_without_model_selection() -> None:
     with _test_session() as db:
         for index, kind in enumerate(["profile", "preference", "fact"]):

@@ -35,9 +35,10 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
-    HarnessTurnRecord,
     HarnessTaskFrameRecord,
+    HarnessTurnRecord,
     HumanHandoffRequest,
+    MemoryRecord,
     Message,
     MessageFeedback,
     ScheduledTaskRun,
@@ -71,12 +72,12 @@ from app.session.attachments import (
     validate_chat_turn_attachments,
 )
 from app.session.helpers import public_session
+from app.session.message_read import message_read
 from app.session.message_visibility import (
     internal_message_turn_ids,
     visible_message_content,
     visible_message_rows,
 )
-from app.session.message_read import message_read
 from app.session.origin import pilotdeck_origin_session_ids
 from app.session.session_schema import (
     ChatAttachmentRead,
@@ -2102,32 +2103,7 @@ def delete_chat_session(
 ) -> dict[str, str]:
     _ensure_request_tenant(tenant_id, current_user)
     row = _get_user_chat_session(db, tenant_id, current_user.id, session_id)
-    messages = db.exec(
-        select(Message).where(Message.tenant_id == tenant_id, Message.session_id == session_id)
-    ).all()
-    events = db.exec(
-        select(AgentEvent).where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == session_id)
-    ).all()
-    feedback_rows = db.exec(
-        select(MessageFeedback).where(MessageFeedback.tenant_id == tenant_id, MessageFeedback.session_id == session_id)
-    ).all()
-    skill_feedback_rows = db.exec(
-        select(SkillFeedback).where(SkillFeedback.tenant_id == tenant_id, SkillFeedback.session_id == session_id)
-    ).all()
-    stage_harness_session_record_deletion(
-        db,
-        tenant_id=tenant_id,
-        session_id=session_id,
-    )
-    for message in messages:
-        db.delete(message)
-    for event in events:
-        db.delete(event)
-    for feedback in feedback_rows:
-        db.delete(feedback)
-    for feedback in skill_feedback_rows:
-        db.delete(feedback)
-    db.delete(row)
+    _delete_chat_session_records(db, tenant_id=tenant_id, session_id=session_id, row=row)
     db.commit()
     try:
         remove_harness_session_workspace(
@@ -2143,6 +2119,53 @@ def delete_chat_session(
             exc_info=True,
         )
     return {"status": "deleted"}
+
+
+def _delete_chat_session_records(
+    db: Session,
+    *,
+    tenant_id: str,
+    session_id: str,
+    row: ChatSession | None = None,
+) -> None:
+    """Stage deletion of all durable records owned by one chat session."""
+    messages = db.exec(
+        select(Message).where(Message.tenant_id == tenant_id, Message.session_id == session_id)
+    ).all()
+    events = db.exec(
+        select(AgentEvent).where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == session_id)
+    ).all()
+    feedback_rows = db.exec(
+        select(MessageFeedback).where(MessageFeedback.tenant_id == tenant_id, MessageFeedback.session_id == session_id)
+    ).all()
+    skill_feedback_rows = db.exec(
+        select(SkillFeedback).where(SkillFeedback.tenant_id == tenant_id, SkillFeedback.session_id == session_id)
+    ).all()
+    memories = db.exec(
+        select(MemoryRecord).where(
+            MemoryRecord.tenant_id == tenant_id,
+            MemoryRecord.session_id == session_id,
+        )
+    ).all()
+    stage_harness_session_record_deletion(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+    )
+    for message in messages:
+        db.delete(message)
+    for event in events:
+        db.delete(event)
+    for feedback in feedback_rows:
+        db.delete(feedback)
+    for feedback in skill_feedback_rows:
+        db.delete(feedback)
+    for memory in memories:
+        db.delete(memory)
+    if row is None:
+        row = db.get(ChatSession, session_id)
+    if row is not None:
+        db.delete(row)
 
 
 @router.get("/sessions/{session_id}/messages", response_model=list[MessageRead])

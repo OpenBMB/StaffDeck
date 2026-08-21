@@ -688,6 +688,24 @@ def test_response_generator_stream_skips_model_for_simple_clarification(monkeypa
     assert "".join(chunks) == "请说明具体业务类型。"
 
 
+def test_response_generator_skips_model_for_handoff_reply(monkeypatch) -> None:
+    def fail_generate_text(*_args, **_kwargs):
+        raise AssertionError("handoff reply must not call the response model")
+
+    monkeypatch.setattr("app.core.response_generator.LLMClient.generate_text", fail_generate_text)
+    reply = ResponseGenerator().generate(
+        "转人工",
+        ChatSession(id="session_test", tenant_id="tenant_demo"),
+        None,
+        RouterDecision(decision="handoff_human"),
+        StepAgentResult(action="handoff", reply="好的，我已为您转人工处理。"),
+        None,
+        model_config=None,  # type: ignore[arg-type]
+    )
+
+    assert reply == "好的，我已为您转人工处理。"
+
+
 def test_response_prompt_preserves_previous_reply_for_format_followup() -> None:
     prompt = ResponseGenerator()._stage_payload(
         {
