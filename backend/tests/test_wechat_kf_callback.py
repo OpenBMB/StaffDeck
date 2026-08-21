@@ -5,6 +5,7 @@ import struct
 
 import pytest
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from defusedxml.common import DefusedXmlException
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
@@ -118,6 +119,13 @@ def test_wechat_kf_callback_rejects_invalid_signature(monkeypatch) -> None:
         },
     )
     assert response.status_code == 403
+
+
+def test_wechat_kf_xml_parser_rejects_entity_expansion() -> None:
+    with pytest.raises(DefusedXmlException):
+        wechat_kf_api._parse_callback_xml(
+            b'<!DOCTYPE foo [<!ENTITY x "expanded">]><xml><Encrypt>&x;</Encrypt></xml>'
+        )
 
 
 def test_wechat_kf_callback_syncs_and_stages_customer_message(monkeypatch) -> None:

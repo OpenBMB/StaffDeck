@@ -5,9 +5,9 @@ import hashlib
 import hmac
 import logging
 import struct
-import xml.etree.ElementTree as ET
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from defusedxml import ElementTree as ET
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlmodel import Session, select
 
@@ -110,6 +110,15 @@ def _xml_text(root: ET.Element, name: str) -> str:
     return str(node.text or "").strip() if node is not None else ""
 
 
+def _parse_callback_xml(data: str | bytes) -> ET.Element:
+    return ET.fromstring(
+        data,
+        forbid_dtd=True,
+        forbid_entities=True,
+        forbid_external=True,
+    )
+
+
 def _save_account_cursor(account_id: str, cursor: str) -> None:
     with Session(engine) as db:
         account = db.get(WeChatKfAccount, account_id)
@@ -154,7 +163,7 @@ async def receive_callback(
     binding, credentials = _callback_binding(binding_id, allow_pending=True)
     logger.info("微信客服回调收到 binding=%s", binding_id)
     try:
-        envelope = ET.fromstring(await request.body())
+        envelope = _parse_callback_xml(await request.body())
     except ET.ParseError as exc:
         raise HTTPException(status_code=400, detail="微信客服回调 XML 无效") from exc
     ciphertext = _xml_text(envelope, "Encrypt")
@@ -174,7 +183,7 @@ async def receive_callback(
         corp_id,
     )
     try:
-        event = ET.fromstring(plaintext)
+        event = _parse_callback_xml(plaintext)
     except ET.ParseError as exc:
         raise HTTPException(status_code=400, detail="微信客服回调明文 XML 无效") from exc
     if _xml_text(event, "Event") != "kf_msg_or_event":
