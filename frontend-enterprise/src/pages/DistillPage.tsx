@@ -494,8 +494,9 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
 const DISTILL_REWRITE_MODEL_STORAGE_KEY = 'skill-distill-rewrite-model';
 const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信', web: '网页端' };
 const UNASSIGNED_USER_VALUE = '__unassigned__';
-// 渠道转接通知运行时仅实现飞书私聊,处理人选项只提供飞书渠道标注(后端同样拒绝其他渠道)。
-const HANDOFF_NOTIFY_CHANNELS = new Set(['feishu']);
+// 渠道转接通知运行时已支持飞书/企微私聊,处理人选项提供对应渠道标注
+// (后端同样拒绝其他渠道)。钉钉/微信适配器只能回会话内消息,不在此列。
+const HANDOFF_NOTIFY_CHANNELS = new Set(['feishu', 'wecom']);
 
 type HandoffAssigneeUser = {
   id: string;
@@ -506,8 +507,8 @@ type HandoffAssigneeUser = {
 };
 
 export function handoffAssigneeUserOptions(tenantUsers: HandoffAssigneeUser[]): SelectOption[] {
-  // 内部成员一律可选(网页端投递);已绑定飞书身份的成员追加"姓名（飞书）"选项,
-  // 选中后运行时按飞书渠道转接。其他渠道身份不生成选项(通知未实现),
+  // 内部成员一律可选(网页端投递);已绑定支持渠道身份的成员追加"姓名（渠道）"选项,
+  // 选中后运行时按该渠道转接。其他渠道身份不生成选项(通知未实现),
   // 渠道懒建账号(渠道客户/群聊)也不进入处理人选项。
   const options: SelectOption[] = [];
   tenantUsers.filter((user) => !user.source || user.source === 'web').forEach((user) => {

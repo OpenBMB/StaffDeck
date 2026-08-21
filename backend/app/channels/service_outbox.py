@@ -911,6 +911,74 @@ def _resolve_assignee_feishu_open_id(
     return None
 
 
+def resolve_assignee_channel_identity(
+    db: Session,
+    binding: ChannelBinding,
+    assignee_user_id: str | None,
+) -> ChannelIdentity | None:
+    """按当前 binding 渠道与 scope 解析 assignee 的非群聊渠道身份。
+
+    与 _resolve_assignee_feishu_open_id 同一套 scope 隔离逻辑,
+    但渠道随 binding 走,供通用 handoff 通知投递使用(飞书/企微等)。
+    未命中返回 None(网页收件箱兜底)。
+    """
+    scope = external_account_scope(db, binding)
+    if not assignee_user_id:
+        return None
+    identity = db.exec(
+        select(ChannelIdentity).where(
+            ChannelIdentity.tenant_id == binding.tenant_id,
+            ChannelIdentity.channel == binding.channel,
+            ChannelIdentity.external_account_scope == scope,
+            ChannelIdentity.staffdeck_user_id == assignee_user_id,
+            ~ChannelIdentity.external_user_id.startswith("group:"),
+        )
+    ).first()
+    return identity or None
+
+
+# 支持 handoff 通知私聊投递的渠道:适配器具备"指定用户主动私聊"能力。
+# 钉钉/微信适配器只能回会话内消息(依赖 session_webhook/context_token),
+# 无法主动私聊处理人,故不在集合内。
+HANDOFF_NOTIFY_CHANNELS = frozenset({"feishu", "wecom"})
+
+# 各渠道 handoff 通知的投递 target 构造。
+_HANDOFF_NOTIFY_TARGET_BUILDERS = {
+    "feishu": lambda external_user_id, handoff_id: {
+        "receive_id_type": "open_id",
+        "receive_id": external_user_id,
+        "handoff_id": handoff_id,
+    },
+    "wecom": lambda external_user_id, handoff_id: {
+        "to_user_id": external_user_id,
+        "handoff_id": handoff_id,
+    },
+}
+
+
+def resolve_handoff_notify_binding(
+    db: Session,
+    tenant_id: str,
+    notify_channel: str,
+) -> ChannelBinding | None:
+    """按通知渠道偏好解析可达的投递 binding。
+
+    notify_channel 为具体渠道(如 feishu)时,在租户内找该渠道的 active binding
+    (排除团队绑定与非交付渠道);找不到返回 None。
+    """
+    notify_channel = str(notify_channel or "").strip()
+    if not notify_channel or notify_channel == "web":
+        return None
+    bindings = db.exec(
+        select(ChannelBinding).where(
+            ChannelBinding.tenant_id == tenant_id,
+            ChannelBinding.channel == notify_channel,
+            ChannelBinding.status == "active",
+        )
+    ).all()
+    return next((row for row in bindings if not row.team_id), None)
+
+
 def _write_handoff_notify_message_id(
     db: Session,
     delivery: ChannelDelivery,
@@ -1013,12 +1081,22 @@ def notify_handoff_assignee(
     pending_question: str,
     context_summary: str,
 ) -> None:
-    """转人工时给 assignee 发飞书私聊通知(kind=handoff_notice)。
+    """转人工时给 assignee 发渠道私聊通知(kind=handoff_notice)。
 
-    主链路:assignee_user_id → 当前 binding scope 下的 ChannelIdentity → open_id。
-    无可用 open_id 时跳过(网页收件箱兜底)。任何异常仅记日志,不影响 handoff 主流程。
+    通用链路:assignee_user_id → 当前 binding scope 下的非群聊 ChannelIdentity
+    → 外部用户 id(open_id/chat_id)。按 binding.channel 构造各渠道投递 target,
+    经 outbox worker 用对应渠道 adapter 投递。无可用身份时跳过(网页收件箱兜底)。
+    任何异常仅记日志,不影响 handoff 主流程。
     """
     try:
+        if binding.channel not in HANDOFF_NOTIFY_CHANNELS:
+            logger.info(
+                "handoff 通知跳过:渠道暂不支持私聊通知 handoff=%s binding=%s channel=%s",
+                handoff.id,
+                binding.id,
+                binding.channel,
+            )
+            return
         existing_notice = db.exec(
             select(ChannelDelivery).where(
                 ChannelDelivery.tenant_id == binding.tenant_id,
@@ -1029,14 +1107,14 @@ def notify_handoff_assignee(
         ).first()
         if existing_notice:
             return
-        open_id = _resolve_assignee_feishu_open_id(
-            db, binding, handoff.assignee_user_id
-        )
-        if not open_id:
+        identity = resolve_assignee_channel_identity(db, binding, handoff.assignee_user_id)
+        external_user_id = identity.external_user_id if identity else None
+        if not external_user_id:
             logger.info(
-                "飞书 handoff 通知跳过:assignee 无可用 open_id handoff=%s binding=%s",
+                "handoff 通知跳过:assignee 在当前绑定作用域无可私聊身份 handoff=%s binding=%s assignee=%s",
                 handoff.id,
                 binding.id,
+                handoff.assignee_user_id,
             )
             return
         # assignee 显示名:从 User 表取,无则空
@@ -1057,11 +1135,9 @@ def notify_handoff_assignee(
         text_parts.append("")
         text_parts.append("如要回复本条消息，请在开头加上 /回复反馈 然后输入答复内容。")
         text = "\n".join(text_parts)
-        target = {
-            "receive_id_type": "open_id",
-            "receive_id": open_id,
-            "handoff_id": handoff.id,
-        }
+        build_target = _HANDOFF_NOTIFY_TARGET_BUILDERS[binding.channel]
+        target = build_target(external_user_id, handoff.id)
+        target["handoff_id"] = handoff.id
         db.add(
             ChannelDelivery(
                 tenant_id=binding.tenant_id,
@@ -1079,4 +1155,4 @@ def notify_handoff_assignee(
         db.commit()
     except Exception:
         db.rollback()
-        logger.exception("飞书 handoff 通知登记失败 handoff=%s binding=%s", handoff.id, binding.id)
+        logger.exception("handoff 通知登记失败 handoff=%s binding=%s", handoff.id, binding.id)

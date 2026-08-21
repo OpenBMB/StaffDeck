@@ -608,9 +608,9 @@ def update_channel_binding_agents(
         # 团队绑定的接待员工由团队现任 TL 决定,不允许整表替换员工挂载
         raise HTTPException(status_code=400, detail="团队绑定的渠道不支持修改员工挂载")
     # 校验默认人工处理人:传入非 None 且非空时,用户必须存在且属于当前租户的内部成员。
-    # 通知渠道为 None/"web" 时仅走网页端收件箱;指定绑定渠道时,当前仅支持飞书
-    # (渠道转接通知只实现了飞书私聊),且该成员必须已在当前绑定作用域绑定
-    # 非群聊渠道身份,保证渠道转接可达。
+    # 通知渠道为 None/"web" 时仅走网页端收件箱;指定绑定渠道时,要求该渠道支持
+    # 私聊通知(当前飞书/企微),且该成员必须已在当前绑定作用域绑定非群聊渠道身份,
+    # 保证渠道转接可达(scope 级校验,复用运行时同一身份解析逻辑)。
     handoff_assignee = request.default_handoff_assignee_user_id
     handoff_channel = request.default_handoff_assignee_channel
     if handoff_assignee != "unchanged" and handoff_assignee:
@@ -622,34 +622,26 @@ def update_channel_binding_agents(
             )
         handoff_channel = str(handoff_channel or "").strip()
         if handoff_channel and handoff_channel not in ("unchanged", "web"):
+            from app.channels.service_outbox import (
+                HANDOFF_NOTIFY_CHANNELS,
+                resolve_assignee_channel_identity,
+            )
+
             if handoff_channel != binding.channel:
                 raise HTTPException(
                     status_code=400,
                     detail="默认人工处理人的转接渠道必须是当前绑定渠道",
                 )
-            if binding.channel != "feishu":
+            if binding.channel not in HANDOFF_NOTIFY_CHANNELS:
+                supported = "、".join(
+                    _CHANNEL_LABELS.get(name, name) for name in sorted(HANDOFF_NOTIFY_CHANNELS)
+                )
                 raise HTTPException(
                     status_code=400,
-                    detail="人工转接通知当前仅支持飞书渠道,请选择网页端或飞书渠道",
+                    detail=f"人工转接通知暂不支持私聊通知(当前支持{supported}),请选择网页端或支持的渠道",
                 )
-            identity_scope = binding.identity_scope_key
-            if not identity_scope:
-                config = dict(binding.config_json or {})
-                app_id = str(config.get("app_id") or "").strip()
-                tenant_key = str(binding.provider_tenant_key or "").strip()
-                if app_id and tenant_key:
-                    from app.channels.service_feishu_inbox import feishu_identity_scope
-
-                    identity_scope = feishu_identity_scope(app_id, tenant_key)
-            reachable = db.exec(
-                select(ChannelIdentity).where(
-                    ChannelIdentity.tenant_id == tenant_id,
-                    ChannelIdentity.channel == binding.channel,
-                    ChannelIdentity.external_account_scope == (identity_scope or ""),
-                    ChannelIdentity.staffdeck_user_id == handoff_assignee,
-                    ~ChannelIdentity.external_user_id.startswith("group:"),
-                )
-            ).first()
+            db.rollback()
+            reachable = resolve_assignee_channel_identity(db, binding, handoff_assignee)
             if not reachable:
                 channel_label = _CHANNEL_LABELS.get(binding.channel, binding.channel)
                 raise HTTPException(

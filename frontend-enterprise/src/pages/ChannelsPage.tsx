@@ -24,6 +24,8 @@ import { Button as UIButton } from '@/components/ui/button';
 import { api, TENANT_ID } from '../api/client';
 
 const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信', web: '网页端' };
+// 渠道转接通知运行时已支持飞书/企微私聊;钉钉/微信适配器只能回会话内消息,不在此列。
+const HANDOFF_NOTIFY_CHANNELS = new Set(['feishu', 'wecom']);
 import IconAdd from '../assets/icons/add.svg?react';
 import IconAlignJustify from '../assets/icons/align-justify.svg?react';
 import IconChat from '../assets/icons/chat.svg?react';
@@ -1021,7 +1023,7 @@ export default function ChannelsPage({
           <div className="flex min-w-0 flex-col gap-[4px]">
             <span className="text-[13px] font-semibold text-[#18181a]">默认人工处理人</span>
             <span className="text-[12px] leading-[1.6] text-[#858b9c]">
-              SOP 人工节点未指定处理人时，转交给此用户；选择带渠道标注的选项会通过对应渠道转接（当前仅支持飞书）。未配置时回退到数字员工负责人或管理员。
+              SOP 人工节点未指定处理人时，转交给此用户；选择带渠道标注的选项会通过对应渠道转接（当前支持飞书/企业微信）。未配置时回退到数字员工负责人或管理员。
             </span>
           </div>
           <div className="flex items-center gap-[8px]">
@@ -1050,9 +1052,9 @@ export default function ChannelsPage({
                 <SelectItem value="__none__">未配置</SelectItem>
                 {tenantUsers.filter((user) => !user.source || user.source === 'web').flatMap((user) => {
                   const name = user.display_name || user.username || user.id;
-                  // 渠道转接通知运行时仅实现飞书私聊,渠道标注选项只对飞书绑定生成
-                  // (后端同样拒绝其他渠道的保存)。
-                  const channelVariantAvailable = binding.channel === 'feishu';
+                  // 渠道转接通知运行时已支持飞书/企微私聊,渠道标注选项对支持
+                  // 私聊通知的绑定渠道生成(后端同样拒绝其他渠道)。
+                  const channelVariantAvailable = HANDOFF_NOTIFY_CHANNELS.has(binding.channel);
                   const scope = binding.identity_scope_key || '';
                   const matchingIdentity = user.channel_identities?.find(
                     (ci) => ci.channel === binding.channel && (ci.external_account_scope || '') === scope,

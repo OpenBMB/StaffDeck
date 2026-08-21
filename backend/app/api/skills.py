@@ -35,6 +35,7 @@ from app.db.models import (
     AgentEvent,
     AgentResourceBinding,
     AgentSkillBranchVersion,
+    ChannelBinding,
     ChannelIdentity,
     ModelConfig,
     Skill,
@@ -54,6 +55,9 @@ from app.security.permissions import (
 )
 from app.security.tenant import ensure_tenant
 from app.skills import SkillDistiller, SkillEditor
+
+_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书", "dingtalk": "钉钉"}
+
 from app.skills.skill_schema import (
     SkillCard,
     SkillCreateRequest,
@@ -198,8 +202,9 @@ def _validate_handoff_assignees(db: Session, content: SkillCard, tenant_id: str)
     """校验 SOP 人工节点的处理人:必须存在、同租户、source='web'(内部成员)。
 
     assignee_notify_channel 为 None 时按默认投递(网页收件箱,可达则渠道通知);
-    为 "web" 时仅网页端;为具体渠道时当前仅支持 "feishu"(渠道转接通知只实现
-    了飞书私聊),且该成员必须已绑定飞书非群聊身份,否则渠道转接不可达。
+    为 "web" 时仅网页端;为具体渠道时要求该渠道支持私聊通知(有可用适配器),
+    且该成员在租户内任一该渠道 active 员工绑定的作用域下绑定了非群聊渠道身份
+    (scope 级可达,跨企业绑定不互通),否则渠道转接不可达。
     """
     assignee_specs = {
         (node.assignee_user_id.strip(), str(node.assignee_notify_channel or "").strip())
@@ -236,32 +241,59 @@ def _validate_handoff_assignees(db: Session, content: SkillCard, tenant_id: str)
     }
     if not channel_specs:
         return
-    # 渠道转接通知目前仅实现飞书私聊(钉钉/企微/微信适配器只能回会话内消息,
-    # 无法主动私聊处理人),其余渠道一律拒绝,避免"配置成功但收不到通知"。
-    unsupported = sorted({channel for _, channel in channel_specs if channel != "feishu"})
+    # 渠道转接通知要求渠道支持主动私聊(飞书/企微);钉钉/微信适配器只能回
+    # 会话内消息,无法私聊处理人,其余渠道一律拒绝,避免"配置成功但收不到通知"。
+    from app.channels.service_outbox import HANDOFF_NOTIFY_CHANNELS
+
+    unsupported = sorted({channel for _, channel in channel_specs if channel not in HANDOFF_NOTIFY_CHANNELS})
     if unsupported:
+        labels = {name: _CHANNEL_LABELS.get(name, name) for name in unsupported}
+        unsupported_text = ", ".join(f"{labels[name]}({name})" for name in unsupported)
         raise HTTPException(
             status_code=400,
-            detail=f"人工节点处理人通知渠道当前仅支持飞书: {', '.join(unsupported)}",
+            detail=f"人工节点处理人通知渠道暂不支持私聊通知(当前支持飞书/企业微信): {unsupported_text}",
         )
     channel_user_ids = {user_id for user_id, _ in channel_specs}
-    identities = db.exec(
-        select(ChannelIdentity).where(
-            ChannelIdentity.tenant_id == tenant_id,
-            ChannelIdentity.staffdeck_user_id.in_(channel_user_ids),
-            ~ChannelIdentity.external_user_id.startswith("group:"),
-        )
-    ).all()
-    bound_channels_by_user: dict[str, set[str]] = {}
-    for identity in identities:
-        bound_channels_by_user.setdefault(identity.staffdeck_user_id, set()).add(
-            identity.channel
-        )
+    # scope 级可达性:成员身份必须挂在租户内该渠道某个 active 员工绑定的
+    # external_account_scope 下(跨企业/跨应用绑定不互通,不能仅按"绑定过该渠道"判断)。
+    from app.channels.service_identity import external_account_scope as _binding_scope
+
+    reachable_by_user: dict[str, set[str]] = {}
+    for channel in {channel for _, channel in channel_specs}:
+        bindings = [
+            binding
+            for binding in db.exec(
+                select(ChannelBinding).where(
+                    ChannelBinding.tenant_id == tenant_id,
+                    ChannelBinding.channel == channel,
+                    ChannelBinding.status == "active",
+                )
+            ).all()
+            if not binding.team_id
+        ]
+        if not bindings:
+            continue
+        scopes = {_binding_scope(db, binding) for binding in bindings}
+        identities = db.exec(
+            select(ChannelIdentity).where(
+                ChannelIdentity.tenant_id == tenant_id,
+                ChannelIdentity.channel == channel,
+                ChannelIdentity.staffdeck_user_id.in_(channel_user_ids),
+                ~ChannelIdentity.external_user_id.startswith("group:"),
+            )
+        ).all()
+        for identity in identities:
+            if identity.external_account_scope in scopes:
+                reachable_by_user.setdefault(identity.staffdeck_user_id, set()).add(channel)
     for user_id, channel in sorted(channel_specs):
-        if channel not in bound_channels_by_user.get(user_id, set()):
+        if channel not in reachable_by_user.get(user_id, set()):
+            label = _CHANNEL_LABELS.get(channel, channel)
             raise HTTPException(
                 status_code=400,
-                detail=f"人工节点处理人未绑定 {channel} 渠道身份,无法按该渠道转接: {user_id}",
+                detail=(
+                    f"人工节点处理人在租户内可用的{label}绑定作用域下未绑定渠道身份,"
+                    f"无法按该渠道转接: {user_id}"
+                ),
             )
 
 

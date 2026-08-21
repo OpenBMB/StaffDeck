@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator
 from time import sleep
 from typing import Any, Literal
@@ -57,6 +58,8 @@ from app.llm.model_config_resolver import (
     resolve_model_config_for_runtime,
 )
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
+
+logger = logging.getLogger(__name__)
 from app.memory.jobs import enqueue_memory_capture
 from app.memory.service import MemoryService
 from app.observability import EventLog
@@ -757,9 +760,9 @@ class AgentLoop:
             step_notify_channel=step_notify_channel,
             binding_default_notify_channel=binding_default_notify_channel,
         )
-        # 给 assignee 发飞书私聊通知(经会话所属 binding 投递)。失败仅记日志,
-        # 不影响 handoff 主流程(网页收件箱仍可兜底)。
-        self._maybe_notify_handoff_assignee_on_feishu(tenant_id, chat_session, handoff)
+        # 给 assignee 发渠道私聊通知。失败仅记日志,不影响 handoff 主流程
+        # (网页收件箱仍可兜底)。
+        self._maybe_notify_handoff_assignee(tenant_id, chat_session, handoff)
         return handoff
 
     def _binding_default_handoff_assignee(
@@ -785,32 +788,65 @@ class AgentLoop:
         channel = str(config.get("default_handoff_assignee_channel") or "").strip()
         return value, (channel or None)
 
-    def _maybe_notify_handoff_assignee_on_feishu(
+    def _maybe_notify_handoff_assignee(
         self,
         tenant_id: str,
         chat_session: ChatSession,
         handoff: HumanHandoffRequest,
     ) -> None:
-        from app.channels.service_outbox import notify_handoff_assignee
+        """按通知渠道偏好解析投递 binding,给 assignee 登记渠道私聊通知。
 
-        # 通知用 binding 必须是会话所属 binding(用户消息进来的那个),
-        # 而非从 agent 挂载列表取首个 active 飞书绑定。
-        if not chat_session.channel_binding_id:
-            return
-        binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
-        if (
-            not binding
-            or binding.tenant_id != tenant_id
-            or binding.channel != "feishu"
-            or binding.status != "active"
-        ):
-            return
-        # 处理人投递渠道偏好:"web" 仅走网页收件箱;指定了其他渠道(非当前 feishu)
-        # 时无法经当前 binding 投递,同样跳过。未指定(None)保持默认:可达则通知。
+        绑定解析规则:
+        - 偏好为具体渠道(如 feishu)时:优先会话所属 binding(渠道匹配且 active);
+          会话无 binding 或渠道不匹配时,在租户内找该渠道的任一 active 员工绑定。
+        - 偏好为 None(默认)时:用会话所属 binding(渠道支持私聊通知即可达)。
+        - 偏好为 "web" 时:仅网页收件箱,直接返回。
+
+        无可用 binding(含日志说明)或 assignee 在该 binding scope 无非群聊身份时,
+        由 notify_handoff_assignee 内部跳过,网页收件箱兜底。
+        """
+        from app.channels.service_outbox import (
+            HANDOFF_NOTIFY_CHANNELS,
+            notify_handoff_assignee,
+            resolve_handoff_notify_binding,
+        )
+
         metadata = handoff.metadata_json if isinstance(handoff.metadata_json, dict) else {}
         notify_channel = str(metadata.get("assignee_notify_channel") or "").strip()
-        if notify_channel and notify_channel != binding.channel:
+        if notify_channel == "web":
             return
+        binding: ChannelBinding | None = None
+        if notify_channel:
+            # 指定渠道:优先会话所属 binding,渠道不匹配时回退租户内该渠道任一 binding。
+            if chat_session.channel_binding_id:
+                session_binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
+                if (
+                    session_binding
+                    and session_binding.tenant_id == tenant_id
+                    and session_binding.channel == notify_channel
+                    and session_binding.status == "active"
+                ):
+                    binding = session_binding
+            binding = binding or resolve_handoff_notify_binding(self.db, tenant_id, notify_channel)
+            if binding is None:
+                logger.warning(
+                    "handoff 通知跳过:租户无可用的 %s 绑定 handoff=%s", notify_channel, handoff.id
+                )
+                return
+        else:
+            # 默认投递:用会话所属 binding,渠道支持私聊通知即可达。
+            if not chat_session.channel_binding_id:
+                return
+            session_binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
+            if (
+                not session_binding
+                or session_binding.tenant_id != tenant_id
+                or session_binding.status != "active"
+            ):
+                return
+            if session_binding.channel not in HANDOFF_NOTIFY_CHANNELS:
+                return
+            binding = session_binding
         notify_handoff_assignee(
             self.db,
             binding,

@@ -67,7 +67,7 @@ describe('SOP node handoff restrictions', () => {
 });
 
 describe('handoffAssigneeUserOptions channel variants', () => {
-  it('only offers feishu channel variants and skips other channels', () => {
+  it('offers supported private-message channel variants and skips others', () => {
     const options = handoffAssigneeUserOptions([
       {
         id: 'user-1',
@@ -85,6 +85,7 @@ describe('handoffAssigneeUserOptions channel variants', () => {
     expect(options).toEqual([
       { value: 'user-1', label: 'alice（网页端）' },
       { value: 'user-1::feishu', label: 'alice（飞书）' },
+      { value: 'user-1::wecom', label: 'alice（企业微信）' },
       { value: 'user-2', label: 'bob（网页端）' },
     ]);
   });

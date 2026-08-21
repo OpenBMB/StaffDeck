@@ -1423,7 +1423,7 @@ def test_put_binding_default_handoff_assignee_unchanged_by_default() -> None:
 
 
 def test_put_non_feishu_default_handoff_assignee_channel_rejected() -> None:
-    """渠道转接通知仅实现飞书:钉钉绑定即使处理人已绑定钉钉身份也拒绝保存。"""
+    """渠道转接通知要求渠道支持私聊:钉钉绑定即使处理人已绑定钉钉身份也拒绝保存。"""
     engine = _test_engine()
     users = _seed_users(engine)
     with Session(engine) as db:
@@ -1459,7 +1459,7 @@ def test_put_non_feishu_default_handoff_assignee_channel_rejected() -> None:
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 400
-    assert "仅支持飞书" in response.json()["detail"]
+    assert "暂不支持私聊通知" in response.json()["detail"]
 
     # 网页端选项不受影响
     web_variant = client.put(
@@ -1472,6 +1472,70 @@ def test_put_non_feishu_default_handoff_assignee_channel_rejected() -> None:
     )
     assert web_variant.status_code == 200
     assert web_variant.json()["default_handoff_assignee_channel"] == "web"
+
+
+def test_put_wecom_default_handoff_assignee_channel_variant_requires_scope_identity() -> None:
+    """企微绑定:渠道选项要求当前 binding scope 下的非群聊身份(scope 级可达)。"""
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wecom",
+            status="active",
+            identity_scope_key="corp_current",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+    client = _make_client(engine)
+
+    # 身份挂在其他企业 scope 下 → 400(跨企业绑定不互通)
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corp_other",
+                external_user_id="staff_owner_other",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+    wrong_scope = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "wecom",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert wrong_scope.status_code == 400
+
+    # 当前 scope 身份 → 200 且落库
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corp_current",
+                external_user_id="staff_owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+    reachable = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "wecom",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert reachable.status_code == 200
+    assert reachable.json()["default_handoff_assignee_channel"] == "wecom"
 
 
 # ---------- 分页 ----------

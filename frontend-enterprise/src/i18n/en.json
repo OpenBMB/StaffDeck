@@ -3003,6 +3003,7 @@
   "保存默认人工处理人失败": "Failed to save the default human assignee",
   "默认人工处理人": "Default human assignee",
   "SOP 人工节点未指定处理人时，转交给此用户；选择带渠道标注的选项会通过对应渠道转接。未配置时回退到数字员工负责人或管理员。": "Assign to this user when an SOP handoff node has no assignee; options with a channel label forward via that channel. If unset, fall back to the employee owner or an administrator.",
+  "SOP 人工节点未指定处理人时，转交给此用户；选择带渠道标注的选项会通过对应渠道转接（当前支持飞书/企业微信）。未配置时回退到数字员工负责人或管理员。": "Assign to this user when an SOP handoff node has no assignee; options with a channel label forward via that channel (Feishu and WeCom are currently supported). If unset, fall back to the employee owner or an administrator.",
   "当前：": "Current:",
   "选择处理人": "Select an assignee",
   "未指定（使用渠道默认）": "Not assigned (use channel default)",
