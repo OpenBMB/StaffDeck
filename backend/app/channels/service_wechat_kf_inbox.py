@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 
 from app.channels.adapters.base import ChannelInbound, ChannelInboundAttachment
 from app.channels.service_durable_inbox import StageDisposition, StageResult
-from app.db.models import ChannelBinding, ChannelInboundEvent, new_id
+from app.db.models import ChannelBinding, ChannelInboundEvent, WeChatKfAccount, new_id
 
 ENVELOPE_VERSION = 1
 MAX_ENVELOPE_BYTES = 256 * 1024
@@ -87,6 +87,18 @@ def stage_wechat_kf_inbound(
                 return StageResult(
                     StageDisposition.SECURITY_DROP,
                     error_code="binding_fence_mismatch",
+                )
+            account = db.exec(
+                select(WeChatKfAccount).where(
+                    WeChatKfAccount.binding_id == binding.id,
+                    WeChatKfAccount.open_kfid == inbound.to_user_id,
+                    WeChatKfAccount.status == "active",
+                )
+            ).first()
+            if not account:
+                return StageResult(
+                    StageDisposition.SECURITY_DROP,
+                    error_code="account_fence_mismatch",
                 )
             event = ChannelInboundEvent(
                 id=new_id("chevt"),

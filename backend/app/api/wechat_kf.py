@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import logging
 import struct
+import time
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from defusedxml import ElementTree as ET
@@ -28,6 +29,7 @@ from app.db.models import ChannelBinding, WeChatKfAccount, utc_now
 router = APIRouter(prefix="/api/channels/wechat-kf", tags=["wechat-kf"])
 
 logger = logging.getLogger(__name__)
+CALLBACK_TIMESTAMP_MAX_AGE_SECONDS = 5 * 60
 
 
 def _callback_signature(token: str, timestamp: str, nonce: str, ciphertext: str) -> str:
@@ -42,6 +44,30 @@ def _verify_callback(
     nonce: str,
     ciphertext: str,
 ) -> None:
+    try:
+        callback_timestamp = int(timestamp)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="微信客服回调时间戳无效：必须是 Unix 秒级整数",
+        ) from exc
+    age_seconds = time.time() - callback_timestamp
+    if age_seconds > CALLBACK_TIMESTAMP_MAX_AGE_SECONDS:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "微信客服回调已过期：timestamp 与服务器时间相差超过 "
+                f"{CALLBACK_TIMESTAMP_MAX_AGE_SECONDS} 秒"
+            ),
+        )
+    if age_seconds < -CALLBACK_TIMESTAMP_MAX_AGE_SECONDS:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "微信客服回调时间戳尚未生效：请求时间超前服务器时间超过 "
+                f"{CALLBACK_TIMESTAMP_MAX_AGE_SECONDS} 秒，请检查客户端时钟"
+            ),
+        )
     expected = _callback_signature(token, timestamp, nonce, ciphertext)
     if not hmac.compare_digest(expected, msg_signature):
         raise HTTPException(status_code=403, detail="微信客服回调签名无效")
@@ -161,10 +187,11 @@ async def receive_callback(
     if not all((msg_signature, timestamp, nonce)):
         raise HTTPException(status_code=400, detail="缺少微信客服回调参数")
     binding, credentials = _callback_binding(binding_id, allow_pending=True)
+    callback_config_revision = binding.config_revision
     logger.info("微信客服回调收到 binding=%s", binding_id)
     try:
         envelope = _parse_callback_xml(await request.body())
-    except ET.ParseError as exc:
+    except (ET.ParseError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="微信客服回调 XML 无效") from exc
     ciphertext = _xml_text(envelope, "Encrypt")
     if not ciphertext:
@@ -184,7 +211,7 @@ async def receive_callback(
     )
     try:
         event = _parse_callback_xml(plaintext)
-    except ET.ParseError as exc:
+    except (ET.ParseError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="微信客服回调明文 XML 无效") from exc
     if _xml_text(event, "Event") != "kf_msg_or_event":
         return Response(content="success", media_type="text/plain")
@@ -196,6 +223,11 @@ async def receive_callback(
     with binding_lifecycle_lock(binding_id):
         # 并发回调必须在锁内重读游标，否则两个请求会从同一 cursor 重复拉取。
         binding, _credentials = _callback_binding(binding_id, allow_pending=True)
+        if binding.config_revision != callback_config_revision:
+            raise HTTPException(
+                status_code=409,
+                detail="微信客服渠道配置已变更，请重新触发回调",
+            )
         with Session(engine) as db:
             account = db.exec(
                 select(WeChatKfAccount).where(
@@ -234,14 +266,28 @@ async def receive_callback(
                     open_kfid,
                 )
                 raise
+            if not isinstance(data, dict):
+                error = "微信客服 sync_msg 响应格式无效"
+                _save_account_error(account.id, error)
+                raise HTTPException(status_code=503, detail=error)
+            raw_messages = data.get("msg_list")
+            if not isinstance(raw_messages, list):
+                raise HTTPException(status_code=503, detail="微信客服消息列表格式无效")
             logger.info(
                 "微信客服 sync_msg 成功 binding=%s open_kfid=%s messages=%s has_more=%s",
                 binding.id,
                 open_kfid,
-                len(data.get("msg_list") or []),
+                len(raw_messages),
                 data.get("has_more"),
             )
-            for raw in data.get("msg_list") or []:
+            for raw in raw_messages:
+                if not isinstance(raw, dict):
+                    logger.warning(
+                        "微信客服消息帧格式无效 binding=%s open_kfid=%s",
+                        binding.id,
+                        open_kfid,
+                    )
+                    continue
                 inbound = normalize_wechat_kf_message(raw, account_scope=scope)
                 if inbound is None:
                     logger.info(
@@ -280,11 +326,21 @@ async def receive_callback(
                     result.disposition,
                 )
                 staged = staged or result.disposition == StageDisposition.STAGED
+            try:
+                has_more = int(data.get("has_more") or 0)
+            except (TypeError, ValueError) as exc:
+                _save_account_error(account.id, "微信客服 sync_msg has_more 格式无效")
+                raise HTTPException(
+                    status_code=503,
+                    detail="微信客服消息分页字段格式无效",
+                ) from exc
+            # Validate pagination metadata before advancing the per-account cursor.
+            # A malformed provider response must be retried from the previous cursor.
             next_cursor = str(data.get("next_cursor") or cursor)
             if next_cursor:
                 cursor = next_cursor
                 _save_account_cursor(account.id, cursor)
-            if int(data.get("has_more") or 0) != 1:
+            if has_more != 1:
                 break
         else:
             raise HTTPException(status_code=503, detail="微信客服消息分页超过安全上限")

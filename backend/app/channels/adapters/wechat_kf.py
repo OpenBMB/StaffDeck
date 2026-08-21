@@ -97,7 +97,12 @@ class WeChatKfTokenProvider:
 def normalize_wechat_kf_message(
     raw: dict[str, Any], *, account_scope: str = ""
 ) -> ChannelInbound | None:
-    if not isinstance(raw, dict) or int(raw.get("origin") or 0) != 3:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        if int(raw.get("origin") or 0) != 3:
+            return None
+    except (TypeError, ValueError):
         return None
     msg_id = str(raw.get("msgid") or "").strip()
     external_userid = str(raw.get("external_userid") or "").strip()
@@ -108,17 +113,28 @@ def normalize_wechat_kf_message(
     text = ""
     attachments: list[ChannelInboundAttachment] = []
     if msg_type == "text":
-        text = str((raw.get("text") or {}).get("content") or "").strip()
+        text_payload = raw.get("text")
+        if not isinstance(text_payload, dict):
+            return None
+        text = str(text_payload.get("content") or "").strip()
     elif msg_type in {"image", "file"}:
         attachments = _wechat_kf_attachments(raw, msg_id, msg_type)
     elif msg_type == "mixed":
-        mixed = raw.get("mixed") or {}
-        for item in mixed.get("msg_item") or []:
+        mixed = raw.get("mixed")
+        if not isinstance(mixed, dict):
+            return None
+        items = mixed.get("msg_item")
+        if not isinstance(items, list):
+            return None
+        for item in items:
             if not isinstance(item, dict):
                 continue
             item_type = str(item.get("msgtype") or "").strip()
             if item_type == "text":
-                value = str((item.get("text") or {}).get("content") or "").strip()
+                text_payload = item.get("text")
+                if not isinstance(text_payload, dict):
+                    continue
+                value = str(text_payload.get("content") or "").strip()
                 if value:
                     text = f"{text}\n{value}".strip() if text else value
             elif item_type in {"image", "file"}:
