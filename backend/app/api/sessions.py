@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,9 +10,15 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from app.api.chat import _build_turn_traces, session_read
-from app.session.message_read import message_read
-from app.core.harness_session_cleanup import stage_harness_session_execution_reset
+from app.api.chat import (
+    _build_turn_traces,
+    _delete_chat_session_records,
+    session_read,
+)
+from app.core.harness_session_cleanup import (
+    remove_harness_session_workspace,
+    stage_harness_session_execution_reset,
+)
 from app.db import get_session
 from app.db.models import (
     AgentEvent,
@@ -29,14 +36,20 @@ from app.observability.session_timings import enrich_turn_traces_with_timings
 from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
+from app.session.message_read import message_read
 from app.session.message_visibility import visible_message_content, visible_message_rows
 
 router = APIRouter(prefix="/api/enterprise/sessions", tags=["enterprise:sessions"])
+logger = logging.getLogger(__name__)
 
 SESSION_LOG_EXPORT_SCHEMA = "staffdeck.conversation-log.v1"
 
 
 class SessionLogExportRequest(BaseModel):
+    session_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class SessionDeleteRequest(BaseModel):
     session_ids: list[str] = Field(min_length=1, max_length=500)
 
 
@@ -86,6 +99,46 @@ def export_session_logs(
         },
         f"staffdeck-conversation-logs-{exported_at.strftime('%Y%m%d-%H%M%S')}.json",
     )
+
+
+@router.post("/delete")
+def delete_session_logs(
+    request: SessionDeleteRequest,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> dict[str, object]:
+    _ensure_request_tenant(tenant_id, current_user)
+    session_ids = list(dict.fromkeys(request.session_ids))
+    rows = [
+        _get_visible_chat_session(db, tenant_id, session_id, current_user)
+        for session_id in session_ids
+    ]
+    for row in rows:
+        _delete_chat_session_records(
+            db,
+            tenant_id=tenant_id,
+            session_id=row.id,
+            row=row,
+        )
+    db.commit()
+    for session_id in session_ids:
+        try:
+            remove_harness_session_workspace(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                db=db,
+            )
+        except OSError:
+            # Database deletion is already committed; one unsafe workspace must
+            # not prevent the remaining requested sessions from being removed.
+            logger.warning(
+                "Failed to remove Harness workspace for tenant=%s session=%s",
+                tenant_id,
+                session_id,
+                exc_info=True,
+            )
+    return {"status": "deleted", "count": len(rows)}
 
 
 @router.get("/{session_id}/export")

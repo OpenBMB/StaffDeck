@@ -88,7 +88,6 @@ import {
   isKnowledgeTracePhase,
   isMissingChatSessionError,
   isRecoverableRunningTrace,
-  isScheduledSession,
   isStreamingMessageId,
   isTerminalSessionEvent,
   knowledgeResultTraceDetail,
@@ -411,7 +410,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const queuedTurnProcessingRef = useRef(false);
   const queuedTurnPreviewsRestoredRef = useRef(false);
   const sessionsInitializedRef = useRef(false);
-  const autoOpenedSessionIdsRef = useRef(new Set<string>());
   const loadErrorNoticeRef = useRef<Record<string, number>>({});
   const uploadControllersRef = useRef(new Map<string, AbortController>());
 
@@ -1190,7 +1188,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         const rows = selectedRow && !listedRows.some((row) => row.id === selectedRow.id)
           ? [...listedRows, selectedRow]
           : listedRows;
-        const previousIds = new Set(knownSessionIdsRef.current);
         const initialized = sessionsInitializedRef.current;
         if (!initialized) {
           const initialReads = loadSessionReadTimes(userId);
@@ -1214,17 +1211,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
           ...rows,
         ]);
         if (!initialized) return;
-        const newScheduledSession = rows.find((row) => (
-          !previousIds.has(row.id)
-          && isScheduledSession(row)
-          && !autoOpenedSessionIdsRef.current.has(row.id)
-        ));
-        if (!newScheduledSession || embedded) return;
-        autoOpenedSessionIdsRef.current.add(newScheduledSession.id);
-        if (!input.trim()) {
-          getSlot(newScheduledSession.id);
-          navigate(chatSessionPath(newScheduledSession.id));
-        }
       })
       .catch((error) => {
         notifyRequestError('sessions', error, '会话加载失败');
@@ -1232,16 +1218,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       .finally(() => {
         setSessionsLoading(false);
       });
-  }, [embedded, getSlot, input, navigate, notifyRequestError, sessionId, tenantId, userId]);
+  }, [notifyRequestError, sessionId, tenantId, userId]);
 
   const handleMissingSession = useCallback((id: string) => {
     forgetMissingSession(id);
     loadSessions();
-    if (sessionId === id && !embedded) {
-      pendingPromotedSessionIdRef.current = null;
-      navigate('/workspace/gallery', { replace: true });
-    }
-  }, [embedded, forgetMissingSession, loadSessions, navigate, sessionId]);
+  }, [forgetMissingSession, loadSessions]);
 
   const loadMessages = useCallback((id: string) => {
     return api

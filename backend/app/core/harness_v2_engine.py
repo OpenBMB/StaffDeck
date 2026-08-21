@@ -281,9 +281,10 @@ class HarnessV2Engine:
         )
         memory_context = [
             memory_read(row)
-            for row in self.owner.memory.context_memories(
+            for row in self.owner.memory.recall(
                 request.tenant_id,
                 request.user_id,
+                query=request.message,
                 agent_id=session.agent_id,
             )
         ]

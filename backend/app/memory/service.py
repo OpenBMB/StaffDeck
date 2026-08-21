@@ -4,6 +4,7 @@ import hashlib
 import re
 from typing import Any
 
+from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from app import paths
@@ -13,11 +14,14 @@ from app.observability.spans import llm_operation
 from app.session.session_schema import ChatTurnRequest, StepAgentResult
 from app.tools.tool_schema import ToolResult
 
-
 PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "memory_extractor_prompt.md"
 MEMORY_SOURCE = "model_memory_extractor"
 PROFILE_NAME_KEY = "preferred_name"
 ALLOWED_MEMORY_KINDS = {"profile", "preference", "fact"}
+DEFAULT_RECALL_LIMIT = 12
+RECALL_CANDIDATE_LIMIT = 80
+RECALL_CONTENT_CHAR_LIMIT = 6000
+HIGH_PRIORITY_PROFILE_IMPORTANCE = 0.8
 
 
 class MemoryService:
@@ -29,11 +33,93 @@ class MemoryService:
         tenant_id: str,
         user_id: str,
         query: str,
-        limit: int | None = None,
+        limit: int | None = DEFAULT_RECALL_LIMIT,
         agent_id: str | None = None,
     ) -> list[MemoryRecord]:
-        del query, limit
-        return self.context_memories(tenant_id, user_id, agent_id=agent_id)
+        effective_limit = DEFAULT_RECALL_LIMIT if limit is None else max(0, limit)
+        if effective_limit == 0:
+            return []
+
+        tokens = _recall_tokens(query)
+        predicates = [
+            MemoryRecord.tenant_id == tenant_id,
+            MemoryRecord.user_id == user_id,
+            MemoryRecord.kind.in_(ALLOWED_MEMORY_KINDS),
+        ]
+        if tokens:
+            predicates.append(
+                or_(
+                    *[
+                        func.lower(MemoryRecord.content).contains(token)
+                        for token in tokens
+                    ]
+                )
+            )
+        candidates = (
+            list(
+                self.db.exec(
+                    select(MemoryRecord)
+                    .where(*predicates)
+                    .order_by(MemoryRecord.updated_at.desc())
+                    .limit(RECALL_CANDIDATE_LIMIT)
+                ).all()
+            )
+            if tokens
+            else []
+        )
+        if agent_id:
+            candidates = [
+                row for row in candidates if self._memory_matches_agent(row, agent_id)
+            ]
+
+        # A high-priority profile is identity context, not a lexical hit. Fetch
+        # those rows separately so an unrelated question cannot hide them.
+        profile_rows = list(
+            self.db.exec(
+                select(MemoryRecord)
+                .where(
+                    MemoryRecord.tenant_id == tenant_id,
+                    MemoryRecord.user_id == user_id,
+                    MemoryRecord.kind == "profile",
+                    MemoryRecord.importance >= HIGH_PRIORITY_PROFILE_IMPORTANCE,
+                )
+                .order_by(MemoryRecord.importance.desc(), MemoryRecord.updated_at.desc())
+                .limit(RECALL_CANDIDATE_LIMIT)
+            ).all()
+        )
+        if agent_id:
+            profile_rows = [
+                row for row in profile_rows if self._memory_matches_agent(row, agent_id)
+            ]
+
+        priority_rows = memory_rows_for_read(profile_rows)
+        priority_ids = {row.id for row in priority_rows}
+        by_id = {row.id: row for row in candidates if row.id not in priority_ids}
+        ranked = sorted(
+            by_id.values(),
+            key=lambda row: _recall_score(row, tokens),
+            reverse=True,
+        )
+        visible = [*priority_rows, *memory_rows_for_read(ranked)]
+        selected: list[MemoryRecord] = []
+        total_chars = 0
+        for row in visible:
+            if len(selected) >= effective_limit:
+                break
+            content_length = len(row.content or "")
+            remaining_chars = RECALL_CONTENT_CHAR_LIMIT - total_chars
+            if content_length > remaining_chars:
+                if remaining_chars <= 0:
+                    continue
+                row = row.model_copy(update={"content": row.content[:remaining_chars]})
+                content_length = remaining_chars
+            if content_length <= 0:
+                continue
+            selected.append(row)
+            total_chars += content_length
+            if total_chars >= RECALL_CONTENT_CHAR_LIMIT:
+                break
+        return selected
 
     def context_memories(
         self,
@@ -420,3 +506,42 @@ def _read_dedupe_key(record: MemoryRecord) -> str:
     if record.kind == "summary":
         return "summary"
     return record.id
+
+
+def _recall_tokens(query: str) -> list[str]:
+    """Extract useful Chinese fragments and English words for lexical recall."""
+
+    text = str(query or "").strip()
+    if not text:
+        return []
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for word in re.findall(r"[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*", text.lower()):
+        if word not in seen:
+            seen.add(word)
+            tokens.append(word)
+    for chunk in re.findall(r"[\u3400-\u9fff\u3040-\u30ff]+", text):
+        fragments = (
+            [chunk]
+            if len(chunk) < 2
+            else [chunk[index : index + 2] for index in range(len(chunk) - 1)]
+        )
+        for fragment in fragments:
+            if fragment not in seen:
+                seen.add(fragment)
+                tokens.append(fragment)
+    return tokens
+
+
+def _recall_score(
+    record: MemoryRecord,
+    tokens: list[str],
+) -> tuple[int, int, float, object]:
+    content = (record.content or "").lower()
+    matches = sum(1 for token in tokens if token in content)
+    return (
+        matches,
+        int(record.importance >= HIGH_PRIORITY_PROFILE_IMPORTANCE),
+        record.importance,
+        record.updated_at,
+    )

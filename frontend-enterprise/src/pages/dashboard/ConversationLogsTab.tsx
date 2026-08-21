@@ -7,6 +7,7 @@ import {
   GitBranch,
   LoaderCircle,
   RefreshCw,
+  Trash2,
   Workflow,
   Wrench,
 } from 'lucide-react';
@@ -103,6 +104,8 @@ export default function ConversationLogsTab() {
   const [reanalyzingId, setReanalyzingId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
   const [exportingKey, setExportingKey] = useState('');
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
@@ -273,6 +276,34 @@ export default function ConversationLogsTab() {
       notify.error(error instanceof Error ? error.message : '批量导出对话日志失败');
     } finally {
       setExportingKey('');
+    }
+  };
+
+  const deleteBatch = async () => {
+    const sessionIds = filteredRows
+      .filter((row) => selectedSessionIds.has(row.id))
+      .map((row) => row.id);
+    if (sessionIds.length === 0) return;
+    if (sessionIds.length > 500) {
+      notify.error('单次最多删除 500 条对话日志，请缩小筛选范围后重试');
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api.post<{ status: string; count: number }>(
+        `/api/enterprise/sessions/delete?tenant_id=${TENANT_ID}`,
+        { session_ids: sessionIds },
+      );
+      const detailSessionId = String(detail?.session?.id || detail?.session?.session_id || '');
+      if (detailSessionId && sessionIds.includes(detailSessionId)) setDetail(null);
+      setSelectedSessionIds(new Set());
+      setDeleteDialogOpen(false);
+      notify.success(`已删除 ${sessionIds.length} 条对话日志`);
+      await load();
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '批量删除对话日志失败');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -593,6 +624,15 @@ export default function ConversationLogsTab() {
                 ? `导出已选（${batchRows.length}）`
                 : `导出筛选结果（${batchRows.length}）`}
             </UIButton>
+            <UIButton
+              variant="outline"
+              disabled={selectedSessionIds.size === 0 || Boolean(exportingKey) || deleting}
+              onClick={() => setDeleteDialogOpen(true)}
+              className="h-[34px] shrink-0 gap-[6px] rounded-[10px] border-[0.5px] border-[#f0d5d5] bg-white px-[14px] text-[12px] font-normal text-[#b33a3a] hover:border-[#e9bcbc] hover:bg-[#fffafa] disabled:text-[#c0c6d4] max-[520px]:w-full"
+            >
+              <Trash2 className="size-[14px]" />
+              删除已选（{selectedSessionIds.size}）
+            </UIButton>
           </div>
         </div>
 
@@ -625,6 +665,34 @@ export default function ConversationLogsTab() {
           />
         )}
       </section>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => !deleting && setDeleteDialogOpen(open)}>
+        <DialogContent aria-describedby={undefined} className="gap-[16px] rounded-[14px] p-[20px] sm:max-w-[420px]">
+          <DialogTitle className="text-[15px] text-[#18181a]">确认删除对话日志</DialogTitle>
+          <p className="m-0 text-[13px] leading-[1.6] text-[#757f9c]">
+            将删除已选的 {selectedSessionIds.size} 条对话及其执行记录和关联记忆，此操作无法撤销。
+          </p>
+          <div className="flex justify-end gap-[8px]">
+            <UIButton
+              variant="outline"
+              disabled={deleting}
+              onClick={() => setDeleteDialogOpen(false)}
+              className="h-[32px] rounded-[8px] px-[14px] text-[12px]"
+            >
+              取消
+            </UIButton>
+            <UIButton
+              variant="destructive"
+              disabled={deleting}
+              onClick={() => void deleteBatch()}
+              className="h-[32px] gap-[6px] rounded-[8px] px-[14px] text-[12px]"
+            >
+              {deleting && <LoaderCircle className="size-[14px] animate-spin" />}
+              确认删除
+            </UIButton>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <FeedbackDetailDialog
         detail={detail}
