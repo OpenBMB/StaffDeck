@@ -221,6 +221,8 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
             return
         if binding.channel == "feishu":
             valid_target = bool(target.get("message_id") or target.get("receive_id"))
+        elif binding.channel == "wechat_kf":
+            valid_target = bool(target.get("to_user_id") and target.get("open_kfid"))
         else:
             valid_target = bool(target.get("to_user_id") and target.get("context_token"))
         if not valid_target:

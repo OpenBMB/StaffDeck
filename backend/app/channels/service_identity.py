@@ -25,7 +25,13 @@ logger = logging.getLogger(__name__)
 _USERNAME_UNSAFE = re.compile(r"[^a-zA-Z0-9_.@-]")
 
 # 渠道显示名前缀(用户回复与懒建账号 display_name 共用)
-_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书", "dingtalk": "钉钉"}
+_CHANNEL_LABELS = {
+    "wechat": "微信",
+    "wechat_kf": "微信客服",
+    "wecom": "企业微信",
+    "feishu": "飞书",
+    "dingtalk": "钉钉",
+}
 
 
 class IdentityScopeConflict(RuntimeError):
@@ -38,6 +44,12 @@ def channel_label(channel: str) -> str:
 
 def scope_from_config(config: dict, binding: ChannelBinding) -> str:
     """按配置计算生效 scope:wecom 取 corp_id/bot_id,兜底 binding.id;其他渠道置空。"""
+    if binding.channel == "wechat_kf":
+        corp_id = str(config.get("corp_id") or "").strip()
+        open_kfid = str(config.get("open_kfid") or "").strip()
+        if corp_id and open_kfid:
+            return f"{corp_id}:{open_kfid}"
+        return corp_id or binding.id
     if binding.channel != "wecom":
         if binding.channel == "dingtalk":
             return str(config.get("provider_tenant_key") or "").strip() or binding.id
@@ -64,6 +76,15 @@ def external_account_key(channel: str, config: dict) -> str | None:
     if channel == "wechat":
         bot_id = str(config.get("ilink_bot_id") or "").strip()
         return f"wechat:ilink_bot:{bot_id}" if bot_id else None
+    if channel == "wechat_kf":
+        corp_id = str(config.get("corp_id") or "").strip()
+        open_kfid = str(config.get("open_kfid") or "").strip()
+        if corp_id and open_kfid:
+            return (
+                f"wechat_kf:corp:{len(corp_id)}:{corp_id}:"
+                f"kf:{len(open_kfid)}:{open_kfid}"
+            )
+        return f"wechat_kf:corp:{len(corp_id)}:{corp_id}" if corp_id else None
     if channel == "feishu":
         app_id = str(config.get("app_id") or "").strip()
         return f"feishu:app:{len(app_id)}:{app_id}" if app_id else None

@@ -49,6 +49,7 @@ from app.db.models import (
     Message,
     Team,
     User,
+    WeChatKfAccount,
     new_id,
     utc_now,
 )
@@ -193,7 +194,7 @@ def claim_staged_inbound(event_id: str, *, db_engine=None) -> bool:
             update(ChannelInboundEvent)
             .where(
                 ChannelInboundEvent.id == event_id,
-                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
+                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk", "wechat_kf"}),
                 ChannelInboundEvent.status == "received",
             )
             .values(
@@ -558,6 +559,8 @@ def _build_name_resolver(binding: ChannelBinding):
 def _valid_notice_target(channel: str, target: dict) -> bool:
     if channel == "feishu":
         return bool(target.get("message_id") or target.get("receive_id"))
+    if channel == "wechat_kf":
+        return bool(target.get("to_user_id") and target.get("open_kfid"))
     return bool(target.get("to_user_id") and target.get("context_token"))
 
 
@@ -1072,6 +1075,9 @@ def process_inbound(
         return False
     # 作用域以绑定配置为准(适配器侧可能拿的是启动时旧值):统一覆盖后再使用
     scope = external_account_scope(None, binding)
+    if binding.channel == "wechat_kf":
+        corp_id = str((binding.config_json or {}).get("corp_id") or "").strip()
+        scope = f"{corp_id}:{inbound.to_user_id}" if corp_id and inbound.to_user_id else scope
     inbound.account_scope = scope
     command = parse_command(inbound.text)
     target = {
@@ -1090,8 +1096,24 @@ def process_inbound(
                 or event.processor_run_id != current_processor_run_id()
             ):
                 return False
-            target = dict(event.target_json or {})
-        else:
+        target = dict(event.target_json or {}) if event else target
+        kf_account = None
+        if binding.channel == "wechat_kf":
+            kf_account = db.exec(
+                select(WeChatKfAccount).where(
+                    WeChatKfAccount.binding_id == binding.id,
+                    WeChatKfAccount.open_kfid == inbound.to_user_id,
+                    WeChatKfAccount.status == "active",
+                )
+            ).first()
+            if not kf_account:
+                event.status = "failed"
+                event.error = "wechat_kf_account_not_bound"
+                event.updated_at = utc_now()
+                db.add(event)
+                db.commit()
+                return False
+        if not event:
             event = ChannelInboundEvent(
                 tenant_id=binding.tenant_id,
                 binding_id=binding.id,
@@ -1249,11 +1271,13 @@ def process_inbound(
             return False
         team: Team | None = None
         team_leader_agent_id: str | None = None
-        if binding.team_id:
+        route_team_id = kf_account.team_id if kf_account else binding.team_id
+        route_agent_id = kf_account.agent_id if kf_account else None
+        if route_team_id:
             # 团队绑定:跳过路由指针/自动分发,消息直路由团队现任 TL(换帅自动跟随)
             from app.teams.service import get_team_leader
 
-            team_row = db.get(Team, binding.team_id)
+            team_row = db.get(Team, route_team_id)
             if team_row and team_row.tenant_id == binding.tenant_id and team_row.status == "active":
                 team = team_row
             team_notice: str | None = None
@@ -1293,6 +1317,13 @@ def process_inbound(
                 inbound.text,
                 team_id=team.id,
                 team_title=f"团队 {team.name} · TL 对话",
+            )
+        elif route_agent_id:
+            current_agent_id = route_agent_id
+            pointer_reset = False
+            route_decision = None
+            chat_session = find_or_create_channel_session(
+                db, binding, user, current_agent_id, inbound.external_conv_id, inbound.text
             )
         else:
             current_agent_id, pointer_reset = resolve_current_agent(db, binding, inbound.external_conv_id)
@@ -1533,7 +1564,7 @@ def process_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
                 update(ChannelInboundEvent)
                 .where(
                     ChannelInboundEvent.id == event_pk,
-                    ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
+                    ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk", "wechat_kf"}),
                     ChannelInboundEvent.status == "processing",
                     ChannelInboundEvent.processor_run_id == current_processor_run_id(),
                 )
@@ -1630,7 +1661,9 @@ def run_staged_inbound_daemon(
                 event_ids = db.exec(
                     select(ChannelInboundEvent.id)
                     .where(
-                        ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk"}),
+                        ChannelInboundEvent.channel.in_(
+                            {"feishu", "wecom", "dingtalk", "wechat_kf"}
+                        ),
                         ChannelInboundEvent.status == "received",
                     )
                     .order_by(ChannelInboundEvent.created_at)
@@ -1728,6 +1761,19 @@ def _decode_and_validate_staged_event(
         ):
             raise ValueError("replay_account_mismatch")
         return inbound
+    if event.channel == "wechat_kf":
+        from app.channels.service_wechat_kf_inbox import decode_replay_envelope
+
+        inbound = decode_replay_envelope(payload)
+        scope = str((account or {}).get("scope") or "").strip()
+        expected_scope = external_account_scope(None, binding)
+        if binding.channel == "wechat_kf":
+            corp_id = str((binding.config_json or {}).get("corp_id") or "").strip()
+            open_kfid = str(inbound.to_user_id or "").strip()
+            expected_scope = f"{corp_id}:{open_kfid}" if corp_id and open_kfid else expected_scope
+        if not scope or expected_scope != scope:
+            raise ValueError("replay_account_mismatch")
+        return inbound
     raise ValueError("unsupported_envelope_channel")
 
 
@@ -1815,11 +1861,14 @@ def sweep_stale_inbound_events(*, db_engine=None) -> int:
             binding = db.get(ChannelBinding, binding_id)
             if not binding:
                 continue
-            if channel not in {"feishu", "wecom", "dingtalk"} and binding.status != "active":
+            if (
+                channel not in {"feishu", "wecom", "dingtalk", "wechat_kf"}
+                and binding.status != "active"
+            ):
                 continue
             db.expunge(binding)
         try:
-            if channel in {"feishu", "wecom", "dingtalk"}:
+            if channel in {"feishu", "wecom", "dingtalk", "wechat_kf"}:
                 if _recover_stale_durable_event(event_pk, db_engine=use_engine):
                     taken += 1
                 continue
