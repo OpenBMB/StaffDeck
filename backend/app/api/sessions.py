@@ -9,7 +9,13 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from app.api.chat import _build_turn_traces, message_read, session_read
+from app.api.chat import (
+    _build_turn_traces,
+    _delete_chat_session_record,
+    _remove_harness_workspace_after_session_delete,
+    message_read,
+    session_read,
+)
 from app.core.harness_session_cleanup import stage_harness_session_execution_reset
 from app.db import get_session
 from app.db.models import (
@@ -35,6 +41,10 @@ SESSION_LOG_EXPORT_SCHEMA = "staffdeck.conversation-log.v1"
 
 
 class SessionLogExportRequest(BaseModel):
+    session_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class SessionLogDeleteRequest(BaseModel):
     session_ids: list[str] = Field(min_length=1, max_length=500)
 
 
@@ -84,6 +94,27 @@ def export_session_logs(
         },
         f"staffdeck-conversation-logs-{exported_at.strftime('%Y%m%d-%H%M%S')}.json",
     )
+
+
+@router.post("/delete")
+def delete_session_logs(
+    request: SessionLogDeleteRequest,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> dict[str, object]:
+    _ensure_request_tenant(tenant_id, current_user)
+    session_ids = list(dict.fromkeys(request.session_ids))
+    rows = [
+        _get_visible_chat_session(db, tenant_id, session_id, current_user)
+        for session_id in session_ids
+    ]
+    for row in rows:
+        _delete_chat_session_record(db, row)
+    db.commit()
+    for row in rows:
+        _remove_harness_workspace_after_session_delete(tenant_id, row.id)
+    return {"status": "deleted", "deleted_count": len(rows), "session_ids": session_ids}
 
 
 @router.get("/{session_id}/export")

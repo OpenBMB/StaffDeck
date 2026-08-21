@@ -20,6 +20,7 @@ from app.db.models import (
     HarnessSessionLeaseRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
+    MemoryRecord,
     Tenant,
     User,
 )
@@ -225,6 +226,21 @@ def test_delete_chat_session_cleans_harness_state_and_workspace(
             session_id="session_other",
             suffix="other",
         )
+        target_memory = MemoryRecord(
+            tenant_id="tenant_demo",
+            user_id=user.id,
+            session_id="session_target",
+            kind="preference",
+            content="只属于目标会话的记忆",
+        )
+        survivor_memory = MemoryRecord(
+            tenant_id="tenant_demo",
+            user_id=user.id,
+            session_id="session_other",
+            kind="preference",
+            content="其他会话的记忆",
+        )
+        db.add_all([target_memory, survivor_memory])
         db.commit()
 
         workspace = harness_session_workspace_path(
@@ -250,4 +266,6 @@ def test_delete_chat_session_cleans_harness_state_and_workspace(
         assert db.get(HarnessInvocationRecord, survivor_ids[0]) is not None
         assert db.get(HarnessRunRecord, survivor_ids[1]) is not None
         assert db.get(HarnessTaskFrameRecord, survivor_ids[2]) is not None
+        assert db.get(MemoryRecord, target_memory.id) is None
+        assert db.get(MemoryRecord, survivor_memory.id) is not None
         assert db.exec(select(HarnessTaskFrameRecord)).all()

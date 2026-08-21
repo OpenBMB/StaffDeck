@@ -80,7 +80,6 @@ import {
   isKnowledgeTracePhase,
   isMissingChatSessionError,
   isRecoverableRunningTrace,
-  isScheduledSession,
   isStreamingMessageId,
   isTerminalSessionEvent,
   knowledgeResultTraceDetail,
@@ -393,7 +392,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const queuedTurnProcessingRef = useRef(false);
   const queuedTurnPreviewsRestoredRef = useRef(false);
   const sessionsInitializedRef = useRef(false);
-  const autoOpenedSessionIdsRef = useRef(new Set<string>());
   const loadErrorNoticeRef = useRef<Record<string, number>>({});
   const uploadControllersRef = useRef(new Map<string, AbortController>());
 
@@ -1053,7 +1051,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     api
       .get<ChatSession[]>(`/api/chat/sessions?tenant_id=${tenantId}`)
       .then((rows) => {
-        const previousIds = new Set(knownSessionIdsRef.current);
         const initialized = sessionsInitializedRef.current;
         if (!initialized) {
           const initialReads = loadSessionReadTimes(userId);
@@ -1076,18 +1073,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
           ...current.filter((row) => optimisticSessionIdsRef.current.has(row.id) && !persistedIds.has(row.id)),
           ...rows,
         ]);
-        if (!initialized) return;
-        const newScheduledSession = rows.find((row) => (
-          !previousIds.has(row.id)
-          && isScheduledSession(row)
-          && !autoOpenedSessionIdsRef.current.has(row.id)
-        ));
-        if (!newScheduledSession) return;
-        autoOpenedSessionIdsRef.current.add(newScheduledSession.id);
-        if (!input.trim()) {
-          getSlot(newScheduledSession.id);
-          navigate(chatSessionPath(newScheduledSession.id));
-        }
       })
       .catch((error) => {
         notifyRequestError('sessions', error, '会话加载失败');
@@ -1095,7 +1080,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       .finally(() => {
         setSessionsLoading(false);
       });
-  }, [getSlot, input, navigate, notifyRequestError, tenantId, userId]);
+  }, [notifyRequestError, tenantId, userId]);
 
   const handleMissingSession = useCallback((id: string) => {
     forgetMissingSession(id);
@@ -2854,10 +2839,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     };
 
     const promoteDraftConversation = (nextSessionId: string) => {
-      if (!startedAsDraftConversation || !nextSessionId || nextSessionId === liveConversationId) return;
-      // Keep the active conversation resolvable to the real session until the route
-      // param catches up, so the transition frame doesn't fall back to the deleted
-      // draft slot and briefly render ChatEmptyState.
+      if (!startedAsDraftConversation || !nextSessionId) return;
+      if (nextSessionId === liveConversationId) {
+        return;
+      }
+      // Keep the active conversation resolvable to the real session while the
+      // draft route remains visible, so failures never jump to a new page.
       pendingPromotedSessionIdRef.current = nextSessionId;
       const previousId = liveConversationId;
       const draftSlot = storeRef.current.get(previousId);
@@ -2916,7 +2903,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       ));
       notifyStore();
       notifyStream();
-      navigate(chatSessionPath(nextSessionId), { replace: true });
       loadSessions();
     };
 
@@ -3002,6 +2988,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
           const completedSessionId = result.session_id || createdSessionId || String(item.data.sessionId || '');
           handleStreamEvent(item, String(item.data.sessionId || liveConversationId), turnId);
           if (startedAsDraftConversation && completedSessionId) {
+            // Keep the draft route stable for both successful and failed turns.
+            // The promoted session remains active in memory and can be opened
+            // explicitly from the sidebar, avoiding failure-driven page jumps.
             promoteDraftConversation(completedSessionId);
           }
           return;

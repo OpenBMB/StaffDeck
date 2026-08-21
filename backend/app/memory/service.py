@@ -4,6 +4,7 @@ import hashlib
 import re
 from typing import Any
 
+from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from app import paths
@@ -18,6 +19,10 @@ PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "memory_extract
 MEMORY_SOURCE = "model_memory_extractor"
 PROFILE_NAME_KEY = "preferred_name"
 ALLOWED_MEMORY_KINDS = {"profile", "preference", "fact"}
+DEFAULT_CONTEXT_MEMORY_LIMIT = 12
+MEMORY_CANDIDATE_MULTIPLIER = 8
+MEMORY_CANDIDATE_FLOOR = 32
+MEMORY_CONTEXT_CHAR_BUDGET = 6_000
 
 
 class MemoryService:
@@ -29,29 +34,36 @@ class MemoryService:
         tenant_id: str,
         user_id: str,
         query: str,
-        limit: int | None = None,
+        limit: int | None = DEFAULT_CONTEXT_MEMORY_LIMIT,
         agent_id: str | None = None,
     ) -> list[MemoryRecord]:
-        del query, limit
-        return self.context_memories(tenant_id, user_id, agent_id=agent_id)
+        return self.context_memories(
+            tenant_id,
+            user_id,
+            query=query,
+            limit=limit,
+            agent_id=agent_id,
+        )
 
     def context_memories(
         self,
         tenant_id: str,
         user_id: str,
         *,
+        query: str | None = None,
+        limit: int | None = DEFAULT_CONTEXT_MEMORY_LIMIT,
         agent_id: str | None = None,
     ) -> list[MemoryRecord]:
-        return [
-            row
-            for row in self._list_user_memories(
-                tenant_id,
-                user_id,
-                limit=None,
-                agent_id=agent_id,
-            )
-            if row.kind in ALLOWED_MEMORY_KINDS
-        ]
+        effective_limit = limit if limit is not None else DEFAULT_CONTEXT_MEMORY_LIMIT
+        rows = self._list_user_memories(
+            tenant_id,
+            user_id,
+            limit=effective_limit,
+            normalize=False,
+            agent_id=agent_id,
+            query=query,
+        )
+        return _bounded_memory_rows(rows, limit=effective_limit)
 
     def capture_turn(
         self,
@@ -129,6 +141,7 @@ class MemoryService:
         limit: int | None = 80,
         normalize: bool = True,
         agent_id: str | None = None,
+        query: str | None = None,
     ) -> list[MemoryRecord]:
         statement = (
             select(MemoryRecord)
@@ -137,15 +150,36 @@ class MemoryService:
                 MemoryRecord.user_id == user_id,
                 MemoryRecord.kind != "conversation",
             )
-            .order_by(MemoryRecord.updated_at.desc())
+        )
+        terms = _memory_query_terms(query)
+        if terms:
+            statement = statement.where(
+                or_(
+                    MemoryRecord.kind == "profile",
+                    *[
+                        func.lower(MemoryRecord.content).contains(term)
+                        for term in terms
+                    ]
+                )
+            )
+        statement = statement.order_by(
+            MemoryRecord.importance.desc(),
+            MemoryRecord.updated_at.desc(),
         )
         if limit is not None:
-            statement = statement.limit(limit * 5 if agent_id else limit)
+            statement = statement.limit(
+                max(
+                    MEMORY_CANDIDATE_FLOOR,
+                    limit * MEMORY_CANDIDATE_MULTIPLIER,
+                )
+            )
         rows = list(self.db.exec(statement).all())
         if agent_id:
             rows = [row for row in rows if self._memory_matches_agent(row, agent_id)]
+        rows = _rank_memory_rows(rows, query)
         if limit is not None:
             rows = rows[:limit]
+        rows = _bounded_memory_rows(rows, limit=limit)
         return memory_rows_for_read(rows) if normalize else rows
 
     def _upsert_keyed_memory(
@@ -340,6 +374,72 @@ def memory_matches_agent(record: MemoryRecord, agent_id: str | None) -> bool:
     if not agent_id:
         return True
     return memory_agent_id(record) == agent_id
+
+
+def _memory_query_terms(query: str | None) -> list[str]:
+    """Build small lexical terms so recall can filter in SQL before ranking."""
+
+    normalized = re.sub(r"\s+", " ", str(query or "").strip().casefold())
+    if not normalized:
+        return []
+    terms: list[str] = []
+    for token in re.findall(r"[\u4e00-\u9fff]+|[a-z0-9_]+", normalized):
+        if token not in terms:
+            terms.append(token)
+        if re.fullmatch(r"[\u4e00-\u9fff]+", token):
+            for index in range(len(token) - 1):
+                pair = token[index : index + 2]
+                if pair not in terms:
+                    terms.append(pair)
+    return terms[:16]
+
+
+def _rank_memory_rows(rows: list[MemoryRecord], query: str | None) -> list[MemoryRecord]:
+    normalized_query = re.sub(r"\s+", " ", str(query or "").strip().casefold())
+    terms = _memory_query_terms(query)
+    if not terms:
+        return sorted(
+            rows,
+            key=lambda row: (
+                float(row.importance or 0),
+                row.updated_at,
+            ),
+            reverse=True,
+        )
+
+    def score(row: MemoryRecord) -> tuple[float, object]:
+        content = str(row.content or "").casefold()
+        key = str((row.metadata_json or {}).get("key") or "").casefold()
+        searchable = f"{content} {key}"
+        exact = 3.0 if normalized_query and normalized_query in searchable else 0.0
+        hits = sum(searchable.count(term) for term in terms)
+        profile_bonus = 0.5 if row.kind == "profile" else 0.0
+        return (
+            exact + min(hits, 8) * 1.5 + profile_bonus + float(row.importance or 0),
+            row.updated_at,
+        )
+
+    return sorted(rows, key=score, reverse=True)
+
+
+def _bounded_memory_rows(
+    rows: list[MemoryRecord],
+    *,
+    limit: int | None,
+    char_budget: int = MEMORY_CONTEXT_CHAR_BUDGET,
+) -> list[MemoryRecord]:
+    bounded: list[MemoryRecord] = []
+    used_chars = 0
+    max_rows = limit if limit is not None else DEFAULT_CONTEXT_MEMORY_LIMIT
+    for row in memory_rows_for_read(rows):
+        if len(bounded) >= max_rows:
+            break
+        content_length = len(str(row.content or ""))
+        if bounded and used_chars + content_length > char_budget:
+            continue
+        bounded.append(row)
+        used_chars += content_length
+    return bounded
 
 
 def tool_read_for_activity(tool: Tool | None, result: ToolResult | None = None) -> dict[str, Any]:

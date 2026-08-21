@@ -158,6 +158,7 @@ class HarnessV2Engine:
             for row in self.owner.memory.context_memories(
                 request.tenant_id,
                 request.user_id,
+                query=request.message,
                 agent_id=session.agent_id,
             )
         ]

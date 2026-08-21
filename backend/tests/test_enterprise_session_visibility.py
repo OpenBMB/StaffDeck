@@ -14,7 +14,9 @@ from app.api.feedback import (
 )
 from app.api.sessions import (
     SESSION_LOG_EXPORT_SCHEMA,
+    SessionLogDeleteRequest,
     SessionLogExportRequest,
+    delete_session_logs,
     export_session_log,
     export_session_logs,
     get_session_detail,
@@ -305,6 +307,38 @@ def test_batch_json_export_preserves_order_deduplicates_and_checks_visibility() 
         with pytest.raises(HTTPException) as exc_info:
             export_session_logs(
                 SessionLogExportRequest(session_ids=["session_member", "session_channel"]),
+                "tenant_demo",
+                current_user=users["member"],
+                db=db,
+            )
+        assert exc_info.value.status_code == 404
+
+
+def test_batch_delete_deduplicates_and_checks_visibility() -> None:
+    with _test_session() as db:
+        users = _seed(db)
+        db.add(
+            Message(
+                tenant_id="tenant_demo",
+                session_id="session_owner",
+                role="user",
+                content="old",
+            )
+        )
+        db.commit()
+        result = delete_session_logs(
+            SessionLogDeleteRequest(session_ids=["session_owner", "session_owner"]),
+            "tenant_demo",
+            current_user=users["owner"],
+            db=db,
+        )
+        assert result["deleted_count"] == 1
+        assert db.get(ChatSession, "session_owner") is None
+        assert db.exec(select(Message).where(Message.session_id == "session_owner")).all() == []
+
+        with pytest.raises(HTTPException) as exc_info:
+            delete_session_logs(
+                SessionLogDeleteRequest(session_ids=["session_member", "session_channel"]),
                 "tenant_demo",
                 current_user=users["member"],
                 db=db,

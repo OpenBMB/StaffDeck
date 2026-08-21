@@ -38,6 +38,7 @@ from app.db.models import (
     KnowledgeConcept,
     Message,
     MessageFeedback,
+    MemoryRecord,
     ScheduledTaskRun,
     Skill,
     SkillFeedback,
@@ -1834,6 +1835,16 @@ def delete_chat_session(
 ) -> dict[str, str]:
     _ensure_request_tenant(tenant_id, current_user)
     row = _get_user_chat_session(db, tenant_id, current_user.id, session_id)
+    _delete_chat_session_record(db, row)
+    db.commit()
+    _remove_harness_workspace_after_session_delete(tenant_id, session_id)
+    return {"status": "deleted"}
+
+
+def _delete_chat_session_record(db: Session, row: ChatSession) -> None:
+    """Stage all database records owned by one chat session for deletion."""
+    tenant_id = row.tenant_id
+    session_id = row.id
     messages = db.exec(
         select(Message).where(Message.tenant_id == tenant_id, Message.session_id == session_id)
     ).all()
@@ -1845,6 +1856,12 @@ def delete_chat_session(
     ).all()
     skill_feedback_rows = db.exec(
         select(SkillFeedback).where(SkillFeedback.tenant_id == tenant_id, SkillFeedback.session_id == session_id)
+    ).all()
+    memory_rows = db.exec(
+        select(MemoryRecord).where(
+            MemoryRecord.tenant_id == tenant_id,
+            MemoryRecord.session_id == session_id,
+        )
     ).all()
     stage_harness_session_record_deletion(
         db,
@@ -1859,8 +1876,12 @@ def delete_chat_session(
         db.delete(feedback)
     for feedback in skill_feedback_rows:
         db.delete(feedback)
+    for memory in memory_rows:
+        db.delete(memory)
     db.delete(row)
-    db.commit()
+
+
+def _remove_harness_workspace_after_session_delete(tenant_id: str, session_id: str) -> None:
     try:
         remove_harness_session_workspace(
             tenant_id=tenant_id,
@@ -1873,7 +1894,6 @@ def delete_chat_session(
             session_id,
             exc_info=True,
         )
-    return {"status": "deleted"}
 
 
 @router.get("/sessions/{session_id}/messages", response_model=list[MessageRead])

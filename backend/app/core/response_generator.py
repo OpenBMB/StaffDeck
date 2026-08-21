@@ -23,6 +23,7 @@ PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "response_gener
 FALLBACK_REPLY = "抱歉，我暂时无法处理这个问题。您可以换个说法，或者我可以帮您转人工。"
 MODEL_FAILURE_SUGGESTION = "请检查模型配置、API Key、网络或模型服务状态后重试。"
 TOOL_FAILURE_SUGGESTION = "请检查工具配置、调用参数或外部服务状态后重试。"
+DIRECT_TASK_REPLY_STATUSES = {"awaiting_user", "handoff"}
 
 
 def public_error_detail(value: object, fallback: str = "未知原因") -> str:
@@ -50,6 +51,23 @@ def format_runtime_failure_reply(
 
 def model_failure_suggestion(detail: object) -> str:
     return MODEL_FAILURE_SUGGESTION
+
+
+def _can_use_terminal_task_reply(
+    task_results: list[dict[str, object]] | None,
+    step_result: StepAgentResult,
+) -> bool:
+    """Avoid a second response-model call for a complete user-facing outcome."""
+
+    if not isinstance(task_results, list) or len(task_results) != 1:
+        return False
+    item = task_results[0]
+    if not isinstance(item, dict):
+        return False
+    return (
+        str(item.get("status") or "") in DIRECT_TASK_REPLY_STATUSES
+        and bool(str(step_result.reply or "").strip())
+    )
 
 
 def tool_failure_reply(tool_result: ToolResult) -> str:
@@ -190,9 +208,15 @@ class ResponseGenerator:
         task_results: list[dict[str, object]] | None = None,
     ) -> bool:
         return bool(
-            not task_results
+            (
+                not task_results
+                or _can_use_terminal_task_reply(task_results, step_result)
+            )
             and str(step_result.reply or "").strip()
-            and step_result.action in {"ask_user", "clarify"}
+            and (
+                step_result.action in {"ask_user", "clarify"}
+                or _can_use_terminal_task_reply(task_results, step_result)
+            )
             and tool_result is None
             and step_result.tool_call is None
             and step_result.knowledge_query is None
