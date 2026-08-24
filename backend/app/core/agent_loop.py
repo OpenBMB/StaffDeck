@@ -588,6 +588,13 @@ class AgentLoop:
             return False
         if tool_result and not tool_result.success:
             return False
+        # Graph topology is authoritative for SOP completion. A non-terminal
+        # node may allow an interim reply and all global slots may already be
+        # filled, but an outgoing edge still means the workflow has work left.
+        # Check this before the reply/tool completion shortcuts so transitioning
+        # into an intermediate node cannot finish the entire SOP.
+        if self._graph_flow_has_unfinished_work(skill, chat_session, step_result):
+            return False
         if (
             tool_result
             and tool_result.success
@@ -602,8 +609,6 @@ class AgentLoop:
             return True
         if not step_result.next_step_id and not step_result.tool_call:
             return True
-        if self._graph_flow_has_unfinished_work(skill, chat_session, step_result):
-            return False
         return self._is_terminal_skill_state(skill, chat_session)
 
     def _is_terminal_skill_state(self, skill: Skill, chat_session: ChatSession) -> bool:

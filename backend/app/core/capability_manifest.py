@@ -28,13 +28,18 @@ from app.db.models import (
     Tool,
     UIConfig,
 )
-from app.harness import build_file_tool_registry, register_command_tools
+from app.harness import (
+    build_file_tool_registry,
+    register_command_tools,
+    register_skill_script_tools,
+)
 from app.harness.sandbox import available_backend
 
 RESERVED_HARNESS_CAPABILITY_NAMES = {
     "capability_search",
     "capability_describe",
     "exec_command",
+    "run_skill_script",
     "knowledge_search",
 }
 
@@ -66,8 +71,9 @@ class CapabilityManifestBuilder:
 
         builtin_registry = build_file_tool_registry()
         register_command_tools(builtin_registry)
+        register_skill_script_tools(builtin_registry)
         for spec in builtin_registry.specs():
-            is_command = spec.name == "exec_command"
+            is_command = spec.name in {"exec_command", "run_skill_script"}
             available.append(
                 CapabilityDescriptor(
                     capability_id=(

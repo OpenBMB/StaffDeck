@@ -8,6 +8,7 @@ from app.api.chat import (
     _event_trace_lines,
     _events_after_cursor,
     _format_scheduled_task_schedule,
+    _harness_event_trace_line,
     _message_turn_ids_from_events,
     _persist_chat_turn_cancelled,
     _persist_chat_turn_interrupted,
@@ -29,6 +30,33 @@ from app.db.models import (
     User,
 )
 from app.observability.event_log import EventLog
+
+
+def test_task_frame_finished_keeps_switched_sop_name_while_awaiting_user() -> None:
+    line = _harness_event_trace_line(
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_test",
+            event_type="task_frame_finished",
+            payload_json={
+                "task_frame_id": "task_purchase",
+                "kind": "sop",
+                "skill_id": "skill_purchase_001",
+                "skill_name": "购买商品流程",
+                "step_id": "collect_user_name",
+                "status": "awaiting_user",
+                "action_count": 1,
+            },
+        )
+    )
+
+    assert line == {
+        "id": "harness_frame_task_purchase",
+        "kind": "skill",
+        "text": "等待用户补充 购买商品流程",
+        "detail": "状态 awaiting_user · 步骤 collect_user_name · 执行 1 个动作",
+        "state": "running",
+    }
 
 
 def test_event_log_binds_all_execution_events_to_current_turn() -> None:

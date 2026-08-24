@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import fnmatch
 import hashlib
+import json
 import mimetypes
 import os
 import shutil
@@ -34,6 +37,7 @@ class ReadFileArguments(_FileArguments):
     path: str = Field(min_length=1)
     offset: int = Field(default=0, ge=0)
     max_bytes: int | None = Field(default=None, ge=1)
+    continuation_token: str | None = Field(default=None, min_length=1)
 
 
 class ExtractDocumentTextArguments(_FileArguments):
@@ -396,12 +400,21 @@ def read_file(
     path = workspace.resolve(args.path)
     metadata = workspace.require_file(path)
     workspace.ensure_file_size(metadata.st_size)
-    if args.offset > metadata.st_size:
-        raise HarnessExecutionError(
-            "INVALID_OFFSET",
-            "Read offset is past the end of the file.",
-            details={"offset": args.offset, "size": metadata.st_size},
-        )
+    digest = _sha256(path)
+    requested_offset = args.offset
+    if args.continuation_token:
+        continuation = _decode_read_continuation(args.continuation_token)
+        relative_path = workspace.relative(path)
+        if continuation["path"] != relative_path or continuation["sha256"] != digest:
+            raise HarnessExecutionError(
+                "STALE_CONTINUATION",
+                "Read continuation no longer matches this file.",
+                details={"path": relative_path, "sha256": digest},
+            )
+        requested_offset = int(continuation["offset"])
+    # EOF is an ordinary terminal state.  Returning it deterministically keeps
+    # an AgentLoop from burning actions by guessing ever larger byte offsets.
+    requested_offset = min(requested_offset, metadata.st_size)
 
     safe_result_bytes = max(1, context.limits.max_result_bytes // 8)
     requested_bytes = args.max_bytes or min(context.limits.max_read_bytes, safe_result_bytes)
@@ -417,22 +430,76 @@ def read_file(
     read_bytes = min(requested_bytes, safe_result_bytes)
     try:
         with path.open("rb") as handle:
-            handle.seek(args.offset)
+            actual_offset = _align_utf8_offset(handle, requested_offset, metadata.st_size)
+            handle.seek(actual_offset)
             content_bytes = handle.read(read_bytes)
     except OSError as exc:
         raise _io_error("File could not be read.", exc) from exc
 
     content, consumed_bytes = _decode_utf8_chunk(content_bytes)
-    next_offset = args.offset + consumed_bytes
-    return {
+    next_offset = actual_offset + consumed_bytes
+    truncated = next_offset < metadata.st_size
+    result = {
         "path": workspace.relative(path),
         "content": content,
-        "offset": args.offset,
+        "requested_offset": requested_offset,
+        "offset": actual_offset,
         "next_offset": next_offset,
-        "truncated": next_offset < metadata.st_size,
+        "truncated": truncated,
+        "eof": not truncated,
         "size": metadata.st_size,
-        "sha256": _sha256(path),
+        "sha256": digest,
     }
+    if truncated:
+        result["continuation_token"] = _encode_read_continuation(
+            path=workspace.relative(path),
+            sha256=digest,
+            offset=next_offset,
+        )
+    return result
+
+
+def _align_utf8_offset(handle: Any, offset: int, size: int) -> int:
+    """Move a legacy byte offset to the next UTF-8 code-point boundary."""
+
+    if offset <= 0 or offset >= size:
+        return offset
+    handle.seek(offset)
+    for _ in range(3):
+        marker = handle.read(1)
+        if not marker or marker[0] & 0xC0 != 0x80:
+            return handle.tell() - (1 if marker else 0)
+    return handle.tell()
+
+
+def _encode_read_continuation(*, path: str, sha256: str, offset: int) -> str:
+    payload = json.dumps(
+        {"v": 1, "path": path, "sha256": sha256, "offset": offset},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_read_continuation(token: str) -> dict[str, Any]:
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("v") != 1
+            or not isinstance(payload.get("path"), str)
+            or not isinstance(payload.get("sha256"), str)
+            or not isinstance(payload.get("offset"), int)
+            or payload["offset"] < 0
+        ):
+            raise ValueError("invalid continuation payload")
+        return payload
+    except (ValueError, UnicodeError, binascii.Error) as exc:
+        raise HarnessExecutionError(
+            "INVALID_CONTINUATION",
+            "Read continuation token is invalid.",
+        ) from exc
 
 
 def extract_document_text(
@@ -964,8 +1031,8 @@ def register_file_tools(registry: HarnessRegistry) -> HarnessRegistry:
         name="read_file",
         description=(
             path_contract
-            + "Read UTF-8 text from a file. "
-            "Use the returned byte offset to continue a truncated read."
+            + "Read UTF-8 text from a file. When truncated, continue by passing the "
+            "returned continuation_token with the same path; never guess byte offsets."
         ),
         argument_model=ReadFileArguments,
         handler=read_file,

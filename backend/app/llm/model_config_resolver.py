@@ -84,11 +84,7 @@ def _snapshot(
     purpose: Literal["runtime", "verification"],
 ) -> ResolvedModelConfig:
     options = current_protocol_options(row.protocol_options_json, protocol)
-    legacy_extra_body: dict[str, Any] = {}
-    if purpose == "runtime" and (
-        row.trust_status == "legacy_trusted" or _is_implicit_legacy_openai(row, protocol)
-    ):
-        legacy_extra_body = copy.deepcopy(row.extra_body_json or {})
+    legacy_extra_body = copy.deepcopy(row.extra_body_json or {})
     return ResolvedModelConfig(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -146,15 +142,11 @@ def _freeze_value(value: Any) -> Any:
 def snapshot_model_config(
     model_config: Any, *, min_output_tokens: int = 0
 ) -> ResolvedModelConfig:
+    # ``min_output_tokens`` is retained only for source compatibility with
+    # older callers.  Model configuration is the sole token-budget authority.
+    del min_output_tokens
     if isinstance(model_config, ResolvedModelConfig):
-        if model_config.max_output_tokens >= min_output_tokens:
-            return model_config
-        return ResolvedModelConfig(
-            **{
-                **model_config.__dict__,
-                "max_output_tokens": min_output_tokens,
-            }
-        )
+        return model_config
     protocol = ModelApiProtocol(
         getattr(model_config, "api_protocol", "openai_chat_completions")
     )
@@ -168,7 +160,7 @@ def snapshot_model_config(
         model=model_config.model,
         temperature=model_config.temperature,
         max_output_tokens=max(
-            int(getattr(model_config, "max_output_tokens", 0) or 0), min_output_tokens
+            1, int(getattr(model_config, "max_output_tokens", 0) or 1)
         ),
         protocol_options=_freeze(
             _snapshot_protocol_options(model_config, protocol)

@@ -3186,6 +3186,7 @@ def _harness_event_trace_line(
 
     if event_type == "task_frame_started":
         kind = str(payload.get("kind") or "conversation").strip()
+        skill_name = str(payload.get("skill_name") or payload.get("skill_id") or "").strip()
         step_id = str(payload.get("step_id") or "").strip()
         if step_names is None:
             detail_parts = [
@@ -3209,20 +3210,32 @@ def _harness_event_trace_line(
         return {
             "id": f"harness_frame_{frame_id}",
             "kind": "skill" if kind == "sop" else "decision",
-            "text": "开始执行任务",
+            "text": f"开始SOP {skill_name}" if kind == "sop" and skill_name else "开始执行任务",
             "detail": " · ".join(part for part in detail_parts if part) or None,
             "state": "running",
         }
     if event_type == "task_frame_finished":
+        kind = str(payload.get("kind") or "conversation").strip()
+        skill_name = str(payload.get("skill_name") or payload.get("skill_id") or "").strip()
+        step_id = str(payload.get("step_id") or "").strip()
         status = str(payload.get("status") or "completed").strip()
         action_count = payload.get("action_count")
         failed = status in {"failed", "blocked", "cancelled"}
         if step_names is None:
-            text = "任务执行失败" if failed else "任务执行完成"
             detail_parts = [
                 f"状态 {status}",
+                f"步骤 {step_id}" if step_id else "",
                 f"执行 {action_count} 个动作" if isinstance(action_count, int) else "",
             ]
+            if kind == "sop" and skill_name:
+                if failed:
+                    text = f"SOP执行失败 {skill_name}"
+                elif status == "awaiting_user":
+                    text = f"等待用户补充 {skill_name}"
+                else:
+                    text = f"SOP任务执行完成 {skill_name}"
+            else:
+                text = "任务执行失败" if failed else "任务执行完成"
         else:
             text = _FRAME_STATUS_TEXTS.get(status, "任务执行失败" if failed else "任务执行完成")
             detail_parts = [
@@ -3230,10 +3243,10 @@ def _harness_event_trace_line(
             ]
         return {
             "id": f"harness_frame_{frame_id}",
-            "kind": "decision",
+            "kind": "skill" if kind == "sop" else "decision",
             "text": text,
             "detail": " · ".join(part for part in detail_parts if part) or None,
-            "state": "failed" if failed else "completed",
+            "state": "failed" if failed else ("running" if status == "awaiting_user" else "completed"),
         }
     if event_type == "harness_action_created":
         action = str(payload.get("action") or "").strip()

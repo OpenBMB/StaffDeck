@@ -92,6 +92,8 @@ class _BoundedProcessResult:
     timed_out: bool
     output_truncated: bool
     duration_ms: int
+    isolation_mode: str = "unknown"
+    isolation_details: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -230,6 +232,10 @@ def exec_command(
         "output_truncated": process.output_truncated,
         "timeout_seconds": args.timeout_seconds,
         "duration_ms": process.duration_ms,
+        "process_isolation": {
+            "mode": process.isolation_mode,
+            **process.isolation_details,
+        },
         "cwd": SANDBOX_WORKSPACE,
         "sandbox": backend,
         "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
@@ -949,6 +955,8 @@ def _run_bounded_process(
         timed_out=timed_out,
         output_truncated=budget.truncated,
         duration_ms=max(0, round((time.monotonic() - started) * 1000)),
+        isolation_mode=managed_process.isolation_mode,
+        isolation_details=dict(managed_process.isolation_details),
     )
 
 
@@ -996,9 +1004,13 @@ def _validate_command(command: str) -> None:
 
     words = [token for token in tokens if not _is_shell_operator(token)]
     for token in tokens:
-        if token in {"<<", "<<<", "<&", ">&", "&>", "|&"}:
+        if token in {"<<", "<<<", "|&"}:
             raise _command_denied("Unsafe shell redirection is not allowed.")
-        if "&" in token and token != "&&":
+        # An ampersand embedded in a quoted argument (for example a URL query)
+        # is data, not a background operator.  Ordinary descriptor redirection
+        # such as ``2>&1`` is also a bounded foreground operation.  Only a real
+        # standalone shell ``&`` starts an unmanaged background process.
+        if token == "&":
             raise _command_denied("Background processes are not allowed.")
     for token in words:
         _validate_path_token(token)

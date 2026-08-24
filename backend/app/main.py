@@ -31,6 +31,11 @@ from app.async_jobs import shutdown_async_jobs, start_async_jobs
 from app.a2a import recover_codex_a2a_tasks, router as a2a_router, stop_codex_a2a_tasks
 from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
+from app.core.harness_recovery import (
+    recover_orphan_harness_runs,
+    start_harness_recovery_sweeper,
+    stop_harness_recovery_sweeper,
+)
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
 from app.public_api import create_public_api_app
@@ -70,11 +75,13 @@ def on_startup() -> None:
         init_db()
         with Session(engine) as db:
             seed_demo_data(db)
+            recover_orphan_harness_runs(db, startup=True)
         recover_codex_a2a_tasks()
         recover_a2a_client_tasks()
         start_background_worker()
         start_channel_services()
         start_timeout_sweeper()
+        start_harness_recovery_sweeper()
         # Internal durable jobs (for example feedback analysis) use the same
         # recovery table even when the externally exposed API is disabled.
         recover_public_jobs()
@@ -95,6 +102,7 @@ def on_shutdown() -> None:
         stop_channel_services()
         stop_background_worker()
         stop_timeout_sweeper()
+        stop_harness_recovery_sweeper()
         shutdown_async_jobs()
     finally:
         release_runtime_instance_lock()

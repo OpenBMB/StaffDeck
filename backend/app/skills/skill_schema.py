@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -134,6 +135,43 @@ class SkillCard(BaseModel):
             node.capability_refs = SkillCapabilityRefs()
             node.retry_policy = {}
         return self
+
+
+def skill_card_from_persisted(value: Any) -> SkillCard:
+    """Load legacy persisted SOP data without weakening write-time validation.
+
+    Older StaffDeck versions allowed a required capability to be stored without
+    also listing it among the node's selected capabilities. Required capabilities
+    are necessarily visible to the node, so promote those legacy references before
+    applying the current strict SkillCard schema.
+    """
+
+    if not isinstance(value, dict):
+        return SkillCard.model_validate(value)
+    content = deepcopy(value)
+    nodes = content.get("nodes")
+    if isinstance(nodes, list):
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            refs = node.get("capability_refs")
+            if not isinstance(refs, dict):
+                continue
+            for required_field, selected_field in (
+                ("required_general_skill_ids", "general_skill_ids"),
+                ("required_tool_ids", "tool_ids"),
+                ("required_knowledge_base_ids", "knowledge_base_ids"),
+            ):
+                required = refs.get(required_field)
+                if not isinstance(required, list):
+                    continue
+                selected = refs.get(selected_field)
+                selected_values = list(selected) if isinstance(selected, list) else []
+                for capability_id in required:
+                    if capability_id not in selected_values:
+                        selected_values.append(capability_id)
+                refs[selected_field] = selected_values
+    return SkillCard.model_validate(content)
 
 
 class ToolSuggestion(BaseModel):

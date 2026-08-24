@@ -30,7 +30,15 @@ from app.skills.skill_editor import SkillEditor
 from app.skills.nesting import SopNestingError
 from app.skills.skill_reflection import PROMPT_PATH as SKILL_REFLECTION_PROMPT_PATH
 from app.skills.skill_reflection import RUBRIC_LABELS
-from app.skills.skill_schema import SkillCard, SkillCreateRequest, SkillDistillRequest, SkillDistillResponse, SkillRewriteRequest, SkillUpdateRequest
+from app.skills.skill_schema import (
+    SkillCard,
+    SkillCreateRequest,
+    SkillDistillRequest,
+    SkillDistillResponse,
+    SkillRewriteRequest,
+    SkillUpdateRequest,
+    skill_card_from_persisted,
+)
 from app.security.encryption import encrypt_secret
 
 
@@ -1206,6 +1214,21 @@ def test_skill_read_preserves_graph_node_ids() -> None:
     node_ids = [node.node_id for node in payload.content.nodes]
 
     assert node_ids == ["collect_info", "reply_result"]
+
+
+def test_persisted_skill_promotes_required_capabilities_without_weakening_schema() -> None:
+    content = _skill_card().model_dump(mode="json")
+    content["nodes"][0]["capability_refs"] = {
+        "required_tool_ids": ["order.query"],
+    }
+
+    with pytest.raises(ValueError, match="required_tool_ids must be a subset"):
+        SkillCard.model_validate(content)
+
+    restored = skill_card_from_persisted(content)
+
+    assert restored.nodes[0].capability_refs.tool_ids == ["order.query"]
+    assert restored.nodes[0].capability_refs.required_tool_ids == ["order.query"]
 
 
 def test_skill_distiller_stream_uses_generation_status(monkeypatch) -> None:

@@ -15,6 +15,10 @@ TRUNCATED_EMAIL_PATTERN = re.compile(
     r"(?P<ellipsis>\.{3}|…)",
     re.IGNORECASE,
 )
+SOURCE_FOOTER_PATTERN = re.compile(
+    r"(?:\n|\s){0,3}(?:参考来源|参考资料|引用来源|资料来源)\s*[:：]\s*"
+    r"(?:\[\d+\]\s*)+$"
+)
 
 
 def compact_knowledge_citation_labels(
@@ -23,7 +27,9 @@ def compact_knowledge_citation_labels(
 ) -> tuple[str, list[dict[str, Any]]]:
     """Keep cited sources and renumber them by first appearance in the reply."""
     if not isinstance(citations, list) or not citations:
-        return content, []
+        # A model may emit a reference footer even when retrieval produced no
+        # durable citations. Do not expose labels that cannot open a source.
+        return SOURCE_FOOTER_PATTERN.sub("", content.rstrip()).rstrip(), []
 
     citations_by_label: dict[int, dict[str, Any]] = {}
     for index, citation in enumerate(citations, start=1):
@@ -51,9 +57,12 @@ def compact_knowledge_citation_labels(
     def replace_label(match: re.Match[str]) -> str:
         old_label = int(match.group(1))
         new_label = label_mapping.get(old_label)
-        return f"[{new_label}]" if new_label is not None else match.group(0)
+        # Metadata is authoritative. Unsupported labels are model-generated
+        # references with no corresponding source card and must not survive.
+        return f"[{new_label}]" if new_label is not None else ""
 
     compacted_content = re.sub(r"\[(\d+)\]", replace_label, content)
+    compacted_content = re.sub(r"[ \t]+(?=\n|$)", "", compacted_content).rstrip()
     compacted_citations = [
         {**citations_by_label[old_label], "label": f"[{label_mapping[old_label]}]"}
         for old_label in ordered_labels

@@ -84,26 +84,6 @@ EMPTY_RESPONSE_MESSAGE = "Model returned an empty response"
 DEFAULT_MODEL_API_TIMEOUT_SECONDS = 600.0
 DEFAULT_INPUT_TOKEN_BUDGET = 32_000
 TURN_STAGE_MESSAGE_MARKER = "_agent_turn_message"
-# Ceiling for the reasoning-model length-truncation retry escalation. A model
-# configuration may legitimately request a larger budget than this; in that case
-# the retry preserves the configured value instead of shrinking it.
-REASONING_TOKEN_ESCALATION_CEILING = 32768
-
-
-def _escalate_reasoning_token_budget(current_max_tokens: int) -> int:
-    """Double the token budget for the next retry, but never below the ceiling.
-
-    Reasoning models (e.g. deepseek-v4-flash) share the max_tokens budget
-    between reasoning_content and content. When finish_reason=length cuts off
-    before the answer, we retry with more room. We cap the escalation at the
-    ceiling, but we never *reduce* a budget that the operator already configured
-    above the ceiling.
-    """
-    if current_max_tokens >= REASONING_TOKEN_ESCALATION_CEILING:
-        return current_max_tokens
-    return min(current_max_tokens * 2, REASONING_TOKEN_ESCALATION_CEILING)
-
-
 class _CurrentStageText(str):
     pass
 
@@ -177,11 +157,10 @@ class LLMClient:
         self.max_output_tokens = model_config.max_output_tokens
         legacy_extra_body = getattr(model_config, "legacy_extra_body", {})
         protocol_options = getattr(model_config, "protocol_options", {})
-        self.extra_body = _normalize_extra_body(
-            legacy_extra_body
-            or getattr(model_config, "extra_body_json", {})
-            or protocol_options
+        vendor_extra_body = _normalize_extra_body(
+            legacy_extra_body or getattr(model_config, "extra_body_json", {})
         )
+        self.extra_body = _merge_extra_body(vendor_extra_body, protocol_options)
         settings = get_settings()
         self.thinking_mode = (
             _thinking_mode_from_extra_body(self.extra_body)
@@ -239,23 +218,38 @@ class LLMClient:
             current_max_tokens = max_output_tokens
             for attempt in range(empty_response_retries + 1):
                 request["max_tokens"] = current_max_tokens
+                driver = self._protocol_driver()
                 span = start_llm_call(
                     model=self.model,
-                    model_name=self.model_config_name or self.model,
+                    model_name=getattr(self, "model_config_name", "") or self.model,
                     endpoint=_endpoint_label(getattr(self, "base_url", "")),
-                    request_kind=self._protocol_driver().request_kind,
+                    request_kind=driver.request_kind,
                     stream=False,
                     attempt=attempt + 1,
                     retry_count=attempt,
                     max_attempts=empty_response_retries + 1,
                     max_output_tokens=current_max_tokens,
                     thinking_mode=getattr(self, "thinking_mode", "") or "provider_default",
+                    request_messages=_observable_messages(request_messages),
+                    request_parameters=_observable_request_parameters(
+                        temperature=self.temperature,
+                        max_output_tokens=current_max_tokens,
+                        response_format=response_format,
+                        stream=False,
+                    ),
+                    request_payload=_observable_value(
+                        _driver_observable_request(driver, request, stream=False)
+                    ),
                     **request_shape,
                 )
                 try:
-                    completion = self._protocol_driver().complete(request)
+                    completion = driver.complete(request)
                 except BaseException as exc:
-                    span.fail(exc, **_completion_span_metrics(None))
+                    span.fail(
+                        exc,
+                        response_text="",
+                        **_completion_span_metrics(None),
+                    )
                     if _image_parameter_unsupported(exc) and _messages_have_images(
                         request_messages
                     ):
@@ -265,10 +259,15 @@ class LLMClient:
                     raise
                 content = _completion_message_content(completion)
                 metrics = _completion_span_metrics(completion)
+                response_message = _observable_completion_message(completion)
+                response_payload = _observable_provider_payload(completion)
                 if content.strip():
                     span.finish(
                         ttft_ms=span.elapsed_ms(),
                         output_chars=len(content),
+                        response_text=content,
+                        response_message=response_message,
+                        response_payload=response_payload,
                         status="success",
                         **metrics,
                     )
@@ -284,19 +283,13 @@ class LLMClient:
                 span.finish(
                     ttft_ms=span.elapsed_ms(),
                     output_chars=0,
+                    response_text="",
+                    response_message=response_message,
+                    response_payload=response_payload,
                     status="empty",
                     **metrics,
                 )
                 empty_diagnostics.append(_completion_empty_diagnostic(completion, attempt + 1))
-                # Reasoning models (e.g. deepseek-v4-flash) share the max_tokens budget
-                # between reasoning_content and content. When finish_reason=length cuts off
-                # before the answer, retry with more room so reasoning can finish and
-                # content can be produced. Never shrink a budget already at/above the ceiling.
-                if (
-                    metrics.get("finish_reason") == "length"
-                    and metrics.get("reasoning_chars", 0) > 0
-                ):
-                    current_max_tokens = _escalate_reasoning_token_budget(current_max_tokens)
                 if attempt >= empty_response_retries:
                     raise LLMError(_empty_response_detail(self, empty_diagnostics))
         except Exception as exc:
@@ -334,17 +327,40 @@ class LLMClient:
             empty_diagnostics: list[str] = []
             current_max_tokens = max_output_tokens
             for attempt in range(empty_response_retries + 1):
+                stream_request = {
+                    "model": self.model,
+                    "messages": request_messages,
+                    "temperature": self.temperature,
+                    "max_tokens": current_max_tokens,
+                    **_thinking_request_kwargs(
+                        getattr(self, "thinking_mode", ""),
+                        getattr(self, "extra_body", {}),
+                    ),
+                }
+                if cancellation is not None:
+                    stream_request["_cancellation"] = cancellation
+                driver = self._protocol_driver()
                 span = start_llm_call(
                     model=self.model,
-                    model_name=self.model_config_name or self.model,
+                    model_name=getattr(self, "model_config_name", "") or self.model,
                     endpoint=_endpoint_label(getattr(self, "base_url", "")),
-                    request_kind=self._protocol_driver().request_kind,
+                    request_kind=driver.request_kind,
                     stream=True,
                     attempt=attempt + 1,
                     retry_count=attempt,
                     max_attempts=empty_response_retries + 1,
                     max_output_tokens=current_max_tokens,
                     thinking_mode=getattr(self, "thinking_mode", "") or "provider_default",
+                    request_messages=_observable_messages(request_messages),
+                    request_parameters=_observable_request_parameters(
+                        temperature=self.temperature,
+                        max_output_tokens=current_max_tokens,
+                        response_format=None,
+                        stream=True,
+                    ),
+                    request_payload=_observable_value(
+                        _driver_observable_request(driver, stream_request, stream=True)
+                    ),
                     **request_shape,
                 )
                 stream_usage_metrics: dict[str, Any] = {}
@@ -359,23 +375,15 @@ class LLMClient:
                 provider_setup_ms: float | None = None
                 finish_reasons: set[str] = set()
                 response_ids: set[str] = set()
+                response_chunks: list[Any] = []
+                recorded_reasoning_parts: list[str] = []
+                tool_call_deltas: list[Any] = []
                 try:
-                    stream_request = {
-                        "model": self.model,
-                        "messages": request_messages,
-                        "temperature": self.temperature,
-                        "max_tokens": current_max_tokens,
-                        **_thinking_request_kwargs(
-                            getattr(self, "thinking_mode", ""),
-                            getattr(self, "extra_body", {}),
-                        ),
-                    }
-                    if cancellation is not None:
-                        stream_request["_cancellation"] = cancellation
-                    stream = self._protocol_driver().stream(stream_request)
+                    stream = driver.stream(stream_request)
                     provider_setup_ms = span.elapsed_ms()
                     for chunk in stream:
                         chunk_count += 1
+                        response_chunks.append(_observable_provider_payload(chunk))
                         chunk_usage_metrics = _usage_span_metrics(getattr(chunk, "usage", None))
                         if chunk_usage_metrics:
                             stream_usage_metrics.update(chunk_usage_metrics)
@@ -391,7 +399,13 @@ class LLMClient:
                         if finish_reason:
                             finish_reasons.add(finish_reason)
                         delta = getattr(choice, "delta", None)
-                        reasoning_chars += len(_reasoning_text(delta))
+                        reasoning = _reasoning_text(delta)
+                        if reasoning:
+                            recorded_reasoning_parts.append(reasoning)
+                            reasoning_chars += len(reasoning)
+                        delta_tool_calls = getattr(delta, "tool_calls", None) or []
+                        if delta_tool_calls:
+                            tool_call_deltas.append(_observable_model_value(delta_tool_calls))
                         content = _content_text(getattr(delta, "content", None))
                         if not content:
                             continue
@@ -416,6 +430,10 @@ class LLMClient:
                         output_chars=output_chars,
                         stream_chunks=chunk_count,
                         reasoning_chars=reasoning_chars,
+                        partial_response_text="".join(recorded_parts),
+                        partial_reasoning_content="".join(recorded_reasoning_parts),
+                        partial_tool_call_deltas=tool_call_deltas,
+                        partial_response_chunks=response_chunks,
                         **stream_usage_metrics,
                     )
                     if not emitted_text and _image_parameter_unsupported(
@@ -425,6 +443,13 @@ class LLMClient:
                         continue
                     raise
                 if emitted_text:
+                    response_text = "".join(recorded_parts)
+                    response_message = {
+                        "role": "assistant",
+                        "content": response_text,
+                        "reasoning_content": "".join(recorded_reasoning_parts),
+                        "tool_call_deltas": tool_call_deltas,
+                    }
                     span.finish(
                         provider_setup_ms=provider_setup_ms,
                         ttft_ms=first_content_ms,
@@ -435,11 +460,14 @@ class LLMClient:
                         reasoning_chars=reasoning_chars,
                         finish_reasons=sorted(finish_reasons),
                         provider_response_ids=sorted(response_ids),
+                        response_text=response_text,
+                        response_message=response_message,
+                        response_chunks=response_chunks,
                         **stream_usage_metrics,
                     )
                     _record_stage_exchange(
                         user_payload,
-                        "".join(recorded_parts),
+                        response_text,
                         request_user_content=getattr(
                             self, "_last_stage_request_user_content", None
                         ),
@@ -454,6 +482,14 @@ class LLMClient:
                     reasoning_chars=reasoning_chars,
                     finish_reasons=sorted(finish_reasons),
                     provider_response_ids=sorted(response_ids),
+                    response_text="",
+                    response_message={
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "".join(recorded_reasoning_parts),
+                        "tool_call_deltas": tool_call_deltas,
+                    },
+                    response_chunks=response_chunks,
                     status="empty",
                     **stream_usage_metrics,
                 )
@@ -467,11 +503,6 @@ class LLMClient:
                         response_ids,
                     )
                 )
-                # Reasoning models share the max_tokens budget between reasoning and answer.
-                # When length-truncated with only reasoning output, escalate the budget on
-                # retry, but never shrink one already at/above the ceiling.
-                if "length" in finish_reasons and reasoning_chars > 0:
-                    current_max_tokens = _escalate_reasoning_token_budget(current_max_tokens)
             raise LLMError(_empty_response_detail(self, empty_diagnostics))
         except Exception as exc:
             if isinstance(exc, LLMError):
@@ -630,6 +661,156 @@ def _completion_message_content(completion: Any) -> str:
     return _content_text(content)
 
 
+def _observable_completion_message(completion: Any) -> dict[str, Any]:
+    """Preserve the provider message before business-level response parsing.
+
+    Some SDKs expose extension fields such as ``reasoning_content`` or function-call
+    arguments outside ``content``. Keeping the complete message here prevents those
+    fields from disappearing when Harness later consumes only the visible text.
+    """
+
+    try:
+        message = completion.choices[0].message
+    except (IndexError, TypeError, AttributeError):
+        return {"role": "assistant", "content": ""}
+    payload = _observable_model_value(message)
+    if not isinstance(payload, dict):
+        payload = {"content": payload}
+    payload.setdefault("role", "assistant")
+    payload.setdefault("content", _content_text(getattr(message, "content", None)))
+    return payload
+
+
+def _observable_provider_payload(value: Any) -> Any:
+    provider_value = getattr(value, "provider_response", None)
+    if provider_value is None:
+        provider_value = getattr(value, "provider_event", None)
+    return _observable_model_value(provider_value if provider_value is not None else value)
+
+
+def _driver_observable_request(
+    driver: Any,
+    request: dict[str, Any],
+    *,
+    stream: bool,
+) -> dict[str, Any]:
+    observable_request = getattr(driver, "observable_request", None)
+    if callable(observable_request):
+        return observable_request(request, stream=stream)
+    # Compatibility for tests and third-party drivers that predate the audit contract.
+    payload = {
+        str(key): value
+        for key, value in request.items()
+        if not str(key).startswith("_")
+    }
+    if stream:
+        payload["stream"] = True
+    return payload
+
+
+_OBSERVABLE_MODEL_FIELDS = (
+    "id",
+    "object",
+    "created",
+    "created_at",
+    "model",
+    "status",
+    "type",
+    "role",
+    "content",
+    "output",
+    "text",
+    "reasoning_content",
+    "reasoning",
+    "thinking",
+    "refusal",
+    "tool_calls",
+    "function_call",
+    "function",
+    "name",
+    "arguments",
+    "choices",
+    "message",
+    "delta",
+    "finish_reason",
+    "stop_reason",
+    "usage",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "input_tokens",
+    "output_tokens",
+    "error",
+)
+
+
+def _observable_model_value(
+    value: Any,
+    *,
+    _seen: set[int] | None = None,
+    _depth: int = 0,
+) -> Any:
+    """Convert provider SDK objects to lossless JSON-compatible audit data."""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return _observable_value(value)
+    if _depth > 20:
+        return "[maximum audit depth reached]"
+    seen = _seen if _seen is not None else set()
+    identity = id(value)
+    if identity in seen:
+        return "[circular reference]"
+    seen.add(identity)
+    try:
+        if isinstance(value, Mapping):
+            return {
+                str(key): (
+                    "[REDACTED]"
+                    if str(key).lower() in _OBSERVABILITY_SECRET_KEYS
+                    else _observable_model_value(item, _seen=seen, _depth=_depth + 1)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [
+                _observable_model_value(item, _seen=seen, _depth=_depth + 1)
+                for item in value
+            ]
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            try:
+                dumped = model_dump(mode="json", exclude_none=False)
+            except TypeError:
+                dumped = model_dump()
+            return _observable_model_value(dumped, _seen=seen, _depth=_depth + 1)
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            return _observable_model_value(to_dict(), _seen=seen, _depth=_depth + 1)
+        attributes = {
+            key: item
+            for key, item in vars(value).items()
+            if not key.startswith("_") and not callable(item)
+        } if hasattr(value, "__dict__") else {}
+        for field in _OBSERVABLE_MODEL_FIELDS:
+            if field in attributes or not hasattr(value, field):
+                continue
+            item = getattr(value, field)
+            if not callable(item):
+                attributes[field] = item
+        if attributes:
+            return {
+                key: (
+                    "[REDACTED]"
+                    if key.lower() in _OBSERVABILITY_SECRET_KEYS
+                    else _observable_model_value(item, _seen=seen, _depth=_depth + 1)
+                )
+                for key, item in attributes.items()
+            }
+        return _observable_value(str(value))
+    finally:
+        seen.discard(identity)
+
+
 def _request_shape_metrics(
     system_prompt: str,
     context_messages: list[dict[str, Any]],
@@ -700,6 +881,18 @@ def _normalize_extra_body(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     return {str(key): _mutable_copy(item) for key, item in value.items()}
+
+
+def _merge_extra_body(base: Any, override: Any) -> dict[str, Any]:
+    """Merge provider fields with normalized protocol options without dropping either."""
+    merged = _normalize_extra_body(base)
+    for key, value in _normalize_extra_body(override).items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_extra_body(current, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _mutable_copy(value: Any) -> Any:
@@ -1357,6 +1550,60 @@ def _preview(text: str, limit: int = 1200) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "\n...<truncated>"
+
+
+_OBSERVABILITY_SECRET_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "password",
+    "secret",
+    "token",
+}
+
+
+def _observable_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the exact textual model input without persisting binary image bodies.
+
+    Conversation logs are an operator-facing debugging surface, so text is intentionally
+    not truncated. Embedded data URLs are the exception: retaining their base64 payload
+    would make a single trace event impractically large while adding no prompt insight.
+    """
+
+    return [_observable_value(message) for message in messages]
+
+
+def _observable_request_parameters(
+    *,
+    temperature: float,
+    max_output_tokens: int,
+    response_format: dict[str, str] | None,
+    stream: bool,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = {
+        "temperature": temperature,
+        "max_output_tokens": max_output_tokens,
+        "stream": stream,
+    }
+    if response_format is not None:
+        parameters["response_format"] = copy.deepcopy(response_format)
+    return parameters
+
+
+def _observable_value(value: Any, *, key: str = "") -> Any:
+    if key.lower() in _OBSERVABILITY_SECRET_KEYS:
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {
+            str(item_key): _observable_value(item, key=str(item_key))
+            for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_observable_value(item) for item in value]
+    if isinstance(value, str) and value.startswith("data:") and ";base64," in value:
+        header, _, encoded = value.partition(",")
+        return f"[{header} payload omitted; base64_chars={len(encoded)}]"
+    return copy.deepcopy(value)
 
 
 def _response_format_unsupported(message: str) -> bool:

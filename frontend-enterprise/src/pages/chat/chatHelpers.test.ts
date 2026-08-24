@@ -14,6 +14,7 @@ import {
   messageAttachments,
   renderInlineMarkdown,
   scheduledDraftForMessage,
+  shouldDeferPersistedEventToLiveStream,
 } from './chatHelpers';
 
 function message(patch: Partial<ChatMessage> = {}): ChatMessage {
@@ -123,6 +124,26 @@ describe('chat history consumer contract', () => {
     );
   });
 
+  it('renders safe Markdown images and keeps unsafe image targets as text', () => {
+    const rendered = renderToStaticMarkup(
+      createElement(MarkdownMessage, {
+        content: [
+          '![趋势图](https://images.example.com/chart.png)',
+          '',
+          '![危险图片](javascript:alert(1))',
+        ].join('\n'),
+      }),
+    );
+
+    expect(rendered).toContain('src="https://images.example.com/chart.png"');
+    expect(rendered).toContain('alt="趋势图"');
+    expect(rendered).toContain('referrerPolicy="no-referrer"');
+    expect(rendered).toContain('aria-label="查看图片：趋势图"');
+    expect(rendered).toContain('危险图片');
+    expect(rendered).not.toContain('危险图片)');
+    expect(rendered).not.toContain('src="javascript:');
+  });
+
   it('keeps only inline citations, deduplicates content, and orders labels', () => {
     const item = message({
       metadata: {
@@ -140,6 +161,22 @@ describe('chat history consumer contract', () => {
       expect.objectContaining({ id: 'citation-2', label: '[2]' }),
     ]);
     expect(knowledgeCitations(item, 'No inline citation markers')).toEqual([]);
+  });
+
+  it('keeps separately cited chunks even when their display titles match', () => {
+    const item = message({
+      metadata: {
+        knowledge_citations: [
+          { id: 'citation-1', chunk_id: 'chunk-1', label: '[1]', title: '同一制度' },
+          { id: 'citation-2', chunk_id: 'chunk-2', label: '[2]', title: '同一制度' },
+        ],
+      },
+    });
+
+    expect(knowledgeCitations(item, item.content)).toEqual([
+      expect.objectContaining({ id: 'citation-1', label: '[1]' }),
+      expect.objectContaining({ id: 'citation-2', label: '[2]' }),
+    ]);
   });
 
   it('restores scheduled drafts and attachments from persisted metadata', () => {
@@ -233,6 +270,14 @@ describe('chat history consumer contract', () => {
     ]);
   });
 
+  it('replays persisted assistant and terminal events even when an old live stream owns the turn', () => {
+    expect(shouldDeferPersistedEventToLiveStream('stream_delta', true)).toBe(true);
+    expect(shouldDeferPersistedEventToLiveStream('assistant_message_created', true)).toBe(false);
+    expect(shouldDeferPersistedEventToLiveStream('stream_end', true)).toBe(false);
+    expect(shouldDeferPersistedEventToLiveStream('complete', true)).toBe(false);
+    expect(shouldDeferPersistedEventToLiveStream('stream_delta', false)).toBe(false);
+  });
+
   it('turns the Harness lifecycle into mergeable execution-record lines', () => {
     const started = harnessEventTraceLine('task_frame_started', {
       task_frame_id: 'task-weather',
@@ -299,6 +344,38 @@ describe('chat history consumer contract', () => {
       id: 'harness_frame_task-weather',
       text: '任务执行完成',
       state: 'completed',
+    });
+  });
+
+  it('keeps a switched SOP visible while it waits for user input', () => {
+    const started = harnessEventTraceLine('task_frame_started', {
+      task_frame_id: 'task-purchase',
+      kind: 'sop',
+      skill_id: 'skill_purchase_001',
+      skill_name: '购买商品流程',
+      step_id: 'collect_user_name',
+    });
+    const finished = harnessEventTraceLine('task_frame_finished', {
+      task_frame_id: 'task-purchase',
+      kind: 'sop',
+      skill_id: 'skill_purchase_001',
+      skill_name: '购买商品流程',
+      step_id: 'collect_user_name',
+      status: 'awaiting_user',
+      action_count: 1,
+    });
+
+    expect(started).toMatchObject({
+      id: 'harness_frame_task-purchase',
+      text: '开始SOP 购买商品流程',
+      state: 'running',
+    });
+    expect(finished).toMatchObject({
+      id: 'harness_frame_task-purchase',
+      kind: 'skill',
+      text: '等待用户补充 购买商品流程',
+      detail: '状态 awaiting_user · 步骤 collect_user_name · 执行 1 个动作',
+      state: 'running',
     });
   });
 });

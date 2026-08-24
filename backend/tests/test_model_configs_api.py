@@ -9,7 +9,6 @@ from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.model_configs import (
-    _verification_probe_tokens,
     create_model_config,
     delete_model_config,
     set_default_model_config,
@@ -202,6 +201,57 @@ def test_openai_responses_model_config_can_be_created(tmp_path) -> None:
         assert created.enabled is False
 
 
+def test_chat_extra_body_is_not_validated_as_protocol_options(tmp_path) -> None:
+    with _db(tmp_path) as db:
+        created = create_model_config(
+            ModelConfigCreateRequest(
+                tenant_id="tenant_a",
+                name="Qwen Chat",
+                api_protocol="openai_chat_completions",
+                base_url="https://llm.example.test/v1",
+                api_key="secret",
+                model="qwen3.8-27b",
+                protocol_options={"thinking": {"type": "disabled"}},
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            ),
+            db=db,
+            current_user=_admin(),
+        )
+
+        assert created.protocol_options == {"thinking": {"type": "disabled"}}
+        assert created.extra_body == {
+            "chat_template_kwargs": {"enable_thinking": False}
+        }
+        row = db.get(ModelConfig, created.id)
+        assert row is not None
+        assert row.protocol_options_json == {
+            "openai_chat_completions": {"thinking": {"type": "disabled"}}
+        }
+        assert row.extra_body_json == {
+            "chat_template_kwargs": {"enable_thinking": False}
+        }
+
+
+def test_non_chat_protocol_rejects_extra_body_with_distinct_error(tmp_path) -> None:
+    with _db(tmp_path) as db:
+        with pytest.raises(HTTPException) as exc_info:
+            create_model_config(
+                ModelConfigCreateRequest(
+                    tenant_id="tenant_a",
+                    name="Responses",
+                    api_protocol="openai_responses",
+                    base_url="https://api.openai.com/v1",
+                    api_key="secret",
+                    model="gpt-5",
+                    extra_body={"vendor_flag": True},
+                ),
+                db=db,
+                current_user=_admin(),
+            )
+
+        assert exc_info.value.detail == "MODEL_EXTRA_BODY_UNSUPPORTED"
+
+
 def test_model_config_delete_removes_agent_bindings(tmp_path) -> None:
     with _db(tmp_path) as db:
         db.add(
@@ -236,13 +286,6 @@ def test_model_config_delete_removes_agent_bindings(tmp_path) -> None:
         assert result == {"status": "deleted"}
         assert db.get(ModelConfig, "model_a") is None
         assert db.get(AgentModelBinding, "binding_a") is None
-
-
-def test_gemini_verification_reserves_tokens_for_visible_output() -> None:
-    from app.llm.model_protocols import ModelApiProtocol
-
-    assert _verification_probe_tokens(ModelApiProtocol.GEMINI_GENERATE_CONTENT, "stream", 32) == 128
-    assert _verification_probe_tokens(ModelApiProtocol.OPENAI_CHAT_COMPLETIONS, "stream", 32) == 32
 
 
 def test_security_change_invalidates_and_disables_legacy_config(tmp_path) -> None:
@@ -473,9 +516,9 @@ def test_verification_runs_bounded_text_stream_and_json_probes(tmp_path, monkeyp
         assert result.success is True
         assert [item.id for item in result.capabilities] == ["text", "stream", "json"]
         assert calls == [
-            ("init", 32, 25.0),
+            ("init", 64, 25.0),
             ("text",),
-            ("init", 32, 25.0),
+            ("init", 64, 25.0),
             ("stream",),
             ("init", 64, 35.0),
             ("json",),

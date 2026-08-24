@@ -1120,6 +1120,33 @@ class ScheduledTaskRun(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class HarnessAgentLoopRecord(SQLModel, table=True):
+    """Durable logical AgentLoop shared across Harness activations."""
+
+    __tablename__ = "harness_agent_loops"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "loop_key", name="uq_harness_agent_loop_session_key"
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("hloop"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    session_id: str = Field(index=True)
+    loop_key: str = Field(index=True)
+    kind: str = Field(default="general", index=True)
+    status: str = Field(default="active", index=True)
+    owner_task_frame_record_id: Optional[str] = Field(default=None, index=True)
+    skill_id: Optional[str] = Field(default=None, index=True)
+    workspace_scope_id: Optional[str] = Field(default=None, index=True)
+    checkpoint_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    last_run_id: Optional[str] = Field(default=None, index=True)
+    state_version: int = 1
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    finished_at: Optional[datetime] = None
+
+
 class HarnessTaskFrameRecord(SQLModel, table=True):
     """Durable TaskFrame state for the isolated Harness v2 execution path."""
 
@@ -1135,6 +1162,7 @@ class HarnessTaskFrameRecord(SQLModel, table=True):
     session_id: str = Field(index=True)
     source_turn_id: str = Field(index=True)
     task_id: str = Field(index=True)
+    agent_loop_id: Optional[str] = Field(default=None, index=True)
     kind: str = Field(default="conversation", index=True)
     decision: str = Field(default="answer_only", index=True)
     status: str = Field(default="queued", index=True)
@@ -1165,6 +1193,7 @@ class HarnessRunRecord(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     session_id: str = Field(index=True)
     task_frame_record_id: str = Field(index=True)
+    agent_loop_id: Optional[str] = Field(default=None, index=True)
     task_id: str = Field(index=True)
     source_turn_id: str = Field(index=True)
     status: str = Field(default="running", index=True)

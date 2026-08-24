@@ -238,6 +238,14 @@ type ParsedApiError = {
   code?: string;
 };
 
+const STABLE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]+$/;
+
+function stableErrorCode(value: unknown): string | undefined {
+  return typeof value === 'string' && STABLE_ERROR_CODE_PATTERN.test(value)
+    ? value
+    : undefined;
+}
+
 function parseErrorPayload(text: string): ParsedApiError {
   if (!text) return { message: '' };
   try {
@@ -248,8 +256,10 @@ function parseErrorPayload(text: string): ParsedApiError {
       error?: unknown;
     };
     const detail = payload.detail ?? payload.message ?? payload.error;
-    const topLevelCode = typeof payload.code === 'string' ? payload.code : undefined;
-    if (typeof detail === 'string') return { message: detail, code: topLevelCode };
+    const topLevelCode = stableErrorCode(payload.code);
+    if (typeof detail === 'string') {
+      return { message: detail, code: topLevelCode ?? stableErrorCode(detail) };
+    }
     if (Array.isArray(detail)) {
       return {
         message: detail
@@ -266,7 +276,7 @@ function parseErrorPayload(text: string): ParsedApiError {
         : typeof structured.detail === 'string'
           ? structured.detail
           : '';
-      const code = typeof structured.code === 'string' ? structured.code : topLevelCode;
+      const code = stableErrorCode(structured.code) ?? topLevelCode;
       if (message || code) return { message: message || String(code), code };
     }
   } catch {

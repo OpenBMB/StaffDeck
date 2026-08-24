@@ -551,14 +551,41 @@ def test_read_chunks_on_utf8_boundaries_and_rejects_binary(tmp_path: Path) -> No
     )
     assert first["content"] == "你"
     assert first["next_offset"] == 3
+    assert first["continuation_token"]
     second = _execute(
         executor,
         context,
         "read_file",
-        {"path": "unicode.txt", "offset": first["next_offset"], "max_bytes": 6},
+        {
+            "path": "unicode.txt",
+            "continuation_token": first["continuation_token"],
+            "max_bytes": 6,
+        },
     )
     assert second["content"] == "好吗"
     assert second["truncated"] is False
+    assert second["eof"] is True
+
+    # Legacy callers may still provide a byte offset. Align a mid-codepoint
+    # offset forward rather than misclassifying a valid UTF-8 file as binary.
+    aligned = _execute(
+        executor,
+        context,
+        "read_file",
+        {"path": "unicode.txt", "offset": 1, "max_bytes": 6},
+    )
+    assert aligned["offset"] == 3
+    assert aligned["content"] == "好吗"
+
+    eof = _execute(
+        executor,
+        context,
+        "read_file",
+        {"path": "unicode.txt", "offset": 999},
+    )
+    assert eof["content"] == ""
+    assert eof["eof"] is True
+    assert eof["offset"] == eof["size"]
 
     context.workspace_root.joinpath("binary.bin").write_bytes(b"\xff\xfe")
     binary = _execute_failure(

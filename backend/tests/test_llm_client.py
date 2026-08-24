@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from app.llm.client import LLMClient, LLMError, _thinking_mode_for_model
@@ -59,9 +61,10 @@ def test_llm_client_uses_600_second_timeout(monkeypatch):
             "temperature": 0.2,
             "max_output_tokens": 256,
             "extra_body_json": {
-                "thinking": {"type": "disabled"},
+                "chat_template_kwargs": {"enable_thinking": False},
                 "do_sample": False,
             },
+            "protocol_options": {"thinking": {"type": "disabled"}},
         },
     )()
     monkeypatch.setattr("app.llm.client.decrypt_secret", fake_decrypt_secret)
@@ -74,6 +77,7 @@ def test_llm_client_uses_600_second_timeout(monkeypatch):
     assert captured["timeout"] == 600.0
     assert captured["base_url"] == "https://example.test/v1"
     assert client.extra_body == {
+        "chat_template_kwargs": {"enable_thinking": False},
         "thinking": {"type": "disabled"},
         "do_sample": False,
     }
@@ -294,6 +298,119 @@ def test_generate_text_persists_provider_request_metrics():
     )
     assert finished["request_message_roles"] == ["system", "user"]
     assert len(finished["request_prefix_fingerprints"]) == 2
+    assert started["request_messages"] == [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": '{"hello": "world"}'},
+    ]
+    assert started["request_parameters"] == {
+        "temperature": 0.2,
+        "max_output_tokens": 256,
+        "stream": False,
+    }
+    assert finished["response_text"] == "ok"
+    assert finished["response_message"] == {"role": "assistant", "content": "ok"}
+
+
+def test_generate_text_preserves_reasoning_tool_arguments_and_raw_provider_output():
+    client = object.__new__(LLMClient)
+    client.client = _FakeOpenAIClient()
+    client.model = "demo-model"
+    client.base_url = "https://example.test/v1"
+    client.temperature = 0.2
+    client.max_output_tokens = 256
+    events: list[tuple[str, dict]] = []
+    raw_arguments = '{"I_ENAME":"张三","I_BS":"1"}'
+    completion = SimpleNamespace(
+        id="resp_audit",
+        model="demo-model",
+        api_key="must-not-be-persisted",
+        choices=[
+            SimpleNamespace(
+                index=0,
+                finish_reason="tool_calls",
+                message=SimpleNamespace(
+                    role="assistant",
+                    content="已准备查询参数",
+                    reasoning_content="先提取姓名，再映射入职状态。",
+                    tool_calls=[
+                        SimpleNamespace(
+                            id="call_audit",
+                            type="function",
+                            function=SimpleNamespace(
+                                name="ZRFC_HR_GET_PERNR_INFO",
+                                arguments=raw_arguments,
+                            ),
+                        )
+                    ],
+                ),
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=21,
+            completion_tokens=9,
+            total_tokens=30,
+        ),
+    )
+    client.client.chat.completions.create = lambda **_kwargs: completion
+
+    with bind_span_sink(lambda event_type, payload: events.append((event_type, payload))):
+        assert client.generate_text("system prompt", {"question": "查询张三"}) == "已准备查询参数"
+
+    started = next(payload for event_type, payload in events if event_type == "llm_call_started")
+    finished = next(payload for event_type, payload in events if event_type == "llm_call_finished")
+    assert started["request_payload"] == {
+        "model": "demo-model",
+        "messages": [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": '{"question": "查询张三"}'},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 256,
+    }
+    assert finished["response_message"]["reasoning_content"] == "先提取姓名，再映射入职状态。"
+    assert finished["response_message"]["tool_calls"][0]["function"] == {
+        "name": "ZRFC_HR_GET_PERNR_INFO",
+        "arguments": raw_arguments,
+    }
+    assert finished["response_payload"]["choices"][0]["message"]["tool_calls"][0][
+        "function"
+    ]["arguments"] == raw_arguments
+    assert finished["response_payload"]["api_key"] == "[REDACTED]"
+
+
+def test_generate_text_observability_omits_embedded_image_data() -> None:
+    client = object.__new__(LLMClient)
+    client.client = _FakeOpenAIClient()
+    client.model = "demo-model"
+    client.base_url = "https://example.test/v1"
+    client.temperature = 0.2
+    client.max_output_tokens = 256
+    events: list[tuple[str, dict]] = []
+
+    payload = {
+        "conversation_context": {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "看图",
+                    "images": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "data:image/png;base64,QUJDREVGRw=="
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    with bind_span_sink(lambda event_type, event: events.append((event_type, event))):
+        assert client.generate_text("system", payload) == "ok"
+
+    started = next(event for event_type, event in events if event_type == "llm_call_started")
+    image_url = started["request_messages"][1]["content"][1]["image_url"]["url"]
+    assert image_url == "[data:image/png;base64 payload omitted; base64_chars=12]"
 
 
 def test_generate_text_persists_provider_cache_usage_metrics():
@@ -488,13 +605,36 @@ def test_generate_text_stream_records_ttft_and_output_volume():
     client.max_output_tokens = 256
     events: list[tuple[str, dict]] = []
 
-    def chunk(content, finish_reason=None):  # noqa: ANN001
-        delta = type("Delta", (), {"content": content, "reasoning_content": None})()
+    raw_arguments = '{"I_ENAME":"张三"}'
+
+    def chunk(content, finish_reason=None, *, reasoning=None, tool_calls=None):  # noqa: ANN001
+        delta = type(
+            "Delta",
+            (),
+            {
+                "content": content,
+                "reasoning_content": reasoning,
+                "tool_calls": tool_calls or [],
+            },
+        )()
         choice = type("Choice", (), {"delta": delta, "finish_reason": finish_reason})()
         return type("Chunk", (), {"id": "chunk_demo", "choices": [choice]})()
 
     client.client.chat.completions.create = lambda **_kwargs: iter(
-        [chunk("你"), chunk("好", "stop")]
+        [
+            chunk(None, reasoning="先判断是否需要工具。"),
+            chunk(
+                "你",
+                tool_calls=[
+                    SimpleNamespace(
+                        index=0,
+                        id="call_stream",
+                        function=SimpleNamespace(name="lookup", arguments=raw_arguments),
+                    )
+                ],
+            ),
+            chunk("好", "stop"),
+        ]
     )
 
     with bind_span_sink(lambda event_type, payload: events.append((event_type, payload))):
@@ -508,8 +648,33 @@ def test_generate_text_stream_records_ttft_and_output_volume():
     assert finished["stream"] is True
     assert finished["ttft_ms"] is not None
     assert finished["output_chars"] == 2
-    assert finished["stream_chunks"] == 2
+    assert finished["stream_chunks"] == 3
     assert finished["finish_reasons"] == ["stop"]
+    assert finished["request_messages"] == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": '{"hello": "world"}'},
+    ]
+    assert finished["response_text"] == "你好"
+    assert finished["response_message"] == {
+        "role": "assistant",
+        "content": "你好",
+        "reasoning_content": "先判断是否需要工具。",
+        "tool_call_deltas": [
+            [
+                {
+                    "index": 0,
+                    "id": "call_stream",
+                    "function": {"name": "lookup", "arguments": raw_arguments},
+                }
+            ]
+        ],
+    }
+    assert finished["response_chunks"][0]["choices"][0]["delta"][
+        "reasoning_content"
+    ] == "先判断是否需要工具。"
+    assert finished["response_chunks"][1]["choices"][0]["delta"]["tool_calls"][0][
+        "function"
+    ]["arguments"] == raw_arguments
 
 
 def test_generate_text_projects_conversation_context_messages():
@@ -969,7 +1134,7 @@ def test_generate_json_requests_json_object_mode():
     assert "json" in str(client.client.chat.completions.calls[0]["messages"][-1]["content"])
 
 
-def test_internal_json_operation_caps_output_without_mutating_system_prompt():
+def test_internal_json_operation_uses_configured_output_budget():
     client = object.__new__(LLMClient)
     client.client = _FakeOpenAIClient()
     client.model = "demo-model"
@@ -984,7 +1149,7 @@ def test_internal_json_operation_caps_output_without_mutating_system_prompt():
         assert client.generate_json("router prompt", {}) == {"decision": "answer_only"}
 
     call = client.client.chat.completions.calls[0]
-    assert call["max_tokens"] == 4096
+    assert call["max_tokens"] == 8192
     assert call["messages"][0]["content"] == "router prompt"
 
 
@@ -997,7 +1162,7 @@ def test_knowledge_router_does_not_retry_empty_control_plane_responses():
     assert operation_empty_response_retries("response.generate", 2) == 2
 
 
-def test_user_visible_response_caps_output_budget_at_4096():
+def test_user_visible_response_uses_configured_output_budget():
     client = object.__new__(LLMClient)
     client.client = _FakeOpenAIClient()
     client.model = "demo-model"
@@ -1007,34 +1172,34 @@ def test_user_visible_response_caps_output_budget_at_4096():
     with llm_operation("response.generate"):
         assert client.generate_text("system prompt", {}) == "ok"
 
-    assert client.client.chat.completions.calls[0]["max_tokens"] == 4096
+    assert client.client.chat.completions.calls[0]["max_tokens"] == 8192
 
 
 @pytest.mark.parametrize(
-    ("operation", "expected"),
+    "operation",
     [
-        ("router.scene", 4096),
-        ("step_agent.run", 4096),
-        ("step_agent.repair", 4096),
-        ("response.generate", 4096),
-        ("response.generate_stream", 4096),
-        ("reflection.review", 2048),
-        ("general_skill.select", 2048),
-        ("general_skill.review", 2048),
-        ("general_skill.reply", 2048),
-        ("knowledge.document_route", 2048),
-        ("knowledge.bucket_route", 512),
-        ("memory.capture", 1024),
-        ("session.title", 512),
+        "router.scene",
+        "step_agent.run",
+        "step_agent.repair",
+        "response.generate",
+        "response.generate_stream",
+        "reflection.review",
+        "general_skill.select",
+        "general_skill.review",
+        "general_skill.reply",
+        "knowledge.document_route",
+        "knowledge.bucket_route",
+        "memory.capture",
+        "session.title",
     ],
 )
-def test_control_plane_operation_output_budgets(operation, expected):  # noqa: ANN001
-    assert operation_output_tokens(operation, 8192) == expected
+def test_control_plane_operation_uses_model_config_budget(operation):  # noqa: ANN001
+    assert operation_output_tokens(operation, 8192) == 8192
 
 
-def test_step_agent_caps_output_budget_at_4096() -> None:
-    assert operation_output_tokens("step_agent.run", 8192) == 4096
-    assert operation_output_tokens("step_agent.repair", 8192) == 4096
+def test_step_agent_uses_model_config_budget() -> None:
+    assert operation_output_tokens("step_agent.run", 8192) == 8192
+    assert operation_output_tokens("step_agent.repair", 8192) == 8192
 
 
 def test_generate_json_falls_back_when_json_object_mode_is_unsupported():
@@ -1206,7 +1371,7 @@ def _recording_create(client, factory):
     return _create
 
 
-def test_generate_text_escalates_token_budget_on_reasoning_length_truncation():
+def test_generate_text_preserves_token_budget_on_reasoning_length_retry():
     client = object.__new__(LLMClient)
     client.client = _FakeOpenAIClient()
     client.model = "demo-model"
@@ -1214,7 +1379,7 @@ def test_generate_text_escalates_token_budget_on_reasoning_length_truncation():
     client.max_output_tokens = 4096
 
     # First attempt: length-truncated empty content with reasoning -> retry.
-    # Second attempt: succeed so we can observe the escalated budget on attempt 1.
+    # Second attempt succeeds, but retries must preserve the configured budget.
     responses = iter([_length_truncated_completion(), _successful_completion()])
     client.client.chat.completions.create = _recording_create(client, lambda: next(responses))
 
@@ -1225,8 +1390,7 @@ def test_generate_text_escalates_token_budget_on_reasoning_length_truncation():
     assert len(calls) == 2
     # Attempt 0 uses the configured budget.
     assert calls[0]["max_tokens"] == 4096
-    # Attempt 1 is doubled (4096 * 2 = 8192), still under the 32768 ceiling.
-    assert calls[1]["max_tokens"] == 8192
+    assert calls[1]["max_tokens"] == 4096
 
 
 def test_generate_text_preserves_budget_above_escalation_ceiling():
@@ -1250,7 +1414,7 @@ def test_generate_text_preserves_budget_above_escalation_ceiling():
     assert calls[1]["max_tokens"] == 65536
 
 
-def test_generate_text_stream_escalates_token_budget_on_reasoning_length_truncation():
+def test_generate_text_stream_preserves_token_budget_on_reasoning_length_retry():
     client = object.__new__(LLMClient)
     client.client = _FakeOpenAIClient()
     client.model = "demo-model"
@@ -1278,7 +1442,7 @@ def test_generate_text_stream_escalates_token_budget_on_reasoning_length_truncat
     calls = client.client.chat.completions.calls
     assert len(calls) == 2
     assert calls[0]["max_tokens"] == 4096
-    assert calls[1]["max_tokens"] == 8192
+    assert calls[1]["max_tokens"] == 4096
 
 
 def test_generate_text_stream_preserves_budget_above_escalation_ceiling():

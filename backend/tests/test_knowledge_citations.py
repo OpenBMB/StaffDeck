@@ -37,6 +37,26 @@ def test_compact_knowledge_citation_labels_supports_historical_filtered_metadata
     assert [item["label"] for item in citations] == ["[1]", "[2]"]
 
 
+def test_compact_knowledge_citation_labels_removes_unsupported_model_labels() -> None:
+    content, citations = compact_knowledge_citation_labels(
+        "制度正文。[1]\n\n参考来源：[1] [2] [3] [4]",
+        [{"id": "kref_1", "label": "[1]", "title": "付款制度"}],
+    )
+
+    assert content == "制度正文。[1]\n\n参考来源：[1]"
+    assert citations == [{"id": "kref_1", "label": "[1]", "title": "付款制度"}]
+
+
+def test_compact_knowledge_citation_labels_removes_footer_without_sources() -> None:
+    content, citations = compact_knowledge_citation_labels(
+        "没有检索依据的回答。\n\n参考来源：[1] [2]",
+        [],
+    )
+
+    assert content == "没有检索依据的回答。"
+    assert citations == []
+
+
 def test_compact_knowledge_citation_labels_adds_deterministic_fallback() -> None:
     content, citations = compact_knowledge_citation_labels(
         "制度规定七天内可以申请退款。",

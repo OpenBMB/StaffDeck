@@ -70,6 +70,7 @@ from app.skills.skill_schema import (
     SkillRewriteResponse,
     SkillVersionRead,
     SkillUpdateRequest,
+    skill_card_from_persisted,
 )
 from app.skills.stream_jobs import SkillStreamEvent, SkillStreamJob, stream_jobs
 from app.skills.step_ids import skill_card_with_unique_step_ids
@@ -96,7 +97,9 @@ def skill_read(
     skill_stats = _stats_for(all_stats, row.skill_id, row.version)
     total_stats = all_stats.get(row.skill_id, {})
     recent_skill_stats = (recent_stats or {}).get(row.skill_id, {})
-    content, _warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(row.content_json))
+    content, _warnings = skill_card_with_unique_step_ids(
+        skill_card_from_persisted(row.content_json)
+    )
     branch_meta = getattr(row, "agent_branch_meta", {}) or {}
     return SkillRead(
         id=row.id,
@@ -139,7 +142,9 @@ def skill_version_read(
     row: SkillVersion, stats: dict[str, dict[str, float | int]] | None = None
 ) -> SkillVersionRead:
     skill_stats = _stats_for(stats or {}, row.skill_id, row.version)
-    content, _warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(row.content_json))
+    content, _warnings = skill_card_with_unique_step_ids(
+        skill_card_from_persisted(row.content_json)
+    )
     return SkillVersionRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -161,7 +166,9 @@ def skill_version_read(
 
 
 def _branch_version_read(row: AgentSkillBranchVersion) -> SkillVersionRead:
-    content, _warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(row.content_json))
+    content, _warnings = skill_card_with_unique_step_ids(
+        skill_card_from_persisted(row.content_json)
+    )
     return SkillVersionRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -753,7 +760,7 @@ def rollback_skill_version(
     row = _get_skill(db, tenant_id, skill_id)
     version_row = _get_skill_version(db, tenant_id, skill_id, version)
     normalized_content, _warnings = skill_card_with_unique_step_ids(
-        SkillCard.model_validate(version_row.content_json)
+        skill_card_from_persisted(version_row.content_json)
     )
     normalized_content = normalized_content.model_copy(
         update={

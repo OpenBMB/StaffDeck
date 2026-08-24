@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import mimetypes
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -51,6 +52,7 @@ from app.harness import (
     open_harness_artifact,
     publish_changed_harness_artifacts,
     register_command_tools,
+    register_skill_script_tools,
     snapshot_harness_workspace,
 )
 from app.harness.execution_context import SANDBOX_WORKSPACE
@@ -65,6 +67,7 @@ from app.tools.tool_schema import ToolCall
 
 _INLINE_JSON_TOOL_RESULT_MAX_CHARS = 2_000
 _INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
+_GENERAL_SKILL_PACKAGE_DIRECTORY = ".harness/skill-packages"
 _SANDBOX_JSON_FILE_KIND = "sandbox_json_file"
 
 
@@ -124,6 +127,7 @@ class HarnessCapabilityInvoker:
         )
         self._file_registry = build_file_tool_registry()
         register_command_tools(self._file_registry)
+        register_skill_script_tools(self._file_registry)
         self._file_executor = HarnessExecutor(self._file_registry)
         self._file_context = HarnessToolContext(
             run_id=self.run_id,
@@ -413,6 +417,28 @@ class HarnessCapabilityInvoker:
         )
         if result.success:
             data = dict(result.data or {})
+            if name in {"exec_command", "run_skill_script"} and data.get("ok") is not True:
+                visible_data = _model_visible_file_result(data)
+                timed_out = bool(data.get("timed_out"))
+                return {
+                    "success": False,
+                    "data": visible_data,
+                    "error": {
+                        "code": (
+                            "COMMAND_TIMEOUT"
+                            if timed_out
+                            else "COMMAND_EXIT_NONZERO"
+                        ),
+                        "message": (
+                            "受控进程执行超时。"
+                            if timed_out
+                            else "受控进程执行完成，但返回了非零退出码。"
+                        ),
+                        "retryable": False,
+                        "details": visible_data,
+                    },
+                    "duration_ms": result.duration_ms,
+                }
             artifacts: list[dict[str, Any]] = []
             if name == "publish_artifact":
                 artifact_path = str(data.get("path") or "").strip()
@@ -712,6 +738,19 @@ class HarnessCapabilityInvoker:
         metadata: dict[str, Any],
         query: str,
     ) -> dict[str, Any]:
+        package = package_from_row(skill)
+        package_root, file_paths = _materialize_general_skill_package(
+            self.workspace_root,
+            package,
+        )
+        entrypoint_path = next(
+            (
+                item
+                for item in file_paths
+                if item.removeprefix(package_root + "/") == package.entrypoint
+            ),
+            f"{package_root}/{package.entrypoint}",
+        )
         return {
             "success": True,
             "data": {
@@ -720,8 +759,15 @@ class HarnessCapabilityInvoker:
                 "operation": "read",
                 "query": query,
                 "package": _skill_package_preview(skill),
+                "package_root": package_root,
+                "sandbox_package_root": _sandbox_path(package_root),
+                "entrypoint_path": entrypoint_path,
+                "sandbox_entrypoint_path": _sandbox_path(entrypoint_path),
+                "file_paths": file_paths,
                 "notice": (
                     "技能包说明已加载到当前隔离 Harness transcript；"
+                    "包内文件已物化到 package_root，请只使用返回的 entrypoint_path 和"
+                    " file_paths 定位文件；"
                     "请由 AgentLoop 直接应用其中的 prompt、规则和示例，并按任务需要调用"
                     "知识库、原装 Tool、exec_command 或 typed 文件工具；Skill 本身不会"
                     "生成临时代码或启动第二套 runner。"
@@ -1215,6 +1261,72 @@ def _skill_package_preview(
         "truncated": len(files) < len(package.files)
         or any(bool(item.get("truncated")) for item in files),
     }
+
+
+def _materialize_general_skill_package(
+    workspace_root: Path,
+    package: Any,
+) -> tuple[str, list[str]]:
+    """Write an immutable GeneralSkill snapshot into the current TaskFrame workspace."""
+
+    safe_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(package.slug or "skill")).strip(
+        ".-"
+    ) or "skill"
+    digest_suffix = re.sub(r"[^a-fA-F0-9]", "", str(package.digest or ""))[:12]
+    directory_name = safe_slug + (f"-{digest_suffix}" if digest_suffix else "")
+    relative_root = f"{_GENERAL_SKILL_PACKAGE_DIRECTORY}/{directory_name}"
+    target_root = workspace_root / relative_root
+    workspace_resolved = workspace_root.resolve()
+    target_resolved = target_root.resolve(strict=False)
+    if not target_resolved.is_relative_to(workspace_resolved):
+        raise HarnessExecutionError(
+            "INVALID_SKILL_PACKAGE",
+            "GeneralSkill package path escapes the TaskFrame workspace.",
+        )
+    if target_root.exists() and (target_root.is_symlink() or not target_root.is_dir()):
+        raise HarnessExecutionError(
+            "INVALID_SKILL_PACKAGE",
+            "GeneralSkill package destination is not a safe directory.",
+        )
+    target_root.mkdir(parents=True, exist_ok=True)
+    file_paths: list[str] = []
+    for item in package.files:
+        relative_path = _safe_general_skill_file_path(str(item.path or ""))
+        target = target_root / relative_path
+        if target.exists() and (target.is_symlink() or not target.is_file()):
+            raise HarnessExecutionError(
+                "INVALID_SKILL_PACKAGE",
+                "GeneralSkill package contains an unsafe existing file path.",
+                details={"path": relative_path},
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.parent.resolve().is_relative_to(workspace_resolved):
+            raise HarnessExecutionError(
+                "INVALID_SKILL_PACKAGE",
+                "GeneralSkill package file escapes the TaskFrame workspace.",
+                details={"path": relative_path},
+            )
+        target.write_text(str(item.content or ""), encoding="utf-8")
+        file_paths.append(f"{relative_root}/{relative_path}")
+    return relative_root, file_paths
+
+
+def _safe_general_skill_file_path(path: str) -> str:
+    normalized = path.replace("\\", "/").strip()
+    parts = [part for part in normalized.split("/") if part not in {"", "."}]
+    if (
+        not parts
+        or normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:", normalized)
+        or any(part == ".." for part in parts)
+        or any("\x00" in part for part in parts)
+    ):
+        raise HarnessExecutionError(
+            "INVALID_SKILL_PACKAGE",
+            "GeneralSkill package contains an unsafe file path.",
+            details={"path": path},
+        )
+    return "/".join(parts)
 
 
 def _failure_was_not_sent(result: dict[str, Any]) -> bool:

@@ -57,6 +57,7 @@ class TaskRequirement(BaseModel):
     kind: Literal["sop", "conversation"]
     goal: str
     source_user_message: str = ""
+    out_of_scope_task_intents: list[str] = Field(default_factory=list)
     requirements: list[str] = Field(default_factory=list)
     sop_context: dict[str, Any] = Field(default_factory=dict)
     required_slots: list[str] = Field(default_factory=list)
@@ -92,6 +93,7 @@ class TaskExecutionResult(BaseModel):
     action_count: int = 0
     error: dict[str, Any] | None = None
     structured_result: Any | None = None
+    loop_checkpoint: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
 
 class TaskRequestCompiler:
@@ -107,6 +109,7 @@ class TaskRequestCompiler:
         prior_task_results: list[dict[str, Any]] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         source_user_message: str | None = None,
+        out_of_scope_task_intents: list[str] | None = None,
     ) -> TaskRequirement:
         current_node = _current_node(skill, frame.target_step_id or session.active_step_id)
         expected_fields = _text_list((current_node or {}).get("expected_user_info"))
@@ -165,6 +168,9 @@ class TaskRequestCompiler:
             kind=frame.kind,
             goal=goal,
             source_user_message=str(source_user_message or "").strip()[:4_000],
+            out_of_scope_task_intents=_unique(
+                [str(item or "") for item in out_of_scope_task_intents or []]
+            ),
             requirements=requirements or [goal],
             sop_context=_sop_context(skill, current_node),
             required_slots=required_slots,

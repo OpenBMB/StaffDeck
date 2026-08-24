@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { toast, type ExternalToast } from 'sonner';
 
+import { apiErrorMessage } from '@/lib/apiErrorMessages';
 import { cn } from '@/lib/utils';
 
 import IconError from '@/assets/icons/error-fill.svg?react';
@@ -61,6 +62,11 @@ function showVariant(variant: ToastVariant, message: ReactNode, options?: AppToa
   });
 }
 
+function localizedErrorMessage(message: ReactNode): ReactNode {
+  if (typeof message !== 'string') return message;
+  return apiErrorMessage(message, message);
+}
+
 /**
  * Global toast helper. `success` / `error` render the SD1 message pill;
  * `warning` / `info` / `loading` delegate to sonner so they share the same
@@ -69,7 +75,8 @@ function showVariant(variant: ToastVariant, message: ReactNode, options?: AppToa
 export const notify = {
   success: (message: ReactNode, options?: AppToastOptions) =>
     showVariant('success', message, options),
-  error: (message: ReactNode, options?: AppToastOptions) => showVariant('error', message, options),
+  error: (message: ReactNode, options?: AppToastOptions) =>
+    showVariant('error', localizedErrorMessage(message), options),
   warning: (message: ReactNode, options?: AppToastOptions) => toast.warning(message, options),
   info: (message: ReactNode, options?: AppToastOptions) => toast.info(message, options),
   loading: (message: ReactNode, options?: AppToastOptions) => toast.loading(message, options),

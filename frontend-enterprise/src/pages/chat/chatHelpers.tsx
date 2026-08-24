@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import CodeBlock from '@/components/CodeBlock';
 import { ApiError } from '@/api/client';
@@ -18,6 +18,8 @@ import type {
 
 import {
   CHAT_MARKDOWN_CLASS,
+  CHAT_MARKDOWN_IMAGE_CLASS,
+  CHAT_MARKDOWN_IMAGE_LINK_CLASS,
   CHAT_MD_TABLE_CLASS,
   CHAT_MD_TABLE_SCROLL_CLASS,
 } from './chatPageStyles';
@@ -196,13 +198,41 @@ function safeExternalHttpUrl(value: string): string | null {
   }
 }
 
+function ExternalMarkdownImage({ alt, src }: { alt: string; src: string }) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return <span title={src}>{alt}</span>;
+  }
+
+  return (
+    <a
+      className={CHAT_MARKDOWN_IMAGE_LINK_CLASS}
+      href={src}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={`查看图片：${alt}`}
+    >
+      <img
+        className={CHAT_MARKDOWN_IMAGE_CLASS}
+        src={src}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+      />
+    </a>
+  );
+}
+
 export function renderInlineMarkdown(
   text: string,
   keyPrefix: string,
   options: MarkdownRenderOptions = {},
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]*\]\([^\)\n]+\))/g;
+  const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]*\]\((?:[^()\n]|\([^()\n]*\))+\))/g;
   let cursor = 0;
   let index = 0;
   let match: RegExpExecArray | null;
@@ -218,14 +248,22 @@ export function renderInlineMarkdown(
     } else if (token.startsWith('**') && token.endsWith('**')) {
       nodes.push(<strong key={key}>{renderInlineMarkdown(token.slice(2, -2), key, options)}</strong>);
     } else {
-      const image = token.match(/^!\[([^\]]*)\]\(([^\)\n]+)\)$/);
+      const image = token.match(/^!\[([^\]]*)\]\(((?:[^()\n]|\([^()\n]*\))+)\)$/);
       if (image) {
-        nodes.push(<span key={key}>{image[1] || '图片'}</span>);
+        const alt = image[1].trim() || '图片';
+        const src = safeExternalHttpUrl(image[2].trim());
+        if (src) {
+          nodes.push(
+            <ExternalMarkdownImage key={key} src={src} alt={alt} />,
+          );
+        } else {
+          nodes.push(<span key={key}>{alt}</span>);
+        }
         cursor = match.index + token.length;
         index += 1;
         continue;
       }
-      const link = token.match(/^\[([^\]]*)\]\(([^\)\n]+)\)$/);
+      const link = token.match(/^\[([^\]]*)\]\(((?:[^()\n]|\([^()\n]*\))+)\)$/);
       if (link) {
         const href = link[2].trim();
         const label = link[1] || href;
@@ -885,6 +923,15 @@ export function isTerminalSessionEvent(
   return isTerminalStreamEvent(event);
 }
 
+export function shouldDeferPersistedEventToLiveStream(
+  eventName: string,
+  liveStreamOwnsTurn: boolean,
+): boolean {
+  if (!liveStreamOwnsTurn) return false;
+  if (eventName === 'assistant_message_created') return false;
+  return !STREAM_TERMINAL_EVENTS.has(eventName);
+}
+
 export function attachTurnIdsToServerMessages(
   serverMessages: ChatMessage[],
   realtimeMessages: ChatMessage[],
@@ -1413,11 +1460,14 @@ export function harnessEventTraceLine(
 
   if (eventName === 'task_frame_started') {
     const kind = typeof data.kind === 'string' ? data.kind : 'conversation';
+    const skillName = typeof data.skill_name === 'string' && data.skill_name.trim()
+      ? data.skill_name.trim()
+      : (typeof data.skill_id === 'string' ? data.skill_id.trim() : '');
     const stepId = typeof data.step_id === 'string' ? data.step_id.trim() : '';
     return {
       id: `harness_frame_${frameId}`,
       kind: kind === 'sop' ? 'skill' : 'decision',
-      text: '开始执行任务',
+      text: kind === 'sop' && skillName ? `开始SOP ${skillName}` : '开始执行任务',
       detail: [
         kind === 'sop' ? 'SOP TaskFrame' : '对话 TaskFrame',
         stepId ? `步骤 ${stepId}` : '',
@@ -1450,17 +1500,33 @@ export function harnessEventTraceLine(
     };
   }
   if (eventName === 'task_frame_finished') {
+    const kind = typeof data.kind === 'string' ? data.kind : 'conversation';
+    const skillName = typeof data.skill_name === 'string' && data.skill_name.trim()
+      ? data.skill_name.trim()
+      : (typeof data.skill_id === 'string' ? data.skill_id.trim() : '');
+    const stepId = typeof data.step_id === 'string' ? data.step_id.trim() : '';
     const status = typeof data.status === 'string' ? data.status : 'completed';
     const failed = ['failed', 'blocked', 'cancelled'].includes(status);
     const actionCount = typeof data.action_count === 'number' ? data.action_count : undefined;
+    const text = kind === 'sop' && skillName
+      ? (failed
+        ? `SOP执行失败 ${skillName}`
+        : (status === 'awaiting_user'
+          ? `等待用户补充 ${skillName}`
+          : `SOP任务执行完成 ${skillName}`))
+      : (failed ? '任务执行失败' : '任务执行完成');
     return {
       id: `harness_frame_${frameId}`,
-      kind: 'decision',
-      text: failed ? '任务执行失败' : '任务执行完成',
-      detail: [`状态 ${status}`, actionCount === undefined ? '' : `执行 ${actionCount} 个动作`]
+      kind: kind === 'sop' ? 'skill' : 'decision',
+      text,
+      detail: [
+        `状态 ${status}`,
+        stepId ? `步骤 ${stepId}` : '',
+        actionCount === undefined ? '' : `执行 ${actionCount} 个动作`,
+      ]
         .filter(Boolean)
         .join(' · '),
-      state: failed ? 'failed' : 'completed',
+      state: failed ? 'failed' : (status === 'awaiting_user' ? 'running' : 'completed'),
       icon: failed ? 'loading' : 'execute',
     };
   }
@@ -1676,9 +1742,15 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
     if (!citation || !citation.id) return;
     const labelNumber = citationLabelNumber(citation, index + 1);
     if (!usedLabels.has(labelNumber)) return;
-    const identity = (
-      citation.title || citation.section_path || citation.summary || citation.excerpt || citation.source_path || citation.concept_id || citation.id
-    );
+    // A document can contribute multiple cited chunks with the same display
+    // title. Prefer durable source identifiers so those cards are not merged.
+    // Historical citations without source identifiers retain title-based
+    // deduplication for backwards compatibility.
+    const identity = citation.chunk_id
+      ? `chunk:${citation.chunk_id}`
+      : citation.concept_id
+        ? `concept:${citation.concept_id}`
+        : (citation.title || citation.section_path || citation.summary || citation.excerpt || citation.source_path || citation.id);
     const key = normalizeMessageText(identity).toLowerCase();
     if (!key || seen.has(key)) return;
     seen.add(key);
