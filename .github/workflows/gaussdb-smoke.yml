@@ -1,0 +1,113 @@
+name: openGauss dialect smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start openGauss
+        run: |
+          GAUSS_PASSWORD="Gs$(openssl rand -hex 9)_aB1"
+          echo "GAUSS_PASSWORD=$GAUSS_PASSWORD" >> "$GITHUB_ENV"
+          docker run -d --name opengauss \
+            -e GS_PASSWORD="$GAUSS_PASSWORD" \
+            -p 5432:5432 \
+            enmotech/opengauss:5.0.0
+          for i in $(seq 1 120); do
+            if docker exec opengauss su - omm -c "gsql -d postgres -c 'select 1'" >/dev/null 2>&1; then
+              echo "openGauss ready after ${i}s"
+              break
+            fi
+            sleep 2
+            if [ "$i" -eq 120 ]; then
+              echo "openGauss failed to become ready"
+              docker logs opengauss
+              exit 1
+            fi
+          done
+          docker exec opengauss su - omm -c "gsql -d postgres -c 'select version()'"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend deps
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -e "backend[dev,postgres]" 2>/dev/null || (cd backend && ../.venv/bin/pip install -q -e ".[dev,postgres]" && ../.venv/bin/pip install -q pytest pytest-asyncio ruff httpx)
+
+      - name: create_all + dialect smoke on openGauss
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:${{ env.GAUSS_PASSWORD }}@127.0.0.1:5432/postgres
+          STAFFDECK_ROLE: all
+        working-directory: backend
+        run: |
+          set -e
+          ../.venv/bin/python - <<'PY'
+          from app.db.database import init_db
+          init_db()
+          print("create_all on openGauss: OK")
+          from sqlalchemy import inspect
+          from app.db import engine
+          idx = {i["name"] for t in ("sessions", "model_configs") for i in inspect(engine).get_indexes(t)}
+          assert "uq_sessions_agent_channel_extconv" in idx, "missing session index"
+          assert "uq_model_configs_tenant_default" in idx, "missing default-model partial index"
+          print("indexes: OK")
+          from app.db.dialect import get_dialect
+          from sqlmodel import Session
+          d = get_dialect(engine.url.get_backend_name())
+          print("dialect:", d.name)
+          with Session(engine) as lock_session:
+              assert d.acquire_advisory_lock(lock_session, "staffdeck-connector")
+              assert d.check_advisory_lock(lock_session, "staffdeck-connector")
+              print("advisory lock acquire+check: OK")
+              d.release_advisory_lock(lock_session, "staffdeck-connector")
+              print("advisory lock release: OK")
+          with Session(engine) as db:
+              from app.db.models import User
+              db.exec(__import__("sqlmodel").select(User)).all()
+          print("basic query: OK")
+          PY
+
+      - name: Boot app and API smoke on openGauss
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:${{ env.GAUSS_PASSWORD }}@127.0.0.1:5432/postgres
+          STAFFDECK_ROLE: all
+          ULTRARAG_PORT: 5199
+        working-directory: backend
+        run: |
+          set -e
+          ../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 5199 &
+          APP_PID=$!
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:5199/api/health >/dev/null 2>&1; then echo "healthy after ${i}s"; break; fi
+            sleep 1
+            if [ "$i" -eq 60 ]; then echo "app failed to start"; kill $APP_PID; exit 1; fi
+          done
+          curl -sf http://127.0.0.1:5199/api/health
+          TOKEN=$(curl -sf -X POST http://127.0.0.1:5199/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"tenant_id":"tenant_demo","username":"admin","password":"admin"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+          echo "login: OK"
+          AGENTS=$(curl -sf "http://127.0.0.1:5199/api/chat/agents?tenant_id=tenant_demo" -H "Authorization: Bearer $TOKEN")
+          echo "agents: $(echo "$AGENTS" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')"
+          BID=$(curl -sf -X POST http://127.0.0.1:5199/api/enterprise/channels \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"tenant_id":"tenant_demo","agent_id":"agent_30b8f623c6fe445b","channel":"wecom"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+          echo "binding: $BID"
+          curl -sf -X POST "http://127.0.0.1:5199/api/enterprise/channels/$BID/wecom/credentials" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"tenant_id":"tenant_demo","bot_id":"smoke_bot","secret":"smoke_secret","corp_id":"smoke_corp"}' -o /dev/null
+          echo "credentials(JSON config patch): OK"
+          curl -sf "http://127.0.0.1:5199/api/enterprise/channels/$BID/deliveries/days?tenant_id=tenant_demo" \
+            -H "Authorization: Bearer $TOKEN" | python3 -c 'import sys,json;print("day-bucket endpoint:", json.load(sys.stdin)["total_days"], "days")'
+          curl -sf "http://127.0.0.1:5199/api/enterprise/knowledge-bases?tenant_id=tenant_demo" \
+            -H "Authorization: Bearer $TOKEN" | python3 -c 'import sys,json;print("knowledge-bases:", len(json.load(sys.stdin)))'
+          kill $APP_PID || true

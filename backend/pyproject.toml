@@ -37,6 +37,10 @@ dev = [
   "pytest-asyncio>=0.23.0",
   "ruff>=0.5.0"
 ]
+# PostgreSQL/openGauss 驱动按需安装(默认 SQLite 的桌面端不背 ~20MB 二进制)
+postgres = [
+  "psycopg[binary]>=3.1"
+]
 packaging = [
   "pyinstaller>=6.6.0",
   "certifi>=2024.2.2",
