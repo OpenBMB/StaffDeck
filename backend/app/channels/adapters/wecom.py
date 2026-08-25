@@ -41,6 +41,7 @@ WECOM_DISCONNECT_ALERT_MINUTES = 15
 WECOM_API_BASE = "https://qyapi.weixin.qq.com/cgi-bin"
 WECOM_TOKEN_REFRESH_SKEW_SECONDS = 300
 WECOM_MEDIA_HOSTS = {"ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com"}
+WECOM_STREAM_MIN_INTERVAL_SECONDS = 0.5
 
 
 def validate_wecom_media_url(url: str) -> bool:
@@ -237,6 +238,106 @@ class _StreamState:
         self.callbacks_inflight = 0
         self.worker_stop_sent = False
         self.disconnect_sent = False
+
+
+class WeComStreamReply:
+    """Throttle model deltas and update one enterprise-WeChat stream message."""
+
+    def __init__(self, binding: ChannelBinding, frame: dict[str, Any], stream: tuple[Any, Any]):
+        self._binding = binding
+        self._frame = frame
+        self._client, self._loop = stream
+        self._stream_id = f"staffdeck:{binding.id}:{frame.get('body', {}).get('msgid', '')}"
+        self._condition = threading.Condition()
+        self._content = ""
+        self._dirty = False
+        self._finished = False
+        self._failed = False
+        self._worker = threading.Thread(
+            target=self._run,
+            name=f"staffdeck-wecom-reply-{self._stream_id[-24:]}",
+            daemon=True,
+        )
+        self._worker.start()
+
+    @property
+    def failed(self) -> bool:
+        with self._condition:
+            return self._failed
+
+    def on_delta(self, delta: str) -> None:
+        if not delta:
+            return
+        with self._condition:
+            if self._finished or self._failed:
+                return
+            self._content += delta
+            self._dirty = True
+            self._condition.notify_all()
+
+    def finish(self) -> bool:
+        with self._condition:
+            if not self._content.strip():
+                self._failed = True
+                self._finished = True
+                self._condition.notify_all()
+                return False
+            self._finished = True
+            self._dirty = True
+            self._condition.notify_all()
+        self._worker.join(timeout=15.0)
+        return not self.failed and not self._worker.is_alive()
+
+    def abort(self) -> None:
+        with self._condition:
+            self._failed = True
+            self._finished = True
+            self._dirty = False
+            self._condition.notify_all()
+        self._worker.join(timeout=SEND_TIMEOUT_SECONDS)
+
+    def _run(self) -> None:
+        last_sent = ""
+        while True:
+            with self._condition:
+                while not self._dirty and not self._finished:
+                    self._condition.wait(timeout=WECOM_STREAM_MIN_INTERVAL_SECONDS)
+                if self._dirty:
+                    content = self._content
+                    finished = self._finished
+                    self._dirty = False
+                else:
+                    continue
+            if not content or (content == last_sent and not finished):
+                if finished:
+                    return
+                continue
+            if not finished:
+                time.sleep(WECOM_STREAM_MIN_INTERVAL_SECONDS)
+                with self._condition:
+                    if self._finished:
+                        self._dirty = True
+                        continue
+                    content = self._content
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._client.reply_stream(
+                        self._frame,
+                        self._stream_id,
+                        content,
+                        finish=finished,
+                    ),
+                    self._loop,
+                )
+                future.result(timeout=SEND_TIMEOUT_SECONDS)
+                last_sent = content
+            except Exception:
+                logger.exception("企微流式回复失败 binding=%s", self._binding.id)
+                with self._condition:
+                    self._failed = True
+                return
+            if finished:
+                return
 
 
 class WeComStreamManager:
@@ -839,6 +940,18 @@ class WeComAdapter:
             body = {"msgtype": "markdown", "markdown": {"content": chunk}}
             future = asyncio.run_coroutine_threadsafe(client.send_message(chat_id, body), loop)
             future.result(timeout=SEND_TIMEOUT_SECONDS)
+
+    def create_stream_reply(
+        self,
+        binding: ChannelBinding,
+        frame: dict[str, Any],
+    ) -> WeComStreamReply | None:
+        from app.channels import get_wecom_stream_manager
+
+        stream = get_wecom_stream_manager().get_stream(binding.id)
+        if not stream or not isinstance(frame, dict):
+            return None
+        return WeComStreamReply(binding, frame, stream)
 
     def start_ingress(self, binding_id: str) -> None:
         from app.channels import get_wecom_stream_manager

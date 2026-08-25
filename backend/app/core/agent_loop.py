@@ -143,9 +143,12 @@ class AgentLoop:
         db: Session,
         *,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+        stream_sink: Any | None = None,
     ) -> None:
         self.db = db
         self.events = EventLog(db, event_sink=event_sink)
+        self.stream_sink = stream_sink
+        self.stream_delivery_succeeded = False
         self.runtime = SkillRuntime()
         self.response_generator = ResponseGenerator()
         self.memory = MemoryService(db)
@@ -1622,7 +1625,8 @@ class AgentLoop:
             reply,
             metadata=assistant_metadata,
         )
-        stage_channel_delivery(self.db, chat_session, assistant_message)
+        if not self.stream_delivery_succeeded:
+            stage_channel_delivery(self.db, chat_session, assistant_message)
         event_payload: dict[str, Any] = {
             "message_id": assistant_message.id,
             "assistant_message_id": assistant_message.id,

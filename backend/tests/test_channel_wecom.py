@@ -13,8 +13,9 @@ import app.channels.service_intake as intake_module
 import app.core.agent_loop as agent_loop_module
 from app.channels.adapters.wecom import (
     WeComAdapter,
-    WeComTokenProvider,
     WeComStreamManager,
+    WeComStreamReply,
+    WeComTokenProvider,
     is_self_frame,
     normalize_wecom_frame,
 )
@@ -566,6 +567,15 @@ class _FakeStreamClient:
         self.sent.append((chatid, body))
         return {}
 
+    async def reply_stream(self, frame: dict, stream_id: str, content: str, *, finish: bool = False):
+        self.sent.append(
+            (
+                frame["headers"]["req_id"],
+                {"stream_id": stream_id, "content": content, "finish": finish},
+            )
+        )
+        return {}
+
 
 def _run_loop_in_thread():
     loop = asyncio.new_event_loop()
@@ -605,6 +615,51 @@ def test_send_raises_when_stream_not_ready(monkeypatch) -> None:
     binding = ChannelBinding(tenant_id="t", agent_id="a", channel="wecom", status="active")
     with pytest.raises(RuntimeError):
         adapter.send(binding, {"to_user_id": "chat_1"}, "hi")
+
+
+def test_stream_reply_updates_one_stream_and_finishes() -> None:
+    client = _FakeStreamClient()
+    loop, _thread = _run_loop_in_thread()
+    binding = ChannelBinding(id="binding-1", tenant_id="t", agent_id="a", channel="wecom")
+    frame = {"headers": {"req_id": "req-1"}, "body": {"msgid": "incoming-1"}}
+    reply = WeComStreamReply(binding, frame, (client, loop))
+    try:
+        reply.on_delta("你好")
+        reply.on_delta("，世界")
+        assert reply.finish() is True
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+
+    assert client.sent
+    assert client.sent[-1][1] == {
+        "stream_id": "staffdeck:binding-1:incoming-1",
+        "content": "你好，世界",
+        "finish": True,
+    }
+    assert {item[1]["stream_id"] for item in client.sent} == {
+        "staffdeck:binding-1:incoming-1"
+    }
+
+
+def test_stream_reply_marks_failed_when_sdk_rejects_update() -> None:
+    class FailingStreamClient(_FakeStreamClient):
+        async def reply_stream(self, *_args, **_kwargs):
+            raise RuntimeError("reply rejected")
+
+    client = FailingStreamClient()
+    loop, _thread = _run_loop_in_thread()
+    binding = ChannelBinding(id="binding-1", tenant_id="t", agent_id="a", channel="wecom")
+    reply = WeComStreamReply(
+        binding,
+        {"headers": {"req_id": "req-1"}, "body": {"msgid": "incoming-1"}},
+        (client, loop),
+    )
+    try:
+        reply.on_delta("失败")
+        assert reply.finish() is False
+        assert reply.failed is True
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
 
 
 # ---------- StreamManager 生命周期 ----------

@@ -1468,6 +1468,19 @@ def process_inbound(
                 interaction_mode=interaction_mode,
             )
             _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 1, db_engine=use_engine)
+            stream_sink = None
+            if binding.channel == "wecom" and isinstance(inbound.raw, dict):
+                adapter = get_channel_adapter(binding.channel)
+                create_stream_reply = getattr(adapter, "create_stream_reply", None)
+                if callable(create_stream_reply):
+                    try:
+                        stream_sink = create_stream_reply(binding, inbound.raw)
+                    except Exception:
+                        logger.exception(
+                            "企微流式回复初始化失败 binding=%s event=%s",
+                            binding.id,
+                            inbound.event_id,
+                        )
             from app.channels.feishu_trace import FeishuTraceStreamer, is_feishu_trace_enabled
 
             trace_streamer: FeishuTraceStreamer | None = None
@@ -1494,13 +1507,20 @@ def process_inbound(
                     db.commit()
 
                 with bind_span_sink(persist_span):
-                    response = AgentLoop(
-                        db, event_sink=trace_streamer.on_event if trace_streamer else None
-                    ).handle_turn(request)
+                    agent_loop_kwargs = {
+                        "event_sink": trace_streamer.on_event if trace_streamer else None,
+                    }
+                    if stream_sink is not None:
+                        agent_loop_kwargs["stream_sink"] = stream_sink
+                    response = AgentLoop(db, **agent_loop_kwargs).handle_turn(request)
             except Exception as exc:
                 logger.exception("渠道入站处理失败 binding=%s event=%s", binding.id, inbound.event_id)
                 if trace_streamer:
                     trace_streamer.abort(str(exc)[:200])
+                if stream_sink is not None:
+                    abort_stream = getattr(stream_sink, "abort", None)
+                    if callable(abort_stream):
+                        abort_stream()
                 db.rollback()
                 event = db.get(ChannelInboundEvent, event_id)
                 chat_session = db.get(ChatSession, session_id)

@@ -640,7 +640,7 @@ class HarnessV2Engine:
                 f"已完成 {task_count} 个团队任务的拆分与派发。"
             )
         if reply is None:
-            reply = self.owner.response_generator.generate(
+            response_args = (
                 execution_request.message,
                 session,
                 response_skill,
@@ -653,6 +653,17 @@ class HarnessV2Engine:
                 conversation_context,
                 execution_payloads,
             )
+            if self.owner.stream_sink is not None:
+                parts: list[str] = []
+                for chunk in self.owner.response_generator.generate_stream(*response_args):
+                    parts.append(chunk)
+                    self.owner.stream_sink.on_delta(chunk)
+                reply = "".join(parts).strip()
+            else:
+                reply = self.owner.response_generator.generate(*response_args)
+        elif self.owner.stream_sink is not None:
+            for chunk in self.owner.response_generator.chunk_text(reply):
+                self.owner.stream_sink.on_delta(chunk)
         self._renew_session_lease()
         reply, citations = compact_knowledge_citation_labels(reply, citations)
         artifacts = _aggregate_artifacts(execution_results)
@@ -684,6 +695,8 @@ class HarnessV2Engine:
         # Cancellation and normal projection compete for this durable receipt.
         # Only the winner may append a terminal assistant message.
         self._raise_if_cancelled(request, session)
+        if self.owner.stream_sink is not None:
+            self.owner.stream_delivery_succeeded = self.owner.stream_sink.finish()
         self.turn_store.begin_completion(self.turn_record)
         reply = self.owner._finalize_turn(
             session,
