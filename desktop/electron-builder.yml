@@ -22,6 +22,9 @@ extraResources:
     to: backend
     filter:
       - "**/*"
+  # 托盘图标（main.js 的 getTrayIcon 从 resources/icon.png 加载）
+  - from: ../packaging/assets/staffdeck.png
+    to: icon.png
 
 win:
   target:

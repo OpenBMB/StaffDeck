@@ -15,7 +15,7 @@
  *   3) 环境变量 STAFFDECK_BACKEND —— 自动拉起指定的后端可执行文件
  *   4) 默认假定 PATH 里有 staffdeck 可执行文件，自动拉起
  */
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, Tray, Menu, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
@@ -28,6 +28,11 @@ const CHAT_PATH = '/chat/';
 const PORT_RANGE = { start: 5173, end: 5199 };
 
 let serverProc = null;
+let mainWindow = null;
+let tray = null;
+// 关窗到托盘而不退出；仅当用户显式选择"退出"时才真正结束。
+let isQuitting = false;
+let currentBaseUrl = '';
 
 /**
  * 对指定 URL 做一次健康检查，返回 true 表示 StaffDeck 已就绪。
@@ -187,8 +192,81 @@ async function resolveBackendUrl() {
   throw new Error(`后端在 ${PORT_RANGE.start}–${PORT_RANGE.end} 端口上 60 秒内未就绪。`);
 }
 
+function getTrayIcon() {
+  // 打包态：resources/icon.png（由 electron-builder extraResources 带入）
+  // 开发态：仓库里的 packaging/assets/staffdeck.png
+  const candidates = [
+    path.join(process.resourcesPath, 'icon.png'),
+    path.join(__dirname, '..', 'packaging', 'assets', 'staffdeck.png'),
+  ];
+  for (const p of candidates) {
+    const img = nativeImage.createFromPath(p);
+    if (!img.isEmpty()) {
+      if (process.platform === 'win32') img.setTemplateImage(false);
+      return img;
+    }
+  }
+  return nativeImage.createEmpty();
+}
+
+function createTray() {
+  if (tray) return tray;
+  tray = new Tray(getTrayIcon());
+  tray.setToolTip(APP_NAME);
+
+  const contextMenu = Menu.buildFromTemplate([
+    { label: '打开 StaffDeck', click: () => showMainWindow() },
+    {
+      label: currentBaseUrl ? `服务端口：${new URL(currentBaseUrl).port}` : '服务：启动中…',
+      enabled: false,
+    },
+    { type: 'separator' },
+    { label: '重启服务', click: restartBackend },
+    { type: 'separator' },
+    {
+      label: '退出',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+  tray.setContextMenu(contextMenu);
+
+  // 单击托盘图标切换主窗口显示/隐藏
+  tray.on('click', () => {
+    if (mainWindow && mainWindow.isVisible()) {
+      mainWindow.hide();
+    } else {
+      showMainWindow();
+    }
+  });
+
+  return tray;
+}
+
+function showMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function restartBackend() {
+  if (serverProc) {
+    try {
+      serverProc.kill();
+    } catch {
+      // 忽略已退出进程
+    }
+    serverProc = null;
+  }
+  spawnBackend()
+    .catch((err) => dialog.showErrorBox(`${APP_NAME} 重启失败`, err.message));
+}
+
 function createWindow(baseUrl) {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     title: APP_NAME,
     width: 1280,
     height: 800,
@@ -206,10 +284,10 @@ function createWindow(baseUrl) {
     },
   });
 
-  win.loadURL(`${baseUrl}${CHAT_PATH}`);
+  mainWindow.loadURL(`${baseUrl}${CHAT_PATH}`);
 
   // 非本机链接交给系统浏览器，保持壳的封闭性
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     const internal =
       url.startsWith(baseUrl) ||
       url.startsWith(`http://localhost:`) ||
@@ -221,27 +299,54 @@ function createWindow(baseUrl) {
     return { action: 'deny' };
   });
 
-  win.on('closed', () => {
-    if (serverProc) {
+  // 关闭按钮：最小化到托盘而非退出（用户可以后台常驻数字员工服务）
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+      if (tray) {
+        tray.displayBalloon({
+          title: `${APP_NAME} 仍在后台运行`,
+          content: `已最小化到托盘，双击/单击图标可重新打开。服务端口 ${new URL(baseUrl).port}`,
+        });
+      }
+    }
+  });
+
+  // 真正退出（托盘菜单/应用结束）时清理后端进程
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    if (isQuitting && serverProc) {
       serverProc.kill();
       serverProc = null;
     }
   });
 
-  return win;
+  return mainWindow;
 }
 
 app.whenReady().then(async () => {
   try {
     const { baseUrl, spawned } = await resolveBackendUrl();
+    currentBaseUrl = baseUrl;
     console.log(`${APP_NAME} 后端就绪：${baseUrl} (spawned=${spawned})`);
+    createTray();
     createWindow(baseUrl);
   } catch (err) {
     dialog.showErrorBox(`${APP_NAME} 启动失败`, err.message);
+    isQuitting = true;
     app.quit();
   }
 });
 
+// 托盘化后：所有窗口关闭时不退出（常驻后台），除非用户显式退出
 app.on('window-all-closed', () => {
-  app.quit();
+  if (isQuitting) {
+    app.quit();
+  }
+});
+
+// 应用真正结束时（含系统关机、托盘"退出"），允许窗口关闭并清理后端
+app.on('before-quit', () => {
+  isQuitting = true;
 });
