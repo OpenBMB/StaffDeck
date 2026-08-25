@@ -79,6 +79,18 @@ type MessageBubbleProps = {
   render: MessageRender;
 };
 
+function activeTeamProgress(item: ChatMessage): { phase: string; statusText: string } | null {
+  const progress = item.metadata?.team_progress;
+  if (!progress || typeof progress !== 'object' || Array.isArray(progress)) return null;
+  const progressRecord = progress as Record<string, unknown>;
+  const phase = typeof progressRecord.phase === 'string' ? progressRecord.phase : '';
+  if (phase !== 'collecting' && phase !== 'synthesizing') return null;
+  const statusText = typeof progressRecord.status_text === 'string'
+    ? progressRecord.status_text.trim()
+    : '';
+  return statusText ? { phase, statusText } : null;
+}
+
 export default function MessageBubble({ chat, item, render }: MessageBubbleProps) {
   const {
     toggleTrace,
@@ -111,6 +123,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
   const groupSenderName = chat.displayedAgent
     ? employeeDisplayName(chat.displayedAgent)
     : '项目领导';
+  const teamProgress = item.role === 'assistant' ? activeTeamProgress(item) : null;
 
   return (
     <div className={cn(CHAT_MESSAGE_ITEM_CLASS, queuedMessage && CHAT_QUEUED_MESSAGE_ITEM_CLASS)}>
@@ -161,8 +174,21 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
 
           {!statusOnly && visibleContent ? (
             item.role === 'assistant' ? (
-              <div data-i18n-ignore>
+              <div aria-live={teamProgress ? 'polite' : undefined} data-i18n-ignore>
                 <MarkdownMessage content={visibleContent} />
+                {teamProgress && (
+                  <div
+                    role="status"
+                    aria-label={teamProgress.statusText}
+                    className="mt-[8px] flex items-center gap-[7px] text-[12px] text-[#6d7791]"
+                  >
+                    <span className="relative flex size-[7px]">
+                      <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#1a71ff] opacity-40" />
+                      <span className="relative inline-flex size-[7px] rounded-full bg-[#1a71ff]" />
+                    </span>
+                    <span>{teamProgress.statusText}</span>
+                  </div>
+                )}
               </div>
             ) : (
               <div className={cn(
@@ -236,7 +262,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
             />
           )}
 
-          {canRateMessage(item) && (
+          {canRateMessage(item) && !teamProgress && (
             <div className={CHAT_FEEDBACK_CLASS}>
               <button
                 type="button"

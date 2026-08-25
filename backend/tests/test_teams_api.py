@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from datetime import timedelta
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.pool import StaticPool
@@ -7,8 +10,27 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api import teams as teams_api
 from app.core import AgentLoop
-from app.db.models import AgentProfile, Team, TeamTask, TeamWakeEvent, Tenant, User
-from app.session.session_schema import ChatTurnRequest, ChatTurnResponse, SessionPublic
+from app.db.models import (
+    AgentEvent,
+    AgentProfile,
+    ChatSession,
+    HarnessInvocationRecord,
+    Message,
+    Team,
+    TeamRun,
+    TeamTask,
+    TeamTaskEvent,
+    TeamWakeEvent,
+    Tenant,
+    User,
+    utc_now,
+)
+from app.session.session_schema import (
+    ChatTurnRequest,
+    ChatTurnResponse,
+    PlannedTaskFrame,
+    SessionPublic,
+)
 from app.teams import wakeup
 from app.teams.schema import (
     ReviewOverrideRequest,
@@ -29,7 +51,13 @@ from app.teams.service import (
     set_leader,
     task_activation_state,
 )
-from app.teams.wakeup import claim_wake_event, enqueue_wake_event, execute_wake_event
+from app.teams.wakeup import (
+    claim_wake_event,
+    dispatch_pending_wake_events,
+    enqueue_wake_event,
+    execute_wake_event,
+    recover_orphaned_wake_events,
+)
 
 
 def _test_session() -> Session:
@@ -499,6 +527,183 @@ def test_tl_chat_blocks_dependent_tasks_until_predecessor_completes(
         assert len(wakes) == 1
 
 
+def test_publish_team_planner_frames_persists_parallel_and_serial_dag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        add_member(db, team, agent_id="agent_worker2")
+        started = _stub_start_wakeup(monkeypatch)
+        session = ChatSession(
+            id="session-team-plan",
+            tenant_id=team.tenant_id,
+            user_id="user_admin",
+            agent_id="agent_tl",
+            team_id=team.id,
+            title=f"团队 {team.name} · TL 对话",
+        )
+        db.add(session)
+        db.commit()
+        frames = [
+            PlannedTaskFrame(
+                task_id="collect",
+                kind="conversation",
+                user_intent="收集制度资料",
+                requirements=["检索并整理制度原文"],
+                execution_target="team_member",
+                assignee_agent_id="agent_worker",
+            ),
+            PlannedTaskFrame(
+                task_id="analyze",
+                kind="conversation",
+                user_intent="分析制度差异",
+                requirements=["基于资料给出差异分析"],
+                depends_on_task_ids=["collect"],
+                execution_target="team_member",
+                assignee_agent_id="agent_worker2",
+                activation_condition={"type": "all_succeeded"},
+            ),
+        ]
+
+        result = wakeup.publish_team_planner_frames(
+            db,
+            team=team,
+            session=session,
+            source_turn_id="message-source",
+            created_by_user_id="user_admin",
+            frames=frames,
+        )
+
+        assert result is not None
+        run = db.get(TeamRun, result.run_id)
+        assert run is not None
+        assert run.status == "running"
+        tasks = list(
+            db.exec(
+                select(TeamTask)
+                .where(TeamTask.team_run_id == run.id)
+                .order_by(TeamTask.created_at)
+            ).all()
+        )
+        assert [task.status for task in tasks] == ["pending", "blocked"]
+        assert tasks[1].depends_on_task_ids_json == [tasks[0].id]
+        assert tasks[1].activation_condition_json == {"type": "all_succeeded"}
+        wakes = db.exec(select(TeamWakeEvent)).all()
+        assert len(wakes) == 1
+        assert wakes[0].payload_json == {
+            "task_id": tasks[0].id,
+            "team_run_id": run.id,
+        }
+        assert started == [wakes[0].id]
+
+        repeated = wakeup.publish_team_planner_frames(
+            db,
+            team=team,
+            session=session,
+            source_turn_id="message-source",
+            created_by_user_id="user_admin",
+            frames=frames,
+        )
+        assert repeated == result
+        assert len(db.exec(select(TeamTask)).all()) == 2
+        assert len(db.exec(select(TeamWakeEvent)).all()) == 1
+
+
+def test_member_task_message_includes_completed_dependency_outputs() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        source = _make_task(db, team, status="done")
+        source.report_json = {
+            "full_reply": "已找到采购制度第三版。",
+            "citations": [{"title": "采购制度"}],
+            "artifacts": [{"path": "results/policy.md"}],
+        }
+        db.add(source)
+        db.commit()
+        dependent = TeamTask(
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            title="分析制度",
+            status="blocked",
+            assignee_agent_id="agent_worker",
+            depends_on_task_ids_json=[source.id],
+        )
+        db.add(dependent)
+        db.commit()
+
+        message = wakeup.build_member_task_message(db, team, dependent, rework=False)
+
+        assert "已完成的前置任务结果" in message
+        assert "已找到采购制度第三版" in message
+        assert "采购制度" in message
+        assert "results/policy.md" in message
+
+
+def test_team_progress_message_updates_after_each_member_result() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        tl_session = ChatSession(
+            id="session-progress-tl",
+            tenant_id=team.tenant_id,
+            user_id="user_admin",
+            agent_id="agent_tl",
+            team_id=team.id,
+            title=f"团队 {team.name} · TL 对话",
+        )
+        run = TeamRun(
+            id="team-run-progress",
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            tl_session_id=tl_session.id,
+            source_turn_id="source-turn-progress",
+            created_by_user_id="user_admin",
+            status="running",
+        )
+        progress_message = Message(
+            id="message-progress",
+            tenant_id=team.tenant_id,
+            session_id=tl_session.id,
+            role="assistant",
+            content="已完成 2 个团队任务的拆分与派发。",
+            metadata_json={"team_run_id": run.id},
+        )
+        tasks = [
+            TeamTask(
+                team_id=team.id,
+                tenant_id=team.tenant_id,
+                team_run_id=run.id,
+                title="查询请假制度",
+                status="done",
+                assignee_agent_id="agent_worker",
+            ),
+            TeamTask(
+                team_id=team.id,
+                tenant_id=team.tenant_id,
+                team_run_id=run.id,
+                title="查询办公用品制度",
+                status="in_progress",
+                assignee_agent_id="agent_worker2",
+            ),
+        ]
+        db.add(tl_session)
+        db.add(run)
+        db.add(progress_message)
+        db.add_all(tasks)
+        db.commit()
+
+        wakeup._update_team_run_progress_message(db, run, tasks)
+        db.commit()
+
+        db.refresh(progress_message)
+        assert progress_message.content == "已收到 1/2 项成员回复。"
+        assert progress_message.metadata_json["team_progress"] == {
+            "phase": "collecting",
+            "completed_tasks": 1,
+            "total_tasks": 2,
+            "status_text": "正在等待其他成员完成",
+        }
+
+
 def test_tl_chat_rejects_cyclic_dependency_graph(monkeypatch: pytest.MonkeyPatch) -> None:
     with _test_session() as db:
         team = _seed_team(db)
@@ -671,6 +876,242 @@ def test_member_execution_report_then_tl_wake(monkeypatch: pytest.MonkeyPatch) -
         assert tl_wakes[0].status == "pending"
         assert started == [tl_wakes[0].id]
         assert db.get(TeamWakeEvent, wake.id).status == "done"
+
+
+def test_planner_member_completion_skips_review_and_enqueues_one_synthesis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        tl_session = ChatSession(
+            id="session-planner-tl",
+            tenant_id=team.tenant_id,
+            user_id="user_admin",
+            agent_id="agent_tl",
+            team_id=team.id,
+            title=f"团队 {team.name} · TL 对话",
+        )
+        run = TeamRun(
+            id="team-run-member",
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            tl_session_id=tl_session.id,
+            source_turn_id="source-turn-member",
+            created_by_user_id="user_admin",
+            status="running",
+        )
+        task = TeamTask(
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            team_run_id=run.id,
+            source_turn_id=run.source_turn_id,
+            title="完成市场分析",
+            status="pending",
+            created_by_user_id="user_admin",
+            created_by_tl=True,
+            assignee_agent_id="agent_worker",
+        )
+        progress_message = Message(
+            id="message-team-progress",
+            tenant_id=team.tenant_id,
+            session_id=tl_session.id,
+            role="assistant",
+            content="已完成 1 个团队任务的拆分与派发。",
+            metadata_json={
+                "team_run_id": run.id,
+                "team_progress": {
+                    "phase": "collecting",
+                    "completed_tasks": 0,
+                    "total_tasks": 1,
+                    "status_text": "正在等待成员回复",
+                },
+            },
+        )
+        db.add(tl_session)
+        db.add(run)
+        db.add(task)
+        db.add(progress_message)
+        db.flush()
+        wake = enqueue_wake_event(
+            db,
+            team=team,
+            target_agent_id="agent_worker",
+            trigger_type="task_assigned",
+            payload={"task_id": task.id, "team_run_id": run.id},
+        )
+        db.commit()
+        started = _stub_start_wakeup(monkeypatch)
+        monkeypatch.setattr(wakeup, "run_agent_turn", lambda *args, **kwargs: "市场分析完成")
+        monkeypatch.setattr(wakeup, "_team_harness_outcome", lambda *args, **kwargs: "completed")
+
+        assert claim_wake_event(db, wake.id) is True
+        execute_wake_event(db, db.get(TeamWakeEvent, wake.id))
+
+        db.refresh(task)
+        db.refresh(run)
+        assert task.status == "done"
+        assert task.report_json["full_reply"] == "市场分析完成"
+        assert run.status == "synthesizing"
+        db.refresh(progress_message)
+        assert progress_message.content == "已收到全部 1 项成员回复。"
+        assert progress_message.metadata_json["team_progress"] == {
+            "phase": "synthesizing",
+            "completed_tasks": 1,
+            "total_tasks": 1,
+            "status_text": "正在整理答案",
+        }
+        assert db.exec(
+            select(TeamWakeEvent).where(TeamWakeEvent.trigger_type == "task_report")
+        ).all() == []
+        synthesis_wakes = db.exec(
+            select(TeamWakeEvent).where(TeamWakeEvent.trigger_type == "team_synthesis")
+        ).all()
+        assert len(synthesis_wakes) == 1
+        assert synthesis_wakes[0].payload_json == {"team_run_id": run.id}
+        assert started == [synthesis_wakes[0].id]
+        assert wakeup.maybe_enqueue_team_synthesis(db, team, run.id) is None
+        assert len(
+            db.exec(
+                select(TeamWakeEvent).where(TeamWakeEvent.trigger_type == "team_synthesis")
+            ).all()
+        ) == 1
+
+
+def test_team_synthesis_publishes_final_answer_on_original_tl_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        tl_session = ChatSession(
+            id="session-final-tl",
+            tenant_id=team.tenant_id,
+            user_id="user_admin",
+            agent_id="agent_tl",
+            team_id=team.id,
+            title=f"团队 {team.name} · TL 对话",
+        )
+        source = Message(
+            id="message-final-source",
+            tenant_id=team.tenant_id,
+            session_id=tl_session.id,
+            role="user",
+            content="比较两个方案并给出建议",
+        )
+        run = TeamRun(
+            id="team-run-final",
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            tl_session_id=tl_session.id,
+            source_turn_id=source.id,
+            created_by_user_id="user_admin",
+            status="synthesizing",
+        )
+        task = TeamTask(
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            team_run_id=run.id,
+            source_turn_id=source.id,
+            title="比较方案",
+            status="done",
+            assignee_agent_id="agent_worker",
+            report_json={
+                "full_reply": "方案 A 成本更低[1]。",
+                "citations": [
+                    {
+                        "label": "[1]",
+                        "title": "方案 A 成本表",
+                        "source_path": "knowledge://plan-a",
+                    }
+                ],
+            },
+        )
+        second_task = TeamTask(
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            team_run_id=run.id,
+            source_turn_id=source.id,
+            title="检查风险",
+            status="done",
+            assignee_agent_id="agent_worker",
+            report_json={
+                "full_reply": "方案 B 风险更小[1]。",
+                "citations": [
+                    {
+                        "label": "[1]",
+                        "title": "方案 B 风险表",
+                        "source_path": "knowledge://plan-b",
+                    }
+                ],
+            },
+        )
+        progress_message = Message(
+            id="message-final-progress",
+            tenant_id=team.tenant_id,
+            session_id=tl_session.id,
+            role="assistant",
+            content="已收到全部 2 项成员回复。",
+            metadata_json={
+                "team_run_id": run.id,
+                "team_progress": {
+                    "phase": "synthesizing",
+                    "completed_tasks": 2,
+                    "total_tasks": 2,
+                    "status_text": "正在整理答案",
+                },
+            },
+        )
+        db.add(tl_session)
+        db.add(source)
+        db.add(run)
+        db.add(task)
+        db.add(second_task)
+        db.add(progress_message)
+        db.flush()
+        wake = enqueue_wake_event(
+            db,
+            team=team,
+            target_agent_id="agent_tl",
+            trigger_type="team_synthesis",
+            payload={"team_run_id": run.id},
+        )
+        db.commit()
+        synthesis_messages: list[str] = []
+
+        def fake_team_turn(*args: object, **kwargs: object) -> str:
+            synthesis_messages.append(str(kwargs["message"]))
+            return "综合建议：优先方案 A，并为关键风险设置兜底。"
+
+        monkeypatch.setattr(
+            wakeup,
+            "run_agent_turn",
+            fake_team_turn,
+        )
+
+        assert claim_wake_event(db, wake.id) is True
+        execute_wake_event(db, db.get(TeamWakeEvent, wake.id))
+
+        db.refresh(run)
+        assert run.status == "completed"
+        assert run.synthesis_session_id
+        final = db.get(Message, run.final_message_id)
+        assert final is not None
+        assert final.session_id == tl_session.id
+        assert final.content == "综合建议：优先方案 A，并为关键风险设置兜底。"
+        assert "方案 A 成本更低[1]" in synthesis_messages[0]
+        assert "方案 B 风险更小[2]" in synthesis_messages[0]
+        assert "最终回答必须严格使用以下 Markdown 版式" in synthesis_messages[0]
+        assert "每个团队任务方向使用 `## <方向名称>` 单独成节" in synthesis_messages[0]
+        assert "不要输出单独的“参考来源”" in synthesis_messages[0]
+        assert "禁止出现“结构化完成报告”" in synthesis_messages[0]
+        assert final.metadata_json["team_run_id"] == run.id
+        assert final.metadata_json["team_synthesis"] is True
+        assert final.metadata_json["user_message_id"] == source.id
+        assert [
+            citation["title"] for citation in final.metadata_json["knowledge_citations"]
+        ] == ["方案 A 成本表", "方案 B 风险表"]
+        db.refresh(progress_message)
+        assert progress_message.content == "已收到全部 2 项成员回复，汇总已完成。"
+        assert progress_message.metadata_json["team_progress"]["phase"] == "completed"
 
 
 def test_tl_review_verdicts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -923,6 +1364,213 @@ def test_claim_wake_event_only_once() -> None:
         # 重复认领(并发/重试)只生效一次
         assert claim_wake_event(db, wake.id) is False
         assert db.get(TeamWakeEvent, wake.id).status == "claimed"
+
+
+def test_recover_orphaned_claimed_wake_records_audit_event() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        task = _make_task(db, team)
+        wake = enqueue_wake_event(
+            db,
+            team=team,
+            target_agent_id="agent_worker",
+            trigger_type="task_assigned",
+            payload={"task_id": task.id},
+        )
+        stale_at = utc_now() - timedelta(minutes=10)
+        wake.status = "claimed"
+        wake.updated_at = stale_at
+        db.add(wake)
+        db.commit()
+
+        recovered = recover_orphaned_wake_events(
+            db,
+            now=utc_now(),
+            lease_timeout_seconds=60,
+        )
+
+        db.expire_all()
+        stored = db.get(TeamWakeEvent, wake.id)
+        assert recovered == [wake.id]
+        assert stored is not None
+        assert stored.status == "pending"
+        audit_rows = db.exec(
+            select(TeamTaskEvent).where(
+                TeamTaskEvent.task_id == task.id,
+                TeamTaskEvent.event_type == "wake_recovered",
+            )
+        ).all()
+        assert len(audit_rows) == 1
+        assert audit_rows[0].payload_json["wake_event_id"] == wake.id
+        assert audit_rows[0].payload_json["previous_updated_at"].startswith(
+            stale_at.replace(tzinfo=None).isoformat(timespec="seconds")
+        )
+
+
+def test_dispatches_abandoned_pending_wake_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        task = _make_task(db, team)
+        wake = enqueue_wake_event(
+            db,
+            team=team,
+            target_agent_id="agent_worker",
+            trigger_type="task_assigned",
+            payload={"task_id": task.id},
+        )
+        wake.updated_at = utc_now() - timedelta(minutes=1)
+        db.add(wake)
+        db.commit()
+        started: list[str] = []
+        monkeypatch.setattr(wakeup, "start_wakeup_async", lambda wake_id: started.append(wake_id) or True)
+
+        dispatched = dispatch_pending_wake_events(db, now=utc_now(), grace_seconds=5)
+
+        assert dispatched == [wake.id]
+        assert started == [wake.id]
+
+
+def test_member_execution_serializes_same_agent_without_blocking_other_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一员工占满额度时仅排队自己，不能误伤其他成员的独立任务。"""
+    with _test_session() as db:
+        team = _seed_team(db)
+        add_member(db, team, agent_id="agent_worker2")
+        first = _make_task(db, team, status="in_progress")
+        queued = _make_task(db, team)
+        queued.title = "同成员排队任务"
+        other = TeamTask(
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            title="另一成员并行任务",
+            status="pending",
+            created_by_user_id="user_admin",
+            created_by_tl=True,
+            assignee_agent_id="agent_worker2",
+        )
+        db.add(queued)
+        db.add(other)
+        db.flush()
+        queued_wake = enqueue_wake_event(
+            db,
+            team=team,
+            target_agent_id="agent_worker",
+            trigger_type="task_assigned",
+            payload={"task_id": queued.id},
+        )
+        other_wake = enqueue_wake_event(
+            db,
+            team=team,
+            target_agent_id="agent_worker2",
+            trigger_type="task_assigned",
+            payload={"task_id": other.id},
+        )
+        queued_wake.status = "claimed"
+        other_wake.status = "claimed"
+        db.add(queued_wake)
+        db.add(other_wake)
+        db.commit()
+
+        executed: list[str] = []
+
+        def fake_execute_member_task(db, event, team, agent):
+            executed.append(event.id)
+
+        monkeypatch.setattr(wakeup, "_execute_member_task", fake_execute_member_task)
+        monkeypatch.setattr(wakeup, "activate_ready_tasks", lambda *args, **kwargs: [])
+
+        execute_wake_event(db, db.get(TeamWakeEvent, queued_wake.id))
+        execute_wake_event(db, db.get(TeamWakeEvent, other_wake.id))
+
+        assert db.get(TeamWakeEvent, queued_wake.id).status == "pending"
+        assert db.get(TeamWakeEvent, other_wake.id).status == "done"
+        assert executed == [other_wake.id]
+
+        # 首个任务结束后，队列中的同成员任务应被重新派发。
+        apply_task_transition(
+            db,
+            first,
+            "review",
+            actor_type="agent",
+            actor_id="agent_worker",
+            event_type="test_review",
+        )
+        db.commit()
+        started = _stub_start_wakeup(monkeypatch)
+        wakeup._drain_member_queue(db, team, "agent_worker")
+        assert started == [queued_wake.id]
+
+
+def test_export_team_log_contains_raw_model_and_tool_records() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        task = _make_task(db, team, status="done")
+        session = ChatSession(
+            id="session_team_export",
+            tenant_id=team.tenant_id,
+            user_id="user_admin",
+            agent_id="agent_worker",
+            team_id=team.id,
+            title="团队执行会话",
+        )
+        task.session_id = session.id
+        db.add(session)
+        db.add(task)
+        db.add(
+            Message(
+                tenant_id=team.tenant_id,
+                session_id=session.id,
+                role="assistant",
+                content="任务已完成",
+            )
+        )
+        db.add(
+            AgentEvent(
+                tenant_id=team.tenant_id,
+                session_id=session.id,
+                event_type="model_exchange_completed",
+                payload_json={
+                    "model_input": {"messages": [{"role": "user", "content": "完整输入"}]},
+                    "model_output": {"content": "完整输出"},
+                    "reasoning_content": "内部推理记录",
+                },
+            )
+        )
+        db.add(
+            HarnessInvocationRecord(
+                tenant_id=team.tenant_id,
+                session_id=session.id,
+                task_id=task.id,
+                run_id="run_export",
+                call_id="call_export",
+                tool_name="knowledge_search",
+                request_digest="digest_export",
+                status="completed",
+                arguments_json={"query": "报销制度"},
+                result_json={"items": [{"content": "制度原文"}]},
+                finished_at=utc_now(),
+            )
+        )
+        db.commit()
+
+        response = teams_api.export_team_conversation_log(
+            team.id,
+            team.tenant_id,
+            db,
+            _admin_user(),
+        )
+        payload = json.loads(response.body)
+
+        assert payload["schema_version"] == teams_api.TEAM_LOG_EXPORT_SCHEMA
+        assert payload["summary"]["session_count"] == 1
+        assert payload["sessions"][0]["events"][0]["payload"]["reasoning_content"] == "内部推理记录"
+        invocation = payload["sessions"][0]["tool_invocations"][0]
+        assert invocation["arguments"] == {"query": "报销制度"}
+        assert invocation["result"] == {"items": [{"content": "制度原文"}]}
+        assert response.headers["content-disposition"].startswith(
+            'attachment; filename="staffdeck-team-log-'
+        )
 
 
 # ---------- 任务列表 ----------

@@ -15,6 +15,13 @@ TRUNCATED_EMAIL_PATTERN = re.compile(
     r"(?P<ellipsis>\.{3}|…)",
     re.IGNORECASE,
 )
+SOURCE_FOOTER_PATTERN = re.compile(
+    r"(?:\n|\s){0,3}(?:参考来源|参考资料|引用来源|资料来源)\s*[:：]\s*"
+    r"(?:\[\d+\]\s*)+$"
+)
+CITATION_REFERENCE_PATTERN = re.compile(
+    r"\[(\d+)\](?:\s*(?:-|–|—|至)\s*\[(\d+)\])?"
+)
 
 
 def compact_knowledge_citation_labels(
@@ -22,7 +29,10 @@ def compact_knowledge_citation_labels(
     citations: object,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Keep cited sources and renumber them by first appearance in the reply."""
+    content = SOURCE_FOOTER_PATTERN.sub("", content.rstrip()).rstrip()
     if not isinstance(citations, list) or not citations:
+        # A model may emit a reference footer even when retrieval produced no
+        # durable citations. Do not expose labels that cannot open a source.
         return content, []
 
     citations_by_label: dict[int, dict[str, Any]] = {}
@@ -34,26 +44,30 @@ def compact_knowledge_citation_labels(
         citations_by_label.setdefault(label, citation)
 
     ordered_labels: list[int] = []
-    for match in re.finditer(r"\[(\d+)\]", content):
-        label = int(match.group(1))
-        if label in citations_by_label and label not in ordered_labels:
-            ordered_labels.append(label)
+    for match in CITATION_REFERENCE_PATTERN.finditer(content):
+        start_label = int(match.group(1))
+        end_label = int(match.group(2)) if match.group(2) else start_label
+        step = 1 if end_label >= start_label else -1
+        for label in range(start_label, end_label + step, step):
+            if label in citations_by_label and label not in ordered_labels:
+                ordered_labels.append(label)
 
     if not ordered_labels:
         ordered_labels = list(citations_by_label)
         if not ordered_labels:
             return content, []
-        source_labels = " ".join(f"[{label}]" for label in ordered_labels)
-        content = f"{content.rstrip()}\n\n参考来源：{source_labels}"
 
     label_mapping = {old_label: index for index, old_label in enumerate(ordered_labels, start=1)}
 
     def replace_label(match: re.Match[str]) -> str:
         old_label = int(match.group(1))
         new_label = label_mapping.get(old_label)
-        return f"[{new_label}]" if new_label is not None else match.group(0)
+        # Metadata is authoritative. Unsupported labels are model-generated
+        # references with no corresponding source card and must not survive.
+        return f"[{new_label}]" if new_label is not None else ""
 
     compacted_content = re.sub(r"\[(\d+)\]", replace_label, content)
+    compacted_content = re.sub(r"[ \t]+(?=\n|$)", "", compacted_content).rstrip()
     compacted_citations = [
         {**citations_by_label[old_label], "label": f"[{label_mapping[old_label]}]"}
         for old_label in ordered_labels

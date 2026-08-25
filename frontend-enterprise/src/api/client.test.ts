@@ -23,4 +23,13 @@ describe('ApiError', () => {
     expect(error.code).toBeUndefined();
     expect(error.message).toBe('body.name: Field required');
   });
+
+  it('recognizes a stable error code returned as a string detail', () => {
+    const error = new ApiError(422, JSON.stringify({
+      detail: 'MODEL_PROTOCOL_OPTIONS_INVALID',
+    }), 'Unprocessable Entity');
+
+    expect(error.code).toBe('MODEL_PROTOCOL_OPTIONS_INVALID');
+    expect(error.message).toBe('MODEL_PROTOCOL_OPTIONS_INVALID');
+  });
 });

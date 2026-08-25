@@ -649,9 +649,9 @@ def test_ensure_code_fences_preserves_paragraphs_outside():
     result = ensure_code_fences(text)
     lines = result.split("\n")
     # 围栏应在 def 之前、print(f()) 之后
-    fence_positions = [i for i, l in enumerate(lines) if l.strip() == "```"]
+    fence_positions = [i for i, line in enumerate(lines) if line.strip() == "```"]
     assert len(fence_positions) == 2
-    def_pos = next(i for i, l in enumerate(lines) if l.startswith("def"))
-    print_pos = next(i for i, l in enumerate(lines) if l.startswith("print"))
+    def_pos = next(i for i, line in enumerate(lines) if line.startswith("def"))
+    print_pos = next(i for i, line in enumerate(lines) if line.startswith("print"))
     assert fence_positions[0] < def_pos
     assert fence_positions[1] > print_pos

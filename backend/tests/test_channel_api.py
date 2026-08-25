@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -15,8 +16,8 @@ from app.db import get_session
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
-    ChannelIdentity,
     ChannelDelivery,
+    ChannelIdentity,
     ChannelInboundEvent,
     Message,
     Tenant,
@@ -279,6 +280,72 @@ def test_unsupported_channel_rejected() -> None:
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 400
+
+
+def test_create_binding_generates_default_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "feishu"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    # 默认名:渠道名 + YYYYMMDDHHMM,如「飞书202608250910」
+    assert re.fullmatch(r"飞书\d{12}", response.json()["name"])
+
+
+def test_create_binding_with_custom_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={
+            "tenant_id": "tenant_demo",
+            "agent_id": "agent_1",
+            "channel": "feishu",
+            "name": "  客服飞书专用  ",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    # 名称去首尾空白后落库
+    assert response.json()["name"] == "客服飞书专用"
+    with Session(engine) as db:
+        rows = db.exec(select(ChannelBinding)).all()
+        assert rows[0].name == "客服飞书专用"
+
+
+def test_create_binding_blank_name_falls_back_to_default() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "wechat", "name": "   "},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    assert re.fullmatch(r"微信\d{12}", response.json()["name"])
+
+
+def test_create_binding_rejects_long_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "wechat", "name": "名" * 51},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 400
+    assert "接入名称" in response.json()["detail"]
 
 
 def test_tenant_mismatch_forbidden() -> None:
@@ -1441,6 +1508,69 @@ def test_put_binding_empty_update_400() -> None:
     assert response.status_code == 400
 
 
+def test_put_binding_rename() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "  客服飞书专用  "},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "客服飞书专用"
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id).name == "客服飞书专用"
+
+    # 不带 name 的更新不影响已有名称
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"auto_route": False},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "客服飞书专用"
+
+
+def test_put_binding_rename_rejects_blank_and_long_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    blank = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "   "},
+        headers=_auth(users["owner"]),
+    )
+    assert blank.status_code == 400
+
+    too_long = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "名" * 51},
+        headers=_auth(users["owner"]),
+    )
+    assert too_long.status_code == 400
+
+
+def test_put_binding_rename_requires_manager() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "新名字"},
+        headers=_auth(users["other"]),
+    )
+    assert response.status_code == 403
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id).name is None
+
+
 def test_put_binding_default_handoff_assignee() -> None:
     engine = _test_engine()
     users = _seed_users(engine)
@@ -1516,7 +1646,8 @@ def test_put_binding_default_handoff_assignee_rejects_channel_customer() -> None
     assert response.status_code == 400
 
 
-def test_put_feishu_default_handoff_assignee_requires_bound_identity() -> None:
+def test_put_feishu_default_handoff_assignee_channel_variant_requires_bound_identity() -> None:
+    """飞书绑定:网页端选项不要求绑定;渠道选项要求当前 scope 下的非群聊身份。"""
     engine = _test_engine()
     users = _seed_users(engine)
     with Session(engine) as db:
@@ -1534,12 +1665,36 @@ def test_put_feishu_default_handoff_assignee_requires_bound_identity() -> None:
         binding_id = binding.id
     client = _make_client(engine)
 
-    unbound = client.put(
+    # 网页端选项:未绑定也允许(收件箱兜底)
+    web_variant = client.put(
         f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
         json={"default_handoff_assignee_user_id": "user_owner"},
         headers=_auth(users["owner"]),
     )
-    assert unbound.status_code == 400
+    assert web_variant.status_code == 200
+    assert web_variant.json()["default_handoff_assignee_channel"] is None
+
+    # 渠道选项:未绑定当前飞书账号 → 400
+    unbound_channel = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "feishu",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert unbound_channel.status_code == 400
+
+    # 渠道选项与绑定渠道不一致 → 400
+    wrong_channel = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "wechat",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert wrong_channel.status_code == 400
 
     with Session(engine) as db:
         db.add(
@@ -1554,12 +1709,59 @@ def test_put_feishu_default_handoff_assignee_requires_bound_identity() -> None:
         )
         db.commit()
 
+    # 绑定后渠道选项 → 200 且落库
     reachable = client.put(
         f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
-        json={"default_handoff_assignee_user_id": "user_owner"},
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "feishu",
+        },
         headers=_auth(users["owner"]),
     )
     assert reachable.status_code == 200
+    payload = reachable.json()
+    assert payload["default_handoff_assignee_user_id"] == "user_owner"
+    assert payload["default_handoff_assignee_channel"] == "feishu"
+    with Session(engine) as db:
+        config = db.get(ChannelBinding, binding_id).config_json or {}
+        assert config["default_handoff_assignee_channel"] == "feishu"
+
+    # 清空处理人时同步清空渠道
+    cleared = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": None},
+        headers=_auth(users["owner"]),
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["default_handoff_assignee_channel"] is None
+    with Session(engine) as db:
+        config = db.get(ChannelBinding, binding_id).config_json or {}
+        assert not config.get("default_handoff_assignee_user_id")
+        assert not config.get("default_handoff_assignee_channel")
+
+
+def test_put_binding_default_handoff_assignee_web_variant_stores_web_channel() -> None:
+    """网页端选项落库为 web 渠道,运行时不再发渠道通知。"""
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "web",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_handoff_assignee_user_id"] == "user_owner"
+    assert payload["default_handoff_assignee_channel"] == "web"
+    with Session(engine) as db:
+        config = db.get(ChannelBinding, binding_id).config_json or {}
+        assert config["default_handoff_assignee_channel"] == "web"
 
 
 def test_put_binding_default_handoff_assignee_unchanged_by_default() -> None:
@@ -1584,6 +1786,122 @@ def test_put_binding_default_handoff_assignee_unchanged_by_default() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["default_handoff_assignee_user_id"] == "user_owner"
+
+
+def test_put_non_feishu_default_handoff_assignee_channel_rejected() -> None:
+    """渠道转接通知要求渠道支持私聊:钉钉绑定即使处理人已绑定钉钉身份也拒绝保存。"""
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="dingtalk",
+            status="active",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        # 处理人已绑定当前钉钉账号的非群聊身份(可达性本身没问题)
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="dingtalk",
+                external_account_scope="",
+                external_user_id="staff_owner",
+                display_name="Owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+        binding_id = binding.id
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "dingtalk",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 400
+    assert "暂不支持私聊通知" in response.json()["detail"]
+
+    # 网页端选项不受影响
+    web_variant = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "web",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert web_variant.status_code == 200
+    assert web_variant.json()["default_handoff_assignee_channel"] == "web"
+
+
+def test_put_wecom_default_handoff_assignee_channel_variant_requires_scope_identity() -> None:
+    """企微绑定:渠道选项要求当前 binding scope 下的非群聊身份(scope 级可达)。"""
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wecom",
+            status="active",
+            identity_scope_key="corp_current",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+    client = _make_client(engine)
+
+    # 身份挂在其他企业 scope 下 → 400(跨企业绑定不互通)
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corp_other",
+                external_user_id="staff_owner_other",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+    wrong_scope = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "wecom",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert wrong_scope.status_code == 400
+
+    # 当前 scope 身份 → 200 且落库
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corp_current",
+                external_user_id="staff_owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+    reachable = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "wecom",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert reachable.status_code == 200
+    assert reachable.json()["default_handoff_assignee_channel"] == "wecom"
 
 
 # ---------- 分页 ----------

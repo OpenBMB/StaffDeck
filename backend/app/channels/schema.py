@@ -14,6 +14,8 @@ class ChannelBindingCreate(BaseModel):
     agent_id: Optional[str] = None
     team_id: Optional[str] = None
     channel: str = "wechat"
+    # 接入显示名;缺省时后端按「渠道名+YYYYMMDDHHMM」生成默认名
+    name: Optional[str] = None
 
 
 class ChannelBindingAgentRead(BaseModel):
@@ -45,6 +47,11 @@ class ChannelBindingAgentsUpdate(BaseModel):
     # 渠道默认人工处理人:不传不动;传 None 清空,传 user_id 写入。
     # SOP 节点未指定 assignee 时回退到此值,再回退到数字员工负责人/管理员。
     default_handoff_assignee_user_id: str | None = "unchanged"
+    # 处理人通知渠道:不传不动;None/"web"=网页端收件箱;"feishu" 等绑定渠道=按该渠道转接。
+    # 仅在 default_handoff_assignee_user_id 非 unchanged 时生效。
+    default_handoff_assignee_channel: str | None = "unchanged"
+    # 接入显示名(重命名):不传不动;传非空字符串则更新
+    name: Optional[str] = None
 
 
 class ChannelBindingRead(BaseModel):
@@ -54,6 +61,8 @@ class ChannelBindingRead(BaseModel):
     tenant_id: str
     agent_id: str
     channel: str
+    # 用户可编辑的接入显示名;为空时前端回退展示渠道类型名
+    name: Optional[str] = None
     # 团队绑定:非空表示接入某团队(与员工挂载互斥)
     team_id: Optional[str] = None
     team_name: Optional[str] = None
@@ -81,6 +90,8 @@ class ChannelBindingRead(BaseModel):
     # 渠道默认人工处理人(SOP 节点未指定 assignee 时回退到此值)。
     default_handoff_assignee_user_id: Optional[str] = None
     default_handoff_assignee_name: Optional[str] = None
+    # 处理人通知渠道:None=默认投递;"web"=仅网页端;"feishu" 等绑定渠道=按该渠道转接。
+    default_handoff_assignee_channel: Optional[str] = None
     identity_scope_key: Optional[str] = None
     # 当前请求者对该绑定的管理角色:admin/owner/collaborator;无管理关系时为 None
     my_role: Optional[str] = None
@@ -371,6 +382,7 @@ def channel_binding_read(
         tenant_id=binding.tenant_id,
         agent_id=binding.agent_id,
         channel=binding.channel,
+        name=binding.name,
         team_id=binding.team_id,
         team_name=team_name,
         status=binding.status,
@@ -398,6 +410,11 @@ def channel_binding_read(
             "default_handoff_assignee_user_id"
         ),
         default_handoff_assignee_name=_default_handoff_assignee_name(db, binding),
+        default_handoff_assignee_channel=(
+            (binding.config_json or {}).get("default_handoff_assignee_channel")
+            if (binding.config_json or {}).get("default_handoff_assignee_user_id")
+            else None
+        ),
         identity_scope_key=identity_scope_key,
         my_role=channel_binding_my_role(db, binding, current_user),
         created_at=binding.created_at.isoformat(),

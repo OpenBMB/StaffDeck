@@ -1,13 +1,72 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
 from app.db.models import ChatSession, Skill
-from app.session.session_schema import RouterDecision
+from app.session.session_schema import RouterDecision, TurnPlan
 
 
 class SlotHydrationPolicy:
+    ALLOWED_MEMORY_KINDS = frozenset({"profile", "preference", "fact"})
+    SLOT_MEMORY_KEY_ALIASES: dict[str, tuple[str, ...]] = {
+        "user_name": ("preferred_name",),
+    }
+
+    @classmethod
+    def hydrate_plan(
+        cls,
+        chat_session: ChatSession,
+        plan: TurnPlan,
+        skills: list[Skill],
+        memory_context: list[dict[str, object]],
+        patcher: Callable[
+            [Skill | None, dict[str, Any], list[dict[str, object]]], dict[str, Any]
+        ]
+        | None = None,
+    ) -> dict[str, Any]:
+        """Hydrate SOP TaskFrames before they are persisted or executed.
+
+        Slot hydration used to exist only as a RouterDecision utility and was
+        not called by Harness v2. That allowed a step to ask for information
+        already available in structured long-term memory; the next user
+        message would then appear to satisfy two different questions. Mutating
+        the canonical TurnPlan keeps persistence, execution and the public
+        router projection on the same slot snapshot.
+        """
+
+        patch_slots = patcher or cls.patch
+        skills_by_id = {skill.skill_id: skill for skill in skills}
+        hydrated_tasks: list[dict[str, Any]] = []
+        for frame in plan.task_frames:
+            if frame.kind != "sop":
+                continue
+            target_skill_id = str(
+                frame.target_skill_id or chat_session.active_skill_id or ""
+            ).strip()
+            target_skill = skills_by_id.get(target_skill_id)
+            continues_active = bool(
+                frame.decision == "continue_active"
+                and target_skill_id == chat_session.active_skill_id
+            )
+            base_slots = (
+                dict(chat_session.slots_json or {}) if continues_active else {}
+            )
+            base_slots.update(dict(frame.slot_hints or {}))
+            patch = patch_slots(target_skill, base_slots, memory_context)
+            if not patch:
+                continue
+            frame.slot_hints = {**dict(frame.slot_hints or {}), **patch}
+            hydrated_tasks.append(
+                {
+                    "task_id": frame.task_id,
+                    "target_skill_id": target_skill_id,
+                    "slots": patch,
+                }
+            )
+        return {"tasks": hydrated_tasks} if hydrated_tasks else {}
+
     @classmethod
     def hydrate(
         cls,
@@ -70,14 +129,21 @@ class SlotHydrationPolicy:
         slots: dict[str, Any],
         memory_context: list[dict[str, object]],
     ) -> dict[str, Any]:
-        if not skill:
-            return {}
-        expected_fields = cls.skill_expected_fields(skill)
-        patch: dict[str, Any] = {}
-        if "user_name" in expected_fields and not cls.slot_has_value(slots, "user_name"):
-            profile_name = cls.profile_name_from_memory(memory_context)
-            if profile_name:
-                patch["user_name"] = profile_name
+        expected_fields = cls.skill_expected_fields(skill) if skill else set()
+        memory_values = cls.memory_values_by_key(memory_context)
+        patch: dict[str, Any] = {
+            key: value
+            for key, value in memory_values.items()
+            if not cls.slot_has_value(slots, key)
+        }
+        for field in expected_fields:
+            if cls.slot_has_value(slots, field) or cls.slot_has_value(patch, field):
+                continue
+            for memory_key in cls.memory_keys_for_slot(field):
+                if memory_key not in memory_values:
+                    continue
+                patch[field] = memory_values[memory_key]
+                break
         return patch
 
     @classmethod
@@ -122,14 +188,43 @@ class SlotHydrationPolicy:
                     fields.update(str(item) for item in expected if str(item).strip())
         return fields
 
-    @staticmethod
-    def profile_name_from_memory(memory_context: list[dict[str, object]]) -> str:
+    @classmethod
+    def memory_values_by_key(
+        cls, memory_context: list[dict[str, object]]
+    ) -> dict[str, str]:
+        """Index eligible structured memories without inferring from prose.
+
+        ``MemoryService.context_memories`` returns newest records first, so
+        ``setdefault`` preserves the most recent value when legacy duplicate
+        keys exist. Memories without an explicit stable key are deliberately
+        ignored: free-text similarity is not a safe basis for filling a Slot.
+        Every keyed profile, preference and fact is projected into the
+        TaskFrame; declared SOP fields only add explicit aliases such as
+        ``preferred_name`` to ``user_name``.
+        """
+
+        values: dict[str, str] = {}
         for memory in memory_context:
-            if memory.get("kind") != "profile":
+            if str(memory.get("kind") or "") not in cls.ALLOWED_MEMORY_KINDS:
                 continue
             metadata = memory.get("metadata")
-            key = metadata.get("key") if isinstance(metadata, dict) else None
+            raw_key = metadata.get("key") if isinstance(metadata, dict) else None
+            key = cls.normalize_key(raw_key)
             content = str(memory.get("content") or "").strip()
-            if key == "preferred_name" and content:
-                return content[:40]
-        return ""
+            if key and content:
+                values.setdefault(key, content)
+        return values
+
+    @classmethod
+    def memory_keys_for_slot(cls, field: str) -> tuple[str, ...]:
+        normalized = cls.normalize_key(field)
+        if not normalized:
+            return ()
+        aliases = cls.SLOT_MEMORY_KEY_ALIASES.get(normalized, ())
+        return (normalized, *aliases)
+
+    @staticmethod
+    def normalize_key(value: object) -> str:
+        if not isinstance(value, str):
+            return ""
+        return re.sub(r"[^a-zA-Z0-9_]+", "_", value.strip().lower()).strip("_")

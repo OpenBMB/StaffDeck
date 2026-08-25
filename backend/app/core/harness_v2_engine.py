@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from copy import deepcopy
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
+from sqlmodel import select
 
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
@@ -20,6 +22,7 @@ from app.core.harness_attachments import (
     validated_task_image_payloads,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
+from app.core.published_deliverables import list_published_deliverables
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
@@ -39,6 +42,7 @@ from app.core.slash_commands import (
     resolve_capability,
     slash_command_message,
 )
+from app.core.slot_hydration_policy import SlotHydrationPolicy
 from app.core.task_frame_store import (
     TaskFrameClaimConflict,
     TaskFrameStore,
@@ -56,6 +60,7 @@ from app.db.models import (
     HarnessTurnRecord,
     Message,
     Skill,
+    Team,
 )
 from app.knowledge.citations import compact_knowledge_citation_labels
 from app.memory.service import memory_read
@@ -84,6 +89,14 @@ def _turn_skill_projection(
     _ = interaction_mode
     skills = expand_visible_sops(source_skills)
     return skills, discoverable_sops(skills)
+
+
+def _turn_planner_message(
+    request: ChatTurnRequest,
+) -> str:
+    """Keep server-only execution context out of Planner task requirements."""
+
+    return request.message
 
 
 def _apply_forced_sop_snapshot(
@@ -306,6 +319,14 @@ class HarnessV2Engine:
 
         self._renew_session_lease()
         planner_state = self.store.planner_state(session)
+        team_context = request.team_context
+        team: Team | None = None
+        if request.interaction_mode == "team_tl" and session.team_id:
+            team = self.db.get(Team, session.team_id)
+            if team is not None and team_context is None:
+                from app.teams.wakeup import build_team_planner_context
+
+                team_context = build_team_planner_context(self.db, team)
         if self.slash_command:
             if self.slash_command.kind in {"skill", "tool"}:
                 direct_manifest = self.manifests.build(
@@ -324,16 +345,36 @@ class HarnessV2Engine:
             )
         else:
             plan = self.planner.plan(
-                execution_request.message,
+                _turn_planner_message(request),
                 session,
                 routing_skills,
                 model_config,
                 deepcopy(conversation_context),
                 memory_context,
                 planner_state,
+                interaction_mode=request.interaction_mode,
+                team_context=team_context,
             )
         self._renew_session_lease()
         self._raise_if_cancelled(request, session)
+        slot_hydration = SlotHydrationPolicy.hydrate_plan(
+            session,
+            plan,
+            skills,
+            memory_context,
+        )
+        if slot_hydration:
+            self.events.record(
+                request.tenant_id,
+                session.id,
+                "slots_hydrated",
+                {
+                    **slot_hydration,
+                    "source": "memory",
+                    "turn_id": user_message.id,
+                    "execution_engine": "harness_v2",
+                },
+            )
         router_decision = turn_plan_router_decision(plan)
         self.events.record(
             request.tenant_id,
@@ -356,6 +397,34 @@ class HarnessV2Engine:
                 "execution_engine": "harness_v2",
             },
         )
+        team_publish_result = None
+        remote_frames = [
+            frame for frame in plan.task_frames if frame.execution_target == "team_member"
+        ]
+        if remote_frames:
+            if request.interaction_mode != "team_tl" or team is None:
+                raise RuntimeError("团队成员 TaskFrame 缺少可信团队上下文。")
+            from app.teams.wakeup import publish_team_planner_frames
+
+            team_publish_result = publish_team_planner_frames(
+                self.db,
+                team=team,
+                session=session,
+                source_turn_id=user_message.id,
+                created_by_user_id=request.user_id,
+                frames=remote_frames,
+            )
+            if team_publish_result is None:
+                raise RuntimeError("团队成员 TaskFrame 未能持久化，已停止本轮虚假分发。")
+            plan = plan.model_copy(
+                update={
+                    "task_frames": [
+                        frame
+                        for frame in plan.task_frames
+                        if frame.execution_target != "team_member"
+                    ]
+                }
+            )
         if plan.decision == "complete_task":
             active_task_frame_id = self.store.active_task_frame_id(session)
             self.store.complete_active_frame(
@@ -495,7 +564,10 @@ class HarnessV2Engine:
                 active_skill,
                 model_config,
                 memory_context,
-                self.store.dependency_results(row),
+                [
+                    *self.store.dependency_results(row),
+                    *self.store.referenced_session_results(row),
+                ],
                 remaining_turn_actions,
             )
             remaining_turn_actions = max(
@@ -562,6 +634,11 @@ class HarnessV2Engine:
         )
         self._renew_session_lease()
         reply = _single_task_reply(execution_results)
+        if team_publish_result is not None and not execution_results:
+            task_count = len(team_publish_result.task_ids)
+            reply = (
+                f"已完成 {task_count} 个团队任务的拆分与派发。"
+            )
         if reply is None:
             reply = self.owner.response_generator.generate(
                 execution_request.message,
@@ -583,6 +660,15 @@ class HarnessV2Engine:
             "execution_engine": "harness_v2",
             "task_frame_ids": [row.task_id for row in records],
         }
+        if team_publish_result is not None:
+            assistant_metadata["team_run_id"] = team_publish_result.run_id
+            assistant_metadata["team_task_ids"] = list(team_publish_result.task_ids)
+            assistant_metadata["team_progress"] = {
+                "phase": "collecting",
+                "completed_tasks": 0,
+                "total_tasks": len(team_publish_result.task_ids),
+                "status_text": "正在等待成员回复",
+            }
         if request.client_turn_id:
             assistant_metadata["client_turn_id"] = request.client_turn_id
         if request.message_visibility != "visible":
@@ -647,6 +733,7 @@ class HarnessV2Engine:
 
     def _renew_session_lease(self) -> None:
         self.session_leases.renew(self.session_lease)
+        self.turn_store.renew(self.turn_record)
         self.db.commit()
 
     def _renew_execution_leases(
@@ -661,6 +748,7 @@ class HarnessV2Engine:
             )
         try:
             self.session_leases.renew(self.session_lease)
+            self.turn_store.renew(self.turn_record)
             self.store.renew_running_lease(
                 row,
                 lease_owner=lease_owner,
@@ -683,6 +771,8 @@ class HarnessV2Engine:
         max_actions: int,
     ) -> tuple[TaskExecutionResult, StepAgentResult]:
         self.store.mark_running(row)
+        agent_loop = self.store.ensure_agent_loop(row)
+        loop_checkpoint = dict(agent_loop.checkpoint_json or {})
         self.active_frame_id = row.id
         self.active_frame_lease_owner = row.lease_owner
         self.active_frame_attempt_no = row.attempt_no
@@ -695,6 +785,12 @@ class HarnessV2Engine:
             db=self.db,
         )
         image_payloads = validated_task_image_payloads(request.attachments)
+        published_deliverables = list_published_deliverables(
+            self.db,
+            tenant_id=request.tenant_id,
+            session_id=session.id,
+            exclude_task_frame_id=row.task_id,
+        )
         step_timeout_seconds = (
             _skill_step_timeout_seconds(active_skill)
             if frame.kind == "sop"
@@ -708,15 +804,19 @@ class HarnessV2Engine:
                 "task_frame_id": row.task_id,
                 "kind": row.kind,
                 "skill_id": row.skill_id,
+                "skill_name": active_skill.name if active_skill is not None else None,
                 "step_id": row.step_id,
                 "step_timeout_seconds": step_timeout_seconds,
                 "harness_max_actions": max_actions,
+                "agent_loop_id": agent_loop.id,
+                "agent_loop_kind": agent_loop.kind,
                 "execution_engine": "harness_v2",
             },
         )
         remaining_actions = max_actions
         results: list[TaskExecutionResult] = []
         last_step_result = StepAgentResult()
+        run: HarnessRunRecord | None = None
 
         while remaining_actions > 0:
             self._raise_if_cancelled(request, session)
@@ -747,11 +847,13 @@ class HarnessV2Engine:
                     *[_prior_result(item) for item in results],
                 ],
                 attachment_descriptors,
+                published_deliverables,
                 source_user_message=(
                     request.message
                     if row.source_turn_id == self.user_message_id
                     else _source_user_message(self.db, row)
                 ),
+                out_of_scope_task_intents=_sibling_task_intents(self.db, row),
             )
             if (
                 self.slash_command
@@ -771,13 +873,26 @@ class HarnessV2Engine:
                 lease_owner=self.active_frame_lease_owner,
                 attempt_no=self.active_frame_attempt_no,
             )
-            run = self.store.start_run(
-                row,
-                requirement=requirement.model_dump(mode="json"),
-                capability_snapshot=manifest.model_dump(mode="json"),
-                lease_owner=self.active_frame_lease_owner,
-                attempt_no=self.active_frame_attempt_no,
-            )
+            if run is None:
+                run = self.store.start_run(
+                    row,
+                    requirement=requirement.model_dump(mode="json"),
+                    capability_snapshot=manifest.model_dump(mode="json"),
+                    lease_owner=self.active_frame_lease_owner,
+                    attempt_no=self.active_frame_attempt_no,
+                )
+                self.store.save_agent_loop_checkpoint(
+                    agent_loop,
+                    loop_checkpoint,
+                    status="active",
+                    last_run_id=run.id,
+                )
+            else:
+                self.store.update_run_context(
+                    run,
+                    requirement=requirement.model_dump(mode="json"),
+                    capability_snapshot=manifest.model_dump(mode="json"),
+                )
             self.active_run_id = run.id
             self.db.commit()
 
@@ -790,6 +905,7 @@ class HarnessV2Engine:
                         **payload,
                         "task_frame_id": row.task_id,
                         "harness_run_id": run.id,
+                        "agent_loop_id": agent_loop.id,
                         "execution_engine": "harness_v2",
                     },
                 )
@@ -830,10 +946,45 @@ class HarnessV2Engine:
                 image_payloads=image_payloads,
                 step_deadline_monotonic=step_deadline_monotonic,
                 step_timeout_seconds=step_timeout_seconds,
+                checkpoint=loop_checkpoint,
             )
+            deferred_continuation = False
+            if frame.kind == "sop":
+                deferred_result = _defer_failed_step_after_completed_checkpoint(
+                    result,
+                    results,
+                )
+                if deferred_result is not result:
+                    deferred_continuation = True
+                    trace(
+                        "harness_step_continuation_deferred",
+                        {
+                            "failed_step_id": frame.target_step_id,
+                            "error": result.error,
+                            "checkpoint_step_id": row.step_id,
+                            "reason": "previous_step_already_produced_user_result",
+                        },
+                    )
+                    result = deferred_result
+            loop_checkpoint = dict(result.loop_checkpoint or {})
             _merge_discovered_artifacts(result, invoker.discover_artifacts())
+            loop_checkpoint["artifacts"] = list(result.artifacts)
+            self.store.save_agent_loop_checkpoint(
+                agent_loop,
+                loop_checkpoint,
+                status="active",
+                last_run_id=run.id,
+            )
             results.append(result)
             remaining_actions -= max(1, result.action_count)
+
+            if deferred_continuation:
+                # The previous SOP step was already committed and moved the
+                # session to this step.  Keep that durable checkpoint queued
+                # for a later turn instead of applying a transient failure to
+                # the session and replacing the useful answer already found.
+                last_step_result = _step_result(result)
+                break
 
             if frame.kind == "conversation":
                 if (
@@ -856,15 +1007,6 @@ class HarnessV2Engine:
                     )
                 else:
                     last_step_result = _step_result(result)
-                self.store.finish_run(
-                    run,
-                    status=result.status,
-                    action_count=result.action_count,
-                    result=result.model_dump(mode="json"),
-                    lease_owner=self.active_frame_lease_owner,
-                    attempt_no=self.active_frame_attempt_no,
-                )
-                self.active_run_id = None
                 break
 
             result = _enforce_required_slots(result, requirement, session)
@@ -933,21 +1075,23 @@ class HarnessV2Engine:
                 continue_frame = False
             else:
                 frame.target_step_id = session.active_step_id
-            self.store.finish_run(
-                run,
-                status=result.status,
-                action_count=result.action_count,
-                result=result.model_dump(mode="json"),
-                lease_owner=self.active_frame_lease_owner,
-                attempt_no=self.active_frame_attempt_no,
-            )
-            self.active_run_id = None
             if not continue_frame:
                 break
 
         combined = _combine_results(row.task_id, results)
+        if run is not None:
+            self.store.finish_run(
+                run,
+                status=combined.status,
+                action_count=combined.action_count,
+                result=combined.model_dump(mode="json"),
+                lease_owner=self.active_frame_lease_owner,
+                attempt_no=self.active_frame_attempt_no,
+            )
+            self.active_run_id = None
         row_status = combined.status
-        if row_status == "action_budget":
+        preserve_agent_loop = _is_recoverable_action_protocol_failure(combined)
+        if row_status == "action_budget" or preserve_agent_loop:
             row_status = "queued"
         self.store.finish_frame(
             row,
@@ -958,16 +1102,27 @@ class HarnessV2Engine:
             lease_owner=self.active_frame_lease_owner,
             attempt_no=self.active_frame_attempt_no,
         )
+        self.store.finish_agent_loop_for_frame(
+            row,
+            result_status=("queued" if preserve_agent_loop else combined.status),
+            checkpoint=loop_checkpoint,
+            last_run_id=run.id if run is not None else None,
+        )
         self.events.record(
             request.tenant_id,
             session.id,
             "task_frame_finished",
             {
                 "task_frame_id": row.task_id,
+                "kind": row.kind,
+                "skill_id": row.skill_id,
+                "skill_name": active_skill.name if active_skill is not None else None,
                 "status": combined.status,
                 "step_id": row.step_id,
                 "action_count": combined.action_count,
                 "error": combined.error,
+                "agent_loop_id": agent_loop.id,
+                "agent_loop_status": agent_loop.status,
                 "execution_engine": "harness_v2",
             },
         )
@@ -1012,6 +1167,12 @@ class HarnessV2Engine:
                             "status": "cancelled",
                             "task_summary": "用户取消了当前 Harness 执行。",
                         },
+                    )
+                    self.store.finish_agent_loop_for_frame(
+                        row,
+                        result_status="cancelled",
+                        checkpoint=self.store.agent_loop_checkpoint(row),
+                        last_run_id=self.active_run_id,
                     )
         self.db.commit()
         turn_store = getattr(self, "turn_store", None)
@@ -1081,6 +1242,12 @@ class HarnessV2Engine:
                         "task_summary": "Harness 执行中断，TaskFrame 已重新排队。",
                     },
                 )
+                self.store.finish_agent_loop_for_frame(
+                    row,
+                    result_status="action_budget",
+                    checkpoint=self.store.agent_loop_checkpoint(row),
+                    last_run_id=self.active_run_id,
+                )
         self.db.commit()
         turn_store = getattr(self, "turn_store", None)
         if turn_store is not None:
@@ -1144,6 +1311,7 @@ class HarnessV2Engine:
         )
         if active_skill is None:
             return None
+        self._record_skill_activation_event(session, row, active_skill)
         self.owner.runtime.restore_task_frame(
             session,
             {
@@ -1155,6 +1323,45 @@ class HarnessV2Engine:
             },
         )
         return active_skill
+
+    def _record_skill_activation_event(
+        self,
+        session: ChatSession,
+        row: HarnessTaskFrameRecord,
+        skill: Skill,
+    ) -> None:
+        """新发起/恢复 SOP 的 TaskFrame 落一条运行时事件。
+
+        SOP 调用次数统计(api/skills._skill_stats)只认 skill_started /
+        skill_resumed 事件;legacy 运行时移除后这两个事件不再产生,导致
+        管理端调用次数永远是 0。这里在新任务(start_new_task)与恢复
+        挂起任务(switch_to_pending)被调度时补记,payload 保持旧结构
+        (to_skill_id/to_skill_version/from_skill_id/from_step_id),
+        继续执行的 continue_active 不计新调用。
+        """
+        if row.decision == "start_new_task":
+            event_type = "skill_started"
+        elif row.decision == "switch_to_pending":
+            event_type = "skill_resumed"
+        else:
+            return
+        payload = {
+            "decision": row.decision,
+            "from_skill_id": session.active_skill_id,
+            "to_skill_id": skill.skill_id,
+            "from_skill_version": None,
+            "to_skill_version": skill.version,
+            "from_step_id": session.active_step_id,
+            "to_step_id": row.step_id,
+            "execution_engine": "harness_v2",
+            "task_frame_id": row.task_id,
+        }
+        self.events.record(
+            session.tenant_id,
+            session.id,
+            event_type,
+            payload,
+        )
 
     def _restore_visible_active_frame(
         self,
@@ -1294,6 +1501,57 @@ def _step_result(result: TaskExecutionResult) -> StepAgentResult:
     )
 
 
+def _is_recoverable_action_protocol_failure(result: TaskExecutionResult) -> bool:
+    """Keep a SOP AgentLoop resumable when only the model action envelope is invalid."""
+
+    error = result.error if isinstance(result.error, dict) else {}
+    return result.status == "failed" and str(error.get("code") or "") == (
+        "HARNESS_ACTION_INVALID"
+    )
+
+
+def _defer_failed_step_after_completed_checkpoint(
+    result: TaskExecutionResult,
+    completed_results: list[TaskExecutionResult],
+) -> TaskExecutionResult:
+    """Keep a committed SOP result when immediate continuation fails.
+
+    SOP TaskFrames may advance through several nodes in one request.  Once a
+    node has completed, its transition and slots are already durable.  A model
+    or protocol failure while starting the following node must therefore not
+    erase a user-visible result from the completed node.  Represent the
+    unfinished continuation as ``action_budget`` so the frame remains queued
+    and resumable at the already-persisted next step.
+    """
+
+    if result.status != "failed":
+        return result
+    checkpoint = next(
+        (
+            item
+            for item in reversed(completed_results)
+            if item.status == "completed" and item.reply_fragment.strip()
+        ),
+        None,
+    )
+    if checkpoint is None:
+        return result
+    failure_summary = str(result.task_summary or "").strip()
+    summaries = [
+        summary
+        for summary in (checkpoint.task_summary.strip(), failure_summary)
+        if summary
+    ]
+    return result.model_copy(
+        update={
+            "status": "action_budget",
+            "reply_fragment": checkpoint.reply_fragment,
+            "next_step_id": None,
+            "task_summary": "；".join(dict.fromkeys(summaries)),
+        }
+    )
+
+
 def _enforce_required_slots(
     result: TaskExecutionResult,
     requirement: Any,
@@ -1331,16 +1589,23 @@ def _combine_results(
             error={"code": "EMPTY_TASK_RESULT"},
         )
     last = results[-1]
+    terminal_reply = next(
+        (
+            item.reply_fragment.strip()
+            for item in reversed(results)
+            if item.reply_fragment.strip()
+        ),
+        "",
+    )
     return TaskExecutionResult(
         task_frame_id=task_frame_id,
         status=last.status,
-        reply_fragment="\n".join(
-            dict.fromkeys(
-                item.reply_fragment.strip()
-                for item in results
-                if item.reply_fragment.strip()
-            )
-        ),
+        # A SOP TaskFrame can advance through several steps in one turn.  Each
+        # step produces a finish reply, but only the terminal step is the
+        # user-visible answer for that TaskFrame.  Keep intermediate summaries
+        # and structured results below without concatenating their transitional
+        # replies into a duplicated final response.
+        reply_fragment=terminal_reply,
         slot_updates={
             key: value
             for item in results
@@ -1391,8 +1656,29 @@ def _single_task_reply(results: list[TaskExecutionResult]) -> str | None:
 
     if len(results) != 1:
         return None
-    reply = str(results[0].reply_fragment or "").strip()
+    result = results[0]
+    reply = str(result.reply_fragment or "").strip()
+    if _structured_reply_requires_synthesis(reply, result.structured_result):
+        return None
     return reply or None
+
+
+def _structured_reply_requires_synthesis(reply: str, structured_result: Any) -> bool:
+    """Reject an obviously partial JSON projection when complete data is available."""
+
+    if structured_result is None or not reply:
+        return False
+    looks_like_json = reply.startswith("{") or (
+        reply.startswith("[")
+        and (len(reply) == 1 or reply[1:2] in {"{", "[", '"'})
+    )
+    if not looks_like_json:
+        return False
+    try:
+        projected = json.loads(reply)
+    except (json.JSONDecodeError, TypeError):
+        return True
+    return projected != structured_result
 
 
 def _response_task_payload(
@@ -1424,6 +1710,7 @@ def _response_task_payload(
             else None
         ),
         "task_summary": result.task_summary,
+        "structured_result": result.structured_result,
         "artifacts": list(result.artifacts),
     }
 
@@ -1443,8 +1730,6 @@ def _inject_handoff_context(
     handoff 状态的 task(本轮新触发转人工)也注入 handoff_info(无 human_reply),
     用于告知用户已转交。
     """
-    from sqlmodel import select
-
     from app.db.models import HumanHandoffRequest
 
     handoff = db.exec(
@@ -1677,6 +1962,26 @@ def _source_user_message(db: Any, row: HarnessTaskFrameRecord) -> str:
     if message is None or message.role != "user":
         return ""
     return str(message.content or "").strip()
+
+
+def _sibling_task_intents(
+    db: Any,
+    row: HarnessTaskFrameRecord,
+) -> list[str]:
+    """Return work from the same user turn that belongs to another TaskFrame."""
+
+    siblings = db.exec(
+        select(HarnessTaskFrameRecord).where(
+            HarnessTaskFrameRecord.session_id == row.session_id,
+            HarnessTaskFrameRecord.source_turn_id == row.source_turn_id,
+            HarnessTaskFrameRecord.id != row.id,
+        )
+    ).all()
+    return [
+        str(item.user_intent or "").strip()
+        for item in siblings
+        if str(item.user_intent or "").strip()
+    ]
 
 
 def _skill_step_timeout_seconds(skill: Skill | None) -> int | None:

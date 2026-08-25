@@ -48,9 +48,9 @@ router = APIRouter(
 
 MODEL_VERIFICATION_DEADLINE_SECONDS = 90.0
 MODEL_VERIFICATION_PROBES = (
-    ("text", 32, 25.0),
-    ("stream", 32, 25.0),
-    ("json", 128, 35.0),
+    ("text", 25.0),
+    ("stream", 25.0),
+    ("json", 35.0),
 )
 
 
@@ -117,7 +117,8 @@ def create_model_config(
         raise HTTPException(status_code=422, detail="MODEL_API_KEY_REQUIRED")
     validate_model_base_url(request.base_url)
     _validate_sampling(protocol, request.temperature, request.max_output_tokens)
-    options = _request_protocol_options(request.protocol_options, request.extra_body, protocol)
+    options = _request_protocol_options(request.protocol_options, protocol)
+    extra_body = _request_extra_body(request.extra_body, protocol)
     row = ModelConfig(
         tenant_id=request.tenant_id,
         name=request.name,
@@ -128,7 +129,7 @@ def create_model_config(
         model=request.model,
         temperature=request.temperature,
         max_output_tokens=request.max_output_tokens,
-        extra_body_json=dict(options),
+        extra_body_json=extra_body,
         protocol_options_json={protocol.value: options},
         is_default=False,
         enabled=False,
@@ -181,13 +182,14 @@ def update_model_config(
     if request.api_key not in {None, ""}:
         security_changed = True
     requested_options = None
-    if request.protocol_options is not None or request.extra_body is not None:
-        requested_options = _request_protocol_options(
-            request.protocol_options,
-            request.extra_body or {},
-            protocol,
-        )
+    if request.protocol_options is not None:
+        requested_options = _request_protocol_options(request.protocol_options, protocol)
         if requested_options != current_protocol_options(row.protocol_options_json, protocol):
+            security_changed = True
+    requested_extra_body = None
+    if request.extra_body is not None:
+        requested_extra_body = _request_extra_body(request.extra_body, protocol)
+        if requested_extra_body != dict(row.extra_body_json or {}):
             security_changed = True
 
     for field in ("name", "base_url", "model", "temperature", "max_output_tokens"):
@@ -203,7 +205,8 @@ def update_model_config(
         partitioned = dict(row.protocol_options_json or {})
         partitioned[protocol.value] = requested_options
         row.protocol_options_json = partitioned
-        row.extra_body_json = dict(requested_options)
+    if requested_extra_body is not None:
+        row.extra_body_json = requested_extra_body
     if request.model_fields_set - {"tenant_id"}:
         row.config_revision += 1
     if security_changed:
@@ -448,18 +451,17 @@ def _run_verification_probes(
     capabilities: list[ModelCapabilityTestResult] = []
     output: str | None = None
     verification_started = monotonic()
-    for capability_id, max_tokens, probe_timeout in MODEL_VERIFICATION_PROBES:
+    for capability_id, probe_timeout in MODEL_VERIFICATION_PROBES:
         remaining = MODEL_VERIFICATION_DEADLINE_SECONDS - (monotonic() - verification_started)
         if remaining <= 0:
             raise LLMError("MODEL_VERIFICATION_DEADLINE_EXCEEDED")
         probe_config = replace(
             config,
             timeout_seconds=min(probe_timeout, remaining),
-            max_output_tokens=_verification_probe_tokens(
-                config.api_protocol,
-                capability_id,
-                min(max_tokens, config.max_output_tokens),
-            ),
+            # Verification is a real model call too. Keep Max Tokens governed
+            # by the saved model configuration instead of an invisible probe
+            # budget.
+            max_output_tokens=config.max_output_tokens,
         )
         probe_client = LLMClient(probe_config)
         if capability_id == "text":
@@ -492,17 +494,6 @@ def _verification_error_code(exc: Exception) -> str:
     if value.startswith("MODEL_") and " " not in value:
         return value
     return "MODEL_CONNECTION_FAILED"
-
-
-def _verification_probe_tokens(
-    protocol: ModelApiProtocol, capability_id: str, default_tokens: int
-) -> int:
-    if protocol is ModelApiProtocol.GEMINI_GENERATE_CONTENT and capability_id in {
-        "text",
-        "stream",
-    }:
-        return max(default_tokens, 128)
-    return default_tokens
 
 
 def _mark_verification_failed(
@@ -550,22 +541,24 @@ def _clear_default(db: Session, tenant_id: str) -> None:
 
 def _request_protocol_options(
     protocol_options: dict | None,
-    extra_body: dict,
     protocol: ModelApiProtocol,
 ) -> dict:
-    if protocol_options is not None and extra_body and protocol_options != extra_body:
-        raise HTTPException(status_code=422, detail="MODEL_PROTOCOL_OPTIONS_CONFLICT")
-    if protocol in {
-        ModelApiProtocol.OPENAI_RESPONSES,
-        ModelApiProtocol.ANTHROPIC_MESSAGES,
-        ModelApiProtocol.GEMINI_GENERATE_CONTENT,
-    }:
-        if (protocol_options is not None and protocol_options != {}) or extra_body:
-            raise HTTPException(status_code=422, detail="MODEL_PROTOCOL_OPTIONS_INVALID")
+    if protocol_options is None:
         return {}
-    if protocol_options is not None:
+    if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
         return normalize_chat_protocol_options(protocol_options)
-    return normalize_chat_protocol_options(extra_body)
+    if protocol_options:
+        raise HTTPException(status_code=422, detail="MODEL_PROTOCOL_OPTIONS_INVALID")
+    return {}
+
+
+def _request_extra_body(extra_body: dict | None, protocol: ModelApiProtocol) -> dict:
+    """Validate provider-specific request fields separately from protocol options."""
+    if not extra_body:
+        return {}
+    if protocol is not ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
+        raise HTTPException(status_code=422, detail="MODEL_EXTRA_BODY_UNSUPPORTED")
+    return dict(extra_body)
 
 
 def _validate_sampling(

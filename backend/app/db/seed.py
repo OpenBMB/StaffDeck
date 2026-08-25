@@ -44,8 +44,8 @@ REFUND_SKILL = {
         "收集订单号",
         "确认处理对象",
         "查询订单状态",
-        "说明退款政策",
-        "引导用户继续处理或转人工",
+        "收集退款原因",
+        "执行退款并反馈真实结果",
     ],
     "required_info": ["order_id", "refund_reason"],
     "slot_filling_policy": {
@@ -80,9 +80,14 @@ REFUND_SKILL = {
         },
         {
             "node_id": "check_refund_eligibility",
+            "type": "tool_call",
             "name": "查询退款资格",
             "instruction": "将本步骤作为目标而不是固定话术；仅当 order_id 已存在且 order_confirmed=true 时调用 order.query；根据订单查询结果说明是否可能支持退款/退货，不要承诺一定成功；如还缺原因则继续收集，已满足时给出明确下一步。",
             "expected_user_info": [],
+            "capability_refs": {
+                "tool_ids": ["order.query"],
+                "required_tool_ids": ["order.query"],
+            },
             "allowed_actions": [
                 "continue_flow",
                 "call_tool:order.query",
@@ -97,7 +102,43 @@ REFUND_SKILL = {
             "expected_user_info": ["refund_reason"],
             "allowed_actions": ["ask_user", "continue_flow"],
         },
+        {
+            "node_id": "execute_refund",
+            "type": "tool_call",
+            "name": "执行退款并反馈结果",
+            "instruction": "仅当 order_id、order_confirmed=true、refundable=true 和 refund_reason 均已满足时调用 order.refund。必须依据工具返回的 refunded、refund_id 和订单状态反馈结果；工具未成功时不得声称退款完成，也不得仅说稍后处理。",
+            "expected_user_info": [],
+            "capability_refs": {
+                "tool_ids": ["order.refund"],
+                "required_tool_ids": ["order.refund"],
+            },
+            "allowed_actions": ["call_tool:order.refund", "answer_user"],
+        },
     ],
+    "edges": [
+        {
+            "source_node_id": "identify_refund_intent",
+            "next_node_id": "collect_order_info",
+        },
+        {
+            "source_node_id": "collect_order_info",
+            "next_node_id": "confirm_refund_order",
+        },
+        {
+            "source_node_id": "confirm_refund_order",
+            "next_node_id": "check_refund_eligibility",
+        },
+        {
+            "source_node_id": "check_refund_eligibility",
+            "next_node_id": "collect_refund_reason",
+        },
+        {
+            "source_node_id": "collect_refund_reason",
+            "next_node_id": "execute_refund",
+        },
+    ],
+    "start_node_id": "identify_refund_intent",
+    "terminal_node_ids": ["execute_refund"],
     "interruption_policy": {
         "related_question": "可以临时回答，回答后回到当前退款流程。",
         "unrelated_business": "可以切换到新技能，并保存当前流程进度。",
@@ -108,6 +149,7 @@ REFUND_SKILL = {
         "不要承诺一定能退款。",
         "未查询订单前，不要判断是否符合退款条件。",
         "退款、退货或取消订单前必须先向用户确认订单号和诉求类型。",
+        "只有 order.refund 明确返回 refunded=true 后才能声称退款完成。",
         "如果用户要求人工，应转人工。",
         ADAPTIVE_FLOW_RULE,
     ],
@@ -541,6 +583,41 @@ ORDER_ARCHIVE_QUERY_TOOL = {
     "enabled": True,
 }
 
+ORDER_REFUND_TOOL = {
+    "name": "order.refund",
+    "display_name": "订单退款",
+    "description": "根据已确认的订单号和退款原因执行退款，返回退款后的订单状态。",
+    "bucket": "订单工具",
+    "method": "POST",
+    "url": "/api/mock/order/refund",
+    "headers_json": {},
+    "auth_json": {},
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "order_id": {"type": "string", "description": "订单号"},
+            "refund_reason": {"type": "string", "description": "用户确认的退款原因"},
+        },
+        "required": ["order_id", "refund_reason"],
+    },
+    "output_schema": {
+        "type": "object",
+        "properties": {
+            "order_id": {"type": "string"},
+            "found": {"type": "boolean"},
+            "refunded": {"type": "boolean"},
+            "refund_id": {"type": "string"},
+            "refund_reason": {"type": "string"},
+            "status": {"type": "string"},
+            "order_status": {"type": "string"},
+            "payment_status": {"type": "string"},
+            "failure_reason": {"type": "string"},
+        },
+    },
+    "allowed_skills_json": ["after_sales_refund"],
+    "enabled": True,
+}
+
 PRODUCT_PURCHASE_TOOL = {
     "name": "product.purchase",
     "display_name": "购买商品",
@@ -768,6 +845,7 @@ MCP_SERVER_TOOLS = {
 DEMO_TOOLS = (
     ORDER_QUERY_TOOL,
     ORDER_ARCHIVE_QUERY_TOOL,
+    ORDER_REFUND_TOOL,
     PRODUCT_PURCHASE_TOOL,
     ORDER_ADD_TOOL,
     PRODUCT_PRICE_QUERY_TOOL,

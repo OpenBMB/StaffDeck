@@ -97,7 +97,13 @@ def test_initial_projection_expands_only_kernel_and_sop_explicit_capabilities() 
             name,
             kind=(
                 "internal"
-                if name in {"capability_search", "capability_describe"}
+                if name
+                in {
+                    "capability_search",
+                    "capability_describe",
+                    "list_published_deliverables",
+                    "read_published_deliverable",
+                }
                 else "knowledge"
                 if name == "knowledge_search"
                 else "file"

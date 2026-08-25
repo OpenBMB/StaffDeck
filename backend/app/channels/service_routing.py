@@ -71,14 +71,24 @@ def parse_command(text: str) -> ChannelCommand | None:
 
 
 def mounted_agents(db: Session, binding: ChannelBinding) -> list[ChannelBindingAgent]:
-    """挂载集;无挂载行(存量 v1 绑定)回退为 [binding.agent_id] 默认,不依赖回填。"""
+    """挂载集;无挂载行(存量 v1 绑定)回退为 [binding.agent_id] 默认,不依赖回填。
+
+    指向已删除员工的孤儿挂载行直接过滤(删除员工会清理挂载,这里兜底历史数据),
+    避免 /员工 列表出现裸 agent_id、或 /切换 把会话路由到已删除员工。
+    挂载行全部失效时按存量绑定回退。
+    """
     rows = db.exec(
         select(ChannelBindingAgent)
         .where(ChannelBindingAgent.binding_id == binding.id)
         .order_by(ChannelBindingAgent.sort_order, ChannelBindingAgent.created_at)
     ).all()
     if rows:
-        return list(rows)
+        alive_ids = set(
+            agent_names(db, binding.tenant_id, [row.agent_id for row in rows])
+        )
+        mounted = [row for row in rows if row.agent_id in alive_ids]
+        if mounted:
+            return mounted
     return [
         ChannelBindingAgent(
             tenant_id=binding.tenant_id,

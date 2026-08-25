@@ -833,6 +833,8 @@ class ChannelBinding(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     agent_id: str = Field(index=True)
     channel: str = Field(default="wechat", index=True)
+    # 用户可编辑的接入显示名;为空时前端回退展示渠道类型名
+    name: Optional[str] = Field(default=None)
     # 团队绑定:非空表示该渠道接入某团队(与员工挂载互斥),入站消息直路由团队 TL;
     # 存 team_id 不存 leader,换帅自动跟随
     team_id: Optional[str] = Field(default=None, index=True)
@@ -1144,6 +1146,33 @@ class ScheduledTaskRun(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class HarnessAgentLoopRecord(SQLModel, table=True):
+    """Durable logical AgentLoop shared across Harness activations."""
+
+    __tablename__ = "harness_agent_loops"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "loop_key", name="uq_harness_agent_loop_session_key"
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("hloop"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    session_id: str = Field(index=True)
+    loop_key: str = Field(index=True)
+    kind: str = Field(default="general", index=True)
+    status: str = Field(default="active", index=True)
+    owner_task_frame_record_id: Optional[str] = Field(default=None, index=True)
+    skill_id: Optional[str] = Field(default=None, index=True)
+    workspace_scope_id: Optional[str] = Field(default=None, index=True)
+    checkpoint_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    last_run_id: Optional[str] = Field(default=None, index=True)
+    state_version: int = 1
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    finished_at: Optional[datetime] = None
+
+
 class HarnessTaskFrameRecord(SQLModel, table=True):
     """Durable TaskFrame state for the isolated Harness v2 execution path."""
 
@@ -1159,6 +1188,7 @@ class HarnessTaskFrameRecord(SQLModel, table=True):
     session_id: str = Field(index=True)
     source_turn_id: str = Field(index=True)
     task_id: str = Field(index=True)
+    agent_loop_id: Optional[str] = Field(default=None, index=True)
     kind: str = Field(default="conversation", index=True)
     decision: str = Field(default="answer_only", index=True)
     status: str = Field(default="queued", index=True)
@@ -1189,6 +1219,7 @@ class HarnessRunRecord(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     session_id: str = Field(index=True)
     task_frame_record_id: str = Field(index=True)
+    agent_loop_id: Optional[str] = Field(default=None, index=True)
     task_id: str = Field(index=True)
     source_turn_id: str = Field(index=True)
     status: str = Field(default="running", index=True)
@@ -1442,6 +1473,34 @@ class TeamMember(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class TeamRun(SQLModel, table=True):
+    """One durable TL plan from delegation through final team synthesis."""
+
+    __tablename__ = "team_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "tl_session_id",
+            "source_turn_id",
+            name="uq_team_run_tl_session_source_turn",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("team_run"), primary_key=True)
+    team_id: str = Field(index=True)
+    tenant_id: str = Field(index=True)
+    tl_session_id: str = Field(index=True)
+    source_turn_id: str = Field(index=True)
+    created_by_user_id: Optional[str] = Field(default=None, index=True)
+    # planning -> running/awaiting_input -> synthesizing -> completed/failed
+    status: str = Field(default="planning", index=True)
+    synthesis_session_id: Optional[str] = Field(default=None, index=True)
+    final_message_id: Optional[str] = Field(default=None, index=True)
+    error: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    completed_at: Optional[datetime] = None
+
+
 class TeamTask(SQLModel, table=True):
     """团队任务:blocked -> pending -> in_progress -> review -> done/rework/escalated;
 
@@ -1453,6 +1512,8 @@ class TeamTask(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("team_task"), primary_key=True)
     team_id: str = Field(index=True)
     tenant_id: str = Field(index=True)
+    team_run_id: Optional[str] = Field(default=None, index=True)
+    source_turn_id: Optional[str] = Field(default=None, index=True)
     parent_task_id: Optional[str] = Field(default=None, index=True)
     title: str
     description: Optional[str] = None

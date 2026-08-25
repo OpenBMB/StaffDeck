@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, renderHook, waitFor } from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,6 +19,7 @@ const teamSession: ChatSession = {
   status: 'active',
   team_id: 'team-1',
   team_name: '增长团队',
+  title: '团队 增长团队 · TL 对话',
   updated_at: '2026-08-01T00:00:00Z',
 };
 
@@ -79,6 +80,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   window.localStorage.clear();
 });
@@ -116,5 +118,24 @@ describe('useChatSession team scope', () => {
       expect(result.current.sessionsLoading).toBe(false);
     });
     expect(result.current.visibleSidebarSessions.map((session) => session.id)).toEqual(['session-team-1']);
+  });
+
+  it('keeps polling messages after a team leader turn hands work to members', async () => {
+    vi.useFakeTimers();
+    const fetchMock = stubChatFetch([teamSession, employeeSession]);
+    renderChatSession('/workspace/chat/session-team-1');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    const messageRequestCount = () => fetchMock.mock.calls.filter(([input]) => (
+      String(input).includes('/api/chat/sessions/session-team-1/messages?')
+    )).length;
+    expect(messageRequestCount()).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
+    expect(messageRequestCount()).toBeGreaterThan(1);
   });
 });

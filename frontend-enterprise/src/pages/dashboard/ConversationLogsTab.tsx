@@ -718,6 +718,8 @@ function FeedbackDetailDialog({
                 : null}
             </div>
 
+            <ModelCallLogSection events={detail.events} />
+
             <section className="rounded-[14px] border border-[#e3e7f1] bg-[#fafbfc] p-[14px]">
               <div className="flex flex-wrap items-center justify-between gap-[8px]">
                 <div>
@@ -763,6 +765,132 @@ function FeedbackDetailDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+type SessionEvent = EnterpriseSessionDetailRead['events'][number];
+
+type ModelCallLog = {
+  spanId: string;
+  started?: SessionEvent;
+  terminal?: SessionEvent;
+};
+
+function ModelCallLogSection({ events }: { events: SessionEvent[] }) {
+  const calls = modelCallLogs(events);
+  if (calls.length === 0) return null;
+
+  return (
+    <section className="rounded-[14px] border border-[#dce6f7] bg-[#f7faff] p-[14px]">
+      <div className="flex flex-wrap items-center justify-between gap-[8px]">
+        <div>
+          <strong className="text-[13px] font-semibold text-[#18181a]">模型输入与输出</strong>
+          <p className="m-0 mt-[3px] text-[11px] text-[#75809a]">
+            这里是模型调用级审计日志，不是用户可见回复。保留实际协议输入、reasoning、工具调用参数和原始响应；密钥及内嵌图片数据已脱敏。
+          </p>
+        </div>
+        <StatusBadge tone="blue">{calls.length} 次模型调用</StatusBadge>
+      </div>
+
+      <div className="mt-[12px] grid gap-[8px]">
+        {calls.map((call, index) => {
+          const input = call.started?.payload || call.terminal?.payload || {};
+          const output = call.terminal?.payload || {};
+          const terminalType = call.terminal?.event_type || '';
+          const failed = terminalType === 'llm_call_failed';
+          const running = !call.terminal;
+          const responseMessage = output.response_message && typeof output.response_message === 'object'
+            ? output.response_message as Record<string, unknown>
+            : {};
+          const modelName = String(input.model_name || input.model || '未记录模型');
+          const operation = String(input.operation || 'llm.request');
+          return (
+            <details
+              key={call.spanId}
+              className="rounded-[10px] border border-[#dfe6f1] bg-white px-[12px] py-[9px]"
+            >
+              <summary className="flex cursor-pointer list-none flex-wrap items-center gap-[6px] text-[12px] font-medium text-[#464c5e]">
+                <span>第 {index + 1} 次 · {operation} · {modelName}</span>
+                <StatusBadge tone={failed ? 'red' : running ? 'orange' : 'green'}>
+                  {failed ? '失败' : running ? '执行中' : '完成'}
+                </StatusBadge>
+                <span className="ml-auto text-[11px] font-normal text-[#8a91a2]">
+                  {formatDateTime(call.started?.created_at || call.terminal?.created_at || '')}
+                </span>
+              </summary>
+              <div className="mt-[10px] grid gap-[10px] lg:grid-cols-2">
+                <ModelExchangePayload
+                  title="模型完整 Input"
+                  value={{
+                    provider_request: input.request_payload || {
+                      messages: input.request_messages || [],
+                      ...(input.request_parameters || {}),
+                    },
+                    normalized_messages: input.request_messages || [],
+                    normalized_parameters: input.request_parameters || {},
+                  }}
+                />
+                <ModelExchangePayload
+                  title={failed ? '模型错误与部分原始 Output' : '模型完整原始 Output'}
+                  value={
+                    failed
+                      ? {
+                          error_type: output.error_type,
+                          error: output.error,
+                          partial_response_text: output.partial_response_text || '',
+                          partial_reasoning_content: output.partial_reasoning_content || '',
+                          partial_tool_call_deltas: output.partial_tool_call_deltas || [],
+                          partial_response_chunks: output.partial_response_chunks || [],
+                        }
+                      : {
+                          response_message: output.response_message || {
+                            role: 'assistant',
+                            content: output.response_text || '',
+                          },
+                          reasoning_content: responseMessage.reasoning_content || '',
+                          tool_calls: responseMessage.tool_calls || [],
+                          tool_call_deltas: responseMessage.tool_call_deltas || [],
+                          provider_response: output.response_payload || null,
+                          provider_stream_chunks: output.response_chunks || [],
+                        }
+                  }
+                />
+              </div>
+            </details>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function ModelExchangePayload({ title, value }: { title: string; value: unknown }) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-[5px] text-[11px] font-semibold text-[#69738b]">{title}</div>
+      <pre className="m-0 max-h-[440px] overflow-auto whitespace-pre-wrap break-words rounded-[8px] bg-[#18181a] p-[12px] text-[11px] leading-[1.55] text-[#d8e2f0]">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </div>
+  );
+}
+
+function modelCallLogs(events: SessionEvent[]): ModelCallLog[] {
+  const calls = new Map<string, ModelCallLog>();
+  events.forEach((event) => {
+    if (!event.event_type.startsWith('llm_call_')) return;
+    const spanId = String(event.payload?.span_id || event.id);
+    const call = calls.get(spanId) || { spanId };
+    if (event.event_type === 'llm_call_started') call.started = event;
+    if (event.event_type === 'llm_call_finished' || event.event_type === 'llm_call_failed') {
+      call.terminal = event;
+    }
+    calls.set(spanId, call);
+  });
+  return Array.from(calls.values()).sort((left, right) => {
+    const leftTime = left.started?.created_at || left.terminal?.created_at || '';
+    const rightTime = right.started?.created_at || right.terminal?.created_at || '';
+    return leftTime.localeCompare(rightTime);
+  });
 }
 
 function FeedbackMessage({

@@ -8,7 +8,7 @@ import secrets
 import string
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
@@ -156,6 +156,29 @@ def _patch_binding_config_key(
 
 SUPPORTED_CHANNELS = {"wechat", "wechat_kf", "wecom", "feishu", "dingtalk"}
 INGRESS_QUIESCE_TIMEOUT_SECONDS = 5.0
+# 渠道中文名:错误信息与通知文案共用
+_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书", "dingtalk": "钉钉"}
+# 接入显示名长度上限(前后端一致)
+BINDING_NAME_MAX_LENGTH = 50
+
+
+def _default_binding_name(channel: str) -> str:
+    """接入默认名:渠道名 + YYYYMMDDHHMM,如「飞书202608250910」。"""
+    label = _CHANNEL_LABELS.get(channel, channel)
+    return f"{label}{datetime.now().strftime('%Y%m%d%H%M')}"
+
+
+def _validated_binding_name(raw: str | None, *, default: str | None = None) -> str | None:
+    """清洗接入显示名:去首尾空白;空值返回 default;超长报 400。"""
+    name = (raw or "").strip()
+    if not name:
+        return default
+    if len(name) > BINDING_NAME_MAX_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"接入名称不能超过 {BINDING_NAME_MAX_LENGTH} 个字符",
+        )
+    return name
 
 # 渠道描述:前端接入页据此渲染渠道卡片与凭证表单,新渠道只加条目不动页面骨架
 CHANNEL_META = [
@@ -405,6 +428,7 @@ def create_channel_binding(
         tenant_id=request.tenant_id,
         agent_id=target_agent_id,
         channel=request.channel,
+        name=_validated_binding_name(request.name, default=_default_binding_name(request.channel)),
         status="pending",
         created_by_user_id=current_user.id,
         team_id=request.team_id,
@@ -538,16 +562,28 @@ def list_my_identity_bindings(
         )
         .order_by(ChannelIdentity.channel)
     ).all()
-    return [
-        MyIdentityBindingRead(
-            channel=row.channel,
-            external_user_id=row.external_user_id,
-            display_name=row.display_name,
-            bound_at=row.updated_at.isoformat(),
-            external_account_scope=row.external_account_scope,
+    # 返回行都指向当前账号,display_name 应始终是当前账号名;历史绑定残留的
+    # 旧名(如懒建期占位名"飞书用户 xxx")在读取时自愈回写,不待重新绑定。
+    account_name = str(current_user.display_name or current_user.username or "").strip()
+    result: list[MyIdentityBindingRead] = []
+    for row in rows:
+        display_name = row.display_name
+        if account_name and display_name != account_name:
+            row.display_name = account_name
+            row.updated_at = utc_now()
+            db.add(row)
+            display_name = account_name
+        result.append(
+            MyIdentityBindingRead(
+                channel=row.channel,
+                external_user_id=row.external_user_id,
+                display_name=display_name,
+                bound_at=row.updated_at.isoformat(),
+                external_account_scope=row.external_account_scope,
+            )
         )
-        for row in rows
-    ]
+    db.commit()
+    return result
 
 
 @router.delete("/my-identity-bindings/{channel}", status_code=204)
@@ -622,14 +658,26 @@ def update_channel_binding_agents(
     if (
         request.agents is None
         and request.auto_route is None
+        and request.name is None
         and request.default_handoff_assignee_user_id == "unchanged"
+        and request.default_handoff_assignee_channel == "unchanged"
     ):
         raise HTTPException(status_code=400, detail="无有效更新内容")
+    # 重命名:传了就要求非空(清洗后),空值视为非法输入而非清空
+    new_name: str | None = None
+    if request.name is not None:
+        new_name = _validated_binding_name(request.name)
+        if not new_name:
+            raise HTTPException(status_code=400, detail="接入名称不能为空")
     if request.agents is not None and binding.team_id:
         # 团队绑定的接待员工由团队现任 TL 决定,不允许整表替换员工挂载
         raise HTTPException(status_code=400, detail="团队绑定的渠道不支持修改员工挂载")
-    # 校验默认人工处理人:传入非 None 且非空时,用户必须存在且属于当前租户
+    # 校验默认人工处理人:传入非 None 且非空时,用户必须存在且属于当前租户的内部成员。
+    # 通知渠道为 None/"web" 时仅走网页端收件箱;指定绑定渠道时,要求该渠道支持
+    # 私聊通知(当前飞书/企微),且该成员必须已在当前绑定作用域绑定非群聊渠道身份,
+    # 保证渠道转接可达(scope 级校验,复用运行时同一身份解析逻辑)。
     handoff_assignee = request.default_handoff_assignee_user_id
+    handoff_channel = request.default_handoff_assignee_channel
     if handoff_assignee != "unchanged" and handoff_assignee:
         user = db.get(User, handoff_assignee)
         if not user or user.tenant_id != tenant_id or user.source != "web":
@@ -637,29 +685,33 @@ def update_channel_binding_agents(
                 status_code=400,
                 detail="默认人工处理人必须是当前租户的内部成员",
             )
-        if binding.channel == "feishu":
-            identity_scope = binding.identity_scope_key
-            if not identity_scope:
-                config = dict(binding.config_json or {})
-                app_id = str(config.get("app_id") or "").strip()
-                tenant_key = str(binding.provider_tenant_key or "").strip()
-                if app_id and tenant_key:
-                    from app.channels.service_feishu_inbox import feishu_identity_scope
+        handoff_channel = str(handoff_channel or "").strip()
+        if handoff_channel and handoff_channel not in ("unchanged", "web"):
+            from app.channels.service_outbox import (
+                HANDOFF_NOTIFY_CHANNELS,
+                resolve_assignee_channel_identity,
+            )
 
-                    identity_scope = feishu_identity_scope(app_id, tenant_key)
-            reachable = db.exec(
-                select(ChannelIdentity).where(
-                    ChannelIdentity.tenant_id == tenant_id,
-                    ChannelIdentity.channel == "feishu",
-                    ChannelIdentity.external_account_scope == (identity_scope or ""),
-                    ChannelIdentity.staffdeck_user_id == handoff_assignee,
-                    ~ChannelIdentity.external_user_id.startswith("group:"),
-                )
-            ).first()
-            if not reachable:
+            if handoff_channel != binding.channel:
                 raise HTTPException(
                     status_code=400,
-                    detail="默认人工处理人必须已绑定当前飞书账号",
+                    detail="默认人工处理人的转接渠道必须是当前绑定渠道",
+                )
+            if binding.channel not in HANDOFF_NOTIFY_CHANNELS:
+                supported = "、".join(
+                    _CHANNEL_LABELS.get(name, name) for name in sorted(HANDOFF_NOTIFY_CHANNELS)
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"人工转接通知暂不支持私聊通知(当前支持{supported}),请选择网页端或支持的渠道",
+                )
+            db.rollback()
+            reachable = resolve_assignee_channel_identity(db, binding, handoff_assignee)
+            if not reachable:
+                channel_label = _CHANNEL_LABELS.get(binding.channel, binding.channel)
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"默认人工处理人必须已绑定当前{channel_label}账号",
                 )
     default_agent_id: str | None = None
     if request.agents is not None:
@@ -696,6 +748,8 @@ def update_channel_binding_agents(
                     )
                 )
             binding.agent_id = default_agent_id
+        if new_name is not None:
+            binding.name = new_name
         binding.updated_at = utc_now()
         db.add(binding)
         db.commit()
@@ -709,12 +763,27 @@ def update_channel_binding_agents(
             )
             db.commit()
         if request.default_handoff_assignee_user_id != "unchanged":
+            assignee_user_id = request.default_handoff_assignee_user_id or None
             _patch_binding_config_key(
                 db,
                 tenant_id,
                 binding_id,
                 "default_handoff_assignee_user_id",
-                request.default_handoff_assignee_user_id or None,
+                assignee_user_id,
+            )
+            # 通知渠道随处理人一起落库:清空处理人时同步清空;传 "web" 表示仅网页端,
+            # 传绑定渠道表示按该渠道转接;未传(None/unchanged)保持存量默认投递行为。
+            notify_channel = None
+            if assignee_user_id:
+                raw_channel = str(request.default_handoff_assignee_channel or "").strip()
+                if raw_channel and raw_channel != "unchanged":
+                    notify_channel = raw_channel
+            _patch_binding_config_key(
+                db,
+                tenant_id,
+                binding_id,
+                "default_handoff_assignee_channel",
+                notify_channel,
             )
             db.commit()
         binding = _get_binding(db, tenant_id, binding_id)

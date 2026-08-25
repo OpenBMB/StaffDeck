@@ -273,6 +273,7 @@ class ResponseGenerator:
                     "task_frame_id": item.get("task_frame_id"),
                     "status": item.get("status"),
                     "task_summary": item.get("task_summary"),
+                    "structured_result": item.get("structured_result"),
                     "current_step": compact_current_step(
                         content, str(item.get("current_step_id") or "") or None
                     ),
@@ -474,5 +475,8 @@ class ResponseGenerator:
             memory_context=None,
             instructions=PROMPT_PATH.read_text(encoding="utf-8"),
             stage_data=stage_data,
-            output_contract="只输出最终用户可见的纯文本，不输出 JSON、Markdown 代码围栏、分析过程或内部状态。",
+            output_contract=(
+                "只输出最终用户可见的 Markdown 正文，不输出 JSON 外壳、分析过程或内部状态；"
+                "除非用户明确请求代码，否则不要使用 Markdown 代码围栏。"
+            ),
         )

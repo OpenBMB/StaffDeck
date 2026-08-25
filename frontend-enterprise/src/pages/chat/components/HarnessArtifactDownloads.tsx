@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 import { notify } from '@/components/ui/app-toast';
@@ -11,6 +11,12 @@ import {
   CHAT_ARTIFACT_COPY_CLASS,
   CHAT_ARTIFACT_HEADING_CLASS,
   CHAT_ARTIFACT_ICON_CLASS,
+  CHAT_ARTIFACT_IMAGE_CARD_CLASS,
+  CHAT_ARTIFACT_IMAGE_CLASS,
+  CHAT_ARTIFACT_IMAGE_DOWNLOAD_CLASS,
+  CHAT_ARTIFACT_IMAGE_FOOTER_CLASS,
+  CHAT_ARTIFACT_IMAGE_LINK_CLASS,
+  CHAT_ARTIFACT_IMAGE_PLACEHOLDER_CLASS,
   CHAT_ARTIFACT_LIST_CLASS,
   CHAT_ARTIFACT_META_CLASS,
   CHAT_ARTIFACT_NAME_CLASS,
@@ -36,14 +42,7 @@ export default function HarnessArtifactDownloads({
     const filename = artifactFilename(artifact.display_name || artifact.path);
     setDownloading(identity);
     try {
-      const query = new URLSearchParams({
-        tenant_id: tenantId,
-        path: artifact.path,
-      });
-      const blob = await api.blob(
-        `/api/chat/sessions/${encodeURIComponent(sessionId)}/artifacts/`
-          + `${encodeURIComponent(artifact.task_frame_id)}?${query.toString()}`,
-      );
+      const blob = await api.blob(artifactApiPath(artifact, tenantId, sessionId));
       const objectUrl = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = objectUrl;
@@ -71,6 +70,20 @@ export default function HarnessArtifactDownloads({
           const identity = `${artifact.task_frame_id}\u001f${artifact.path}`;
           const filename = artifactFilename(artifact.display_name || artifact.path);
           const isDownloading = downloading === identity;
+          if (isImageArtifact(artifact)) {
+            return (
+              <ArtifactImagePreview
+                artifact={artifact}
+                identity={identity}
+                filename={filename}
+                isDownloading={isDownloading}
+                key={identity}
+                tenantId={tenantId}
+                sessionId={sessionId}
+                onDownload={() => void downloadArtifact(artifact)}
+              />
+            );
+          }
           return (
             <button
               type="button"
@@ -101,9 +114,118 @@ export default function HarnessArtifactDownloads({
   );
 }
 
+type ArtifactImagePreviewProps = {
+  artifact: HarnessWorkspaceArtifact;
+  identity: string;
+  filename: string;
+  isDownloading: boolean;
+  tenantId: string;
+  sessionId: string;
+  onDownload: () => void;
+};
+
+function ArtifactImagePreview({
+  artifact,
+  identity,
+  filename,
+  isDownloading,
+  tenantId,
+  sessionId,
+  onDownload,
+}: ArtifactImagePreviewProps) {
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewFailed, setPreviewFailed] = useState(false);
+
+  useEffect(() => {
+    if (!tenantId || !sessionId) return undefined;
+    let disposed = false;
+    let objectUrl = '';
+    setPreviewUrl('');
+    setPreviewFailed(false);
+
+    void api.blob(artifactApiPath(artifact, tenantId, sessionId))
+      .then((blob) => {
+        if (disposed) return;
+        objectUrl = window.URL.createObjectURL(blob);
+        setPreviewUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!disposed) setPreviewFailed(true);
+      });
+
+    return () => {
+      disposed = true;
+      if (objectUrl) window.URL.revokeObjectURL(objectUrl);
+    };
+  }, [artifact.path, artifact.task_frame_id, identity, sessionId, tenantId]);
+
+  return (
+    <figure className={CHAT_ARTIFACT_IMAGE_CARD_CLASS}>
+      {previewUrl ? (
+        <a
+          className={CHAT_ARTIFACT_IMAGE_LINK_CLASS}
+          href={previewUrl}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`查看图片 ${filename}`}
+        >
+          <img
+            className={CHAT_ARTIFACT_IMAGE_CLASS}
+            src={previewUrl}
+            alt={filename}
+            loading="lazy"
+            decoding="async"
+          />
+        </a>
+      ) : (
+        <div className={CHAT_ARTIFACT_IMAGE_PLACEHOLDER_CLASS} aria-live="polite">
+          {previewFailed ? '图片预览不可用，可下载查看' : '正在加载图片…'}
+        </div>
+      )}
+      <figcaption className={CHAT_ARTIFACT_IMAGE_FOOTER_CLASS}>
+        <span className={CHAT_ARTIFACT_COPY_CLASS}>
+          <span className={CHAT_ARTIFACT_NAME_CLASS} data-i18n-ignore>{filename}</span>
+          <span className={CHAT_ARTIFACT_META_CLASS}>{artifactMeta(artifact)}</span>
+        </span>
+        <button
+          type="button"
+          className={CHAT_ARTIFACT_IMAGE_DOWNLOAD_CLASS}
+          disabled={isDownloading || !sessionId || !tenantId}
+          aria-label={`下载图片 ${filename}`}
+          aria-busy={isDownloading}
+          onClick={onDownload}
+        >
+          <StaffdeckIcon name="download" size={16} />
+        </button>
+      </figcaption>
+    </figure>
+  );
+}
+
+function artifactApiPath(
+  artifact: HarnessWorkspaceArtifact,
+  tenantId: string,
+  sessionId: string,
+): string {
+  const query = new URLSearchParams({
+    tenant_id: tenantId,
+    path: artifact.path,
+  });
+  return `/api/chat/sessions/${encodeURIComponent(sessionId)}/artifacts/`
+    + `${encodeURIComponent(artifact.task_frame_id)}?${query.toString()}`;
+}
+
 function artifactFilename(path: string): string {
   const filename = path.replace(/\\/g, '/').split('/').pop()?.trim() || '';
   return filename.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 180) || 'artifact';
+}
+
+function isImageArtifact(artifact: HarnessWorkspaceArtifact): boolean {
+  const contentType = artifact.content_type?.toLowerCase().split(';')[0].trim();
+  if (contentType?.startsWith('image/')) return true;
+  return /\.(?:apng|avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(
+    artifact.display_name || artifact.path,
+  );
 }
 
 function artifactMeta(artifact: HarnessWorkspaceArtifact): string {

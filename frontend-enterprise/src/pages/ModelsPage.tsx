@@ -29,6 +29,7 @@ import { notify } from '@/components/ui/app-toast';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { cn } from '@/lib/utils';
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_ITEM_DANGER_CLASS } from '@/lib/enterprise-ui';
+import { apiErrorMessage } from '@/lib/apiErrorMessages';
 import IconAdd from '../assets/icons/add.svg?react';
 import IconClear from '../assets/icons/field-clear.svg?react';
 import IconEdit from '../assets/icons/edit.svg?react';
@@ -120,17 +121,7 @@ export function modelActionError(error: unknown, fallback: string): string {
     const providerError = providerErrorFromApiError(error);
     if (providerError) return modelProviderErrorMessage(providerError, fallback);
   }
-  const message = error instanceof Error ? error.message : '';
-  if (message.includes('MODEL_DEFAULT_CONFLICT')) {
-    return '默认模型状态已变化，请刷新后重试';
-  }
-  if (message.includes('MODEL_CONFIG_DISABLED')) {
-    return '请先启用该模型，再设为默认';
-  }
-  if (message.includes('MODEL_CONFIG_VERIFICATION_REQUIRED')) {
-    return '请先完成模型测试，再启用或设为默认';
-  }
-  return message || fallback;
+  return apiErrorMessage(error, fallback);
 }
 const MODEL_CONFIGS_UPDATED_EVENT = 'ultrarag-enterprise-model-configs-updated';
 

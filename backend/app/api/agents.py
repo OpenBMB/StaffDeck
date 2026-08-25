@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime
 from time import sleep
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -52,8 +53,11 @@ from app.db.models import (
     AgentSkillBranch,
     AgentSkillBranchVersion,
     AgentUsage,
+    ChannelBinding,
+    ChannelBindingAgent,
     ChatSession,
     GeneralSkill,
+    HumanHandoffRequest,
     KnowledgeBase,
     KnowledgeBucket,
     KnowledgeChunk,
@@ -62,6 +66,7 @@ from app.db.models import (
     ModelConfig,
     ScheduledTask,
     Skill,
+    TeamMember,
     Tool,
     utc_now,
     User,
@@ -76,6 +81,10 @@ from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
+from app.session.cleanup import (
+    purge_chat_session_records,
+    remove_chat_session_workspace,
+)
 
 IMPORT_LOCK_RETRY_ATTEMPTS = 2
 IMPORT_LOCK_RETRY_DELAY_SECONDS = 0.5
@@ -450,8 +459,74 @@ def delete_agent(
     ).all()
     for binding in bindings:
         db.delete(binding)
+    # 渠道挂载同步清理:否则孤儿挂载行会让 /员工 列出已删除员工的裸 ID,
+    # 甚至可被 /切换 路由到。默认挂载被删时把首个剩余挂载提升为默认并同步
+    # binding.agent_id,保持存量绑定回退路径有效。会话指针无需处理:
+    # resolve_current_agent 发现指针不在挂载集会自动重置默认。
+    channel_mounts = db.exec(
+        select(ChannelBindingAgent).where(ChannelBindingAgent.agent_id == row.id)
+    ).all()
+    affected_binding_ids = {mount.binding_id for mount in channel_mounts}
+    for mount in channel_mounts:
+        db.delete(mount)
+    for binding_id in affected_binding_ids:
+        channel_binding = db.get(ChannelBinding, binding_id)
+        if not channel_binding or channel_binding.agent_id != row.id:
+            continue
+        remaining = db.exec(
+            select(ChannelBindingAgent)
+            .where(ChannelBindingAgent.binding_id == binding_id)
+            .order_by(ChannelBindingAgent.sort_order, ChannelBindingAgent.created_at)
+        ).first()
+        if remaining:
+            remaining.is_default = True
+            channel_binding.agent_id = remaining.agent_id
+            channel_binding.updated_at = utc_now()
+            db.add(remaining)
+            db.add(channel_binding)
+    # 会话级联清理:员工删除后其会话若保留,新消息会由租户默认 persona 静默接管,
+    # 与删除团队一致,直接清空其全部会话(消息/事件/反馈/Harness 记录与工作区)。
+    sessions = db.exec(
+        select(ChatSession).where(
+            ChatSession.tenant_id == tenant_id, ChatSession.agent_id == row.id
+        )
+    ).all()
+    workspace_keys = [(session.tenant_id, session.id) for session in sessions]
+    for session in sessions:
+        purge_chat_session_records(db, session)
+    # 团队成员关系同步清理,避免花名册/TL 会话悬挂在已删除员工上。
+    memberships = db.exec(select(TeamMember).where(TeamMember.agent_id == row.id)).all()
+    for membership in memberships:
+        db.delete(membership)
+    # 定时任务立即暂停,而不是等到下次触发才失败。
+    scheduled_tasks = db.exec(
+        select(ScheduledTask).where(
+            ScheduledTask.tenant_id == tenant_id,
+            ScheduledTask.agent_id == row.id,
+            ScheduledTask.status == "active",
+        )
+    ).all()
+    for task in scheduled_tasks:
+        task.status = "paused"
+        task.next_run_at = None
+        task.updated_at = utc_now()
+        db.add(task)
+    # 待处理人工转接直接取消,避免悬挂在已删员工的收件箱里。
+    pending_handoffs = db.exec(
+        select(HumanHandoffRequest).where(
+            HumanHandoffRequest.tenant_id == tenant_id,
+            HumanHandoffRequest.agent_id == row.id,
+            HumanHandoffRequest.status == "pending",
+        )
+    ).all()
+    for handoff in pending_handoffs:
+        handoff.status = "cancelled"
+        handoff.updated_at = utc_now()
+        db.add(handoff)
     db.delete(row)
     db.commit()
+    for session_tenant_id, session_id in workspace_keys:
+        remove_chat_session_workspace(tenant_id=session_tenant_id, session_id=session_id, db=db)
     return {"status": "deleted"}
 
 
@@ -581,7 +656,7 @@ def _import_agent_resources_once(
                 db, request.tenant_id, source_agent, request.resource_type, resolved
             )
         else:
-            _upsert_imported_resource_binding(
+            resolved = _upsert_imported_resource_binding(
                 db,
                 request.tenant_id,
                 source_agent,
@@ -1253,13 +1328,30 @@ def _copy_resource_binding(
 ) -> None:
     if binding.status != "active":
         return
+    resource_id = binding.resource_id
+    metadata = dict(binding.metadata_json or {})
+    if binding.resource_type == "general_skill":
+        general_skill = db.get(GeneralSkill, binding.resource_id)
+        if (
+            general_skill is not None
+            and general_skill.tenant_id == tenant_id
+            and not is_open_gallery_resource(db, tenant_id, "general_skill", general_skill)
+        ):
+            copied_skill = _copy_private_general_skill(
+                db,
+                tenant_id,
+                general_skill,
+                target_agent_id,
+            )
+            resource_id = copied_skill.id
+            metadata = agent_private_metadata(target_agent_id, metadata)
     copied_binding = AgentResourceBinding(
         tenant_id=tenant_id,
         agent_id=target_agent_id,
         resource_type=binding.resource_type,
-        resource_id=binding.resource_id,
+        resource_id=resource_id,
         status=binding.status,
-        metadata_json=dict(binding.metadata_json or {}),
+        metadata_json=metadata,
     )
     db.add(copied_binding)
     if binding.resource_type == "skill":
@@ -1396,7 +1488,13 @@ def _upsert_imported_resource_binding(
     resource_type: str,
     resolved: AgentResource,
     source_binding: AgentResourceBinding | None,
-) -> None:
+) -> AgentResource:
+    if (
+        resource_type == "general_skill"
+        and isinstance(resolved, GeneralSkill)
+        and not is_open_gallery_resource(db, tenant_id, resource_type, resolved)
+    ):
+        resolved = _copy_private_general_skill(db, tenant_id, resolved, target_agent.id)
     status = source_binding.status if source_binding else "active"
     metadata = agent_private_metadata(
         target_agent.id,
@@ -1430,6 +1528,67 @@ def _upsert_imported_resource_binding(
         _copy_or_update_skill_branch(db, tenant_id, source_agent.id, target_agent.id, resolved)
     elif resource_type == "knowledge_base" and isinstance(resolved, KnowledgeBase):
         _copy_or_update_knowledge_branch(db, tenant_id, source_agent.id, target_agent.id, resolved)
+    return resolved
+
+
+def _copy_private_general_skill(
+    db: Session,
+    tenant_id: str,
+    source: GeneralSkill,
+    target_agent_id: str,
+) -> GeneralSkill:
+    existing_bindings = db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == target_agent_id,
+            AgentResourceBinding.resource_type == "general_skill",
+            AgentResourceBinding.status != "deleted",
+        )
+    ).all()
+    for existing_binding in existing_bindings:
+        existing = db.get(GeneralSkill, existing_binding.resource_id)
+        metadata = (
+            existing.metadata_json
+            if existing is not None and isinstance(existing.metadata_json, dict)
+            else {}
+        )
+        if metadata.get("copied_from_general_skill_id") == source.id:
+            return existing
+
+    metadata = agent_private_metadata(target_agent_id, deepcopy(source.metadata_json or {}))
+    metadata["copied_from_general_skill_id"] = source.id
+    metadata["copied_from_general_skill_slug"] = source.slug
+    copied = GeneralSkill(
+        tenant_id=tenant_id,
+        slug=_unique_general_skill_slug(db, tenant_id, f"{source.slug}-copy"),
+        name=source.name,
+        description=source.description,
+        homepage=source.homepage,
+        skill_markdown=source.skill_markdown,
+        skill_files_json=deepcopy(source.skill_files_json or []),
+        metadata_json=metadata,
+        status=source.status,
+        capability_scope=source.capability_scope,
+        permissions_json=deepcopy(source.permissions_json or {}),
+        runtime_config_json=deepcopy(source.runtime_config_json or {}),
+    )
+    db.add(copied)
+    db.flush()
+    return copied
+
+
+def _unique_general_skill_slug(db: Session, tenant_id: str, base_slug: str) -> str:
+    candidate = base_slug
+    suffix = 2
+    while db.exec(
+        select(GeneralSkill).where(
+            GeneralSkill.tenant_id == tenant_id,
+            GeneralSkill.slug == candidate,
+        )
+    ).first():
+        candidate = f"{base_slug}-{suffix}"
+        suffix += 1
+    return candidate
 
 
 def _copy_or_update_skill_branch(
