@@ -6,7 +6,7 @@ import re
 import secrets
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -149,6 +149,27 @@ SUPPORTED_CHANNELS = {"wechat", "wecom", "feishu", "dingtalk"}
 INGRESS_QUIESCE_TIMEOUT_SECONDS = 5.0
 # 渠道中文名:错误信息与通知文案共用
 _CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书", "dingtalk": "钉钉"}
+# 接入显示名长度上限(前后端一致)
+BINDING_NAME_MAX_LENGTH = 50
+
+
+def _default_binding_name(channel: str) -> str:
+    """接入默认名:渠道名 + YYYYMMDDHHMM,如「飞书202608250910」。"""
+    label = _CHANNEL_LABELS.get(channel, channel)
+    return f"{label}{datetime.now().strftime('%Y%m%d%H%M')}"
+
+
+def _validated_binding_name(raw: str | None, *, default: str | None = None) -> str | None:
+    """清洗接入显示名:去首尾空白;空值返回 default;超长报 400。"""
+    name = (raw or "").strip()
+    if not name:
+        return default
+    if len(name) > BINDING_NAME_MAX_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"接入名称不能超过 {BINDING_NAME_MAX_LENGTH} 个字符",
+        )
+    return name
 
 # 渠道描述:前端接入页据此渲染渠道卡片与凭证表单,新渠道只加条目不动页面骨架
 CHANNEL_META = [
@@ -371,6 +392,7 @@ def create_channel_binding(
         tenant_id=request.tenant_id,
         agent_id=target_agent_id,
         channel=request.channel,
+        name=_validated_binding_name(request.name, default=_default_binding_name(request.channel)),
         status="pending",
         created_by_user_id=current_user.id,
         team_id=request.team_id,
@@ -600,10 +622,17 @@ def update_channel_binding_agents(
     if (
         request.agents is None
         and request.auto_route is None
+        and request.name is None
         and request.default_handoff_assignee_user_id == "unchanged"
         and request.default_handoff_assignee_channel == "unchanged"
     ):
         raise HTTPException(status_code=400, detail="无有效更新内容")
+    # 重命名:传了就要求非空(清洗后),空值视为非法输入而非清空
+    new_name: str | None = None
+    if request.name is not None:
+        new_name = _validated_binding_name(request.name)
+        if not new_name:
+            raise HTTPException(status_code=400, detail="接入名称不能为空")
     if request.agents is not None and binding.team_id:
         # 团队绑定的接待员工由团队现任 TL 决定,不允许整表替换员工挂载
         raise HTTPException(status_code=400, detail="团队绑定的渠道不支持修改员工挂载")
@@ -683,6 +712,8 @@ def update_channel_binding_agents(
                     )
                 )
             binding.agent_id = default_agent_id
+        if new_name is not None:
+            binding.name = new_name
         binding.updated_at = utc_now()
         db.add(binding)
         db.commit()

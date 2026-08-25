@@ -908,6 +908,8 @@ export type ChannelBindingRead = {
   tenant_id: string;
   agent_id: string;
   channel: string;
+  /** 用户可编辑的接入显示名；为空时回退展示渠道类型名。 */
+  name?: string | null;
   status: string;
   connected: boolean;
   ilink_bot_id?: string | null;

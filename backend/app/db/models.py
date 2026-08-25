@@ -833,6 +833,8 @@ class ChannelBinding(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     agent_id: str = Field(index=True)
     channel: str = Field(default="wechat", index=True)
+    # 用户可编辑的接入显示名;为空时前端回退展示渠道类型名
+    name: Optional[str] = Field(default=None)
     # 团队绑定:非空表示该渠道接入某团队(与员工挂载互斥),入站消息直路由团队 TL;
     # 存 team_id 不存 leader,换帅自动跟随
     team_id: Optional[str] = Field(default=None, index=True)

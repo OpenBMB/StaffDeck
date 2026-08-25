@@ -263,6 +263,8 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN last_connected_at DATETIME"))
             if "team_id" not in binding_columns:
                 conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN team_id VARCHAR"))
+            if "name" not in binding_columns:
+                conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN name VARCHAR"))
 
         if "channel_deliveries" in tables:
             delivery_columns = {column["name"] for column in inspector.get_columns("channel_deliveries")}

@@ -1,3 +1,5 @@
+import re
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
@@ -130,6 +132,72 @@ def test_unsupported_channel_rejected() -> None:
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 400
+
+
+def test_create_binding_generates_default_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "feishu"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    # 默认名:渠道名 + YYYYMMDDHHMM,如「飞书202608250910」
+    assert re.fullmatch(r"飞书\d{12}", response.json()["name"])
+
+
+def test_create_binding_with_custom_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={
+            "tenant_id": "tenant_demo",
+            "agent_id": "agent_1",
+            "channel": "feishu",
+            "name": "  客服飞书专用  ",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    # 名称去首尾空白后落库
+    assert response.json()["name"] == "客服飞书专用"
+    with Session(engine) as db:
+        rows = db.exec(select(ChannelBinding)).all()
+        assert rows[0].name == "客服飞书专用"
+
+
+def test_create_binding_blank_name_falls_back_to_default() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "wechat", "name": "   "},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    assert re.fullmatch(r"微信\d{12}", response.json()["name"])
+
+
+def test_create_binding_rejects_long_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "wechat", "name": "名" * 51},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 400
+    assert "接入名称" in response.json()["detail"]
 
 
 def test_tenant_mismatch_forbidden() -> None:
@@ -1203,6 +1271,69 @@ def test_put_binding_empty_update_400() -> None:
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 400
+
+
+def test_put_binding_rename() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "  客服飞书专用  "},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "客服飞书专用"
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id).name == "客服飞书专用"
+
+    # 不带 name 的更新不影响已有名称
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"auto_route": False},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "客服飞书专用"
+
+
+def test_put_binding_rename_rejects_blank_and_long_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    blank = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "   "},
+        headers=_auth(users["owner"]),
+    )
+    assert blank.status_code == 400
+
+    too_long = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "名" * 51},
+        headers=_auth(users["owner"]),
+    )
+    assert too_long.status_code == 400
+
+
+def test_put_binding_rename_requires_manager() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "新名字"},
+        headers=_auth(users["other"]),
+    )
+    assert response.status_code == 403
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id).name is None
 
 
 def test_put_binding_default_handoff_assignee() -> None:
