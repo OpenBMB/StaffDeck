@@ -1137,6 +1137,8 @@ export type TeamTaskRead = {
   id: string;
   team_id: string;
   tenant_id: string;
+  team_run_id?: string | null;
+  source_turn_id?: string | null;
   parent_task_id?: string | null;
   title: string;
   description?: string | null;

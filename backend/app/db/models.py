@@ -1447,6 +1447,34 @@ class TeamMember(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class TeamRun(SQLModel, table=True):
+    """One durable TL plan from delegation through final team synthesis."""
+
+    __tablename__ = "team_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "tl_session_id",
+            "source_turn_id",
+            name="uq_team_run_tl_session_source_turn",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("team_run"), primary_key=True)
+    team_id: str = Field(index=True)
+    tenant_id: str = Field(index=True)
+    tl_session_id: str = Field(index=True)
+    source_turn_id: str = Field(index=True)
+    created_by_user_id: Optional[str] = Field(default=None, index=True)
+    # planning -> running/awaiting_input -> synthesizing -> completed/failed
+    status: str = Field(default="planning", index=True)
+    synthesis_session_id: Optional[str] = Field(default=None, index=True)
+    final_message_id: Optional[str] = Field(default=None, index=True)
+    error: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    completed_at: Optional[datetime] = None
+
+
 class TeamTask(SQLModel, table=True):
     """团队任务:blocked -> pending -> in_progress -> review -> done/rework/escalated;
 
@@ -1458,6 +1486,8 @@ class TeamTask(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("team_task"), primary_key=True)
     team_id: str = Field(index=True)
     tenant_id: str = Field(index=True)
+    team_run_id: Optional[str] = Field(default=None, index=True)
+    source_turn_id: Optional[str] = Field(default=None, index=True)
     parent_task_id: Optional[str] = Field(default=None, index=True)
     title: str
     description: Optional[str] = None

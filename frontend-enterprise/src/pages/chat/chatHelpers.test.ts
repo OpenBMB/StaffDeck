@@ -15,6 +15,7 @@ import {
   renderInlineMarkdown,
   scheduledDraftForMessage,
   shouldDeferPersistedEventToLiveStream,
+  stripTrailingCitationSummary,
 } from './chatHelpers';
 
 function message(patch: Partial<ChatMessage> = {}): ChatMessage {
@@ -29,6 +30,34 @@ function message(patch: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 describe('chat history consumer contract', () => {
+  it('keeps inline citations but removes duplicate trailing citation summaries', () => {
+    const content = [
+      '请假制度按员工手册执行[1]，办公用品按行政手册执行[5]。',
+      '',
+      '## 参考来源',
+      '',
+      '- [1] 人事-员工手册与假期政策：事假',
+      '- [5] 行政-行政服务手册：办公用品申领',
+      '',
+      '参考来源：[1] [5]',
+    ].join('\n');
+
+    expect(stripTrailingCitationSummary(content)).toBe(
+      '请假制度按员工手册执行[1]，办公用品按行政手册执行[5]。',
+    );
+  });
+
+  it('removes a trailing citation-label footer without changing the answer', () => {
+    expect(stripTrailingCitationSummary('正文保留[1]。\n\n参考资料：[1] [2]')).toBe(
+      '正文保留[1]。',
+    );
+  });
+
+  it('preserves ordinary prose that mentions a source', () => {
+    const content = '参考来源：员工手册，具体以最新制度为准。';
+    expect(stripTrailingCitationSummary(content)).toBe(content);
+  });
+
   it('continues top-level process numbering across blank lines and bullet details', () => {
     const rendered = renderToStaticMarkup(
       createElement(MarkdownMessage, {
@@ -144,7 +173,7 @@ describe('chat history consumer contract', () => {
     expect(rendered).not.toContain('src="javascript:');
   });
 
-  it('keeps only inline citations, deduplicates content, and orders labels', () => {
+  it('prefers inline citations, deduplicates content, and falls back to source metadata', () => {
     const item = message({
       metadata: {
         knowledge_citations: [
@@ -160,7 +189,11 @@ describe('chat history consumer contract', () => {
       expect.objectContaining({ id: 'citation-duplicate', label: '[1]' }),
       expect.objectContaining({ id: 'citation-2', label: '[2]' }),
     ]);
-    expect(knowledgeCitations(item, 'No inline citation markers')).toEqual([]);
+    expect(knowledgeCitations(item, 'No inline citation markers')).toEqual([
+      expect.objectContaining({ id: 'citation-duplicate', label: '[1]' }),
+      expect.objectContaining({ id: 'citation-2', label: '[2]' }),
+      expect.objectContaining({ id: 'citation-unused', label: '[3]' }),
+    ]);
   });
 
   it('keeps separately cited chunks even when their display titles match', () => {

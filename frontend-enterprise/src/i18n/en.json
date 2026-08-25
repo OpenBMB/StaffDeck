@@ -3209,5 +3209,15 @@
   "模型完整 Input": "Complete Model Input",
   "模型完整原始 Output": "Complete Raw Model Output",
   "第": "No.",
-  "模型错误与部分原始 Output": "Model Error and Partial Raw Output"
+  "模型错误与部分原始 Output": "Model Error and Partial Raw Output",
+  "任务唤醒已认领": "Task wake-up claimed",
+  "任务唤醒已完成": "Task wake-up completed",
+  "任务唤醒失败": "Task wake-up failed",
+  "恢复中断的任务唤醒": "Recover interrupted task wake-up",
+  "恢复成员执行": "Resume member execution",
+  "跳过重复成员执行": "Skip duplicate member execution",
+  "群聊完整日志已下载": "Complete group-chat log downloaded",
+  "下载群聊日志失败": "Failed to download group-chat log",
+  "下载完整日志": "Download Complete Log",
+  "导出中…": "Exporting…"
 }

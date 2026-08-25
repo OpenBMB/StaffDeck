@@ -544,7 +544,9 @@ class LLMClient:
         system_prompt: str,
         user_payload: dict[str, Any],
         cancellation: CancellationToken | None = None,
-    ) -> dict[str, Any]:
+        *,
+        accept_json_sequence: bool = False,
+    ) -> Any:
         outputs: list[str] = []
         next_payload = user_payload
         last_error: json.JSONDecodeError | None = None
@@ -579,6 +581,20 @@ class LLMClient:
                 )
                 return parsed
             except json.JSONDecodeError as exc:
+                if accept_json_sequence:
+                    try:
+                        parsed_sequence = _loads_llm_json_sequence(text)
+                    except json.JSONDecodeError:
+                        pass
+                    else:
+                        _record_stage_exchange(
+                            next_payload,
+                            text,
+                            request_user_content=getattr(
+                                self, "_last_stage_request_user_content", None
+                            ),
+                        )
+                        return parsed_sequence
                 last_error = exc
                 _record_stage_exchange(
                     next_payload,
@@ -611,6 +627,28 @@ class LLMClient:
         raise LLMError(
             f"Model did not return valid JSON after {JSON_REPAIR_ATTEMPTS} repair attempts; {previews}"
         ) from last_error
+
+    def generate_json_sequence(
+        self,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        cancellation: CancellationToken | None = None,
+    ) -> Any:
+        """Accept consecutive top-level JSON values for sequence-aware consumers.
+
+        Most callers require exactly one JSON document and continue to use
+        :meth:`generate_json`. Harness is sequence-aware: some Responses-compatible
+        providers flatten multiple valid action items into consecutive JSON objects.
+        This opt-in entry point preserves those objects in provider order instead of
+        spending all repair attempts on text that is individually valid per item.
+        """
+
+        return self.generate_json(
+            system_prompt,
+            user_payload,
+            cancellation,
+            accept_json_sequence=True,
+        )
 
     def _generate_json_candidate(
         self,
@@ -1481,6 +1519,41 @@ def _loads_llm_json(text: str) -> Any:
     if last_error is not None:
         raise last_error
     raise json.JSONDecodeError("Could not decode JSON", candidate, 0)
+
+
+def _loads_llm_json_sequence(text: str) -> list[Any]:
+    """Decode two or more consecutive top-level JSON values without reordering."""
+
+    candidate = _extract_json(text)
+    last_error: json.JSONDecodeError | None = None
+    seen: set[str] = set()
+    for variant in _json_candidate_variants(candidate):
+        if variant in seen:
+            continue
+        seen.add(variant)
+        decoder = json.JSONDecoder()
+        values: list[Any] = []
+        index = 0
+        try:
+            while index < len(variant):
+                while index < len(variant) and variant[index].isspace():
+                    index += 1
+                if index >= len(variant):
+                    break
+                value, index = decoder.raw_decode(variant, index)
+                values.append(value)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if len(values) >= 2:
+            return values
+    if last_error is not None:
+        raise last_error
+    raise json.JSONDecodeError(
+        "Expected multiple consecutive JSON values",
+        candidate,
+        0,
+    )
 
 
 def _json_candidate_variants(text: str) -> tuple[str, ...]:

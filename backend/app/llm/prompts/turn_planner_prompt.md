@@ -37,6 +37,20 @@
 - `answer_only` 对应 conversation frame，不表示跳过 Harness。
 - 不输出 `source_message`；服务端以数据库中的用户消息为事实源。
 - 不要输出能力可用性、GeneralSkill、知识库或 Tool 选择。
+- 默认 `execution_target=self`、`assignee_agent_id=null`、`activation_condition={}`。
+- 当 `stage_data.interaction_mode=team_tl` 时，`stage_data.team_context` 是本轮唯一可信的团队目录：
+  - 对每个可独立执行的成员工作生成一个独立 conversation TaskFrame；不要把多个成员任务合并。
+  - 需要成员执行时填写 `execution_target=team_member`，并从
+    `team_context.members` 原样选择精确的 `assignee_agent_id`；不得编造或按名字猜 ID。
+  - 负责人本人处理的工作使用 `execution_target=self`，不填 assignee_agent_id。
+  - 互不依赖的成员 TaskFrame 不要填写依赖，系统会并行发布；确有结果依赖时，后置
+    TaskFrame 的 `depends_on_task_ids` 引用本轮前置 TaskFrame.task_id，并按需要填写
+    `activation_condition`，默认 `{ "type": "all_succeeded" }`。
+  - 分配给成员的 TaskFrame 使用 `kind=conversation`；成员收到任务后会在自己的运行环境中
+    重新匹配其 SOP、技能、知识库和工具。
+  - 不要生成一个依赖成员 TaskFrame 的本地“汇总” TaskFrame；团队任务完成后的汇总由团队
+    调度链路处理。
+  - 新链路不再要求最终回复输出 `team_tasks` JSON；该格式仅由服务端兼容历史会话。
 
 对于 pending task：
 - 只有用户明确继续某个 pending task 时使用 switch_to_pending，并填写 selected_task_id。

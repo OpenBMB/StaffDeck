@@ -14,15 +14,50 @@ import type {
   TeamConversationStreamRead,
   TeamConversationsResponse,
   TeamRead,
+  TurnTraceRead,
 } from '@/types';
 import {
   MarkdownMessage,
   harnessWorkspaceArtifacts,
   knowledgeCitations,
   stripTrailingCitationSummary,
+  traceDetails,
+  traceSummary,
 } from '../chatHelpers';
+import type { TraceLine, TurnTrace } from '../chatTypes';
+import ExecutionRecord from './ExecutionRecord';
 import HarnessArtifactDownloads from './HarnessArtifactDownloads';
 import KnowledgeCitationList from './KnowledgeCitationList';
+
+function collaborationTrace(rows: TurnTraceRead[]): { turnId: string; trace: TurnTrace } | null {
+  const ordered = [...rows].sort(
+    (left, right) => Date.parse(left.started_at) - Date.parse(right.started_at),
+  );
+  const latest = ordered[ordered.length - 1];
+  if (!latest) return null;
+  const lines: TraceLine[] = latest.lines.map((line) => ({
+    id: line.id,
+    kind: line.kind,
+    text: line.text,
+    detail: line.detail || undefined,
+    code: line.code || undefined,
+    language: line.language || undefined,
+    output: line.output || undefined,
+    outputLanguage: line.outputLanguage || undefined,
+    outputTitle: line.outputTitle || undefined,
+    state: line.state,
+    collapsible: Boolean(line.collapsible || line.code || line.output),
+    depth: typeof line.depth === 'number' ? line.depth : undefined,
+  }));
+  return {
+    turnId: latest.turn_id,
+    trace: {
+      lines,
+      startedAt: Date.parse(latest.started_at) || Date.now(),
+      completedAt: latest.completed_at ? Date.parse(latest.completed_at) : undefined,
+    },
+  };
+}
 
 function conversationTitle(conversation: TeamConversationRead): string {
   return staffdeckDisplayText(conversation.title)
@@ -144,6 +179,8 @@ export default function TeamCollaborationPanel({
   const [expandedSessionId, setExpandedSessionId] = useState('');
   const [messagesBySession, setMessagesBySession] = useState<Record<string, TeamConversationMessageRead[]>>({});
   const [streamBySession, setStreamBySession] = useState<Record<string, TeamConversationStreamRead>>({});
+  const [tracesBySession, setTracesBySession] = useState<Record<string, TurnTraceRead[]>>({});
+  const [expandedTraceIds, setExpandedTraceIds] = useState<string[]>([]);
   const [loadingSessionId, setLoadingSessionId] = useState('');
   const [answerByTaskId, setAnswerByTaskId] = useState<Record<string, string>>({});
   const [submittingTaskId, setSubmittingTaskId] = useState('');
@@ -165,11 +202,20 @@ export default function TeamCollaborationPanel({
       if (refreshing) return;
       refreshing = true;
       try {
-        const stream = await api.get<TeamConversationStreamRead>(
-          `/api/enterprise/teams/${team.id}/conversations/${expandedSessionId}/stream?tenant_id=${TENANT_ID}`,
-        );
+        const [stream, traces] = await Promise.all([
+          api.get<TeamConversationStreamRead>(
+            `/api/enterprise/teams/${team.id}/conversations/${expandedSessionId}/stream?tenant_id=${TENANT_ID}`,
+          ),
+          api.get<TurnTraceRead[]>(
+            `/api/chat/sessions/${expandedSessionId}/trace?tenant_id=${TENANT_ID}`,
+          ).catch(() => []),
+        ]);
         if (cancelled) return;
         setStreamBySession((current) => ({ ...current, [expandedSessionId]: stream }));
+        setTracesBySession((current) => ({
+          ...current,
+          [expandedSessionId]: Array.isArray(traces) ? traces : [],
+        }));
         if (stream.status === 'completed' || stream.status === 'failed') {
           const rows = await api.get<TeamConversationMessageRead[]>(
             `/api/enterprise/teams/${team.id}/conversations/${expandedSessionId}/messages?tenant_id=${TENANT_ID}`,
@@ -199,15 +245,25 @@ export default function TeamCollaborationPanel({
       return;
     }
     setExpandedSessionId(conversation.session_id);
-    if (messagesBySession[conversation.session_id]) return;
+    if (messagesBySession[conversation.session_id] && tracesBySession[conversation.session_id]) return;
     setLoadingSessionId(conversation.session_id);
     try {
-      const rows = await api.get<TeamConversationMessageRead[]>(
-        `/api/enterprise/teams/${team.id}/conversations/${conversation.session_id}/messages?tenant_id=${TENANT_ID}`,
-      );
+      const [rows, traces] = await Promise.all([
+        api.get<TeamConversationMessageRead[]>(
+          `/api/enterprise/teams/${team.id}/conversations/${conversation.session_id}/messages?tenant_id=${TENANT_ID}`,
+        ),
+        api.get<TurnTraceRead[]>(
+          `/api/chat/sessions/${conversation.session_id}/trace?tenant_id=${TENANT_ID}`,
+        ).catch(() => []),
+      ]);
       setMessagesBySession((current) => ({ ...current, [conversation.session_id]: rows }));
+      setTracesBySession((current) => ({
+        ...current,
+        [conversation.session_id]: Array.isArray(traces) ? traces : [],
+      }));
     } catch {
       setMessagesBySession((current) => ({ ...current, [conversation.session_id]: [] }));
+      setTracesBySession((current) => ({ ...current, [conversation.session_id]: [] }));
     } finally {
       setLoadingSessionId('');
     }
@@ -249,10 +305,16 @@ export default function TeamCollaborationPanel({
     const memberReplies = (messagesBySession[conversation.session_id] || [])
       .filter((message) => message.role === 'assistant');
     const stream = streamBySession[conversation.session_id];
+    const traceSnapshot = collaborationTrace(tracesBySession[conversation.session_id] || []);
+    const traceLines = traceSnapshot?.trace.lines || [];
+    const traceLineDetails = traceDetails(traceLines);
+    const traceLineSummary = traceSnapshot
+      ? traceSummary(traceSnapshot.trace, traceLines)
+      : null;
     const streamReply = staffdeckDisplayText(stream?.content || '');
     const showStreamReply = Boolean(
       streamReply
-      && !memberReplies.some((message) => staffdeckDisplayText(message.content) === streamReply),
+      && memberReplies.length === 0,
     );
     const preview = staffdeckDisplayText(conversation.preview || '成员正在处理…');
     const taskId = conversation.task_id || '';
@@ -374,6 +436,21 @@ export default function TeamCollaborationPanel({
                 </button>
               {expanded && !loading && (
                 <div className="mt-[10px] border-t border-[#eef1f6] pt-[10px]">
+                  {traceSnapshot && traceLineSummary && traceLines.length > 0 && (
+                    <div className="mb-[10px]">
+                      <ExecutionRecord
+                        traceTurnId={traceSnapshot.turnId}
+                        summary={traceLineSummary}
+                        details={traceLineDetails}
+                        expanded={expandedTraceIds.includes(traceSnapshot.turnId)}
+                        onToggle={(turnId, isExpanded) => setExpandedTraceIds((current) => (
+                          isExpanded
+                            ? current.filter((item) => item !== turnId)
+                            : [...current.filter((item) => item !== turnId), turnId]
+                        ))}
+                      />
+                    </div>
+                  )}
                   {memberReplies.map((message) => {
                     const chatMessage: ChatMessage = {
                       ...message,

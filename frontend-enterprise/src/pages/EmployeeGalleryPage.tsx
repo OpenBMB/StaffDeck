@@ -42,6 +42,7 @@ export default function EmployeeGalleryPage({
 }) {
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [teams, setTeams] = useState<TeamRead[]>([]);
+  const [teamsLoadFailed, setTeamsLoadFailed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [avatarAgent, setAvatarAgent] = useState<AgentProfileRead | null>(null);
   const [profileAgent, setProfileAgent] = useState<AgentProfileRead | null>(null);
@@ -69,7 +70,9 @@ export default function EmployeeGalleryPage({
     try {
       const rows = await api.get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${TENANT_ID}`);
       setTeams(rows);
+      setTeamsLoadFailed(false);
     } catch (error) {
+      setTeamsLoadFailed(true);
       notify.error(error instanceof Error ? error.message : '加载团队失败');
     }
   }
@@ -82,7 +85,7 @@ export default function EmployeeGalleryPage({
   // Keep these tabs aligned with the rest of the app:
   // - 所有员工: employees the current user can access and chat with
   // - 我的数字员工: employees the current user can manage/edit
-  // - 我的团队: teams owned by the current user
+  // - 团队对话: teams the backend has authorized for the current tenant
   // - 数字员工广场: public employees not already listed as mine
   const availableAgents = useMemo(
     () => visibleEmployeeAgents(agents, currentUser, { activeOnly: true }),
@@ -117,13 +120,7 @@ export default function EmployeeGalleryPage({
     ].some((value) => value.toLowerCase().includes(keyword));
   });
 
-  // 与「我的数字员工」语义对齐：优先展示当前用户拥有的团队；
-  // 没有用户信息时（如未登录预览）回退为全部团队。
-  const myTeams = useMemo(
-    () => (currentUser ? teams.filter((team) => team.owner_user_id === currentUser.id) : teams),
-    [teams, currentUser],
-  );
-  const filteredTeams = myTeams.filter((team) => {
+  const filteredTeams = teams.filter((team) => {
     const keyword = searchTerm.trim().toLowerCase();
     if (!keyword) return true;
     return [
@@ -244,6 +241,13 @@ export default function EmployeeGalleryPage({
     { value: 'gallery', label: '数字员工广场' },
   ];
 
+  function changeScope(nextScope: GalleryScope) {
+    setScope(nextScope);
+    if (nextScope === 'teams' && teamsLoadFailed) {
+      void loadTeams();
+    }
+  }
+
   const hasSearchTerm = Boolean(searchTerm.trim());
   const emptyText = hasSearchTerm ? '没有匹配的数字员工' : '暂无数字员工';
   const emptyDescription = hasSearchTerm
@@ -281,7 +285,7 @@ export default function EmployeeGalleryPage({
         className="mt-[36px] mb-[16px] max-[560px]:w-full"
         aria-label="数字员工分类"
         value={scope}
-        onChange={setScope}
+        onChange={changeScope}
         items={galleryTabs}
         tabClassName="max-[560px]:min-h-[54px] max-[560px]:w-auto max-[560px]:flex-1 max-[560px]:px-[6px] max-[560px]:text-[12px] max-[560px]:leading-[16px]"
       />

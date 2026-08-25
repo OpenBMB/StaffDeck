@@ -39,8 +39,10 @@ from app.core.harness_v2_engine import (
     _globalize_citations,
     _is_recoverable_action_protocol_failure,
     _prior_result,
+    _response_task_payload,
     _sibling_task_intents,
     _single_task_reply,
+    _turn_planner_message,
     _turn_skill_projection,
     _with_recoverable_first_session,
 )
@@ -94,6 +96,8 @@ from app.session.session_schema import (
     ChatTurnResponse,
     PlannedTaskFrame,
     SessionPublic,
+    TeamPlannerContext,
+    TeamPlannerMember,
     TurnPlan,
 )
 from app.session.attachment_store import stage_chat_attachment
@@ -159,6 +163,22 @@ def test_team_tl_turn_keeps_leader_sops_routable() -> None:
 
     assert [skill.skill_id for skill in executable] == ["purchase"]
     assert [skill.skill_id for skill in routable] == ["purchase"]
+
+
+def test_team_planner_receives_only_visible_user_message() -> None:
+    request = ChatTurnRequest(
+        tenant_id="tenant-demo",
+        session_id="session-team",
+        user_id="user-1",
+        message="查询请假制度和采购制度",
+        interaction_mode="team_tl",
+        context_injection="服务端团队目录与调度说明",
+    )
+
+    planner_message = _turn_planner_message(request)
+
+    assert planner_message == "查询请假制度和采购制度"
+    assert "调度说明" not in planner_message
 
 
 def test_agent_loop_has_no_legacy_runtime_switch(monkeypatch) -> None:
@@ -323,6 +343,92 @@ def test_turn_planner_falls_back_to_an_isolated_conversation_frame() -> None:
     assert frame.target_step_id is None
 
 
+def test_turn_planner_keeps_team_delegation_as_separate_remote_frames() -> None:
+    plan = TurnPlan(
+        decision="answer_only",
+        user_intent="并行安排人事和行政查询制度",
+        task_frames=[
+            PlannedTaskFrame(
+                task_id="hr-policy",
+                kind="conversation",
+                decision="answer_only",
+                user_intent="安排人事查询请假制度",
+                requirements=["人事查询公司请假制度"],
+                execution_target="team_member",
+                assignee_agent_id="agent-hr",
+            ),
+            PlannedTaskFrame(
+                task_id="admin-policy",
+                kind="conversation",
+                decision="answer_only",
+                user_intent="安排行政查询采购制度",
+                requirements=["行政查询办公用品采购制度"],
+                execution_target="team_member",
+                assignee_agent_id="agent-admin",
+            ),
+        ],
+    )
+
+    normalized = TurnPlanner()._normalize(
+        plan,
+        "请并行安排人事和行政查询制度",
+        _chat_session(),
+        available_skills=[],
+        interaction_mode="team_tl",
+        team_context=TeamPlannerContext(
+            team_id="team-1",
+            leader_agent_id="agent-tl",
+            members=[
+                TeamPlannerMember(agent_id="agent-tl", name="负责人", role="leader"),
+                TeamPlannerMember(agent_id="agent-hr", name="人事", role="member"),
+                TeamPlannerMember(agent_id="agent-admin", name="行政", role="member"),
+            ],
+        ),
+    )
+
+    assert len(normalized.task_frames) == 2
+    assert [frame.execution_target for frame in normalized.task_frames] == [
+        "team_member",
+        "team_member",
+    ]
+    assert [frame.assignee_agent_id for frame in normalized.task_frames] == [
+        "agent-hr",
+        "agent-admin",
+    ]
+    assert all(frame.depends_on_task_ids == [] for frame in normalized.task_frames)
+
+
+def test_turn_planner_does_not_merge_normal_conversation_frames() -> None:
+    plan = TurnPlan(
+        decision="answer_only",
+        user_intent="完成两个独立查询",
+        task_frames=[
+            PlannedTaskFrame(
+                kind="conversation",
+                decision="answer_only",
+                requirements=["查询甲"],
+            ),
+            PlannedTaskFrame(
+                kind="conversation",
+                decision="answer_only",
+                requirements=["查询乙"],
+            ),
+        ],
+    )
+
+    normalized = TurnPlanner()._normalize(
+        plan,
+        "完成两个独立查询",
+        _chat_session(),
+        available_skills=[],
+    )
+
+    assert [frame.requirements for frame in normalized.task_frames] == [
+        ["查询甲"],
+        ["查询乙"],
+    ]
+
+
 @pytest.mark.parametrize(
     "status",
     ["completed", "awaiting_user", "handoff", "failed", "blocked", "action_budget"],
@@ -356,6 +462,67 @@ def test_single_task_reply_keeps_multi_task_and_empty_reply_on_synthesis_path() 
 
     assert _single_task_reply([completed, awaiting]) is None
     assert _single_task_reply([empty]) is None
+
+
+def test_single_task_reply_synthesizes_incomplete_structured_projection() -> None:
+    structured_result = {
+        "requirements": ["需求分析", "FS 草稿", "追踪矩阵"],
+        "status": "complete",
+    }
+    incomplete = TaskExecutionResult(
+        task_frame_id="task-incomplete-json",
+        status="completed",
+        reply_fragment="{",
+        structured_result=structured_result,
+    )
+    matching = incomplete.model_copy(
+        update={
+            "reply_fragment": json.dumps(
+                structured_result,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        }
+    )
+    markdown = incomplete.model_copy(update={"reply_fragment": "完整结果如下。"})
+
+    assert _single_task_reply([incomplete]) is None
+    assert _single_task_reply([matching]) == matching.reply_fragment
+    assert _single_task_reply([markdown]) == "完整结果如下。"
+
+
+def test_response_task_payload_keeps_structured_result_for_synthesis() -> None:
+    structured_result = {"fs": {"title": "ClickHouse 分析面板"}}
+    result = TaskExecutionResult(
+        task_frame_id="task-structured",
+        status="completed",
+        reply_fragment="{",
+        structured_result=structured_result,
+    )
+
+    payload = _response_task_payload(
+        SimpleNamespace(
+            user_intent="生成完整需求结果",
+            task_id="task-structured",
+            step_id="generate",
+            slots_json={},
+        ),
+        result,
+        None,
+        harness_v2_engine_module._step_result(result),
+    )
+
+    assert payload["structured_result"] == structured_result
+
+
+def test_harness_finish_prompt_requires_user_visible_markdown_layout() -> None:
+    prompt = harness_agent_module.PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "用户可见回复排版规则（适用于 `finish.reply_fragment`）" in prompt
+    assert "必须用 `##` 或 `###` 小标题分组" in prompt
+    assert "每一项独立成行" in prompt
+    assert "不要添加“结构化完成报告”" in prompt
+    assert "不要在 JSON 对象之外输出 Markdown" in prompt
 
 
 def test_combine_results_exposes_only_terminal_sop_step_reply() -> None:
@@ -2904,6 +3071,90 @@ def test_harness_agent_repairs_invalid_tool_action_envelope_once(
         event_type == "harness_action_repair_requested"
         for event_type, _payload in trace_events
     ) == 1
+
+
+def test_harness_agent_executes_consecutive_json_actions_in_order(
+    monkeypatch,
+) -> None:
+    outputs = iter(
+        [
+            [
+                {
+                    "action": "tool",
+                    "tool_name": "skill.first",
+                    "arguments": {"query": "first"},
+                },
+                {
+                    "action": "tool",
+                    "tool_name": "skill.second",
+                    "arguments": {"query": "second"},
+                },
+            ],
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "两个能力均已执行。",
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json_sequence(self, _system_prompt, _payload):
+            return next(outputs)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    invoked: list[tuple[str, dict[str, object]]] = []
+    trace_events: list[tuple[str, dict[str, object]]] = []
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-consecutive-actions",
+            kind="conversation",
+            goal="依次执行两个能力",
+            capability_manifest=CapabilityManifest(
+                available=[
+                    CapabilityDescriptor(
+                        capability_id="skill-first",
+                        name="skill.first",
+                        kind="tool",
+                    ),
+                    CapabilityDescriptor(
+                        capability_id="skill-second",
+                        name="skill.second",
+                        kind="tool",
+                    ),
+                ]
+            ),
+        ),
+        _model_config(),
+        lambda name, arguments: (
+            invoked.append((name, arguments))
+            or {"success": True, "data": {"tool": name}}
+        ),
+        max_actions=3,
+        trace_sink=lambda event_type, payload: trace_events.append(
+            (event_type, payload)
+        ),
+    )
+
+    assert result.status == "completed"
+    assert result.action_count == 3
+    assert invoked == [
+        ("skill.first", {"query": "first"}),
+        ("skill.second", {"query": "second"}),
+    ]
+    assert sum(
+        event_type == "harness_action_created"
+        for event_type, _payload in trace_events
+    ) == 3
+    assert any(
+        event_type == "harness_action_sequence_accepted"
+        and payload["action_count"] == 2
+        for event_type, payload in trace_events
+    )
 
 
 def test_invalid_action_protocol_failure_keeps_sop_loop_recoverable() -> None:

@@ -1337,6 +1337,48 @@ def test_generate_json_allows_multiple_repair_attempts(monkeypatch):
     assert "parser_error" in payloads[2]["_json_repair"]
 
 
+def test_generate_json_sequence_accepts_consecutive_objects_without_retry(monkeypatch):
+    client = object.__new__(LLMClient)
+    payloads = []
+
+    def fake_generate_text(_system_prompt, payload, response_format=None):  # noqa: ANN001, ARG001
+        payloads.append(payload)
+        return (
+            '{"action":"tool","tool_name":"skill.first","arguments":{}}\n'
+            '{"action":"tool","tool_name":"skill.second","arguments":{}}'
+        )
+
+    monkeypatch.setattr(client, "generate_text", fake_generate_text)
+
+    assert client.generate_json_sequence("prompt", {}) == [
+        {"action": "tool", "tool_name": "skill.first", "arguments": {}},
+        {"action": "tool", "tool_name": "skill.second", "arguments": {}},
+    ]
+    assert len(payloads) == 1
+    assert "_json_repair" not in payloads[0]
+
+
+def test_generate_json_keeps_consecutive_object_recovery_opt_in(monkeypatch):
+    client = object.__new__(LLMClient)
+    payloads = []
+    calls = iter(
+        [
+            '{"decision":"answer_only"}{"decision":"start_new_task"}',
+            '{"decision":"answer_only"}',
+        ]
+    )
+
+    def fake_generate_text(_system_prompt, payload, response_format=None):  # noqa: ANN001, ARG001
+        payloads.append(payload)
+        return next(calls)
+
+    monkeypatch.setattr(client, "generate_text", fake_generate_text)
+
+    assert client.generate_json("prompt", {}) == {"decision": "answer_only"}
+    assert len(payloads) == 2
+    assert payloads[1]["_json_repair"]["attempt"] == 1
+
+
 # --- Reasoning-model length-truncation token escalation regression tests ---
 
 

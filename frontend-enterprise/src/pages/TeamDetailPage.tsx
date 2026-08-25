@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Crown, MessageCircle } from 'lucide-react';
+import { Crown, Download, MessageCircle } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import {
@@ -63,6 +63,12 @@ const TEAM_EVENT_TYPE_LABELS: Record<string, string> = {
   review_override_rework: '人工改判退回',
   review_override_escalate: '人工改判升级',
   blackboard_written: '写入黑板',
+  wake_claimed: '任务唤醒已认领',
+  wake_completed: '任务唤醒已完成',
+  wake_failed: '任务唤醒失败',
+  wake_recovered: '恢复中断的任务唤醒',
+  member_execution_resumed: '恢复成员执行',
+  member_execution_skipped: '跳过重复成员执行',
 };
 
 export function teamEventTypeLabel(eventType: string): string {
@@ -171,6 +177,7 @@ export default function TeamDetailPage({
   const [configBidRounds, setConfigBidRounds] = useState('1');
   const [savingConfig, setSavingConfig] = useState(false);
   const [startingChat, setStartingChat] = useState(false);
+  const [exportingLog, setExportingLog] = useState(false);
   const [promotingEntryId, setPromotingEntryId] = useState<string | null>(null);
   const openedTaskParamRef = useRef<string | null>(null);
 
@@ -353,6 +360,30 @@ export default function TeamDetailPage({
       notify.error(error instanceof Error ? error.message : '开始团队对话失败');
     } finally {
       setStartingChat(false);
+    }
+  }
+
+  async function downloadTeamLog() {
+    if (!teamId || exportingLog) return;
+    setExportingLog(true);
+    try {
+      const blob = await api.blob(
+        `/api/enterprise/teams/${teamId}/export?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const safeName = (team?.name || teamId).replace(/[^\w\-\u4e00-\u9fff]+/g, '-');
+      anchor.href = url;
+      anchor.download = `staffdeck-team-log-${safeName || teamId}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      notify.success('群聊完整日志已下载');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '下载群聊日志失败');
+    } finally {
+      setExportingLog(false);
     }
   }
 
@@ -684,15 +715,27 @@ export default function TeamDetailPage({
         >
           返回团队列表
         </Button>
-        <Button
-          type="button"
-          disabled={startingChat || !team}
-          onClick={() => void startTeamChat()}
-          className="h-[34px] gap-[6px] rounded-[10px] bg-[#18181a] px-[14px] text-[12px] font-normal text-white hover:bg-[#303030]"
-        >
-          <MessageCircle className="size-[14px]" />
-          {startingChat ? '进入中…' : '开始对话'}
-        </Button>
+        <div className="flex items-center gap-[8px]">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={exportingLog || !team}
+            onClick={() => void downloadTeamLog()}
+            className="h-[34px] gap-[6px] rounded-[10px] border-[#e3e7f1] px-[14px] text-[12px] font-normal text-[#464c5e]"
+          >
+            <Download className="size-[14px]" />
+            {exportingLog ? '导出中…' : '下载完整日志'}
+          </Button>
+          <Button
+            type="button"
+            disabled={startingChat || !team}
+            onClick={() => void startTeamChat()}
+            className="h-[34px] gap-[6px] rounded-[10px] bg-[#18181a] px-[14px] text-[12px] font-normal text-white hover:bg-[#303030]"
+          >
+            <MessageCircle className="size-[14px]" />
+            {startingChat ? '进入中…' : '开始对话'}
+          </Button>
+        </div>
       </div>
 
       <div className="mt-[16px] grid grid-cols-1 gap-[20px] lg:grid-cols-2">

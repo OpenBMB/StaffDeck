@@ -37,13 +37,26 @@ def test_compact_knowledge_citation_labels_supports_historical_filtered_metadata
     assert [item["label"] for item in citations] == ["[1]", "[2]"]
 
 
+def test_compact_knowledge_citation_labels_preserves_range_order() -> None:
+    content, citations = compact_knowledge_citation_labels(
+        "请假制度依据员工手册。[1]-[4]\n\n参考来源：[1] [2] [3] [4] [5]",
+        [
+            {"id": f"kref_{index}", "label": f"[{index}]", "title": f"来源 {index}"}
+            for index in range(1, 6)
+        ],
+    )
+
+    assert content == "请假制度依据员工手册。[1]-[4]"
+    assert [item["label"] for item in citations] == ["[1]", "[2]", "[3]", "[4]"]
+
+
 def test_compact_knowledge_citation_labels_removes_unsupported_model_labels() -> None:
     content, citations = compact_knowledge_citation_labels(
         "制度正文。[1]\n\n参考来源：[1] [2] [3] [4]",
         [{"id": "kref_1", "label": "[1]", "title": "付款制度"}],
     )
 
-    assert content == "制度正文。[1]\n\n参考来源：[1]"
+    assert content == "制度正文。[1]"
     assert citations == [{"id": "kref_1", "label": "[1]", "title": "付款制度"}]
 
 
@@ -57,7 +70,7 @@ def test_compact_knowledge_citation_labels_removes_footer_without_sources() -> N
     assert citations == []
 
 
-def test_compact_knowledge_citation_labels_adds_deterministic_fallback() -> None:
+def test_compact_knowledge_citation_labels_keeps_sources_without_adding_a_footer() -> None:
     content, citations = compact_knowledge_citation_labels(
         "制度规定七天内可以申请退款。",
         [
@@ -66,7 +79,7 @@ def test_compact_knowledge_citation_labels_adds_deterministic_fallback() -> None
         ],
     )
 
-    assert content == "制度规定七天内可以申请退款。\n\n参考来源：[1] [2]"
+    assert content == "制度规定七天内可以申请退款。"
     assert [(item["label"], item["title"]) for item in citations] == [
         ("[1]", "退款政策"),
         ("[2]", "退款流程"),

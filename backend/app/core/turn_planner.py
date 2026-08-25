@@ -26,6 +26,7 @@ from app.session.session_schema import (
     PlannedTaskFrame,
     RouterDecision,
     TaskUpdate,
+    TeamPlannerContext,
     TurnPlan,
 )
 from app.session.slot_policy import strip_router_generated_message_slots
@@ -49,6 +50,8 @@ class TurnPlanner:
         conversation_context: dict[str, object] | None = None,
         memory_context: list[dict[str, object]] | None = None,
         task_frame_state: list[dict[str, Any]] | None = None,
+        interaction_mode: str = "normal",
+        team_context: TeamPlannerContext | None = None,
     ) -> TurnPlan:
         payload = stage_payload(
             phase="TurnPlanner",
@@ -66,6 +69,10 @@ class TurnPlanner:
                 # make the prompt boundary explicit so the planner cannot
                 # confuse runtime capabilities with SOP routing candidates.
                 "available_sops": [_sop_payload(skill) for skill in available_skills],
+                "interaction_mode": interaction_mode,
+                "team_context": (
+                    team_context.model_dump(mode="json") if team_context is not None else None
+                ),
             },
             output_contract=TURN_PLANNER_OUTPUT_SCHEMA,
         )
@@ -87,6 +94,8 @@ class TurnPlanner:
             session,
             available_skills,
             task_frame_state,
+            interaction_mode,
+            team_context,
         )
 
     def _generate_validated_plan(
@@ -131,6 +140,8 @@ class TurnPlanner:
         session: ChatSession,
         available_skills: list[Skill],
         task_frame_state: list[dict[str, Any]] | None = None,
+        interaction_mode: str = "normal",
+        team_context: TeamPlannerContext | None = None,
     ) -> TurnPlan:
         skills = {skill.skill_id: skill for skill in available_skills}
         known_frames = _known_task_frames(session, task_frame_state)
@@ -333,6 +344,11 @@ class TurnPlanner:
                 if task_id_map.get(task_id, task_id) in valid_ids
                 and task_id_map.get(task_id, task_id) != frame.task_id
             ]
+        frames = _normalize_execution_targets(
+            frames,
+            interaction_mode=interaction_mode,
+            team_context=team_context,
+        )
 
         first = frames[0]
         if plan.decision == "complete_task":
@@ -368,6 +384,65 @@ def _compact_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
             }
         )
     return compact
+
+
+def _normalize_execution_targets(
+    frames: list[PlannedTaskFrame],
+    *,
+    interaction_mode: str,
+    team_context: TeamPlannerContext | None,
+) -> list[PlannedTaskFrame]:
+    """Validate planner-selected assignees without guessing team membership."""
+    leader_id = team_context.leader_agent_id if team_context is not None else ""
+    member_ids = {
+        member.agent_id
+        for member in (team_context.members if team_context is not None else [])
+        if member.agent_id and member.agent_id != leader_id
+    }
+    for frame in frames:
+        assignee_id = str(frame.assignee_agent_id or "").strip()
+        is_valid_remote = (
+            interaction_mode == "team_tl"
+            and team_context is not None
+            and frame.kind == "conversation"
+            and frame.execution_target == "team_member"
+            and assignee_id in member_ids
+        )
+        if is_valid_remote:
+            frame.execution_target = "team_member"
+            frame.assignee_agent_id = assignee_id
+        else:
+            frame.execution_target = "self"
+            frame.assignee_agent_id = None
+            frame.activation_condition = {}
+
+    # A TeamTask can depend only on other TeamTasks published in this batch.
+    # If a model points a remote frame at a leader-local frame, keep it local
+    # rather than creating a permanently blocked task with an unresolvable ID.
+    while True:
+        remote_ids = {
+            frame.task_id
+            for frame in frames
+            if frame.execution_target == "team_member" and frame.task_id
+        }
+        changed = False
+        for frame in frames:
+            if frame.execution_target != "team_member":
+                continue
+            if any(task_id not in remote_ids for task_id in frame.depends_on_task_ids):
+                frame.execution_target = "self"
+                frame.assignee_agent_id = None
+                frame.activation_condition = {}
+                changed = True
+        if not changed:
+            break
+
+    for frame in frames:
+        if frame.execution_target != "team_member" or not frame.depends_on_task_ids:
+            frame.activation_condition = {}
+        elif not frame.activation_condition:
+            frame.activation_condition = {"type": "all_succeeded"}
+    return frames
 
 
 def turn_plan_router_decision(plan: TurnPlan) -> RouterDecision:

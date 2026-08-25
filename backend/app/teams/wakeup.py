@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
+import re
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import update
@@ -16,6 +19,7 @@ from app.db.models import (
     HarnessTurnRecord,
     Message,
     Team,
+    TeamRun,
     TeamTask,
     TeamTaskBid,
     TeamTaskEvent,
@@ -24,7 +28,13 @@ from app.db.models import (
     new_id,
     utc_now,
 )
-from app.session.session_schema import ChatTurnRequest, ChatTurnResponse
+from app.session.session_schema import (
+    ChatTurnRequest,
+    ChatTurnResponse,
+    PlannedTaskFrame,
+    TeamPlannerContext,
+    TeamPlannerMember,
+)
 from app.teams.service import (
     BID_HP_INITIAL,
     BID_SCORE_FALLBACK,
@@ -50,24 +60,21 @@ from app.teams.service import (
     write_blackboard_entries,
 )
 
+logger = logging.getLogger(__name__)
+
+# claimed 是一个带租约的执行态，而不是永久锁。后台线程/服务异常退出后，
+# sweeper 会依据 updated_at 心跳把事件恢复为 pending 并重新派发。
+WAKE_LEASE_TIMEOUT_SECONDS = 180.0
+WAKE_HEARTBEAT_SECONDS = 30.0
+PENDING_DISPATCH_GRACE_SECONDS = 5.0
+
 TL_ASSIGNMENT_INSTRUCTION = (
-    "派发任务的唯一方式是输出一个围栏代码块 ```json,内容形如:"
-    '{"team_tasks": [{"client_ref": "稳定的本批任务引用", "title": "任务标题", '
-    '"description": "任务描述", "assignee_agent_id": "成员的 agent_id", '
-    '"depends_on": ["同一批前置任务的 client_ref"], '
-    '"activation_condition": {"type": "all_succeeded"}}]}。'
-    "assignee_agent_id 必须来自上面的花名册;可以一次派多个任务。"
-    "省略 assignee_agent_id 即把任务投入任务池,由成员竞标、你裁决后中标者执行。"
-    "存在真实执行前置关系时才填写 depends_on;系统会登记被阻塞任务,前置条件满足后才唤醒。"
-    "activation_condition.type 支持 all_succeeded(默认)、any_succeeded、all_terminal、"
-    "minimum_succeeded;minimum_succeeded 需同时给 minimum 正整数。"
-    "不要为了表达先后叙述而制造不必要的依赖,互不依赖的任务应并行执行。"
-    "如果执行前还缺少用户必须补充的信息,先向用户提问,本轮不要输出 team_tasks。"
-    "后续阶段依赖前置任务结果时必须填写 depends_on,不得把尚未满足条件的未来阶段"
-    "创建成可立即唤醒的独立任务。"
-    "注意:只有输出该 JSON 代码块,任务才会被真正创建并交给成员执行;"
-    "只用自然语言宣布『已派发』是无效的,系统不会创建任何任务。"
-    "如果只是与人讨论、不需要派任务,就不要输出该代码块。"
+    "团队任务由 TurnPlanner 的结构化 TaskFrame 直接创建和分发，不要在回复中输出 "
+    "team_tasks JSON 代码块。需要成员执行时，让规划阶段为每个独立方向生成一个 "
+    "execution_target=team_member 的 conversation TaskFrame，并选择花名册中的精确 agent_id。"
+    "互不依赖的方向保持无依赖以便并行；确有因果关系时使用 TaskFrame 依赖表达。"
+    "员工会在自己的 Harness 中继续拆分任务并选择 SOP、技能、知识库和工具。"
+    "如果只是讨论或信息不足，应直接说明或向人提问，不要虚构已经分发的任务。"
 )
 
 TL_REVIEW_INSTRUCTION = (
@@ -122,6 +129,45 @@ TL_BID_JUDGE_REPAIR_MESSAGE = (
 )
 
 
+def build_team_planner_context(db: Session, team: Team) -> TeamPlannerContext:
+    """Project the trusted roster boundary used by the TL TurnPlanner."""
+
+    leader = get_team_leader(db, team.id)
+    members: list[TeamPlannerMember] = []
+    for membership in list_team_members(db, team.id):
+        agent = db.get(AgentProfile, membership.agent_id)
+        if agent is None or agent.tenant_id != team.tenant_id or agent.status != "active":
+            continue
+        metadata = agent.metadata_json if isinstance(agent.metadata_json, dict) else {}
+        raw_capabilities = (
+            metadata.get("capabilities")
+            or metadata.get("specialties")
+            or metadata.get("skills")
+            or metadata.get("expertise_tags")
+            or []
+        )
+        capabilities = (
+            [str(item).strip() for item in raw_capabilities if str(item).strip()]
+            if isinstance(raw_capabilities, list)
+            else []
+        )
+        if agent.description and agent.description.strip():
+            capabilities.insert(0, agent.description.strip())
+        members.append(
+            TeamPlannerMember(
+                agent_id=agent.id,
+                name=agent.name,
+                role=membership.role,
+                capabilities=list(dict.fromkeys(capabilities))[:12],
+            )
+        )
+    return TeamPlannerContext(
+        team_id=team.id,
+        leader_agent_id=leader.agent_id if leader is not None else "",
+        members=members,
+    )
+
+
 def build_tl_chat_context(db: Session, team: Team, user_message: str) -> str:
     """Build server-only TL context without embedding the visible user message."""
 
@@ -150,11 +196,27 @@ def build_tl_chat_message(db: Session, team: Team, user_message: str) -> str:
 
 
 def build_member_task_message(db: Session, team: Team, task: TeamTask, *, rework: bool) -> str:
-    """成员执行上下文注入:任务描述(+ 退回意见)+ 黑板 + 报告与黑板建议要求。"""
-    lines = [f"你是团队「{team.name}」的成员,请完成以下团队任务。"]
+    """Build the member's user turn from task context without changing its normal prompt."""
+    lines = ["请完成以下任务。"]
     lines.append(f"任务标题:{task.title}")
     if task.description:
         lines.append(f"任务描述:{task.description}")
+    dependencies = list(task.depends_on_task_ids_json or [])
+    if dependencies:
+        lines.append("已完成的前置任务结果:")
+        for dependency_id in dependencies:
+            dependency = db.get(TeamTask, dependency_id)
+            if dependency is None:
+                continue
+            report = dependency.report_json if isinstance(dependency.report_json, dict) else {}
+            summary = str(report.get("full_reply") or report.get("summary") or "").strip()
+            lines.append(f"- {dependency.title}({dependency.id}):{summary or '(无可用报告)'}")
+            citations = report.get("citations")
+            if isinstance(citations, list) and citations:
+                lines.append(f"  引用:{citations}")
+            artifacts = report.get("artifacts")
+            if isinstance(artifacts, list) and artifacts:
+                lines.append(f"  交付物:{artifacts}")
     if rework:
         review = dict(task.review_json or {})
         comment = str(review.get("comment") or "").strip()
@@ -170,13 +232,6 @@ def build_member_task_message(db: Session, team: Team, task: TeamTask, *, rework
     if blackboard:
         lines.append("团队黑板(相关工作记忆):")
         lines.extend(blackboard)
-    lines.append("完成后请输出结构化完成报告,包含:结论、过程要点、交付物。")
-    lines.append(
-        "如果你在执行中发现了值得全团队记住的信息(关键结论/约定口径/容易踩的坑),"
-        "请在报告末尾额外输出一个围栏代码块 ```json,内容形如:"
-        '{"blackboard_suggestions": [{"content": "值得记住的事", "tags": ["标签"]}]}。'
-        "建议由 TL 验收时裁决后才会真正写入团队黑板;没有值得记录的信息就不要输出该代码块。"
-    )
     return "\n".join(lines)
 
 
@@ -333,12 +388,60 @@ def claim_wake_event(db: Session, wake_event_id: str) -> bool:
     return result.rowcount == 1
 
 
-def start_wakeup_async(wake_event_id: str) -> None:
-    threading.Thread(
-        target=_execute_wakeup_in_background,
-        args=(wake_event_id,),
-        daemon=True,
-    ).start()
+def start_wakeup_async(wake_event_id: str) -> bool:
+    try:
+        threading.Thread(
+            target=_execute_wakeup_in_background,
+            args=(wake_event_id,),
+            name=f"team-wake-{wake_event_id}",
+            daemon=True,
+        ).start()
+    except RuntimeError:
+        logger.exception("团队唤醒线程启动失败: wake_event_id=%s", wake_event_id)
+        return False
+    return True
+
+
+def _wake_task_id(event: TeamWakeEvent) -> str:
+    payload = event.payload_json if isinstance(event.payload_json, dict) else {}
+    return str(payload.get("task_id") or "")
+
+
+def _record_wake_lifecycle(
+    db: Session,
+    event: TeamWakeEvent,
+    event_type: str,
+    payload: dict | None = None,
+) -> None:
+    task_id = _wake_task_id(event)
+    if not task_id or db.get(TeamTask, task_id) is None:
+        return
+    record_task_event(
+        db,
+        team_id=event.team_id,
+        task_id=task_id,
+        actor_type="system",
+        actor_id=None,
+        event_type=event_type,
+        payload={"wake_event_id": event.id, **dict(payload or {})},
+    )
+
+
+def _wake_heartbeat(wake_event_id: str, stop_event: threading.Event) -> None:
+    while not stop_event.wait(WAKE_HEARTBEAT_SECONDS):
+        try:
+            with Session(engine) as heartbeat_db:
+                heartbeat_db.exec(
+                    update(TeamWakeEvent)
+                    .where(
+                        TeamWakeEvent.id == wake_event_id,
+                        TeamWakeEvent.status == "claimed",
+                    )
+                    .values(updated_at=utc_now())
+                )
+                heartbeat_db.commit()
+        except Exception:
+            logger.exception("团队唤醒租约续期失败: wake_event_id=%s", wake_event_id)
 
 
 def _execute_wakeup_in_background(wake_event_id: str) -> None:
@@ -348,7 +451,89 @@ def _execute_wakeup_in_background(wake_event_id: str) -> None:
         event = db.get(TeamWakeEvent, wake_event_id)
         if event is None:
             return
-        execute_wake_event(db, event)
+        _record_wake_lifecycle(
+            db,
+            event,
+            "wake_claimed",
+            {"trigger_type": event.trigger_type, "agent_id": event.target_agent_id},
+        )
+        db.commit()
+        heartbeat_stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=_wake_heartbeat,
+            args=(wake_event_id, heartbeat_stop),
+            name=f"team-wake-heartbeat-{wake_event_id}",
+            daemon=True,
+        )
+        heartbeat.start()
+        try:
+            execute_wake_event(db, event)
+        finally:
+            heartbeat_stop.set()
+            heartbeat.join(timeout=1.0)
+
+
+def recover_orphaned_wake_events(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    lease_timeout_seconds: float = WAKE_LEASE_TIMEOUT_SECONDS,
+) -> list[str]:
+    """回收超过租约且无心跳的 claimed 事件，供重启和协程丢失后恢复。"""
+    now = now or utc_now()
+    cutoff = now - timedelta(seconds=max(1.0, lease_timeout_seconds))
+    rows = db.exec(
+        select(TeamWakeEvent).where(
+            TeamWakeEvent.status == "claimed",
+            TeamWakeEvent.updated_at < cutoff,
+        )
+    ).all()
+    recovered: list[str] = []
+    for row in rows:
+        previous_updated_at = row.updated_at
+        result = db.exec(
+            update(TeamWakeEvent)
+            .where(
+                TeamWakeEvent.id == row.id,
+                TeamWakeEvent.status == "claimed",
+                TeamWakeEvent.updated_at < cutoff,
+            )
+            .values(status="pending", error=None, updated_at=now)
+        )
+        if result.rowcount != 1:
+            continue
+        _record_wake_lifecycle(
+            db,
+            row,
+            "wake_recovered",
+            {"reason": "lease_expired", "previous_updated_at": previous_updated_at.isoformat()},
+        )
+        recovered.append(row.id)
+    db.commit()
+    return recovered
+
+
+def dispatch_pending_wake_events(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    grace_seconds: float = PENDING_DISPATCH_GRACE_SECONDS,
+    limit: int = 50,
+) -> list[str]:
+    """补派未启动的持久化事件；claim 的原子更新保证多进程下只执行一次。"""
+    now = now or utc_now()
+    cutoff = now - timedelta(seconds=max(0.0, grace_seconds))
+    rows = db.exec(
+        select(TeamWakeEvent)
+        .where(TeamWakeEvent.status == "pending", TeamWakeEvent.updated_at <= cutoff)
+        .order_by(TeamWakeEvent.created_at)
+        .limit(max(1, limit))
+    ).all()
+    dispatched: list[str] = []
+    for row in rows:
+        if start_wakeup_async(row.id):
+            dispatched.append(row.id)
+    return dispatched
 
 
 def _ensure_wake_target_agent(db: Session, event: TeamWakeEvent) -> AgentProfile:
@@ -386,16 +571,21 @@ def _release_member_slot(team_id: str, agent_id: str) -> None:
             _member_slot_counts[(team_id, agent_id)] = running - 1
 
 
-def _member_in_progress_count(db: Session, team: Team, agent_id: str) -> int:
-    return len(
-        db.exec(
-            select(TeamTask).where(
-                TeamTask.team_id == team.id,
-                TeamTask.assignee_agent_id == agent_id,
-                TeamTask.status == "in_progress",
-            )
-        ).all()
+def _member_in_progress_count(
+    db: Session,
+    team: Team,
+    agent_id: str,
+    *,
+    exclude_task_id: str | None = None,
+) -> int:
+    statement = select(TeamTask).where(
+        TeamTask.team_id == team.id,
+        TeamTask.assignee_agent_id == agent_id,
+        TeamTask.status == "in_progress",
     )
+    if exclude_task_id:
+        statement = statement.where(TeamTask.id != exclude_task_id)
+    return len(db.exec(statement).all())
 
 
 def _record_wake_queued(
@@ -545,6 +735,7 @@ def run_agent_turn(
     interaction_mode: Literal["team_task", "team_tl"],
     client_turn_id: str | None = None,
     allow_needs_input: bool = False,
+    message_visibility: Literal["visible", "internal"] = "visible",
 ) -> TeamAgentTurnResult:
     """在独立会话里执行一轮 agent turn，并复用单聊落库消息作为结果源。
 
@@ -561,6 +752,7 @@ def run_agent_turn(
         message=message,
         channel="team",
         interaction_mode=interaction_mode,
+        message_visibility=message_visibility,
     )
     result: ChatTurnResponse | None = None
     for item in AgentLoop(db).handle_turn_stream(request):
@@ -613,7 +805,12 @@ def execute_wake_event(db: Session, event: TeamWakeEvent) -> TeamWakeEvent:
             # 覆盖落库前的并发窗口与进程重启后的存量执行中任务
             limit = member_concurrency(team)
             slot_acquired = _try_acquire_member_slot(team.id, agent.id, limit)
-            if not slot_acquired or _member_in_progress_count(db, team, agent.id) >= limit:
+            if not slot_acquired or _member_in_progress_count(
+                db,
+                team,
+                agent.id,
+                exclude_task_id=_wake_task_id(event),
+            ) >= limit:
                 if slot_acquired:
                     _release_member_slot(team.id, agent.id)
                     slot_acquired = False
@@ -627,16 +824,50 @@ def execute_wake_event(db: Session, event: TeamWakeEvent) -> TeamWakeEvent:
             _execute_bid_request(db, event, team, agent)
         elif event.trigger_type == "bid_judge":
             _execute_bid_judge(db, event, team, agent)
+        elif event.trigger_type == "team_synthesis":
+            _execute_team_synthesis(db, event, team, agent)
         else:
             raise RuntimeError(f"未知唤醒触发类型: {event.trigger_type}")
         event.status = "done"
+        _record_wake_lifecycle(
+            db,
+            event,
+            "wake_completed",
+            {"trigger_type": event.trigger_type, "agent_id": event.target_agent_id},
+        )
     except Exception as exc:
         if event.trigger_type == "bid_request":
             _handle_bid_failure(db, event, exc)
+        elif event.trigger_type == "team_synthesis":
+            run_id = str(event.payload_json.get("team_run_id") or "")
+            run = db.get(TeamRun, run_id) if run_id else None
+            if run is not None:
+                run.status = "failed"
+                run.error = str(exc)
+                run.updated_at = utc_now()
+                db.add(run)
+                tasks = list(
+                    db.exec(
+                        select(TeamTask)
+                        .where(TeamTask.team_run_id == run.id)
+                        .order_by(TeamTask.created_at)
+                    ).all()
+                )
+                _update_team_run_progress_message(db, run, tasks, phase="failed")
         else:
             _escalate_task_on_failure(db, event, exc)
         event.status = "failed"
         event.error = str(exc)
+        _record_wake_lifecycle(
+            db,
+            event,
+            "wake_failed",
+            {
+                "trigger_type": event.trigger_type,
+                "agent_id": event.target_agent_id,
+                "error": str(exc),
+            },
+        )
     finally:
         event.updated_at = utc_now()
         db.add(event)
@@ -649,6 +880,13 @@ def execute_wake_event(db: Session, event: TeamWakeEvent) -> TeamWakeEvent:
         if team is not None:
             # 任一唤醒都可能让前置任务进入成功、失败或恢复等待状态；统一重算依赖图。
             activate_ready_tasks(db, team)
+            run_id = str(event.payload_json.get("team_run_id") or "")
+            if not run_id:
+                task_id = _wake_task_id(event)
+                task = db.get(TeamTask, task_id) if task_id else None
+                run_id = str(task.team_run_id or "") if task is not None else ""
+            if run_id and event.trigger_type != "team_synthesis":
+                maybe_enqueue_team_synthesis(db, team, run_id)
     return event
 
 
@@ -681,28 +919,49 @@ def _execute_member_task(db: Session, event: TeamWakeEvent, team: Team, agent: A
         raise RuntimeError("唤醒事件关联的团队任务不存在")
     if task.assignee_agent_id and task.assignee_agent_id != agent.id:
         raise RuntimeError("唤醒目标与任务指派成员不一致")
+    if task.status in {"review", "done", "escalated"}:
+        _record_wake_lifecycle(
+            db,
+            event,
+            "member_execution_skipped",
+            {"reason": "task_already_terminal", "task_status": task.status},
+        )
+        return
     rework = event.trigger_type == "task_rework"
-    session = ChatSession(
-        id=new_id("session"),
-        tenant_id=team.tenant_id,
-        user_id=team.owner_user_id,
-        agent_id=agent.id,
-        title=f"团队任务:{task.title}",
-        status="active",
-        team_id=team.id,
-    )
-    db.add(session)
-    db.flush()
-    task.session_id = session.id
-    apply_task_transition(
-        db,
-        task,
-        "in_progress",
-        actor_type="agent",
-        actor_id=agent.id,
-        event_type="task_rework_started" if rework else "task_started",
-        payload={"wake_event_id": event.id},
-    )
+    session = db.get(ChatSession, task.session_id) if task.session_id else None
+    if session is None or session.team_id != team.id or session.agent_id != agent.id:
+        session = ChatSession(
+            id=new_id("session"),
+            tenant_id=team.tenant_id,
+            user_id=team.owner_user_id,
+            agent_id=agent.id,
+            title=f"团队任务:{task.title}",
+            status="active",
+            team_id=team.id,
+        )
+        db.add(session)
+        db.flush()
+        task.session_id = session.id
+    # 恢复 claimed 孤儿事件时任务通常已经是 in_progress；复用原会话和
+    # client_turn_id，避免重复创建会话、重复状态迁移或丢失 Harness 幂等语义。
+    if task.status != "in_progress":
+        apply_task_transition(
+            db,
+            task,
+            "in_progress",
+            actor_type="agent",
+            actor_id=agent.id,
+            event_type="task_rework_started" if rework else "task_started",
+            payload={"wake_event_id": event.id},
+        )
+    else:
+        db.add(task)
+        _record_wake_lifecycle(
+            db,
+            event,
+            "member_execution_resumed",
+            {"session_id": session.id},
+        )
     db.commit()
     message = build_member_task_message(db, team, task, rework=rework)
     turn_result = _coerce_team_turn_result(run_agent_turn(
@@ -761,6 +1020,19 @@ def _execute_member_task(db: Session, event: TeamWakeEvent, team: Team, agent: A
                 break
     if suggestions:
         task.report_json["blackboard_suggestions"] = suggestions
+    if task.team_run_id:
+        apply_task_transition(
+            db,
+            task,
+            "done",
+            actor_type="agent",
+            actor_id=agent.id,
+            event_type="task_completed",
+            payload={"wake_event_id": event.id, "team_run_id": task.team_run_id},
+        )
+        db.add(task)
+        db.commit()
+        return
     apply_task_transition(
         db,
         task,
@@ -794,6 +1066,378 @@ def _execute_member_task(db: Session, event: TeamWakeEvent, team: Team, agent: A
     )
     db.commit()
     start_wakeup_async(wake.id)
+
+
+def _team_synthesis_evidence(
+    tasks: list[TeamTask],
+) -> tuple[list[dict[str, object]], dict[str, str]]:
+    """Globalize member citation labels and relabel each report before TL synthesis."""
+
+    citations: list[dict[str, object]] = []
+    labels_by_identity: dict[str, str] = {}
+    relabeled_results: dict[str, str] = {}
+    for task in tasks:
+        report = task.report_json if isinstance(task.report_json, dict) else {}
+        result = str(report.get("full_reply") or report.get("summary") or "").strip()
+        labels_for_task: dict[str, str] = {}
+        raw_citations = report.get("citations")
+        if isinstance(raw_citations, list):
+            for index, raw_citation in enumerate(raw_citations, 1):
+                if not isinstance(raw_citation, dict):
+                    continue
+                citation = dict(raw_citation)
+                old_label = str(citation.get("label") or f"[{index}]").strip()
+                identity = next(
+                    (
+                        f"{field}:{value}"
+                        for field in ("concept_id", "chunk_id")
+                        if (value := str(citation.get(field) or "").strip())
+                    ),
+                    "",
+                )
+                if not identity:
+                    identity = "|".join(
+                        str(citation.get(field) or "").strip()
+                        for field in ("source_path", "section_path", "title", "excerpt")
+                        if str(citation.get(field) or "").strip()
+                    )
+                if not identity:
+                    continue
+                new_label = labels_by_identity.get(identity)
+                if new_label is None:
+                    new_label = f"[{len(citations) + 1}]"
+                    labels_by_identity[identity] = new_label
+                    citations.append({**citation, "label": new_label})
+                labels_for_task[old_label] = new_label
+
+        if labels_for_task:
+            result = re.sub(
+                r"\[(\d+)\]",
+                lambda match: labels_for_task.get(match.group(0), match.group(0)),
+                result,
+            )
+        relabeled_results[task.id] = result
+    return citations, relabeled_results
+
+
+def _compact_citation_for_synthesis(citation: dict[str, object]) -> dict[str, object]:
+    compact = {
+        field: citation[field]
+        for field in ("label", "title", "source_path", "section_path", "summary")
+        if citation.get(field)
+    }
+    excerpt = str(citation.get("excerpt") or "").strip()
+    if excerpt:
+        compact["excerpt"] = excerpt[:600]
+    return compact
+
+
+def build_team_synthesis_message(
+    db: Session,
+    team: Team,
+    run: TeamRun,
+    tasks: list[TeamTask],
+) -> str:
+    source = db.get(Message, run.source_turn_id)
+    citations, relabeled_results = _team_synthesis_evidence(tasks)
+    lines = [
+        f"你是团队「{team.name}」的 TL。所有可执行的团队任务已经结束，请汇总成对人的最终回答。",
+        f"人的原始需求:{source.content if source is not None else '(原始需求不可用)'}",
+        "团队任务结果:",
+    ]
+    for index, task in enumerate(tasks, 1):
+        report = task.report_json if isinstance(task.report_json, dict) else {}
+        result = relabeled_results.get(task.id, "")
+        lines.append(
+            f"{index}. {task.title} | assignee={task.assignee_agent_id or '未指派'} "
+            f"| status={task.status}"
+        )
+        lines.append(f"   结果:{result or '(无结果)'}")
+        artifacts = report.get("artifacts")
+        if isinstance(artifacts, list) and artifacts:
+            lines.append(f"   交付物:{artifacts}")
+        if task.status == "escalated":
+            lines.append(f"   未完成原因:{task.review_json or report.get('error') or '任务已升级'}")
+    if citations:
+        lines.append("团队任务引用（编号已经全局统一，最终回答须保留相应编号）:")
+        lines.extend(
+            f"- {citation.get('label')}: {_compact_citation_for_synthesis(citation)}"
+            for citation in citations
+        )
+    lines.append(
+        "请直接回答人的原始需求：合并重复结论，保留关键依据和交付物；"
+        "对失败或缺失部分明确说明，不要声称未完成的工作已经完成。"
+        "引用编号必须沿用上面的全局编号，不要从每个任务重新从 [1] 开始。"
+    )
+    lines.extend(
+        [
+            "最终回答必须严格使用以下 Markdown 版式：",
+            "- 首行用一到两句直接给出整体答案或建议，不添加报告类标题。",
+            "- 每个团队任务方向使用 `## <方向名称>` 单独成节，节与节之间保留空行；"
+            "方向名称优先沿用上面的任务标题。",
+            "- 每节先给该方向的结论，再用项目符号或有序列表展开规则、条件、步骤和关键依据；"
+            "每一项独立成行，不得把多级编号和多个方向压进同一个长段落。",
+            "- 引用 `[n]` 只紧跟其支撑的事实；不要输出单独的“参考来源”“参考资料”"
+            "“引用来源”或“资料来源”标题、列表或页脚，界面会统一展示知识来源。",
+            "- 仅在确有失败、缺失或风险时使用 `> 注意：...` 单独说明。不要输出 assignee、"
+            "status、工具名、内部执行过程或思考链路。",
+            "- 禁止出现“结构化完成报告”“完成报告”“总结报告”等标题，也不要套用固定的"
+            "“结论 / 过程要点 / 交付物”三段式。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _team_progress_message(db: Session, run: TeamRun) -> Message | None:
+    messages = list(
+        db.exec(
+            select(Message)
+            .where(
+                Message.tenant_id == run.tenant_id,
+                Message.session_id == run.tl_session_id,
+                Message.role == "assistant",
+            )
+            .order_by(Message.created_at.desc())
+        ).all()
+    )
+    for message in messages:
+        metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
+        if (
+            str(metadata.get("team_run_id") or "") == run.id
+            and metadata.get("team_synthesis") is not True
+        ):
+            return message
+    return None
+
+
+def _update_team_run_progress_message(
+    db: Session,
+    run: TeamRun,
+    tasks: list[TeamTask],
+    *,
+    phase: Literal["collecting", "synthesizing", "completed", "failed"] | None = None,
+) -> Message | None:
+    """Rewrite the original TL dispatch reply as the asynchronous team run advances."""
+
+    message = _team_progress_message(db, run)
+    if message is None:
+        return None
+    total = len(tasks)
+    completed = sum(task.status in {"done", "escalated"} for task in tasks)
+    resolved_phase = phase
+    if resolved_phase is None:
+        if run.status == "completed":
+            resolved_phase = "completed"
+        elif run.status == "failed":
+            resolved_phase = "failed"
+        elif run.status == "synthesizing" or (total > 0 and completed == total):
+            resolved_phase = "synthesizing"
+        else:
+            resolved_phase = "collecting"
+
+    if resolved_phase == "collecting":
+        if completed:
+            content = f"已收到 {completed}/{total} 项成员回复。"
+            status_text = "正在等待其他成员完成"
+        else:
+            content = f"已完成 {total} 个团队任务的拆分与派发。"
+            status_text = "正在等待成员回复"
+    elif resolved_phase == "synthesizing":
+        content = f"已收到全部 {total} 项成员回复。"
+        status_text = "正在整理答案"
+    elif resolved_phase == "completed":
+        content = f"已收到全部 {total} 项成员回复，汇总已完成。"
+        status_text = ""
+    else:
+        content = "成员回复已经收齐，但整理答案时遇到问题。"
+        status_text = ""
+
+    metadata = dict(message.metadata_json or {})
+    current_progress = metadata.get("team_progress")
+    current_phase = (
+        str(current_progress.get("phase") or "")
+        if isinstance(current_progress, dict)
+        else ""
+    )
+    if current_phase == "completed" and resolved_phase != "completed":
+        return message
+    metadata["team_progress"] = {
+        "phase": resolved_phase,
+        "completed_tasks": completed,
+        "total_tasks": total,
+        "status_text": status_text,
+    }
+    message.content = content
+    message.metadata_json = metadata
+    db.add(message)
+    session = db.get(ChatSession, run.tl_session_id)
+    if session is not None:
+        session.summary = f"最近回复：{content[:120]}"
+        session.updated_at = utc_now()
+        db.add(session)
+    return message
+
+
+def maybe_enqueue_team_synthesis(db: Session, team: Team, run_id: str) -> str | None:
+    """Start one final TL synthesis after the complete team DAG reaches a terminal state."""
+
+    run = db.get(TeamRun, run_id)
+    if run is None or run.team_id != team.id or run.status in {"synthesizing", "completed", "failed"}:
+        return None
+    tasks = list(
+        db.exec(
+            select(TeamTask)
+            .where(TeamTask.team_run_id == run.id)
+            .order_by(TeamTask.created_at)
+        ).all()
+    )
+    if not tasks:
+        return None
+    waiting_for_input = any(
+        task.status == "escalated"
+        and bool((task.report_json or {}).get("needs_input"))
+        for task in tasks
+    )
+    if waiting_for_input:
+        run.status = "awaiting_input"
+        run.updated_at = utc_now()
+        db.add(run)
+        _update_team_run_progress_message(db, run, tasks, phase="collecting")
+        db.commit()
+        return None
+    terminal_statuses = {"done", "escalated"}
+    if any(task.status not in terminal_statuses for task in tasks):
+        if run.status == "awaiting_input":
+            run.status = "running"
+            run.updated_at = utc_now()
+            db.add(run)
+        _update_team_run_progress_message(db, run, tasks, phase="collecting")
+        db.commit()
+        return None
+    claim = db.exec(
+        update(TeamRun)
+        .where(
+            TeamRun.id == run.id,
+            TeamRun.status.in_(["planning", "running", "awaiting_input"]),
+        )
+        .values(status="synthesizing", updated_at=utc_now())
+    )
+    db.commit()
+    if claim.rowcount != 1:
+        return None
+    run = db.get(TeamRun, run.id)
+    if run is None:
+        return None
+    _update_team_run_progress_message(db, run, tasks, phase="synthesizing")
+    db.commit()
+    leader = get_team_leader(db, team.id)
+    if leader is None:
+        run.status = "failed"
+        run.error = "团队缺少 TL，无法汇总团队结果。"
+        run.updated_at = utc_now()
+        db.add(run)
+        _update_team_run_progress_message(db, run, tasks, phase="failed")
+        db.commit()
+        return None
+    wake = enqueue_wake_event(
+        db,
+        team=team,
+        target_agent_id=leader.agent_id,
+        trigger_type="team_synthesis",
+        payload={"team_run_id": run.id},
+    )
+    db.commit()
+    start_wakeup_async(wake.id)
+    return wake.id
+
+
+def _execute_team_synthesis(
+    db: Session,
+    event: TeamWakeEvent,
+    team: Team,
+    agent: AgentProfile,
+) -> None:
+    run_id = str(event.payload_json.get("team_run_id") or "")
+    run = db.get(TeamRun, run_id)
+    if run is None or run.team_id != team.id:
+        raise RuntimeError("团队汇总运行不存在")
+    if run.status == "completed":
+        return
+    tasks = list(
+        db.exec(
+            select(TeamTask)
+            .where(TeamTask.team_run_id == run.id)
+            .order_by(TeamTask.created_at)
+        ).all()
+    )
+    if not tasks or any(task.status not in {"done", "escalated"} for task in tasks):
+        raise RuntimeError("团队任务尚未全部结束，不能开始最终汇总")
+    _update_team_run_progress_message(db, run, tasks, phase="synthesizing")
+    db.commit()
+    synthesis_session = (
+        db.get(ChatSession, run.synthesis_session_id) if run.synthesis_session_id else None
+    )
+    if synthesis_session is None:
+        synthesis_session = ChatSession(
+            id=new_id("session"),
+            tenant_id=team.tenant_id,
+            user_id=run.created_by_user_id or team.owner_user_id,
+            agent_id=agent.id,
+            title=f"团队结果汇总:{team.name}",
+            status="active",
+            team_id=team.id,
+        )
+        db.add(synthesis_session)
+        db.flush()
+        run.synthesis_session_id = synthesis_session.id
+        run.updated_at = utc_now()
+        db.add(run)
+        db.commit()
+    result = _coerce_team_turn_result(
+        run_agent_turn(
+            db,
+            team=team,
+            agent=agent,
+            session_id=synthesis_session.id,
+            wake_event_id=event.id,
+            message=build_team_synthesis_message(db, team, run, tasks),
+            interaction_mode="team_task",
+            message_visibility="internal",
+        )
+    )
+    member_citations, _ = _team_synthesis_evidence(tasks)
+    reply = result.reply.rstrip()
+    tl_session = db.get(ChatSession, run.tl_session_id)
+    if tl_session is None or tl_session.team_id != team.id:
+        raise RuntimeError("团队 TL 原始会话不存在，无法发布最终汇总")
+    loop = AgentLoop(db)
+    loop._finalize_turn(
+        tl_session,
+        team.tenant_id,
+        reply,
+        user_message_id=run.source_turn_id,
+        assistant_metadata_override={
+            "execution_engine": "harness_v2",
+            "team_run_id": run.id,
+            "team_synthesis": True,
+            "knowledge_citations": member_citations or list(result.citations),
+            "harness_artifacts": list(result.artifacts),
+        },
+    )
+    db.commit()
+    final_message = db.exec(
+        select(Message)
+        .where(Message.session_id == tl_session.id, Message.role == "assistant")
+        .order_by(Message.created_at.desc())
+    ).first()
+    run.status = "completed"
+    run.final_message_id = final_message.id if final_message is not None else None
+    run.completed_at = utc_now()
+    run.updated_at = utc_now()
+    run.error = None
+    db.add(run)
+    _update_team_run_progress_message(db, run, tasks, phase="completed")
+    db.commit()
 
 
 def _execute_tl_review(db: Session, event: TeamWakeEvent, team: Team, agent: AgentProfile) -> None:
@@ -1687,6 +2331,186 @@ def _execute_bid_award(
 # ---------- TL 对话轮次后处理(tl_chat 端点与主聊天端共用) ----------
 
 
+@dataclass(frozen=True)
+class TeamPlanPublishResult:
+    run_id: str
+    task_ids: list[str]
+
+
+def _normalized_team_activation_condition(frame: PlannedTaskFrame) -> dict:
+    if not frame.depends_on_task_ids:
+        return {}
+    condition = dict(frame.activation_condition or {})
+    condition_type = str(condition.get("type") or "all_succeeded")
+    if condition_type not in {
+        "all_succeeded",
+        "any_succeeded",
+        "all_terminal",
+        "minimum_succeeded",
+    }:
+        condition_type = "all_succeeded"
+    condition["type"] = condition_type
+    if condition_type == "minimum_succeeded":
+        try:
+            condition["minimum"] = max(
+                1,
+                min(len(frame.depends_on_task_ids), int(condition.get("minimum") or 1)),
+            )
+        except (TypeError, ValueError):
+            condition["minimum"] = 1
+    return condition
+
+
+def publish_team_planner_frames(
+    db: Session,
+    *,
+    team: Team,
+    session: ChatSession,
+    source_turn_id: str,
+    created_by_user_id: str | None,
+    frames: list[PlannedTaskFrame],
+) -> TeamPlanPublishResult | None:
+    """Persist remote planner frames as a durable TeamTask DAG and dispatch ready nodes."""
+
+    remote_frames = [
+        frame
+        for frame in frames
+        if frame.execution_target == "team_member" and frame.assignee_agent_id
+    ]
+    if not remote_frames:
+        return None
+    existing_run = db.exec(
+        select(TeamRun).where(
+            TeamRun.tl_session_id == session.id,
+            TeamRun.source_turn_id == source_turn_id,
+        )
+    ).first()
+    if existing_run is not None:
+        task_ids = [
+            row.id
+            for row in db.exec(
+                select(TeamTask)
+                .where(TeamTask.team_run_id == existing_run.id)
+                .order_by(TeamTask.created_at)
+            ).all()
+        ]
+        return TeamPlanPublishResult(run_id=existing_run.id, task_ids=task_ids)
+
+    member_ids = {item.agent_id for item in list_team_members(db, team.id)}
+    leader = get_team_leader(db, team.id)
+    leader_id = leader.agent_id if leader is not None else ""
+    valid_frames = [
+        frame
+        for frame in remote_frames
+        if frame.assignee_agent_id in member_ids and frame.assignee_agent_id != leader_id
+    ]
+    if not valid_frames:
+        return None
+
+    run = TeamRun(
+        team_id=team.id,
+        tenant_id=team.tenant_id,
+        tl_session_id=session.id,
+        source_turn_id=source_turn_id,
+        created_by_user_id=created_by_user_id,
+        status="planning",
+    )
+    db.add(run)
+    db.flush()
+
+    frame_id_map: dict[str, str] = {}
+    for frame in valid_frames:
+        frame_id = str(frame.task_id or "").strip()
+        task_id = frame_id or new_id("team_task")
+        if db.get(TeamTask, task_id) is not None:
+            task_id = new_id("team_task")
+        if frame_id:
+            frame_id_map[frame_id] = task_id
+
+    created: list[TeamTask] = []
+    wake_ids: list[str] = []
+    for frame in valid_frames:
+        frame_id = str(frame.task_id or "").strip()
+        task_id = frame_id_map.get(frame_id) or new_id("team_task")
+        dependencies = [
+            frame_id_map[dependency_id]
+            for dependency_id in frame.depends_on_task_ids
+            if dependency_id in frame_id_map and frame_id_map[dependency_id] != task_id
+        ]
+        title = str(frame.user_intent or "").strip()
+        if not title and frame.requirements:
+            title = str(frame.requirements[0]).strip()
+        title = title or "团队任务"
+        description = "\n".join(
+            item for item in (str(value).strip() for value in frame.requirements) if item
+        )
+        task = TeamTask(
+            id=task_id,
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            team_run_id=run.id,
+            source_turn_id=source_turn_id,
+            title=title[:200],
+            description=description or None,
+            status="blocked" if dependencies else "pending",
+            created_by_user_id=created_by_user_id,
+            created_by_tl=True,
+            assignee_agent_id=frame.assignee_agent_id,
+            depends_on_task_ids_json=dependencies,
+            activation_condition_json=_normalized_team_activation_condition(frame),
+        )
+        db.add(task)
+        db.flush()
+        record_task_event(
+            db,
+            team_id=team.id,
+            task_id=task.id,
+            actor_type="agent",
+            actor_id=leader_id or None,
+            event_type="task_created",
+            payload={
+                "source": "turn_planner",
+                "team_run_id": run.id,
+                "planner_task_frame_id": frame_id or None,
+                "assignee_agent_id": frame.assignee_agent_id,
+                "depends_on_task_ids": dependencies,
+                "activation_condition": dict(task.activation_condition_json or {}),
+            },
+        )
+        if dependencies:
+            record_task_event(
+                db,
+                team_id=team.id,
+                task_id=task.id,
+                actor_type="system",
+                actor_id=None,
+                event_type="task_blocked",
+                payload={
+                    "team_run_id": run.id,
+                    "depends_on_task_ids": dependencies,
+                    "activation_condition": dict(task.activation_condition_json or {}),
+                },
+            )
+        else:
+            wake = enqueue_wake_event(
+                db,
+                team=team,
+                target_agent_id=str(frame.assignee_agent_id),
+                trigger_type="task_assigned",
+                payload={"task_id": task.id, "team_run_id": run.id},
+            )
+            wake_ids.append(wake.id)
+        created.append(task)
+
+    run.status = "running"
+    run.updated_at = utc_now()
+    db.add(run)
+    db.commit()
+    for wake_id in wake_ids:
+        start_wakeup_async(wake_id)
+    return TeamPlanPublishResult(run_id=run.id, task_ids=[task.id for task in created])
+
+
 def process_tl_reply(
     db: Session,
     *,
@@ -1709,6 +2533,29 @@ def process_tl_reply(
     tl_agent = db.get(AgentProfile, leader.agent_id)
     if tl_agent is None:
         return []
+    if client_turn_id:
+        receipt = db.exec(
+            select(HarnessTurnRecord).where(
+                HarnessTurnRecord.tenant_id == team.tenant_id,
+                HarnessTurnRecord.session_id == session.id,
+                HarnessTurnRecord.client_turn_id == client_turn_id,
+            )
+        ).first()
+        if receipt is not None and receipt.user_message_id:
+            run = db.exec(
+                select(TeamRun).where(
+                    TeamRun.tl_session_id == session.id,
+                    TeamRun.source_turn_id == receipt.user_message_id,
+                )
+            ).first()
+            if run is not None:
+                return list(
+                    db.exec(
+                        select(TeamTask)
+                        .where(TeamTask.team_run_id == run.id)
+                        .order_by(TeamTask.created_at)
+                    ).all()
+                )
     assignments = parse_tl_task_assignments(reply)
     if not assignments:
         # 最终回复被 ResponseGenerator 改写时,JSON 块可能只存在于 frame 级输出

@@ -421,6 +421,19 @@ def _migrate_sqlite_skill_schema() -> None:
             team_task_columns = {
                 column["name"] for column in inspector.get_columns("team_tasks")
             }
+            if "team_run_id" not in team_task_columns:
+                conn.execute(text("ALTER TABLE team_tasks ADD COLUMN team_run_id VARCHAR"))
+                conn.execute(
+                    text("CREATE INDEX IF NOT EXISTS ix_team_tasks_team_run_id ON team_tasks (team_run_id)")
+                )
+            if "source_turn_id" not in team_task_columns:
+                conn.execute(text("ALTER TABLE team_tasks ADD COLUMN source_turn_id VARCHAR"))
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_team_tasks_source_turn_id "
+                        "ON team_tasks (source_turn_id)"
+                    )
+                )
             if "depends_on_task_ids_json" not in team_task_columns:
                 conn.execute(text("ALTER TABLE team_tasks ADD COLUMN depends_on_task_ids_json JSON"))
                 conn.execute(

@@ -1774,6 +1774,19 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     return () => window.clearInterval(timer);
   }, [loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
 
+  // A TL turn ends as soon as the team DAG is dispatched. The eventual synthesis is
+  // persisted asynchronously, outside that turn's SSE stream, so keep the active team
+  // conversation synchronized even while there is no locally running turn.
+  useEffect(() => {
+    if (!sessionId || !displayedTeamId || runningTurn?.sessionId === sessionId) return;
+    const timer = window.setInterval(() => {
+      void loadMessages(sessionId).finally(() => {
+        void loadTraces(sessionId);
+      });
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [displayedTeamId, loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
+
   useEffect(() => {
     if (!sessionId) return;
     const session = sessions.find((item) => item.id === sessionId);

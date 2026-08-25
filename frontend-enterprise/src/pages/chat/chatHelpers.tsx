@@ -1704,7 +1704,25 @@ export function canRateMessage(item: ChatMessage): boolean {
 }
 
 export function stripTrailingCitationSummary(content: string): string {
-  return content;
+  const citationHeading = '(?:参考来源|参考资料|引用来源|资料来源)';
+  const labelFooter = new RegExp(
+    `(?:^|\\n)\\s*${citationHeading}\\s*[:：]\\s*(?:\\[\\d+\\]\\s*)+\\s*$`,
+    'u',
+  );
+  const citationSection = new RegExp(
+    `(?:^|\\n)\\s{0,3}(?:#{1,6}\\s*)?${citationHeading}\\s*[:：]?\\s*`
+      + `(?:\\n\\s*(?:[-*+]\\s+|\\d+[.)]\\s+)?\\[\\d+\\][^\\n]*)+\\s*$`,
+    'u',
+  );
+
+  let stripped = content.trimEnd();
+  let previous = '';
+  while (stripped !== previous) {
+    previous = stripped;
+    stripped = stripped.replace(labelFooter, '').trimEnd();
+    stripped = stripped.replace(citationSection, '').trimEnd();
+  }
+  return stripped;
 }
 
 function citationLabelsInContent(content: string): Set<number> {
@@ -1735,13 +1753,12 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
   const citations = item.metadata?.knowledge_citations;
   if (!Array.isArray(citations)) return [];
   const usedLabels = citationLabelsInContent(content);
-  if (usedLabels.size === 0) return [];
   const seen = new Set<string>();
   const result: KnowledgeCitation[] = [];
   citations.forEach((citation, index) => {
     if (!citation || !citation.id) return;
     const labelNumber = citationLabelNumber(citation, index + 1);
-    if (!usedLabels.has(labelNumber)) return;
+    if (usedLabels.size > 0 && !usedLabels.has(labelNumber)) return;
     // A document can contribute multiple cited chunks with the same display
     // title. Prefer durable source identifiers so those cards are not merged.
     // Historical citations without source identifiers retain title-based

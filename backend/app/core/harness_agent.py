@@ -112,6 +112,7 @@ class HarnessTaskAgent:
         non_retryable_action_signatures: set[str] = set()
         allowed_names = requirement.capability_manifest.allowed_names()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
+        pending_actions: list[HarnessAction] = []
 
         def finish(result: TaskExecutionResult) -> TaskExecutionResult:
             summary = " ".join(
@@ -186,82 +187,98 @@ class HarnessTaskAgent:
                 payload["conversation_context"] = attachment_context
             try:
                 action: HarnessAction | None = None
-                validation_error: ValidationError | None = None
-                for protocol_attempt in range(2):
-                    # Persist a stable link between this LLM span and the Harness
-                    # iteration that consumes it.  Timing projections must not
-                    # infer this relationship from overlapping wall-clock windows.
-                    with llm_operation(
-                        "harness.task_action",
-                        task_frame_id=requirement.task_frame_id,
-                        iteration=iteration,
-                        protocol_attempt=protocol_attempt + 1,
-                    ):
-                        raw = _deadline_llm_client(
-                            model_config,
-                            step_deadline_monotonic,
-                        ).generate_json(
-                            system_prompt,
-                            payload,
-                        )
-                    try:
-                        action = HarnessAction.model_validate(raw)
-                    except ValidationError as exc:
-                        action = _adapt_general_skill_structured_result(
-                            raw,
-                            loaded_general_skill_names=loaded_general_skill_names,
-                        )
-                        if action is not None:
-                            if trace_sink:
+                validation_error: Exception | None = None
+                if pending_actions:
+                    action = pending_actions.pop(0)
+                else:
+                    for protocol_attempt in range(2):
+                        # Persist a stable link between this LLM span and the Harness
+                        # iteration that consumes it.  Timing projections must not
+                        # infer this relationship from overlapping wall-clock windows.
+                        with llm_operation(
+                            "harness.task_action",
+                            task_frame_id=requirement.task_frame_id,
+                            iteration=iteration,
+                            protocol_attempt=protocol_attempt + 1,
+                        ):
+                            client = _deadline_llm_client(
+                                model_config,
+                                step_deadline_monotonic,
+                            )
+                            raw = _generate_harness_action_json(
+                                client,
+                                system_prompt,
+                                payload,
+                            )
+                        try:
+                            actions = _harness_actions_from_raw(raw)
+                            action = actions[0]
+                            pending_actions.extend(actions[1:])
+                            if len(actions) > 1 and trace_sink:
                                 trace_sink(
-                                    "harness_structured_result_adapted",
+                                    "harness_action_sequence_accepted",
                                     {
                                         "iteration": iteration,
-                                        "source": loaded_general_skill_names[-1],
-                                        "result_type": type(raw).__name__,
+                                        "action_count": len(actions),
+                                        "actions": [item.action for item in actions],
                                     },
                                 )
-                            break
-                        validation_error = exc
-                        if protocol_attempt == 0:
-                            payload = {
-                                **payload,
-                                "protocol_repair": {
-                                    "message": (
-                                        "上一次输出不符合 HarnessAction Schema。请只修正动作"
-                                        "协议，不要改变任务意图。"
-                                    ),
-                                    "invalid_output": raw,
-                                    "validation_error": str(exc),
-                                    "required_tool_envelope": {
-                                        "action": "tool",
-                                        "tool_name": (
-                                            "capability_manifest 中的已授权能力名称"
+                        except (ValidationError, ValueError) as exc:
+                            action = _adapt_general_skill_structured_result(
+                                raw,
+                                loaded_general_skill_names=loaded_general_skill_names,
+                            )
+                            if action is not None:
+                                if trace_sink:
+                                    trace_sink(
+                                        "harness_structured_result_adapted",
+                                        {
+                                            "iteration": iteration,
+                                            "source": loaded_general_skill_names[-1],
+                                            "result_type": type(raw).__name__,
+                                        },
+                                    )
+                                break
+                            validation_error = exc
+                            if protocol_attempt == 0:
+                                payload = {
+                                    **payload,
+                                    "protocol_repair": {
+                                        "message": (
+                                            "上一次输出不符合 HarnessAction Schema。请只修正动作"
+                                            "协议，不要改变任务意图。"
                                         ),
-                                        "arguments": {},
+                                        "invalid_output": raw,
+                                        "validation_error": str(exc),
+                                        "required_tool_envelope": {
+                                            "action": "tool",
+                                            "tool_name": (
+                                                "capability_manifest 中的已授权能力名称"
+                                            ),
+                                            "arguments": {},
+                                        },
+                                        "required_finish_envelope": {
+                                            "action": "finish",
+                                            "status": "completed | awaiting_user | handoff | failed",
+                                        },
                                     },
-                                    "required_finish_envelope": {
-                                        "action": "finish",
-                                        "status": "completed | awaiting_user | handoff | failed",
-                                    },
-                                },
-                            }
-                            if trace_sink:
-                                trace_sink(
-                                    "harness_action_repair_requested",
-                                    {
-                                        "iteration": iteration,
-                                        "error": str(exc),
-                                    },
-                                )
-                            continue
-                        raise
-                    break
+                                }
+                                if trace_sink:
+                                    trace_sink(
+                                        "harness_action_repair_requested",
+                                        {
+                                            "iteration": iteration,
+                                            "error": str(exc),
+                                        },
+                                    )
+                                continue
+                            raise
+                        break
                 if action is None:
                     if validation_error is not None:
                         raise validation_error
                     raise RuntimeError("Harness action generation returned no action.")
-            except (ValidationError, LLMError) as exc:
+            except (ValidationError, ValueError, LLMError) as exc:
                 if _deadline_expired(step_deadline_monotonic):
                     return finish(_step_timeout_result(
                         requirement,
@@ -610,6 +627,36 @@ def _is_non_retryable_failure(result: object) -> bool:
     return isinstance(error, dict) and error.get("retryable") is False
 
 
+def _generate_harness_action_json(
+    client: LLMClient,
+    system_prompt: str,
+    payload: dict[str, Any],
+) -> Any:
+    """Use sequence-aware parsing when the concrete client supports it."""
+
+    sequence_generator = getattr(client, "generate_json_sequence", None)
+    if callable(sequence_generator):
+        return sequence_generator(system_prompt, payload)
+    # Test doubles and older compatible clients still expose the original method.
+    return client.generate_json(system_prompt, payload)
+
+
+def _harness_actions_from_raw(raw: object) -> list[HarnessAction]:
+    """Normalize one action or an ordered action sequence from a provider response."""
+
+    items: object = raw
+    if isinstance(raw, dict) and set(raw) == {"actions"}:
+        items = raw.get("actions")
+    if not isinstance(items, list):
+        return [HarnessAction.model_validate(items)]
+    if not items:
+        raise ValueError("Harness action sequence must not be empty.")
+    actions = [HarnessAction.model_validate(item) for item in items]
+    if any(action.action == "finish" for action in actions[:-1]):
+        raise ValueError("A finish action must be the final item in an action sequence.")
+    return actions
+
+
 def _adapt_general_skill_structured_result(
     raw: object,
     *,
@@ -626,7 +673,11 @@ def _adapt_general_skill_structured_result(
 
     if not loaded_general_skill_names or not isinstance(raw, (dict, list)):
         return None
-    if isinstance(raw, dict) and "action" in raw:
+    if isinstance(raw, dict) and ({"action", "actions"} & set(raw)):
+        return None
+    if isinstance(raw, list) and any(
+        isinstance(item, dict) and "action" in item for item in raw
+    ):
         return None
     reply_fragment = json.dumps(
         raw,

@@ -93,6 +93,8 @@ class TeamTaskRead(BaseModel):
     id: str
     team_id: str
     tenant_id: str
+    team_run_id: str | None = None
+    source_turn_id: str | None = None
     parent_task_id: str | None = None
     title: str
     description: str | None = None
