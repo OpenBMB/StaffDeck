@@ -1507,8 +1507,17 @@ def process_inbound(
                     db.commit()
 
                 with bind_span_sink(persist_span):
+                    event_sink = trace_streamer.on_event if trace_streamer else None
+                    if stream_sink is not None:
+                        original_event_sink = event_sink
+
+                        def event_sink(event_type: str, payload: dict[str, object]) -> None:
+                            stream_sink.on_event(event_type, payload)
+                            if original_event_sink:
+                                original_event_sink(event_type, payload)
+
                     agent_loop_kwargs = {
-                        "event_sink": trace_streamer.on_event if trace_streamer else None,
+                        "event_sink": event_sink,
                     }
                     if stream_sink is not None:
                         agent_loop_kwargs["stream_sink"] = stream_sink
