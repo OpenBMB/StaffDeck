@@ -139,6 +139,48 @@ def test_wechat_kf_xml_parser_rejects_entity_expansion() -> None:
         )
 
 
+def test_wechat_kf_callback_returns_400_for_malicious_envelope_xml(monkeypatch) -> None:
+    client, _engine, binding_id, _token, _aes_key, _corp_id = _client(monkeypatch)
+    timestamp = str(int(time.time()))
+
+    response = client.post(
+        f"/api/channels/wechat-kf/{binding_id}/callback",
+        params={
+            "msg_signature": "signature",
+            "timestamp": timestamp,
+            "nonce": "nonce",
+        },
+        content=b'<!DOCTYPE foo [<!ENTITY x "expanded">]><xml><Encrypt>&x;</Encrypt></xml>',
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "微信客服回调 XML 无效"
+
+
+def test_wechat_kf_callback_returns_400_for_malicious_plaintext_xml(monkeypatch) -> None:
+    client, _engine, binding_id, token, aes_key, corp_id = _client(monkeypatch)
+    plaintext = (
+        b'<!DOCTYPE foo [<!ENTITY x "expanded">]>'
+        b'<xml><Event>&x;</Event><Token>sync-token</Token>'
+        b'<OpenKfId>wk1234567890</OpenKfId></xml>'
+    )
+    ciphertext = _encrypt(plaintext.decode(), aes_key, corp_id)
+    timestamp = str(int(time.time()))
+
+    response = client.post(
+        f"/api/channels/wechat-kf/{binding_id}/callback",
+        params={
+            "msg_signature": _signature(token, timestamp, "nonce", ciphertext),
+            "timestamp": timestamp,
+            "nonce": "nonce",
+        },
+        content=f"<xml><Encrypt><![CDATA[{ciphertext}]]></Encrypt></xml>",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "微信客服回调明文 XML 无效"
+
+
 def test_wechat_kf_callback_rejects_stale_timestamp() -> None:
     with pytest.raises(HTTPException, match="已过期.*超过 300 秒"):
         wechat_kf_api._verify_callback(

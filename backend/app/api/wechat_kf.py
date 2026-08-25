@@ -9,6 +9,7 @@ import time
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlmodel import Session, select
 
@@ -191,7 +192,7 @@ async def receive_callback(
     logger.info("微信客服回调收到 binding=%s", binding_id)
     try:
         envelope = _parse_callback_xml(await request.body())
-    except (ET.ParseError, ValueError) as exc:
+    except (ET.ParseError, DefusedXmlException, ValueError) as exc:
         raise HTTPException(status_code=400, detail="微信客服回调 XML 无效") from exc
     ciphertext = _xml_text(envelope, "Encrypt")
     if not ciphertext:
@@ -211,7 +212,7 @@ async def receive_callback(
     )
     try:
         event = _parse_callback_xml(plaintext)
-    except (ET.ParseError, ValueError) as exc:
+    except (ET.ParseError, DefusedXmlException, ValueError) as exc:
         raise HTTPException(status_code=400, detail="微信客服回调明文 XML 无效") from exc
     if _xml_text(event, "Event") != "kf_msg_or_event":
         return Response(content="success", media_type="text/plain")
