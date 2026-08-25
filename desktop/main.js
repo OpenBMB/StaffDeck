@@ -89,6 +89,9 @@ async function probeRunningInstance(host = '127.0.0.1') {
  *   - 否则回退到 PATH 中的 staffdeck（打包态）
  */
 function resolveBackendEntry() {
+  const fs = require('fs');
+
+  // 显式指定优先（可配合 STAFFDECK_BACKEND_SCRIPT 传脚本）
   const backend = process.env.STAFFDECK_BACKEND;
   if (backend) {
     const script = process.env.STAFFDECK_BACKEND_SCRIPT;
@@ -98,16 +101,23 @@ function resolveBackendEntry() {
     return { cmd: backend, args: [] };
   }
 
-  // 开发态：优先用仓库里的 backend/.venv。不依赖 npm 脚本名或 STAFFDECK_DEV，
-  // 只要 .venv 存在就用它；打包态 .venv 不在安装包内，自然回退到 staffdeck。
-  const fs = require('fs');
+  // 打包态：electron-builder 把后端目录放进 resources/backend（PyInstaller 产物，
+  // 自含 Python 运行时）。不依赖外部 Python 环境，装完即用。
+  if (app.isPackaged) {
+    const frozenExe = path.join(process.resourcesPath, 'backend', 'staffdeck.exe');
+    if (fs.existsSync(frozenExe)) {
+      return { cmd: frozenExe, args: [] };
+    }
+  }
+
+  // 开发态：优先用仓库里的 backend/.venv。只要 .venv 存在就用它。
   const venvPy = path.join(__dirname, '..', 'backend', '.venv', 'Scripts', 'python.exe');
   const launcher = path.join(__dirname, '..', 'backend', 'desktop_launcher.py');
   if (fs.existsSync(venvPy) && fs.existsSync(launcher)) {
     return { cmd: venvPy, args: [launcher] };
   }
 
-  // 打包态：PATH 中的 staffdeck
+  // 兜底：PATH 中的 staffdeck
   return { cmd: 'staffdeck', args: [] };
 }
 
