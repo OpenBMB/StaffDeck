@@ -121,6 +121,9 @@ async function spawnBackend() {
   serverProc = spawn(cmd, launchArgs, {
     stdio: 'inherit',
     windowsHide: true,
+    // 强制后端以 headless 运行：desktop_launcher.py 非 headless 时会在服务
+    // 就绪后自动打开系统浏览器。由 Electron 窗口负责展示，必须抑制该行为。
+    env: { ...process.env, STAFFDECK_HEADLESS: '1' },
   });
   serverProc.on('error', (err) => {
     dialog.showErrorBox(
