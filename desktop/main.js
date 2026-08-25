@@ -77,16 +77,57 @@ async function probeRunningInstance(host = '127.0.0.1') {
 }
 
 /**
- * 自动拉起后端进程。
+ * 定位后端可执行入口（开发环境 / 打包环境）。
+ *
+ * 返回 { cmd, args }：
+ *   - cmd  可执行文件本身（python.exe / staffdeck.exe / 自定义）
+ *   - args 要追加的命令行参数
+ * 解析顺序（配合 main.js 的自动拉起）：
+ *   - STAFFDECK_BACKEND 显式指定时优先（可配合 STAFFDECK_BACKEND_SCRIPT 传脚本）
+ *   - 否则若有 backend/.venv，则用其中的 python 解释器跑 desktop_launcher.py
+ *     （开发态；判定与 npm 脚本名无关，见函数内注释）
+ *   - 否则回退到 PATH 中的 staffdeck（打包态）
  */
-function spawnBackend(exePath, extraArgs = []) {
-  const args = ['--host', '127.0.0.1', ...extraArgs];
-  serverProc = spawn(exePath, args, {
+function resolveBackendEntry() {
+  const backend = process.env.STAFFDECK_BACKEND;
+  if (backend) {
+    const script = process.env.STAFFDECK_BACKEND_SCRIPT;
+    if (script && path.isAbsolute(script)) {
+      return { cmd: backend, args: [script] };
+    }
+    return { cmd: backend, args: [] };
+  }
+
+  // 开发态：优先用仓库里的 backend/.venv。不依赖 npm 脚本名或 STAFFDECK_DEV，
+  // 只要 .venv 存在就用它；打包态 .venv 不在安装包内，自然回退到 staffdeck。
+  const fs = require('fs');
+  const venvPy = path.join(__dirname, '..', 'backend', '.venv', 'Scripts', 'python.exe');
+  const launcher = path.join(__dirname, '..', 'backend', 'desktop_launcher.py');
+  if (fs.existsSync(venvPy) && fs.existsSync(launcher)) {
+    return { cmd: venvPy, args: [launcher] };
+  }
+
+  // 打包态：PATH 中的 staffdeck
+  return { cmd: 'staffdeck', args: [] };
+}
+
+/**
+ * 自动拉起后端进程，并在就绪后回调实际端口解析出的 URL。
+ */
+async function spawnBackend() {
+  const { cmd, args } = resolveBackendEntry();
+  // 参数顺序：脚本在前、服务参数在后（python desktop_launcher.py --host ...）
+  const launchArgs = [...args, '--host', '127.0.0.1'];
+  serverProc = spawn(cmd, launchArgs, {
     stdio: 'inherit',
-    windowsHide: false,
+    windowsHide: true,
   });
   serverProc.on('error', (err) => {
-    dialog.showErrorBox(`${APP_NAME} 启动失败`, `无法启动后端进程：${exePath}\n\n${err.message}`);
+    dialog.showErrorBox(
+      `${APP_NAME} 启动失败`,
+      `无法启动后端进程：${cmd}\n\n${err.message}\n\n` +
+        '请确认后端环境已就绪（backend/.venv），或设置 STAFFDECK_BACKEND 指定后端路径。'
+    );
   });
   serverProc.on('close', () => {
     // 后端退出被视为应用退出，避免后台残留进程
@@ -97,7 +138,8 @@ function spawnBackend(exePath, extraArgs = []) {
 
 /**
  * 解析最终要加载的后端地址。
- * 返回 { baseUrl }，若需要自行拉起后端则在此完成。
+ * 自动拉起后端后，会探测端口范围找到它实际监听的实例。
+ * 返回 { baseUrl, spawned }。
  */
 async function resolveBackendUrl() {
   // 1) 显式指定 URL
@@ -119,12 +161,14 @@ async function resolveBackendUrl() {
     return { baseUrl: running, spawned: false };
   }
 
-  // 3) 自动拉起后端
-  const backend = process.env.STAFFDECK_BACKEND || 'staffdeck';
-  spawnBackend(backend);
-  const url = `http://127.0.0.1:${PORT_RANGE.start}`;
-  if (await waitForHealth(url)) {
-    return { baseUrl: url, spawned: true };
+  // 3) 自动拉起后端，然后探测其实际端口
+  await spawnBackend();
+  for (let i = 0; i < 120; i += 1) {
+    const found = await probeRunningInstance();
+    if (found) {
+      return { baseUrl: found, spawned: true };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
   throw new Error(`后端在 ${PORT_RANGE.start}–${PORT_RANGE.end} 端口上 60 秒内未就绪。`);
