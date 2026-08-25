@@ -5,6 +5,7 @@ import { notify } from '@/components/ui/app-toast';
 import AppHeader from '@/components/AppHeader';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
+import SearchableSelect from '@/components/SearchableSelect';
 import {
   Checkbox,
   Dialog,
@@ -1245,19 +1246,18 @@ export default function ChannelsPage({
               )}
               {identityUnboundUsers.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-[8px]">
-                  <Select value={identityInviteUserId || '__none__'} onValueChange={(value) => setIdentityInviteUserId(value === '__none__' ? '' : value)}>
-                    <SelectTrigger className="h-[32px] w-[180px] text-[12px]">
-                      <SelectValue placeholder="选择内部成员" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">选择内部成员</SelectItem>
-                      {identityUnboundUsers.map((user) => (
-                        <SelectItem key={user.id} value={user.id}>
-                          {user.display_name || user.username || user.id}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <SearchableSelect
+                    value={identityInviteUserId}
+                    onValueChange={setIdentityInviteUserId}
+                    options={identityUnboundUsers.map((user) => ({
+                      value: user.id,
+                      label: user.display_name || user.username || user.id,
+                      keywords: [user.username],
+                    }))}
+                    placeholder="选择内部成员"
+                    searchPlaceholder="搜索成员"
+                    emptyText="无匹配成员"
+                  />
                   <UIButton
                     variant="outline"
                     disabled={!identityInviteUserId || bindCodeLoading}
