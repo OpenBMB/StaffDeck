@@ -113,6 +113,106 @@ class AuditCaseEvent(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class AuditEvidenceLedger(SQLModel, table=True):
+    __tablename__ = "audit_evidence_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "audit_element_id",
+            "source_kind",
+            "chunk_id",
+            "extractor_version",
+            name="uq_audit_evidence_source",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditev"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    audit_element_id: str = Field(index=True)
+    source_kind: str = Field(index=True)
+    source_id: str = Field(index=True)
+    source_version_id: str = Field(index=True)
+    chunk_id: str = Field(index=True)
+    source_ref: str
+    evidence_type: str = Field(index=True)
+    evidence_text: str
+    confidence: float
+    extractor_version: str = Field(index=True)
+    report_section_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditElementCoverage(SQLModel, table=True):
+    __tablename__ = "audit_element_coverage"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "audit_element_id",
+            name="uq_audit_element_coverage",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditcov"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    audit_element_id: str = Field(index=True)
+    status: str = Field(default="pending", index=True)
+    material_evidence_count: int = 0
+    knowledge_evidence_count: int = 0
+    gap_reason: Optional[str] = None
+    lead_auditor_confirmed_by: Optional[str] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditReportVersion(SQLModel, table=True):
+    __tablename__ = "audit_report_versions"
+
+    id: str = Field(default_factory=lambda: new_id("auditreport"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    version: int = Field(index=True)
+    status: str = Field(default="draft", index=True)
+    material_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    knowledge_base_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    coverage_snapshot_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    final_storage_key: Optional[str] = None
+    lead_auditor_confirmed_by: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditReportSection(SQLModel, table=True):
+    __tablename__ = "audit_report_sections"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_version_id",
+            "section_id",
+            name="uq_audit_report_section",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditsection"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    report_version_id: str = Field(index=True)
+    section_id: str = Field(index=True)
+    title: str
+    sequence: int
+    audit_element_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="pending", index=True)
+    draft_markdown: str = ""
+    citation_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    model_config_id: Optional[str] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    retry_count: int = 0
+    error_code: Optional[str] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class User(SQLModel, table=True):
     __tablename__ = "users"
     __table_args__ = (
