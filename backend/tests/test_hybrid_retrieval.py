@@ -14,7 +14,9 @@ from app.api.model_configs import validate_model_token_budget
 from app.db.database import _migrate_model_context_budget
 from app.db.models import KnowledgeChunk, KnowledgeChunkEmbedding, KnowledgeRetrievalConfig
 from app.knowledge.retrieval.bm25 import BM25Retriever
+from app.knowledge.retrieval.contracts import RetrievalCandidate
 from app.knowledge.retrieval.indexer import KnowledgeVectorIndexer
+from app.knowledge.retrieval.reranker import LLMReranker
 from app.knowledge.retrieval.vector import (
     EmbeddingError,
     OpenAICompatibleEmbeddingProvider,
@@ -35,6 +37,20 @@ def _chunk(chunk_id: str, content: str) -> KnowledgeChunk:
         content=content,
         source_ref=f"{chunk_id}.md#chunk=0",
     )
+
+
+def _candidate(chunk_id: str, score: float = 0.5) -> RetrievalCandidate:
+    return RetrievalCandidate(_chunk(chunk_id, f"内容 {chunk_id}"), score, "rrf", 1)
+
+
+class _FakeLLMClient:
+    def __init__(self, response: dict[str, object]) -> None:
+        self.response = response
+        self.payload: dict[str, object] | None = None
+
+    def generate_json(self, _prompt: str, payload: dict[str, object]) -> dict[str, object]:
+        self.payload = payload
+        return self.response
 
 
 def _retrieval_config() -> KnowledgeRetrievalConfig:
@@ -294,3 +310,44 @@ def test_vector_retriever_ranks_by_cosine_similarity() -> None:
     assert [item.chunk.id for item in result.candidates] == ["c2", "c1"]
     assert all(item.source == "vector" for item in result.candidates)
     assert result.trace[0]["strategy"] == "vector"
+
+
+def test_reranker_rejects_unknown_candidate_ids() -> None:
+    client = _FakeLLMClient({"ranked": [{"chunk_id": "outside", "score": 0.99}]})
+
+    result = LLMReranker(client).rerank(
+        "能源绩效",
+        [_candidate("c1"), _candidate("c2")],
+        limit=2,
+    )
+
+    assert [item.chunk.id for item in result.candidates] == ["c1", "c2"]
+    assert result.trace[-1]["fallback_reason"] == "RERANK_UNKNOWN_CANDIDATE"
+
+
+def test_reranker_uses_model_order_and_keeps_source_scores() -> None:
+    client = _FakeLLMClient(
+        {
+            "ranked": [
+                {"chunk_id": "c2", "score": 0.9},
+                {"chunk_id": "c1", "score": 0.7},
+            ]
+        }
+    )
+
+    result = LLMReranker(client).rerank(
+        "能源绩效",
+        [_candidate("c1"), _candidate("c2")],
+        limit=2,
+    )
+
+    assert [item.chunk.id for item in result.candidates] == ["c2", "c1"]
+    assert [item.score for item in result.candidates] == [0.9, 0.7]
+    assert all(item.source == "reranker" for item in result.candidates)
+    assert client.payload == {
+        "query": "能源绩效",
+        "candidates": [
+            {"chunk_id": "c1", "content": "内容 c1"},
+            {"chunk_id": "c2", "content": "内容 c2"},
+        ],
+    }
