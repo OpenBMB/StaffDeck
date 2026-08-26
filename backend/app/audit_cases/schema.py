@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.db.models import AuditCase, AuditCaseMaterial
+
+
+class AuditCaseCreate(BaseModel):
+    tenant_id: str
+    organization_name: str = Field(min_length=1, max_length=200)
+    report_type: str = Field(min_length=1, max_length=100)
+    management_systems: list[str] = Field(default_factory=list)
+    knowledge_base_version_ids: list[str] = Field(default_factory=list)
+    member_user_ids: list[str] = Field(default_factory=list)
+
+
+class AuditCaseRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    tenant_id: str
+    owner_user_id: str
+    member_user_ids: list[str]
+    organization_name: str
+    report_type: str
+    management_systems: list[str]
+    status: str
+    knowledge_base_version_ids: list[str]
+    active_report_version_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AuditCaseMaterialRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    audit_case_id: str
+    attachment_id: str
+    material_type: str
+    filename: str
+    content_type: str
+    sha256: str
+    size: int
+    characters: int
+    extraction_status: str
+    processing_status: str
+    version: int
+    is_current: bool
+    supersedes_material_id: str | None = None
+    error_code: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AuditCaseCoverageRead(BaseModel):
+    current_material_count: int
+    successful_material_count: int
+    failed_material_count: int
+    total_chunk_count: int
+    successful_chunk_count: int
+    file_coverage: float
+    chunk_coverage: float
+
+
+class AuditCaseNotFound(LookupError):
+    pass
+
+
+class AuditCaseAccessDenied(PermissionError):
+    pass
+
+
+class AuditCaseReadOnly(RuntimeError):
+    pass
+
+
+class AuditMaterialProcessingError(RuntimeError):
+    pass
+
+
+def audit_case_read(row: AuditCase) -> AuditCaseRead:
+    return AuditCaseRead(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        owner_user_id=row.owner_user_id,
+        member_user_ids=list(row.member_user_ids_json or []),
+        organization_name=row.organization_name,
+        report_type=row.report_type,
+        management_systems=list(row.management_systems_json or []),
+        status=row.status,
+        knowledge_base_version_ids=list(row.knowledge_base_version_ids_json or []),
+        active_report_version_id=row.active_report_version_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def audit_case_material_read(row: AuditCaseMaterial) -> AuditCaseMaterialRead:
+    return AuditCaseMaterialRead(
+        id=row.id,
+        audit_case_id=row.audit_case_id,
+        attachment_id=row.attachment_id,
+        material_type=row.material_type,
+        filename=row.filename,
+        content_type=row.content_type,
+        sha256=row.sha256,
+        size=row.size,
+        characters=row.characters,
+        extraction_status=row.extraction_status,
+        processing_status=row.processing_status,
+        version=row.version,
+        is_current=row.is_current,
+        supersedes_material_id=row.supersedes_material_id,
+        error_code=row.error_code,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
