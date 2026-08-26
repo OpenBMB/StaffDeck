@@ -324,16 +324,26 @@ class WeComStreamReply:
         self._binding = binding
         self._frame = frame
         self._client, self._loop = stream
-        self._stream_id = f"staffdeck:{binding.id}:{frame.get('body', {}).get('msgid', '')}"
+        base_stream_id = f"staffdeck:{binding.id}:{frame.get('body', {}).get('msgid', '')}"
+        self._stream_id = f"{base_stream_id}:progress"
+        self._answer_stream_id = f"{base_stream_id}:answer"
+        body = frame.get("body") if isinstance(frame, dict) else None
+        self._is_group = bool((body or {}).get("chatid"))
         self._condition = threading.Condition()
         self._progress: list[tuple[str, str]] = [("status", "📖 正在思考…")]
         self._answer = ""
+        self._answer_started = False
         self._dirty = False
         self._finished = False
         self._failed = False
         self._animation_frame = 0
-        self._animation_enabled = True
+        # Mobile group chats can jump when a stream message is re-laid out.
+        # Keep group progress event-driven and single-line; direct chats retain
+        # the existing animated progress behavior.
+        self._animation_enabled = not self._is_group
         self._processing_key: str | None = None
+        self._last_progress_sent = ""
+        self._last_answer_sent = ""
         self._skill_names = dict(skill_names or {})
         self._step_names = dict(step_names or {})
         self._tool_names = dict(tool_names or {})
@@ -359,6 +369,7 @@ class WeComStreamReply:
             if self._finished or self._failed:
                 return
             self._answer += delta
+            self._answer_started = True
             self._animation_enabled = False
             self._dirty = True
             self._condition.notify_all()
@@ -372,7 +383,17 @@ class WeComStreamReply:
         with self._condition:
             if self._finished or self._failed:
                 return
+            if self._is_group and self._answer_started:
+                return
             self._animation_enabled = False
+            if self._is_group:
+                # Group-chat mobile clients are sensitive to changing message
+                # height. Replace one status line instead of growing history.
+                self._progress = [("status", message)]
+                self._processing_key = None
+                self._dirty = True
+                self._condition.notify_all()
+                return
             if key == "intent":
                 self._progress = [item for item in self._progress if item[0] != "status"]
             if key in {"skill", "step", "task", "tool", "knowledge"} and message.startswith("⏳"):
@@ -478,7 +499,6 @@ class WeComStreamReply:
         self._worker.join(timeout=SEND_TIMEOUT_SECONDS)
 
     def _run(self) -> None:
-        last_sent = ""
         while True:
             with self._condition:
                 while not self._dirty and not self._finished:
@@ -490,8 +510,10 @@ class WeComStreamReply:
                                 if key == self._processing_key and message[:1] in WECOM_PROCESSING_FRAMES:
                                     self._progress[index] = (
                                         key,
-                                        f"{WECOM_PROCESSING_FRAMES[self._animation_frame % 2]}"
-                                        f"{message[1:]}",
+                                        (
+                                            f"{WECOM_PROCESSING_FRAMES[self._animation_frame % 2]}"
+                                            f"{message[1:]}"
+                                        ),
                                     )
                                     break
                         elif not self._answer:
@@ -500,55 +522,69 @@ class WeComStreamReply:
                                 f"{WECOM_PROGRESS_FRAMES[self._animation_frame % len(WECOM_PROGRESS_FRAMES)]} 正在思考…",
                             )
                         self._dirty = True
-                if self._dirty:
-                    content = self._render_content()
-                    finished = self._finished
-                    self._dirty = False
-                else:
+                if not self._dirty and not self._finished:
                     continue
-            if not content or (content == last_sent and not finished):
-                if finished:
+                self._dirty = False
+                finished = self._finished
+                progress = self._render_progress_unlocked()
+                answer = self._answer.strip()
+            operations: list[tuple[str, str, bool]] = []
+            if finished:
+                operations.append((self._stream_id, progress, True))
+                if answer:
+                    operations.append((self._answer_stream_id, answer, True))
+            else:
+                if progress != self._last_progress_sent:
+                    operations.append((self._stream_id, progress, False))
+                if answer and answer != self._last_answer_sent:
+                    operations.append((self._answer_stream_id, answer, False))
+            for stream_id, content, stream_finished in operations:
+                if not content:
+                    continue
+                if len(content.encode("utf-8")) > WECOM_STREAM_MAX_BYTES:
+                    logger.warning(
+                        "企微流式消息超过移动端安全长度，降级普通消息 binding=%s bytes=%s",
+                        self._binding.id,
+                        len(content.encode("utf-8")),
+                    )
+                    with self._condition:
+                        self._failed = True
                     return
-                continue
-            if len(content.encode("utf-8")) > WECOM_STREAM_MAX_BYTES:
-                logger.warning(
-                    "企微流式消息超过移动端安全长度，降级普通消息 binding=%s bytes=%s",
-                    self._binding.id,
-                    len(content.encode("utf-8")),
-                )
-                with self._condition:
-                    self._failed = True
-                return
-            if not finished:
-                time.sleep(WECOM_STREAM_MIN_INTERVAL_SECONDS)
-                with self._condition:
-                    if self._finished:
-                        self._dirty = True
-                        continue
-                    content = self._render_content()
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    self._client.reply_stream(
-                        self._frame,
-                        self._stream_id,
-                        content,
-                        finish=finished,
-                    ),
-                    self._loop,
-                )
-                future.result(timeout=SEND_TIMEOUT_SECONDS)
-                last_sent = content
-            except Exception:
-                logger.exception("企微流式回复失败 binding=%s", self._binding.id)
-                with self._condition:
-                    self._failed = True
-                return
+                if not stream_finished:
+                    time.sleep(WECOM_STREAM_MIN_INTERVAL_SECONDS)
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._client.reply_stream(
+                            self._frame,
+                            stream_id,
+                            content,
+                            finish=stream_finished,
+                        ),
+                        self._loop,
+                    )
+                    future.result(timeout=SEND_TIMEOUT_SECONDS)
+                    if stream_id == self._stream_id:
+                        self._last_progress_sent = content
+                    else:
+                        self._last_answer_sent = content
+                except Exception:
+                    logger.exception("企微流式回复失败 binding=%s", self._binding.id)
+                    with self._condition:
+                        self._failed = True
+                    return
             if finished:
                 return
 
     def _render_content(self) -> str:
         with self._condition:
             return self._render_content_unlocked()
+
+    def _render_progress(self) -> str:
+        with self._condition:
+            return self._render_progress_unlocked()
+
+    def _render_progress_unlocked(self) -> str:
+        return "\n\n".join(message for _key, message in self._progress)
 
     def _render_content_unlocked(self) -> str:
         progress = "\n\n".join(message for _key, message in self._progress)

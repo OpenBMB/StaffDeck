@@ -642,7 +642,10 @@ def test_stream_reply_updates_one_stream_and_finishes() -> None:
     client = _FakeStreamClient()
     loop, _thread = _run_loop_in_thread()
     binding = ChannelBinding(id="binding-1", tenant_id="t", agent_id="a", channel="wecom")
-    frame = {"headers": {"req_id": "req-1"}, "body": {"msgid": "incoming-1"}}
+    frame = {
+        "headers": {"req_id": "req-1"},
+        "body": {"msgid": "incoming-1", "from": {"userid": "user-1"}},
+    }
     reply = WeComStreamReply(binding, frame, (client, loop))
     try:
         reply.on_delta("你好")
@@ -652,13 +655,21 @@ def test_stream_reply_updates_one_stream_and_finishes() -> None:
         loop.call_soon_threadsafe(loop.stop)
 
     assert client.sent
-    assert client.sent[-1][1] == {
-        "stream_id": "staffdeck:binding-1:incoming-1",
-        "content": "✅ 流程已结束\n\n---\n\n你好，世界",
+    assert client.sent[-2][1] == {
+        "stream_id": "staffdeck:binding-1:incoming-1:progress",
+        "content": "✅ 流程已结束",
         "finish": True,
     }
-    assert {item[1]["stream_id"] for item in client.sent} == {
-        "staffdeck:binding-1:incoming-1"
+    assert client.sent[-1][1] == {
+        "stream_id": "staffdeck:binding-1:incoming-1:answer",
+        "content": "你好，世界",
+        "finish": True,
+    }
+    assert {
+        item[1]["stream_id"] for item in client.sent if "stream_id" in item[1]
+    } == {
+        "staffdeck:binding-1:incoming-1:progress",
+        "staffdeck:binding-1:incoming-1:answer",
     }
 
 
@@ -679,7 +690,10 @@ def test_stream_reply_marks_failed_when_sdk_rejects_update() -> None:
     binding = ChannelBinding(id="binding-1", tenant_id="t", agent_id="a", channel="wecom")
     reply = WeComStreamReply(
         binding,
-        {"headers": {"req_id": "req-1"}, "body": {"msgid": "incoming-1"}},
+        {
+            "headers": {"req_id": "req-1"},
+            "body": {"msgid": "incoming-1", "from": {"userid": "user-1"}},
+        },
         (client, loop),
     )
     try:
@@ -696,7 +710,10 @@ def test_stream_reply_renders_safe_progress_events() -> None:
     binding = ChannelBinding(id="binding-1", tenant_id="t", agent_id="a", channel="wecom")
     reply = WeComStreamReply(
         binding,
-        {"headers": {"req_id": "req-1"}, "body": {"msgid": "incoming-1"}},
+        {
+            "headers": {"req_id": "req-1"},
+            "body": {"msgid": "incoming-1", "from": {"userid": "user-1"}},
+        },
         (client, loop),
     )
     try:
@@ -706,10 +723,15 @@ def test_stream_reply_renders_safe_progress_events() -> None:
     finally:
         loop.call_soon_threadsafe(loop.stop)
 
+    progress_content = next(
+        item[1]["content"]
+        for item in client.sent
+        if item[1].get("stream_id", "").endswith(":progress")
+    )
+    assert "调用工具：查询订单…" in progress_content
+    assert "结果已整理" not in progress_content
     final_content = client.sent[-1][1]["content"]
-    assert "调用工具：查询订单…" in final_content
-    assert "结果已整理" in final_content
-    assert "tool_display_name" not in final_content
+    assert final_content == "结果已整理"
 
 
 def test_stream_reply_renders_intent_skill_and_capability_names() -> None:
@@ -745,6 +767,30 @@ def test_stream_reply_renders_intent_skill_and_capability_names() -> None:
     assert reply._event_message(
         "tool_call_started", {"name": "leave.get_balance"}
     ) == "⏳ 调用工具：查询假期余额…"
+
+
+def test_group_stream_reply_keeps_one_event_driven_progress_line() -> None:
+    client = _FakeStreamClient()
+    loop, _thread = _run_loop_in_thread()
+    binding = ChannelBinding(id="binding-1", tenant_id="t", agent_id="a", channel="wecom")
+    frame = {
+        "headers": {"req_id": "req-1"},
+        "body": {"msgid": "incoming-1", "chatid": "group-1"},
+    }
+    reply = WeComStreamReply(binding, frame, (client, loop))
+    try:
+        assert reply._animation_enabled is False
+        reply.on_event("skill_started", {"skill_name": "订单查询流程"})
+        reply.on_event("task_frame_started", {"name": "核对订单信息"})
+        assert reply._progress == [("status", "⏳ 正在处理：核对订单信息…")]
+
+        reply.on_delta("结果已整理")
+        reply.on_event("tool_call_started", {"name": "查询订单"})
+        assert reply._progress == [("status", "⏳ 正在处理：核对订单信息…")]
+        assert reply._render_content().endswith("结果已整理")
+    finally:
+        reply.abort()
+        loop.call_soon_threadsafe(loop.stop)
 
 
 # ---------- StreamManager 生命周期 ----------
