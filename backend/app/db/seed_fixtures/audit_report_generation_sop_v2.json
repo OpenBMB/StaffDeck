@@ -75,7 +75,7 @@
       "name": "核对项目材料清单",
       "instruction": "先读取 audit_case_id 对应的结构化材料清单；只询问缺失、失败或版本冲突的材料。清单中 status=available 或 processing_status=succeeded 的当前版本不得要求用户重复上传。",
       "expected_user_info": ["material_manifest_status"],
-      "allowed_actions": [],
+      "allowed_actions": ["audit_case_manifest"],
       "knowledge_scope": {},
       "capability_refs": {
         "general_skill_ids": [],
@@ -109,7 +109,7 @@
       "name": "建立材料证据台账",
       "instruction": "按材料、页码或段落、审核条款和证据主题建立完整证据台账，保留证据来源、覆盖状态和无法确认的缺口。",
       "expected_user_info": ["evidence_coverage_status"],
-      "allowed_actions": [],
+      "allowed_actions": ["audit_evidence_process"],
       "knowledge_scope": {},
       "capability_refs": {
         "general_skill_ids": [],
@@ -131,10 +131,10 @@
       "capability_refs": {
         "general_skill_ids": [],
         "tool_ids": [],
-        "knowledge_base_ids": [],
+        "knowledge_base_ids": ["audit_case_knowledge"],
         "required_general_skill_ids": [],
         "required_tool_ids": [],
-        "required_knowledge_base_ids": []
+        "required_knowledge_base_ids": ["audit_case_knowledge"]
       }
     },
     {
@@ -177,7 +177,7 @@
       "name": "检查一致性与覆盖率",
       "instruction": "检查报告章节是否覆盖全部适用审核范围，材料证据与结论是否一致，知识库引用是否对应当前版本，并列出所有未解决缺口。",
       "expected_user_info": ["evidence_coverage_status", "knowledge_coverage_status"],
-      "allowed_actions": [],
+      "allowed_actions": ["audit_report_status"],
       "knowledge_scope": {},
       "capability_refs": {
         "general_skill_ids": [],

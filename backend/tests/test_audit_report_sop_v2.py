@@ -39,6 +39,16 @@ def test_audit_report_sop_v2_is_project_driven() -> None:
     assert collect.capability_refs.knowledge_base_ids == []
 
 
+def test_audit_report_sop_requires_structured_pipeline_capabilities() -> None:
+    card = load_audit_report_sop_v2()
+    by_id = {node.node_id: node for node in card.nodes}
+
+    assert "audit_case_manifest" in by_id["collect_materials"].allowed_actions
+    assert "audit_evidence_process" in by_id["build_material_evidence_ledger"].allowed_actions
+    assert "audit_report_status" in by_id["consistency_and_coverage_check"].allowed_actions
+    assert by_id["retrieve_reference_knowledge"].capability_refs.required_knowledge_base_ids
+
+
 def test_seed_audit_report_sop_v2_is_idempotent_and_preserves_old_version(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'sop-seed.db'}")
     SQLModel.metadata.create_all(engine)

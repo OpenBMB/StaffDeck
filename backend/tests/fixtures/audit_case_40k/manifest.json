@@ -1,0 +1,27 @@
+{
+  "organization_name": "StaffDeck 审核流水线测试企业",
+  "report_type": "再认证",
+  "management_systems": ["GB/T 23331-2020"],
+  "generated_files": [
+    {
+      "filename": "审核计划.txt",
+      "material_type": "audit_plan",
+      "minimum_characters": 2000
+    },
+    {
+      "filename": "审核记录.txt",
+      "material_type": "audit_record",
+      "minimum_characters": 40000
+    },
+    {
+      "filename": "绩效确认表.txt",
+      "material_type": "performance_record",
+      "minimum_characters": 3000
+    },
+    {
+      "filename": "报告模板.docx",
+      "material_type": "report_template",
+      "required_anchors": ["管理体系概况", "审核证据", "改进建议"]
+    }
+  ]
+}

@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from io import BytesIO
 
 from docx import Document
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.audit_cases.coverage import calculate_coverage, require_publishable
@@ -38,6 +38,12 @@ class ReportSectionSpec(BaseModel):
     title: str
     sequence: int
     audit_element_ids: list[str]
+
+
+class ReportGenerationSummary(BaseModel):
+    status: str = "succeeded"
+    generated_section_ids: list[str] = Field(default_factory=list)
+    regenerated_section_ids: list[str] = Field(default_factory=list)
 
 
 class AuditCitationError(RuntimeError):
@@ -99,8 +105,14 @@ class AuditReportService:
 
     def generate_pending_sections(
         self, case: AuditCase, report: AuditReportVersion, model_config: ModelConfig
-    ) -> None:
+    ) -> ReportGenerationSummary:
+        generated_section_ids: list[str] = []
+        regenerated_section_ids: list[str] = []
+        failed = False
         for section in self._pending_sections(report.id):
+            generated_section_ids.append(section.section_id)
+            if section.status == "failed":
+                regenerated_section_ids.append(section.section_id)
             evidence = self._section_evidence(case.id, section.audit_element_ids_json)
             try:
                 draft = self.client_factory(model_config).generate_text(
@@ -118,6 +130,7 @@ class AuditReportService:
                 section.status = "succeeded"
                 section.error_code = None
             except (LLMError, AuditCitationError) as exc:
+                failed = True
                 section.status = "failed"
                 section.retry_count += 1
                 section.error_code = (
@@ -127,6 +140,11 @@ class AuditReportService:
                 )
             self.db.add(section)
             self.db.commit()
+        return ReportGenerationSummary(
+            status="failed" if failed else "succeeded",
+            generated_section_ids=generated_section_ids,
+            regenerated_section_ids=regenerated_section_ids,
+        )
 
     def assemble_draft(self, report: AuditReportVersion) -> str:
         sections = self._sections(report.id)

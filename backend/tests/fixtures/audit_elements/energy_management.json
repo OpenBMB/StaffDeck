@@ -70,5 +70,17 @@
     ],
     "report_section_id": "performance_evaluation",
     "required": true
+  },
+  {
+    "id": "4.8.1",
+    "management_system": "GB/T 23331-2020",
+    "title": "不符合、不合格和纠正措施",
+    "requirement": "组织应对不符合和不合格进行处理，并采取纠正措施以消除原因，防止再次发生。",
+    "query_templates": [
+      "请查找审核发现、不符合项、原因分析和纠正措施的记录。",
+      "请核对纠正措施是否经过实施、验证并保留改进效果证据。"
+    ],
+    "report_section_id": "improvements",
+    "required": true
   }
 ]
