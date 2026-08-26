@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from app.audit_cases.elements import load_required_elements
 from app.db.models import AuditElementCoverage, AuditEvidenceLedger
 
 
@@ -57,3 +58,12 @@ def test_evidence_and_report_rows_have_stable_idempotency_keys() -> None:
         assert db.exec(
             select(AuditElementCoverage).where(AuditElementCoverage.audit_case_id == "case-1")
         ).one().material_evidence_count == 0
+
+
+def test_required_elements_are_stable_and_unique() -> None:
+    elements = load_required_elements(["GB/T 23331-2020"])
+
+    assert elements
+    assert len({item.id for item in elements}) == len(elements)
+    assert all(item.query_templates for item in elements)
+    assert all(item.report_section_id for item in elements)
