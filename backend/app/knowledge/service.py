@@ -42,8 +42,18 @@ from app.knowledge.okf import (
     upsert_concepts,
 )
 from app.knowledge.parser import KnowledgeParseError, extract_text
+from app.knowledge.retrieval.bm25 import BM25Retriever
+from app.knowledge.retrieval.hybrid import (
+    HybridKnowledgeRetriever,
+    PassthroughReranker,
+)
 from app.knowledge.retrieval.indexer import KnowledgeVectorIndexer
-from app.knowledge.retrieval.vector import OpenAICompatibleEmbeddingProvider
+from app.knowledge.retrieval.reranker import LLMReranker
+from app.knowledge.retrieval.vector import (
+    EmbeddingError,
+    OpenAICompatibleEmbeddingProvider,
+    VectorRetriever,
+)
 from app.knowledge.schema import (
     KnowledgeBucketRead,
     KnowledgeChunkRead,
@@ -123,6 +133,12 @@ def _retrieval_config_is_valid(config: KnowledgeRetrievalConfig) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _retrieval_error_code(exc: Exception) -> str:
+    if isinstance(exc, EmbeddingError) and exc.args and isinstance(exc.args[0], str):
+        return str(exc.args[0])
+    return "HYBRID_RETRIEVAL_FAILED"
 
 
 @dataclass
@@ -930,9 +946,36 @@ class KnowledgeService:
         with observed_span(
             "knowledge_span", "knowledge.rank_chunks", candidate_count=len(chunks)
         ) as span:
-            ranked_candidates = _rank_chunks(
-                query, chunks, selected_buckets, expanded_sections
-            )
+            retrieval_config = self._active_retrieval_config(request.tenant_id)
+            if retrieval_config is None:
+                ranked_candidates = _rank_chunks(
+                    query, chunks, selected_buckets, expanded_sections
+                )
+            else:
+                try:
+                    hybrid_result = self._build_hybrid_retriever(
+                        retrieval_config,
+                        model_config,
+                    ).retrieve(
+                        query,
+                        chunks,
+                        max(1, retrieval_config.candidate_limit),
+                        max(1, retrieval_config.rerank_limit),
+                    )
+                    ranked_candidates = [
+                        item.chunk for item in hybrid_result.candidates
+                    ]
+                    route_trace.extend(hybrid_result.trace)
+                except Exception as exc:  # noqa: BLE001 - preserve lexical fallback.
+                    ranked_candidates = _rank_chunks(
+                        query, chunks, selected_buckets, expanded_sections
+                    )
+                    route_trace.append(
+                        {
+                            "strategy": "hybrid",
+                            "fallback_reason": _retrieval_error_code(exc),
+                        }
+                    )
             ranked_hits = _select_diverse_chunk_hits(
                 ranked_candidates, selected_buckets, request.max_chunks
             )
@@ -1508,6 +1551,49 @@ class KnowledgeService:
         if row is None:
             return None
         return resolve_model_config_for_runtime(self.db, tenant_id, row.id)
+
+    def _active_retrieval_config(self, tenant_id: str) -> KnowledgeRetrievalConfig | None:
+        if not get_settings().hybrid_knowledge_retrieval_enabled:
+            return None
+        return self.db.exec(
+            select(KnowledgeRetrievalConfig)
+            .where(
+                KnowledgeRetrievalConfig.tenant_id == tenant_id,
+                KnowledgeRetrievalConfig.enabled == True,  # noqa: E712 - SQLModel expression.
+            )
+            .order_by(KnowledgeRetrievalConfig.updated_at.desc())
+        ).first()
+
+    def _build_hybrid_retriever(
+        self,
+        retrieval_config: KnowledgeRetrievalConfig,
+        model_config: ModelConfig | None,
+    ) -> HybridKnowledgeRetriever:
+        reranker = PassthroughReranker()
+        if retrieval_config.reranker_mode == "llm":
+            reranker_config = model_config
+            if retrieval_config.reranker_model_config_id:
+                try:
+                    reranker_config = resolve_model_config_for_runtime(
+                        self.db,
+                        retrieval_config.tenant_id,
+                        retrieval_config.reranker_model_config_id,
+                    )
+                except Exception:  # noqa: BLE001 - use deterministic passthrough fallback.
+                    reranker_config = None
+            if reranker_config is not None:
+                try:
+                    reranker = LLMReranker(LLMClient(reranker_config))
+                except Exception:  # noqa: BLE001 - model setup must not break retrieval.
+                    reranker = PassthroughReranker("RERANKER_MODEL_UNAVAILABLE")
+
+        embedding_provider = OpenAICompatibleEmbeddingProvider(retrieval_config)
+        return HybridKnowledgeRetriever(
+            bm25=BM25Retriever(),
+            vector=VectorRetriever(self.db, retrieval_config),
+            reranker=reranker,
+            embedding_provider=embedding_provider,
+        )
 
     def ensure_default_knowledge_base(self, tenant_id: str) -> KnowledgeBase:
         existing = self.db.exec(

@@ -12,6 +12,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.agents.branching import ensure_open_gallery_binding
 from app.api.knowledge import (
     confirm_discovery as confirm_discovery_api,
+)
+from app.api.knowledge import (
     list_documents,
     search_knowledge,
     update_chunk,
@@ -28,6 +30,7 @@ from app.db.models import (
     KnowledgeDiscoverySuggestion,
     KnowledgeDocument,
     KnowledgeIngestJob,
+    KnowledgeRetrievalConfig,
     ModelConfig,
     Skill,
     Tenant,
@@ -35,9 +38,15 @@ from app.db.models import (
     User,
     utc_now,
 )
-from app.knowledge.schema import KnowledgeChunkUpdateRequest, KnowledgeDocumentUpdateRequest, KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.knowledge.okf import search_concepts
 from app.knowledge.parser import extract_text
+from app.knowledge.retrieval.contracts import RetrievalCandidate, RetrievalResult
+from app.knowledge.schema import (
+    KnowledgeChunkUpdateRequest,
+    KnowledgeDocumentUpdateRequest,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
+)
 from app.knowledge.service import (
     IngestPayload,
     KnowledgeDiscoveryConflictError,
@@ -561,6 +570,86 @@ def test_knowledge_search_without_model_uses_relevance_rank_order() -> None:
         )
 
         assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_frontend"]
+
+
+def test_knowledge_search_uses_hybrid_retriever_only_when_enabled(monkeypatch) -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        document = KnowledgeDocument(
+            id="kdoc_hybrid",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            filename="energy.md",
+            file_type="md",
+            title="能源评审资料",
+            status="ready",
+        )
+        bucket = KnowledgeBucket(
+            id="kbucket_hybrid",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            bucket_key="energy_review",
+            title="能源评审",
+            summary="能源评审要求和证据。",
+        )
+        chunk = KnowledgeChunk(
+            id="kchunk_hybrid",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            bucket_id=bucket.id,
+            chunk_index=0,
+            content="能源评审应保留审核证据。",
+            summary="能源评审审核证据。",
+            source_ref="energy.md#chunk=0",
+        )
+        db.add_all(
+            [
+                document,
+                bucket,
+                chunk,
+                KnowledgeRetrievalConfig(
+                    id="retrieval_hybrid",
+                    tenant_id="tenant_demo",
+                    name="测试混合检索",
+                    embedding_base_url="https://embedding.example/v1",
+                    embedding_api_key_encrypted="",
+                    embedding_model="text-embedding-model",
+                    embedding_dimensions=3,
+                    enabled=True,
+                ),
+            ]
+        )
+        db.commit()
+
+        class FakeHybrid:
+            def retrieve(self, _query, chunks, _candidate_limit, _rerank_limit):
+                return RetrievalResult(
+                    candidates=[RetrievalCandidate(chunks[0], 1.0, "reranker", 1)],
+                    trace=[{"strategy": "rrf", "selected_count": 1}],
+                )
+
+        monkeypatch.setattr(
+            "app.knowledge.service.get_settings",
+            lambda: type("Settings", (), {"hybrid_knowledge_retrieval_enabled": True})(),
+        )
+        monkeypatch.setattr(KnowledgeService, "_build_hybrid_retriever", lambda *args: FakeHybrid())
+
+        response = KnowledgeService(db).search(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_ids=["kb_demo"],
+                query="能源评审审核证据",
+                mode="chat",
+                max_buckets=1,
+                max_chunks=1,
+            )
+        )
+
+        assert [chunk.id for chunk in response.chunks] == ["kchunk_hybrid"]
+        assert any(item.get("strategy") == "rrf" for item in response.trace)
 
 
 def test_model_driven_document_route_does_not_fall_back_to_lexical_matching(monkeypatch) -> None:

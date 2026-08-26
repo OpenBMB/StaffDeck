@@ -14,7 +14,8 @@ from app.api.model_configs import validate_model_token_budget
 from app.db.database import _migrate_model_context_budget
 from app.db.models import KnowledgeChunk, KnowledgeChunkEmbedding, KnowledgeRetrievalConfig
 from app.knowledge.retrieval.bm25 import BM25Retriever
-from app.knowledge.retrieval.contracts import RetrievalCandidate
+from app.knowledge.retrieval.contracts import RetrievalCandidate, RetrievalResult
+from app.knowledge.retrieval.hybrid import HybridKnowledgeRetriever
 from app.knowledge.retrieval.indexer import KnowledgeVectorIndexer
 from app.knowledge.retrieval.reranker import LLMReranker
 from app.knowledge.retrieval.vector import (
@@ -51,6 +52,77 @@ class _FakeLLMClient:
     def generate_json(self, _prompt: str, payload: dict[str, object]) -> dict[str, object]:
         self.payload = payload
         return self.response
+
+
+class _FakeRetriever:
+    def __init__(self, strategy: str, chunk_ids: list[str]) -> None:
+        self.strategy = strategy
+        self.chunk_ids = chunk_ids
+
+    def retrieve(
+        self,
+        _query: str,
+        chunks: list[KnowledgeChunk],
+        limit: int,
+    ) -> RetrievalResult:
+        by_id = {chunk.id: chunk for chunk in chunks}
+        candidates = [
+            RetrievalCandidate(by_id[chunk_id], 1.0, self.strategy, index + 1)
+            for index, chunk_id in enumerate(self.chunk_ids)
+            if chunk_id in by_id
+        ][:limit]
+        return RetrievalResult(
+            candidates=candidates,
+            trace=[{"strategy": self.strategy, "selected_count": len(candidates)}],
+        )
+
+
+class _FailingRetriever:
+    def __init__(self, error_code: str) -> None:
+        self.error_code = error_code
+
+    def retrieve(
+        self,
+        _query: str,
+        _chunks: list[KnowledgeChunk],
+        _limit: int,
+    ) -> RetrievalResult:
+        raise EmbeddingError(self.error_code)
+
+
+class _FakeReranker:
+    def __init__(self, chunk_ids: list[str]) -> None:
+        self.chunk_ids = chunk_ids
+
+    def rerank(
+        self,
+        _query: str,
+        candidates: list[RetrievalCandidate],
+        limit: int,
+    ) -> RetrievalResult:
+        by_id = {candidate.chunk.id: candidate for candidate in candidates}
+        ranked = [
+            RetrievalCandidate(by_id[chunk_id].chunk, 0.9, "reranker", index + 1)
+            for index, chunk_id in enumerate(self.chunk_ids)
+            if chunk_id in by_id
+        ][:limit]
+        return RetrievalResult(
+            candidates=ranked,
+            trace=[{"strategy": "reranker", "selected_count": len(ranked)}],
+        )
+
+
+class _PassthroughReranker:
+    def rerank(
+        self,
+        _query: str,
+        candidates: list[RetrievalCandidate],
+        limit: int,
+    ) -> RetrievalResult:
+        return RetrievalResult(
+            candidates=candidates[:limit],
+            trace=[{"strategy": "reranker", "selected_count": min(limit, len(candidates))}],
+        )
 
 
 def _retrieval_config() -> KnowledgeRetrievalConfig:
@@ -351,3 +423,39 @@ def test_reranker_uses_model_order_and_keeps_source_scores() -> None:
             {"chunk_id": "c2", "content": "内容 c2"},
         ],
     }
+
+
+def test_hybrid_rrf_combines_bm25_and_vector_then_reranks() -> None:
+    chunks = [_chunk("c1", "one"), _chunk("c2", "two"), _chunk("c3", "three")]
+    retriever = HybridKnowledgeRetriever(
+        bm25=_FakeRetriever("bm25", ["c1", "c2"]),
+        vector=_FakeRetriever("vector", ["c3", "c2"]),
+        reranker=_FakeReranker(["c2", "c3", "c1"]),
+    )
+
+    result = retriever.retrieve("能源评审", chunks, candidate_limit=3, rerank_limit=3)
+
+    assert [item.chunk.id for item in result.candidates] == ["c2", "c3", "c1"]
+    assert [item["strategy"] for item in result.trace] == [
+        "bm25",
+        "vector",
+        "rrf",
+        "reranker",
+    ]
+
+
+def test_vector_failure_falls_back_to_bm25_without_losing_answer() -> None:
+    chunks = [_chunk("c1", "能源评审")]
+    retriever = HybridKnowledgeRetriever(
+        bm25=_FakeRetriever("bm25", ["c1"]),
+        vector=_FailingRetriever("EMBEDDING_PROVIDER_UNAVAILABLE"),
+        reranker=_PassthroughReranker(),
+    )
+
+    result = retriever.retrieve("能源评审", chunks, candidate_limit=3, rerank_limit=2)
+
+    assert [item.chunk.id for item in result.candidates] == ["c1"]
+    assert any(
+        item.get("fallback_reason") == "EMBEDDING_PROVIDER_UNAVAILABLE"
+        for item in result.trace
+    )
