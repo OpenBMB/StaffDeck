@@ -14,30 +14,26 @@ from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.capability_scope import normalize_capability_scope
 from app import paths
+from app.async_jobs import enqueue_async_job
+from app.capability_scope import normalize_capability_scope
+from app.config import get_settings
 from app.db import engine
 from app.db.models import (
-    KnowledgeBucket,
     KnowledgeBase,
+    KnowledgeBucket,
     KnowledgeChunk,
     KnowledgeConcept,
     KnowledgeDiscoverySuggestion,
     KnowledgeDocument,
     KnowledgeIngestJob,
+    KnowledgeRetrievalConfig,
     ModelConfig,
     Skill,
     Tool,
     utc_now,
 )
-from app.knowledge.parser import KnowledgeParseError, extract_text
-from app.llm.model_config_resolver import resolve_model_config_for_runtime
-from app.knowledge.schema import (
-    KnowledgeBucketRead,
-    KnowledgeChunkRead,
-    KnowledgeSearchRequest,
-    KnowledgeSearchResponse,
-)
+from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
 from app.knowledge.okf import (
     build_okf_for_document,
     okf_citations_for_concepts,
@@ -45,11 +41,20 @@ from app.knowledge.okf import (
     selected_concept_cards,
     upsert_concepts,
 )
-from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
+from app.knowledge.parser import KnowledgeParseError, extract_text
+from app.knowledge.retrieval.indexer import KnowledgeVectorIndexer
+from app.knowledge.retrieval.vector import OpenAICompatibleEmbeddingProvider
+from app.knowledge.schema import (
+    KnowledgeBucketRead,
+    KnowledgeChunkRead,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
+)
 from app.llm import LLMClient, LLMError
+from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.observability.spans import llm_operation, observed_span
+from app.security.encryption import decrypt_secret
 from app.skills.skill_schema import SkillCard, SkillGraphEdge, SkillGraphNode
-
 
 PROMPT_DIR = paths.resource_dir() / "app" / "llm" / "prompts"
 BUCKET_PROMPT = PROMPT_DIR / "knowledge_bucket_prompt.md"
@@ -102,6 +107,22 @@ INGEST_STAGES: list[dict[str, Any]] = [
 
 INGEST_STAGE_BY_KEY = {stage["key"]: stage for stage in INGEST_STAGES}
 logger = logging.getLogger(__name__)
+
+
+def _retrieval_config_is_valid(config: KnowledgeRetrievalConfig) -> bool:
+    if (
+        not config.embedding_base_url.strip()
+        or not config.embedding_model.strip()
+        or config.embedding_dimensions < 1
+    ):
+        return False
+    try:
+        # Local OpenAI-compatible servers may intentionally use an empty key;
+        # only a key that cannot be decrypted makes the config invalid here.
+        decrypt_secret(config.embedding_api_key_encrypted)
+    except ValueError:
+        return False
+    return True
 
 
 @dataclass
@@ -553,6 +574,7 @@ class KnowledgeService:
             )
 
             self._discover_from_document(job.tenant_id, job.knowledge_base_id, document, buckets, job)
+            self._queue_vector_index_if_enabled(job, document)
             self._update_ingest_stage(
                 job,
                 "done",
@@ -585,6 +607,98 @@ class KnowledgeService:
                 detail=str(exc),
             )
             self._clear_embedded_content(job)
+
+    def _queue_vector_index_if_enabled(
+        self,
+        job: KnowledgeIngestJob,
+        document: KnowledgeDocument,
+    ) -> None:
+        settings = get_settings()
+        if not settings.hybrid_knowledge_retrieval_enabled:
+            return
+        config = self.db.exec(
+            select(KnowledgeRetrievalConfig)
+            .where(
+                KnowledgeRetrievalConfig.tenant_id == document.tenant_id,
+                KnowledgeRetrievalConfig.enabled == True,  # noqa: E712 - SQLModel expression.
+            )
+            .order_by(KnowledgeRetrievalConfig.updated_at.desc())
+        ).first()
+        if config is None or not _retrieval_config_is_valid(config):
+            logger.warning(
+                "hybrid retrieval enabled but no valid embedding configuration is available",
+                extra={"tenant_id": document.tenant_id},
+            )
+            return
+
+        enqueue_async_job(
+            "knowledge_vector_index",
+            KnowledgeService.run_vector_index_job,
+            document.tenant_id,
+            document.knowledge_base_version_id,
+            document.id,
+            config.id,
+            metadata={
+                "tenant_id": document.tenant_id,
+                "knowledge_base_version_id": document.knowledge_base_version_id,
+                "document_id": document.id,
+            },
+        )
+        job.metadata_json = {
+            **(job.metadata_json or {}),
+            "vector_index": {
+                "status": "queued",
+                "retrieval_config_id": config.id,
+            },
+        }
+        self.db.add(job)
+        self.db.commit()
+        self.db.refresh(job)
+
+    @staticmethod
+    def run_vector_index_job(
+        tenant_id: str,
+        knowledge_base_version_id: str,
+        document_id: str,
+        retrieval_config_id: str,
+    ) -> None:
+        with Session(engine) as db:
+            config = db.get(KnowledgeRetrievalConfig, retrieval_config_id)
+            if (
+                config is None
+                or config.tenant_id != tenant_id
+                or not config.enabled
+                or not _retrieval_config_is_valid(config)
+            ):
+                return
+            chunks = db.exec(
+                select(KnowledgeChunk)
+                .where(
+                    KnowledgeChunk.tenant_id == tenant_id,
+                    KnowledgeChunk.knowledge_base_version_id == knowledge_base_version_id,
+                    KnowledgeChunk.document_id == document_id,
+                )
+                .order_by(KnowledgeChunk.chunk_index)
+            ).all()
+            if not chunks:
+                return
+            provider = OpenAICompatibleEmbeddingProvider(config)
+            summary = KnowledgeVectorIndexer(db, config, provider).index_version(
+                tenant_id,
+                knowledge_base_version_id,
+                chunks,
+            )
+            logger.info(
+                "knowledge vector index completed",
+                extra={
+                    "tenant_id": tenant_id,
+                    "knowledge_base_version_id": knowledge_base_version_id,
+                    "document_id": document_id,
+                    "indexed": summary.indexed,
+                    "skipped": summary.skipped,
+                    "failed": summary.failed,
+                },
+            )
 
     def search(self, request: KnowledgeSearchRequest, model_config: ModelConfig | None = None) -> KnowledgeSearchResponse:
         with observed_span(

@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     # 一张独立卡片展示智能体每一步（SOP/工具/知识检索），与正文回复互不影响。
     # 仅影响飞书渠道；关闭时退化为仅发最终回复。
     channel_feishu_trace_enabled: bool = True
+    # Vector indexing is opt-in. The existing lexical knowledge search remains
+    # the safe default until an administrator configures and enables embedding.
+    hybrid_knowledge_retrieval_enabled: bool = False
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),
