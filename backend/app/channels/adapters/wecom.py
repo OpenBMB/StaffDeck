@@ -146,6 +146,13 @@ def is_self_frame(frame: dict[str, Any]) -> bool:
     return bool(sender) and bool(bot_id) and sender == bot_id
 
 
+def _strip_bot_mention(text: str, *, is_group: bool) -> str:
+    """Remove the leading WeCom bot mention before command parsing."""
+    if not is_group:
+        return text
+    return re.sub(r"^\s*(?:<@[^>\s]+>|@[^\s]+)\s*", "", text).strip()
+
+
 def normalize_wecom_frame(frame: dict[str, Any], *, account_scope: str = "") -> ChannelInbound | None:
     """归一化企微 WS 消息帧；自身消息/非文本语音/缺字段返回 None（丢弃）。"""
     if not isinstance(frame, dict) or is_self_frame(frame):
@@ -239,8 +246,6 @@ def normalize_wecom_frame(frame: dict[str, Any], *, account_scope: str = "") -> 
                         )
                     )
             text = "\n".join(text_parts)
-    if not text and not attachments:
-        return None
     from_user_id = str((body.get("from") or {}).get("userid") or "").strip()
     if not from_user_id:
         return None
@@ -252,6 +257,10 @@ def normalize_wecom_frame(frame: dict[str, Any], *, account_scope: str = "") -> 
         chattype = "single"
     # 官方文档：chatid 仅群聊返回
     is_group = bool(chat_id)
+    if text:
+        text = _strip_bot_mention(text, is_group=is_group)
+    if not text and not attachments:
+        return None
     headers = frame.get("headers") or {}
     event_id = str(body.get("msgid") or body.get("msg_id") or headers.get("req_id") or "").strip()
     if not event_id:
