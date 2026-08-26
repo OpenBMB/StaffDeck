@@ -842,6 +842,38 @@ def _step_timeout_result(
     )
 
 
+_READ_FILE_CONTROL_FIELDS = (
+    "path",
+    "requested_offset",
+    "offset",
+    "next_offset",
+    "continuation_token",
+    "truncated",
+    "eof",
+    "size",
+    "sha256",
+)
+
+
+def _bounded_read_file_data(
+    data: dict[str, Any], *, char_budget: int
+) -> dict[str, Any]:
+    content = str(data.get("content") or "")
+    bounded = {
+        key: data.get(key)
+        for key in _READ_FILE_CONTROL_FIELDS
+        if key in data
+    }
+    bounded["content_total_chars"] = len(content)
+    fixed_chars = len(
+        json.dumps(bounded, ensure_ascii=False, sort_keys=True, default=str)
+    )
+    preview_budget = max(0, char_budget - fixed_chars - 160)
+    bounded["content"] = content[:preview_budget]
+    bounded["content_truncated_for_model"] = len(bounded["content"]) < len(content)
+    return bounded
+
+
 def _bounded_capability_result(
     tool_name: str,
     result: dict[str, Any],
@@ -854,6 +886,11 @@ def _bounded_capability_result(
         "data": result.get("data"),
         "error": result.get("error"),
     }
+    data = result.get("data")
+    if tool_name == "read_file" and isinstance(data, dict):
+        payload["data"] = _bounded_read_file_data(
+            data, char_budget=max(0, max_chars - 256)
+        )
     if isinstance(result.get("mcp_app"), dict):
         payload["mcp_app"] = result["mcp_app"]
     serialized = json.dumps(

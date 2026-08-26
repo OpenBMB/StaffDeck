@@ -103,6 +103,31 @@ from app.skills.skill_schema import SkillCapabilityRefs
 from app.tools.tool_schema import ToolResult
 
 
+def test_bounded_read_file_result_preserves_continuation_metadata() -> None:
+    token = "continuation-token-that-must-remain-complete"
+    result = harness_agent_module._bounded_capability_result(
+        "read_file",
+        {
+            "success": True,
+            "data": {
+                "path": "attachments/audit.txt",
+                "content": "能" * 20_000,
+                "offset": 0,
+                "next_offset": 25_600,
+                "continuation_token": token,
+                "eof": False,
+                "size": 120_000,
+                "sha256": "a" * 64,
+            },
+        },
+    )
+    assert result["data"]["continuation_token"] == token
+    assert result["data"]["next_offset"] == 25_600
+    assert result["data"]["content_truncated_for_model"] is True
+    assert result["data"]["content_total_chars"] == 20_000
+    assert len(json.dumps(result, ensure_ascii=False)) <= 12_000
+
+
 def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
     request = ChatTurnRequest(
         tenant_id="tenant-demo",
