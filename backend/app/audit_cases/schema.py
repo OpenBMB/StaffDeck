@@ -65,6 +65,20 @@ class AuditCaseCoverageRead(BaseModel):
     chunk_coverage: float
 
 
+class AuditCoverageSnapshot(BaseModel):
+    file_coverage: float
+    chunk_coverage: float
+    element_coverage: float
+    publish_allowed: bool
+    blockers: list[str]
+    files_total: int
+    files_succeeded: int
+    chunks_total: int
+    chunks_succeeded: int
+    elements_total: int
+    elements_resolved: int
+
+
 class AuditCaseNotFound(LookupError):
     pass
 

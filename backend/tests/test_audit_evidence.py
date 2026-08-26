@@ -5,11 +5,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from app.audit_cases.coverage import calculate_coverage
 from app.audit_cases.elements import load_required_elements
 from app.audit_cases.evidence import AuditEvidenceProcessor
 from app.audit_cases.evidence_schema import AuditEvidenceError, validate_extraction_result
 from app.db.models import (
     AuditCase,
+    AuditCaseMaterial,
     AuditCaseMaterialChunk,
     AuditElementCoverage,
     AuditEvidenceLedger,
@@ -172,3 +174,84 @@ def test_extracted_evidence_must_reference_known_element() -> None:
             },
             allowed_element_ids={"4.4.3"},
         )
+
+
+def _coverage_case(
+    db: Session, intervals: list[tuple[int, int]], statuses: list[str]
+) -> AuditCase:
+    case = AuditCase(
+        id="case-coverage",
+        tenant_id="tenant_demo",
+        owner_user_id="user-1",
+        organization_name="示例组织",
+        report_type="再认证审核报告",
+        management_systems_json=["GB/T 23331-2020"],
+    )
+    material = AuditCaseMaterial(
+        id="material-coverage",
+        tenant_id=case.tenant_id,
+        audit_case_id=case.id,
+        attachment_id="attachment-1",
+        material_type="audit_record",
+        filename="审核记录.txt",
+        content_type="text/plain",
+        sha256="material-sha",
+        size=1800,
+        storage_key="case-coverage/material-coverage/source",
+        characters=1800,
+        extraction_status="succeeded",
+        processing_status="succeeded",
+    )
+    chunks = [
+        AuditCaseMaterialChunk(
+            id=f"coverage-chunk-{index + 1}",
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            material_id=material.id,
+            chunk_index=index,
+            start_char=start,
+            end_char=end,
+            content_sha256=f"coverage-sha-{index + 1}",
+            content="x" * (end - start),
+            processing_status=status,
+        )
+        for index, ((start, end), status) in enumerate(zip(intervals, statuses, strict=True))
+    ]
+    coverages = [
+        AuditElementCoverage(
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            audit_element_id=element.id,
+            status="evidence_found",
+        )
+        for element in load_required_elements(case.management_systems_json)
+    ]
+    db.add(case)
+    db.add(material)
+    db.add_all(chunks)
+    db.add_all(coverages)
+    db.commit()
+    return case
+
+
+def test_coverage_gate_requires_all_files_chunks_and_elements() -> None:
+    with _test_session() as db:
+        case = _coverage_case(db, [(0, 900), (900, 1800)], ["succeeded", "pending"])
+
+        snapshot = calculate_coverage(db, case)
+
+        assert snapshot.file_coverage == 1.0
+        assert snapshot.chunk_coverage == 0.5
+        assert snapshot.element_coverage == 1.0
+        assert snapshot.publish_allowed is False
+        assert snapshot.blockers == ["CHUNK_COVERAGE_INCOMPLETE"]
+
+
+def test_chunk_interval_gap_blocks_publish_even_when_status_succeeded() -> None:
+    with _test_session() as db:
+        case = _coverage_case(db, [(0, 900), (901, 1800)], ["succeeded", "succeeded"])
+
+        snapshot = calculate_coverage(db, case)
+
+        assert "CHUNK_INTERVAL_GAP" in snapshot.blockers
+        assert snapshot.publish_allowed is False
