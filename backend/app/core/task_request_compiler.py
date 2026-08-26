@@ -52,6 +52,14 @@ class CapabilityManifest(BaseModel):
         }
 
 
+class MaterialManifestItem(BaseModel):
+    attachment_id: str
+    filename: str
+    sha256: str | None = None
+    workspace_path: str | None = None
+    status: Literal["available", "failed"]
+
+
 class TaskRequirement(BaseModel):
     task_frame_id: str
     kind: Literal["sop", "conversation"]
@@ -69,6 +77,7 @@ class TaskRequirement(BaseModel):
     memory_projection: list[dict[str, str]] = Field(default_factory=list)
     prior_task_results: list[dict[str, Any]] = Field(default_factory=list)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    material_manifest: list[MaterialManifestItem] = Field(default_factory=list)
     capability_manifest: CapabilityManifest = Field(default_factory=CapabilityManifest)
 
 
@@ -163,6 +172,19 @@ class TaskRequestCompiler:
                     "检索当前 SOP 节点要求的知识库：" + "、".join(required_knowledge_base_ids),
                 ]
             )
+        material_manifest = [
+            MaterialManifestItem(
+                attachment_id=str(item.get("attachment_id") or ""),
+                filename=str(item.get("filename") or ""),
+                sha256=str(item.get("sha256") or "") or None,
+                workspace_path=str(item.get("workspace_path") or "") or None,
+                status="available" if item.get("materialized") else "failed",
+            )
+            for item in attachments or []
+            if isinstance(item, dict)
+            and item.get("attachment_id")
+            and item.get("filename")
+        ]
         return TaskRequirement(
             task_frame_id=str(frame.task_id or ""),
             kind=frame.kind,
@@ -182,6 +204,7 @@ class TaskRequestCompiler:
             memory_projection=_memory_projection(memory_context),
             prior_task_results=list(prior_task_results or []),
             attachments=list(attachments or []),
+            material_manifest=material_manifest,
             capability_manifest=manifest,
         )
 
