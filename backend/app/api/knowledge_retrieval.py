@@ -16,6 +16,7 @@ from app.db.models import (
     KnowledgeChunk,
     KnowledgeChunkEmbedding,
     KnowledgeRetrievalConfig,
+    ModelConfig,
     User,
     new_id,
     utc_now,
@@ -129,6 +130,10 @@ def upsert_retrieval_config(
     ensure_tenant_admin(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     base_url = _validate_embedding_url(request.embedding_base_url)
+    if request.reranker_model_config_id:
+        model_config = db.get(ModelConfig, request.reranker_model_config_id)
+        if not model_config or model_config.tenant_id != request.tenant_id:
+            raise HTTPException(status_code=422, detail="RERANKER_MODEL_CONFIG_INVALID")
     row = _config_for_tenant(db, request.tenant_id)
     if row is None:
         row = KnowledgeRetrievalConfig(

@@ -180,6 +180,7 @@ type KnowledgeRetrievalDraft = {
   embedding_model: string;
   embedding_dimensions: string;
   reranker_mode: 'llm' | 'none';
+  reranker_model_config_id: string;
   candidate_limit: string;
   rerank_limit: string;
   enabled: boolean;
@@ -192,12 +193,19 @@ const DEFAULT_KNOWLEDGE_RETRIEVAL_DRAFT: KnowledgeRetrievalDraft = {
   embedding_model: '',
   embedding_dimensions: '1536',
   reranker_mode: 'llm',
+  reranker_model_config_id: '',
   candidate_limit: '40',
   rerank_limit: '12',
   enabled: false,
 };
 
-export function KnowledgeRetrievalPanel({ tenantId = TENANT_ID }: { tenantId?: string }) {
+export function KnowledgeRetrievalPanel({
+  tenantId = TENANT_ID,
+  modelConfigs = [],
+}: {
+  tenantId?: string;
+  modelConfigs?: ModelConfigRead[];
+}) {
   const [config, setConfig] = useState<KnowledgeRetrievalConfigRead | null>(null);
   const [statuses, setStatuses] = useState<KnowledgeVectorIndexStatus[]>([]);
   const [draft, setDraft] = useState<KnowledgeRetrievalDraft>(DEFAULT_KNOWLEDGE_RETRIEVAL_DRAFT);
@@ -227,6 +235,7 @@ export function KnowledgeRetrievalPanel({ tenantId = TENANT_ID }: { tenantId?: s
         embedding_model: next.embedding_model,
         embedding_dimensions: String(next.embedding_dimensions),
         reranker_mode: next.reranker_mode === 'none' ? 'none' : 'llm',
+        reranker_model_config_id: next.reranker_model_config_id || '',
         candidate_limit: String(next.candidate_limit),
         rerank_limit: String(next.rerank_limit),
         enabled: next.enabled,
@@ -266,6 +275,7 @@ export function KnowledgeRetrievalPanel({ tenantId = TENANT_ID }: { tenantId?: s
           embedding_model: draft.embedding_model.trim(),
           embedding_dimensions: Number(draft.embedding_dimensions),
           reranker_mode: draft.reranker_mode,
+          reranker_model_config_id: draft.reranker_model_config_id || null,
           candidate_limit: Number(draft.candidate_limit),
           rerank_limit: Number(draft.rerank_limit),
           enabled: draft.enabled,
@@ -303,7 +313,7 @@ export function KnowledgeRetrievalPanel({ tenantId = TENANT_ID }: { tenantId?: s
     <KCard title="混合检索配置" extra={config?.enabled ? <KTag color="green">已启用</KTag> : <KTag>未启用</KTag>}>
       <div className="flex flex-col gap-[14px]" data-testid="knowledge-retrieval-panel">
         <p className="m-0 text-[12px] leading-[1.6] text-[#858b9c]">
-          BM25 负责关键词命中，Embedding 负责语义召回，候选集合再交给 reranker 重排。API Key 只写入不回显。
+          BM25 负责关键词命中，Embedding 负责语义召回，候选集合再交给 reranker 重排。API Key 只写入不回显；首次启用前还需在 backend/.env 设置 HYBRID_KNOWLEDGE_RETRIEVAL_ENABLED=true 并重启服务。
         </p>
         {error ? <p className="m-0 rounded-[8px] bg-[#fff1f0] px-[10px] py-[8px] text-[12px] text-[#d20b0b]">{error}</p> : null}
         <div className="grid gap-[12px] md:grid-cols-2">
@@ -332,6 +342,13 @@ export function KnowledgeRetrievalPanel({ tenantId = TENANT_ID }: { tenantId?: s
             <select value={draft.reranker_mode} onChange={(event) => updateDraft('reranker_mode', event.target.value as 'llm' | 'none')} className="h-[34px] rounded-[8px] border border-[#e3e7f1] bg-white px-[10px] text-[12px] text-[#18181a] outline-none">
               <option value="llm">大模型重排</option>
               <option value="none">不重排（使用 RRF）</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
+            Reranker 模型
+            <select value={draft.reranker_model_config_id} onChange={(event) => updateDraft('reranker_model_config_id', event.target.value)} disabled={draft.reranker_mode === 'none'} className="h-[34px] rounded-[8px] border border-[#e3e7f1] bg-white px-[10px] text-[12px] text-[#18181a] outline-none disabled:opacity-60">
+              <option value="">使用当前知识检索模型</option>
+              {modelConfigs.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}
             </select>
           </label>
           <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
@@ -1366,7 +1383,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
           <StatCard label="文档总数" value={stats.documents} />
         </div>
 
-        {isEnterpriseAdmin(currentUser) ? <KnowledgeRetrievalPanel tenantId={TENANT_ID} /> : null}
+        {isEnterpriseAdmin(currentUser) ? <KnowledgeRetrievalPanel tenantId={TENANT_ID} modelConfigs={modelConfigs} /> : null}
 
         <div className="flex flex-col gap-[18px]">
           <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">

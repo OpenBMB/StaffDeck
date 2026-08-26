@@ -157,6 +157,18 @@ DEMO_MODEL_API_KEY="你的API-Key"
 
 API Key 用于创建初始模型配置，存入数据库前会被加密。请勿提交 `backend/.env`。服务启动后也可以在**管理员 → 模型配置**中管理模型服务。
 
+#### 可选：启用混合知识检索
+
+如需在知识库中启用 BM25 + Embedding + reranker，先在 `backend/.env` 设置并重启服务：
+
+```dotenv
+HYBRID_KNOWLEDGE_RETRIEVAL_ENABLED="true"
+```
+
+然后进入**管理员 → 知识库**，在“混合检索配置”中填写 OpenAI-compatible Embedding 地址、模型名和准确的向量维度，选择候选数、reranker 模式及模型并保存。地址填写到 `/v1` 这一层即可，系统会调用其 `/embeddings` 接口。API Key 只允许写入，数据库中加密保存，读取时只返回掩码。
+
+开启配置后可以在同一面板查看每个知识库版本的向量总数、就绪数、失败数和缺失数，并点击“重建缺失向量”。文档内容变化会按内容哈希重新向量化，未变化的块不会重复调用 Embedding 服务。Embedding 失败时自动回退 BM25，reranker 失败时保留 RRF 融合结果；关闭全局开关或配置开关都不会改变原有词法检索路径。
+
 ### 3. 启动 Web Demo
 
 | 平台 | 推荐命令 |
