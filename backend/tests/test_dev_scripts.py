@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -126,3 +125,12 @@ def test_powershell_launcher_accepts_newer_python_3_versions() -> None:
 
     assert 'Prefix = @("-3.11")' in script
     assert 'Prefix = @("-3")' in script
+
+
+def test_powershell_launcher_prefers_repository_virtualenv() -> None:
+    script = (SCRIPTS_DIR / "dev.ps1").read_text(encoding="utf-8")
+
+    assert '$repositoryPython = Join-Path $root "backend\\.venv\\Scripts\\python.exe"' in script
+    local_candidate = '[pscustomobject]@{ File = $repositoryPython; Prefix = @() }'
+    assert local_candidate in script
+    assert script.index(local_candidate) < script.index('File = "py"')

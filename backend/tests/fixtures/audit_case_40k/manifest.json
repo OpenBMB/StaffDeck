@@ -2,6 +2,11 @@
   "organization_name": "StaffDeck 审核流水线测试企业",
   "report_type": "再认证",
   "management_systems": ["GB/T 23331-2020"],
+  "acceptance": {
+    "audit_record_characters": 40000,
+    "required_audit_element_count": 7,
+    "knowledge_base_version_ids": ["kb-version-1"]
+  },
   "generated_files": [
     {
       "filename": "审核计划.txt",

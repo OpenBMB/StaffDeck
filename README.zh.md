@@ -180,6 +180,21 @@ HYBRID_KNOWLEDGE_RETRIEVAL_ENABLED="true"
 
 当前版本的 Harness 可靠性修复支持同一 `TaskFrame` 在后续轮次继续使用已经物化的附件。审核报告场景还支持通过审核项目材料库跨对话复用材料：先在 `POST /api/audit-cases` 创建项目，再通过 `POST /api/audit-cases/{case_id}/materials` 上传材料并等待处理状态为 `succeeded`，新建对话后在页面选择该项目即可继续生成报告。系统会按项目材料清单装载当前版本，不会要求重复上传状态为 `available` 或处理成功的材料；只有缺失、解析失败或版本冲突的材料需要补充。项目材料与会话绑定后不可在同一会话切换到另一个项目，避免证据串用。
 
+#### 审核报告流水线验收样例
+
+仓库提供固定的 4 万字审核记录验收样例。它会逐块处理审核记录全文，检索并登记知识库证据，生成带引用的报告章节，再执行发布门禁。验收必须同时满足：文件、文本块和审核要素覆盖率均为 `1.0`，`publish_allowed` 为 `true`，并且报告返回材料版本 ID 和知识库版本 ID。
+
+Windows PowerShell 可在项目根目录运行：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest .\backend\tests\test_audit_pipeline_acceptance.py -q
+.\scripts\dev_up.ps1 --detach
+curl.exe http://127.0.0.1:5173/api/health
+Start-Process http://127.0.0.1:5173/workspace/gallery
+```
+
+健康检查应返回 `status=ok`；打开技能广场后应能看到数字员工和审核项目选择入口。验收样例使用模拟模型与固定知识库响应，不会调用真实模型或修改生产知识库。
+
 ### 4. 验证安装
 
 macOS、Linux 或 WSL：
