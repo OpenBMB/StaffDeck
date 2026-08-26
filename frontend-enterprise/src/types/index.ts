@@ -578,6 +578,7 @@ export type ChatSession = {
   id: string;
   tenant_id: string;
   user_id?: string;
+  audit_case_id?: string | null;
   agent_id?: string;
   title?: string;
   active_skill_id?: string;
@@ -590,6 +591,51 @@ export type ChatSession = {
   team_id?: string | null;
   team_name?: string | null;
   updated_at: string;
+};
+
+export type AuditCaseRead = {
+  id: string;
+  tenant_id: string;
+  owner_user_id: string;
+  member_user_ids: string[];
+  organization_name: string;
+  report_type: string;
+  management_systems: string[];
+  status: string;
+  knowledge_base_version_ids: string[];
+  active_report_version_id?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AuditCaseMaterialRead = {
+  id: string;
+  audit_case_id: string;
+  attachment_id: string;
+  material_type: string;
+  filename: string;
+  content_type: string;
+  sha256: string;
+  size: number;
+  characters: number;
+  extraction_status: string;
+  processing_status: string;
+  version: number;
+  is_current: boolean;
+  supersedes_material_id?: string | null;
+  error_code?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AuditCaseCoverageRead = {
+  current_material_count: number;
+  successful_material_count: number;
+  failed_material_count: number;
+  total_chunk_count: number;
+  successful_chunk_count: number;
+  file_coverage: number;
+  chunk_coverage: number;
 };
 
 export type ChatAttachmentKind = 'text' | 'pdf' | 'image' | 'binary';

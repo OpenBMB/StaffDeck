@@ -11,6 +11,7 @@ import ChatHeader from './components/ChatHeader';
 import MessageList from './components/MessageList';
 import Composer from './components/Composer';
 import ChatDialogs from './components/ChatDialogs';
+import AuditCasePanel from './components/AuditCasePanel';
 
 export default function ChatPage() {
   const chat = useChatSession();
@@ -57,6 +58,15 @@ export default function ChatPage() {
       />
       <main className={cn(CHAT_MAIN_CLASS, 'flex-1')}>
         <ChatHeader chat={chat} />
+        <AuditCasePanel
+          cases={chat.auditCases}
+          selectedId={chat.selectedAuditCaseId}
+          materials={chat.auditCaseMaterials}
+          coverage={chat.auditCaseCoverage}
+          loading={chat.auditCasesLoading || chat.auditCaseMaterialsLoading}
+          locked={Boolean(chat.currentSession?.audit_case_id)}
+          onSelect={chat.selectAuditCase}
+        />
         <MessageList chat={chat} />
         <Composer chat={chat} />
       </main>
