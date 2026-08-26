@@ -99,6 +99,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_channel_bind_code_constraints(conn, tables)
         _migrate_capability_scope_schema(conn, inspector, tables)
         _migrate_harness_v2_schema(conn, inspector, tables)
+        _migrate_audit_case_schema(conn, inspector, tables)
 
         if "api_jobs" in tables:
             job_columns = {column["name"] for column in inspector.get_columns("api_jobs")}
@@ -2010,6 +2011,24 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
             "ix_harness_invocations_logical_action_key "
             "ON harness_invocations(logical_action_key) "
             "WHERE logical_action_key IS NOT NULL"
+            )
+        )
+
+
+def _migrate_audit_case_schema(conn, inspector, tables: set[str]) -> None:
+    """Add the nullable project reference to databases created before Phase 2."""
+
+    if "sessions" not in tables:
+        return
+    # The caller's Inspector may have cached the pre-migration column list.
+    # Re-inspect the active connection so repeated startup migrations are safe.
+    columns = {column["name"] for column in inspect(conn).get_columns("sessions")}
+    if "audit_case_id" not in columns:
+        conn.execute(text("ALTER TABLE sessions ADD COLUMN audit_case_id VARCHAR"))
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sessions_audit_case_id "
+            "ON sessions(audit_case_id)"
         )
     )
 

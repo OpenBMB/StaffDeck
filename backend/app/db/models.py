@@ -25,6 +25,94 @@ class Tenant(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class AuditCase(SQLModel, table=True):
+    __tablename__ = "audit_cases"
+
+    id: str = Field(default_factory=lambda: new_id("auditcase"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    owner_user_id: str = Field(index=True)
+    member_user_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    organization_name: str = Field(index=True)
+    report_type: str
+    management_systems_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="collecting", index=True)
+    knowledge_base_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    active_report_version_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCaseMaterial(SQLModel, table=True):
+    __tablename__ = "audit_case_materials"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "audit_case_id", "sha256", name="uq_audit_case_material_sha"),
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "filename",
+            "version",
+            name="uq_audit_case_material_version",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditmat"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    attachment_id: str = Field(index=True)
+    material_type: str = Field(index=True)
+    filename: str = Field(index=True)
+    content_type: str
+    sha256: str = Field(index=True)
+    size: int
+    storage_key: str
+    extracted_text_storage_key: Optional[str] = None
+    characters: int = 0
+    extraction_status: str = Field(default="pending", index=True)
+    processing_status: str = Field(default="pending", index=True)
+    version: int = 1
+    is_current: bool = Field(default=True, index=True)
+    supersedes_material_id: Optional[str] = Field(default=None, index=True)
+    error_code: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCaseMaterialChunk(SQLModel, table=True):
+    __tablename__ = "audit_case_material_chunks"
+    __table_args__ = (
+        UniqueConstraint("material_id", "chunk_index", name="uq_audit_material_chunk_index"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditchunk"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    material_id: str = Field(index=True)
+    chunk_index: int = Field(index=True)
+    start_char: int
+    end_char: int
+    content_sha256: str
+    content: str
+    page_refs_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    processing_status: str = Field(default="pending", index=True)
+    extracted_facts_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCaseEvent(SQLModel, table=True):
+    __tablename__ = "audit_case_events"
+
+    id: str = Field(default_factory=lambda: new_id("auditevent"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    actor_user_id: str = Field(index=True)
+    event_type: str = Field(index=True)
+    resource_type: str
+    resource_id: str
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class User(SQLModel, table=True):
     __tablename__ = "users"
     __table_args__ = (
@@ -822,6 +910,8 @@ class ChatSession(SQLModel, table=True):
     channel_account_key: Optional[str] = Field(default=None, index=True)
     # 团队会话挂接:非空表示该会话属于某团队(TL 对话/任务执行等)
     team_id: Optional[str] = Field(default=None, index=True)
+    # 审核项目绑定:历史会话保持 NULL,不自动归属任何项目
+    audit_case_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
