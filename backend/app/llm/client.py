@@ -84,6 +84,27 @@ EMPTY_RESPONSE_MESSAGE = "Model returned an empty response"
 DEFAULT_MODEL_API_TIMEOUT_SECONDS = 600.0
 DEFAULT_INPUT_TOKEN_BUDGET = 32_000
 TURN_STAGE_MESSAGE_MARKER = "_agent_turn_message"
+
+
+def _input_token_budget(model_config: Any, max_output_tokens: int) -> int:
+    budget_is_trusted = (
+        getattr(model_config, "trust_status", "unverified") == "verified"
+        and getattr(model_config, "context_window_source", "default") == "admin_attested"
+        and getattr(model_config, "context_window_tokens", None) is not None
+    )
+    if not budget_is_trusted:
+        return DEFAULT_INPUT_TOKEN_BUDGET
+    try:
+        context_window_tokens = int(model_config.context_window_tokens)
+        safe_input_tokens = int(model_config.safe_input_tokens)
+        max_safe_input_tokens = context_window_tokens - int(max_output_tokens) - 4_096
+    except (TypeError, ValueError, AttributeError):
+        return DEFAULT_INPUT_TOKEN_BUDGET
+    if safe_input_tokens < 1 or safe_input_tokens > max_safe_input_tokens:
+        return DEFAULT_INPUT_TOKEN_BUDGET
+    return safe_input_tokens
+
+
 class _CurrentStageText(str):
     pass
 
@@ -155,6 +176,7 @@ class LLMClient:
         self.model_config_name = str(getattr(model_config, "name", "") or "").strip()
         self.temperature = model_config.temperature
         self.max_output_tokens = model_config.max_output_tokens
+        self.input_token_budget = _input_token_budget(model_config, self.max_output_tokens)
         legacy_extra_body = getattr(model_config, "legacy_extra_body", {})
         protocol_options = getattr(model_config, "protocol_options", {})
         vendor_extra_body = _normalize_extra_body(
@@ -187,7 +209,10 @@ class LLMClient:
         request_messages = _request_messages(system_prompt, context_messages, serialized)
         if response_format and response_format.get("type") == "json_object":
             request_messages = _with_json_mode_instruction(request_messages)
-        request_messages = _fit_request_messages(request_messages)
+        request_messages = _fit_request_messages(
+            request_messages,
+            token_budget=getattr(self, "input_token_budget", DEFAULT_INPUT_TOKEN_BUDGET),
+        )
         if isinstance(user_payload, dict) and isinstance(
             user_payload.get(STAGE_PROTOCOL_KEY), dict
         ):
@@ -313,7 +338,10 @@ class LLMClient:
         )
         context_messages, serialized = _prepare_user_input(user_payload)
         request_messages = _request_messages(system_prompt, context_messages, serialized)
-        request_messages = _fit_request_messages(request_messages)
+        request_messages = _fit_request_messages(
+            request_messages,
+            token_budget=getattr(self, "input_token_budget", DEFAULT_INPUT_TOKEN_BUDGET),
+        )
         if isinstance(user_payload, dict) and isinstance(
             user_payload.get(STAGE_PROTOCOL_KEY), dict
         ):
