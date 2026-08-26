@@ -47,6 +47,7 @@ router = APIRouter(
 )
 
 MODEL_VERIFICATION_DEADLINE_SECONDS = 90.0
+DEFAULT_SAFE_INPUT_TOKENS = 32_000
 MODEL_VERIFICATION_PROBES = (
     ("text", 25.0),
     ("stream", 25.0),
@@ -76,6 +77,9 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
         model=row.model,
         temperature=row.temperature,
         max_output_tokens=row.max_output_tokens,
+        context_window_tokens=row.context_window_tokens,
+        context_window_source=row.context_window_source,
+        safe_input_tokens=row.safe_input_tokens,
         extra_body=dict(extra_body),
         protocol_options=current_protocol_options(
             row.protocol_options_json, ModelApiProtocol(row.api_protocol)
@@ -129,6 +133,9 @@ def create_model_config(
         model=request.model,
         temperature=request.temperature,
         max_output_tokens=request.max_output_tokens,
+        context_window_tokens=request.context_window_tokens,
+        context_window_source=request.context_window_source,
+        safe_input_tokens=request.safe_input_tokens,
         extra_body_json=extra_body,
         protocol_options_json={protocol.value: options},
         is_default=False,
@@ -141,6 +148,13 @@ def create_model_config(
         if request.is_default or not _has_available_model(db, request.tenant_id):
             _clear_default(db, request.tenant_id)
             row.is_default = True
+    validate_model_token_budget(
+        context_window_tokens=row.context_window_tokens,
+        context_window_source=row.context_window_source,
+        trust_status=row.trust_status,
+        safe_input_tokens=row.safe_input_tokens,
+        max_output_tokens=row.max_output_tokens,
+    )
     db.add(row)
     _commit_or_conflict(db)
     db.refresh(row)
@@ -192,6 +206,41 @@ def update_model_config(
         if requested_extra_body != dict(row.extra_body_json or {}):
             security_changed = True
 
+    target_context_window_tokens = (
+        request.context_window_tokens
+        if "context_window_tokens" in request.model_fields_set
+        else row.context_window_tokens
+    )
+    target_context_window_source = (
+        request.context_window_source
+        if "context_window_source" in request.model_fields_set
+        else row.context_window_source
+    )
+    target_safe_input_tokens = (
+        request.safe_input_tokens
+        if "safe_input_tokens" in request.model_fields_set
+        else row.safe_input_tokens
+    )
+    if security_changed:
+        if "safe_input_tokens" in request.model_fields_set:
+            validate_model_token_budget(
+                context_window_tokens=target_context_window_tokens,
+                context_window_source=target_context_window_source,
+                trust_status="unverified",
+                safe_input_tokens=target_safe_input_tokens,
+                max_output_tokens=target_tokens,
+            )
+        target_context_window_source = "default"
+        target_safe_input_tokens = DEFAULT_SAFE_INPUT_TOKENS
+    else:
+        validate_model_token_budget(
+            context_window_tokens=target_context_window_tokens,
+            context_window_source=target_context_window_source,
+            trust_status=row.trust_status,
+            safe_input_tokens=target_safe_input_tokens,
+            max_output_tokens=target_tokens,
+        )
+
     for field in ("name", "base_url", "model", "temperature", "max_output_tokens"):
         value = getattr(request, field)
         if value is not None:
@@ -207,6 +256,12 @@ def update_model_config(
         row.protocol_options_json = partitioned
     if requested_extra_body is not None:
         row.extra_body_json = requested_extra_body
+    if "context_window_tokens" in request.model_fields_set:
+        row.context_window_tokens = target_context_window_tokens
+    if "context_window_source" in request.model_fields_set or security_changed:
+        row.context_window_source = target_context_window_source
+    if "safe_input_tokens" in request.model_fields_set or security_changed:
+        row.safe_input_tokens = target_safe_input_tokens
     if request.model_fields_set - {"tenant_id"}:
         row.config_revision += 1
     if security_changed:
@@ -569,6 +624,33 @@ def _validate_sampling(
         raise HTTPException(status_code=422, detail="MODEL_TEMPERATURE_INVALID")
     if max_output_tokens <= 0:
         raise HTTPException(status_code=422, detail="MODEL_MAX_OUTPUT_TOKENS_INVALID")
+
+
+def validate_model_token_budget(
+    *,
+    context_window_tokens: int | None,
+    context_window_source: str = "admin_attested",
+    trust_status: str = "verified",
+    safe_input_tokens: int,
+    max_output_tokens: int,
+) -> None:
+    if safe_input_tokens < 1:
+        raise HTTPException(status_code=422, detail="MODEL_TOKEN_BUDGET_INVALID")
+    if (
+        context_window_tokens is None
+        or context_window_source != "admin_attested"
+        or trust_status != "verified"
+    ):
+        if safe_input_tokens != DEFAULT_SAFE_INPUT_TOKENS:
+            detail = (
+                "MODEL_CONTEXT_NOT_ATTESTED"
+                if context_window_tokens is not None
+                else "MODEL_CONTEXT_NOT_VERIFIED"
+            )
+            raise HTTPException(status_code=422, detail=detail)
+        return
+    if safe_input_tokens > context_window_tokens - max_output_tokens - 4_096:
+        raise HTTPException(status_code=422, detail="MODEL_TOKEN_BUDGET_INVALID")
 
 
 def _require_trusted(row: ModelConfig) -> None:

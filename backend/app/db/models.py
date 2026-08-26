@@ -706,6 +706,52 @@ class KnowledgeChunk(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class KnowledgeRetrievalConfig(SQLModel, table=True):
+    __tablename__ = "knowledge_retrieval_configs"
+
+    id: str = Field(default_factory=lambda: new_id("retrieval"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    embedding_base_url: str
+    embedding_api_key_encrypted: str
+    embedding_model: str
+    embedding_dimensions: int
+    reranker_mode: str = Field(default="llm", index=True)
+    reranker_model_config_id: Optional[str] = Field(default=None, index=True)
+    candidate_limit: int = 40
+    rerank_limit: int = 12
+    enabled: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class KnowledgeChunkEmbedding(SQLModel, table=True):
+    __tablename__ = "knowledge_chunk_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "chunk_id",
+            "retrieval_config_id",
+            "content_sha256",
+            name="uq_knowledge_chunk_embedding_version",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("kembed"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
+    knowledge_base_version_id: str = Field(index=True)
+    chunk_id: str = Field(index=True)
+    retrieval_config_id: str = Field(index=True)
+    embedding_model: str
+    content_sha256: str = Field(index=True)
+    dimensions: int
+    vector_json: list[float] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="ready", index=True)
+    error_code: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class KnowledgeConcept(SQLModel, table=True):
     __tablename__ = "knowledge_concepts"
     __table_args__ = (
@@ -788,6 +834,9 @@ class ModelConfig(SQLModel, table=True):
     model: str
     temperature: float = 0.2
     max_output_tokens: int = 8192
+    context_window_tokens: Optional[int] = None
+    context_window_source: str = Field(default="default", index=True)
+    safe_input_tokens: int = 32_000
     extra_body_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     protocol_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     legacy_unmapped_options_json: dict[str, Any] = Field(

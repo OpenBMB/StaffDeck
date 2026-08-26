@@ -26,6 +26,7 @@ _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID = "20260712_default_model_output_tokens
 _LEGACY_DEFAULT_MODEL_OUTPUT_TOKENS = 2048
 _MODEL_API_PROTOCOLS_MIGRATION_ID = "20260722_model_api_protocols_v1"
 _DEFAULT_MODEL_OUTPUT_TOKENS = 8192
+_DEFAULT_SAFE_INPUT_TOKENS = 32_000
 _MODEL_API_PROTOCOL_COLUMNS = {
     "extra_body_json",
     "api_protocol",
@@ -89,6 +90,7 @@ def _migrate_sqlite_skill_schema() -> None:
     legacy_id_prefix = f"{legacy_key}_"
     with _sqlite_immediate_connection() as conn:
         _migrate_model_api_protocols(conn, tables)
+        _migrate_model_context_budget(conn, tables)
         _migrate_default_model_output_limit(conn, tables)
         _migrate_channel_binding_agents_backfill(conn, tables)
         _migrate_channel_scope_rebuild(conn, inspector, tables)
@@ -1457,6 +1459,42 @@ def _migrate_model_api_protocols(conn, tables: set[str]) -> None:
     _normalize_model_default_rows(conn)
     if repairing_applied_migration:
         return
+
+
+def _migrate_model_context_budget(conn, tables: set[str]) -> None:
+    if "model_configs" not in tables:
+        return
+
+    columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(model_configs)")).all()
+    }
+    column_ddl = {
+        "context_window_tokens": "ALTER TABLE model_configs ADD COLUMN context_window_tokens INTEGER",
+        "context_window_source": (
+            "ALTER TABLE model_configs ADD COLUMN context_window_source VARCHAR "
+            "NOT NULL DEFAULT 'default'"
+        ),
+        "safe_input_tokens": (
+            "ALTER TABLE model_configs ADD COLUMN safe_input_tokens INTEGER "
+            f"NOT NULL DEFAULT {_DEFAULT_SAFE_INPUT_TOKENS}"
+        ),
+    }
+    for column_name, ddl in column_ddl.items():
+        if column_name not in columns:
+            conn.execute(text(ddl))
+    conn.execute(
+        text(
+            "UPDATE model_configs SET context_window_source = 'default' "
+            "WHERE context_window_source IS NULL OR context_window_source = ''"
+        )
+    )
+    conn.execute(
+        text(
+            "UPDATE model_configs SET safe_input_tokens = :default_tokens "
+            "WHERE safe_input_tokens IS NULL OR safe_input_tokens < 1"
+        ),
+        {"default_tokens": _DEFAULT_SAFE_INPUT_TOKENS},
+    )
 
 
 def _normalize_model_default_rows(conn) -> None:
