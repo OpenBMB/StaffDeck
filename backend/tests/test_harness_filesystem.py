@@ -597,6 +597,36 @@ def test_read_chunks_on_utf8_boundaries_and_rejects_binary(tmp_path: Path) -> No
     assert binary == "UNSUPPORTED_ENCODING"
 
 
+def test_read_file_continuation_covers_long_utf8_text_without_gaps(tmp_path: Path) -> None:
+    executor, context = _harness(tmp_path)
+    original = "审核证据第00001段。\n" * 4_000
+    context.workspace_root.mkdir(parents=True)
+    (context.workspace_root / "audit.txt").write_bytes(original.encode("utf-8"))
+    arguments: dict[str, object] = {"path": "audit.txt", "max_bytes": 16_384}
+    pages: list[str] = []
+    expected_offset = 0
+    for _ in range(10):
+        page = _execute(executor, context, "read_file", arguments)
+        assert page["offset"] == expected_offset
+        pages.append(str(page["content"]))
+        if page["eof"]:
+            break
+        expected_offset = int(page["next_offset"])
+        arguments = {
+            "path": "audit.txt",
+            "continuation_token": page["continuation_token"],
+            "max_bytes": 16_384,
+        }
+    else:
+        pytest.fail("read_file pagination did not reach eof within 10 pages")
+    actual = "".join(pages)
+    assert len(actual) == len(original)
+    assert hashlib.sha256(actual.encode("utf-8")).hexdigest() == hashlib.sha256(
+        original.encode("utf-8")
+    ).hexdigest()
+    assert actual == original
+
+
 def test_ambiguous_edit_requires_explicit_replace_all(tmp_path: Path) -> None:
     executor, context = _harness(tmp_path)
     _execute(
