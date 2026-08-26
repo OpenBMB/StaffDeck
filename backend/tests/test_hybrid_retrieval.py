@@ -6,7 +6,22 @@ from sqlalchemy import create_engine, text
 
 from app.api.model_configs import validate_model_token_budget
 from app.db.database import _migrate_model_context_budget
-from app.db.models import KnowledgeChunkEmbedding
+from app.db.models import KnowledgeChunk, KnowledgeChunkEmbedding
+from app.knowledge.retrieval.bm25 import BM25Retriever
+
+
+def _chunk(chunk_id: str, content: str) -> KnowledgeChunk:
+    return KnowledgeChunk(
+        id=chunk_id,
+        tenant_id="tenant_demo",
+        knowledge_base_id="kb-1",
+        knowledge_base_version_id="kbver-1",
+        document_id=f"doc-{chunk_id}",
+        bucket_id=f"bucket-{chunk_id}",
+        chunk_index=int(chunk_id.removeprefix("c")),
+        content=content,
+        source_ref=f"{chunk_id}.md#chunk=0",
+    )
 
 
 def test_safe_input_budget_must_leave_output_and_system_reserve() -> None:
@@ -71,3 +86,15 @@ def test_legacy_model_config_gets_default_budget_columns() -> None:
 
     assert {"context_window_tokens", "context_window_source", "safe_input_tokens"} <= columns
     assert row == ("default", 32_000)
+
+
+def test_bm25_retrieves_chinese_phrase_and_exact_standard_number() -> None:
+    chunks = [
+        _chunk("c1", "组织应识别主要能源使用并确定相关变量"),
+        _chunk("c2", "GB/T 23331-2020 要求建立能源评审"),
+        _chunk("c3", "员工请假流程与办公管理无关"),
+    ]
+    result = BM25Retriever().retrieve("GB/T 23331-2020 能源评审", chunks, limit=2)
+
+    assert [item.chunk.id for item in result.candidates] == ["c2", "c1"]
+    assert result.trace[0]["strategy"] == "bm25"
