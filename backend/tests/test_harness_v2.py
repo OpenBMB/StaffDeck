@@ -128,6 +128,31 @@ def test_bounded_read_file_result_preserves_continuation_metadata() -> None:
     assert len(json.dumps(result, ensure_ascii=False)) <= 12_000
 
 
+def test_same_task_frame_reuses_persisted_attachment_descriptors() -> None:
+    row = HarnessTaskFrameRecord(
+        tenant_id="tenant_demo",
+        session_id="session-1",
+        source_turn_id="turn-1",
+        task_id="task-1",
+        kind="sop",
+        user_intent="生成审核报告",
+        task_requirement_json={
+            "attachments": [
+                {
+                    "attachment_id": "file-1",
+                    "filename": "审核记录.pdf",
+                    "workspace_path": "/workspace/attachments/file-1.pdf",
+                    "sha256": "b" * 64,
+                    "materialized": True,
+                }
+            ]
+        },
+    )
+    assert harness_v2_engine_module._resolve_task_attachment_descriptors(row, []) == (
+        row.task_requirement_json["attachments"]
+    )
+
+
 def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
     request = ChatTurnRequest(
         tenant_id="tenant-demo",

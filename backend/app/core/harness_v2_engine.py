@@ -175,6 +175,29 @@ def _turn_slash_selection(request: ChatTurnRequest) -> SlashCommandSelection | N
     return selection
 
 
+def _task_attachment_descriptors(
+    row: HarnessTaskFrameRecord,
+) -> list[dict[str, Any]]:
+    raw = (row.task_requirement_json or {}).get("attachments")
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("workspace_path") or "")
+        if path.startswith("/workspace/attachments/") and item.get("materialized") is True:
+            result.append(dict(item))
+    return result
+
+
+def _resolve_task_attachment_descriptors(
+    row: HarnessTaskFrameRecord,
+    current: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return current if current else _task_attachment_descriptors(row)
+
+
 class HarnessV2Engine:
     """Outer planner + durable TaskFrame scheduler + isolated Harness runs."""
 
@@ -775,13 +798,16 @@ class HarnessV2Engine:
         self.active_frame_id = row.id
         self.active_frame_lease_owner = row.lease_owner
         self.active_frame_attempt_no = row.attempt_no
-        attachment_descriptors = materialize_task_attachments(
+        current_attachment_descriptors = materialize_task_attachments(
             request.attachments,
             tenant_id=request.tenant_id,
             session_id=session.id,
             task_frame_id=row.task_id,
             user_id=request.user_id or "",
             db=self.db,
+        )
+        attachment_descriptors = _resolve_task_attachment_descriptors(
+            row, current_attachment_descriptors
         )
         image_payloads = validated_task_image_payloads(request.attachments)
         step_timeout_seconds = (
