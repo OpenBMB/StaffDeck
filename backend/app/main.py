@@ -4,11 +4,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
+from app.a2a import recover_codex_a2a_tasks, stop_codex_a2a_tasks
+from app.a2a import router as a2a_router
 from app.api import (
     agents,
     app_updates,
-    auth,
     audit_cases,
+    auth,
     channels,
     chat,
     evolution,
@@ -16,6 +18,7 @@ from app.api import (
     general_skills,
     knowledge,
     knowledge_bases,
+    knowledge_retrieval,
     memories,
     mock,
     model_configs,
@@ -29,7 +32,6 @@ from app.api import (
     ui_config,
 )
 from app.async_jobs import shutdown_async_jobs, start_async_jobs
-from app.a2a import recover_codex_a2a_tasks, router as a2a_router, stop_codex_a2a_tasks
 from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
 from app.core.harness_recovery import (
@@ -45,8 +47,8 @@ from app.public_api.maintenance import start_public_api_maintenance, stop_public
 from app.public_api.webhooks import enqueue_due_webhook_deliveries
 from app.runtime_lock import acquire_runtime_instance_lock, release_runtime_instance_lock
 from app.scheduled_tasks.worker import start_background_worker, stop_background_worker
-from app.tools.a2a_recovery import recover_a2a_client_tasks
 from app.teams.sweeper import start_timeout_sweeper, stop_timeout_sweeper
+from app.tools.a2a_recovery import recover_a2a_client_tasks
 from app.version import app_version
 
 settings = get_settings()
@@ -125,6 +127,7 @@ app.include_router(agents.enterprise_router)
 app.include_router(general_skills.router)
 app.include_router(knowledge_bases.router)
 app.include_router(knowledge.router)
+app.include_router(knowledge_retrieval.router)
 app.include_router(skills.router)
 app.include_router(model_configs.router)
 app.include_router(memories.router)

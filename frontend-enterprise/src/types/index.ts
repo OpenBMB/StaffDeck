@@ -179,6 +179,40 @@ export type KnowledgeSearchResponse = {
   evidence_pack: KnowledgeSearchEvidence[];
 };
 
+export type KnowledgeRetrievalConfigRead = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  embedding_base_url: string;
+  embedding_api_key_masked: string;
+  embedding_model: string;
+  embedding_dimensions: number;
+  reranker_mode: 'llm' | 'none' | string;
+  reranker_model_config_id?: string | null;
+  candidate_limit: number;
+  rerank_limit: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KnowledgeVectorIndexStatus = {
+  knowledge_base_version_id: string;
+  total_chunks: number;
+  ready_embeddings: number;
+  failed_embeddings: number;
+  missing_embeddings: number;
+  embedding_model: string;
+  updated_at?: string | null;
+};
+
+export type KnowledgeReindexResponse = {
+  status: string;
+  job_ids: string[];
+  queued_document_ids: string[];
+  skipped_document_ids: string[];
+};
+
 export type AgentResourceType = 'skill' | 'general_skill' | 'knowledge_base' | 'tool';
 
 export type AgentResourceBindingRead = {
