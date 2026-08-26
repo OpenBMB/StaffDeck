@@ -1,25 +1,39 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi.responses import JSONResponse
 from sqlmodel import Session, select
 
+from app.audit_cases.coverage import calculate_coverage
+from app.audit_cases.evidence import AuditEvidenceProcessor
+from app.audit_cases.knowledge import AuditKnowledgeOrchestrator
+from app.audit_cases.reporting import AuditReportService
 from app.audit_cases.schema import (
     AuditCaseAccessDenied,
-    AuditCaseCoverageRead,
     AuditCaseCreate,
     AuditCaseMaterialRead,
     AuditCaseNotFound,
+    AuditCaseProcessRequest,
     AuditCaseRead,
     AuditCaseReadOnly,
+    AuditCoverageSnapshot,
+    AuditReportCreateRequest,
+    AuditReportRead,
+    AuditReportSectionRead,
     audit_case_material_read,
     audit_case_read,
 )
 from app.audit_cases.service import AuditCaseService
 from app.db import get_session
-from app.db.models import AuditCase, AuditCaseMaterial, AuditCaseMaterialChunk, User
+from app.db.models import (
+    AuditCase,
+    AuditReportSection,
+    AuditReportVersion,
+    ModelConfig,
+    User,
+)
 from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.permissions import require_tenant_admin
-
 
 router = APIRouter(
     prefix="/api/audit-cases",
@@ -133,13 +147,14 @@ def list_audit_case_materials(
     return [audit_case_material_read(row) for row in service.list_current_materials(case)]
 
 
-@router.post("/{case_id}/process", response_model=list[AuditCaseMaterialRead])
+@router.post("/{case_id}/process", response_model=None)
 def process_audit_case_materials(
     case_id: str,
     tenant_id: str = Query(...),
+    request: AuditCaseProcessRequest | None = Body(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
-) -> list[AuditCaseMaterialRead]:
+) -> list[AuditCaseMaterialRead] | JSONResponse:
     service = AuditCaseService(db)
     case = _authorized_case(
         service,
@@ -147,6 +162,29 @@ def process_audit_case_materials(
         case_id=case_id,
         current_user=current_user,
     )
+    if request is not None:
+        model_config = _model_config_for_case(db, case, request.model_config_id)
+        try:
+            for material in service.list_current_materials(case):
+                if not (
+                    material.extraction_status == "succeeded"
+                    and material.processing_status == "succeeded"
+                ):
+                    service.process_material(case, material)
+            evidence = AuditEvidenceProcessor(db).process_pending_chunks(case, model_config)
+            knowledge = AuditKnowledgeOrchestrator(db).retrieve(case, model_config)
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "succeeded" if evidence.failed == 0 else "partial_failure",
+                    "evidence": evidence.model_dump(mode="json"),
+                    "knowledge": knowledge.model_dump(mode="json"),
+                },
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _case_error(exc) from exc
     try:
         return [
             audit_case_material_read(service.process_material(case, material))
@@ -156,51 +194,72 @@ def process_audit_case_materials(
         raise _case_error(exc) from exc
 
 
-@router.get("/{case_id}/coverage", response_model=AuditCaseCoverageRead)
+@router.get("/{case_id}/coverage", response_model=AuditCoverageSnapshot)
 def audit_case_coverage(
     case_id: str,
     tenant_id: str = Query(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
-) -> AuditCaseCoverageRead:
-    service = AuditCaseService(db)
+) -> AuditCoverageSnapshot:
     case = _authorized_case(
-        service,
+        AuditCaseService(db),
         tenant_id=tenant_id,
         case_id=case_id,
         current_user=current_user,
     )
-    materials = service.list_current_materials(case)
-    material_ids = [material.id for material in materials]
-    chunks = (
-        db.exec(
-            select(AuditCaseMaterialChunk).where(
-                AuditCaseMaterialChunk.tenant_id == tenant_id,
-                AuditCaseMaterialChunk.audit_case_id == case.id,
-                AuditCaseMaterialChunk.material_id.in_(material_ids),
-            )
-        ).all()
-        if material_ids
-        else []
+    return calculate_coverage(db, case)
+
+
+@router.get("/{case_id}/reports", response_model=list[AuditReportRead])
+def list_audit_case_reports(
+    case_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[AuditReportRead]:
+    case = _authorized_case(
+        AuditCaseService(db),
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
     )
-    successful_materials = [
-        material
-        for material in materials
-        if material.extraction_status == "succeeded"
-        and material.processing_status == "succeeded"
-    ]
-    successful_chunks = [chunk for chunk in chunks if chunk.processing_status == "succeeded"]
-    material_count = len(materials)
-    chunk_count = len(chunks)
-    return AuditCaseCoverageRead(
-        current_material_count=material_count,
-        successful_material_count=len(successful_materials),
-        failed_material_count=material_count - len(successful_materials),
-        total_chunk_count=chunk_count,
-        successful_chunk_count=len(successful_chunks),
-        file_coverage=(len(successful_materials) / material_count) if material_count else 0.0,
-        chunk_coverage=(len(successful_chunks) / chunk_count) if chunk_count else 0.0,
+    rows = db.exec(
+        select(AuditReportVersion)
+        .where(
+            AuditReportVersion.tenant_id == case.tenant_id,
+            AuditReportVersion.audit_case_id == case.id,
+        )
+        .order_by(AuditReportVersion.version.desc())
+    ).all()
+    return [_audit_report_read(db, row) for row in rows]
+
+
+@router.post("/{case_id}/reports", response_model=AuditReportRead, status_code=202)
+def create_audit_case_report(
+    case_id: str,
+    request: AuditReportCreateRequest,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AuditReportRead:
+    case = _authorized_case(
+        AuditCaseService(db),
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
     )
+    model_config = _model_config_for_case(db, case, request.model_config_id)
+    try:
+        service = AuditReportService(db)
+        report = service.create_version(case)
+        service.generate_pending_sections(case, report, model_config)
+        if request.publish:
+            report = service.publish(case, report, request.confirmed_by)
+        return _audit_report_read(db, report)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _case_error(exc) from exc
 
 
 @router.get("/{case_id}", response_model=AuditCaseRead)
@@ -252,3 +311,54 @@ def delete_audit_case(
     except Exception as exc:
         raise _case_error(exc) from exc
     return Response(status_code=204)
+
+
+def _model_config_for_case(
+    db: Session, case: AuditCase, model_config_id: str | None
+) -> ModelConfig:
+    if model_config_id:
+        row = db.get(ModelConfig, model_config_id)
+        if row is None or row.tenant_id != case.tenant_id or not row.enabled:
+            raise HTTPException(status_code=404, detail="MODEL_CONFIG_NOT_FOUND")
+        return row
+    row = db.exec(
+        select(ModelConfig)
+        .where(ModelConfig.tenant_id == case.tenant_id, ModelConfig.enabled)
+        .order_by(ModelConfig.is_default.desc(), ModelConfig.created_at)
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=400, detail="MODEL_CONFIG_REQUIRED")
+    return row
+
+
+def _audit_report_read(db: Session, row: AuditReportVersion) -> AuditReportRead:
+    sections = db.exec(
+        select(AuditReportSection)
+        .where(AuditReportSection.report_version_id == row.id)
+        .order_by(AuditReportSection.sequence)
+    ).all()
+    return AuditReportRead(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        audit_case_id=row.audit_case_id,
+        version=row.version,
+        status=row.status,
+        material_version_ids=list(row.material_version_ids_json or []),
+        knowledge_base_version_ids=list(row.knowledge_base_version_ids_json or []),
+        coverage_snapshot=dict(row.coverage_snapshot_json or {}),
+        final_storage_key=row.final_storage_key,
+        sections=[
+            AuditReportSectionRead(
+                id=section.id,
+                section_id=section.section_id,
+                title=section.title,
+                sequence=section.sequence,
+                status=section.status,
+                retry_count=section.retry_count,
+                error_code=section.error_code,
+                draft_markdown=section.draft_markdown,
+                citation_ids=list(section.citation_ids_json or []),
+            )
+            for section in sections
+        ],
+    )

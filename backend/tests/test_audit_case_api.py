@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import paths
+from app.api import audit_cases as audit_cases_module
+from app.audit_cases.evidence_schema import ProcessingSummary
+from app.audit_cases.knowledge import KnowledgeRetrievalSummary
 from app.db import get_session
 from app.db.models import (
     AuditCase,
     AuditCaseEvent,
     AuditCaseMaterial,
     AuditCaseMaterialChunk,
+    ModelConfig,
     Tenant,
     User,
 )
@@ -134,6 +136,81 @@ def test_audit_case_api_round_trip(api_context) -> None:
     listed = client.get("/api/audit-cases?tenant_id=tenant_demo", headers=headers)
     assert listed.status_code == 200
     assert [item["id"] for item in listed.json()] == [case_id]
+
+
+def test_process_coverage_and_report_api_flow(api_context, monkeypatch) -> None:
+    client, engine, users, _tmp_path = api_context
+    headers = _headers(users["owner"])
+    created = client.post(
+        "/api/audit-cases",
+        headers=headers,
+        json={
+            "tenant_id": "tenant_demo",
+            "organization_name": "流程测试企业",
+            "report_type": "再认证",
+            "management_systems": ["GB/T 23331-2020"],
+            "knowledge_base_version_ids": ["kbver-1"],
+        },
+    )
+    case_id = created.json()["id"]
+    uploaded = client.post(
+        f"/api/audit-cases/{case_id}/materials?tenant_id=tenant_demo&material_type=audit_record",
+        headers=headers,
+        files={"files": ("记录.txt", b"audit record", "text/plain")},
+    )
+    assert uploaded.status_code == 200
+    prepared = client.post(
+        f"/api/audit-cases/{case_id}/process?tenant_id=tenant_demo",
+        headers=headers,
+    )
+    assert prepared.status_code == 200
+
+    with Session(engine) as db:
+        db.add(
+            ModelConfig(
+                id="model-1",
+                tenant_id="tenant_demo",
+                name="测试模型",
+                api_key_encrypted="not-used",
+                model="test-model",
+            )
+        )
+        db.commit()
+
+    class _NoopEvidenceProcessor:
+        def __init__(self, _db):
+            pass
+
+        def process_pending_chunks(self, _case, _model_config):
+            return ProcessingSummary(total=1, succeeded=0, failed=0, skipped=1)
+
+    class _NoopKnowledgeOrchestrator:
+        def __init__(self, _db):
+            pass
+
+        def retrieve(self, _case, _model_config):
+            return KnowledgeRetrievalSummary()
+
+    monkeypatch.setattr(audit_cases_module, "AuditEvidenceProcessor", _NoopEvidenceProcessor)
+    monkeypatch.setattr(audit_cases_module, "AuditKnowledgeOrchestrator", _NoopKnowledgeOrchestrator)
+
+    processed = client.post(
+        f"/api/audit-cases/{case_id}/process?tenant_id=tenant_demo",
+        headers=headers,
+        json={"model_config_id": "model-1"},
+    )
+    assert processed.status_code == 202, processed.text
+    coverage = client.get(
+        f"/api/audit-cases/{case_id}/coverage?tenant_id=tenant_demo",
+        headers=headers,
+    )
+    assert coverage.status_code == 200
+    assert set(coverage.json()) >= {
+        "file_coverage",
+        "chunk_coverage",
+        "element_coverage",
+        "publish_allowed",
+    }
 
 
 def test_audit_case_api_enforces_project_scope_and_archive_read_only(api_context) -> None:

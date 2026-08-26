@@ -1509,6 +1509,20 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     assert shared_descriptor.metadata["script_execution"] == "use_harness_tools"
 
 
+def test_audit_capabilities_exist_only_for_bound_audit_case() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant-demo", name="Demo"))
+        db.commit()
+
+        builder = CapabilityManifestBuilder(db)
+        ordinary = builder.build("tenant-demo", None, None, None, audit_case_id=None)
+        bound = builder.build("tenant-demo", None, None, None, audit_case_id="case-1")
+
+    assert "audit_case_manifest" not in ordinary.allowed_names()
+    assert "audit_case_manifest" in bound.allowed_names()
+
+
 def test_general_tools_remain_discoverable_across_sop_steps() -> None:
     engine = _test_engine()
     with Session(engine) as db:

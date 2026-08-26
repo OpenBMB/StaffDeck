@@ -386,6 +386,7 @@ class HarnessV2Engine:
                     session.agent_id,
                     None,
                     None,
+                    audit_case_id=session.audit_case_id,
                 )
                 resolve_capability(self.slash_command, direct_manifest)
             plan = build_slash_turn_plan(
@@ -895,6 +896,7 @@ class HarnessV2Engine:
                 session.agent_id,
                 active_skill,
                 frame.target_step_id,
+                audit_case_id=session.audit_case_id,
             )
             # Keep the complete frozen manifest server-side for authorization,
             # while compiling the TaskRequirement only from the safe model

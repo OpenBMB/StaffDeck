@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -65,6 +66,10 @@ class AuditCaseCoverageRead(BaseModel):
     chunk_coverage: float
 
 
+class AuditCaseProcessRequest(BaseModel):
+    model_config_id: str | None = None
+
+
 class AuditCoverageSnapshot(BaseModel):
     file_coverage: float
     chunk_coverage: float
@@ -77,6 +82,42 @@ class AuditCoverageSnapshot(BaseModel):
     chunks_succeeded: int
     elements_total: int
     elements_resolved: int
+    current_material_count: int = 0
+    successful_material_count: int = 0
+    failed_material_count: int = 0
+    total_chunk_count: int = 0
+    successful_chunk_count: int = 0
+
+
+class AuditReportSectionRead(BaseModel):
+    id: str
+    section_id: str
+    title: str
+    sequence: int
+    status: str
+    retry_count: int
+    error_code: str | None = None
+    draft_markdown: str = ""
+    citation_ids: list[str] = Field(default_factory=list)
+
+
+class AuditReportRead(BaseModel):
+    id: str
+    tenant_id: str
+    audit_case_id: str
+    version: int
+    status: str
+    material_version_ids: list[str] = Field(default_factory=list)
+    knowledge_base_version_ids: list[str] = Field(default_factory=list)
+    coverage_snapshot: dict[str, Any] = Field(default_factory=dict)
+    final_storage_key: str | None = None
+    sections: list[AuditReportSectionRead] = Field(default_factory=list)
+
+
+class AuditReportCreateRequest(BaseModel):
+    model_config_id: str | None = None
+    publish: bool = False
+    confirmed_by: str | None = None
 
 
 class AuditCaseNotFound(LookupError):

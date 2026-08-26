@@ -110,6 +110,11 @@ def calculate_coverage(db: Session, case: AuditCase) -> AuditCoverageSnapshot:
         chunks_succeeded=chunks_succeeded,
         elements_total=elements_total,
         elements_resolved=elements_resolved,
+        current_material_count=files_total,
+        successful_material_count=files_succeeded,
+        failed_material_count=files_total - files_succeeded,
+        total_chunk_count=chunks_total,
+        successful_chunk_count=chunks_succeeded,
     )
 
 
