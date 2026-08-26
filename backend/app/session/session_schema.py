@@ -213,6 +213,7 @@ class SessionPublic(BaseModel):
 class ChatTurnRequest(BaseModel):
     tenant_id: str
     session_id: Optional[str] = None
+    audit_case_id: Optional[str] = None
     agent_id: Optional[str] = None
     model_config_id: Optional[str] = None
     client_turn_id: Optional[str] = None
@@ -295,6 +296,7 @@ class ChatSessionRead(BaseModel):
     id: str
     tenant_id: str
     user_id: Optional[str]
+    audit_case_id: Optional[str] = None
     agent_id: Optional[str] = None
     title: Optional[str]
     active_skill_id: Optional[str]

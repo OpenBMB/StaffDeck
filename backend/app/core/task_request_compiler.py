@@ -16,6 +16,8 @@ CapabilityKind = Literal[
     "internal",
 ]
 
+MaterialSource = Literal["chat_attachment", "audit_case"]
+
 
 class CapabilityDescriptor(BaseModel):
     capability_id: str
@@ -53,7 +55,10 @@ class CapabilityManifest(BaseModel):
 
 
 class MaterialManifestItem(BaseModel):
-    attachment_id: str
+    source: MaterialSource = "chat_attachment"
+    attachment_id: str | None = None
+    material_id: str | None = None
+    audit_case_id: str | None = None
     filename: str
     sha256: str | None = None
     workspace_path: str | None = None
@@ -77,6 +82,7 @@ class TaskRequirement(BaseModel):
     memory_projection: list[dict[str, str]] = Field(default_factory=list)
     prior_task_results: list[dict[str, Any]] = Field(default_factory=list)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    audit_case_id: str | None = None
     material_manifest: list[MaterialManifestItem] = Field(default_factory=list)
     capability_manifest: CapabilityManifest = Field(default_factory=CapabilityManifest)
 
@@ -119,6 +125,8 @@ class TaskRequestCompiler:
         attachments: list[dict[str, Any]] | None = None,
         source_user_message: str | None = None,
         out_of_scope_task_intents: list[str] | None = None,
+        audit_case_id: str | None = None,
+        audit_case_materials: list[dict[str, Any]] | None = None,
     ) -> TaskRequirement:
         current_node = _current_node(skill, frame.target_step_id or session.active_step_id)
         expected_fields = _text_list((current_node or {}).get("expected_user_info"))
@@ -172,19 +180,41 @@ class TaskRequestCompiler:
                     "检索当前 SOP 节点要求的知识库：" + "、".join(required_knowledge_base_ids),
                 ]
             )
-        material_manifest = [
-            MaterialManifestItem(
-                attachment_id=str(item.get("attachment_id") or ""),
-                filename=str(item.get("filename") or ""),
-                sha256=str(item.get("sha256") or "") or None,
-                workspace_path=str(item.get("workspace_path") or "") or None,
-                status="available" if item.get("materialized") else "failed",
-            )
-            for item in attachments or []
+        combined_materials = [
+            item
+            for item in [*(attachments or []), *(audit_case_materials or [])]
             if isinstance(item, dict)
-            and item.get("attachment_id")
-            and item.get("filename")
         ]
+        material_manifest = []
+        for item in combined_materials:
+            source = "audit_case" if item.get("source") == "audit_case" else "chat_attachment"
+            identity = item.get("material_id") if source == "audit_case" else item.get("attachment_id")
+            if not identity or not item.get("filename"):
+                continue
+            material_manifest.append(
+                MaterialManifestItem(
+                    source=source,
+                    attachment_id=(
+                        str(item.get("attachment_id") or "") or None
+                        if source == "chat_attachment"
+                        else None
+                    ),
+                    material_id=(str(item.get("material_id") or "") or None),
+                    audit_case_id=(str(item.get("audit_case_id") or "") or None),
+                    filename=str(item.get("filename") or ""),
+                    sha256=str(item.get("sha256") or "") or None,
+                    workspace_path=str(item.get("workspace_path") or "") or None,
+                    status=(
+                        "available"
+                        if (
+                            item.get("materialized")
+                            and str(item.get("status") or "succeeded")
+                            in {"available", "succeeded"}
+                        )
+                        else "failed"
+                    ),
+                )
+            )
         return TaskRequirement(
             task_frame_id=str(frame.task_id or ""),
             kind=frame.kind,
@@ -203,7 +233,8 @@ class TaskRequestCompiler:
             allowed_transitions=_transitions(skill, current_node),
             memory_projection=_memory_projection(memory_context),
             prior_task_results=list(prior_task_results or []),
-            attachments=list(attachments or []),
+            attachments=combined_materials,
+            audit_case_id=str(audit_case_id or "") or None,
             material_manifest=material_manifest,
             capability_manifest=manifest,
         )

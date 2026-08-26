@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import ensure_open_gallery_binding
+from app.audit_cases.storage import write_case_blob
 from app.core import harness_agent as harness_agent_module
 from app.core import harness_v2_engine as harness_v2_engine_module
 from app.core import turn_planner as turn_planner_module
@@ -45,7 +46,9 @@ from app.core.harness_v2_engine import (
     _turn_planner_message,
     _turn_skill_projection,
     _with_recoverable_first_session,
+    get_or_create_harness_session,
 )
+from app.core.harness_audit_cases import materialize_audit_case_materials
 from app.core.task_frame_store import (
     MAX_TASK_FRAMES_PER_TURN,
     TaskFrameClaimConflict,
@@ -62,6 +65,8 @@ from app.core.task_request_compiler import (
 from app.core.turn_planner import TurnPlanner
 from app.db.models import (
     AgentProfile,
+    AuditCase,
+    AuditCaseMaterial,
     ChatSession,
     GeneralSkill,
     HarnessAgentLoopRecord,
@@ -151,6 +156,122 @@ def test_same_task_frame_reuses_persisted_attachment_descriptors() -> None:
     assert harness_v2_engine_module._resolve_task_attachment_descriptors(row, []) == (
         row.task_requirement_json["attachments"]
     )
+
+
+def test_audit_case_materials_are_added_to_task_requirement_manifest() -> None:
+    frame = PlannedTaskFrame(
+        task_id="task-audit-case",
+        kind="conversation",
+        user_intent="继续生成审核报告",
+    )
+    requirement = TaskRequestCompiler().compile(
+        frame,
+        _chat_session(audit_case_id="auditcase-1"),
+        None,
+        CapabilityManifest(),
+        audit_case_id="auditcase-1",
+        audit_case_materials=[
+            {
+                "source": "audit_case",
+                "audit_case_id": "auditcase-1",
+                "material_id": "material-1",
+                "filename": "审核记录.txt",
+                "sha256": "a" * 64,
+                "version": 1,
+                "status": "succeeded",
+                "workspace_path": "/workspace/audit-case/material-1/审核记录.txt",
+                "materialized": True,
+            }
+        ],
+    )
+
+    assert requirement.audit_case_id == "auditcase-1"
+    assert requirement.attachments[0]["source"] == "audit_case"
+    assert requirement.material_manifest[0].source == "audit_case"
+    assert requirement.material_manifest[0].material_id == "material-1"
+    assert requirement.material_manifest[0].status == "available"
+
+
+def test_materialize_audit_case_materials_writes_to_task_workspace(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("app.paths.user_data_dir", lambda: tmp_path)
+    database = _test_engine()
+    data = "审核记录全文".encode("utf-8")
+    with Session(database) as db:
+        case = AuditCase(
+            id="auditcase-materialize",
+            tenant_id="tenant-demo",
+            owner_user_id="user-1",
+            organization_name="示例企业",
+            report_type="再认证",
+        )
+        material = AuditCaseMaterial(
+            id="material-1",
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            attachment_id="attachment-1",
+            material_type="audit_record",
+            filename="审核记录.txt",
+            content_type="text/plain",
+            sha256="a" * 64,
+            size=len(data),
+            storage_key="",
+            processing_status="succeeded",
+            extraction_status="succeeded",
+        )
+        db.add_all([case, material])
+        db.flush()
+        material.storage_key = write_case_blob(
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            material_id=material.id,
+            name="raw",
+            data=data,
+        )
+        db.add(material)
+        db.commit()
+
+        descriptors = materialize_audit_case_materials(
+            db=db,
+            case=case,
+            session_id="session-new",
+            task_frame_id="task-audit-case",
+        )
+
+    assert len(descriptors) == 1
+    descriptor = descriptors[0]
+    assert descriptor["source"] == "audit_case"
+    assert descriptor["material_id"] == "material-1"
+    assert descriptor["materialized"] is True
+    workspace_path = tmp_path / "harness_workspaces"
+    assert list(workspace_path.rglob("审核记录.txt"))[0].read_bytes() == data
+
+
+def test_harness_session_binds_audit_case_and_rejects_switching() -> None:
+    database = _test_engine()
+    with Session(database) as db:
+        owner = AgentLoop(db)
+        first = get_or_create_harness_session(
+            owner,
+            ChatTurnRequest(
+                tenant_id="tenant-demo",
+                user_id="user-1",
+                audit_case_id="auditcase-1",
+                message="开始审核",
+            ),
+        )
+        assert first.audit_case_id == "auditcase-1"
+
+        with pytest.raises(harness_v2_engine_module.HarnessExecutionFenced, match="SESSION_AUDIT_CASE_CONFLICT"):
+            get_or_create_harness_session(
+                owner,
+                ChatTurnRequest(
+                    tenant_id="tenant-demo",
+                    user_id="user-1",
+                    session_id=first.id,
+                    audit_case_id="auditcase-2",
+                    message="切换项目",
+                ),
+            )
 
 
 def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
