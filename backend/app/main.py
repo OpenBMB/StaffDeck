@@ -8,6 +8,7 @@ from app.api import (
     agents,
     app_updates,
     auth,
+    audit_cases,
     channels,
     chat,
     evolution,
@@ -118,6 +119,7 @@ app.include_router(chat.router)
 app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)
 app.include_router(auth.router)
+app.include_router(audit_cases.router)
 app.include_router(agents.scope_router)
 app.include_router(agents.enterprise_router)
 app.include_router(general_skills.router)
