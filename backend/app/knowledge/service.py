@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import delete
+from sqlalchemy import and_, delete, or_
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -24,6 +24,7 @@ from app.db.models import (
     KnowledgeBase,
     KnowledgeBucket,
     KnowledgeChunk,
+    KnowledgeChunkEmbedding,
     KnowledgeConcept,
     KnowledgeDiscoverySuggestion,
     KnowledgeDocument,
@@ -667,12 +668,7 @@ class KnowledgeService:
             self._finalize_cancelled_job(job, str(exc) or "入库任务已取消")
         except Exception as exc:  # noqa: BLE001 - persist stable job failure.
             if job.document_id:
-                document = self.db.get(KnowledgeDocument, job.document_id)
-                if document:
-                    document.status = "failed"
-                    document.error = str(exc)
-                    document.updated_at = utc_now()
-                    self.db.add(document)
+                self._mark_partial_ingest_failed(job, str(exc))
             self._update_ingest_stage(
                 job,
                 "failed",
@@ -1445,9 +1441,21 @@ class KnowledgeService:
         return self.db.exec(stmt.order_by(KnowledgeDocument.updated_at.desc())).all()
 
     def _load_concepts_for_search(self, request: KnowledgeSearchRequest) -> list[KnowledgeConcept]:
-        stmt = select(KnowledgeConcept).where(
-            KnowledgeConcept.tenant_id == request.tenant_id,
-            KnowledgeConcept.status == "active",
+        stmt = (
+            select(KnowledgeConcept)
+            .join(
+                KnowledgeDocument,
+                and_(
+                    KnowledgeDocument.id == KnowledgeConcept.document_id,
+                    KnowledgeDocument.tenant_id == KnowledgeConcept.tenant_id,
+                ),
+                isouter=True,
+            )
+            .where(
+                KnowledgeConcept.tenant_id == request.tenant_id,
+                KnowledgeConcept.status == "active",
+                or_(KnowledgeConcept.document_id.is_(None), KnowledgeDocument.status == "ready"),
+            )
         )
         if request.knowledge_base_ids:
             stmt = stmt.where(KnowledgeConcept.knowledge_base_id.in_(request.knowledge_base_ids))
@@ -1781,14 +1789,44 @@ class KnowledgeService:
         document_id = job.document_id
         if not document_id:
             return
-        for model in (KnowledgeDiscoverySuggestion, KnowledgeConcept, KnowledgeChunk, KnowledgeBucket):
-            self.db.exec(delete(model).where(model.document_id == document_id))
+        self._delete_partial_ingest_rows(document_id)
         document = self.db.get(KnowledgeDocument, document_id)
         if document:
             self.db.delete(document)
         job.document_id = None
         self.db.add(job)
         self.db.commit()
+
+    def _mark_partial_ingest_failed(self, job: KnowledgeIngestJob, error: str) -> None:
+        document_id = job.document_id
+        if not document_id:
+            return
+        self._delete_partial_ingest_rows(document_id)
+        document = self.db.get(KnowledgeDocument, document_id)
+        if document is None:
+            return
+        metadata = dict(document.metadata_json or {})
+        metadata.pop("chunk_stats", None)
+        metadata.pop("bucket_quality", None)
+        metadata.pop("okf", None)
+        document.status = "failed"
+        document.error = error
+        document.bucket_count = 0
+        document.chunk_count = 0
+        document.metadata_json = metadata
+        document.updated_at = utc_now()
+        self.db.add(document)
+        self.db.commit()
+
+    def _delete_partial_ingest_rows(self, document_id: str) -> None:
+        chunk_ids = self.db.exec(
+            select(KnowledgeChunk.id).where(KnowledgeChunk.document_id == document_id)
+        ).all()
+        normalized_chunk_ids = [str(chunk_id) for chunk_id in chunk_ids if chunk_id]
+        if normalized_chunk_ids:
+            self.db.exec(delete(KnowledgeChunkEmbedding).where(KnowledgeChunkEmbedding.chunk_id.in_(normalized_chunk_ids)))
+        for model in (KnowledgeDiscoverySuggestion, KnowledgeConcept, KnowledgeChunk, KnowledgeBucket):
+            self.db.exec(delete(model).where(model.document_id == document_id))
 
     def _update_ingest_stage(
         self,

@@ -112,3 +112,96 @@ All checks passed!
 
 - Real RapidDoc installation, model artifact readiness, and benchmark validation remain out of scope for Task 2 and were already noted as unfinished from Task 1.
 - The duplicate short-circuit intentionally keys on both `source_sha256` and `text_sha256`; if future requirements need different versioning semantics for same-source/same-text retries, that policy should be made explicit before Task 3 or later ingestion work.
+
+---
+
+## Review fix follow-up (2026-08-27)
+
+Status: completed
+
+### Findings addressed
+
+- Failed ingestion after partial persistence no longer leaves active concept routing artifacts behind.
+- Failed ingestion now cleans derived rows (`KnowledgeDiscoverySuggestion`, `KnowledgeConcept`, `KnowledgeChunk`, `KnowledgeBucket`, and any chunk embeddings tied to the failed document) while preserving the failed document row, its stable error, and the original uploaded blob on the job.
+- Concept routing now additionally requires either no backing document or a backing `KnowledgeDocument.status == "ready"`, so failed documents are invisible from active concept routing even if a stale row somehow survived.
+- Reverted the unrelated `backend/app/knowledge/okf.py` frontmatter/scalar parser behavior changes and kept only the Task 2 provenance/source metadata serialization additions.
+
+### Review-fix Red command
+
+```powershell
+Set-Location .\backend; .\.venv\Scripts\python.exe -m pytest tests\test_knowledge_base.py tests\test_knowledge_document_extraction.py -q
+```
+
+### Review-fix Red failure evidence
+
+The new partial-persistence regression test failed before the fix:
+
+- `tests/test_knowledge_document_extraction.py::test_failed_ingest_after_partial_persistence_cleans_derived_rows_and_hides_concepts`
+  - failure: `assert failed_document.bucket_count == 0`
+  - actual: `AssertionError: assert 1 == 0`
+
+This proved a later ingestion failure could leave already-persisted derived rows reachable from the failed document window.
+
+### Review-fix implementation summary
+
+- Added a regression path that forces failure after concepts/chunks exist and after a synthetic discovery suggestion is committed.
+- Added failure cleanup in `KnowledgeService` so later ingest exceptions delete derived rows but keep the failed document itself for retry/debug visibility.
+- Reset failed-document counters/derived metadata after cleanup so the failed row does not advertise ghost buckets/chunks.
+- Added a ready-document gate to concept loading for search.
+- Restored legacy OKF parser fallback behavior while retaining the Task 2 provenance serialization changes.
+
+### Review-fix verification commands
+
+Focused regression:
+
+```powershell
+Set-Location .\backend; .\.venv\Scripts\python.exe -m pytest tests\test_knowledge_document_extraction.py -q -k partial_persistence
+```
+
+Output:
+
+```text
+.                                                                        [100%]
+1 passed, 2 deselected in 8.61s
+```
+
+Prior knowledge regression:
+
+```powershell
+Set-Location .\backend; .\.venv\Scripts\python.exe -m pytest tests\test_knowledge_base.py tests\test_knowledge_document_extraction.py -q
+```
+
+Output:
+
+```text
+..............................................                           [100%]
+46 passed in 18.37s
+```
+
+Ruff:
+
+```powershell
+Set-Location .\backend; .\.venv\Scripts\python.exe -m ruff check app\knowledge tests\test_knowledge_document_extraction.py
+```
+
+Output:
+
+```text
+All checks passed!
+```
+
+### Review-fix validation details
+
+- Full text retention still verified via `document.metadata_json["raw_text"]`.
+- Page refs and provenance readback are still verified on document metadata, chunk metadata, and OKF concept `source_refs`.
+- Failed partial-persistence ingestion now verifies all derived rows are removed:
+  - `KnowledgeDiscoverySuggestion`
+  - `KnowledgeConcept`
+  - `KnowledgeBucket`
+  - `KnowledgeChunk`
+- Failed partial-persistence ingestion now verifies failed-document counters are reset to zero and active concept loading returns no rows for that failed document.
+- Original blob retention and the earlier idempotency assertions remain in place and still pass.
+
+### Remaining risks
+
+- This fix makes failure atomic from the retrieval/database perspective for the document’s derived rows. If a future implementation moves vector queueing earlier or makes queue dispatch externally transactional, that boundary should be reviewed again so the same atomicity guarantee holds across process boundaries.

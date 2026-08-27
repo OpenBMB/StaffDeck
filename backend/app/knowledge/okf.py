@@ -706,15 +706,16 @@ def _parse_okf_zip(content: bytes) -> list[ParsedOkfDocument]:
 def _parse_frontmatter(raw: str) -> dict[str, Any]:
     try:
         import yaml  # type: ignore
-    except ModuleNotFoundError:
-        yaml = None
-    if yaml is not None:
-        try:
-            parsed = yaml.safe_load(raw)
-        except yaml.YAMLError:
-            parsed = None
+
+        parsed = yaml.safe_load(raw)
         if isinstance(parsed, dict):
             return dict(parsed)
+    except Exception:  # noqa: BLE001 - preserve legacy OKF fallback parsing semantics.
+        return _parse_frontmatter_fallback(raw)
+    return _parse_frontmatter_fallback(raw)
+
+
+def _parse_frontmatter_fallback(raw: str) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for line in raw.splitlines():
         if not line.strip() or line.lstrip().startswith("#") or ":" not in line:
@@ -734,7 +735,7 @@ def _parse_scalar(value: str) -> Any:
     if value[0] in {'"', "'", "[", "{"}:
         try:
             return json.loads(value.replace("'", '"') if value[0] == "'" else value)
-        except json.JSONDecodeError:
+        except Exception:  # noqa: BLE001 - preserve legacy scalar fallback semantics.
             return value.strip("\"'")
     if value.lower() in {"true", "false"}:
         return value.lower() == "true"
