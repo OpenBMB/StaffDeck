@@ -34,6 +34,56 @@ class AuditCaseRead(BaseModel):
     updated_at: datetime
 
 
+class AuditCaseUpdate(BaseModel):
+    organization_name: str | None = Field(default=None, min_length=1, max_length=200)
+    report_type: str | None = Field(default=None, min_length=1, max_length=100)
+    management_systems: list[str] | None = None
+    knowledge_base_version_ids: list[str] | None = None
+
+
+class AuditCaseMemberUpdate(BaseModel):
+    member_user_ids: list[str] = Field(default_factory=list)
+
+
+class AuditCaseManagementRead(AuditCaseRead):
+    material_total: int = 0
+    material_ready: int = 0
+    material_failed: int = 0
+    file_coverage: float = 0.0
+    chunk_coverage: float = 0.0
+
+
+class AuditCaseManagementPage(BaseModel):
+    items: list[AuditCaseManagementRead]
+    total: int
+
+
+class AuditCaseKnowledgeVersionOption(BaseModel):
+    id: str
+    knowledge_base_id: str
+    name: str
+    version: str
+    description: str | None = None
+    status: str
+
+
+class AuditCaseManagementOptions(BaseModel):
+    knowledge_versions: list[AuditCaseKnowledgeVersionOption] = Field(default_factory=list)
+    supported_extensions: list[str] = Field(default_factory=list)
+    max_material_bytes: int
+
+
+class AuditCaseEventRead(BaseModel):
+    id: str
+    audit_case_id: str
+    actor_user_id: str
+    event_type: str
+    resource_type: str
+    resource_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
 class AuditCaseMaterialRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

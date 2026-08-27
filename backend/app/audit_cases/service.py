@@ -9,9 +9,17 @@ from app.audit_cases.chunking import chunk_text
 from app.audit_cases.schema import (
     AuditCaseAccessDenied,
     AuditCaseCreate,
+    AuditCaseEventRead,
+    AuditCaseKnowledgeVersionOption,
+    AuditCaseManagementOptions,
+    AuditCaseManagementPage,
+    AuditCaseManagementRead,
+    AuditCaseMemberUpdate,
     AuditCaseNotFound,
     AuditCaseReadOnly,
+    AuditCaseUpdate,
     AuditMaterialProcessingError,
+    audit_case_read,
 )
 from app.audit_cases.storage import delete_case_storage, read_case_blob, write_case_blob
 from app.db.models import (
@@ -20,12 +28,12 @@ from app.db.models import (
     AuditCaseMaterial,
     AuditCaseMaterialChunk,
     ChatSession,
+    KnowledgeBaseVersion,
     User,
     new_id,
     utc_now,
 )
 from app.knowledge.parser import KnowledgeParseError, extract_text
-
 
 _CASE_EVENT_METADATA_KEYS = {
     "filename",
@@ -37,6 +45,17 @@ _CASE_EVENT_METADATA_KEYS = {
     "report_version_id",
     "count",
 }
+
+SUPPORTED_AUDIT_MATERIAL_EXTENSIONS = (
+    ".pdf",
+    ".docx",
+    ".txt",
+    ".md",
+    ".markdown",
+    ".html",
+    ".htm",
+)
+MAX_AUDIT_MATERIAL_BYTES = 50 * 1024 * 1024
 
 
 def record_case_event(
@@ -123,6 +142,271 @@ class AuditCaseService:
         self.db.commit()
         self.db.refresh(case)
         return case
+
+    def _assert_admin(self, actor: User) -> None:
+        if actor.role != "admin":
+            raise AuditCaseAccessDenied("tenant administrator required")
+
+    def update_case(
+        self,
+        case: AuditCase,
+        actor: User,
+        request: AuditCaseUpdate,
+    ) -> AuditCase:
+        self._assert_admin(actor)
+        case_id = case.id
+        case = self.db.get(AuditCase, case_id)
+        if case is None or case.tenant_id != actor.tenant_id:
+            raise AuditCaseNotFound(case_id)
+        self._assert_writable(case)
+
+        if request.organization_name is not None:
+            organization_name = request.organization_name.strip()
+            if not organization_name:
+                raise AuditCaseAccessDenied("organization name is required")
+            case.organization_name = organization_name
+        if request.report_type is not None:
+            report_type = request.report_type.strip()
+            if not report_type:
+                raise AuditCaseAccessDenied("report type is required")
+            case.report_type = report_type
+        if request.management_systems is not None:
+            case.management_systems_json = list(dict.fromkeys(
+                value.strip()
+                for value in request.management_systems
+                if value.strip()
+            ))
+        if request.knowledge_base_version_ids is not None:
+            version_ids = list(dict.fromkeys(request.knowledge_base_version_ids))
+            if version_ids:
+                versions = self.db.exec(
+                    select(KnowledgeBaseVersion).where(
+                        KnowledgeBaseVersion.tenant_id == case.tenant_id,
+                        KnowledgeBaseVersion.id.in_(version_ids),
+                        KnowledgeBaseVersion.status == "active",
+                    )
+                ).all()
+                if {version.id for version in versions} != set(version_ids):
+                    raise AuditCaseAccessDenied("invalid knowledge base version")
+            case.knowledge_base_version_ids_json = version_ids
+
+        case.updated_at = utc_now()
+        self.db.add(case)
+        record_case_event(
+            self.db,
+            case=case,
+            actor_user_id=actor.id,
+            event_type="audit_case.updated",
+            resource_type="audit_case",
+            resource_id=case.id,
+            metadata={"count": 1},
+        )
+        self.db.commit()
+        self.db.refresh(case)
+        return case
+
+    def replace_members(
+        self,
+        case: AuditCase,
+        actor: User,
+        request: AuditCaseMemberUpdate,
+    ) -> AuditCase:
+        self._assert_admin(actor)
+        case_id = case.id
+        case = self.db.get(AuditCase, case_id)
+        if case is None or case.tenant_id != actor.tenant_id:
+            raise AuditCaseNotFound(case_id)
+        self._assert_writable(case)
+
+        requested_ids = sorted(set(request.member_user_ids))
+        if requested_ids:
+            members = self.db.exec(
+                select(User).where(
+                    User.tenant_id == case.tenant_id,
+                    User.id.in_(requested_ids),
+                    User.source == "web",
+                )
+            ).all()
+            if {member.id for member in members} != set(requested_ids):
+                raise AuditCaseAccessDenied("internal project member required")
+
+        case.member_user_ids_json = requested_ids
+        case.updated_at = utc_now()
+        self.db.add(case)
+        record_case_event(
+            self.db,
+            case=case,
+            actor_user_id=actor.id,
+            event_type="audit_case.members_replaced",
+            resource_type="audit_case",
+            resource_id=case.id,
+            metadata={"count": len(requested_ids)},
+        )
+        self.db.commit()
+        self.db.refresh(case)
+        return case
+
+    def list_management_cases(
+        self,
+        actor: User,
+        *,
+        tenant_id: str,
+        query: str = "",
+        status: str | None = None,
+        management_system: str | None = None,
+        report_type: str | None = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> AuditCaseManagementPage:
+        self._assert_admin(actor)
+        if actor.tenant_id != tenant_id:
+            raise AuditCaseAccessDenied("tenant mismatch")
+
+        rows = self.db.exec(
+            select(AuditCase)
+            .where(AuditCase.tenant_id == tenant_id)
+            .order_by(AuditCase.updated_at.desc())
+        ).all()
+        normalized_query = query.strip().casefold()
+        normalized_report_type = report_type.strip() if report_type else ""
+        normalized_system = management_system.strip() if management_system else ""
+        filtered = [
+            row
+            for row in rows
+            if (
+                not normalized_query
+                or normalized_query in row.organization_name.casefold()
+            )
+            and (
+                not status
+                or status == "all"
+                or (status == "active" and row.status != "archived")
+                or (status == "archived" and row.status == "archived")
+            )
+            and (
+                not normalized_system
+                or normalized_system in (row.management_systems_json or [])
+            )
+            and (
+                not normalized_report_type
+                or row.report_type == normalized_report_type
+            )
+        ]
+        total = len(filtered)
+        page_rows = filtered[max(offset, 0): max(offset, 0) + max(limit, 1)]
+        case_ids = [row.id for row in page_rows]
+
+        materials = []
+        chunks = []
+        if case_ids:
+            materials = self.db.exec(
+                select(AuditCaseMaterial).where(
+                    AuditCaseMaterial.tenant_id == tenant_id,
+                    AuditCaseMaterial.audit_case_id.in_(case_ids),
+                    AuditCaseMaterial.is_current,
+                )
+            ).all()
+            current_material_ids = [material.id for material in materials]
+            chunks = (
+                self.db.exec(
+                    select(AuditCaseMaterialChunk).where(
+                        AuditCaseMaterialChunk.tenant_id == tenant_id,
+                        AuditCaseMaterialChunk.material_id.in_(current_material_ids),
+                    )
+                ).all()
+                if current_material_ids
+                else []
+            )
+        material_by_case: dict[str, list[AuditCaseMaterial]] = {}
+        for material in materials:
+            material_by_case.setdefault(material.audit_case_id, []).append(material)
+        chunks_by_case: dict[str, list[AuditCaseMaterialChunk]] = {}
+        for chunk in chunks:
+            chunks_by_case.setdefault(chunk.audit_case_id, []).append(chunk)
+
+        items: list[AuditCaseManagementRead] = []
+        for row in page_rows:
+            current_materials = material_by_case.get(row.id, [])
+            ready = [
+                material
+                for material in current_materials
+                if material.extraction_status == "succeeded"
+                and material.processing_status == "succeeded"
+            ]
+            failed = [
+                material
+                for material in current_materials
+                if material.extraction_status == "failed"
+                or material.processing_status == "failed"
+            ]
+            current_chunks = chunks_by_case.get(row.id, [])
+            successful_chunks = [
+                chunk for chunk in current_chunks if chunk.processing_status == "succeeded"
+            ]
+            base = audit_case_read(row).model_dump()
+            items.append(
+                AuditCaseManagementRead(
+                    **base,
+                    material_total=len(current_materials),
+                    material_ready=len(ready),
+                    material_failed=len(failed),
+                    file_coverage=(len(ready) / len(current_materials)) if current_materials else 0.0,
+                    chunk_coverage=(len(successful_chunks) / len(current_chunks)) if current_chunks else 0.0,
+                )
+            )
+        return AuditCaseManagementPage(items=items, total=total)
+
+    def list_management_options(self, actor: User, *, tenant_id: str) -> AuditCaseManagementOptions:
+        self._assert_admin(actor)
+        if actor.tenant_id != tenant_id:
+            raise AuditCaseAccessDenied("tenant mismatch")
+        versions = self.db.exec(
+            select(KnowledgeBaseVersion)
+            .where(
+                KnowledgeBaseVersion.tenant_id == tenant_id,
+                KnowledgeBaseVersion.status == "active",
+            )
+            .order_by(KnowledgeBaseVersion.name, KnowledgeBaseVersion.version)
+        ).all()
+        return AuditCaseManagementOptions(
+            knowledge_versions=[
+                AuditCaseKnowledgeVersionOption(
+                    id=version.id,
+                    knowledge_base_id=version.knowledge_base_id,
+                    name=version.name,
+                    version=version.version,
+                    description=version.description,
+                    status=version.status,
+                )
+                for version in versions
+            ],
+            supported_extensions=list(SUPPORTED_AUDIT_MATERIAL_EXTENSIONS),
+            max_material_bytes=MAX_AUDIT_MATERIAL_BYTES,
+        )
+
+    def list_events(self, case: AuditCase, actor: User) -> list[AuditCaseEventRead]:
+        case = self.get_case_for_user(case.tenant_id, case.id, actor)
+        rows = self.db.exec(
+            select(AuditCaseEvent)
+            .where(
+                AuditCaseEvent.tenant_id == case.tenant_id,
+                AuditCaseEvent.audit_case_id == case.id,
+            )
+            .order_by(AuditCaseEvent.created_at.desc())
+        ).all()
+        return [
+            AuditCaseEventRead(
+                id=row.id,
+                audit_case_id=row.audit_case_id,
+                actor_user_id=row.actor_user_id,
+                event_type=row.event_type,
+                resource_type=row.resource_type,
+                resource_id=row.resource_id,
+                metadata=dict(row.metadata_json or {}),
+                created_at=row.created_at,
+            )
+            for row in rows
+        ]
 
     def _assert_writable(self, case: AuditCase) -> None:
         if case.status == "archived":
