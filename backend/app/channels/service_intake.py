@@ -973,8 +973,9 @@ def _run_handoff_reply_command(
     binding: ChannelBinding,
     inbound: ChannelInbound,
     command: ChannelCommand,
+    target: dict,
 ) -> str:
-    """/回复反馈 指令处理:处理人通过飞书发送 /回复反馈 <内容> 回复人工转接通知。
+    """/回复反馈 指令处理:处理人发送 /回复反馈 <内容> 回复人工转接通知。
 
     匹配策略(按优先级):
     1. 引用通知(parent_id):按 handoff.notify_message_id == parent_id 精确匹配。
@@ -983,6 +984,10 @@ def _run_handoff_reply_command(
        提示处理人回复对应通知消息。
     命中后复用 _apply_handoff_reply 置 answered + 恢复 SOP,并给处理人回确认。
     无 ChannelIdentity 时拒绝。
+
+    确认回执沿用调用方解析出的渠道 target(暂存事件的 target_json;微信走兜底值),
+    与其余指令回复一致。此处不能写死飞书的 receive_id 字段:企微/微信的 send() 读
+    to_user_id,钉钉读 session_webhook,收到飞书格式会直接抛错、投递失败。
     """
     reply_text = command.query.strip()
     if not reply_text:
@@ -1067,7 +1072,7 @@ def _run_handoff_reply_command(
         handoff,
         reply_text,
         answered_by_user_id=answered_by,
-        source="feishu",
+        source=binding.channel,
     )
     # 给处理人回一条确认(经 outbox 投递)
     db.add(
@@ -1076,10 +1081,7 @@ def _run_handoff_reply_command(
             binding_id=binding.id,
             session_id=f"handoff:{handoff.id}",
             message_id=None,
-            target_json={
-                "receive_id_type": "open_id",
-                "receive_id": inbound.from_user_id,
-            },
+            target_json=dict(target),
             kind="handoff_ack",
             text=f"已收到你的回复，正在恢复 SOP 执行。回复预览：{reply_text[:120]}",
             status="pending",
@@ -1225,7 +1227,7 @@ def process_inbound(
             if command.kind in {"bind", "unbind"}:
                 reply = _run_bind_command(db, binding, inbound, command)
             elif command.kind == "handoff_reply":
-                reply = _run_handoff_reply_command(db, binding, inbound, command)
+                reply = _run_handoff_reply_command(db, binding, inbound, command, target)
             elif binding.team_id:
                 # 团队绑定:消息直路由团队 TL,员工列表/切换等指令无意义
                 reply = "该渠道已接入团队，消息由团队 TL 统一接收，员工切换类指令不可用。"

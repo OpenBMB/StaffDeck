@@ -142,6 +142,14 @@ def _inbound(
         parent_id=parent_id,
     )
 
+def _feishu_target(inbound: ChannelInbound) -> dict:
+    """飞书入站在 feishu_runtime 侧构造并暂存的投递 target。"""
+    return {
+        "message_id": inbound.event_id,
+        "reply_in_thread": False,
+        "receive_id_type": "open_id",
+        "receive_id": inbound.from_user_id,
+    }
 
 def _inbound_event(
     *,
@@ -1731,7 +1739,9 @@ def test_run_handoff_reply_command_matches_by_identity(monkeypatch) -> None:
         original = intake_mod.external_account_scope
         intake_mod.external_account_scope = lambda _db, _b: ""
         try:
-            result = _run_handoff_reply_command(db, binding, inbound, command)
+            result = _run_handoff_reply_command(
+                db, binding, inbound, command, _feishu_target(inbound)
+            )
             assert resumed == [("handoff_hr1", "feishu")]
             assert result is intake_mod._HANDOFF_REPLY_HANDLED
             assert db.get(HumanHandoffRequest, "handoff_hr1").status == "answered"
@@ -1777,7 +1787,9 @@ def test_run_handoff_reply_command_rejects_without_identity() -> None:
         original = intake_mod.external_account_scope
         intake_mod.external_account_scope = lambda _db, _b: ""
         try:
-            result = _run_handoff_reply_command(db, binding, inbound, command)
+            result = _run_handoff_reply_command(
+                db, binding, inbound, command, _feishu_target(inbound)
+            )
             assert "未找到" in result or "未绑定" in result
             assert db.get(HumanHandoffRequest, "handoff_hr2").status == "pending"
         finally:
@@ -1803,7 +1815,9 @@ def test_run_handoff_reply_command_no_pending_handoff_returns_error() -> None:
         original = intake_mod.external_account_scope
         intake_mod.external_account_scope = lambda _db, _b: ""
         try:
-            result = _run_handoff_reply_command(db, binding, inbound, command)
+            result = _run_handoff_reply_command(
+                db, binding, inbound, command, _feishu_target(inbound)
+            )
             assert "未找到" in result
         finally:
             intake_mod.external_account_scope = original
@@ -1823,7 +1837,7 @@ def test_run_handoff_reply_command_empty_query_returns_usage() -> None:
         inbound = _inbound(event_id="om_hr_4", text="/回复反馈")
         command = ChannelCommand(kind="handoff_reply", query="")
 
-        result = _run_handoff_reply_command(db, binding, inbound, command)
+        result = _run_handoff_reply_command(db, binding, inbound, command, _feishu_target(inbound))
         assert "用法" in result
 
 
@@ -1899,7 +1913,9 @@ def test_run_handoff_reply_command_rejects_multiple_pending(monkeypatch) -> None
         original = intake_mod.external_account_scope
         intake_mod.external_account_scope = lambda _db, _b: ""
         try:
-            result = _run_handoff_reply_command(db, binding, inbound, command)
+            result = _run_handoff_reply_command(
+                db, binding, inbound, command, _feishu_target(inbound)
+            )
             assert resumed == []
             assert "多个待处理" in result
         finally:
@@ -1928,7 +1944,9 @@ def test_run_handoff_reply_command_rejects_unknown_parent_id() -> None:
         original = intake_mod.external_account_scope
         intake_mod.external_account_scope = lambda _db, _b: ""
         try:
-            result = _run_handoff_reply_command(db, binding, inbound, command)
+            result = _run_handoff_reply_command(
+                db, binding, inbound, command, _feishu_target(inbound)
+            )
             assert "未找到" in result
             assert db.get(HumanHandoffRequest, handoff.id).status == "pending"
         finally:
@@ -2026,7 +2044,9 @@ def test_run_handoff_reply_command_matches_by_parent_id(monkeypatch) -> None:
         original = intake_mod.external_account_scope
         intake_mod.external_account_scope = lambda _db, _b: ""
         try:
-            result = _run_handoff_reply_command(db, binding, inbound, command)
+            result = _run_handoff_reply_command(
+                db, binding, inbound, command, _feishu_target(inbound)
+            )
             assert resumed == ["handoff_p1"]
             assert result is intake_mod._HANDOFF_REPLY_HANDLED
         finally:
