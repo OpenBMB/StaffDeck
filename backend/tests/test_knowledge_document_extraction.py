@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 
 import pytest
 from sqlalchemy.pool import StaticPool
@@ -23,6 +24,7 @@ from app.documents.extraction import (
     DocumentExtractionResult,
     ExtractedPage,
 )
+from app.knowledge import okf as okf_module
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import IngestPayload, KnowledgeService
 
@@ -116,6 +118,47 @@ def test_scanned_pdf_ingest_persists_full_text_page_refs_and_provenance(
         ).one()
         assert source_document.source_refs_json[0]["source_sha256"] == source["source_sha256"]
         assert source_document.source_refs_json[0]["page_refs"] == ["page:1", "page:2"]
+
+
+def test_okf_parser_helpers_match_pre_task2_baseline() -> None:
+    frontmatter_source = inspect.getsource(okf_module._parse_frontmatter).replace("\r\n", "\n")
+    scalar_source = inspect.getsource(okf_module._parse_scalar).replace("\r\n", "\n")
+
+    assert frontmatter_source == (
+        "def _parse_frontmatter(raw: str) -> dict[str, Any]:\n"
+        "    try:\n"
+        "        import yaml  # type: ignore\n"
+        "\n"
+        "        parsed = yaml.safe_load(raw)\n"
+        "        if isinstance(parsed, dict):\n"
+        "            return dict(parsed)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    result: dict[str, Any] = {}\n"
+        "    for line in raw.splitlines():\n"
+        "        if not line.strip() or line.lstrip().startswith(\"#\") or \":\" not in line:\n"
+        "            continue\n"
+        "        key, value = line.split(\":\", 1)\n"
+        "        key = key.strip()\n"
+        "        value = value.strip()\n"
+        "        if not key:\n"
+        "            continue\n"
+        "        result[key] = _parse_scalar(value)\n"
+        "    return result\n"
+    )
+    assert scalar_source == (
+        "def _parse_scalar(value: str) -> Any:\n"
+        "    if not value:\n"
+        "        return \"\"\n"
+        "    if value[0] in {'\"', \"'\", \"[\", \"{\"}:\n"
+        "        try:\n"
+        "            return json.loads(value.replace(\"'\", '\"') if value[0] == \"'\" else value)\n"
+        "        except Exception:\n"
+        "            return value.strip(\"\\\"'\")\n"
+        "    if value.lower() in {\"true\", \"false\"}:\n"
+        "        return value.lower() == \"true\"\n"
+        "    return value\n"
+    )
 
 
 def test_failed_ingest_preserves_blob_and_duplicate_source_sha_is_idempotent(

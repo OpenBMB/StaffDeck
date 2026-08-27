@@ -710,12 +710,8 @@ def _parse_frontmatter(raw: str) -> dict[str, Any]:
         parsed = yaml.safe_load(raw)
         if isinstance(parsed, dict):
             return dict(parsed)
-    except Exception:  # noqa: BLE001 - preserve legacy OKF fallback parsing semantics.
-        return _parse_frontmatter_fallback(raw)
-    return _parse_frontmatter_fallback(raw)
-
-
-def _parse_frontmatter_fallback(raw: str) -> dict[str, Any]:
+    except Exception:
+        pass
     result: dict[str, Any] = {}
     for line in raw.splitlines():
         if not line.strip() or line.lstrip().startswith("#") or ":" not in line:
@@ -735,7 +731,7 @@ def _parse_scalar(value: str) -> Any:
     if value[0] in {'"', "'", "[", "{"}:
         try:
             return json.loads(value.replace("'", '"') if value[0] == "'" else value)
-        except Exception:  # noqa: BLE001 - preserve legacy scalar fallback semantics.
+        except Exception:
             return value.strip("\"'")
     if value.lower() in {"true", "false"}:
         return value.lower() == "true"

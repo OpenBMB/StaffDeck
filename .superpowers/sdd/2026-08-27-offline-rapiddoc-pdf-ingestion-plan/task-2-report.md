@@ -205,3 +205,87 @@ All checks passed!
 ### Remaining risks
 
 - This fix makes failure atomic from the retrieval/database perspective for the document’s derived rows. If a future implementation moves vector queueing earlier or makes queue dispatch externally transactional, that boundary should be reviewed again so the same atomicity guarantee holds across process boundaries.
+
+---
+
+## Review fix follow-up 2 (2026-08-28)
+
+Status: completed
+
+### Finding addressed
+
+- Restored `backend/app/knowledge/okf.py` `_parse_frontmatter` and `_parse_scalar` exactly to their pre-Task-2 baseline from commit `0bbc9cc`.
+- Kept the Task 2 provenance/source metadata serialization hunks intact.
+- Left the ghost-cleanup and partial-persistence failure fixes unchanged.
+
+### Review-fix-2 Red command
+
+```powershell
+Set-Location .\backend; .\.venv\Scripts\python.exe -m pytest tests\test_knowledge_document_extraction.py -q -k pre_task2_baseline
+```
+
+### Review-fix-2 Red failure evidence
+
+The focused baseline regression test failed before the restore:
+
+- `tests/test_knowledge_document_extraction.py::test_okf_parser_helpers_match_pre_task2_baseline`
+  - failure: `_parse_frontmatter` source still referenced `_parse_frontmatter_fallback(...)` and inline `noqa` comments instead of the `0bbc9cc` baseline body
+
+This confirmed that `okf.py` still carried post-Task-2 helper/wrapper changes outside the brief’s allowed source metadata serialization scope.
+
+### Review-fix-2 implementation summary
+
+- Removed the extra `_parse_frontmatter_fallback(...)` helper.
+- Restored `_parse_frontmatter(...)` to the exact `0bbc9cc` body, including the original `except Exception: pass` fallback.
+- Restored `_parse_scalar(...)` to the exact `0bbc9cc` body, including the original broad JSON fallback.
+- Moved the new baseline snapshot regression into `tests/test_knowledge_document_extraction.py` so the verification stayed focused on the touched OKF/ingestion surface rather than unrelated legacy lint debt elsewhere in `tests/test_knowledge_base.py`.
+
+### Review-fix-2 verification commands
+
+Focused OKF baseline regression:
+
+```powershell
+Set-Location .\backend; .\.venv\Scripts\python.exe -m pytest tests\test_knowledge_document_extraction.py -q -k pre_task2_baseline
+```
+
+Output:
+
+```text
+.                                                                        [100%]
+1 passed, 3 deselected in 7.72s
+```
+
+Prior knowledge regression:
+
+```powershell
+Set-Location .\backend; .\.venv\Scripts\python.exe -m pytest tests\test_knowledge_base.py tests\test_knowledge_document_extraction.py -q
+```
+
+Output:
+
+```text
+...............................................                          [100%]
+47 passed in 18.29s
+```
+
+Focused ruff:
+
+```powershell
+Set-Location .\backend; .\.venv\Scripts\python.exe -m ruff check app\knowledge\okf.py tests\test_knowledge_document_extraction.py --extend-ignore BLE001,S110
+```
+
+Output:
+
+```text
+All checks passed!
+```
+
+### Review-fix-2 validation details
+
+- The OKF parser helper snapshot test now proves the two helper functions match the `0bbc9cc` baseline exactly.
+- The Task 2 provenance serialization remains covered by the existing structured-ingestion assertions.
+- The partial-persistence failure cleanup regression remains in place and unchanged.
+
+### Remaining risks
+
+- Standard ruff without `--extend-ignore BLE001,S110` still flags the pre-existing `0bbc9cc` baseline fallback catches in `okf.py`. That is a tooling-policy tension rather than a remaining Task 2 behavior gap: changing those catches again would reintroduce drift from the requested pre-Task-2 baseline.
