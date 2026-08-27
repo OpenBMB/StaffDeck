@@ -186,6 +186,22 @@ class AuditMaterialProcessingError(RuntimeError):
     pass
 
 
+class AuditMaterialAlreadyExists(ValueError):
+    pass
+
+
+class AuditMaterialCategoryConflict(ValueError):
+    pass
+
+
+class AuditMaterialFormatError(ValueError):
+    pass
+
+
+class AuditMaterialTooLarge(ValueError):
+    pass
+
+
 def audit_case_read(row: AuditCase) -> AuditCaseRead:
     return AuditCaseRead(
         id=row.id,

@@ -7,6 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import paths
 from app.api import audit_cases as audit_cases_module
+from app.audit_cases import service as audit_case_service_module
 from app.audit_cases.evidence_schema import ProcessingSummary
 from app.audit_cases.knowledge import KnowledgeRetrievalSummary
 from app.db import get_session
@@ -78,6 +79,117 @@ def api_context(tmp_path, monkeypatch):
 
 def _headers(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(user)}"}
+
+
+def upload_material(
+    client: TestClient,
+    headers: dict[str, str],
+    case_id: str,
+    material_type: str,
+    filename: str,
+    data: bytes,
+):
+    return client.post(
+        f"/api/audit-cases/{case_id}/materials?tenant_id=tenant_demo"
+        f"&material_type={material_type}",
+        headers=headers,
+        files={"files": (filename, data, "text/plain")},
+    )
+
+
+def test_same_hash_in_other_material_type_returns_category_conflict(api_context) -> None:
+    client, _engine, users, _tmp_path = api_context
+    admin = _headers(users["admin"])
+    created = client.post(
+        "/api/audit-cases",
+        headers=admin,
+        json={
+            "tenant_id": "tenant_demo",
+            "organization_name": "分类去重企业",
+            "report_type": "监督",
+        },
+    )
+    assert created.status_code == 200
+    case_id = created.json()["id"]
+    first = upload_material(client, admin, case_id, "audit_record", "same.txt", b"same")
+    assert first.status_code == 200
+    conflict = upload_material(client, admin, case_id, "audit_plan", "plan.txt", b"same")
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "MATERIAL_CATEGORY_CONFLICT"
+
+
+def test_explicit_replace_preserves_old_version_and_processes_only_new_material(
+    api_context,
+) -> None:
+    client, _engine, users, _tmp_path = api_context
+    admin = _headers(users["admin"])
+    created = client.post(
+        "/api/audit-cases",
+        headers=admin,
+        json={
+            "tenant_id": "tenant_demo",
+            "organization_name": "版本企业",
+            "report_type": "再认证",
+        },
+    )
+    assert created.status_code == 200
+    case_id = created.json()["id"]
+    first = upload_material(
+        client, admin, case_id, "audit_record", "记录.txt", "第一版记录".encode("utf-8")
+    )
+    assert first.status_code == 200
+    material_id = first.json()[0]["id"]
+    replaced = client.post(
+        f"/api/audit-cases/{case_id}/materials/{material_id}/replace"
+        "?tenant_id=tenant_demo",
+        headers=admin,
+        files={"file": ("记录-v2.txt", "第二版记录".encode("utf-8"), "text/plain")},
+    )
+    assert replaced.status_code == 200
+    replacement = replaced.json()
+    assert replacement["version"] == 2
+    assert replacement["supersedes_material_id"] == material_id
+    history = client.get(
+        f"/api/audit-cases/{case_id}/materials?tenant_id=tenant_demo&include_history=true",
+        headers=admin,
+    )
+    assert history.status_code == 200
+    assert {item["version"] for item in history.json()} == {1, 2}
+    assert [item["id"] for item in history.json() if item["is_current"]] == [
+        replacement["id"]
+    ]
+    processed = client.post(
+        f"/api/audit-cases/{case_id}/materials/{replacement['id']}/process"
+        "?tenant_id=tenant_demo",
+        headers=admin,
+    )
+    assert processed.status_code == 200
+    assert processed.json()["id"] == replacement["id"]
+
+
+def test_material_upload_rejects_legacy_doc_and_oversized_file(api_context, monkeypatch) -> None:
+    client, _engine, users, _tmp_path = api_context
+    admin = _headers(users["admin"])
+    created = client.post(
+        "/api/audit-cases",
+        headers=admin,
+        json={
+            "tenant_id": "tenant_demo",
+            "organization_name": "格式校验企业",
+            "report_type": "监督",
+        },
+    )
+    assert created.status_code == 200
+    case_id = created.json()["id"]
+
+    legacy = upload_material(client, admin, case_id, "audit_record", "旧记录.doc", b"data")
+    assert legacy.status_code == 422
+    assert legacy.json()["detail"] == "UNSUPPORTED_DOCUMENT_FORMAT"
+
+    monkeypatch.setattr(audit_case_service_module, "MAX_AUDIT_MATERIAL_BYTES", 3)
+    oversized = upload_material(client, admin, case_id, "audit_record", "大文件.txt", b"1234")
+    assert oversized.status_code == 413
+    assert oversized.json()["detail"] == "AUDIT_MATERIAL_TOO_LARGE"
 
 
 def test_audit_case_management_api_is_admin_only(api_context) -> None:

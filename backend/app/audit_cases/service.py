@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from typing import Any
 
 from sqlmodel import Session, delete, select, update
@@ -18,7 +19,11 @@ from app.audit_cases.schema import (
     AuditCaseNotFound,
     AuditCaseReadOnly,
     AuditCaseUpdate,
+    AuditMaterialAlreadyExists,
+    AuditMaterialCategoryConflict,
+    AuditMaterialFormatError,
     AuditMaterialProcessingError,
+    AuditMaterialTooLarge,
     audit_case_read,
 )
 from app.audit_cases.storage import delete_case_storage, read_case_blob, write_case_blob
@@ -56,6 +61,19 @@ SUPPORTED_AUDIT_MATERIAL_EXTENSIONS = (
     ".htm",
 )
 MAX_AUDIT_MATERIAL_BYTES = 50 * 1024 * 1024
+SUPPORTED_AUDIT_MATERIAL_TYPES = frozenset(
+    {"audit_plan", "audit_record", "performance_record", "report_template"}
+)
+
+
+def _validate_material_upload(filename: str, data: bytes) -> None:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".doc":
+        raise AuditMaterialFormatError("UNSUPPORTED_DOCUMENT_FORMAT")
+    if suffix not in SUPPORTED_AUDIT_MATERIAL_EXTENSIONS:
+        raise AuditMaterialFormatError("UNSUPPORTED_DOCUMENT_FORMAT")
+    if len(data) > MAX_AUDIT_MATERIAL_BYTES:
+        raise AuditMaterialTooLarge("AUDIT_MATERIAL_TOO_LARGE")
 
 
 def record_case_event(
@@ -423,21 +441,31 @@ class AuditCaseService:
     ) -> AuditCaseMaterial:
         case = self.get_case_for_user(case.tenant_id, case.id, actor)
         self._assert_writable(case)
+        if material_type not in SUPPORTED_AUDIT_MATERIAL_TYPES:
+            raise AuditMaterialFormatError("UNSUPPORTED_MATERIAL_TYPE")
+        _validate_material_upload(filename, data)
         sha256 = hashlib.sha256(data).hexdigest()
-        duplicate = self.db.exec(
+        same_hash = self.db.exec(
             select(AuditCaseMaterial).where(
                 AuditCaseMaterial.tenant_id == case.tenant_id,
                 AuditCaseMaterial.audit_case_id == case.id,
                 AuditCaseMaterial.sha256 == sha256,
             )
-        ).first()
+        ).all()
+        duplicate = next(
+            (item for item in same_hash if item.material_type == material_type),
+            None,
+        )
         if duplicate is not None:
             return duplicate
+        if same_hash:
+            raise AuditMaterialCategoryConflict("MATERIAL_CATEGORY_CONFLICT")
 
         same_name = self.db.exec(
             select(AuditCaseMaterial).where(
                 AuditCaseMaterial.tenant_id == case.tenant_id,
                 AuditCaseMaterial.audit_case_id == case.id,
+                AuditCaseMaterial.material_type == material_type,
                 AuditCaseMaterial.filename == filename,
             )
         ).all()
@@ -514,8 +542,142 @@ class AuditCaseService:
             ).all()
         )
 
+    def list_materials(
+        self,
+        case: AuditCase,
+        *,
+        include_history: bool = False,
+    ) -> list[AuditCaseMaterial]:
+        statement = select(AuditCaseMaterial).where(
+            AuditCaseMaterial.tenant_id == case.tenant_id,
+            AuditCaseMaterial.audit_case_id == case.id,
+        )
+        if not include_history:
+            statement = statement.where(AuditCaseMaterial.is_current)
+        return list(
+            self.db.exec(
+                statement.order_by(
+                    AuditCaseMaterial.material_type,
+                    AuditCaseMaterial.filename,
+                    AuditCaseMaterial.version,
+                )
+            ).all()
+        )
+
+    def replace_material(
+        self,
+        case: AuditCase,
+        actor: User,
+        material: AuditCaseMaterial,
+        filename: str,
+        content_type: str,
+        data: bytes,
+    ) -> AuditCaseMaterial:
+        case = self.get_case_for_user(case.tenant_id, case.id, actor)
+        self._assert_writable(case)
+        current = self.db.exec(
+            select(AuditCaseMaterial).where(
+                AuditCaseMaterial.tenant_id == case.tenant_id,
+                AuditCaseMaterial.audit_case_id == case.id,
+                AuditCaseMaterial.id == material.id,
+            )
+        ).first()
+        if current is None:
+            raise AuditCaseNotFound(material.id)
+        if not current.is_current:
+            raise AuditMaterialProcessingError("MATERIAL_NOT_CURRENT")
+        _validate_material_upload(filename, data)
+        material_type = current.material_type
+        sha256 = hashlib.sha256(data).hexdigest()
+        same_hash = self.db.exec(
+            select(AuditCaseMaterial).where(
+                AuditCaseMaterial.tenant_id == case.tenant_id,
+                AuditCaseMaterial.audit_case_id == case.id,
+                AuditCaseMaterial.sha256 == sha256,
+            )
+        ).all()
+        if any(item.material_type == material_type for item in same_hash):
+            raise AuditMaterialAlreadyExists("MATERIAL_ALREADY_EXISTS")
+        if any(item.material_type != material_type for item in same_hash):
+            raise AuditMaterialCategoryConflict("MATERIAL_CATEGORY_CONFLICT")
+
+        latest_version = self.db.exec(
+            select(AuditCaseMaterial.version).where(
+                AuditCaseMaterial.tenant_id == case.tenant_id,
+                AuditCaseMaterial.audit_case_id == case.id,
+                AuditCaseMaterial.material_type == material_type,
+            ).order_by(AuditCaseMaterial.version.desc())
+        ).first()
+        version = (latest_version or current.version) + 1
+        current.is_current = False
+        current.updated_at = utc_now()
+        self.db.add(current)
+        replacement = AuditCaseMaterial(
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            attachment_id=new_id("attachment"),
+            material_type=material_type,
+            filename=filename,
+            content_type=content_type,
+            sha256=sha256,
+            size=len(data),
+            storage_key="",
+            version=version,
+            supersedes_material_id=current.id,
+        )
+        self.db.add(replacement)
+        self.db.flush()
+        replacement.storage_key = write_case_blob(
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            material_id=replacement.id,
+            name="raw",
+            data=data,
+        )
+        record_case_event(
+            self.db,
+            case=case,
+            actor_user_id=actor.id,
+            event_type="audit_case.material_replaced",
+            resource_type="audit_case_material",
+            resource_id=replacement.id,
+            metadata={
+                "filename": replacement.filename,
+                "sha256": replacement.sha256,
+                "version": replacement.version,
+                "status": replacement.processing_status,
+            },
+        )
+        self.db.commit()
+        self.db.refresh(replacement)
+        return replacement
+
+    def process_one_material(
+        self,
+        case: AuditCase,
+        actor: User,
+        material_id: str,
+    ) -> AuditCaseMaterial:
+        case = self.get_case_for_user(case.tenant_id, case.id, actor)
+        self._assert_writable(case)
+        material = self.db.exec(
+            select(AuditCaseMaterial).where(
+                AuditCaseMaterial.tenant_id == case.tenant_id,
+                AuditCaseMaterial.audit_case_id == case.id,
+                AuditCaseMaterial.id == material_id,
+                AuditCaseMaterial.is_current,
+            )
+        ).first()
+        if material is None:
+            raise AuditCaseNotFound(material_id)
+        return self.process_material(case, material, actor_user_id=actor.id)
+
     def process_material(
-        self, case: AuditCase, material: AuditCaseMaterial
+        self,
+        case: AuditCase,
+        material: AuditCaseMaterial,
+        *,
+        actor_user_id: str | None = None,
     ) -> AuditCaseMaterial:
         self._assert_writable(case)
         if material.tenant_id != case.tenant_id or material.audit_case_id != case.id:
@@ -567,6 +729,21 @@ class AuditCaseService:
             material.error_code = str(exc) or exc.__class__.__name__
         material.updated_at = utc_now()
         self.db.add(material)
+        record_case_event(
+            self.db,
+            case=case,
+            actor_user_id=actor_user_id or case.owner_user_id,
+            event_type="audit_case.material_processed",
+            resource_type="audit_case_material",
+            resource_id=material.id,
+            metadata={
+                "filename": material.filename,
+                "sha256": material.sha256,
+                "version": material.version,
+                "status": material.processing_status,
+                "error_code": material.error_code,
+            },
+        )
         self.db.commit()
         self.db.refresh(material)
         return material

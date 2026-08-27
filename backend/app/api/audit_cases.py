@@ -22,6 +22,10 @@ from app.audit_cases.schema import (
     AuditCaseReadOnly,
     AuditCaseUpdate,
     AuditCoverageSnapshot,
+    AuditMaterialAlreadyExists,
+    AuditMaterialCategoryConflict,
+    AuditMaterialFormatError,
+    AuditMaterialTooLarge,
     AuditReportCreateRequest,
     AuditReportRead,
     AuditReportSectionRead,
@@ -54,6 +58,14 @@ def _case_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=409, detail="AUDIT_CASE_READ_ONLY")
     if isinstance(exc, AuditCaseAccessDenied):
         return HTTPException(status_code=403, detail="AUDIT_CASE_ACCESS_DENIED")
+    if isinstance(exc, AuditMaterialAlreadyExists):
+        return HTTPException(status_code=409, detail="MATERIAL_ALREADY_EXISTS")
+    if isinstance(exc, AuditMaterialCategoryConflict):
+        return HTTPException(status_code=409, detail="MATERIAL_CATEGORY_CONFLICT")
+    if isinstance(exc, AuditMaterialFormatError):
+        return HTTPException(status_code=422, detail=str(exc))
+    if isinstance(exc, AuditMaterialTooLarge):
+        return HTTPException(status_code=413, detail="AUDIT_MATERIAL_TOO_LARGE")
     return HTTPException(status_code=400, detail=str(exc))
 
 
@@ -172,6 +184,7 @@ async def upload_audit_case_materials(
 def list_audit_case_materials(
     case_id: str,
     tenant_id: str = Query(...),
+    include_history: bool = Query(False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> list[AuditCaseMaterialRead]:
@@ -182,7 +195,70 @@ def list_audit_case_materials(
         case_id=case_id,
         current_user=current_user,
     )
-    return [audit_case_material_read(row) for row in service.list_current_materials(case)]
+    return [
+        audit_case_material_read(row)
+        for row in service.list_materials(case, include_history=include_history)
+    ]
+
+
+@router.post(
+    "/{case_id}/materials/{material_id}/process",
+    response_model=AuditCaseMaterialRead,
+)
+def process_one_audit_case_material(
+    case_id: str,
+    material_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_session),
+) -> AuditCaseMaterialRead:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        return audit_case_material_read(
+            service.process_one_material(case, current_user, material_id)
+        )
+    except Exception as exc:
+        raise _case_error(exc) from exc
+
+
+@router.post(
+    "/{case_id}/materials/{material_id}/replace",
+    response_model=AuditCaseMaterialRead,
+)
+async def replace_audit_case_material(
+    case_id: str,
+    material_id: str,
+    file: UploadFile = File(...),
+    tenant_id: str = Query(...),
+    current_user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_session),
+) -> AuditCaseMaterialRead:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        material = service.get_material(case.id, material_id, current_user)
+        replacement = service.replace_material(
+            case,
+            current_user,
+            material,
+            file.filename or "unnamed",
+            file.content_type or "application/octet-stream",
+            await file.read(),
+        )
+        return audit_case_material_read(replacement)
+    except Exception as exc:
+        raise _case_error(exc) from exc
 
 
 @router.post("/{case_id}/process", response_model=None)
@@ -208,7 +284,7 @@ def process_audit_case_materials(
                     material.extraction_status == "succeeded"
                     and material.processing_status == "succeeded"
                 ):
-                    service.process_material(case, material)
+                    service.process_material(case, material, actor_user_id=current_user.id)
             evidence = AuditEvidenceProcessor(db).process_pending_chunks(case, model_config)
             knowledge = AuditKnowledgeOrchestrator(db).retrieve(case, model_config)
             return JSONResponse(
@@ -225,7 +301,9 @@ def process_audit_case_materials(
             raise _case_error(exc) from exc
     try:
         return [
-            audit_case_material_read(service.process_material(case, material))
+            audit_case_material_read(
+                service.process_material(case, material, actor_user_id=current_user.id)
+            )
             for material in service.list_current_materials(case)
         ]
     except Exception as exc:

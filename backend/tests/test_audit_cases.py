@@ -9,7 +9,12 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import paths
 from app.audit_cases.chunking import chunk_text
-from app.audit_cases.schema import AuditCaseCreate, AuditCaseNotFound, AuditCaseReadOnly
+from app.audit_cases.schema import (
+    AuditCaseCreate,
+    AuditCaseNotFound,
+    AuditCaseReadOnly,
+    AuditMaterialFormatError,
+)
 from app.audit_cases.service import AuditCaseService
 from app.audit_cases.storage import read_case_blob, write_case_blob
 from app.db.models import AuditCase, AuditCaseMaterial, AuditCaseMaterialChunk, User
@@ -247,24 +252,18 @@ def test_process_material_persists_full_text_and_contiguous_chunks(tmp_path, mon
     assert "".join(chunk.content for chunk in chunks) == text
 
 
-def test_process_material_failure_keeps_source_and_error_state(tmp_path, monkeypatch) -> None:
+def test_legacy_doc_is_rejected_before_storage(tmp_path, monkeypatch) -> None:
     service, owner, case = _service_with_case(tmp_path, monkeypatch)
-    source = b"legacy binary document"
-    material = service.add_material(
-        case,
-        owner,
-        "audit_record",
-        "记录.doc",
-        "application/msword",
-        source,
-    )
 
-    processed = service.process_material(case, material)
-
-    assert processed.extraction_status == "failed"
-    assert processed.processing_status == "failed"
-    assert processed.error_code
-    assert read_case_blob(processed.storage_key) == source
+    with pytest.raises(AuditMaterialFormatError, match="UNSUPPORTED_DOCUMENT_FORMAT"):
+        service.add_material(
+            case,
+            owner,
+            "audit_record",
+            "记录.doc",
+            "application/msword",
+            b"legacy binary document",
+        )
 
 
 def test_archived_case_rejects_new_material(tmp_path, monkeypatch) -> None:
