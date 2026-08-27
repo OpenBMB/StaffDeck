@@ -45,13 +45,20 @@ class AuditCase(SQLModel, table=True):
 class AuditCaseMaterial(SQLModel, table=True):
     __tablename__ = "audit_case_materials"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "audit_case_id", "sha256", name="uq_audit_case_material_sha"),
         UniqueConstraint(
             "tenant_id",
             "audit_case_id",
+            "sha256",
+            "material_type",
+            name="uq_audit_case_material_sha_type",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "material_type",
             "filename",
             "version",
-            name="uq_audit_case_material_version",
+            name="uq_audit_case_material_version_type",
         ),
     )
 

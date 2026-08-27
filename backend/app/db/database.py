@@ -50,6 +50,7 @@ _CHANNEL_SCOPE_REBUILD_MIGRATION_ID = "20260719_channel_scope_rebuild"
 _CHANNEL_BINDINGS_MULTI_MIGRATION_ID = "20260721_channel_bindings_multi"
 _CHANNEL_ACCOUNT_KEY_MIGRATION_ID = "20260723_channel_account_key_v1"
 _FEISHU_CHANNEL_SCHEMA_MIGRATION_ID = "20260724_feishu_channel_schema_v1"
+_AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID = "audit_case_material_unique_type_v1"
 _CAPABILITY_SCOPE_TABLES = (
     "general_skills",
     "tools",
@@ -102,6 +103,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_capability_scope_schema(conn, inspector, tables)
         _migrate_harness_v2_schema(conn, inspector, tables)
         _migrate_audit_case_schema(conn, inspector, tables)
+        _migrate_audit_case_material_schema(conn, inspector, tables)
 
         if "api_jobs" in tables:
             job_columns = {column["name"] for column in inspector.get_columns("api_jobs")}
@@ -2068,6 +2070,135 @@ def _migrate_audit_case_schema(conn, inspector, tables: set[str]) -> None:
             "CREATE INDEX IF NOT EXISTS ix_sessions_audit_case_id "
             "ON sessions(audit_case_id)"
         )
+    )
+
+
+def _migrate_audit_case_material_schema(conn, inspector, tables: set[str]) -> None:
+    """Make material uniqueness include its classification without losing versions."""
+
+    if "audit_case_materials" not in tables:
+        return
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID},
+    ).first()
+    if applied:
+        return
+
+    unique_constraints = {
+        item["name"]: tuple(item["column_names"])
+        for item in inspect(conn).get_unique_constraints("audit_case_materials")
+    }
+    expected_constraints = {
+        "uq_audit_case_material_sha_type": (
+            "tenant_id",
+            "audit_case_id",
+            "sha256",
+            "material_type",
+        ),
+        "uq_audit_case_material_version_type": (
+            "tenant_id",
+            "audit_case_id",
+            "material_type",
+            "filename",
+            "version",
+        ),
+    }
+    if all(unique_constraints.get(name) == columns for name, columns in expected_constraints.items()):
+        conn.execute(
+            text(
+                "INSERT INTO app_data_migrations (id) VALUES (:id)"
+            ),
+            {"id": _AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID},
+        )
+        return
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE audit_case_materials_new (
+                id VARCHAR PRIMARY KEY,
+                tenant_id VARCHAR NOT NULL,
+                audit_case_id VARCHAR NOT NULL,
+                attachment_id VARCHAR NOT NULL,
+                material_type VARCHAR NOT NULL,
+                filename VARCHAR NOT NULL,
+                content_type VARCHAR NOT NULL,
+                sha256 VARCHAR NOT NULL,
+                size INTEGER NOT NULL,
+                storage_key VARCHAR NOT NULL,
+                extracted_text_storage_key VARCHAR,
+                characters INTEGER NOT NULL DEFAULT 0,
+                extraction_status VARCHAR NOT NULL DEFAULT 'pending',
+                processing_status VARCHAR NOT NULL DEFAULT 'pending',
+                version INTEGER NOT NULL DEFAULT 1,
+                is_current BOOLEAN NOT NULL DEFAULT 1,
+                supersedes_material_id VARCHAR,
+                error_code VARCHAR,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                CONSTRAINT uq_audit_case_material_sha_type
+                    UNIQUE (tenant_id, audit_case_id, sha256, material_type),
+                CONSTRAINT uq_audit_case_material_version_type
+                    UNIQUE (tenant_id, audit_case_id, material_type, filename, version)
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            INSERT INTO audit_case_materials_new (
+                id, tenant_id, audit_case_id, attachment_id, material_type, filename,
+                content_type, sha256, size, storage_key, extracted_text_storage_key,
+                characters, extraction_status, processing_status, version, is_current,
+                supersedes_material_id, error_code, created_at, updated_at
+            )
+            SELECT
+                id, tenant_id, audit_case_id, attachment_id, material_type, filename,
+                content_type, sha256, size, storage_key, extracted_text_storage_key,
+                characters, extraction_status, processing_status, version, is_current,
+                supersedes_material_id, error_code, created_at, updated_at
+            FROM audit_case_materials
+            """
+        )
+    )
+    conn.execute(text("DROP TABLE audit_case_materials"))
+    conn.execute(text("ALTER TABLE audit_case_materials_new RENAME TO audit_case_materials"))
+    for column_name in (
+        "tenant_id",
+        "audit_case_id",
+        "attachment_id",
+        "material_type",
+        "filename",
+        "sha256",
+        "extraction_status",
+        "processing_status",
+        "version",
+        "is_current",
+        "supersedes_material_id",
+        "error_code",
+    ):
+        conn.execute(
+            text(
+                f"CREATE INDEX IF NOT EXISTS ix_audit_case_materials_{column_name} "
+                f"ON audit_case_materials({column_name})"
+            )
+        )
+    conn.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID},
     )
 
 
