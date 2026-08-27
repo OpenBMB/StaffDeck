@@ -30,6 +30,14 @@ def _workspace_tempdir() -> tempfile.TemporaryDirectory[str]:
     return tempfile.TemporaryDirectory(dir=ROOT_DIR)
 
 
+def _write_ready_manifest(model_dir: Path) -> None:
+    (model_dir / "manifest.json").write_text(
+        json.dumps({"version": "2026.08.27", "files": ["weights.bin"]}),
+        encoding="utf-8",
+    )
+    (model_dir / "weights.bin").write_bytes(b"1234")
+
+
 class _FakePdfReader:
     def __init__(self, *_args, **_kwargs) -> None:
         self.is_encrypted = False
@@ -51,6 +59,7 @@ def test_adapter_calls_doc_analyze_with_expected_cpu_ort_parameters(
         temp_path = Path(temp_dir)
         model_dir = temp_path / "models"
         model_dir.mkdir()
+        _write_ready_manifest(model_dir)
         monkeypatch.setenv("RAPID_MODELS_DIR", str(model_dir))
         monkeypatch.setattr("pypdf.PdfReader", _FakePdfReader)
 
@@ -104,6 +113,7 @@ def test_adapter_raises_dependency_missing_when_runtime_package_is_unavailable(
         temp_path = Path(temp_dir)
         model_dir = temp_path / "models"
         model_dir.mkdir()
+        _write_ready_manifest(model_dir)
         monkeypatch.setenv("RAPID_MODELS_DIR", str(model_dir))
         monkeypatch.setattr("pypdf.PdfReader", _FakePdfReader)
 
@@ -142,6 +152,7 @@ def test_adapter_maps_empty_ocr_result_to_stable_error(
         temp_path = Path(temp_dir)
         model_dir = temp_path / "models"
         model_dir.mkdir()
+        _write_ready_manifest(model_dir)
         monkeypatch.setenv("RAPID_MODELS_DIR", str(model_dir))
         monkeypatch.setattr("pypdf.PdfReader", _FakePdfReader)
 
@@ -173,6 +184,7 @@ def test_adapter_maps_timeout_to_stable_error(
         temp_path = Path(temp_dir)
         model_dir = temp_path / "models"
         model_dir.mkdir()
+        _write_ready_manifest(model_dir)
         monkeypatch.setenv("RAPID_MODELS_DIR", str(model_dir))
         monkeypatch.setattr("pypdf.PdfReader", _FakePdfReader)
 
@@ -248,18 +260,93 @@ def test_model_manager_reports_readiness_without_downloading() -> None:
         temp_path = Path(temp_dir)
         model_dir = temp_path / "models"
         model_dir.mkdir()
-        manifest_path = model_dir / "manifest.json"
-        manifest_path.write_text(
-            json.dumps({"version": "2026.08.27", "files": ["weights.bin"]}),
-            encoding="utf-8",
-        )
-        (model_dir / "weights.bin").write_bytes(b"1234")
+        _write_ready_manifest(model_dir)
 
         readiness = module.RapidDocModelManager(model_dir=model_dir).check_readiness()
 
         assert readiness.ready is True
         assert readiness.model_dir == model_dir
         assert readiness.version == "2026.08.27"
+
+
+def test_model_manager_marks_missing_manifest_as_not_ready() -> None:
+    module = importlib.import_module("app.documents.model_manager")
+    with _workspace_tempdir() as temp_dir:
+        temp_path = Path(temp_dir)
+        model_dir = temp_path / "models"
+        model_dir.mkdir()
+
+        readiness = module.RapidDocModelManager(model_dir=model_dir).check_readiness()
+
+        assert readiness.ready is False
+        assert readiness.version is None
+        assert readiness.missing == [str(model_dir / "manifest.json")]
+
+
+def test_model_manager_prepare_supports_positional_only_prepare_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("app.documents.model_manager")
+    with _workspace_tempdir() as temp_dir:
+        temp_path = Path(temp_dir)
+        model_dir = temp_path / "models"
+
+        class FakeRapidDocModule:
+            @staticmethod
+            def prepare_models(model_dir_arg, /):
+                target_dir = Path(model_dir_arg)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                (target_dir / "manifest.json").write_text(
+                    json.dumps({"version": "2026.08.27", "files": ["weights.bin"]}),
+                    encoding="utf-8",
+                )
+                (target_dir / "weights.bin").write_bytes(b"1234")
+
+        def fake_import(name: str):
+            if name == "onnxruntime":
+                return object()
+            if name == "rapiddoc":
+                return FakeRapidDocModule()
+            raise ImportError(name)
+
+        monkeypatch.setattr(module.importlib, "import_module", fake_import)
+
+        readiness = module.RapidDocModelManager(model_dir=model_dir).prepare()
+
+        assert readiness.ready is True
+        assert readiness.version == "2026.08.27"
+
+
+def test_model_manager_prepare_does_not_retry_internal_type_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("app.documents.model_manager")
+    with _workspace_tempdir() as temp_dir:
+        temp_path = Path(temp_dir)
+        model_dir = temp_path / "models"
+        calls = 0
+
+        class FakeRapidDocModule:
+            @staticmethod
+            def prepare_models(*, model_dir: str):
+                nonlocal calls
+                calls += 1
+                raise TypeError("internal bug")
+
+        def fake_import(name: str):
+            if name == "onnxruntime":
+                return object()
+            if name == "rapiddoc":
+                return FakeRapidDocModule()
+            raise ImportError(name)
+
+        monkeypatch.setattr(module.importlib, "import_module", fake_import)
+
+        with pytest.raises(module.DocumentExtractionError) as exc_info:
+            module.RapidDocModelManager(model_dir=model_dir).prepare()
+
+        assert exc_info.value.code == "DOCUMENT_EXTRACTION_FAILED"
+        assert calls == 1
 
 
 def test_prepare_script_check_only_only_checks_without_preparing(
@@ -298,3 +385,15 @@ def test_prepare_script_check_only_only_checks_without_preparing(
 
     assert exit_code == 0
     assert calls == ["check"]
+
+
+def test_prepare_script_check_only_fails_when_manifest_is_missing() -> None:
+    script = _load_script("prepare_rapiddoc_models")
+    with _workspace_tempdir() as temp_dir:
+        temp_path = Path(temp_dir)
+        model_dir = temp_path / "models"
+        model_dir.mkdir()
+
+        exit_code = script.main(["--check-only", "--model-dir", str(model_dir)])
+
+    assert exit_code == 1

@@ -213,3 +213,94 @@ def test_legacy_extract_text_keeps_tuple_contract_for_pdf(monkeypatch: pytest.Mo
     assert text.startswith("# PDF 文档")
     assert "Alpha" in text
     assert "Beta" in text
+
+
+def test_legacy_extract_text_uses_configured_structured_extractor_for_scanned_pdf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import Settings
+    from app.knowledge import parser
+
+    class FakeReader:
+        def __init__(self) -> None:
+            self.pages = [_FakePdfPage("native text"), _FakePdfPage("")]
+
+    class FakeAdapter:
+        def __init__(
+            self,
+            *,
+            model_manager,
+            timeout_seconds: float,
+            worker_count: int,
+            max_pages: int,
+            max_pixels: int,
+            device: str = "cpu",
+            engine: str = "ort",
+        ) -> None:
+            self.model_manager = model_manager
+            self.timeout_seconds = timeout_seconds
+            self.worker_count = worker_count
+            self.max_pages = max_pages
+            self.max_pixels = max_pixels
+            self.device = device
+            self.engine = engine
+            self.calls: list[tuple[str, bytes]] = []
+
+        def extract_pdf(self, filename: str, content: bytes):
+            self.calls.append((filename, content))
+            return extraction.DocumentExtractionResult(
+                text="structured route",
+                pages=[
+                    extraction.ExtractedPage(
+                        page_number=1,
+                        text="structured route",
+                        char_count=len("structured route"),
+                    )
+                ],
+                page_refs=["page:1"],
+                source_sha256=hashlib.sha256(content).hexdigest(),
+                source_page_count=1,
+                method="structured",
+                engine="rapiddoc-ort",
+                engine_version="test",
+                warnings=[],
+                char_count=len("structured route"),
+                table_count=0,
+            )
+
+    extraction = _load_extraction_module()
+    fake_adapter_instances: list[FakeAdapter] = []
+
+    def build_fake_adapter(**kwargs):
+        adapter = FakeAdapter(**kwargs)
+        fake_adapter_instances.append(adapter)
+        return adapter
+
+    settings = Settings().model_copy(
+        update={
+            "structured_pdf_enabled": True,
+            "structured_pdf_engine": "rapiddoc",
+            "rapid_models_dir": "C:/configured-models",
+            "structured_pdf_timeout_seconds": 12.5,
+            "structured_pdf_worker_count": 3,
+            "structured_pdf_max_pages": 9,
+            "structured_pdf_max_pixels": 123456,
+        }
+    )
+
+    monkeypatch.setattr("pypdf.PdfReader", lambda _stream: FakeReader())
+    monkeypatch.setattr(parser, "get_settings", lambda: settings)
+    monkeypatch.setattr(parser, "RapidDocStructuredPdfAdapter", build_fake_adapter)
+
+    text, file_type = parser.extract_text("scan.pdf", b"%PDF-1.4 scanned")
+
+    assert file_type == "pdf"
+    assert text == "structured route"
+    assert len(fake_adapter_instances) == 1
+    adapter = fake_adapter_instances[0]
+    assert adapter.calls == [("scan.pdf", b"%PDF-1.4 scanned")]
+    assert str(adapter.model_manager.resolve_model_dir()) == "C:\\configured-models"
+    assert adapter.timeout_seconds == 12.5
+    assert adapter.worker_count == 3
+    assert adapter.max_pages == 9
+    assert adapter.max_pixels == 123456

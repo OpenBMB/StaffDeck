@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import os
 from dataclasses import dataclass, field
@@ -43,9 +44,9 @@ class RapidDocModelManager:
 
         manifest_path = model_dir / "manifest.json"
         if not manifest_path.is_file():
-            warnings.append(f"missing manifest: {manifest_path}")
+            missing.append(str(manifest_path))
             return RapidDocModelReadiness(
-                ready=True,
+                ready=False,
                 model_dir=model_dir,
                 version=None,
                 warnings=warnings,
@@ -104,10 +105,52 @@ class RapidDocModelManager:
             )
 
         try:
-            prepare_fn(model_dir=str(model_dir))
-        except TypeError:
-            prepare_fn(str(model_dir))
+            prepare_call = _resolve_prepare_call(prepare_fn, model_dir)
+            prepare_fn(*prepare_call["args"], **prepare_call["kwargs"])
         except Exception as exc:
             raise DocumentExtractionError("DOCUMENT_EXTRACTION_FAILED", str(exc)) from exc
 
         return self.require_ready()
+
+
+def _resolve_prepare_call(prepare_fn, model_dir: Path) -> dict[str, tuple[str] | dict[str, str]]:
+    try:
+        signature = inspect.signature(prepare_fn)
+    except (TypeError, ValueError) as exc:
+        raise DocumentExtractionError(
+            "DOCUMENT_EXTRACTION_FAILED",
+            "RapidDoc model prepare API has an unsupported signature",
+        ) from exc
+
+    parameters = list(signature.parameters.values())
+    if _supports_keyword_model_dir(parameters):
+        return {"args": (), "kwargs": {"model_dir": str(model_dir)}}
+    if _supports_positional_model_dir(parameters):
+        return {"args": (str(model_dir),), "kwargs": {}}
+    raise DocumentExtractionError(
+        "DOCUMENT_EXTRACTION_FAILED",
+        "RapidDoc model prepare API must accept a model_dir argument",
+    )
+
+
+def _supports_keyword_model_dir(parameters: list[inspect.Parameter]) -> bool:
+    for parameter in parameters:
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == "model_dir" and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
+
+
+def _supports_positional_model_dir(parameters: list[inspect.Parameter]) -> bool:
+    if not parameters:
+        return False
+    first_parameter = parameters[0]
+    return first_parameter.kind in (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.VAR_POSITIONAL,
+    )
