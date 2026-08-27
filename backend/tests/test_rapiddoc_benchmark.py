@@ -22,6 +22,10 @@ def _load_script(name: str):
     return module
 
 
+def _workspace_tempdir() -> tempfile.TemporaryDirectory[str]:
+    return tempfile.TemporaryDirectory(dir=ROOT_DIR.parent)
+
+
 def _valid_report() -> dict[str, object]:
     return {
         "engine": "rapiddoc-ort",
@@ -37,8 +41,25 @@ def _valid_report() -> dict[str, object]:
             "matched": True,
             "source_sha256": "doc-sha256",
             "page_sha256": ["page-1", "page-2"],
+            "char_count": 120,
+            "table_count": 1,
+            "mismatch_fields": [],
         },
         "warnings": [],
+    }
+
+
+def _raw_probe_result(*, page_sha256: list[str], text_chars: int = 120, table_count: int = 1) -> dict[str, object]:
+    return {
+        "engine": "rapiddoc-ort",
+        "peak_rss_bytes": 2048,
+        "elapsed_seconds": 1.5,
+        "page_count": len(page_sha256),
+        "non_empty_pages": len(page_sha256),
+        "text_chars": text_chars,
+        "table_count": table_count,
+        "warnings": [],
+        "page_sha256": page_sha256,
     }
 
 
@@ -123,34 +144,173 @@ def test_resolve_pdf_path_rejects_repository_managed_input() -> None:
         benchmark.resolve_pdf_path(repo_pdf)
 
 
-def test_main_writes_validated_report_from_explicit_paths() -> None:
+@pytest.mark.parametrize(
+    ("platform", "expected_prefix"),
+    [
+        ("win32", ["py", "-3.11", "-m", "venv"]),
+        ("linux", ["python3.11", "-m", "venv"]),
+    ],
+)
+def test_probe_creation_command_uses_platform_specific_python(platform: str, expected_prefix: list[str]) -> None:
     benchmark = _load_script("benchmark_rapiddoc")
-    with tempfile.TemporaryDirectory(dir=ROOT_DIR.parent) as temp_dir:
+
+    command = benchmark.build_probe_create_command(ROOT_DIR / ".rapiddoc-probe", platform=platform)
+
+    assert command[: len(expected_prefix)] == expected_prefix
+
+
+def test_parse_args_allows_internal_probe_without_report_outputs() -> None:
+    benchmark = _load_script("benchmark_rapiddoc")
+
+    args = benchmark.parse_args(
+        [
+            "--internal-probe",
+            "--pdf",
+            "C:/outside/sample.pdf",
+            "--model-dir",
+            "C:/outside/models",
+            "--probe-json-output",
+            "C:/outside/probe.json",
+        ]
+    )
+
+    assert args.internal_probe is True
+    assert args.output is None
+    assert args.offline_replay is None
+
+
+def test_ensure_probe_environment_creates_probe_venv_when_missing() -> None:
+    benchmark = _load_script("benchmark_rapiddoc")
+    with _workspace_tempdir() as temp_dir:
+        probe_dir = Path(temp_dir) / ".rapiddoc-probe"
+        commands: list[list[str]] = []
+
+        def fake_runner(command: list[str]) -> None:
+            commands.append(command)
+            python_path = benchmark.probe_python_path(probe_dir, platform="win32")
+            python_path.parent.mkdir(parents=True, exist_ok=True)
+            python_path.write_text("", encoding="utf-8")
+
+        python_path = benchmark.ensure_probe_environment(
+            probe_dir,
+            platform="win32",
+            run_command=fake_runner,
+        )
+
+        assert commands == [["py", "-3.11", "-m", "venv", str(probe_dir)]]
+        assert python_path == benchmark.probe_python_path(probe_dir, platform="win32")
+
+
+def test_execute_probe_collects_metrics_from_rapiddoc_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    benchmark = _load_script("benchmark_rapiddoc")
+    with _workspace_tempdir() as temp_dir:
         tmp_path = Path(temp_dir)
         pdf_path = tmp_path / "sample.pdf"
         pdf_path.write_bytes(b"%PDF-1.4\n")
         model_dir = tmp_path / "models"
         model_dir.mkdir()
+        captured: dict[str, object] = {"calls": 0}
+
+        def fake_doc_analyze(pdf: str, **kwargs):
+            captured["pdf"] = pdf
+            captured["kwargs"] = kwargs
+            return {
+                "pages": [
+                    {"text": "alpha", "tables": [{"id": 1}]},
+                    {"markdown": "beta", "tables": []},
+                ],
+                "warnings": ["engine warning"],
+            }
+
+        class FakeRapidDocModule:
+            doc_analyze = staticmethod(fake_doc_analyze)
+
+        def fake_import(name: str):
+            captured["calls"] = int(captured["calls"]) + 1
+            if name == "onnxruntime":
+                return object()
+            if name == "rapiddoc":
+                return FakeRapidDocModule()
+            raise ImportError(name)
+
+        monkeypatch.setattr(benchmark.importlib, "import_module", fake_import)
+        monkeypatch.setattr(benchmark.time, "perf_counter", lambda: 10.0 if int(captured["calls"]) < 2 else 12.5)
+        monkeypatch.setattr(benchmark, "_peak_rss_bytes", lambda: 4096)
+
+        result = benchmark.execute_probe(pdf_path=pdf_path, model_dir=model_dir, offline=False)
+
+        assert result["page_count"] == 2
+        assert result["non_empty_pages"] == 2
+        assert result["text_chars"] == len("alphabeta")
+        assert result["table_count"] == 1
+        assert result["warnings"] == ["engine warning"]
+        assert captured["pdf"] == str(pdf_path)
+        kwargs = captured["kwargs"]
+        assert kwargs["mode"] == "auto"
+        assert kwargs["model_dir"] == str(model_dir)
+        assert kwargs["table_enable"] is True
+        assert kwargs["reading_order"] is True
+        assert kwargs["formula_enable"] is False
+        assert kwargs["table_formula_enable"] is False
+        assert kwargs["extract_images"] is False
+        assert kwargs["checkbox_enable"] is False
+
+
+def test_execute_probe_fails_clearly_when_dependency_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    benchmark = _load_script("benchmark_rapiddoc")
+    with _workspace_tempdir() as temp_dir:
+        tmp_path = Path(temp_dir)
+        pdf_path = tmp_path / "sample.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+        model_dir = tmp_path / "models"
+        model_dir.mkdir()
+
+        def raise_import_error(_name: str):
+            raise ImportError("missing rapiddoc")
+
+        monkeypatch.setattr(benchmark.importlib, "import_module", raise_import_error)
+
+        with pytest.raises(benchmark.ProbeExecutionError, match="OCR_DEPENDENCY_MISSING"):
+            benchmark.execute_probe(pdf_path=pdf_path, model_dir=model_dir, offline=False)
+
+
+def test_compare_offline_replay_marks_mismatches() -> None:
+    benchmark = _load_script("benchmark_rapiddoc")
+
+    offline_replay, warnings = benchmark.compare_offline_replay(
+        source_sha256="source-sha",
+        primary_result=_raw_probe_result(page_sha256=["a", "b"], text_chars=10, table_count=1),
+        replay_result=_raw_probe_result(page_sha256=["a", "c"], text_chars=9, table_count=2),
+    )
+
+    assert offline_replay["matched"] is False
+    assert offline_replay["mismatch_fields"] == ["page_sha256", "text_chars", "table_count"]
+    assert "OFFLINE_REPLAY_MISMATCH: page_sha256,text_chars,table_count" in warnings
+
+
+def test_main_runs_live_probe_and_offline_replay_against_same_pdf() -> None:
+    benchmark = _load_script("benchmark_rapiddoc")
+    with tempfile.TemporaryDirectory(dir=ROOT_DIR.parent) as temp_dir:
+        tmp_path = Path(temp_dir)
+        pdf_path = tmp_path / "sample.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\nhello world\n")
+        model_dir = tmp_path / "models"
+        model_dir.mkdir()
         (model_dir / "weights.bin").write_bytes(b"1234")
-        replay_path = tmp_path / "offline-replay.json"
-        replay_path.write_text(
-            json.dumps(
-                {
-                    "engine": "rapiddoc-ort",
-                    "peak_rss_bytes": 512,
-                    "elapsed_seconds": 1.25,
-                    "page_count": 2,
-                    "non_empty_pages": 2,
-                    "text_chars": 64,
-                    "table_count": 0,
-                    "warnings": ["offline replay matched"],
-                    "source_sha256": "doc-sha256",
-                    "page_sha256": ["page-1", "page-2"],
-                }
-            ),
-            encoding="utf-8",
-        )
         output_path = tmp_path / "benchmark.json"
+        replay_path = tmp_path / "offline-replay.json"
+        calls: list[bool] = []
+
+        def fake_ensure_probe_environment(*_args, **_kwargs):
+            return tmp_path / ".rapiddoc-probe" / "Scripts" / "python.exe"
+
+        def fake_run_probe(*, offline: bool, **_kwargs):
+            calls.append(offline)
+            return _raw_probe_result(page_sha256=["page-1", "page-2"])
+
+        benchmark.ensure_probe_environment = fake_ensure_probe_environment
+        benchmark.run_probe_subprocess = fake_run_probe
+        benchmark._probe_site_packages_bytes = lambda _python: 777
 
         exit_code = benchmark.main(
             [
@@ -166,7 +326,78 @@ def test_main_writes_validated_report_from_explicit_paths() -> None:
         )
 
         assert exit_code == 0
+        assert calls == [False, True]
         report = json.loads(output_path.read_text(encoding="utf-8"))
+        replay_dump = json.loads(replay_path.read_text(encoding="utf-8"))
+        assert report["package_bytes"] == 777
         assert report["model_bytes"] == 4
         assert report["page_count"] == 2
-        assert report["offline_replay"]["page_sha256"] == ["page-1", "page-2"]
+        assert report["offline_replay"]["matched"] is True
+        assert report["offline_replay"]["source_sha256"] == benchmark.sha256_file(pdf_path)
+        assert replay_dump["page_sha256"] == ["page-1", "page-2"]
+
+
+def test_main_reports_offline_replay_mismatch_in_output() -> None:
+    benchmark = _load_script("benchmark_rapiddoc")
+    with tempfile.TemporaryDirectory(dir=ROOT_DIR.parent) as temp_dir:
+        tmp_path = Path(temp_dir)
+        pdf_path = tmp_path / "sample.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\nhello world\n")
+        model_dir = tmp_path / "models"
+        model_dir.mkdir()
+        output_path = tmp_path / "benchmark.json"
+        replay_path = tmp_path / "offline-replay.json"
+        results = iter(
+            [
+                _raw_probe_result(page_sha256=["page-1", "page-2"], text_chars=8, table_count=1),
+                _raw_probe_result(page_sha256=["page-1", "page-X"], text_chars=7, table_count=2),
+            ]
+        )
+
+        benchmark.ensure_probe_environment = lambda *_args, **_kwargs: tmp_path / "probe-python"
+        benchmark.run_probe_subprocess = lambda **_kwargs: next(results)
+        benchmark._probe_site_packages_bytes = lambda _python: 0
+
+        benchmark.main(
+            [
+                "--pdf",
+                str(pdf_path),
+                "--output",
+                str(output_path),
+                "--model-dir",
+                str(model_dir),
+                "--offline-replay",
+                str(replay_path),
+            ]
+        )
+
+        report = json.loads(output_path.read_text(encoding="utf-8"))
+        assert report["offline_replay"]["matched"] is False
+        assert report["offline_replay"]["mismatch_fields"] == [
+            "page_sha256",
+            "text_chars",
+            "table_count",
+        ]
+        assert "OFFLINE_REPLAY_MISMATCH: page_sha256,text_chars,table_count" in report["warnings"]
+
+
+def test_main_fails_clearly_when_model_dir_missing() -> None:
+    benchmark = _load_script("benchmark_rapiddoc")
+    with tempfile.TemporaryDirectory(dir=ROOT_DIR.parent) as temp_dir:
+        tmp_path = Path(temp_dir)
+        pdf_path = tmp_path / "sample.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+
+        with pytest.raises(benchmark.ProbeExecutionError, match="OCR_MODEL_MISSING"):
+            benchmark.main(
+                [
+                    "--pdf",
+                    str(pdf_path),
+                    "--output",
+                    str(tmp_path / "benchmark.json"),
+                    "--model-dir",
+                    str(tmp_path / "missing-model-dir"),
+                    "--offline-replay",
+                    str(tmp_path / "offline-replay.json"),
+                ]
+            )

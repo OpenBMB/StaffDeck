@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib
 import json
-import site
+import os
+import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +29,10 @@ REQUIRED_FIELDS = (
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
+class ProbeExecutionError(RuntimeError):
+    pass
+
+
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -39,6 +48,25 @@ def resolve_pdf_path(pdf_path: str | Path, repo_root: Path = ROOT_DIR) -> Path:
     if not candidate.is_file():
         raise FileNotFoundError(f"PDF input does not exist: {candidate}")
     return candidate
+
+
+def resolve_model_dir(model_dir: str | Path) -> Path:
+    candidate = Path(model_dir).expanduser().resolve(strict=False)
+    if not candidate.is_dir():
+        raise ProbeExecutionError(f"OCR_MODEL_MISSING: model directory does not exist: {candidate}")
+    return candidate
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -60,16 +88,297 @@ def _dir_size_bytes(path: Path) -> int:
     return total
 
 
-def _current_env_package_bytes() -> int:
-    seen: set[Path] = set()
-    total = 0
-    for site_dir in site.getsitepackages():
-        path = Path(site_dir)
-        if path in seen:
-            continue
-        seen.add(path)
-        total += _dir_size_bytes(path)
-    return total
+def probe_python_path(probe_dir: Path, platform: str | None = None) -> Path:
+    target_platform = sys.platform if platform is None else platform
+    if target_platform.startswith("win"):
+        return probe_dir / "Scripts" / "python.exe"
+    return probe_dir / "bin" / "python"
+
+
+def build_probe_create_command(probe_dir: Path, platform: str | None = None) -> list[str]:
+    target_platform = sys.platform if platform is None else platform
+    if target_platform.startswith("win"):
+        return ["py", "-3.11", "-m", "venv", str(probe_dir)]
+    return ["python3.11", "-m", "venv", str(probe_dir)]
+
+
+def ensure_probe_environment(
+    probe_dir: Path,
+    *,
+    platform: str | None = None,
+    run_command: Any | None = None,
+) -> Path:
+    python_path = probe_python_path(probe_dir, platform=platform)
+    if python_path.is_file():
+        return python_path
+
+    runner = _run_plain_command if run_command is None else run_command
+    runner(build_probe_create_command(probe_dir, platform=platform))
+
+    if not python_path.is_file():
+        raise ProbeExecutionError(
+            f"PROBE_ENV_CREATE_FAILED: probe environment python was not created at {python_path}"
+        )
+    return python_path
+
+
+def _run_plain_command(command: list[str]) -> None:
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        details = (completed.stderr or completed.stdout or "").strip()
+        raise ProbeExecutionError(f"PROBE_ENV_CREATE_FAILED: {details or 'venv creation failed'}")
+
+
+def _probe_site_packages_bytes(probe_python: Path) -> int:
+    probe_dir = probe_python.parent.parent
+    if probe_python.parent.name == "Scripts":
+        return _dir_size_bytes(probe_dir / "Lib" / "site-packages")
+    lib_dir = probe_dir / "lib"
+    for candidate in lib_dir.glob("python*/site-packages"):
+        return _dir_size_bytes(candidate)
+    return 0
+
+
+def _peak_rss_bytes() -> int:
+    if sys.platform.startswith("win"):
+        import ctypes
+        from ctypes import wintypes
+
+        class ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        handle = ctypes.windll.kernel32.GetCurrentProcess()
+        ok = ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb)
+        if ok:
+            return int(counters.PeakWorkingSetSize)
+        return 0
+
+    import resource
+
+    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform == "darwin":
+        return int(usage)
+    return int(usage * 1024)
+
+
+def _extract_warnings(raw: Any) -> list[str]:
+    warnings = raw.get("warnings") if isinstance(raw, dict) else getattr(raw, "warnings", [])
+    if warnings is None:
+        return []
+    return [str(item) for item in warnings if str(item).strip()]
+
+
+def _extract_pages(raw: Any) -> list[Any]:
+    if isinstance(raw, dict) and isinstance(raw.get("pages"), list):
+        return raw["pages"]
+    pages = getattr(raw, "pages", None)
+    if isinstance(pages, list):
+        return pages
+    if isinstance(raw, list):
+        return raw
+    raise ProbeExecutionError("DOCUMENT_EXTRACTION_FAILED: RapidDoc did not return a pages collection")
+
+
+def _page_text(page: Any) -> str:
+    if isinstance(page, dict):
+        text = page.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+        markdown = page.get("markdown")
+        if isinstance(markdown, str) and markdown.strip():
+            return markdown
+        content = page.get("content")
+        if isinstance(content, str):
+            return content
+        return ""
+
+    for attr in ("text", "markdown", "content"):
+        value = getattr(page, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _page_table_count(page: Any) -> int:
+    tables = page.get("tables") if isinstance(page, dict) else getattr(page, "tables", [])
+    if isinstance(tables, list):
+        return len(tables)
+    return 0
+
+
+def _call_rapiddoc(pdf_path: Path, model_dir: Path) -> Any:
+    try:
+        importlib.import_module("onnxruntime")
+        rapiddoc = importlib.import_module("rapiddoc")
+    except ImportError as exc:
+        raise ProbeExecutionError(f"OCR_DEPENDENCY_MISSING: {exc}") from exc
+
+    analyze = getattr(rapiddoc, "doc_analyze", None)
+    if not callable(analyze):
+        raise ProbeExecutionError("OCR_DEPENDENCY_MISSING: rapiddoc.doc_analyze is unavailable")
+
+    try:
+        return analyze(
+            str(pdf_path),
+            mode="auto",
+            model_dir=str(model_dir),
+            table_enable=True,
+            reading_order=True,
+            formula_enable=False,
+            table_formula_enable=False,
+            extract_images=False,
+            checkbox_enable=False,
+        )
+    except TypeError as exc:
+        raise ProbeExecutionError(f"DOCUMENT_EXTRACTION_FAILED: incompatible RapidDoc API: {exc}") from exc
+    except Exception as exc:  # pragma: no cover - guarded by behavioral tests
+        raise ProbeExecutionError(f"DOCUMENT_EXTRACTION_FAILED: {exc}") from exc
+
+
+def execute_probe(*, pdf_path: Path, model_dir: Path, offline: bool) -> dict[str, Any]:
+    if not model_dir.is_dir():
+        raise ProbeExecutionError(f"OCR_MODEL_MISSING: model directory does not exist: {model_dir}")
+
+    offline_updates = {
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "STAFFDECK_RAPIDDOC_OFFLINE": "1",
+    }
+    saved_env = {key: os.environ.get(key) for key in offline_updates}
+
+    if offline:
+        os.environ.update(offline_updates)
+
+    try:
+        started = time.perf_counter()
+        raw = _call_rapiddoc(pdf_path, model_dir)
+        elapsed_seconds = time.perf_counter() - started
+        pages = _extract_pages(raw)
+        page_texts = [_page_text(page) for page in pages]
+        page_sha256 = [_sha256_text(text) for text in page_texts]
+        non_empty_pages = sum(1 for text in page_texts if text.strip())
+        table_count = sum(_page_table_count(page) for page in pages)
+        warnings = _extract_warnings(raw)
+
+        return {
+            "engine": "rapiddoc-ort",
+            "peak_rss_bytes": _peak_rss_bytes(),
+            "elapsed_seconds": elapsed_seconds,
+            "page_count": len(pages),
+            "non_empty_pages": non_empty_pages,
+            "text_chars": sum(len(text) for text in page_texts),
+            "table_count": table_count,
+            "warnings": warnings,
+            "page_sha256": page_sha256,
+        }
+    finally:
+        if offline:
+            for key, old_value in saved_env.items():
+                if old_value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old_value
+
+
+def run_probe_subprocess(
+    *,
+    probe_python: Path,
+    pdf_path: Path,
+    model_dir: Path,
+    offline: bool,
+) -> dict[str, Any]:
+    with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False, encoding="utf-8") as handle:
+        probe_output_path = Path(handle.name)
+
+    command = [
+        str(probe_python),
+        str(Path(__file__).resolve()),
+        "--internal-probe",
+        "--pdf",
+        str(pdf_path),
+        "--model-dir",
+        str(model_dir),
+        "--probe-json-output",
+        str(probe_output_path),
+    ]
+    if offline:
+        command.append("--offline")
+
+    env = os.environ.copy()
+    if offline:
+        env.update(
+            {
+                "HF_HUB_OFFLINE": "1",
+                "TRANSFORMERS_OFFLINE": "1",
+                "STAFFDECK_RAPIDDOC_OFFLINE": "1",
+                "HTTP_PROXY": "",
+                "HTTPS_PROXY": "",
+                "ALL_PROXY": "",
+            }
+        )
+
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, env=env, check=False)
+        if completed.returncode != 0:
+            details = (completed.stderr or completed.stdout or "").strip()
+            raise ProbeExecutionError(details or "DOCUMENT_EXTRACTION_FAILED: probe subprocess failed")
+        return _read_json(probe_output_path)
+    finally:
+        probe_output_path.unlink(missing_ok=True)
+
+
+def compare_offline_replay(
+    *,
+    source_sha256: str,
+    primary_result: dict[str, Any],
+    replay_result: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    mismatch_fields: list[str] = []
+    for field in ("page_count", "page_sha256", "text_chars", "table_count"):
+        if primary_result.get(field) != replay_result.get(field):
+            mismatch_fields.append(field)
+
+    replay_source_sha256 = replay_result.get("source_sha256")
+    if replay_source_sha256 is not None and replay_source_sha256 != source_sha256:
+        mismatch_fields.append("source_sha256")
+
+    warnings: list[str] = []
+    if mismatch_fields:
+        stable = ",".join(mismatch_fields)
+        warnings.append(f"OFFLINE_REPLAY_MISMATCH: {stable}")
+
+    return (
+        {
+            "matched": not mismatch_fields,
+            "source_sha256": source_sha256,
+            "page_sha256": replay_result.get("page_sha256", []),
+            "char_count": replay_result.get("text_chars", 0),
+            "table_count": replay_result.get("table_count", 0),
+            "mismatch_fields": mismatch_fields,
+        },
+        warnings,
+    )
+
+
+def _dedupe_warnings(items: list[str]) -> list[str]:
+    result: list[str] = []
+    for item in items:
+        if item and item not in result:
+            result.append(item)
+    return result
 
 
 def _require_non_negative_int(report: dict[str, Any], field: str) -> None:
@@ -135,60 +444,122 @@ def validate_benchmark_report(report: dict[str, Any]) -> dict[str, Any]:
     if len(page_sha256) != page_count:
         raise ValueError("offline_replay.page_sha256 count must match page_count")
 
+    char_count = offline_replay.get("char_count")
+    if not isinstance(char_count, int) or char_count < 0:
+        raise ValueError("offline_replay.char_count must be a non-negative integer")
+
+    table_count = offline_replay.get("table_count")
+    if not isinstance(table_count, int) or table_count < 0:
+        raise ValueError("offline_replay.table_count must be a non-negative integer")
+
+    mismatch_fields = offline_replay.get("mismatch_fields")
+    if not isinstance(mismatch_fields, list) or not all(isinstance(item, str) for item in mismatch_fields):
+        raise ValueError("offline_replay.mismatch_fields must be a list of strings")
+
     return report
 
 
 def build_benchmark_report(
     *,
-    replay_payload: dict[str, Any],
+    pdf_path: Path,
     model_dir: Path,
-    package_bytes: int | None = None,
+    package_bytes: int,
+    primary_result: dict[str, Any],
+    replay_result: dict[str, Any],
 ) -> dict[str, Any]:
+    source_sha256 = sha256_file(pdf_path)
+    offline_replay, replay_warnings = compare_offline_replay(
+        source_sha256=source_sha256,
+        primary_result=primary_result,
+        replay_result=replay_result,
+    )
+
     report = {
-        "engine": replay_payload.get("engine"),
-        "package_bytes": _current_env_package_bytes() if package_bytes is None else package_bytes,
+        "engine": primary_result.get("engine"),
+        "package_bytes": package_bytes,
         "model_bytes": _dir_size_bytes(model_dir),
-        "peak_rss_bytes": replay_payload.get("peak_rss_bytes"),
-        "elapsed_seconds": replay_payload.get("elapsed_seconds"),
-        "page_count": replay_payload.get("page_count"),
-        "non_empty_pages": replay_payload.get("non_empty_pages"),
-        "text_chars": replay_payload.get("text_chars"),
-        "table_count": replay_payload.get("table_count"),
-        "offline_replay": {
-            "matched": True,
-            "source_sha256": replay_payload.get("source_sha256"),
-            "page_sha256": replay_payload.get("page_sha256"),
-        },
-        "warnings": replay_payload.get("warnings", []),
+        "peak_rss_bytes": primary_result.get("peak_rss_bytes"),
+        "elapsed_seconds": primary_result.get("elapsed_seconds"),
+        "page_count": primary_result.get("page_count"),
+        "non_empty_pages": primary_result.get("non_empty_pages"),
+        "text_chars": primary_result.get("text_chars"),
+        "table_count": primary_result.get("table_count"),
+        "offline_replay": offline_replay,
+        "warnings": _dedupe_warnings(
+            [*primary_result.get("warnings", []), *replay_result.get("warnings", []), *replay_warnings]
+        ),
     }
     return validate_benchmark_report(report)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate and persist an isolated RapidDoc benchmark")
+    parser = argparse.ArgumentParser(description="Run an isolated RapidDoc benchmark probe")
     parser.add_argument("--pdf", required=True, help="Path to a local PDF outside the repository")
-    parser.add_argument("--output", required=True, help="Path to write the benchmark JSON report")
+    parser.add_argument("--output", help="Path to write the benchmark JSON report")
     parser.add_argument("--model-dir", required=True, help="Model directory measured for the probe")
     parser.add_argument(
         "--offline-replay",
-        required=True,
-        help="JSON payload captured from the isolated offline replay run",
+        help="Path where the fresh offline replay JSON result should be written",
     )
+    parser.add_argument("--internal-probe", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--probe-json-output", help=argparse.SUPPRESS)
+    parser.add_argument("--offline", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    resolve_pdf_path(args.pdf)
-    model_dir = Path(args.model_dir).expanduser().resolve(strict=False)
+    pdf_path = resolve_pdf_path(args.pdf)
+    model_dir = resolve_model_dir(args.model_dir)
+
+    if args.internal_probe:
+        if not args.probe_json_output:
+            raise ProbeExecutionError("DOCUMENT_EXTRACTION_FAILED: missing --probe-json-output")
+        probe_result = execute_probe(pdf_path=pdf_path, model_dir=model_dir, offline=args.offline)
+        probe_result["source_sha256"] = sha256_file(pdf_path)
+        _write_json(Path(args.probe_json_output).expanduser().resolve(strict=False), probe_result)
+        return 0
+
+    if not args.output:
+        raise ProbeExecutionError("DOCUMENT_EXTRACTION_FAILED: missing --output")
+    if not args.offline_replay:
+        raise ProbeExecutionError("DOCUMENT_EXTRACTION_FAILED: missing --offline-replay")
+
     output_path = Path(args.output).expanduser().resolve(strict=False)
-    replay_path = Path(args.offline_replay).expanduser().resolve(strict=True)
+    replay_path = Path(args.offline_replay).expanduser().resolve(strict=False)
 
-    replay_payload = _read_json(replay_path)
-    report = build_benchmark_report(replay_payload=replay_payload, model_dir=model_dir)
+    probe_dir = ROOT_DIR / ".rapiddoc-probe"
+    probe_python = ensure_probe_environment(probe_dir)
+    package_bytes = _probe_site_packages_bytes(probe_python)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    primary_result = run_probe_subprocess(
+        probe_python=probe_python,
+        pdf_path=pdf_path,
+        model_dir=model_dir,
+        offline=False,
+    )
+    replay_result = run_probe_subprocess(
+        probe_python=probe_python,
+        pdf_path=pdf_path,
+        model_dir=model_dir,
+        offline=True,
+    )
+
+    _write_json(replay_path, replay_result)
+    report = build_benchmark_report(
+        pdf_path=pdf_path,
+        model_dir=model_dir,
+        package_bytes=package_bytes,
+        primary_result=primary_result,
+        replay_result=replay_result,
+    )
+
+    _write_json(output_path, report)
     json.dump(report, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
     return 0
