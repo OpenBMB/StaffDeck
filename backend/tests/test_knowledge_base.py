@@ -319,6 +319,46 @@ def test_pdf_pages_receive_stable_section_labels(monkeypatch) -> None:
     assert sections[-1]["path"] == "PDF 文档 / 第 3 页"
 
 
+def test_native_pdf_ingest_preserves_legacy_text_and_file_type(monkeypatch) -> None:
+    class FakePage:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+        def extract_text(self) -> str:
+            return self.text
+
+    class FakeReader:
+        pages = [FakePage("第一章 原生文本"), FakePage("第二章 原生文本")]
+
+    monkeypatch.setattr("pypdf.PdfReader", lambda _stream: FakeReader())
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        db.commit()
+        service = KnowledgeService(db)
+        job = service.create_ingest_job(
+            IngestPayload(
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
+                filename="native.pdf",
+                content_base64=_b64("%PDF-1.4 native"),
+            )
+        )
+
+        expected_text, expected_type = extract_text("native.pdf", b"%PDF-1.4 native")
+
+        service._run_ingest_job(job.id)  # noqa: SLF001 - exercise persistent job logic synchronously.
+
+        refreshed_job = db.get(KnowledgeIngestJob, job.id)
+        assert refreshed_job is not None
+        document = db.get(KnowledgeDocument, refreshed_job.document_id)
+        assert document is not None
+        assert expected_type == "pdf"
+        assert document.file_type == expected_type
+        assert document.metadata_json["raw_text"] == expected_text
+
+
 def test_long_section_continuations_share_one_related_section() -> None:
     paragraphs = [f"{index}. 流程内容" + ("说明" * 150) for index in range(1, 9)]
 

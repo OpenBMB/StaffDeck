@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
 from app.config import Settings, get_settings
-from app.documents.extraction import DocumentExtractionError, DocumentExtractor
+from app.documents.extraction import (
+    DocumentExtractionError,
+    DocumentExtractionResult,
+    DocumentExtractor,
+    ExtractedPage,
+)
 from app.documents.model_manager import RapidDocModelManager
 from app.documents.rapiddoc_adapter import RapidDocStructuredPdfAdapter
 
@@ -15,15 +22,32 @@ class KnowledgeParseError(ValueError):
     pass
 
 
-def extract_text(filename: str, content: bytes) -> tuple[str, str]:
+@dataclass(frozen=True)
+class ParsedKnowledgeDocument:
+    extraction: DocumentExtractionResult
+    file_type: str
+
+    @property
+    def text(self) -> str:
+        return self.extraction.text
+
+
+def extract_document(filename: str, content: bytes) -> ParsedKnowledgeDocument:
     suffix = Path(filename).suffix.lower()
+    file_type = suffix.lstrip(".") if suffix != ".htm" else "html"
     try:
         result = _build_document_extractor().extract(filename, content)
     except DocumentExtractionError as exc:
         if suffix == ".pdf" and exc.code == "OCR_DEPENDENCY_MISSING":
-            return _extract_pdf_legacy(content), "pdf"
-        raise KnowledgeParseError(str(exc)) from exc
-    return result.text, suffix.lstrip(".") if suffix != ".htm" else "html"
+            result = _extract_pdf_legacy_result(content)
+        else:
+            raise KnowledgeParseError(str(exc)) from exc
+    return ParsedKnowledgeDocument(extraction=result, file_type=file_type)
+
+
+def extract_text(filename: str, content: bytes) -> tuple[str, str]:
+    result = extract_document(filename, content)
+    return result.text, result.file_type
 
 
 def _build_document_extractor(settings: Settings | None = None) -> DocumentExtractor:
@@ -51,16 +75,43 @@ def _build_document_extractor(settings: Settings | None = None) -> DocumentExtra
 
 
 def _extract_pdf_legacy(content: bytes) -> str:
+    return _extract_pdf_legacy_result(content).text
+
+
+def _extract_pdf_legacy_result(content: bytes) -> DocumentExtractionResult:
     try:
         from pypdf import PdfReader
     except Exception as exc:  # pragma: no cover - dependency availability differs by env.
         raise KnowledgeParseError("缺少 pypdf，无法解析 PDF。") from exc
     reader = PdfReader(BytesIO(content))
-    pages: list[str] = []
+    pages: list[ExtractedPage] = []
     for index, page in enumerate(reader.pages):
         page_text = page.extract_text() or ""
         if page_text.strip():
-            pages.append(f"## 第 {index + 1} 页\n\n{page_text}")
+            pages.append(
+                ExtractedPage(
+                    page_number=index + 1,
+                    text=page_text,
+                    char_count=len(page_text),
+                )
+            )
+    text = ""
     if not pages:
-        return ""
-    return "# PDF 文档\n\n" + "\n\n".join(pages)
+        text = ""
+    else:
+        text = "# PDF 文档\n\n" + "\n\n".join(
+            f"## 第 {page.page_number} 页\n\n{page.text}" for page in pages
+        )
+    return DocumentExtractionResult(
+        text=text,
+        pages=pages,
+        page_refs=[page.ref for page in pages],
+        source_sha256=hashlib.sha256(content).hexdigest(),
+        source_page_count=len(reader.pages),
+        method="native",
+        engine="pypdf",
+        engine_version="builtin",
+        warnings=[],
+        char_count=sum(page.char_count for page in pages),
+        table_count=0,
+    )
