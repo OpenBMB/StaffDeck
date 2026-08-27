@@ -39,6 +39,7 @@ import {
 } from "./employee";
 import AccountsPage from "./pages/AccountsPage";
 import AuditCasesPage from "./pages/audit-cases/AuditCasesPage";
+import AuditCaseDetailPage from "./pages/audit-cases/AuditCaseDetailPage";
 import AgentsPage from "./pages/AgentsPage";
 import ChannelsPage from "./pages/ChannelsPage";
 import ChatPage from "./pages/chat/ChatPage";
@@ -761,6 +762,16 @@ function Shell({
                 element={
                   isAdmin ? (
                     <AuditCasesPage currentUser={auth.user} onLogout={onLogout} />
+                  ) : (
+                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                  )
+                }
+              />
+              <Route
+                path="/enterprise/audit-cases/:caseId"
+                element={
+                  isAdmin ? (
+                    <AuditCaseDetailPage currentUser={auth.user} onLogout={onLogout} />
                   ) : (
                     <Navigate to={EnterpriseRoute.Gallery} replace />
                   )

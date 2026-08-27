@@ -1,7 +1,10 @@
 import { api, TENANT_ID } from '@/api/client';
 import type {
+  AuditCaseCoverageRead,
+  AuditCaseEventRead,
   AuditCaseManagementOptions,
   AuditCaseManagementPage,
+  AuditCaseMaterialRead,
   AuditCaseRead,
 } from '@/types';
 
@@ -86,5 +89,34 @@ export function replaceAuditCaseMembers(
   return api.put<AuditCaseRead>(
     `/api/audit-cases/${encodeURIComponent(caseId)}/members?tenant_id=${encodeURIComponent(TENANT_ID)}`,
     { member_user_ids: cleanList(memberUserIds) },
+  );
+}
+
+export function loadAuditCase(caseId: string): Promise<AuditCaseRead> {
+  return api.get<AuditCaseRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function loadAuditCaseMaterials(
+  caseId: string,
+  includeHistory = false,
+): Promise<AuditCaseMaterialRead[]> {
+  const search = new URLSearchParams({ tenant_id: TENANT_ID });
+  if (includeHistory) search.set('include_history', 'true');
+  return api.get<AuditCaseMaterialRead[]>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/materials?${search.toString()}`,
+  );
+}
+
+export function loadAuditCaseCoverage(caseId: string): Promise<AuditCaseCoverageRead> {
+  return api.get<AuditCaseCoverageRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/coverage?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function loadAuditCaseEvents(caseId: string): Promise<AuditCaseEventRead[]> {
+  return api.get<AuditCaseEventRead[]>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/events?tenant_id=${encodeURIComponent(TENANT_ID)}`,
   );
 }
