@@ -80,9 +80,132 @@ def _headers(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(user)}"}
 
 
+def test_audit_case_management_api_is_admin_only(api_context) -> None:
+    client, _engine, users, _tmp_path = api_context
+    payload = {
+        "tenant_id": "tenant_demo",
+        "organization_name": "管理页面企业",
+        "report_type": "再认证",
+        "management_systems": ["GB/T 23331-2020"],
+        "member_user_ids": ["user-member"],
+    }
+
+    member_create = client.post(
+        "/api/audit-cases",
+        headers=_headers(users["owner"]),
+        json=payload,
+    )
+    assert member_create.status_code == 403
+
+    created = client.post(
+        "/api/audit-cases",
+        headers=_headers(users["admin"]),
+        json=payload,
+    )
+    assert created.status_code == 200, created.text
+    case_id = created.json()["id"]
+
+    forbidden_update = client.patch(
+        f"/api/audit-cases/{case_id}?tenant_id=tenant_demo",
+        headers=_headers(users["owner"]),
+        json={"organization_name": "不应修改"},
+    )
+    assert forbidden_update.status_code == 403
+
+    updated = client.patch(
+        f"/api/audit-cases/{case_id}?tenant_id=tenant_demo",
+        headers=_headers(users["admin"]),
+        json={"organization_name": "已修改企业"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["organization_name"] == "已修改企业"
+
+    member_read = client.get(
+        f"/api/audit-cases/{case_id}?tenant_id=tenant_demo",
+        headers=_headers(users["member"]),
+    )
+    assert member_read.status_code == 200
+
+    members = client.put(
+        f"/api/audit-cases/{case_id}/members?tenant_id=tenant_demo",
+        headers=_headers(users["admin"]),
+        json={"member_user_ids": ["user-member"]},
+    )
+    assert members.status_code == 200, members.text
+
+    management = client.get(
+        "/api/audit-cases/management?tenant_id=tenant_demo",
+        headers=_headers(users["admin"]),
+    )
+    assert management.status_code == 200, management.text
+    assert management.json()["total"] == 1
+    assert management.json()["items"][0]["material_total"] == 0
+
+    options = client.get(
+        "/api/audit-cases/management-options?tenant_id=tenant_demo",
+        headers=_headers(users["admin"]),
+    )
+    assert options.status_code == 200, options.text
+    assert ".docx" in options.json()["supported_extensions"]
+
+    events = client.get(
+        f"/api/audit-cases/{case_id}/events?tenant_id=tenant_demo",
+        headers=_headers(users["admin"]),
+    )
+    assert events.status_code == 200, events.text
+    assert {event["event_type"] for event in events.json()} >= {
+        "audit_case.created",
+        "audit_case.updated",
+        "audit_case.members_replaced",
+    }
+
+
+def test_audit_case_material_mutations_require_admin(api_context) -> None:
+    client, _engine, users, _tmp_path = api_context
+    created = client.post(
+        "/api/audit-cases",
+        headers=_headers(users["admin"]),
+        json={
+            "tenant_id": "tenant_demo",
+            "organization_name": "材料权限企业",
+            "report_type": "再认证",
+            "member_user_ids": ["user-member"],
+        },
+    )
+    assert created.status_code == 200
+    case_id = created.json()["id"]
+    member_headers = _headers(users["member"])
+
+    upload = client.post(
+        f"/api/audit-cases/{case_id}/materials?tenant_id=tenant_demo&material_type=audit_record",
+        headers=member_headers,
+        files={"files": ("记录.txt", b"audit record", "text/plain")},
+    )
+    assert upload.status_code == 403
+
+    admin_upload = client.post(
+        f"/api/audit-cases/{case_id}/materials?tenant_id=tenant_demo&material_type=audit_record",
+        headers=_headers(users["admin"]),
+        files={"files": ("记录.txt", b"audit record", "text/plain")},
+    )
+    assert admin_upload.status_code == 200
+
+    process = client.post(
+        f"/api/audit-cases/{case_id}/process?tenant_id=tenant_demo",
+        headers=member_headers,
+    )
+    assert process.status_code == 403
+
+    archive = client.post(
+        f"/api/audit-cases/{case_id}/archive?tenant_id=tenant_demo",
+        headers=member_headers,
+    )
+    assert archive.status_code == 403
+
+
 def test_audit_case_api_round_trip(api_context) -> None:
     client, _engine, users, _tmp_path = api_context
-    headers = _headers(users["owner"])
+    headers = _headers(users["admin"])
 
     created = client.post(
         "/api/audit-cases",
@@ -140,7 +263,7 @@ def test_audit_case_api_round_trip(api_context) -> None:
 
 def test_process_coverage_and_report_api_flow(api_context, monkeypatch) -> None:
     client, engine, users, _tmp_path = api_context
-    headers = _headers(users["owner"])
+    headers = _headers(users["admin"])
     created = client.post(
         "/api/audit-cases",
         headers=headers,
@@ -215,7 +338,7 @@ def test_process_coverage_and_report_api_flow(api_context, monkeypatch) -> None:
 
 def test_audit_case_api_enforces_project_scope_and_archive_read_only(api_context) -> None:
     client, _engine, users, _tmp_path = api_context
-    headers = _headers(users["owner"])
+    headers = _headers(users["admin"])
     created = client.post(
         "/api/audit-cases",
         headers=headers,
@@ -249,10 +372,10 @@ def test_audit_case_api_enforces_project_scope_and_archive_read_only(api_context
 
 def test_tenant_admin_delete_removes_materials_and_storage_but_keeps_event(api_context) -> None:
     client, engine, users, tmp_path = api_context
-    owner_headers = _headers(users["owner"])
+    admin_headers = _headers(users["admin"])
     created = client.post(
         "/api/audit-cases",
-        headers=owner_headers,
+        headers=admin_headers,
         json={
             "tenant_id": "tenant_demo",
             "organization_name": "待删除企业",
@@ -262,7 +385,7 @@ def test_tenant_admin_delete_removes_materials_and_storage_but_keeps_event(api_c
     case_id = created.json()["id"]
     uploaded = client.post(
         f"/api/audit-cases/{case_id}/materials?tenant_id=tenant_demo&material_type=audit_record",
-        headers=owner_headers,
+        headers=admin_headers,
         files={"files": ("记录.txt", b"delete me", "text/plain")},
     )
     assert uploaded.status_code == 200
@@ -278,7 +401,7 @@ def test_tenant_admin_delete_removes_materials_and_storage_but_keeps_event(api_c
 
     forbidden = client.delete(
         f"/api/audit-cases/{case_id}?tenant_id=tenant_demo",
-        headers=owner_headers,
+        headers=_headers(users["owner"]),
     )
     assert forbidden.status_code == 403
 

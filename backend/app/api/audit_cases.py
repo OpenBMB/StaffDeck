@@ -11,11 +11,16 @@ from app.audit_cases.reporting import AuditReportService
 from app.audit_cases.schema import (
     AuditCaseAccessDenied,
     AuditCaseCreate,
+    AuditCaseEventRead,
+    AuditCaseManagementOptions,
+    AuditCaseManagementPage,
     AuditCaseMaterialRead,
+    AuditCaseMemberUpdate,
     AuditCaseNotFound,
     AuditCaseProcessRequest,
     AuditCaseRead,
     AuditCaseReadOnly,
+    AuditCaseUpdate,
     AuditCoverageSnapshot,
     AuditReportCreateRequest,
     AuditReportRead,
@@ -33,7 +38,7 @@ from app.db.models import (
     User,
 )
 from app.security.auth import ensure_current_user_tenant, get_current_user
-from app.security.permissions import require_tenant_admin
+from app.security.permissions import ensure_tenant_admin, require_tenant_admin
 
 router = APIRouter(
     prefix="/api/audit-cases",
@@ -75,13 +80,46 @@ def create_audit_case(
     db: Session = Depends(get_session),
 ) -> AuditCaseRead:
     try:
-        ensure_current_user_tenant(request.tenant_id, current_user)
+        ensure_tenant_admin(request.tenant_id, current_user)
         row = AuditCaseService(db).create_case(current_user, request)
         return audit_case_read(row)
     except HTTPException:
         raise
     except Exception as exc:
         raise _case_error(exc) from exc
+
+
+@router.get("/management", response_model=AuditCaseManagementPage)
+def list_audit_case_management(
+    tenant_id: str = Query(...),
+    query: str = Query(""),
+    status: str | None = Query(None),
+    management_system: str | None = Query(None),
+    report_type: str | None = Query(None),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_session),
+) -> AuditCaseManagementPage:
+    return AuditCaseService(db).list_management_cases(
+        current_user,
+        tenant_id=tenant_id,
+        query=query,
+        status=status,
+        management_system=management_system,
+        report_type=report_type,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@router.get("/management-options", response_model=AuditCaseManagementOptions)
+def list_audit_case_management_options(
+    tenant_id: str = Query(...),
+    current_user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_session),
+) -> AuditCaseManagementOptions:
+    return AuditCaseService(db).list_management_options(current_user, tenant_id=tenant_id)
 
 
 @router.get("", response_model=list[AuditCaseRead])
@@ -102,7 +140,7 @@ async def upload_audit_case_materials(
     files: list[UploadFile] = File(...),
     tenant_id: str = Query(...),
     material_type: str = Query("audit_record", min_length=1),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_tenant_admin),
     db: Session = Depends(get_session),
 ) -> list[AuditCaseMaterialRead]:
     service = AuditCaseService(db)
@@ -152,7 +190,7 @@ def process_audit_case_materials(
     case_id: str,
     tenant_id: str = Query(...),
     request: AuditCaseProcessRequest | None = Body(default=None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_tenant_admin),
     db: Session = Depends(get_session),
 ) -> list[AuditCaseMaterialRead] | JSONResponse:
     service = AuditCaseService(db)
@@ -208,6 +246,65 @@ def audit_case_coverage(
         current_user=current_user,
     )
     return calculate_coverage(db, case)
+
+
+@router.patch("/{case_id}", response_model=AuditCaseRead)
+def update_audit_case(
+    case_id: str,
+    request: AuditCaseUpdate,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_session),
+) -> AuditCaseRead:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        return audit_case_read(service.update_case(case, current_user, request))
+    except Exception as exc:
+        raise _case_error(exc) from exc
+
+
+@router.put("/{case_id}/members", response_model=AuditCaseRead)
+def replace_audit_case_members(
+    case_id: str,
+    request: AuditCaseMemberUpdate,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_session),
+) -> AuditCaseRead:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        return audit_case_read(service.replace_members(case, current_user, request))
+    except Exception as exc:
+        raise _case_error(exc) from exc
+
+
+@router.get("/{case_id}/events", response_model=list[AuditCaseEventRead])
+def list_audit_case_events(
+    case_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_session),
+) -> list[AuditCaseEventRead]:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    return service.list_events(case, current_user)
 
 
 @router.get("/{case_id}/reports", response_model=list[AuditReportRead])
@@ -283,7 +380,7 @@ def get_audit_case(
 def archive_audit_case(
     case_id: str,
     tenant_id: str = Query(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_tenant_admin),
     db: Session = Depends(get_session),
 ) -> AuditCaseRead:
     service = AuditCaseService(db)
