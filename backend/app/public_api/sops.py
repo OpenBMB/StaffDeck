@@ -326,6 +326,7 @@ def execute_sop_generate(db: Session, job: APIJob) -> dict[str, Any]:
     update_job(db, job, stage="learning", progress=0.15, event_type="sop.generate.learning")
     request = SkillDistillRequest(
         tenant_id=job.tenant_id,
+        agent_id=str(job.agent_id),
         title=str(payload["title"]),
         raw_content=str(payload["raw_content"]),
         business_domain=payload.get("business_domain"),

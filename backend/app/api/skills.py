@@ -20,6 +20,7 @@ from app.agents.branching import (
     ensure_private_resource_binding,
     get_agent,
     hide_open_gallery_binding,
+    is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
     mark_resource_open_gallery,
     project_skill_with_branch,
@@ -27,7 +28,9 @@ from app.agents.branching import (
     rollback_branch,
     update_branch_skill,
     user_creator_metadata,
+    visible_knowledge_base_versions,
     visible_skill_rows,
+    visible_tool_rows,
 )
 from app.async_jobs import enqueue_async_job
 from app.db import get_session
@@ -37,6 +40,7 @@ from app.db.models import (
     AgentSkillBranchVersion,
     ChannelBinding,
     ChannelIdentity,
+    GeneralSkill,
     ModelConfig,
     Skill,
     SkillFeedback,
@@ -55,9 +59,6 @@ from app.security.permissions import (
 )
 from app.security.tenant import ensure_tenant
 from app.skills import SkillDistiller, SkillEditor
-
-_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书", "dingtalk": "钉钉"}
-
 from app.skills.skill_schema import (
     SkillCard,
     SkillCreateRequest,
@@ -80,6 +81,8 @@ from app.skills.nesting import (
     sop_capability_scope,
     validate_sop_nesting,
 )
+
+_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书", "dingtalk": "钉钉"}
 
 router = APIRouter(
     prefix="/api/enterprise/skills",
@@ -805,8 +808,9 @@ def distill_skill(
 ) -> SkillDistillResponse:
     ensure_current_user_tenant(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
+    _ensure_distill_agent_scope(db, request, current_user)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-    request = _with_available_tools(db, request)
+    request = _with_available_context_for_distill(db, request)
     try:
         return SkillDistiller().distill(request, model_config)
     except LLMError as exc:
@@ -816,9 +820,12 @@ def distill_skill(
 @router.post("/distill/stream")
 def distill_skill_stream(
     request: SkillDistillRequest,
+    db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
     ensure_current_user_tenant(request.tenant_id, current_user)
+    ensure_tenant(db, request.tenant_id)
+    _ensure_distill_agent_scope(db, request, current_user)
     job_id = _start_distill_stream_job(request, current_user)
     return StreamingResponse(_stream_skill_job(job_id), media_type="text/event-stream")
 
@@ -845,9 +852,12 @@ def rewrite_skill_stream(
 @router.post("/distill/jobs")
 def create_distill_job(
     request: SkillDistillRequest,
+    db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
     ensure_current_user_tenant(request.tenant_id, current_user)
+    ensure_tenant(db, request.tenant_id)
+    _ensure_distill_agent_scope(db, request, current_user)
     return {"job_id": _start_distill_stream_job(request, current_user)}
 
 
@@ -974,7 +984,7 @@ def _run_distill_stream_job(job_id: str, request_data: dict[str, object]) -> Non
         with Session(get_session_engine()) as db:
             ensure_tenant(db, request.tenant_id)
             model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-            enriched_request = _with_available_tools(db, request)
+            enriched_request = _with_available_context_for_distill(db, request)
             stream_jobs.append(job_id, "status", {"text": "正在调用模型生成新技能"})
             for item in SkillDistiller().stream_text(enriched_request, model_config):
                 if stream_jobs.is_cancelled(job_id):
@@ -1110,28 +1120,143 @@ def _sync_skill_tool_bindings(
         db.add(row)
 
 
-def _with_available_tools(db: Session, request: SkillDistillRequest) -> SkillDistillRequest:
-    tools = db.exec(
-        select(Tool).where(Tool.tenant_id == request.tenant_id, Tool.enabled == True)  # noqa: E712
+def _ensure_distill_agent_scope(
+    db: Session,
+    request: SkillDistillRequest,
+    current_user: User,
+) -> None:
+    if request.agent_id:
+        ensure_agent_scope_manager(db, request.tenant_id, request.agent_id, current_user)
+
+
+def _visible_general_skill_rows_for_distill(
+    db: Session,
+    tenant_id: str,
+    agent_id: str | None,
+) -> list[GeneralSkill]:
+    agent = get_agent(db, tenant_id, agent_id)
+    rows = db.exec(
+        select(GeneralSkill).where(
+            GeneralSkill.tenant_id == tenant_id,
+            GeneralSkill.status == "published",
+        )
     ).all()
-    available_tools = [
-        *request.available_tools,
-        *[
-            {
-                "id": tool.id,
-                "name": tool.name,
-                "display_name": tool.display_name,
-                "description": tool.description,
-                "bucket": tool.bucket or "未分桶",
-                "method": tool.method,
-                "url": tool.url,
-                "input_schema": tool.input_schema,
-                "output_schema": tool.output_schema,
-            }
-            for tool in tools
-        ],
+    if agent_id and not agent:
+        return []
+    if not agent or agent.is_overall:
+        return [
+            row
+            for row in rows
+            if is_open_gallery_resource(db, tenant_id, "general_skill", row)
+        ]
+    bindings = db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == agent.id,
+            AgentResourceBinding.resource_type == "general_skill",
+            AgentResourceBinding.status == "active",
+        )
+    ).all()
+    rows_by_id = {row.id: row for row in rows}
+    return [
+        row
+        for binding in bindings
+        if (row := rows_by_id.get(binding.resource_id)) is not None
+        and is_bound_resource_visible_for_agent(
+            db,
+            tenant_id,
+            "general_skill",
+            row,
+            binding,
+        )
     ]
-    return request.model_copy(update={"available_tools": available_tools})
+
+
+def _with_available_context_for_distill(
+    db: Session,
+    request: SkillDistillRequest,
+) -> SkillDistillRequest:
+    tools = visible_tool_rows(
+        db,
+        request.tenant_id,
+        request.agent_id,
+        include_inactive=False,
+    )
+    available_tools = _dedupe_capability_catalog(
+        [
+            *request.available_tools,
+            *[
+                {
+                    "id": tool.id,
+                    "name": tool.name,
+                    "display_name": tool.display_name,
+                    "description": tool.description,
+                    "bucket": tool.bucket or "未分桶",
+                    "method": tool.method,
+                    "url": tool.url,
+                    "input_schema": tool.input_schema,
+                    "output_schema": tool.output_schema,
+                }
+                for tool in tools
+            ],
+        ],
+        ("id", "name"),
+    )
+    general_skills = _visible_general_skill_rows_for_distill(
+        db,
+        request.tenant_id,
+        request.agent_id,
+    )
+    available_general_skills = _dedupe_capability_catalog(
+        [
+            *request.available_general_skills,
+            *[
+                {
+                    "id": skill.id,
+                    "slug": skill.slug,
+                    "name": skill.name,
+                    "description": skill.description or "",
+                    "capability_scope": skill.capability_scope,
+                }
+                for skill in general_skills
+            ],
+        ],
+        ("id", "slug"),
+    )
+    visible_knowledge = visible_knowledge_base_versions(
+        db,
+        request.tenant_id,
+        request.agent_id,
+        include_inactive=False,
+    )
+    available_knowledge_bases = _dedupe_capability_catalog(
+        [
+            *request.available_knowledge_bases,
+            *[
+                {
+                    "id": knowledge_base_id,
+                    "name": version.name,
+                    "description": version.description or "",
+                    "capability_scope": version.capability_scope,
+                }
+                for knowledge_base_id, version in visible_knowledge.items()
+            ],
+        ],
+        ("id", "name"),
+    )
+    return request.model_copy(
+        update={
+            "available_tools": available_tools,
+            "available_general_skills": available_general_skills,
+            "available_knowledge_bases": available_knowledge_bases,
+        }
+    )
+
+
+def _with_available_tools(db: Session, request: SkillDistillRequest) -> SkillDistillRequest:
+    """Backward-compatible alias for public API callers."""
+
+    return _with_available_context_for_distill(db, request)
 
 
 def _with_available_context_for_rewrite(

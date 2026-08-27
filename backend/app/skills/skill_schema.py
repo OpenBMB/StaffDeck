@@ -270,11 +270,14 @@ class SkillVersionRead(BaseModel):
 
 class SkillDistillRequest(BaseModel):
     tenant_id: str
+    agent_id: Optional[str] = None
     title: str
     raw_content: str
     business_domain: Optional[str] = None
     model_config_id: Optional[str] = None
     available_tools: list[dict[str, Any]] = Field(default_factory=list)
+    available_general_skills: list[dict[str, Any]] = Field(default_factory=list)
+    available_knowledge_bases: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SkillDistillResponse(BaseModel):

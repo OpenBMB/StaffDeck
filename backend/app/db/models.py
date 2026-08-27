@@ -639,6 +639,17 @@ class UIConfig(SQLModel, table=True):
     show_tool_trace: bool = True
     reflection_max_rounds: int = 1
     agent_loop_max_actions: int = 32
+    context_token_budget: int = 32_000
+    context_compaction_trigger_ratio: float = 0.70
+    context_recent_round_limit: int = 6
+    context_long_summary_token_budget: int = 4_000
+    context_medium_summary_token_budget: int = 4_000
+    context_allowed_roles: list[str] = Field(
+        default_factory=lambda: ["user", "assistant"],
+        sa_column=Column(JSON),
+    )
+    context_long_summary_prefix: str = "历史的信息可以被总结为："
+    context_medium_summary_prefix: str = "近期的历史信息总结为："
     sandbox_enabled: bool = False
     sandbox_network_mode: str = Field(default="all")
     sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(JSON))

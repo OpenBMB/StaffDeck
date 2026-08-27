@@ -395,6 +395,62 @@ def _migrate_sqlite_skill_schema() -> None:
                         "INTEGER NOT NULL DEFAULT 32"
                     )
                 )
+            if "context_token_budget" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_token_budget "
+                        "INTEGER NOT NULL DEFAULT 32000"
+                    )
+                )
+            if "context_compaction_trigger_ratio" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_compaction_trigger_ratio "
+                        "FLOAT NOT NULL DEFAULT 0.70"
+                    )
+                )
+            if "context_recent_round_limit" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_recent_round_limit "
+                        "INTEGER NOT NULL DEFAULT 6"
+                    )
+                )
+            if "context_long_summary_token_budget" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_long_summary_token_budget "
+                        "INTEGER NOT NULL DEFAULT 4000"
+                    )
+                )
+            if "context_medium_summary_token_budget" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_medium_summary_token_budget "
+                        "INTEGER NOT NULL DEFAULT 4000"
+                    )
+                )
+            if "context_allowed_roles" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_allowed_roles "
+                        "JSON NOT NULL DEFAULT '[\"user\", \"assistant\"]'"
+                    )
+                )
+            if "context_long_summary_prefix" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_long_summary_prefix "
+                        "VARCHAR NOT NULL DEFAULT '历史的信息可以被总结为：'"
+                    )
+                )
+            if "context_medium_summary_prefix" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_medium_summary_prefix "
+                        "VARCHAR NOT NULL DEFAULT '近期的历史信息总结为：'"
+                    )
+                )
             if "sandbox_enabled" not in ui_columns:
                 conn.execute(
                     text(

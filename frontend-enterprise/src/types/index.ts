@@ -359,6 +359,14 @@ export type UIConfigRead = {
   show_tool_trace: boolean;
   reflection_max_rounds: number;
   agent_loop_max_actions: number;
+  context_token_budget: number;
+  context_compaction_trigger_ratio: number;
+  context_recent_round_limit: number;
+  context_long_summary_token_budget: number;
+  context_medium_summary_token_budget: number;
+  context_allowed_roles: Array<'user' | 'assistant'>;
+  context_long_summary_prefix: string;
+  context_medium_summary_prefix: string;
   sandbox_enabled: boolean;
   harness_storage_path: string;
   effective_harness_storage_path: string;
