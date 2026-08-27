@@ -104,7 +104,8 @@ def create_audit_case(
 @router.get("/management", response_model=AuditCaseManagementPage)
 def list_audit_case_management(
     tenant_id: str = Query(...),
-    query: str = Query(""),
+    q: str = Query("", alias="q"),
+    query: str | None = Query(None, include_in_schema=False),
     status: str | None = Query(None),
     management_system: str | None = Query(None),
     report_type: str | None = Query(None),
@@ -116,7 +117,7 @@ def list_audit_case_management(
     return AuditCaseService(db).list_management_cases(
         current_user,
         tenant_id=tenant_id,
-        query=query,
+        query=q or query or "",
         status=status,
         management_system=management_system,
         report_type=report_type,

@@ -253,6 +253,13 @@ def test_audit_case_management_api_is_admin_only(api_context) -> None:
     assert management.json()["total"] == 1
     assert management.json()["items"][0]["material_total"] == 0
 
+    filtered_management = client.get(
+        "/api/audit-cases/management?tenant_id=tenant_demo&q=不存在的企业",
+        headers=_headers(users["admin"]),
+    )
+    assert filtered_management.status_code == 200
+    assert filtered_management.json()["total"] == 0
+
     options = client.get(
         "/api/audit-cases/management-options?tenant_id=tenant_demo",
         headers=_headers(users["admin"]),
