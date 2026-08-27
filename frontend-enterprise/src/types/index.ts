@@ -1297,3 +1297,46 @@ export type TeamEventRead = {
   payload: Record<string, unknown>;
   created_at: string;
 };
+
+// ---------------------------------------------------------------------------
+// Certification projects (认证项目)
+// ---------------------------------------------------------------------------
+
+export type AuditCaseManagementRead = AuditCaseRead & {
+  material_total: number;
+  material_ready: number;
+  material_failed: number;
+  file_coverage: number;
+  chunk_coverage: number;
+};
+
+export type AuditCaseManagementPage = {
+  items: AuditCaseManagementRead[];
+  total: number;
+};
+
+export type AuditCaseKnowledgeVersionOption = {
+  id: string;
+  knowledge_base_id: string;
+  name: string;
+  version: string;
+  description?: string | null;
+  status: string;
+};
+
+export type AuditCaseManagementOptions = {
+  knowledge_versions: AuditCaseKnowledgeVersionOption[];
+  supported_extensions: string[];
+  max_material_bytes: number;
+};
+
+export type AuditCaseEventRead = {
+  id: string;
+  audit_case_id: string;
+  actor_user_id: string;
+  event_type: string;
+  resource_type: string;
+  resource_id: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
