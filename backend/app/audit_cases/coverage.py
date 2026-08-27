@@ -71,7 +71,10 @@ def calculate_coverage(db: Session, case: AuditCase) -> AuditCoverageSnapshot:
         for material in materials
     )
     chunks_total = len(chunks)
-    chunks_succeeded = sum(chunk.processing_status == "succeeded" for chunk in chunks)
+    chunks_succeeded = sum(
+        (chunk.chunking_status or chunk.processing_status) == "succeeded"
+        for chunk in chunks
+    )
     elements_total = len(elements)
     elements_resolved = sum(
         coverage_by_element.get(element.id) is not None
@@ -80,6 +83,20 @@ def calculate_coverage(db: Session, case: AuditCase) -> AuditCoverageSnapshot:
     )
 
     blockers: list[str] = []
+    pending_material_ids = [
+        material.id
+        for material in materials
+        if material.extraction_status != "succeeded"
+        or material.processing_status != "succeeded"
+    ]
+    failed_material_ids = [
+        material.id
+        for material in materials
+        if material.extraction_status == "failed" or material.processing_status == "failed"
+    ]
+    pending_chunk_ids = [
+        chunk.id for chunk in chunks if chunk.processing_status != "succeeded"
+    ]
     file_coverage = _coverage_ratio(files_succeeded, files_total)
     chunk_coverage = _coverage_ratio(chunks_succeeded, chunks_total)
     element_coverage = _coverage_ratio(elements_resolved, elements_total)
@@ -92,6 +109,8 @@ def calculate_coverage(db: Session, case: AuditCase) -> AuditCoverageSnapshot:
             blockers.append("CHUNK_COVERAGE_INCOMPLETE")
     elif chunk_coverage < 1.0:
         blockers.append("CHUNK_COVERAGE_INCOMPLETE")
+    if pending_chunk_ids and chunk_coverage == 1.0:
+        blockers.append("EVIDENCE_COVERAGE_INCOMPLETE")
     blockers.extend(_interval_blockers(materials, chunks))
     if elements_total == 0:
         blockers.append("NO_REQUIRED_AUDIT_ELEMENTS")
@@ -115,6 +134,9 @@ def calculate_coverage(db: Session, case: AuditCase) -> AuditCoverageSnapshot:
         failed_material_count=files_total - files_succeeded,
         total_chunk_count=chunks_total,
         successful_chunk_count=chunks_succeeded,
+        pending_material_ids=pending_material_ids,
+        failed_material_ids=failed_material_ids,
+        pending_chunk_ids=pending_chunk_ids,
     )
 
 

@@ -58,6 +58,19 @@ class AuditCaseManagementPage(BaseModel):
     total: int
 
 
+class AuditCaseChoiceOption(BaseModel):
+    value: str
+    label: str
+    code: str | None = None
+
+
+class AuditCaseMaterialTypeOption(BaseModel):
+    value: str
+    label: str
+    group: str
+    description: str
+
+
 class AuditCaseKnowledgeVersionOption(BaseModel):
     id: str
     knowledge_base_id: str
@@ -65,10 +78,18 @@ class AuditCaseKnowledgeVersionOption(BaseModel):
     version: str
     description: str | None = None
     status: str
+    document_count: int = 0
+    chunk_count: int = 0
+    is_agent_branch: bool = False
+    recommended: bool = False
+    duplicate_group: str | None = None
 
 
 class AuditCaseManagementOptions(BaseModel):
     knowledge_versions: list[AuditCaseKnowledgeVersionOption] = Field(default_factory=list)
+    audit_types: list[AuditCaseChoiceOption] = Field(default_factory=list)
+    management_systems: list[AuditCaseChoiceOption] = Field(default_factory=list)
+    material_types: list[AuditCaseMaterialTypeOption] = Field(default_factory=list)
     supported_extensions: list[str] = Field(default_factory=list)
     max_material_bytes: int
 
@@ -96,6 +117,13 @@ class AuditCaseMaterialRead(BaseModel):
     sha256: str
     size: int
     characters: int
+    page_count: int = 0
+    extraction_method: str | None = None
+    extraction_engine: str | None = None
+    extraction_engine_version: str | None = None
+    extraction_warnings: list[str] = Field(default_factory=list)
+    extracted_text_sha256: str | None = None
+    processing_job_id: str | None = None
     extraction_status: str
     processing_status: str
     version: int
@@ -137,6 +165,9 @@ class AuditCoverageSnapshot(BaseModel):
     failed_material_count: int = 0
     total_chunk_count: int = 0
     successful_chunk_count: int = 0
+    pending_material_ids: list[str] = Field(default_factory=list)
+    failed_material_ids: list[str] = Field(default_factory=list)
+    pending_chunk_ids: list[str] = Field(default_factory=list)
 
 
 class AuditReportSectionRead(BaseModel):
@@ -230,6 +261,13 @@ def audit_case_material_read(row: AuditCaseMaterial) -> AuditCaseMaterialRead:
         sha256=row.sha256,
         size=row.size,
         characters=row.characters,
+        page_count=row.page_count,
+        extraction_method=row.extraction_method,
+        extraction_engine=row.extraction_engine,
+        extraction_engine_version=row.extraction_engine_version,
+        extraction_warnings=list(row.extraction_warnings_json or []),
+        extracted_text_sha256=row.extracted_text_sha256,
+        processing_job_id=row.processing_job_id,
         extraction_status=row.extraction_status,
         processing_status=row.processing_status,
         version=row.version,

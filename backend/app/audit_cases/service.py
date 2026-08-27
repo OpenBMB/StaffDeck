@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import re
+from contextlib import contextmanager
+from threading import Lock, RLock
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import Session, delete, select, update
 
-from app.audit_cases.chunking import chunk_text
+from app.async_jobs import AsyncJob, enqueue_async_job, get_async_job_queue
+from app.audit_cases.chunking import chunk_text, page_refs_for_span
 from app.audit_cases.schema import (
     AuditCaseAccessDenied,
+    AuditCaseChoiceOption,
     AuditCaseCreate,
     AuditCaseEventRead,
     AuditCaseKnowledgeVersionOption,
@@ -16,6 +22,7 @@ from app.audit_cases.schema import (
     AuditCaseManagementPage,
     AuditCaseManagementRead,
     AuditCaseMemberUpdate,
+    AuditCaseMaterialTypeOption,
     AuditCaseNotFound,
     AuditCaseReadOnly,
     AuditCaseUpdate,
@@ -27,18 +34,43 @@ from app.audit_cases.schema import (
     audit_case_read,
 )
 from app.audit_cases.storage import delete_case_storage, read_case_blob, write_case_blob
+from app.db import engine
 from app.db.models import (
     AuditCase,
     AuditCaseEvent,
     AuditCaseMaterial,
     AuditCaseMaterialChunk,
     ChatSession,
+    KnowledgeChunk,
+    KnowledgeDocument,
     KnowledgeBaseVersion,
     User,
     new_id,
     utc_now,
 )
-from app.knowledge.parser import KnowledgeParseError, extract_text
+from app.documents.extraction import DocumentExtractionError, DocumentExtractionResult, ExtractedPage
+from app.knowledge.parser import KnowledgeParseError, extract_document, extract_text
+
+_DEFAULT_EXTRACT_TEXT = extract_text
+_MATERIAL_LOCKS: dict[str, RLock] = {}
+_MATERIAL_LOCKS_GUARD = Lock()
+
+
+def _material_lock(material_id: str) -> RLock:
+    with _MATERIAL_LOCKS_GUARD:
+        return _MATERIAL_LOCKS.setdefault(material_id, RLock())
+
+
+@contextmanager
+def _hold_material_locks(material_ids: list[str]):
+    locks = [_material_lock(material_id) for material_id in sorted(set(material_ids))]
+    for lock in locks:
+        lock.acquire()
+    try:
+        yield
+    finally:
+        for lock in reversed(locks):
+            lock.release()
 
 _CASE_EVENT_METADATA_KEYS = {
     "filename",
@@ -62,8 +94,83 @@ SUPPORTED_AUDIT_MATERIAL_EXTENSIONS = (
 )
 MAX_AUDIT_MATERIAL_BYTES = 50 * 1024 * 1024
 SUPPORTED_AUDIT_MATERIAL_TYPES = frozenset(
-    {"audit_plan", "audit_record", "performance_record", "report_template"}
+    {
+        "audit_notice",
+        "permanent_site_list",
+        "temporary_site_list",
+        "document_review_report",
+        "audit_team_preparation_record",
+        "opening_closing_attendance",
+        "organization_information_confirmation",
+        "opening_meeting_record",
+        "closing_meeting_record",
+        "audit_record_form",
+        "nonconformity_report",
+        "improvement_suggestion_report",
+        "stage_one_audit_report",
+        "stage_one_findings_summary",
+        "audit_report",
+        "surveillance_audit_plan",
+        "audit_performance_tracking",
+        "other_material",
+        # Retain the pre-Phase-1 API values so existing projects and API
+        # clients remain readable/operable; the new UI does not expose them
+        # as upload categories.
+        "audit_plan",
+        "audit_record",
+    }
 )
+
+AUDIT_TYPE_OPTIONS = (
+    ("一阶段审核", "一阶段审核", "A"),
+    ("认证审核", "认证审核", "B"),
+    ("第一次监督审核", "第一次监督审核", "C"),
+    ("第二次监督审核", "第二次监督审核", "D"),
+    ("再认证审核", "再认证审核", "E"),
+    ("补充审核", "补充审核", None),
+    ("扩项审核", "扩项审核", None),
+    ("确认审核", "确认审核", None),
+    ("暂停恢复审核", "暂停恢复审核", None),
+    ("标准转换审核", "标准转换审核", None),
+    ("证后监督", "证后监督", "H"),
+    ("其他审核", "其他审核", None),
+)
+
+MANAGEMENT_SYSTEM_OPTIONS = (
+    "质量管理体系",
+    "环境管理体系",
+    "职业健康安全管理体系",
+    "信息安全管理体系",
+    "信息技术服务管理体系",
+    "能源管理体系",
+    "食品安全管理体系",
+    "其他管理体系",
+)
+
+MATERIAL_TYPE_OPTIONS = (
+    ("audit_notice", "审核通知单", "审核前准备", "审核通知与任务安排"),
+    ("permanent_site_list", "常设场所清单", "审核前准备", "常设场所和审核范围"),
+    ("temporary_site_list", "临时场所清单", "审核前准备", "临时场所和审核范围"),
+    ("document_review_report", "文审报告", "审核前准备", "文件审核结论与记录"),
+    ("audit_team_preparation_record", "审核组准备会记录", "审核前准备", "审核组准备会过程记录"),
+    ("opening_closing_attendance", "首末次会议签到表", "会议与信息确认", "首末次会议参会签到"),
+    ("organization_information_confirmation", "受审核组织信息确认表", "会议与信息确认", "受审核组织基本信息确认"),
+    ("opening_meeting_record", "管理体系审核首次会议记录", "会议与信息确认", "首次会议过程记录"),
+    ("closing_meeting_record", "管理体系审核末次会议记录", "会议与信息确认", "末次会议过程记录"),
+    ("audit_record_form", "审核记录表", "审核实施与发现", "条款审核记录与证据"),
+    ("nonconformity_report", "不符合项报告", "审核实施与发现", "不符合项及证据"),
+    ("improvement_suggestion_report", "改进建议报告", "审核实施与发现", "改进建议及依据"),
+    ("stage_one_audit_report", "一阶段审核报告", "审核实施与发现", "一阶段审核结论"),
+    ("stage_one_findings_summary", "一阶段审核发现问题汇总表", "审核实施与发现", "一阶段问题汇总"),
+    ("audit_report", "审核报告", "报告与监督", "既有审核报告或参考报告"),
+    ("surveillance_audit_plan", "监督审核策划表", "报告与监督", "监督审核策划信息"),
+    ("audit_performance_tracking", "审核过程绩效跟踪分析表", "报告与监督", "审核过程绩效跟踪"),
+    ("other_material", "其他资料", "报告与监督", "无法归入上述类别的资料"),
+)
+
+
+def _normalized_knowledge_name(name: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", name.casefold())
 
 
 def _validate_material_upload(filename: str, data: bytes) -> None:
@@ -74,6 +181,74 @@ def _validate_material_upload(filename: str, data: bytes) -> None:
         raise AuditMaterialFormatError("UNSUPPORTED_DOCUMENT_FORMAT")
     if len(data) > MAX_AUDIT_MATERIAL_BYTES:
         raise AuditMaterialTooLarge("AUDIT_MATERIAL_TOO_LARGE")
+
+
+def _extract_audit_material(filename: str, content: bytes) -> DocumentExtractionResult:
+    """Extract without losing the legacy monkeypatch seam used by API clients/tests."""
+
+    if extract_text is not _DEFAULT_EXTRACT_TEXT:
+        text, file_type = extract_text(filename, content)
+        page = ExtractedPage(page_number=1, text=text, char_count=len(text))
+        return DocumentExtractionResult(
+            text=text,
+            pages=[page],
+            page_refs=[page.ref],
+            source_sha256=hashlib.sha256(content).hexdigest(),
+            source_page_count=1,
+            method="native",
+            engine=file_type or "text",
+            engine_version="legacy-compat",
+            char_count=len(text),
+        )
+    try:
+        return extract_document(filename, content).extraction
+    except KnowledgeParseError as exc:
+        message = str(exc)
+        code, _, detail = message.partition(":")
+        raise DocumentExtractionError(code or "DOCUMENT_EXTRACTION_FAILED", detail.strip() or message) from exc
+
+
+def _page_ranges(result: DocumentExtractionResult) -> list[tuple[str, int, int]]:
+    """Locate each extracted page in the rendered full text for auditable refs."""
+
+    ranges: list[tuple[str, int, int]] = []
+    cursor = 0
+    for page in result.pages:
+        if not page.text:
+            continue
+        start = result.text.find(page.text, cursor)
+        if start < 0:
+            start = result.text.find(page.text)
+        if start < 0:
+            continue
+        end = start + len(page.text)
+        ranges.append((page.ref, start, end))
+        cursor = end
+    if not ranges and result.text:
+        ranges.append(("page:1", 0, len(result.text)))
+    return ranges
+
+
+def _material_error_code(exc: Exception) -> str:
+    if isinstance(exc, DocumentExtractionError):
+        return exc.code
+    if isinstance(exc, AuditMaterialProcessingError):
+        return str(exc) or "AUDIT_MATERIAL_PROCESSING_FAILED"
+    if isinstance(exc, KnowledgeParseError):
+        return "DOCUMENT_EXTRACTION_FAILED"
+    return str(exc) or exc.__class__.__name__
+
+
+def _is_shared_in_memory_bind(db_bind: Any) -> bool:
+    """StaticPool in-memory SQLite cannot safely run a second ORM session."""
+
+    pool = getattr(db_bind, "pool", None)
+    url = getattr(db_bind, "url", None)
+    return (
+        pool is not None
+        and pool.__class__.__name__ == "StaticPool"
+        and getattr(url, "get_backend_name", lambda: "")() == "sqlite"
+    )
 
 
 def record_case_event(
@@ -386,6 +561,67 @@ class AuditCaseService:
             )
             .order_by(KnowledgeBaseVersion.name, KnowledgeBaseVersion.version)
         ).all()
+
+        version_ids = [version.id for version in versions]
+        document_counts = {
+            version_id: count
+            for version_id, count in self.db.exec(
+                select(
+                    KnowledgeDocument.knowledge_base_version_id,
+                    func.count(KnowledgeDocument.id),
+                )
+                .where(
+                    KnowledgeDocument.tenant_id == tenant_id,
+                    KnowledgeDocument.knowledge_base_version_id.in_(version_ids),
+                )
+                .group_by(KnowledgeDocument.knowledge_base_version_id)
+            ).all()
+            if version_id is not None
+        } if version_ids else {}
+        chunk_counts = {
+            version_id: count
+            for version_id, count in self.db.exec(
+                select(
+                    KnowledgeChunk.knowledge_base_version_id,
+                    func.count(KnowledgeChunk.id),
+                )
+                .where(
+                    KnowledgeChunk.tenant_id == tenant_id,
+                    KnowledgeChunk.knowledge_base_version_id.in_(version_ids),
+                )
+                .group_by(KnowledgeChunk.knowledge_base_version_id)
+            ).all()
+            if version_id is not None
+        } if version_ids else {}
+        duplicate_groups: dict[str, set[str]] = {}
+        for version in versions:
+            normalized_name = _normalized_knowledge_name(version.name)
+            if normalized_name:
+                duplicate_groups.setdefault(normalized_name, set()).add(version.knowledge_base_id)
+        duplicate_group_by_kb = {
+            knowledge_base_id: normalized_name
+            for normalized_name, knowledge_base_ids in duplicate_groups.items()
+            if len(knowledge_base_ids) > 1
+            for knowledge_base_id in knowledge_base_ids
+        }
+        versions_by_knowledge_base: dict[str, list[KnowledgeBaseVersion]] = {}
+        for version in versions:
+            versions_by_knowledge_base.setdefault(version.knowledge_base_id, []).append(version)
+        recommended_ids: set[str] = set()
+        for knowledge_base_versions in versions_by_knowledge_base.values():
+            recommended = max(
+                knowledge_base_versions,
+                key=lambda version: (
+                    bool(document_counts.get(version.id) or chunk_counts.get(version.id))
+                    and "-branch.agent_" not in version.version.casefold(),
+                    bool(document_counts.get(version.id) or chunk_counts.get(version.id)),
+                    chunk_counts.get(version.id, 0),
+                    document_counts.get(version.id, 0),
+                    version.version,
+                    version.id,
+                ),
+            )
+            recommended_ids.add(recommended.id)
         return AuditCaseManagementOptions(
             knowledge_versions=[
                 AuditCaseKnowledgeVersionOption(
@@ -395,8 +631,30 @@ class AuditCaseService:
                     version=version.version,
                     description=version.description,
                     status=version.status,
+                    document_count=document_counts.get(version.id, 0),
+                    chunk_count=chunk_counts.get(version.id, 0),
+                    is_agent_branch="-branch.agent_" in version.version.casefold(),
+                    recommended=version.id in recommended_ids,
+                    duplicate_group=duplicate_group_by_kb.get(version.knowledge_base_id),
                 )
                 for version in versions
+            ],
+            audit_types=[
+                AuditCaseChoiceOption(value=value, label=label, code=code)
+                for value, label, code in AUDIT_TYPE_OPTIONS
+            ],
+            management_systems=[
+                AuditCaseChoiceOption(value=value, label=value)
+                for value in MANAGEMENT_SYSTEM_OPTIONS
+            ],
+            material_types=[
+                AuditCaseMaterialTypeOption(
+                    value=value,
+                    label=label,
+                    group=group,
+                    description=description,
+                )
+                for value, label, group, description in MATERIAL_TYPE_OPTIONS
             ],
             supported_extensions=list(SUPPORTED_AUDIT_MATERIAL_EXTENSIONS),
             max_material_bytes=MAX_AUDIT_MATERIAL_BYTES,
@@ -672,7 +930,132 @@ class AuditCaseService:
             raise AuditCaseNotFound(material_id)
         return self.process_material(case, material, actor_user_id=actor.id)
 
+    def read_material_source(self, material_id: str) -> bytes:
+        material = self.db.get(AuditCaseMaterial, material_id)
+        if material is None:
+            raise AuditCaseNotFound(material_id)
+        return read_case_blob(material.storage_key)
+
+    def enqueue_material_processing(
+        self,
+        case: AuditCase,
+        actor: User,
+        material_id: str,
+    ) -> AsyncJob:
+        """Persist the job identity before submitting work to the process-local queue."""
+
+        case = self.get_case_for_user(case.tenant_id, case.id, actor)
+        self._assert_writable(case)
+        material = self.db.exec(
+            select(AuditCaseMaterial).where(
+                AuditCaseMaterial.tenant_id == case.tenant_id,
+                AuditCaseMaterial.audit_case_id == case.id,
+                AuditCaseMaterial.id == material_id,
+                AuditCaseMaterial.is_current,
+            )
+        ).first()
+        if material is None:
+            raise AuditCaseNotFound(material_id)
+
+        queue = get_async_job_queue()
+        if (
+            material.extraction_status == "succeeded"
+            and material.processing_status == "succeeded"
+        ):
+            return AsyncJob(
+                id=material.processing_job_id or f"material-{material.id}",
+                name="audit_case.material.extract",
+                status="succeeded",
+                metadata={"material_id": material.id, "reused": True},
+            )
+        if material.processing_job_id:
+            existing = queue.get(material.processing_job_id)
+            if existing is not None:
+                return existing
+            # A normal duplicate request must not submit twice. Startup
+            # recovery calls this method with a cleared job id below.
+            return AsyncJob(
+                id=material.processing_job_id,
+                name="audit_case.material.extract",
+                status="queued",
+                metadata={"material_id": material.id, "recovered": True},
+            )
+        else:
+            job_id = new_id("job")
+            material.processing_job_id = job_id
+        material.processing_status = "pending"
+        if material.extraction_status == "failed":
+            material.extraction_status = "pending"
+        material.error_code = None
+        material.updated_at = utc_now()
+        self.db.add(material)
+        self.db.commit()
+
+        try:
+            job = enqueue_async_job(
+                "audit_case.material.extract",
+                _run_material_processing,
+                self.db.get_bind(),
+                case.tenant_id,
+                case.id,
+                material.id,
+                actor.id,
+                job_id=job_id,
+                metadata={
+                    "job_id": job_id,
+                    "tenant_id": case.tenant_id,
+                    "audit_case_id": case.id,
+                    "material_id": material.id,
+                },
+            )
+        except Exception as exc:
+            material.processing_status = "failed"
+            material.extraction_status = "failed"
+            material.error_code = "ASYNC_JOB_ENQUEUE_FAILED"
+            material.updated_at = utc_now()
+            self.db.add(material)
+            self.db.commit()
+            raise AuditMaterialProcessingError(str(exc) or "ASYNC_JOB_ENQUEUE_FAILED") from exc
+        return job
+
+    def retry_material(self, case: AuditCase, actor: User, material_id: str) -> AuditCaseMaterial:
+        case = self.get_case_for_user(case.tenant_id, case.id, actor)
+        self._assert_writable(case)
+        material = self.db.exec(
+            select(AuditCaseMaterial).where(
+                AuditCaseMaterial.tenant_id == case.tenant_id,
+                AuditCaseMaterial.audit_case_id == case.id,
+                AuditCaseMaterial.id == material_id,
+                AuditCaseMaterial.is_current,
+            )
+        ).first()
+        if material is None:
+            raise AuditCaseNotFound(material_id)
+        material.processing_job_id = None
+        material.extraction_status = "pending"
+        material.processing_status = "pending"
+        material.error_code = None
+        material.updated_at = utc_now()
+        self.db.add(material)
+        self.db.commit()
+        self.enqueue_material_processing(case, actor, material.id)
+        return self.get_material(case.id, material.id, actor)
+
     def process_material(
+        self,
+        case: AuditCase,
+        material: AuditCaseMaterial,
+        *,
+        actor_user_id: str | None = None,
+    ) -> AuditCaseMaterial:
+        with _material_lock(material.id):
+            return self._process_material(
+                case,
+                material,
+                actor_user_id=actor_user_id,
+            )
+
+    def _process_material(
         self,
         case: AuditCase,
         material: AuditCaseMaterial,
@@ -683,31 +1066,49 @@ class AuditCaseService:
         if material.tenant_id != case.tenant_id or material.audit_case_id != case.id:
             raise AuditCaseNotFound(material.id)
         material.processing_status = "processing"
+        material.error_code = None
         material.updated_at = utc_now()
         self.db.add(material)
         self.db.commit()
-        self.db.exec(
-            delete(AuditCaseMaterialChunk).where(
-                AuditCaseMaterialChunk.tenant_id == case.tenant_id,
-                AuditCaseMaterialChunk.audit_case_id == case.id,
-                AuditCaseMaterialChunk.material_id == material.id,
-            )
-        )
         try:
             source = read_case_blob(material.storage_key)
-            text, _format = extract_text(material.filename, source)
-            if not text.strip():
-                raise AuditMaterialProcessingError("EMPTY_EXTRACTED_TEXT")
+            extraction = _extract_audit_material(material.filename, source)
+            if not extraction.text.strip():
+                error_code = (
+                    "PDF_TEXT_LAYER_MISSING"
+                    if Path(material.filename).suffix.lower() == ".pdf"
+                    else "EMPTY_EXTRACTED_TEXT"
+                )
+                raise AuditMaterialProcessingError(error_code)
             material.extracted_text_storage_key = write_case_blob(
                 tenant_id=case.tenant_id,
                 audit_case_id=case.id,
                 material_id=material.id,
                 name="extracted.txt",
-                data=text.encode("utf-8"),
+                data=extraction.text.encode("utf-8"),
             )
-            material.characters = len(text)
+            # The old chunk set is replaced only after the complete extracted
+            # text has been durably written, so a failed OCR attempt never
+            # destroys the last auditable result.
+            self.db.exec(
+                delete(AuditCaseMaterialChunk).where(
+                    AuditCaseMaterialChunk.tenant_id == case.tenant_id,
+                    AuditCaseMaterialChunk.audit_case_id == case.id,
+                    AuditCaseMaterialChunk.material_id == material.id,
+                )
+            )
+            material.characters = len(extraction.text)
+            material.page_count = extraction.source_page_count
+            material.extraction_method = extraction.method
+            material.extraction_engine = extraction.engine
+            material.extraction_engine_version = extraction.engine_version
+            material.extraction_warnings_json = list(extraction.warnings)
+            material.extracted_text_sha256 = hashlib.sha256(
+                extraction.text.encode("utf-8")
+            ).hexdigest()
             material.extraction_status = "succeeded"
-            for span in chunk_text(text):
+            page_ranges = _page_ranges(extraction)
+            for span in chunk_text(extraction.text):
                 self.db.add(
                     AuditCaseMaterialChunk(
                         tenant_id=case.tenant_id,
@@ -718,15 +1119,19 @@ class AuditCaseService:
                         end_char=span.end_char,
                         content_sha256=span.content_sha256,
                         content=span.content,
-                        processing_status="succeeded",
+                        page_refs_json=page_refs_for_span(
+                            span.start_char, span.end_char, page_ranges
+                        ),
+                        chunking_status="succeeded",
+                        processing_status="pending",
                     )
                 )
             material.processing_status = "succeeded"
             material.error_code = None
-        except (KnowledgeParseError, AuditMaterialProcessingError, OSError) as exc:
+        except (DocumentExtractionError, KnowledgeParseError, AuditMaterialProcessingError, OSError) as exc:
             material.extraction_status = "failed"
             material.processing_status = "failed"
-            material.error_code = str(exc) or exc.__class__.__name__
+            material.error_code = _material_error_code(exc)
         material.updated_at = utc_now()
         self.db.add(material)
         record_case_event(
@@ -768,6 +1173,19 @@ class AuditCaseService:
         return case
 
     def delete_case(self, case_id: str, actor: User) -> None:
+        material_ids = [
+            row
+            for row in self.db.exec(
+                select(AuditCaseMaterial.id).where(
+                    AuditCaseMaterial.tenant_id == actor.tenant_id,
+                    AuditCaseMaterial.audit_case_id == case_id,
+                )
+            ).all()
+        ]
+        with _hold_material_locks(material_ids):
+            self._delete_case_locked(case_id, actor)
+
+    def _delete_case_locked(self, case_id: str, actor: User) -> None:
         case = self.db.get(AuditCase, case_id)
         if case is None or case.tenant_id != actor.tenant_id:
             raise AuditCaseNotFound(case_id)
@@ -808,3 +1226,69 @@ class AuditCaseService:
         self.db.delete(case)
         self.db.commit()
         delete_case_storage(tenant_id, case_id)
+
+
+def _run_material_processing(
+    db_bind: Any,
+    tenant_id: str,
+    case_id: str,
+    material_id: str,
+    actor_user_id: str,
+) -> None:
+    """Run one job with a fresh session; request sessions never cross threads."""
+
+    # Test clients commonly bind a StaticPool in-memory database. It has one
+    # connection by design, so a background session would race the request
+    # session; the explicit process endpoint remains the deterministic path in
+    # that setup. File-backed production SQLite uses independent connections.
+    if _is_shared_in_memory_bind(db_bind):
+        return
+
+    with Session(db_bind) as db:
+        case = db.exec(
+            select(AuditCase).where(
+                AuditCase.tenant_id == tenant_id,
+                AuditCase.id == case_id,
+            )
+        ).first()
+        material = db.exec(
+            select(AuditCaseMaterial).where(
+                AuditCaseMaterial.tenant_id == tenant_id,
+                AuditCaseMaterial.audit_case_id == case_id,
+                AuditCaseMaterial.id == material_id,
+                AuditCaseMaterial.is_current,
+            )
+        ).first()
+        if case is None or material is None:
+            return
+        AuditCaseService(db).process_material(
+            case,
+            material,
+            actor_user_id=actor_user_id,
+        )
+
+
+def recover_pending_material_jobs(db_bind: Any | None = None) -> int:
+    """Requeue pending/processing materials after an application restart."""
+
+    bind = db_bind or engine
+    queued = 0
+    with Session(bind) as db:
+        rows = db.exec(
+            select(AuditCaseMaterial, AuditCase)
+            .join(AuditCase, AuditCase.id == AuditCaseMaterial.audit_case_id)
+            .where(
+                AuditCaseMaterial.is_current,
+                AuditCaseMaterial.processing_status.in_(["pending", "processing"]),
+            )
+        ).all()
+        for material, case in rows:
+            owner = db.get(User, case.owner_user_id)
+            if owner is None:
+                continue
+            material.processing_job_id = None
+            db.add(material)
+            db.commit()
+            AuditCaseService(db).enqueue_material_processing(case, owner, material.id)
+            queued += 1
+    return queued

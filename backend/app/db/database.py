@@ -2079,6 +2079,53 @@ def _migrate_audit_case_material_schema(conn, inspector, tables: set[str]) -> No
     if "audit_case_materials" not in tables:
         return
 
+    # These columns are additive so old audit material rows remain readable;
+    # create_all handles new databases and startup adds them to SQLite stores.
+    material_columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(audit_case_materials)"))
+    }
+    additive_columns = {
+        "page_count": "INTEGER NOT NULL DEFAULT 0",
+        "extraction_method": "VARCHAR",
+        "extraction_engine": "VARCHAR",
+        "extraction_engine_version": "VARCHAR",
+        "extraction_warnings_json": "JSON",
+        "extracted_text_sha256": "VARCHAR",
+        "processing_job_id": "VARCHAR",
+    }
+    for column_name, column_ddl in additive_columns.items():
+        if column_name not in material_columns:
+            conn.execute(
+                text(
+                    f"ALTER TABLE audit_case_materials ADD COLUMN {column_name} "
+                    f"{column_ddl}"
+                )
+            )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_audit_case_materials_processing_job_id "
+            "ON audit_case_materials(processing_job_id)"
+        )
+    )
+    if "audit_case_material_chunks" in tables:
+        chunk_columns = {
+            str(row[1])
+            for row in conn.execute(text("PRAGMA table_info(audit_case_material_chunks)"))
+        }
+        if "chunking_status" not in chunk_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE audit_case_material_chunks ADD COLUMN "
+                    "chunking_status VARCHAR"
+                )
+            )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_audit_case_material_chunks_chunking_status "
+                "ON audit_case_material_chunks(chunking_status)"
+            )
+        )
+
     conn.execute(
         text(
             """
@@ -2140,6 +2187,13 @@ def _migrate_audit_case_material_schema(conn, inspector, tables: set[str]) -> No
                 storage_key VARCHAR NOT NULL,
                 extracted_text_storage_key VARCHAR,
                 characters INTEGER NOT NULL DEFAULT 0,
+                page_count INTEGER NOT NULL DEFAULT 0,
+                extraction_method VARCHAR,
+                extraction_engine VARCHAR,
+                extraction_engine_version VARCHAR,
+                extraction_warnings_json JSON,
+                extracted_text_sha256 VARCHAR,
+                processing_job_id VARCHAR,
                 extraction_status VARCHAR NOT NULL DEFAULT 'pending',
                 processing_status VARCHAR NOT NULL DEFAULT 'pending',
                 version INTEGER NOT NULL DEFAULT 1,
@@ -2162,13 +2216,17 @@ def _migrate_audit_case_material_schema(conn, inspector, tables: set[str]) -> No
             INSERT INTO audit_case_materials_new (
                 id, tenant_id, audit_case_id, attachment_id, material_type, filename,
                 content_type, sha256, size, storage_key, extracted_text_storage_key,
-                characters, extraction_status, processing_status, version, is_current,
+                characters, page_count, extraction_method, extraction_engine,
+                extraction_engine_version, extraction_warnings_json, extracted_text_sha256,
+                processing_job_id, extraction_status, processing_status, version, is_current,
                 supersedes_material_id, error_code, created_at, updated_at
             )
             SELECT
                 id, tenant_id, audit_case_id, attachment_id, material_type, filename,
                 content_type, sha256, size, storage_key, extracted_text_storage_key,
-                characters, extraction_status, processing_status, version, is_current,
+                characters, page_count, extraction_method, extraction_engine,
+                extraction_engine_version, extraction_warnings_json, extracted_text_sha256,
+                processing_job_id, extraction_status, processing_status, version, is_current,
                 supersedes_material_id, error_code, created_at, updated_at
             FROM audit_case_materials
             """

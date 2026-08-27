@@ -32,6 +32,7 @@ from app.api import (
     ui_config,
 )
 from app.async_jobs import shutdown_async_jobs, start_async_jobs
+from app.audit_cases.service import recover_pending_material_jobs
 from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
 from app.core.harness_recovery import (
@@ -79,6 +80,7 @@ def on_startup() -> None:
         with Session(engine) as db:
             seed_demo_data(db)
             recover_orphan_harness_runs(db, startup=True)
+        recover_pending_material_jobs(engine)
         recover_codex_a2a_tasks()
         recover_a2a_client_tasks()
         start_background_worker()

@@ -74,6 +74,13 @@ class AuditCaseMaterial(SQLModel, table=True):
     storage_key: str
     extracted_text_storage_key: Optional[str] = None
     characters: int = 0
+    page_count: int = 0
+    extraction_method: Optional[str] = None
+    extraction_engine: Optional[str] = None
+    extraction_engine_version: Optional[str] = None
+    extraction_warnings_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    extracted_text_sha256: Optional[str] = None
+    processing_job_id: Optional[str] = Field(default=None, index=True)
     extraction_status: str = Field(default="pending", index=True)
     processing_status: str = Field(default="pending", index=True)
     version: int = 1
@@ -100,6 +107,7 @@ class AuditCaseMaterialChunk(SQLModel, table=True):
     content_sha256: str
     content: str
     page_refs_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    chunking_status: Optional[str] = Field(default=None, index=True)
     processing_status: str = Field(default="pending", index=True)
     extracted_facts_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)

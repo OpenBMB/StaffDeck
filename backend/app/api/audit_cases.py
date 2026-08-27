@@ -152,7 +152,7 @@ async def upload_audit_case_materials(
     case_id: str,
     files: list[UploadFile] = File(...),
     tenant_id: str = Query(...),
-    material_type: str = Query("audit_record", min_length=1),
+    material_type: str = Query("audit_record_form", min_length=1),
     current_user: User = Depends(require_tenant_admin),
     db: Session = Depends(get_session),
 ) -> list[AuditCaseMaterialRead]:
@@ -175,6 +175,11 @@ async def upload_audit_case_materials(
                 upload.content_type or "application/octet-stream",
                 data,
             )
+            if not (
+                material.extraction_status == "succeeded"
+                and material.processing_status == "succeeded"
+            ):
+                service.enqueue_material_processing(case, current_user, material.id)
             result.append(audit_case_material_read(material))
         return result
     except Exception as exc:
@@ -229,6 +234,32 @@ def process_one_audit_case_material(
 
 
 @router.post(
+    "/{case_id}/materials/{material_id}/retry",
+    response_model=AuditCaseMaterialRead,
+    status_code=202,
+)
+def retry_audit_case_material(
+    case_id: str,
+    material_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_session),
+) -> AuditCaseMaterialRead:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        service.retry_material(case, current_user, material_id)
+        return audit_case_material_read(service.get_material(case.id, material_id, current_user))
+    except Exception as exc:
+        raise _case_error(exc) from exc
+
+
+@router.post(
     "/{case_id}/materials/{material_id}/replace",
     response_model=AuditCaseMaterialRead,
 )
@@ -257,6 +288,7 @@ async def replace_audit_case_material(
             file.content_type or "application/octet-stream",
             await file.read(),
         )
+        service.enqueue_material_processing(case, current_user, replacement.id)
         return audit_case_material_read(replacement)
     except Exception as exc:
         raise _case_error(exc) from exc
@@ -278,14 +310,32 @@ def process_audit_case_materials(
         current_user=current_user,
     )
     if request is not None:
-        model_config = _model_config_for_case(db, case, request.model_config_id)
         try:
-            for material in service.list_current_materials(case):
+            materials = service.list_current_materials(case)
+            pending_materials = [
+                material
+                for material in materials
                 if not (
                     material.extraction_status == "succeeded"
                     and material.processing_status == "succeeded"
-                ):
-                    service.process_material(case, material, actor_user_id=current_user.id)
+                )
+            ]
+            for material in pending_materials:
+                service.enqueue_material_processing(case, current_user, material.id)
+            if pending_materials:
+                snapshot = calculate_coverage(db, case)
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        "status": "pending",
+                        "materials": [
+                            audit_case_material_read(item).model_dump(mode="json")
+                            for item in materials
+                        ],
+                        "coverage": snapshot.model_dump(mode="json"),
+                    },
+                )
+            model_config = _model_config_for_case(db, case, request.model_config_id)
             evidence = AuditEvidenceProcessor(db).process_pending_chunks(case, model_config)
             knowledge = AuditKnowledgeOrchestrator(db).retrieve(case, model_config)
             return JSONResponse(
@@ -301,12 +351,11 @@ def process_audit_case_materials(
         except Exception as exc:
             raise _case_error(exc) from exc
     try:
-        return [
-            audit_case_material_read(
-                service.process_material(case, material, actor_user_id=current_user.id)
-            )
-            for material in service.list_current_materials(case)
-        ]
+        processed: list[AuditCaseMaterialRead] = []
+        for material in service.list_current_materials(case):
+            row = service.process_material(case, material, actor_user_id=current_user.id)
+            processed.append(audit_case_material_read(row))
+        return processed
     except Exception as exc:
         raise _case_error(exc) from exc
 

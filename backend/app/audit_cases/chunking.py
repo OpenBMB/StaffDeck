@@ -11,6 +11,7 @@ class ChunkSpan:
     end_char: int
     content: str
     content_sha256: str
+    page_refs: tuple[str, ...] = ()
 
 
 def chunk_text(text: str, target_chars: int = 1_000) -> list[ChunkSpan]:
@@ -42,3 +43,17 @@ def chunk_text(text: str, target_chars: int = 1_000) -> list[ChunkSpan]:
         )
         start = end
     return spans
+
+
+def page_refs_for_span(
+    start_char: int,
+    end_char: int,
+    page_ranges: list[tuple[str, int, int]],
+) -> list[str]:
+    """Return the source pages intersecting a rendered-text character span."""
+
+    return [
+        page_ref
+        for page_ref, page_start, page_end in page_ranges
+        if page_start < end_char and page_end > start_char
+    ]
