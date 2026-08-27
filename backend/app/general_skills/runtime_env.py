@@ -5,10 +5,11 @@ import subprocess
 import sys
 import threading
 import venv
+from collections.abc import Iterator
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.version import InvalidVersion, Version
@@ -54,6 +55,11 @@ def runtime_environment(
     env["VIRTUAL_ENV"] = str(bin_dir.parent)
     env["GENERAL_SKILL_RUNTIME_PYTHON"] = str(python_path)
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # Windows pipes otherwise inherit the active console code page. Skill
+    # runners exchange JSON over stdout, so force the protocol stream to UTF-8
+    # just as it is on POSIX hosts.
+    if sys.platform == "win32":
+        env.setdefault("PYTHONIOENCODING", "utf-8")
     return env
 
 

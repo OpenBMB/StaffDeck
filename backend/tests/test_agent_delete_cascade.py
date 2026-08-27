@@ -41,7 +41,7 @@ def test_delete_agent_purges_sessions_membership_tasks_and_handoffs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """删除员工要清空其会话/工作区,并同步清理团队成员关系、定时任务与待处理转接。"""
+    """删除员工要清空其会话/工作区及关联转接，并同步清理成员关系和任务。"""
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
@@ -147,10 +147,6 @@ def test_delete_agent_purges_sessions_membership_tasks_and_handoffs(
             select(ScheduledTask).where(ScheduledTask.agent_id == "agent_keep")
         ).one()
         assert kept_task.status == "active"
-        handoff_statuses = {
-            handoff.status
-            for handoff in db.exec(
-                select(HumanHandoffRequest).where(HumanHandoffRequest.agent_id == "agent_gone")
-            ).all()
-        }
-        assert handoff_statuses == {"cancelled", "answered"}
+        assert db.exec(
+            select(HumanHandoffRequest).where(HumanHandoffRequest.session_id == "session_gone")
+        ).all() == []

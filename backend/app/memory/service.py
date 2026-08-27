@@ -4,6 +4,7 @@ import hashlib
 import re
 from typing import Any
 
+from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
 from app import paths
@@ -13,11 +14,14 @@ from app.observability.spans import llm_operation
 from app.session.session_schema import ChatTurnRequest, StepAgentResult
 from app.tools.tool_schema import ToolResult
 
-
 PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "memory_extractor_prompt.md"
 MEMORY_SOURCE = "model_memory_extractor"
 PROFILE_NAME_KEY = "preferred_name"
 ALLOWED_MEMORY_KINDS = {"profile", "preference", "fact"}
+DEFAULT_RECALL_LIMIT = 12
+RECALL_CANDIDATE_LIMIT = 80
+RECALL_CONTENT_CHAR_LIMIT = 6000
+HIGH_PRIORITY_PROFILE_IMPORTANCE = 0.8
 
 
 class MemoryService:
@@ -32,8 +36,80 @@ class MemoryService:
         limit: int | None = None,
         agent_id: str | None = None,
     ) -> list[MemoryRecord]:
-        del query, limit
-        return self.context_memories(tenant_id, user_id, agent_id=agent_id)
+        effective_limit = DEFAULT_RECALL_LIMIT if limit is None else max(0, limit)
+        if effective_limit == 0:
+            return []
+
+        tokens = _recall_tokens(query)
+        predicates = [
+            MemoryRecord.tenant_id == tenant_id,
+            MemoryRecord.user_id == user_id,
+            MemoryRecord.kind.in_(ALLOWED_MEMORY_KINDS),
+        ]
+        agent_scope = memory_agent_scope_predicate(tenant_id, agent_id)
+        if agent_scope is not None:
+            predicates.append(agent_scope)
+        if tokens:
+            predicates.append(
+                or_(*[func.lower(MemoryRecord.content).contains(token) for token in tokens])
+            )
+        candidates = (
+            list(
+                self.db.exec(
+                    select(MemoryRecord)
+                    .where(*predicates)
+                    .order_by(MemoryRecord.updated_at.desc())
+                    .limit(RECALL_CANDIDATE_LIMIT)
+                ).all()
+            )
+            if tokens
+            else []
+        )
+
+        profile_predicates = [
+            MemoryRecord.tenant_id == tenant_id,
+            MemoryRecord.user_id == user_id,
+            MemoryRecord.kind == "profile",
+            MemoryRecord.importance >= HIGH_PRIORITY_PROFILE_IMPORTANCE,
+        ]
+        if agent_scope is not None:
+            profile_predicates.append(agent_scope)
+        priority_rows = list(
+            self.db.exec(
+                select(MemoryRecord)
+                .where(*profile_predicates)
+                .order_by(MemoryRecord.importance.desc(), MemoryRecord.updated_at.desc())
+                .limit(RECALL_CANDIDATE_LIMIT)
+            ).all()
+        )
+
+        priority_rows = memory_rows_for_read(priority_rows)
+        priority_ids = {row.id for row in priority_rows}
+        ranked = sorted(
+            (row for row in candidates if row.id not in priority_ids),
+            key=lambda row: _recall_score(row, tokens),
+            reverse=True,
+        )
+        visible = [*priority_rows, *memory_rows_for_read(ranked)]
+        selected: list[MemoryRecord] = []
+        total_chars = 0
+        for row in visible:
+            if len(selected) >= effective_limit:
+                break
+            content_length = len(row.content or "")
+            remaining_chars = RECALL_CONTENT_CHAR_LIMIT - total_chars
+            if content_length > remaining_chars:
+                if remaining_chars <= 0:
+                    continue
+                row = row.model_copy(update={"content": row.content[:remaining_chars]})
+                content_length = remaining_chars
+            if content_length <= 0:
+                continue
+            selected.append(row)
+            total_chars += content_length
+            if total_chars >= RECALL_CONTENT_CHAR_LIMIT:
+                break
+        return selected
 
     def context_memories(
         self,
@@ -139,8 +215,11 @@ class MemoryService:
             )
             .order_by(MemoryRecord.updated_at.desc())
         )
+        agent_scope = memory_agent_scope_predicate(tenant_id, agent_id)
+        if agent_scope is not None:
+            statement = statement.where(agent_scope)
         if limit is not None:
-            statement = statement.limit(limit * 5 if agent_id else limit)
+            statement = statement.limit(limit)
         rows = list(self.db.exec(statement).all())
         if agent_id:
             rows = [row for row in rows if self._memory_matches_agent(row, agent_id)]
@@ -342,6 +421,25 @@ def memory_matches_agent(record: MemoryRecord, agent_id: str | None) -> bool:
     return memory_agent_id(record) == agent_id
 
 
+def memory_agent_scope_predicate(tenant_id: str, agent_id: str | None):
+    """Return the SQL scope matching the in-memory agent ownership rules."""
+
+    if not agent_id:
+        return None
+    metadata_agent_id = func.json_extract(MemoryRecord.metadata_json, "$.agent_id")
+    session_ids = select(ChatSession.id).where(
+        ChatSession.tenant_id == tenant_id,
+        ChatSession.agent_id == agent_id,
+    )
+    return or_(
+        metadata_agent_id == agent_id,
+        and_(
+            or_(metadata_agent_id.is_(None), metadata_agent_id == ""),
+            MemoryRecord.session_id.in_(session_ids),
+        ),
+    )
+
+
 def tool_read_for_activity(tool: Tool | None, result: ToolResult | None = None) -> dict[str, Any]:
     return {
         "name": result.tool_name if result else tool.name if tool else "",
@@ -395,7 +493,7 @@ def _normalize_memory_key(value: Any, kind: str, content: str) -> str:
         normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", value.strip().lower()).strip("_")
         if normalized:
             return normalized[:80]
-    digest = hashlib.md5(f"{kind}:{content}".encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
+    digest = hashlib.md5(f"{kind}:{content}".encode(), usedforsecurity=False).hexdigest()[:12]
     return f"{kind}_{digest}"
 
 
@@ -420,3 +518,35 @@ def _read_dedupe_key(record: MemoryRecord) -> str:
     if record.kind == "summary":
         return "summary"
     return record.id
+
+
+def _recall_tokens(query: str) -> list[str]:
+    """Extract Chinese bigrams and English words for a lightweight lexical search."""
+
+    text = str(query or "").strip()
+    if not text:
+        return []
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for word in re.findall(r"[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*", text.lower()):
+        if word not in seen:
+            seen.add(word)
+            tokens.append(word)
+    for chunk in re.findall(r"[\u3400-\u9fff\u3040-\u30ff]+", text):
+        fragments = [chunk] if len(chunk) < 2 else [chunk[index : index + 2] for index in range(len(chunk) - 1)]
+        for fragment in fragments:
+            if fragment not in seen:
+                seen.add(fragment)
+                tokens.append(fragment)
+    return tokens
+
+
+def _recall_score(record: MemoryRecord, tokens: list[str]) -> tuple[int, int, float, object]:
+    content = (record.content or "").lower()
+    matches = sum(1 for token in tokens if token in content)
+    return (
+        matches,
+        int(record.importance >= HIGH_PRIORITY_PROFILE_IMPORTANCE),
+        record.importance,
+        record.updated_at,
+    )

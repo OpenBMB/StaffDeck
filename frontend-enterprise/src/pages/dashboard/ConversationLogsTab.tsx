@@ -7,6 +7,7 @@ import {
   GitBranch,
   LoaderCircle,
   RefreshCw,
+  Trash2,
   Workflow,
   Wrench,
 } from 'lucide-react';
@@ -103,6 +104,8 @@ export default function ConversationLogsTab() {
   const [reanalyzingId, setReanalyzingId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
   const [exportingKey, setExportingKey] = useState('');
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
@@ -215,9 +218,8 @@ export default function ConversationLogsTab() {
   const allPageRowsSelected =
     pageSessionIds.length > 0 && pageSessionIds.every((sessionId) => selectedSessionIds.has(sessionId));
   const somePageRowsSelected = pageSessionIds.some((sessionId) => selectedSessionIds.has(sessionId));
-  const batchRows = selectedSessionIds.size
-    ? filteredRows.filter((row) => selectedSessionIds.has(row.id))
-    : filteredRows;
+  const selectedRows = filteredRows.filter((row) => selectedSessionIds.has(row.id));
+  const batchRows = selectedSessionIds.size ? selectedRows : filteredRows;
 
   const toggleSessionSelection = (sessionId: string, selected: boolean) => {
     setSelectedSessionIds((current) => {
@@ -273,6 +275,29 @@ export default function ConversationLogsTab() {
       notify.error(error instanceof Error ? error.message : '批量导出对话日志失败');
     } finally {
       setExportingKey('');
+    }
+  };
+
+  const deleteSelectedSessions = async () => {
+    const sessionIds = selectedRows.map((row) => row.id);
+    if (sessionIds.length === 0) return;
+    setDeleting(true);
+    try {
+      const result = await api.post<{ deleted: number }>(
+        `/api/enterprise/sessions/delete?tenant_id=${TENANT_ID}`,
+        { session_ids: sessionIds },
+      );
+      notify.success(`已删除 ${result.deleted} 条对话日志`);
+      if (sessionIds.includes(String(detail?.session?.id || detail?.session?.session_id || ''))) {
+        setDetail(null);
+      }
+      setSelectedSessionIds(new Set());
+      setDeleteConfirmOpen(false);
+      await load();
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '批量删除对话日志失败');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -593,6 +618,15 @@ export default function ConversationLogsTab() {
                 ? `导出已选（${batchRows.length}）`
                 : `导出筛选结果（${batchRows.length}）`}
             </UIButton>
+            <UIButton
+              variant="outline"
+              disabled={selectedRows.length === 0 || deleting}
+              onClick={() => setDeleteConfirmOpen(true)}
+              className="h-[34px] shrink-0 gap-[6px] rounded-[10px] border-[0.5px] border-[#f0d3d3] bg-white px-[14px] text-[12px] font-normal text-[#c43d3d] hover:border-[#e1a8a8] hover:bg-[#fff7f7] hover:text-[#a92d2d] disabled:text-[#d8a8a8] max-[520px]:w-full"
+            >
+              {deleting ? <LoaderCircle className="size-[14px] animate-spin" /> : <Trash2 className="size-[14px]" />}
+              删除已选（{selectedRows.length}）
+            </UIButton>
           </div>
         </div>
 
@@ -633,6 +667,35 @@ export default function ConversationLogsTab() {
         onReanalyze={reanalyzeFeedback}
         reanalyzingId={reanalyzingId}
       />
+      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <DialogContent
+          aria-describedby={undefined}
+          className="w-[calc(100%-2rem)] rounded-[14px] px-[20px] py-[18px] sm:max-w-[440px]"
+        >
+          <DialogTitle className="text-[16px] font-semibold text-[#18181a]">删除对话日志</DialogTitle>
+          <p className="mt-[12px] text-[13px] leading-[1.6] text-[#646b7d]">
+            将永久删除已选的 {selectedRows.length} 条对话及其关联记录。
+          </p>
+          <div className="mt-[18px] flex justify-end gap-[8px]">
+            <UIButton
+              type="button"
+              variant="outline"
+              onClick={() => setDeleteConfirmOpen(false)}
+              disabled={deleting}
+            >
+              取消
+            </UIButton>
+            <UIButton
+              type="button"
+              onClick={() => void deleteSelectedSessions()}
+              disabled={deleting || selectedRows.length === 0}
+              className="bg-[#c43d3d] text-white hover:bg-[#a92d2d]"
+            >
+              {deleting ? '删除中' : '确认删除'}
+            </UIButton>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

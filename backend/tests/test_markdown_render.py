@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import signal
+import threading
 
 from app.channels.markdown_render import (
     CodeBlock,
@@ -80,15 +80,16 @@ def test_parse_multiple_inline_code_no_infinite_loop():
     """Regression: multiple inline code segments caused an infinite loop because
     the code-placeholder regex searched text[pos:] but used the relative match.end()
     as the absolute pos, never advancing past the second placeholder."""
-    def _handler(signum, frame):
-        raise TimeoutError("parse_markdown did not complete in time")
+    result: list[object] = []
 
-    signal.signal(signal.SIGALRM, _handler)
-    signal.alarm(5)
-    try:
-        blocks = parse_markdown("a `b` c `d` e")
-    finally:
-        signal.alarm(0)
+    def parse() -> None:
+        result.append(parse_markdown("a `b` c `d` e"))
+
+    worker = threading.Thread(target=parse, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive(), "parse_markdown did not complete in time"
+    blocks = result[0]
     spans = blocks[0].spans
     code_spans = [s for s in spans if "code" in s.styles]
     assert len(code_spans) == 2

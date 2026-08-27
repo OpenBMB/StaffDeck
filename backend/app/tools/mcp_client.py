@@ -435,6 +435,10 @@ class _StdioSession(_MCPSession):
     def __enter__(self) -> "_StdioSession":
         command = _stdio_command(self.config)
         env = os.environ.copy()
+        if os.name == "nt":
+            # MCP stdio is a UTF-8 JSON-RPC stream. Python servers on Windows
+            # otherwise use the active console code page for pipes.
+            env.setdefault("PYTHONIOENCODING", "utf-8")
         raw_env = self.config.get("env")
         if isinstance(raw_env, Mapping):
             env.update({str(key): str(value) for key, value in raw_env.items()})

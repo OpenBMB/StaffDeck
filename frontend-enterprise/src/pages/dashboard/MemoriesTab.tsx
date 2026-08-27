@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Plus } from 'lucide-react';
 
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { DetailField } from '@/components/DetailField';
@@ -13,6 +14,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Textarea,
 } from '@/components/ui';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
@@ -61,6 +63,10 @@ export default function MemoriesTab({
   const [detail, setDetail] = useState<MemoryUserGroup | null>(null);
   const [loading, setLoading] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [manualMemoryOpen, setManualMemoryOpen] = useState(false);
+  const [manualMemoryContent, setManualMemoryContent] = useState('');
+  const [manualMemoryKind, setManualMemoryKind] = useState('fact');
+  const [savingManualMemory, setSavingManualMemory] = useState(false);
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [filter, setFilter] = useState<MemoryFilter>(EMPTY_FILTER);
 
@@ -111,6 +117,38 @@ export default function MemoriesTab({
   const emptyText = agentId
     ? '当前员工暂无用户记忆；新的对话记忆会按员工和用户隔离沉淀。'
     : '暂无记忆';
+
+  async function createManualMemory() {
+    const content = manualMemoryContent.trim();
+    if (!content) {
+      notify.error('请输入记忆内容');
+      return;
+    }
+    setSavingManualMemory(true);
+    try {
+      const params = new URLSearchParams({ tenant_id: TENANT_ID });
+      const payload: { content: string; kind: string; agent_id?: string; user_id?: string } = {
+        content,
+        kind: manualMemoryKind,
+      };
+      if (agentId) {
+        payload.agent_id = agentId;
+      }
+      if (canFilterUsers && filter.user_id) {
+        payload.user_id = filter.user_id;
+      }
+      await api.post<MemoryRead>(`/api/enterprise/memories?${params.toString()}`, payload);
+      notify.success('已写入记忆');
+      setManualMemoryContent('');
+      setManualMemoryKind('fact');
+      setManualMemoryOpen(false);
+      await load(filter);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '写入失败');
+    } finally {
+      setSavingManualMemory(false);
+    }
+  }
 
   function resetFilter() {
     setFilter(EMPTY_FILTER);
@@ -311,6 +349,16 @@ export default function MemoriesTab({
             <UIButton
               type="button"
               variant="outline"
+              onClick={() => setManualMemoryOpen(true)}
+              disabled={loading}
+              className="h-[34px] w-[112px] gap-[4px] rounded-[10px] border-[0.5px] border-[#d7e3fb] bg-white px-[14px] text-[12px] font-normal text-[#1a71ff] hover:border-[#a9c6f5] hover:bg-[#f5f8ff] hover:text-[#145ec7]"
+            >
+              <Plus className="size-[14px]" />
+              新增记忆
+            </UIButton>
+            <UIButton
+              type="button"
+              variant="outline"
               onClick={resetFilter}
               disabled={loading}
               className="h-[34px] w-[80px] gap-[4px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[20px] text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
@@ -361,6 +409,53 @@ export default function MemoriesTab({
       </section>
 
       <MemoryDetailDialog detail={detail} onClose={() => setDetail(null)} />
+      <Dialog open={manualMemoryOpen} onOpenChange={setManualMemoryOpen}>
+        <DialogContent
+          aria-describedby={undefined}
+          className="w-[calc(100%-2rem)] rounded-[14px] px-[20px] py-[18px] sm:max-w-[520px]"
+        >
+          <DialogTitle className="text-[16px] font-semibold text-[#18181a]">新增记忆</DialogTitle>
+          <div className="mt-[16px] grid gap-[14px]">
+            <label className="grid gap-[6px] text-[12px] text-[#757f9c]">
+              类型
+              <UISelect value={manualMemoryKind} onValueChange={setManualMemoryKind}>
+                <SelectTrigger className="h-[36px] rounded-[8px] border-[#e3e7f1] text-[13px] text-[#18181a]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fact">fact</SelectItem>
+                  <SelectItem value="preference">preference</SelectItem>
+                  <SelectItem value="profile">profile</SelectItem>
+                </SelectContent>
+              </UISelect>
+            </label>
+            <label className="grid gap-[6px] text-[12px] text-[#757f9c]">
+              记忆内容
+              <Textarea
+                value={manualMemoryContent}
+                onChange={(event) => setManualMemoryContent(event.target.value)}
+                placeholder="输入需要长期保留的信息"
+                maxLength={1200}
+                rows={5}
+                className="resize-y border-[#e3e7f1] text-[13px] text-[#18181a]"
+              />
+            </label>
+          </div>
+          <div className="mt-[18px] flex justify-end gap-[8px]">
+            <UIButton
+              type="button"
+              variant="outline"
+              onClick={() => setManualMemoryOpen(false)}
+              disabled={savingManualMemory}
+            >
+              取消
+            </UIButton>
+            <UIButton type="button" onClick={() => void createManualMemory()} disabled={savingManualMemory}>
+              {savingManualMemory ? '写入中' : '写入记忆'}
+            </UIButton>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

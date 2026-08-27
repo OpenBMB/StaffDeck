@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { ReactNode } from 'react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { type ReactNode, useEffect } from 'react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
@@ -31,11 +31,29 @@ const employeeSession: ChatSession = {
   updated_at: '2026-08-01T00:00:00Z',
 };
 
+const scheduledSession: ChatSession = {
+  id: 'session-scheduled-1',
+  tenant_id: 'tenant_demo',
+  agent_id: 'agent-1',
+  status: 'active',
+  is_scheduled: true,
+  updated_at: '2026-08-01T00:01:00Z',
+};
+
 function jsonResponse(body: unknown): Response {
   return {
     ok: true,
     status: 200,
     statusText: 'OK',
+    text: async () => JSON.stringify(body ?? {}),
+  } as Response;
+}
+
+function jsonErrorResponse(status: number, body: unknown): Response {
+  return {
+    ok: false,
+    status,
+    statusText: 'Not Found',
     text: async () => JSON.stringify(body ?? {}),
   } as Response;
 }
@@ -57,13 +75,23 @@ function stubChatFetch(sessions: ChatSession[]) {
 function renderChatSession(
   initialPath: string,
   options: Parameters<typeof useChatSession>[0] = {},
+  onLocationChange: (pathname: string) => void = () => undefined,
 ) {
+  function LocationReporter() {
+    const location = useLocation();
+    useEffect(() => {
+      onLocationChange(location.pathname);
+    }, [location.pathname, onLocationChange]);
+    return null;
+  }
+
   const wrapper = ({ children }: { children: ReactNode }) => (
     <I18nProvider>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
-          <Route path="/workspace/chat/:sessionId" element={<>{children}</>} />
-          <Route path="/workspace/chat" element={<>{children}</>} />
+          <Route path="/workspace/chat/:sessionId" element={<><LocationReporter />{children}</>} />
+          <Route path="/workspace/chat" element={<><LocationReporter />{children}</>} />
+          <Route path="*" element={<LocationReporter />} />
         </Routes>
       </MemoryRouter>
     </I18nProvider>
@@ -137,5 +165,55 @@ describe('useChatSession team scope', () => {
       await vi.advanceTimersByTimeAsync(2_100);
     });
     expect(messageRequestCount()).toBeGreaterThan(1);
+  });
+
+  it('does not navigate away when polling discovers a scheduled background session', async () => {
+    vi.useFakeTimers();
+    let sessionListRequests = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/chat/sessions/session-emp-1?')) return jsonResponse(employeeSession);
+      if (url.includes('/api/chat/sessions?')) {
+        sessionListRequests += 1;
+        return jsonResponse(sessionListRequests === 1 ? [employeeSession] : [employeeSession, scheduledSession]);
+      }
+      if (url.includes('/api/chat/')) return jsonResponse([]);
+      if (url.includes('/api/enterprise/')) return jsonResponse([]);
+      return jsonResponse({});
+    }));
+    const locations: string[] = [];
+    renderChatSession('/workspace/chat/session-emp-1', {}, (pathname) => locations.push(pathname));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500);
+    });
+
+    expect(locations).toEqual(['/workspace/chat/session-emp-1']);
+  });
+
+  it('keeps the current route when a failed step leaves its session unavailable', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/chat/sessions/session-emp-1/messages?')) {
+        return jsonErrorResponse(404, { detail: 'Session not found' });
+      }
+      if (url.includes('/api/chat/sessions/session-emp-1?')) return jsonResponse(employeeSession);
+      if (url.includes('/api/chat/sessions?')) return jsonResponse([employeeSession]);
+      if (url.includes('/api/chat/')) return jsonResponse([]);
+      if (url.includes('/api/enterprise/')) return jsonResponse([]);
+      return jsonResponse({});
+    }));
+    const locations: string[] = [];
+    renderChatSession('/workspace/chat/session-emp-1', {}, (pathname) => locations.push(pathname));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    expect(locations).toEqual(['/workspace/chat/session-emp-1']);
   });
 });

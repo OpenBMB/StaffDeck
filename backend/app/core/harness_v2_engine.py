@@ -294,9 +294,10 @@ class HarnessV2Engine:
         )
         memory_context = [
             memory_read(row)
-            for row in self.owner.memory.context_memories(
+            for row in self.owner.memory.recall(
                 request.tenant_id,
                 request.user_id,
+                query=request.message,
                 agent_id=session.agent_id,
             )
         ]
@@ -633,7 +634,9 @@ class HarnessV2Engine:
             request.tenant_id, session.active_skill_id, session.agent_id
         )
         self._renew_session_lease()
-        reply = _single_task_reply(execution_results)
+        reply = _single_task_reply(execution_results) or _terminal_waiting_or_handoff_reply(
+            execution_results
+        )
         if team_publish_result is not None and not execution_results:
             task_count = len(team_publish_result.task_ids)
             reply = (
@@ -1661,6 +1664,18 @@ def _single_task_reply(results: list[TaskExecutionResult]) -> str | None:
     if _structured_reply_requires_synthesis(reply, result.structured_result):
         return None
     return reply or None
+
+
+def _terminal_waiting_or_handoff_reply(results: list[TaskExecutionResult]) -> str | None:
+    """Reuse a terminal task reply when the turn is waiting for a person or user input."""
+
+    for result in reversed(results):
+        if result.status not in {"awaiting_user", "handoff"}:
+            continue
+        reply = str(result.reply_fragment or "").strip()
+        if reply:
+            return reply
+    return None
 
 
 def _structured_reply_requires_synthesis(reply: str, structured_result: Any) -> bool:

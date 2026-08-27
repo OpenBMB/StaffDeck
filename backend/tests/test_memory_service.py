@@ -1,8 +1,21 @@
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.api.memories import clear_my_memories, list_memories
-from app.db.models import AgentProfile, ChatSession, MemoryRecord, Message, ModelConfig, Tenant, User
+from app.api.memories import (
+    ManualMemoryCreateRequest,
+    clear_my_memories,
+    create_manual_memory,
+    list_memories,
+)
+from app.db.models import (
+    AgentProfile,
+    ChatSession,
+    MemoryRecord,
+    Message,
+    ModelConfig,
+    Tenant,
+    User,
+)
 from app.llm.client import LLMClient
 from app.memory.jobs import _conversation_messages_for_turn
 from app.memory.service import MemoryService, memory_rows_for_read
@@ -209,6 +222,83 @@ def test_memory_recall_excludes_summary_history() -> None:
 
     assert [row.kind for row in rows] == ["preference"]
     assert rows[0].content == "用户偏好客服回复简洁。"
+
+
+def test_memory_recall_scopes_agent_before_candidate_limit() -> None:
+    with _test_session() as db:
+        db.add(
+            MemoryRecord(
+                id="memory_target_agent",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                kind="fact",
+                content="用户正在处理报销流程",
+                metadata_json={"agent_id": "agent_target"},
+            )
+        )
+        db.add(
+            MemoryRecord(
+                id="memory_target_irrelevant",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                kind="fact",
+                content="用户喜欢下午开会",
+                metadata_json={"agent_id": "agent_target"},
+            )
+        )
+        for index in range(80):
+            db.add(
+                MemoryRecord(
+                    id=f"memory_other_agent_{index}",
+                    tenant_id="tenant_demo",
+                    user_id="user_demo",
+                    kind="fact",
+                    content=f"其他员工的报销记录 {index}",
+                    metadata_json={"agent_id": "agent_other"},
+                )
+            )
+        db.commit()
+
+        rows = MemoryService(db).recall(
+            "tenant_demo",
+            "user_demo",
+            "报销流程",
+            agent_id="agent_target",
+        )
+
+    assert [row.id for row in rows] == ["memory_target_agent"]
+
+
+def test_create_manual_memory_is_not_owned_by_a_chat_session() -> None:
+    with _test_session() as db:
+        user = User(
+            id="user_demo",
+            tenant_id="tenant_demo",
+            username="demo",
+            password_hash="hash",
+        )
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(user)
+        db.add(AgentProfile(id="agent_demo", tenant_id="tenant_demo", name="Demo agent"))
+        db.commit()
+
+        created = create_manual_memory(
+            ManualMemoryCreateRequest(
+                content="客户偏好中文账单",
+                kind="preference",
+                agent_id="agent_demo",
+            ),
+            tenant_id="tenant_demo",
+            current_user=user,
+            db=db,
+        )
+
+        record = db.get(MemoryRecord, created["id"])
+
+    assert record is not None
+    assert record.session_id is None
+    assert record.metadata_json["source"] == "manual_memory"
+    assert record.metadata_json["agent_id"] == "agent_demo"
 
 
 def test_context_memories_returns_all_supported_memories_without_model_selection() -> None:

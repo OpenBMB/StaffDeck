@@ -70,8 +70,14 @@ def acquire_runtime_instance_lock() -> Path | None:
     try:
         _try_lock(handle)
     except OSError as exc:
-        handle.seek(0)
-        owner = handle.read().strip() or "unknown"
+        try:
+            handle.seek(0)
+            owner = handle.read().strip() or "unknown"
+        except OSError:
+            # Windows byte-range locks deny a second descriptor read as well as
+            # the lock attempt. Keep startup failure actionable even when the
+            # owner PID cannot be read from the held descriptor.
+            owner = "unknown"
         handle.close()
         raise RuntimeInstanceLockError(
             f"Another StaffDeck process already owns {database_path} (pid={owner})."

@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.api.chat import _build_turn_traces, session_read
-from app.session.message_read import message_read
 from app.core.harness_session_cleanup import stage_harness_session_execution_reset
 from app.db import get_session
 from app.db.models import (
@@ -29,6 +28,8 @@ from app.observability.session_timings import enrich_turn_traces_with_timings
 from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
+from app.session.cleanup import purge_chat_session_records, remove_chat_session_workspace
+from app.session.message_read import message_read
 from app.session.message_visibility import visible_message_content, visible_message_rows
 
 router = APIRouter(prefix="/api/enterprise/sessions", tags=["enterprise:sessions"])
@@ -37,6 +38,10 @@ SESSION_LOG_EXPORT_SCHEMA = "staffdeck.conversation-log.v1"
 
 
 class SessionLogExportRequest(BaseModel):
+    session_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class SessionLogDeleteRequest(BaseModel):
     session_ids: list[str] = Field(min_length=1, max_length=500)
 
 
@@ -86,6 +91,32 @@ def export_session_logs(
         },
         f"staffdeck-conversation-logs-{exported_at.strftime('%Y%m%d-%H%M%S')}.json",
     )
+
+
+@router.post("/delete")
+def delete_session_logs(
+    request: SessionLogDeleteRequest,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> dict[str, int]:
+    _ensure_request_tenant(tenant_id, current_user)
+    session_ids = list(dict.fromkeys(request.session_ids))
+    rows = [
+        _get_visible_chat_session(db, tenant_id, session_id, current_user)
+        for session_id in session_ids
+    ]
+    workspace_keys = [(row.tenant_id, row.id) for row in rows]
+    for row in rows:
+        purge_chat_session_records(db, row)
+    db.commit()
+    for workspace_tenant_id, session_id in workspace_keys:
+        remove_chat_session_workspace(
+            tenant_id=workspace_tenant_id,
+            session_id=session_id,
+            db=db,
+        )
+    return {"deleted": len(rows)}
 
 
 @router.get("/{session_id}/export")

@@ -245,6 +245,10 @@ def exec_command(
 def _command_for_sandbox_workspace(command: str, backend: str) -> str:
     """Make the stable model-visible /workspace path work on non-mount sandboxes."""
 
+    # Bubblewrap mounts the stable alias inside the sandbox. Keep the command
+    # unchanged even when this helper is exercised from a Windows host.
+    if backend == "bubblewrap":
+        return command
     if sys.platform == "win32":
         # Models sometimes translate the stable /workspace alias into a
         # Windows-looking path. Keep the alias portable without rewriting any
@@ -261,8 +265,6 @@ def _command_for_sandbox_workspace(command: str, backend: str) -> str:
             ".",
             command,
         )
-    if backend == "bubblewrap":
-        return command
     return re.sub(r"(?<![A-Za-z0-9_.-])/workspace(?=/|\s|$|[\"'])", ".", command)
 
 
@@ -850,6 +852,7 @@ def _managed_process_environment(env: dict[str, str] | None) -> dict[str, str]:
             "PATH", "HOME", "PWD", "TMPDIR", "LANG", "LC_ALL",
             "ARGUMENTS", "QUERY", "SKILL_WORKSPACE", "ARTIFACT_DIR", "SKILL_SLUG",
             "SKILL_NAME", "USER_ID", "SKILL_FILES_JSON", "SSL_CERT_FILE", "PIP_CERT",
+            "PYTHONIOENCODING",
         }
     }
     return {**baseline, **allowed}

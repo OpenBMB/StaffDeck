@@ -43,6 +43,7 @@ from app.core.harness_v2_engine import (
     _response_task_payload,
     _sibling_task_intents,
     _single_task_reply,
+    _terminal_waiting_or_handoff_reply,
     _turn_planner_message,
     _turn_skill_projection,
     _with_recoverable_first_session,
@@ -463,6 +464,28 @@ def test_single_task_reply_keeps_multi_task_and_empty_reply_on_synthesis_path() 
 
     assert _single_task_reply([completed, awaiting]) is None
     assert _single_task_reply([empty]) is None
+
+
+def test_terminal_waiting_or_handoff_reply_skips_synthesis_for_multi_task_turn() -> None:
+    completed = TaskExecutionResult(
+        task_frame_id="task_completed",
+        status="completed",
+        reply_fragment="已处理完成。",
+    )
+    awaiting = TaskExecutionResult(
+        task_frame_id="task_waiting",
+        status="awaiting_user",
+        reply_fragment="请补充报销金额。",
+    )
+    handoff = TaskExecutionResult(
+        task_frame_id="task_handoff",
+        status="handoff",
+        reply_fragment="已转交人工处理。",
+    )
+
+    assert _terminal_waiting_or_handoff_reply([completed, awaiting]) == "请补充报销金额。"
+    assert _terminal_waiting_or_handoff_reply([completed, handoff]) == "已转交人工处理。"
+    assert _terminal_waiting_or_handoff_reply([completed]) is None
 
 
 def test_single_task_reply_synthesizes_incomplete_structured_projection() -> None:
@@ -1877,7 +1900,7 @@ def test_harness_reads_published_deliverable_from_an_earlier_task_frame(
             db=db,
         )
         (workspace / "results").mkdir(parents=True)
-        (workspace / "results" / "schedule.md").write_text(content, encoding="utf-8")
+        (workspace / "results" / "schedule.md").write_bytes(encoded)
         db.add(
             Message(
                 tenant_id="tenant-demo",

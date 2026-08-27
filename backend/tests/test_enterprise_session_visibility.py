@@ -14,7 +14,9 @@ from app.api.feedback import (
 )
 from app.api.sessions import (
     SESSION_LOG_EXPORT_SCHEMA,
+    SessionLogDeleteRequest,
     SessionLogExportRequest,
+    delete_session_logs,
     export_session_log,
     export_session_logs,
     get_session_detail,
@@ -343,6 +345,34 @@ def test_batch_json_export_preserves_order_deduplicates_and_checks_visibility() 
                 db=db,
             )
         assert exc_info.value.status_code == 404
+
+
+def test_batch_delete_deduplicates_and_checks_visibility() -> None:
+    with _test_session() as db:
+        users = _seed(db)
+        with pytest.raises(HTTPException) as exc_info:
+            delete_session_logs(
+                SessionLogDeleteRequest(session_ids=["session_channel"]),
+                "tenant_demo",
+                current_user=users["member"],
+                db=db,
+            )
+        assert exc_info.value.status_code == 404
+        assert db.get(ChatSession, "session_channel") is not None
+
+        response = delete_session_logs(
+            SessionLogDeleteRequest(
+                session_ids=["session_channel", "session_owner", "session_channel"]
+            ),
+            "tenant_demo",
+            current_user=users["owner"],
+            db=db,
+        )
+
+        assert response == {"deleted": 2}
+        assert db.get(ChatSession, "session_channel") is None
+        assert db.get(ChatSession, "session_owner") is None
+        assert db.get(ChatSession, "session_member") is not None
 
 
 def test_reset_allowed_for_agent_creator_and_admin_only() -> None:

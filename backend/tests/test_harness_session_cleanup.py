@@ -20,6 +20,8 @@ from app.db.models import (
     HarnessSessionLeaseRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
+    HumanHandoffRequest,
+    MemoryRecord,
     Team,
     Tenant,
     User,
@@ -183,7 +185,12 @@ def test_workspace_cleanup_unlinks_exact_symlink_without_following_target(
     external.mkdir()
     (external / "keep.txt").write_text("keep", encoding="utf-8")
     target.parent.mkdir(parents=True)
-    target.symlink_to(external, target_is_directory=True)
+    try:
+        target.symlink_to(external, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Creating symbolic links requires Windows Developer Mode or elevation")
+        raise
 
     assert remove_harness_session_workspace(
         tenant_id="tenant_demo",
@@ -227,6 +234,36 @@ def test_delete_chat_session_cleans_harness_state_and_workspace(
             session_id="session_other",
             suffix="other",
         )
+        db.add_all(
+            [
+                MemoryRecord(
+                    id="memory_target",
+                    tenant_id="tenant_demo",
+                    user_id=user.id,
+                    session_id="session_target",
+                    kind="fact",
+                    content="仅属于待删除会话",
+                ),
+                MemoryRecord(
+                    id="memory_survivor",
+                    tenant_id="tenant_demo",
+                    user_id=user.id,
+                    session_id="session_other",
+                    kind="fact",
+                    content="其他会话记忆应保留",
+                ),
+                HumanHandoffRequest(
+                    id="handoff_target",
+                    tenant_id="tenant_demo",
+                    session_id="session_target",
+                ),
+                HumanHandoffRequest(
+                    id="handoff_survivor",
+                    tenant_id="tenant_demo",
+                    session_id="session_other",
+                ),
+            ]
+        )
         db.commit()
 
         workspace = harness_session_workspace_path(
@@ -252,6 +289,10 @@ def test_delete_chat_session_cleans_harness_state_and_workspace(
         assert db.get(HarnessInvocationRecord, survivor_ids[0]) is not None
         assert db.get(HarnessRunRecord, survivor_ids[1]) is not None
         assert db.get(HarnessTaskFrameRecord, survivor_ids[2]) is not None
+        assert db.get(MemoryRecord, "memory_target") is None
+        assert db.get(MemoryRecord, "memory_survivor") is not None
+        assert db.get(HumanHandoffRequest, "handoff_target") is None
+        assert db.get(HumanHandoffRequest, "handoff_survivor") is not None
         assert db.exec(select(HarnessTaskFrameRecord)).all()
 
 

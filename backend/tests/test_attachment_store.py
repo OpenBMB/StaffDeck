@@ -86,7 +86,12 @@ def test_attachment_directory_rejects_intermediate_symlink_escape(
         user_id="user",
         attachment_id="attachment",
     )
-    (root / key[:2]).symlink_to(outside, target_is_directory=True)
+    try:
+        (root / key[:2]).symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("symbolic links require Developer Mode or elevated privileges on Windows")
+        raise
 
     with pytest.raises(ValueError, match="escapes storage root"):
         _attachment_directory(

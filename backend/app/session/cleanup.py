@@ -11,6 +11,8 @@ from app.core.harness_session_cleanup import (
 from app.db.models import (
     AgentEvent,
     ChatSession,
+    HumanHandoffRequest,
+    MemoryRecord,
     Message,
     MessageFeedback,
     SkillFeedback,
@@ -28,7 +30,14 @@ def purge_chat_session_records(db: Session, session: ChatSession) -> None:
     tenant_id = session.tenant_id
     session_id = session.id
     stage_harness_session_record_deletion(db, tenant_id=tenant_id, session_id=session_id)
-    for model in (Message, AgentEvent, MessageFeedback, SkillFeedback):
+    for model in (
+        Message,
+        AgentEvent,
+        MessageFeedback,
+        SkillFeedback,
+        MemoryRecord,
+        HumanHandoffRequest,
+    ):
         for row in db.exec(
             select(model).where(model.tenant_id == tenant_id, model.session_id == session_id)
         ).all():

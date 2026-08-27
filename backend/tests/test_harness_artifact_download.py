@@ -153,7 +153,8 @@ def test_publisher_builds_relative_hashed_metadata(tmp_path: Path) -> None:
     workspace = tmp_path / "task"
     artifact = workspace / "outputs" / "report.csv"
     artifact.parent.mkdir(parents=True)
-    artifact.write_text("a,b\n1,2\n", encoding="utf-8")
+    # Keep the fixture bytes stable across Windows newline translation.
+    artifact.write_bytes(b"a,b\n1,2\n")
 
     published = publish_harness_artifacts(
         workspace.resolve(),
@@ -361,11 +362,16 @@ def test_secure_open_rejects_file_and_parent_symlinks(
     workspace.mkdir()
     external.mkdir()
     (external / "secret.txt").write_text("outside", encoding="utf-8")
-    (workspace / "linked-file.txt").symlink_to(external / "secret.txt")
-    (workspace / "linked-directory").symlink_to(
-        external,
-        target_is_directory=True,
-    )
+    try:
+        (workspace / "linked-file.txt").symlink_to(external / "secret.txt")
+        (workspace / "linked-directory").symlink_to(
+            external,
+            target_is_directory=True,
+        )
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("symbolic links require Developer Mode or elevated privileges on Windows")
+        raise
 
     with pytest.raises(HarnessArtifactAccessError):
         open_harness_artifact(workspace, "linked-file.txt")

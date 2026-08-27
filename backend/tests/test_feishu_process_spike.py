@@ -4,11 +4,12 @@ import asyncio
 import json
 import multiprocessing
 import sqlite3
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from multiprocessing.process import BaseProcess
+from pathlib import Path
 
 import pytest
 import websockets
@@ -912,7 +913,12 @@ def test_parent_watchdog_escalates_from_ignored_terminate_to_kill(
     elapsed = time.monotonic() - float(started_event["deadline_monotonic"])
 
     assert exit_code != 0
-    assert record.termination_phase == "kill"
+    if sys.platform == "win32":
+        # Windows terminate() is allowed to end the child immediately; POSIX
+        # runtimes exercise the explicit terminate-then-kill escalation.
+        assert record.termination_phase in {"terminate", "kill"}
+    else:
+        assert record.termination_phase == "kill"
     assert elapsed < 0.6
     assert supervisor.stop(timeout=2.0)
 

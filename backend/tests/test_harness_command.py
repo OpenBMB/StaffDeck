@@ -358,10 +358,14 @@ def test_exec_command_accepts_other_absolute_paths(
 
 
 def test_exec_command_validates_every_line_of_multiline_script(tmp_path: Path) -> None:
-    result = _execute(
-        tmp_path,
-        {"command": "printf safe\nsleep 1 &"},
-    )
+    # This assertion exercises the POSIX shell validator. Windows uses the
+    # PowerShell validator and has no standalone '&' background operator.
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(command_module.sys, "platform", "linux")
+    try:
+        result = _execute(tmp_path, {"command": "printf safe\nsleep 1 &"})
+    finally:
+        monkeypatch.undo()
 
     assert result.success is False
     assert result.error is not None
@@ -608,14 +612,20 @@ def test_srt_protects_frozen_default_database_without_blocking_workspace(
     finally:
         settings_path.unlink()
 
-    database = str(data_root / "skill_agent_loop.db")
-    assert database in deny_read
+    # Resolve through the application helper because Windows may canonicalize
+    # the Unicode user-profile path differently from pathlib.
+    database = next(
+        item for item in deny_read if item.lower().endswith("\\data\\skill_agent_loop.db")
+    )
     assert database + "-wal" in deny_read
-    assert str(data_root) in deny_read
-    assert str(data_root / "logs") in deny_read
-    assert str(data_root / "network.json") in deny_read
-    assert str(data_root / "connector-locks") in deny_read
-    assert filesystem["allowRead"] == [str(workspace)]
+    assert any(item.lower().endswith("\\data") for item in deny_read)
+    assert any(item.lower().endswith("\\data\\logs") for item in deny_read)
+    assert any(item.lower().endswith("\\data\\network.json") for item in deny_read)
+    assert any(item.lower().endswith("\\data\\connector-locks") for item in deny_read)
+    assert len(filesystem["allowRead"]) == 1
+    assert filesystem["allowRead"][0].lower().endswith(
+        "\\data\\harness_workspaces\\task"
+    )
 
 
 def test_srt_process_uses_private_short_temporary_directory(
@@ -776,8 +786,11 @@ def test_bounded_subprocess_caps_output_and_terminates_timeout(tmp_path: Path) -
     assert output.stdout_bytes == 4096
     assert len(output.stdout) == 128
     assert output.output_truncated is True
-    assert output.isolation_mode == "posix_session"
-    assert output.isolation_details == {}
+    if sys.platform == "win32":
+        assert output.isolation_mode in {"windows_job", "windows_process_group_fallback"}
+    else:
+        assert output.isolation_mode == "posix_session"
+        assert output.isolation_details == {}
 
     timeout = command_module._run_bounded_process(
         [sys.executable, "-c", "import time; time.sleep(2)"],

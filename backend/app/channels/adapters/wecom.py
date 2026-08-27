@@ -237,6 +237,7 @@ class _StreamState:
         self.callbacks_inflight = 0
         self.worker_stop_sent = False
         self.disconnect_sent = False
+        self.restart_scheduled = False
 
 
 class WeComStreamManager:
@@ -326,8 +327,17 @@ class WeComStreamManager:
             if state and state.worker and state.worker.is_alive():
                 # stream 死 + worker 活:视为待回收——强制退役让 worker 完成当前条后
                 # 退出并清理(退出路径会从 _streams 清除该 state),本轮不新建,
-                # 下轮 reconcile 即可正常重建
+                # worker 完成后自动安排一次重建，避免仅调用 ensure_binding 的
+                # 生命周期（例如凭证热更新）永久停在退役状态。
                 state.retired.set()
+                if not state.restart_scheduled:
+                    state.restart_scheduled = True
+                    threading.Thread(
+                        target=self._restart_after_worker,
+                        args=(binding_id, state),
+                        name=f"staffdeck-wecom-restart-{binding_id}",
+                        daemon=True,
+                    ).start()
                 return
             state = _StreamState()
             state.config_revision = config_revision
@@ -348,6 +358,21 @@ class WeComStreamManager:
             state.worker.start()
             thread.start()
 
+    def _restart_after_worker(self, binding_id: str, state: _StreamState) -> None:
+        worker = state.worker
+        if worker and worker.is_alive():
+            worker.join()
+        with self._lock:
+            if self._streams.get(binding_id) is not state:
+                return
+            state.restart_scheduled = False
+            if self._stopped.is_set() or binding_id in self._paused:
+                return
+        try:
+            self.ensure_binding(binding_id)
+        except Exception:
+            logger.exception("企微旧 worker 退役后重建失败 binding=%s", binding_id)
+
     def stop_binding(self, binding_id: str) -> None:
         with self._lock:
             state = self._streams.get(binding_id)
@@ -366,6 +391,27 @@ class WeComStreamManager:
             self._paused.discard(binding_id)
         if start:
             self.ensure_binding(binding_id)
+            # A credential update is serialized by the binding lifecycle lock.
+            # Wait until the replacement has claimed its client before returning
+            # so an immediately following update cannot stop an unstarted
+            # intermediate generation and silently skip it.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                with self._lock:
+                    state = self._streams.get(binding_id)
+                    ready = bool(
+                        state
+                        and state.client is not None
+                        and state.loop is not None
+                        and state.loop.is_running()
+                    )
+                    stopped = bool(
+                        state is None
+                        or (state.thread is not None and not state.thread.is_alive())
+                    )
+                if ready or stopped:
+                    return
+                time.sleep(0.01)
 
     def _join_worker(self, state: _StreamState) -> None:
         worker = state.worker

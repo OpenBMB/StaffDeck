@@ -1,17 +1,32 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.db import get_session
 from app.db.models import AgentProfile, ChatSession, MemoryRecord, User
-from app.memory.service import memory_agent_id, memory_matches_agent, memory_read, memory_rows_for_read
+from app.memory.service import (
+    ALLOWED_MEMORY_KINDS,
+    memory_agent_id,
+    memory_agent_scope_predicate,
+    memory_matches_agent,
+    memory_read,
+    memory_rows_for_read,
+)
 from app.security.auth import get_current_user, require_current_tenant
 from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
 
-
 router = APIRouter(prefix="/api/enterprise/memories", tags=["enterprise:memories"])
+
+
+class ManualMemoryCreateRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=1200)
+    kind: str = Field(default="fact")
+    importance: float = Field(default=0.9, ge=0.0, le=1.0)
+    agent_id: str | None = None
+    user_id: str | None = None
 
 
 @router.get("")
@@ -41,8 +56,10 @@ def list_memories(
         statement = statement.where(MemoryRecord.user_id == current_user.id)
     if can_view_all and username:
         statement = statement.where(MemoryRecord.username == username)
-    fetch_limit = limit * 5 if agent_id else limit
-    rows = list(db.exec(statement.order_by(MemoryRecord.updated_at.desc()).limit(fetch_limit)).all())
+    agent_scope = memory_agent_scope_predicate(tenant_id, agent_id)
+    if agent_scope is not None:
+        statement = statement.where(agent_scope)
+    rows = list(db.exec(statement.order_by(MemoryRecord.updated_at.desc()).limit(limit)).all())
     session_agents = _session_agent_map(db, rows) if agent_id else {}
     if agent_id:
         rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
@@ -51,6 +68,55 @@ def list_memories(
         needle = q.strip().lower()
         rows = [row for row in rows if needle in row.content.lower() or needle in (row.username or "").lower()]
     return [_memory_read_with_inferred_agent(row, session_agents) for row in rows]
+
+
+@router.post("")
+def create_manual_memory(
+    request: ManualMemoryCreateRequest,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> dict:
+    if tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant mismatch")
+    ensure_tenant(db, tenant_id)
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Memory content is required")
+    if request.kind not in ALLOWED_MEMORY_KINDS:
+        raise HTTPException(status_code=400, detail="Unsupported memory kind")
+
+    agent_id = request.agent_id.strip() if request.agent_id else None
+    if agent_id:
+        agent = db.get(AgentProfile, agent_id)
+        if not agent or agent.tenant_id != tenant_id:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+    target_user_id = request.user_id.strip() if request.user_id else current_user.id
+    can_write_for_others = _can_view_all_memories(db, tenant_id, agent_id, current_user)
+    if target_user_id != current_user.id and not can_write_for_others:
+        raise HTTPException(status_code=403, detail="Cannot write memory for another user")
+    target_user = db.get(User, target_user_id)
+    if not target_user or target_user.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    metadata = {"source": "manual_memory"}
+    if agent_id:
+        metadata["agent_id"] = agent_id
+    record = MemoryRecord(
+        tenant_id=tenant_id,
+        user_id=target_user.id,
+        username=target_user.username,
+        session_id=None,
+        kind=request.kind,
+        content=content,
+        importance=request.importance,
+        metadata_json=metadata,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return memory_read(record)
 
 
 @router.delete("/me")
