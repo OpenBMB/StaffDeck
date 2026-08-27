@@ -14,9 +14,9 @@ import { auditCaseStatusClass, auditCaseStatusLabel } from './auditCasePresentat
 import type { AuditCaseCreateRequest } from './auditCaseTypes';
 import { AuditCaseBasicForm } from './components/AuditCaseBasicForm';
 import { AuditCaseEventTimeline } from './components/AuditCaseEventTimeline';
-import { CoveragePanel } from './components/CoveragePanel';
 import { KnowledgeVersionSelector } from './components/KnowledgeVersionSelector';
 import { MemberSelector } from './components/MemberSelector';
+import { MaterialManager } from './components/MaterialManager';
 import { useAuditCaseDetail } from './hooks/useAuditCaseDetail';
 
 type DetailTab = 'overview' | 'members' | 'materials' | 'events';
@@ -128,7 +128,7 @@ export default function AuditCaseDetailPage({
           </section>
         )}
         {tab === 'materials' && (
-          <section className="grid gap-[12px] rounded-[14px] border border-[#edf0f5] bg-white p-[18px]"><h2 className="text-[14px] font-medium text-[#464c5e]">审核材料</h2><p className="text-[12px] text-[#858b9c]">当前材料 {detail.materials.length} 份。材料上传、处理、替换和重试将在这里维护。</p><CoveragePanel coverage={detail.coverage} /></section>
+          <section className="grid gap-[12px] rounded-[14px] border border-[#edf0f5] bg-white p-[18px]"><h2 className="text-[14px] font-medium text-[#464c5e]">审核材料</h2><MaterialManager caseId={detail.project.id} materials={detail.materials} coverage={detail.coverage} options={detail.options} disabled={Boolean(archived)} onChanged={detail.reloadMaterials} /></section>
         )}
         {tab === 'events' && <AuditCaseEventTimeline events={detail.events} />}
       </main>

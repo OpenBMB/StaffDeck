@@ -6,6 +6,9 @@ import {
   createAuditCase,
   listManagedAuditCases,
   loadAuditCaseManagementOptions,
+  processAuditCaseMaterial,
+  replaceAuditCaseMaterial,
+  uploadAuditCaseMaterials,
 } from './auditCaseApi';
 
 function jsonResponse(body: unknown): Response {
@@ -72,5 +75,31 @@ describe('audit case management api', () => {
       organization_name: '示例企业',
       report_type: '再认证',
     });
+  });
+
+  it('uploads typed materials as multipart and supports single-file process and replace', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'material-1', material_type: 'audit_record' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const file = new File(['审核记录'], 'record.txt', { type: 'text/plain' });
+
+    await uploadAuditCaseMaterials('case-1', 'audit_record', [file]);
+    await processAuditCaseMaterial('case-1', 'material-1');
+    await replaceAuditCaseMaterial('case-1', 'material-1', file);
+
+    const uploadCall = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
+    expect(String(uploadCall[0])).toContain('/api/audit-cases/case-1/materials?');
+    expect(String(uploadCall[0])).toContain('material_type=audit_record');
+    expect(uploadCall[1].body).toBeInstanceOf(FormData);
+    expect((uploadCall[1].body as FormData).get('files')).toBe(file);
+    expect(uploadCall[1].headers).not.toHaveProperty('Content-Type');
+
+    const processCall = fetchMock.mock.calls[1] as unknown as [RequestInfo | URL, RequestInit];
+    expect(String(processCall[0])).toContain('/materials/material-1/process');
+    expect(processCall[1].method).toBe('POST');
+
+    const replaceCall = fetchMock.mock.calls[2] as unknown as [RequestInfo | URL, RequestInit];
+    expect(String(replaceCall[0])).toContain('/materials/material-1/replace');
+    expect(replaceCall[1].body).toBeInstanceOf(FormData);
+    expect((replaceCall[1].body as FormData).get('file')).toBe(file);
   });
 });

@@ -120,3 +120,48 @@ export function loadAuditCaseEvents(caseId: string): Promise<AuditCaseEventRead[
     `/api/audit-cases/${encodeURIComponent(caseId)}/events?tenant_id=${encodeURIComponent(TENANT_ID)}`,
   );
 }
+
+export type AuditCaseMaterialType =
+  | 'audit_plan'
+  | 'audit_record'
+  | 'performance_record'
+  | 'report_template';
+
+export function uploadAuditCaseMaterials(
+  caseId: string,
+  materialType: AuditCaseMaterialType,
+  files: File[],
+): Promise<AuditCaseMaterialRead[]> {
+  const form = new FormData();
+  files.forEach((file) => form.append('files', file));
+  const search = new URLSearchParams({
+    tenant_id: TENANT_ID,
+    material_type: materialType,
+  });
+  return api.postForm<AuditCaseMaterialRead[]>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/materials?${search.toString()}`,
+    form,
+  );
+}
+
+export function processAuditCaseMaterial(
+  caseId: string,
+  materialId: string,
+): Promise<AuditCaseMaterialRead> {
+  return api.post<AuditCaseMaterialRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/materials/${encodeURIComponent(materialId)}/process?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function replaceAuditCaseMaterial(
+  caseId: string,
+  materialId: string,
+  file: File,
+): Promise<AuditCaseMaterialRead> {
+  const form = new FormData();
+  form.append('file', file);
+  return api.postForm<AuditCaseMaterialRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/materials/${encodeURIComponent(materialId)}/replace?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    form,
+  );
+}

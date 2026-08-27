@@ -33,9 +33,10 @@ export function isAuthError(error: unknown): boolean {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...authHeader(),
       ...(options.headers || {}),
     },
@@ -76,6 +77,8 @@ export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
+  postForm: <T>(path: string, body: FormData, signal?: AbortSignal) =>
+    request<T>(path, { method: 'POST', body, signal }),
   postWithSignal: <T>(path: string, body: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: 'POST', body: JSON.stringify(body), signal }),
   postKeepalive: <T>(path: string, body?: unknown) => keepalivePost<T>(path, body),
