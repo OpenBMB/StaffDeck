@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     # Vector indexing is opt-in. The existing lexical knowledge search remains
     # the safe default until an administrator configures and enables embedding.
     hybrid_knowledge_retrieval_enabled: bool = False
+    structured_pdf_enabled: bool = False
+    structured_pdf_engine: str = "rapiddoc"
+    rapid_models_dir: str = ""
+    structured_pdf_max_pages: int = 64
+    structured_pdf_max_pixels: int = 20_000_000
+    structured_pdf_timeout_seconds: float = 180.0
+    structured_pdf_worker_count: int = 1
+    structured_pdf_allow_ocr_fallback: bool = False
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),
