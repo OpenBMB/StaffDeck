@@ -70,9 +70,16 @@ def acquire_runtime_instance_lock() -> Path | None:
     try:
         _try_lock(handle)
     except OSError as exc:
-        handle.seek(0)
-        owner = handle.read().strip() or "unknown"
-        handle.close()
+        try:
+            handle.seek(0)
+            owner = handle.read().strip() or "unknown"
+        except OSError:
+            # Windows may deny reads of a file that is held by another
+            # process.  Preserve the stable domain error instead of leaking
+            # the platform-specific sharing violation.
+            owner = "unknown"
+        finally:
+            handle.close()
         raise RuntimeInstanceLockError(
             f"Another StaffDeck process already owns {database_path} (pid={owner})."
         ) from exc
