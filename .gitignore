@@ -26,8 +26,7 @@ node_modules/
 /frontend-site/
 /official-site/
 /frontend-chat/
-/docs/*
-!/docs/sop-operation-manual.zh-CN.md
+/docs/
 # 打包产物（PyInstaller 输出、附带 python、下载缓存）—— 不进 git
 packaging/out/
 packaging/build/
