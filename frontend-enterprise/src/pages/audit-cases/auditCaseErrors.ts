@@ -11,11 +11,21 @@ const ERROR_MESSAGES: Record<string, string> = {
   MATERIAL_CATEGORY_CONFLICT: '相同文件已存在于其他材料分类',
   UNSUPPORTED_DOCUMENT_FORMAT: '文件格式暂不支持，请将 .doc 转换为 .docx',
   AUDIT_MATERIAL_TOO_LARGE: '单个文件不能超过 50 MB',
+  PDF_TEXT_LAYER_MISSING: 'PDF 未检测到可搜索文字，请在 IntSig/CamScanner 中开启 OCR 后重新导出可搜索 PDF，再点击“替换”',
+  EMPTY_EXTRACTED_TEXT: '未提取到可用文本；如果是扫描 PDF，请在 IntSig/CamScanner 中开启 OCR 后重新导出可搜索 PDF',
+  OCR_MODEL_MISSING: '未找到离线 OCR 模型，请先准备 RapidDoc 模型后再重试；原始文件仍已保留',
+  OCR_DEPENDENCY_MISSING: '离线 OCR 依赖尚未安装或未启用，请先准备 RapidDoc 运行环境后再重试',
+  OCR_TIMEOUT: '离线 OCR 处理超时，请检查机器资源后重试；原始文件仍已保留',
+  DOCUMENT_EXTRACTION_FAILED: '文档提取失败，请检查文件是否损坏或重试；原始文件仍已保留',
 };
 
+export function auditCaseErrorCodeMessage(code: string, fallback: string): string {
+  return ERROR_MESSAGES[code] || fallback;
+}
+
 export function auditCaseErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof ApiError && error.code && ERROR_MESSAGES[error.code]) {
-    return ERROR_MESSAGES[error.code];
+  if (error instanceof ApiError && error.code) {
+    return auditCaseErrorCodeMessage(error.code, fallback);
   }
   return error instanceof Error && error.message ? error.message : fallback;
 }

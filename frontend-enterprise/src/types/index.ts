@@ -652,7 +652,14 @@ export type AuditCaseMaterialRead = {
   sha256: string;
   size: number;
   characters: number;
-  extraction_status: string;
+  page_count?: number;
+  extraction_method?: string | null;
+  extraction_engine?: string | null;
+  extraction_engine_version?: string | null;
+  extraction_warnings?: string[];
+  extracted_text_sha256?: string | null;
+  processing_job_id?: string | null;
+  extraction_status: 'pending' | 'processing' | 'succeeded' | 'failed' | string;
   processing_status: string;
   version: number;
   is_current: boolean;
@@ -670,6 +677,18 @@ export type AuditCaseCoverageRead = {
   successful_chunk_count: number;
   file_coverage: number;
   chunk_coverage: number;
+  element_coverage?: number;
+  publish_allowed?: boolean;
+  blockers?: string[];
+  files_total?: number;
+  files_succeeded?: number;
+  chunks_total?: number;
+  chunks_succeeded?: number;
+  elements_total?: number;
+  elements_resolved?: number;
+  pending_material_ids?: string[];
+  failed_material_ids?: string[];
+  pending_chunk_ids?: string[];
 };
 
 export type ChatAttachmentKind = 'text' | 'pdf' | 'image' | 'binary';
@@ -687,6 +706,15 @@ export type ChatAttachmentRead = {
   sha256?: string | null;
   python_summary?: string | null;
   error?: string | null;
+  extraction_status?: 'pending' | 'succeeded' | 'failed' | string | null;
+  extraction_method?: string | null;
+  extraction_engine?: string | null;
+  extraction_engine_version?: string | null;
+  page_count?: number | null;
+  non_empty_page_count?: number | null;
+  extracted_characters?: number | null;
+  extracted_text_sha256?: string | null;
+  extraction_warnings?: string[];
 };
 
 export type ChatSlashCommand = {
@@ -1322,10 +1350,31 @@ export type AuditCaseKnowledgeVersionOption = {
   version: string;
   description?: string | null;
   status: string;
+  document_count?: number;
+  chunk_count?: number;
+  is_agent_branch?: boolean;
+  recommended?: boolean;
+  duplicate_group?: string | null;
+};
+
+export type AuditCaseChoiceOption = {
+  value: string;
+  label: string;
+  code?: string | null;
+};
+
+export type AuditCaseMaterialTypeOption = {
+  value: string;
+  label: string;
+  group: string;
+  description: string;
 };
 
 export type AuditCaseManagementOptions = {
   knowledge_versions: AuditCaseKnowledgeVersionOption[];
+  audit_types?: AuditCaseChoiceOption[];
+  management_systems?: AuditCaseChoiceOption[];
+  material_types?: AuditCaseMaterialTypeOption[];
   supported_extensions: string[];
   max_material_bytes: number;
 };
