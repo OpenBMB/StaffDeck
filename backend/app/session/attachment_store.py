@@ -49,11 +49,25 @@ def stage_chat_attachment(
         "content_type": attachment.content_type,
         "size": len(data),
         "sha256": digest,
+        "extraction_status": attachment.extraction_status,
+        "extraction_method": attachment.extraction_method,
+        "extraction_engine": attachment.extraction_engine,
+        "extraction_engine_version": attachment.extraction_engine_version,
+        "page_count": attachment.page_count,
+        "non_empty_page_count": attachment.non_empty_page_count,
+        "extracted_characters": attachment.extracted_characters,
+        "extracted_text_sha256": attachment.extracted_text_sha256,
+        "extraction_warnings": list(attachment.extraction_warnings),
     }
     _atomic_write(
         directory / "metadata.json",
         json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
     )
+    derived_text = attachment.extracted_text
+    if derived_text is not None and attachment.extraction_status == "succeeded":
+        _atomic_write(directory / "extracted.txt", derived_text.encode("utf-8"))
+    else:
+        (directory / "extracted.txt").unlink(missing_ok=True)
     return attachment.model_copy(
         update={
             "sha256": digest,
@@ -98,6 +112,44 @@ def read_staged_chat_attachment(
     return data
 
 
+def read_staged_chat_attachment_text(
+    attachment: ChatAttachmentRead,
+    *,
+    tenant_id: str,
+    user_id: str,
+) -> str | None:
+    """Read the complete server-side derived text after identity verification."""
+
+    directory = _attachment_directory(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        attachment_id=attachment.id,
+    )
+    payload_path = directory / "payload"
+    metadata_path = directory / "metadata.json"
+    extracted_path = directory / "extracted.txt"
+    try:
+        if any(path.is_symlink() for path in (directory, payload_path, metadata_path, extracted_path)):
+            return None
+        metadata: dict[str, Any] = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if (
+            metadata.get("tenant_id") != tenant_id
+            or metadata.get("user_id") != user_id
+            or metadata.get("attachment_id") != attachment.id
+            or metadata.get("sha256") != hashlib.sha256(payload_path.read_bytes()).hexdigest()
+            or metadata.get("extraction_status") != "succeeded"
+            or not extracted_path.is_file()
+        ):
+            return None
+        text = extracted_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    expected_sha = str(metadata.get("extracted_text_sha256") or "").lower()
+    if expected_sha and hashlib.sha256(text.encode("utf-8")).hexdigest() != expected_sha:
+        return None
+    return text
+
+
 def _attachment_directory(*, tenant_id: str, user_id: str, attachment_id: str) -> Path:
     data_root = paths.user_data_dir().resolve()
     root = (data_root / "harness_uploads").resolve()
@@ -138,6 +190,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 __all__ = [
     "read_staged_chat_attachment",
+    "read_staged_chat_attachment_text",
     "sandbox_attachment_path",
     "stage_chat_attachment",
 ]

@@ -962,7 +962,7 @@ async def upload_chat_attachments(
             file.filename or "uploaded-file",
             file.content_type,
             data,
-            extract_text=False,
+            extract_text=True,
         )
         parsed.append(
             stage_chat_attachment(
