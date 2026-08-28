@@ -22,11 +22,18 @@ def _workspace_tempdir() -> tempfile.TemporaryDirectory[str]:
 
 
 def _write_ready_manifest(model_dir: Path) -> None:
+    payload = b"1234"
     (model_dir / "manifest.json").write_text(
-        json.dumps({"version": "0.9.10", "files": ["weights.bin"]}),
+        json.dumps(
+            {
+                "version": "0.9.10",
+                "files": ["weights.bin"],
+                "sha256": {"weights.bin": hashlib.sha256(payload).hexdigest()},
+            }
+        ),
         encoding="utf-8",
     )
-    (model_dir / "weights.bin").write_bytes(b"1234")
+    (model_dir / "weights.bin").write_bytes(payload)
 
 
 class _FakePdfReader:
@@ -263,6 +270,20 @@ def test_model_manager_reports_readiness_without_downloading() -> None:
         assert readiness.ready is True
         assert readiness.model_dir == model_dir
         assert readiness.version == "0.9.10"
+
+
+def test_model_manager_rejects_a_corrupted_model_file() -> None:
+    module = importlib.import_module("app.documents.model_manager")
+    with _workspace_tempdir() as temp_dir:
+        model_dir = Path(temp_dir) / "models"
+        model_dir.mkdir()
+        _write_ready_manifest(model_dir)
+        (model_dir / "weights.bin").write_bytes(b"tampered")
+
+        readiness = module.RapidDocModelManager(model_dir=model_dir).check_readiness()
+
+        assert readiness.ready is False
+        assert str(model_dir / "weights.bin") in readiness.missing
 
 
 def test_model_manager_marks_missing_manifest_as_not_ready() -> None:

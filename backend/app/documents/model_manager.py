@@ -109,10 +109,19 @@ class RapidDocModelManager:
         if not isinstance(files, list) or not files:
             missing.append(str(manifest_path) + ":files")
             files = []
+        checksums = manifest.get("sha256")
+        if not isinstance(checksums, dict):
+            missing.append(str(manifest_path) + ":sha256")
+            checksums = {}
         for relative_path in files:
             candidate = _safe_model_path(model_dir, str(relative_path))
-            if candidate is None or not candidate.is_file():
+            expected_sha256 = checksums.get(str(relative_path))
+            if not isinstance(expected_sha256, str) or not expected_sha256.strip():
+                missing.append(str(manifest_path) + f":sha256[{relative_path}]")
+            elif candidate is None or not candidate.is_file():
                 missing.append(str(model_dir / str(relative_path)))
+            elif _sha256_file(candidate).lower() != expected_sha256.lower():
+                missing.append(str(candidate))
 
         bundled_files = manifest.get("bundled_files", [])
         if not isinstance(bundled_files, list):
@@ -181,6 +190,7 @@ class RapidDocModelManager:
                 "package": "rapid-doc",
                 "version": rapid_doc_package_version(),
                 "files": [artifact.filename for artifact in artifacts],
+                "sha256": {artifact.filename: artifact.sha256 for artifact in artifacts},
                 "bundled_files": list(bundled_files),
             }
             _write_manifest(model_dir / "manifest.json", manifest)
