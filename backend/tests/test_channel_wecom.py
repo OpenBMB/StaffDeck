@@ -627,6 +627,41 @@ def test_send_via_run_coroutine_threadsafe_and_split(monkeypatch) -> None:
     assert all(body["msgtype"] == "markdown" for _, body in client.sent)
 
 
+def test_send_mentions_original_group_sender(monkeypatch) -> None:
+    import app.channels
+
+    client = _FakeStreamClient()
+    loop, _thread = _run_loop_in_thread()
+    fake_manager = SimpleNamespace(get_stream=lambda binding_id: (client, loop))
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: fake_manager)
+    try:
+        adapter = WeComAdapter()
+        binding = ChannelBinding(tenant_id="t", agent_id="a", channel="wecom", status="active")
+        adapter.send(
+            binding,
+            {
+                "to_user_id": "group_chat_1",
+                "context_token": "group_chat_1",
+                "is_group": True,
+                "reply_to_user_id": "zhangsan",
+                "reply_quote": {"sender_name": "张三", "text": "转人工"},
+            },
+            "人工回复内容",
+        )
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+
+    assert client.sent == [
+        (
+            "group_chat_1",
+            {
+                "msgtype": "markdown",
+                "markdown": {"content": "> 张三：转人工\n\n人工回复内容"},
+            },
+        )
+    ]
+
+
 def test_send_raises_when_stream_not_ready(monkeypatch) -> None:
     import app.channels
 

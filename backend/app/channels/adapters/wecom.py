@@ -1188,7 +1188,19 @@ class WeComAdapter:
         if not stream:
             raise RuntimeError(f"企微连接未就绪 binding={binding.id}")
         client, loop = stream
-        for chunk in _split_wecom_text(text):
+        reply_to_user_id = str(target.get("reply_to_user_id") or "").strip()
+        is_group = bool(target.get("is_group") and reply_to_user_id)
+        quote = target.get("reply_quote") if isinstance(target.get("reply_quote"), dict) else {}
+        quote_sender = str(quote.get("sender_name") or reply_to_user_id).strip()
+        quote_text = str(quote.get("text") or "").strip().replace("\n", " ")
+        quote_prefix = f"> {quote_sender}：{quote_text[:240]}\n\n" if is_group and quote_text else ""
+        quote_prefix_bytes = len(quote_prefix.encode("utf-8"))
+        content_limit = max(1, 1800 - quote_prefix_bytes)
+        for chunk in _split_wecom_text(text, max_bytes=content_limit):
+            if is_group:
+                # WeCom does not expose an asynchronous native quote target.
+                # Render the original sender and text as a Markdown quote.
+                chunk = f"{quote_prefix}{chunk}"
             body = {"msgtype": "markdown", "markdown": {"content": chunk}}
             future = asyncio.run_coroutine_threadsafe(client.send_message(chat_id, body), loop)
             future.result(timeout=SEND_TIMEOUT_SECONDS)

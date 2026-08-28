@@ -238,11 +238,14 @@ curl -X POST "$BASE/agents" \
 GET/POST /agents/{agent_id}/sops
 POST     /agents/{agent_id}/sops:generate
 POST     /agents/{agent_id}/sops/{sop_id}:rewrite
+GET      /agents/{agent_id}/sops/{sop_id}/drafts/{draft_id}
 PUT      /agents/{agent_id}/sops/{sop_id}
 PATCH    /agents/{agent_id}/sops/{sop_id}
 POST     /sops/{sop_id}:validate
 POST     /sops/{sop_id}:publish
+POST     /sops/{sop_id}:archive
 GET      /sops/{sop_id}/versions
+GET      /sops/{sop_id}/versions/{version}
 GET      /sops/{sop_id}/versions/{version}/diff
 POST     /sops/{sop_id}/versions/{version}:rollback
 ```

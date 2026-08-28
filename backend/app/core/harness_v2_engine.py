@@ -639,7 +639,15 @@ class HarnessV2Engine:
             reply = (
                 f"已完成 {task_count} 个团队任务的拆分与派发。"
             )
-        if reply is None:
+        is_handoff = any(result.status == "handoff" for result in execution_results)
+        if is_handoff:
+            # Handoff is now queued for a human; do not let the execution model
+            # describe the missing native channel as if the request failed.
+            reply = "已为你提交人工处理请求，请稍候，工作人员会尽快回复。"
+            if self.owner.stream_sink is not None:
+                for chunk in self.owner.response_generator.chunk_text(reply):
+                    self.owner.stream_sink.on_delta(chunk)
+        elif reply is None:
             response_args = (
                 execution_request.message,
                 session,
@@ -961,6 +969,10 @@ class HarnessV2Engine:
                 step_timeout_seconds=step_timeout_seconds,
                 checkpoint=loop_checkpoint,
             )
+            if request.channel == "human_handoff_resume" and result.status == "handoff":
+                # The human reply is already the handoff completion signal. Do not
+                # re-enter the same terminal handoff node during the resume turn.
+                result.status = "completed"
             deferred_continuation = False
             if frame.kind == "sop":
                 deferred_result = _defer_failed_step_after_completed_checkpoint(

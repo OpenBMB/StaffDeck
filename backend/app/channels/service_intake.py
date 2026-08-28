@@ -977,7 +977,7 @@ def _run_handoff_reply_command(
     inbound: ChannelInbound,
     command: ChannelCommand,
 ) -> str:
-    """/回复反馈 指令处理:处理人通过飞书发送 /回复反馈 <内容> 回复人工转接通知。
+    """处理人通过渠道发送 /回复反馈 <内容> 回复人工转接通知。
 
     匹配策略(按优先级):
     1. 引用通知(parent_id):按 handoff.notify_message_id == parent_id 精确匹配。
@@ -990,9 +990,14 @@ def _run_handoff_reply_command(
     reply_text = command.query.strip()
     if not reply_text:
         return (
-            "用法：/回复反馈 <答复内容>\n"
+            "用法：/回复反馈 <答复内容>；企业微信也可使用 /回复反馈 <handoff_id> <答复内容>\n"
             "回复内容将作为人工答复并恢复 SOP 执行。\n"
             "也可以直接回复（引用）人工转接通知消息进行答复。"
+        )
+    if "<答复内容>" in reply_text:
+        return (
+            "请把 <答复内容> 替换成实际回复文本，例如："
+            " /回复反馈 handoff_xxx 您好，我来为您处理。"
         )
     # 查发送者身份(用当前 binding scope 隔离)
     scope = external_account_scope(db, binding)
@@ -1008,10 +1013,44 @@ def _run_handoff_reply_command(
     if not assignee_user_id:
         return (
             "未找到待处理的人工转接请求。"
-            "或当前飞书账号未绑定到 StaffDeck 处理人身份。"
+            "或当前渠道账号未绑定到 StaffDeck 处理人身份。"
         )
 
     handoff: HumanHandoffRequest | None = None
+    # 企业微信没有可靠的引用消息 ID。通知中展示 handoff ID，处理人可显式
+    # 指定请求，避免多个 pending 请求时依赖猜测。
+    command_parts = reply_text.split(maxsplit=1)
+    explicit_handoff_id = (
+        command_parts[0].strip()
+        if binding.channel == "wecom" and len(command_parts) == 2
+        else ""
+    )
+    if explicit_handoff_id.startswith("handoff_"):
+        candidate = db.get(HumanHandoffRequest, explicit_handoff_id)
+        if (
+            not candidate
+            or candidate.tenant_id != binding.tenant_id
+            or candidate.status != "pending"
+            or candidate.assignee_user_id != assignee_user_id
+        ):
+            return "未找到分配给你的待处理人工转接请求。请检查 handoff ID。"
+        reply_text = command_parts[1].strip()
+        if not reply_text:
+            return "请在 handoff ID 后提供人工答复内容。"
+        notice = db.exec(
+            select(ChannelDelivery)
+            .where(
+                ChannelDelivery.tenant_id == binding.tenant_id,
+                ChannelDelivery.binding_id == binding.id,
+                ChannelDelivery.kind == "handoff_notice",
+                ChannelDelivery.session_id == f"handoff:{candidate.id}",
+                ChannelDelivery.status == "delivered",
+            )
+            .order_by(ChannelDelivery.created_at.desc())
+        ).first()
+        if not notice or str((notice.target_json or {}).get("to_user_id") or "").strip() != inbound.from_user_id:
+            return "该人工转接请求未投递给你的当前企业微信账号。"
+        handoff = candidate
     # 策略 1:引用通知 — 按 parent_id -> notify_message_id 精确匹配
     reply_ids = _feishu_reply_message_ids(inbound)
     if reply_ids:
@@ -1044,7 +1083,37 @@ def _run_handoff_reply_command(
             # 同时校验通知实际目标与当前 StaffDeck 身份，防止引用或身份变更后越权。
             return "该人工转接请求不是分配给你的，无法代为回复。"
 
-    # 策略 2:非引用 — 按 assignee 查 pending handoff
+    # 策略 2:企业微信没有统一的引用消息字段,按当前绑定下最近一次已投递的
+    # handoff 通知匹配。这样处理人可以直接发送 /回复反馈,同时仍限制在自己的
+    # 身份和当前企业账号作用域内。
+    if not handoff and binding.channel == "wecom":
+        notices = db.exec(
+            select(ChannelDelivery)
+            .where(
+                ChannelDelivery.tenant_id == binding.tenant_id,
+                ChannelDelivery.binding_id == binding.id,
+                ChannelDelivery.kind == "handoff_notice",
+                ChannelDelivery.status == "delivered",
+            )
+            .order_by(ChannelDelivery.created_at.desc())
+        ).all()
+        for notice in notices:
+            target = notice.target_json or {}
+            if str(target.get("to_user_id") or "").strip() != inbound.from_user_id:
+                continue
+            handoff_id = str(target.get("handoff_id") or "").strip()
+            candidate = db.get(HumanHandoffRequest, handoff_id) if handoff_id else None
+            if (
+                candidate
+                and candidate.tenant_id == binding.tenant_id
+                and candidate.status == "pending"
+                and candidate.assignee_user_id == assignee_user_id
+            ):
+                handoff = candidate
+                break
+
+    # 策略 3:非引用 — 按 assignee 查 pending handoff。飞书/无可用企微通知
+    # 时保留原有的单请求和多请求保护，避免误回错人工请求。
     if not handoff:
         pending = db.exec(
             select(HumanHandoffRequest).where(
@@ -1070,19 +1139,25 @@ def _run_handoff_reply_command(
         handoff,
         reply_text,
         answered_by_user_id=answered_by,
-        source="feishu",
+        source=binding.channel,
     )
-    # 给处理人回一条确认(经 outbox 投递)
+    # 给处理人回一条确认(经 outbox 投递)。企业微信只接受 to_user_id;
+    # 飞书使用 receive_id + receive_id_type。
+    ack_target = (
+        {"to_user_id": inbound.from_user_id}
+        if binding.channel == "wecom"
+        else {
+            "receive_id_type": "open_id",
+            "receive_id": inbound.from_user_id,
+        }
+    )
     db.add(
         ChannelDelivery(
             tenant_id=binding.tenant_id,
             binding_id=binding.id,
             session_id=f"handoff:{handoff.id}",
             message_id=None,
-            target_json={
-                "receive_id_type": "open_id",
-                "receive_id": inbound.from_user_id,
-            },
+            target_json=ack_target,
             kind="handoff_ack",
             text=f"已收到你的回复，正在恢复 SOP 执行。回复预览：{reply_text[:120]}",
             status="pending",
@@ -1128,6 +1203,13 @@ def process_inbound(
         "to_user_id": inbound.conv_key if inbound.is_group else inbound.from_user_id,
         "context_token": inbound.context_token,
     }
+    if inbound.is_group:
+        target["reply_to_user_id"] = inbound.from_user_id
+        target["is_group"] = True
+        target["reply_quote"] = {
+            "sender_name": inbound.sender_name or inbound.from_user_id,
+            "text": inbound.text,
+        }
 
     with Session(use_engine) as db:
         event = db.get(ChannelInboundEvent, staged_event_pk) if staged_event_pk else None
@@ -1140,7 +1222,11 @@ def process_inbound(
                 or event.processor_run_id != current_processor_run_id()
             ):
                 return False
-        target = dict(event.target_json or {}) if event else target
+        if event:
+            target = {
+                **target,
+                **dict(event.target_json or {}),
+            }
         kf_account = None
         if binding.channel == "wechat_kf":
             kf_account = db.exec(
