@@ -35,10 +35,23 @@ class ParsedKnowledgeDocument:
 def extract_document(filename: str, content: bytes) -> ParsedKnowledgeDocument:
     suffix = Path(filename).suffix.lower()
     file_type = suffix.lstrip(".") if suffix != ".htm" else "html"
+    settings = get_settings()
     try:
-        result = _build_document_extractor().extract(filename, content)
+        result = _build_document_extractor(settings).extract(filename, content)
     except DocumentExtractionError as exc:
-        if suffix == ".pdf" and exc.code == "OCR_DEPENDENCY_MISSING":
+        # The legacy parser is a compatibility fallback only while structured
+        # PDF OCR is disabled, or when an administrator explicitly opts in.
+        # In strict mode, a missing OCR dependency must remain visible instead
+        # of being converted into an empty native result.
+        allow_legacy_fallback = (
+            suffix == ".pdf"
+            and exc.code == "OCR_DEPENDENCY_MISSING"
+            and (
+                not settings.structured_pdf_enabled
+                or settings.structured_pdf_allow_ocr_fallback
+            )
+        )
+        if allow_legacy_fallback:
             result = _extract_pdf_legacy_result(content)
         else:
             raise KnowledgeParseError(str(exc)) from exc

@@ -304,3 +304,30 @@ def test_legacy_extract_text_uses_configured_structured_extractor_for_scanned_pd
     assert adapter.worker_count == 3
     assert adapter.max_pages == 9
     assert adapter.max_pixels == 123456
+
+
+def test_configured_ocr_dependency_error_is_not_silently_downgraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import Settings
+    from app.knowledge import parser
+
+    settings = Settings().model_copy(
+        update={
+            "structured_pdf_enabled": True,
+            "structured_pdf_allow_ocr_fallback": False,
+        }
+    )
+
+    class FailingExtractor:
+        def extract(self, filename: str, content: bytes):
+            raise parser.DocumentExtractionError(
+                "OCR_DEPENDENCY_MISSING",
+                "rapid-doc is unavailable",
+            )
+
+    monkeypatch.setattr(parser, "get_settings", lambda: settings)
+    monkeypatch.setattr(parser, "_build_document_extractor", lambda _settings=None: FailingExtractor())
+
+    with pytest.raises(parser.KnowledgeParseError, match="OCR_DEPENDENCY_MISSING"):
+        parser.extract_text("scan.pdf", b"%PDF-1.4 scanned")
