@@ -24,7 +24,9 @@ class RapidDocModelManager:
         self._configured_model_dir = model_dir
 
     def resolve_model_dir(self) -> Path:
-        configured = self._configured_model_dir or os.environ.get("RAPID_MODELS_DIR") or "models/rapiddoc"
+        configured = self._configured_model_dir or os.environ.get("RAPID_MODELS_DIR")
+        if not configured:
+            configured = str(Path(__file__).resolve().parents[2] / "models" / "rapiddoc")
         return Path(configured).expanduser().resolve(strict=False)
 
     def check_readiness(self) -> RapidDocModelReadiness:
@@ -61,7 +63,11 @@ class RapidDocModelManager:
                 f"invalid model manifest: {manifest_path}: {exc}",
             ) from exc
 
-        for relative_path in manifest.get("files", []):
+        files = manifest.get("files")
+        if not isinstance(files, list) or not files:
+            missing.append(str(manifest_path) + ":files")
+            files = []
+        for relative_path in files:
             candidate = model_dir / str(relative_path)
             if not candidate.is_file():
                 missing.append(str(candidate))

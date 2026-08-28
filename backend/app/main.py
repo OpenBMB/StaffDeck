@@ -42,6 +42,8 @@ from app.core.harness_recovery import (
 )
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
+from app.documents.extraction import DocumentExtractionError
+from app.documents.model_manager import RapidDocModelManager
 from app.public_api import create_public_api_app
 from app.public_api.jobs import cleanup_public_api_records, recover_public_jobs
 from app.public_api.maintenance import start_public_api_maintenance, stop_public_api_maintenance
@@ -114,8 +116,37 @@ def on_shutdown() -> None:
 
 
 @app.get("/api/health", tags=["health"])
-def health() -> dict[str, str]:
-    return {"status": "ok", "app": "StaffDeck"}
+def health() -> dict[str, object]:
+    structured_pdf: dict[str, object] = {
+        "enabled": settings.structured_pdf_enabled,
+        "engine": settings.structured_pdf_engine,
+        "ready": False,
+        "status": "disabled" if not settings.structured_pdf_enabled else "needs_prepare",
+        "manifest_exists": False,
+        "missing_count": 0,
+        "version": None,
+        "model_dir_configured": bool(settings.rapid_models_dir),
+        "ocr_worker_count": settings.structured_pdf_worker_count,
+        "ocr_worker_status": "disabled" if not settings.structured_pdf_enabled else "blocked_model",
+    }
+    if settings.structured_pdf_enabled:
+        try:
+            readiness = RapidDocModelManager(
+                model_dir=settings.rapid_models_dir or None
+            ).check_readiness()
+            structured_pdf.update(
+                {
+                    "ready": readiness.ready,
+                    "status": "ready" if readiness.ready else "needs_prepare",
+                    "manifest_exists": (readiness.model_dir / "manifest.json").is_file(),
+                    "missing_count": len(readiness.missing),
+                    "version": readiness.version,
+                    "ocr_worker_status": "ready" if readiness.ready else "blocked_model",
+                }
+            )
+        except DocumentExtractionError as exc:
+            structured_pdf.update({"error_code": exc.code, "missing_count": 1})
+    return {"status": "ok", "app": "StaffDeck", "structured_pdf": structured_pdf}
 
 
 app.include_router(app_updates.router)

@@ -169,6 +169,10 @@ HYBRID_KNOWLEDGE_RETRIEVAL_ENABLED="true"
 
 开启配置后可以在同一面板查看每个知识库版本的向量总数、就绪数、失败数和缺失数，并点击“重建缺失向量”。文档内容变化会按内容哈希重新向量化，未变化的块不会重复调用 Embedding 服务。Embedding 失败时自动回退 BM25，reranker 失败时保留 RRF 融合结果；关闭全局开关或配置开关都不会改变原有词法检索路径。
 
+#### 可选：在 StaffDeck 内处理扫描型 PDF
+
+带文字层的 PDF 默认由原生解析器处理；扫描型 PDF 可在本机启用 RapidDoc + ONNX Runtime CPU 结构化提取。该能力默认关闭，启动时不会自动下载模型。请先阅读[离线 RapidDoc 操作说明](./docs/rapiddoc-offline-operations.md)，使用 `--check-only` 检查模型，再明确执行 `--prepare`，最后在 `backend/.env` 设置 `STRUCTURED_PDF_ENABLED="true"`。启用但未准备模型时，启动会明确提示准备命令，不会静默丢失文本或云端 OCR。
+
 ### 3. 启动 Web Demo
 
 | 平台 | 推荐命令 |
@@ -209,7 +213,7 @@ Windows PowerShell：
 curl.exe http://127.0.0.1:5173/api/health
 ```
 
-预期输出：
+预期至少包含 `"status":"ok"`；同时会返回 `structured_pdf` 子对象，说明结构化 PDF 是 `disabled`、`needs_prepare` 还是 `ready`：
 
 ```json
 {"status":"ok"}

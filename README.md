@@ -169,6 +169,10 @@ Then open **Admin → Knowledge** and fill in the OpenAI-compatible embedding ba
 
 The same panel shows per-version vector totals, ready, failed, and missing counts, and can queue “Rebuild missing vectors”. Content changes are detected by content hash, so unchanged chunks are not embedded again. Embedding failures fall back to BM25, while reranker failures preserve the RRF result; disabling either the global flag or the tenant configuration preserves the legacy lexical path.
 
+#### Optional: Process Scanned PDFs Inside StaffDeck
+
+PDFs with a text layer use the native parser by default. Scanned PDFs can use local RapidDoc + ONNX Runtime CPU structured extraction. The feature is disabled by default and startup never downloads OCR models implicitly. Read the [offline RapidDoc operations guide](./docs/rapiddoc-offline-operations.md), run `--check-only`, explicitly run `--prepare`, and then set `STRUCTURED_PDF_ENABLED="true"` in `backend/.env`. If the feature is enabled before its model is prepared, startup reports the required preparation command instead of silently losing text or using cloud OCR.
+
 ### 3. Launch the Web Demo
 
 | Platform | Recommended command |
@@ -194,7 +198,7 @@ On Windows PowerShell:
 curl.exe http://127.0.0.1:5173/api/health
 ```
 
-Expected output:
+The response should contain `"status":"ok"`; it also includes a `structured_pdf` object whose status is `disabled`, `needs_prepare`, or `ready`:
 
 ```json
 {"status":"ok"}

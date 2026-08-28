@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import shutil
 import signal
@@ -26,11 +27,120 @@ DEFAULT_PORT_RANGE_START = 5173
 DEFAULT_PORT_RANGE_END = 5199
 
 
+def _configured_env(name: str) -> str | None:
+    """Read one non-secret setting without importing the application.
+
+    The lifecycle command runs from the repository root while the backend
+    reads ``backend/.env`` from its own working directory.  Reading only the
+    structured-PDF settings here keeps the preflight check aligned with the
+    backend without loading or printing model credentials.
+    """
+    value = os.environ.get(name)
+    if value is not None:
+        return value.strip()
+
+    dotenv_path = os.environ.get("ULTRARAG_DOTENV")
+    path = Path(dotenv_path).expanduser() if dotenv_path else ROOT_DIR / "backend" / ".env"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, raw_value = stripped.split("=", 1)
+        if key.strip() != name:
+            continue
+        value = raw_value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        return value.strip()
+    return None
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
+    raw = _configured_env(name)
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _structured_pdf_model_dir() -> Path:
+    configured = _configured_env("RAPID_MODELS_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve(strict=False)
+    return ROOT_DIR / "backend" / "models" / "rapiddoc"
+
+
+def _structured_pdf_state() -> dict[str, object]:
+    """Return local RapidDoc readiness without importing or downloading OCR."""
+    enabled = _env_flag("STRUCTURED_PDF_ENABLED")
+    engine = _configured_env("STRUCTURED_PDF_ENGINE") or "rapiddoc"
+    state: dict[str, object] = {
+        "enabled": enabled,
+        "engine": engine,
+        "ready": False,
+        "manifest_exists": False,
+        "missing_count": 0,
+        "version": None,
+    }
+    if not enabled:
+        state["status"] = "disabled"
+        return state
+
+    model_dir = _structured_pdf_model_dir()
+    manifest_path = model_dir / "manifest.json"
+    state["manifest_exists"] = manifest_path.is_file()
+    if not model_dir.is_dir():
+        state["missing_count"] = 1
+        state["status"] = "needs_prepare"
+        return state
+    if not manifest_path.is_file():
+        state["missing_count"] = 1
+        state["status"] = "needs_prepare"
+        return state
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state["missing_count"] = 1
+        state["status"] = "needs_prepare"
+        state["error"] = "invalid_manifest"
+        return state
+
+    if not isinstance(manifest, dict):
+        state["missing_count"] = 1
+        state["status"] = "needs_prepare"
+        state["error"] = "invalid_manifest"
+        return state
+    state["version"] = manifest.get("version")
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        state["missing_count"] = 1
+        state["status"] = "needs_prepare"
+        state["error"] = "manifest_files_missing"
+        return state
+    missing_count = sum(1 for item in files if not (model_dir / str(item)).is_file())
+    state["missing_count"] = missing_count
+    state["ready"] = missing_count == 0
+    state["status"] = "ready" if state["ready"] else "needs_prepare"
+    return state
+
+
+def _ensure_structured_pdf_readiness() -> dict[str, object]:
+    state = _structured_pdf_state()
+    if not state["enabled"] or state["ready"]:
+        return state
+    if sys.platform == "win32":
+        command = r".\backend\.venv\Scripts\python.exe scripts\prepare_rapiddoc_models.py --prepare"
+    else:
+        command = "backend/.venv/bin/python scripts/prepare_rapiddoc_models.py --prepare"
+    raise RuntimeError(
+        "STRUCTURED_PDF_ENABLED is true, but the offline RapidDoc model is not ready "
+        f"(missing artifacts: {state['missing_count']}). Run {command} explicitly, "
+        "then start StaffDeck again. No model download was attempted."
+    )
 
 
 def _pid_file(name: str) -> Path:
@@ -189,6 +299,13 @@ def _restore_runtime_port() -> None:
 
 
 def _npm_executable() -> str:
+    configured = os.environ.get("STAFFDECK_NPM", "").strip()
+    if configured:
+        executable = Path(configured).expanduser()
+        if executable.is_file():
+            return str(executable)
+        raise RuntimeError(f"STAFFDECK_NPM does not point to a file: {configured}")
+
     names = ("npm.cmd", "npm") if sys.platform == "win32" else ("npm",)
     for name in names:
         executable = shutil.which(name)
@@ -197,11 +314,28 @@ def _npm_executable() -> str:
     raise RuntimeError("npm is not available on PATH; install Node.js 20 or newer")
 
 
+def _npm_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    configured_node = os.environ.get("STAFFDECK_NODE", "").strip()
+    if not configured_node:
+        return environment
+
+    node = Path(configured_node).expanduser()
+    if not node.is_file():
+        raise RuntimeError(f"STAFFDECK_NODE does not point to a file: {configured_node}")
+    node_directory = str(node.resolve().parent)
+    path_entries = environment.get("PATH", "").split(os.pathsep)
+    if node_directory not in path_entries:
+        environment["PATH"] = os.pathsep.join([node_directory, *path_entries])
+    return environment
+
+
 def _build_frontend() -> None:
     print("Building frontend bundle for single-port app...")
     subprocess.run(
         [_npm_executable(), "--prefix", str(ROOT_DIR / "frontend-enterprise"), "run", "build"],
         cwd=ROOT_DIR,
+        env=_npm_environment(),
         check=True,
     )
 
@@ -213,6 +347,7 @@ def _ensure_frontend_dependencies() -> None:
     dependency_check = subprocess.run(
         [npm, "--prefix", str(frontend_dir), "ls", "--depth=0", "--json"],
         cwd=ROOT_DIR,
+        env=_npm_environment(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
@@ -223,6 +358,7 @@ def _ensure_frontend_dependencies() -> None:
     subprocess.run(
         [npm, "--prefix", str(frontend_dir), "ci", "--no-audit", "--no-fund"],
         cwd=ROOT_DIR,
+        env=_npm_environment(),
         check=True,
     )
 
@@ -312,6 +448,7 @@ def command_up(detach_flag: bool) -> int:
     detach = detach_flag or _env_flag("DETACH")
     os.environ.setdefault("AUTO_RESTART", "1" if detach else "0")
     supervisor = _load_supervisor()
+    _ensure_structured_pdf_readiness()
     _ensure_frontend_dependencies()
     supervisor.validate_prerequisites()
     _ensure_sandbox_runtime()
@@ -375,6 +512,13 @@ def command_status() -> int:
         if service.health_url:
             state = "ok" if _url_ready(service.health_url) else "unavailable"
             print(f"  {service.name:<10} {state} ({service.health_url})")
+    structured_pdf = _structured_pdf_state()
+    print("Structured PDF:")
+    print(f"  enabled    {structured_pdf['enabled']}")
+    print(f"  engine     {structured_pdf['engine']}")
+    print(f"  readiness  {structured_pdf['status']}")
+    print(f"  manifest   {'present' if structured_pdf['manifest_exists'] else 'missing'}")
+    print(f"  missing    {structured_pdf['missing_count']}")
     return 0
 
 

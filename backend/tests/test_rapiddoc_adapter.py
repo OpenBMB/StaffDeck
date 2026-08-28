@@ -283,6 +283,41 @@ def test_model_manager_marks_missing_manifest_as_not_ready() -> None:
         assert readiness.missing == [str(model_dir / "manifest.json")]
 
 
+def test_health_reports_structured_pdf_readiness_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = importlib.import_module("app.main")
+    with _workspace_tempdir() as temp_dir:
+        model_dir = Path(temp_dir) / "models"
+        model_dir.mkdir()
+        _write_ready_manifest(model_dir)
+        monkeypatch.setattr(
+            main_module,
+            "settings",
+            type(
+                "Settings",
+                (),
+                {
+                    "structured_pdf_enabled": True,
+                    "structured_pdf_engine": "rapiddoc",
+                    "rapid_models_dir": str(model_dir),
+                    "structured_pdf_worker_count": 2,
+                },
+            )(),
+        )
+
+        payload = main_module.health()
+
+    structured_pdf = payload["structured_pdf"]
+    assert payload["status"] == "ok"
+    assert structured_pdf["ready"] is True
+    assert structured_pdf["status"] == "ready"
+    assert structured_pdf["manifest_exists"] is True
+    assert structured_pdf["missing_count"] == 0
+    assert structured_pdf["ocr_worker_count"] == 2
+    assert structured_pdf["ocr_worker_status"] == "ready"
+
+
 def test_model_manager_prepare_supports_positional_only_prepare_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
