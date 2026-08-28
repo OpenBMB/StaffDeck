@@ -81,6 +81,21 @@ def materialize_task_attachments(
             "size": attachment.size,
             "preview": attachment.preview,
         }
+        for metadata_key in (
+            "extraction_status",
+            "extraction_method",
+            "extraction_engine",
+            "extraction_engine_version",
+            "page_count",
+            "non_empty_page_count",
+            "extracted_characters",
+            "extracted_text_sha256",
+            "extraction_warnings",
+            "error",
+        ):
+            metadata_value = getattr(attachment, metadata_key, None)
+            if metadata_value is not None:
+                descriptor[metadata_key] = metadata_value
         if attachment.kind == "image" and attachment.data_url:
             image_data_url, image_error = _validated_image_data_url(attachment)
             if image_data_url:
