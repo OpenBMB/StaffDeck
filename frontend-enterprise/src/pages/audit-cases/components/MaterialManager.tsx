@@ -75,6 +75,13 @@ function materialErrorMessage(material: AuditCaseMaterialRead): string {
   return auditCaseErrorCodeMessage(material.error_code, `处理失败：${material.error_code}`);
 }
 
+function canRetryMaterial(material: AuditCaseMaterialRead): boolean {
+  if (material.processing_status !== 'failed' && material.extraction_status !== 'failed') return false;
+  // These errors describe a source that must be replaced or re-exported. A
+  // retry would submit the same immutable blob and produce the same result.
+  return !['PDF_TEXT_LAYER_MISSING', 'EMPTY_EXTRACTED_TEXT'].includes(material.error_code || '');
+}
+
 export function MaterialManager({
   caseId,
   materials,
@@ -261,7 +268,7 @@ export function MaterialManager({
                         <div key={material.id} className="flex items-center justify-between gap-[10px] rounded-[8px] bg-[#f8f9fb] px-[10px] py-[8px]">
                           <div className="min-w-0"><p className="truncate text-[12px] text-[#464c5e]" title={material.filename}>{material.filename}</p><p className={`mt-[3px] text-[11px] ${status.className}`}>{status.label}{material.characters ? ` · ${material.characters.toLocaleString()} 字` : ''}{material.page_count ? ` · ${material.page_count} 页` : ''}{material.extraction_method ? ` · ${extractionMethodLabel(material.extraction_method)}` : ''}</p>{materialErrorMessage(material) && <p className="mt-[3px] text-[11px] leading-[1.5] text-[#c20d0d]">{materialErrorMessage(material)}</p>}</div>
                           <div className="flex shrink-0 items-center gap-[6px]">
-                            {(material.extraction_status === 'failed' || material.processing_status === 'failed') && <Button type="button" variant="ghost" size="sm" disabled={disabled || replacing} onClick={() => void handleRetry(material)}>{replacing ? '处理中…' : '重试'}</Button>}
+                            {canRetryMaterial(material) && <Button type="button" variant="ghost" size="sm" disabled={disabled || replacing} onClick={() => void handleRetry(material)}>{replacing ? '处理中…' : '重试'}</Button>}
                             <label htmlFor={replaceInputId} className={disabled || replacing ? 'pointer-events-none text-[11px] text-[#b1b7c5]' : 'cursor-pointer text-[11px] text-[#1a71ff]'}>{replacing ? '处理中…' : '替换'}</label>
                             <Input id={replaceInputId} type="file" accept={extensions.join(',')} aria-label={`替换${material.filename}`} disabled={disabled || replacing} className="sr-only" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void handleReplace(material, file); event.currentTarget.value = ''; }} />
                           </div>

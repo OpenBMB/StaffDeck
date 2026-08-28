@@ -129,7 +129,7 @@ describe('MaterialManager', () => {
     expect(screen.queryByLabelText('上传报告模板')).toBeNull();
   });
 
-  it('explains how to fix an image-only PDF from the scanning app', () => {
+  it('explains how to fix an image-only PDF with the offline OCR path', () => {
     renderManager({
       materials: [{
         ...material('scan-1', '扫描审核记录.pdf'),
@@ -139,8 +139,9 @@ describe('MaterialManager', () => {
       }],
     });
 
-    expect(screen.getByText(/IntSig\/CamScanner/)).toBeTruthy();
+    expect(screen.getByText(/RapidDoc/)).toBeTruthy();
     expect(screen.getByText(/可搜索 PDF/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
   });
 
   it('shows extraction metadata and allows retry after OCR failure', async () => {
