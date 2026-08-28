@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import os
-import tempfile
 from importlib.metadata import PackageNotFoundError, version
 from io import BytesIO
 from pathlib import Path
@@ -26,29 +25,34 @@ class RapidDocStructuredPdfAdapter:
         self.model_manager = model_manager or RapidDocModelManager()
         self.timeout_seconds = timeout_seconds
         self.worker_count = worker_count
-        self.max_pages = max_pages
+        # RapidDoc calls this value pdf_pages_batch. It is a processing window,
+        # not a document page limit; all pages are still processed.
+        self.max_pages = max(1, max_pages)
         self.max_pixels = max_pixels
         self.device = device
         self.engine = engine
 
     def extract_pdf(self, filename: str, content: bytes) -> DocumentExtractionResult:
-        self._validate_pdf(content)
+        source_page_count = self._validate_pdf(content)
         readiness = self.model_manager.require_ready()
-        saved_env = {key: os.environ.get(key) for key in _OFFLINE_ENV_UPDATES}
-        os.environ.update(_OFFLINE_ENV_UPDATES)
+        saved_env = {
+            key: os.environ.get(key)
+            for key in (*_OFFLINE_ENV_UPDATES, "RAPID_MODELS_DIR", "MINERU_DEVICE_MODE", "MINERU_PROCESSING_WINDOW_SIZE")
+        }
+        env_updates = {
+            **_OFFLINE_ENV_UPDATES,
+            "RAPID_MODELS_DIR": str(readiness.model_dir),
+            "MINERU_DEVICE_MODE": self.device,
+            "MINERU_PROCESSING_WINDOW_SIZE": str(self.max_pages),
+        }
+        os.environ.update(env_updates)
         for proxy_key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
             saved_env.setdefault(proxy_key, os.environ.get(proxy_key))
             os.environ[proxy_key] = ""
 
-        temp_path: Path | None = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
-                handle.write(content)
-                temp_path = Path(handle.name)
-
-            raw = self._call_rapiddoc(temp_path, readiness.model_dir)
-            pages = _extract_pages(raw)
-            extracted_pages = _normalize_pages(pages)
+            raw = self._call_rapiddoc(content, readiness.model_dir)
+            extracted_pages = _normalize_pages(raw, source_page_count)
             if not any(page.text.strip() for page in extracted_pages):
                 raise DocumentExtractionError("DOCUMENT_EXTRACTION_FAILED", "RapidDoc returned no OCR text")
 
@@ -58,65 +62,77 @@ class RapidDocStructuredPdfAdapter:
                 pages=extracted_pages,
                 page_refs=[page.ref for page in extracted_pages],
                 source_sha256=_sha256_bytes(content),
-                source_page_count=len(extracted_pages),
+                source_page_count=source_page_count,
                 method="structured",
-                engine="rapiddoc-ort",
-                engine_version=_package_version("rapiddoc"),
+                engine="rapid-doc-onnxruntime",
+                engine_version=_package_version("rapid-doc"),
                 warnings=warnings,
                 char_count=sum(page.char_count for page in extracted_pages),
                 table_count=sum(page.table_count for page in extracted_pages),
             )
         finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
             for key, old_value in saved_env.items():
                 if old_value is None:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = old_value
 
-    def _call_rapiddoc(self, pdf_path: Path, model_dir: Path):
+    def _call_rapiddoc(self, content: bytes, model_dir: Path):
+        if self.engine not in {"ort", "onnxruntime"}:
+            raise DocumentExtractionError(
+                "OCR_DEPENDENCY_MISSING",
+                f"unsupported RapidDoc engine: {self.engine}; only ONNX Runtime CPU is enabled",
+            )
         try:
             importlib.import_module("onnxruntime")
-            rapiddoc = importlib.import_module("rapiddoc")
-        except ImportError as exc:
+            rapid_doc = importlib.import_module("rapid_doc")
+            rapidocr = importlib.import_module("rapidocr")
+        except Exception as exc:
             raise DocumentExtractionError("OCR_DEPENDENCY_MISSING", str(exc)) from exc
 
-        analyze = getattr(rapiddoc, "doc_analyze", None)
-        if not callable(analyze):
-            raise DocumentExtractionError("OCR_DEPENDENCY_MISSING", "rapiddoc.doc_analyze is unavailable")
+        rapid_doc_cls = getattr(rapid_doc, "RapidDoc", None)
+        engine_type = getattr(rapidocr, "EngineType", None)
+        ort_engine = getattr(engine_type, "ONNXRUNTIME", None)
+        if not callable(rapid_doc_cls) or ort_engine is None:
+            raise DocumentExtractionError(
+                "OCR_DEPENDENCY_MISSING",
+                "rapid-doc RapidDoc or rapidocr ONNX Runtime engine is unavailable",
+            )
 
         try:
-            return analyze(
-                str(pdf_path),
-                mode="auto",
-                device=self.device,
-                engine=self.engine,
-                model_dir=str(model_dir),
-                table_enable=True,
-                reading_order=True,
+            analyzer = rapid_doc_cls(
+                parse_method="auto",
                 formula_enable=False,
-                table_formula_enable=False,
-                extract_images=False,
-                checkbox_enable=False,
-                timeout=self.timeout_seconds,
-                workers=self.worker_count,
-                max_pages=self.max_pages,
-                max_pixels=self.max_pixels,
+                table_enable=True,
+                lang="ch",
+                ocr_config={"engine_type": ort_engine},
+                pdf_pages_batch=self.max_pages,
+                image_output_mode="url",
+            )
+            return analyzer(
+                content,
+                image_output_mode="url",
+                f_dump_middle_json=False,
+                f_dump_content_list=False,
+                f_draw_layout_bbox=False,
+                f_draw_span_bbox=False,
             )
         except TimeoutError as exc:
             raise DocumentExtractionError("OCR_TIMEOUT", str(exc) or "ocr timed out") from exc
         except TypeError as exc:
             raise DocumentExtractionError(
                 "DOCUMENT_EXTRACTION_FAILED",
-                f"incompatible RapidDoc API: {exc}",
+                f"incompatible rapid-doc API: {exc}",
             ) from exc
         except DocumentExtractionError:
             raise
         except Exception as exc:
-            raise DocumentExtractionError("DOCUMENT_EXTRACTION_FAILED", str(exc) or "rapid extraction failed") from exc
+            raise DocumentExtractionError(
+                "DOCUMENT_EXTRACTION_FAILED",
+                str(exc) or "rapid extraction failed",
+            ) from exc
 
-    def _validate_pdf(self, content: bytes) -> None:
+    def _validate_pdf(self, content: bytes) -> int:
         try:
             from pypdf import PdfReader
             from pypdf.errors import PdfReadError
@@ -132,6 +148,7 @@ class RapidDocStructuredPdfAdapter:
 
         if getattr(reader, "is_encrypted", False):
             raise DocumentExtractionError("PDF_ENCRYPTED", "pdf is encrypted")
+        return len(reader.pages)
 
 
 _OFFLINE_ENV_UPDATES = {
@@ -141,53 +158,58 @@ _OFFLINE_ENV_UPDATES = {
 }
 
 
-def _extract_pages(raw) -> list[object]:
-    if isinstance(raw, dict) and isinstance(raw.get("pages"), list):
-        return raw["pages"]
-    pages = getattr(raw, "pages", None)
-    if isinstance(pages, list):
-        return pages
-    if isinstance(raw, list):
-        return raw
-    raise DocumentExtractionError(
-        "DOCUMENT_EXTRACTION_FAILED",
-        "RapidDoc did not return a pages collection",
-    )
+def _normalize_pages(raw, page_count: int) -> list[ExtractedPage]:
+    grouped: dict[int, list[str]] = {}
+    table_counts: dict[int, int] = {}
+    content_list = getattr(raw, "content_list_json", None)
+    if isinstance(raw, dict):
+        content_list = raw.get("content_list_json", content_list)
+    if isinstance(content_list, list):
+        for item in content_list:
+            if not isinstance(item, dict):
+                continue
+            try:
+                page_number = int(item.get("page_idx", 0)) + 1
+            except (TypeError, ValueError):
+                page_number = 1
+            page_number = min(max(page_number, 1), max(page_count, 1))
+            text = _content_item_text(item)
+            if text:
+                grouped.setdefault(page_number, []).append(text)
+            if "table" in str(item.get("type", "")).lower():
+                table_counts[page_number] = table_counts.get(page_number, 0) + 1
 
+    if not grouped:
+        markdown = getattr(raw, "markdown", None)
+        if isinstance(raw, dict):
+            markdown = raw.get("markdown", markdown)
+        if isinstance(markdown, str) and markdown.strip():
+            # This is only a compatibility fallback. The official output uses
+            # content_list_json, which preserves page-level references.
+            grouped[1] = [markdown]
 
-def _normalize_pages(raw_pages: list[object]) -> list[ExtractedPage]:
-    pages: list[ExtractedPage] = []
-    for index, page in enumerate(raw_pages, start=1):
-        text = _page_text(page)
-        pages.append(
-            ExtractedPage(
-                page_number=index,
-                text=text,
-                char_count=len(text),
-                table_count=_page_table_count(page),
-            )
+    return [
+        ExtractedPage(
+            page_number=page_number,
+            text="\n\n".join(grouped.get(page_number, [])),
+            char_count=len("\n\n".join(grouped.get(page_number, []))),
+            table_count=table_counts.get(page_number, 0),
         )
-    return pages
+        for page_number in range(1, max(page_count, 1) + 1)
+    ]
 
 
-def _page_text(page: object) -> str:
-    if isinstance(page, dict):
-        for key in ("text", "markdown", "content"):
-            value = page.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-        return ""
-
-    for attr in ("text", "markdown", "content"):
-        value = getattr(page, attr, None)
+def _content_item_text(item: dict[str, object]) -> str:
+    parts: list[str] = []
+    for key in ("text", "table_body"):
+        value = item.get(key)
         if isinstance(value, str) and value.strip():
-            return value
-    return ""
-
-
-def _page_table_count(page: object) -> int:
-    tables = page.get("tables") if isinstance(page, dict) else getattr(page, "tables", [])
-    return len(tables) if isinstance(tables, list) else 0
+            parts.append(value)
+    for key in ("table_caption", "table_footnote", "image_caption", "image_footnote"):
+        value = item.get(key)
+        if isinstance(value, list):
+            parts.extend(str(entry) for entry in value if str(entry).strip())
+    return "\n".join(parts).strip()
 
 
 def _extract_warnings(raw) -> list[str]:

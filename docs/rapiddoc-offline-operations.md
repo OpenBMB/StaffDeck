@@ -12,7 +12,19 @@ STRUCTURED_PDF_ENGINE="rapiddoc"
 RAPID_MODELS_DIR=""
 ```
 
-关闭时不会影响普通文字 PDF。要处理扫描 PDF，先安装与当前项目兼容的 RapidDoc 和 ONNX Runtime，再显式准备模型。
+关闭时不会影响普通文字 PDF。要处理扫描 PDF，先使用项目 OCR extra 安装官方 `rapid-doc==0.9.10` 和 `onnxruntime==1.20.1`，再显式准备模型。本项目不启用 OpenVINO、GPU 或云端 OCR。
+
+Windows PowerShell：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pip install -e ".[ocr]"
+```
+
+macOS、Linux 或 WSL：
+
+```bash
+backend/.venv/bin/python -m pip install -e '.[ocr]'
+```
 
 ## 2. 检查模型（不会下载）
 
@@ -32,7 +44,7 @@ backend/.venv/bin/python scripts/prepare_rapiddoc_models.py --check-only
 
 ## 3. 显式准备模型
 
-模型准备可能需要一次网络访问；它只会在你明确执行 `--prepare` 时发生。准备完成后，运行时通过 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1` 和 `STAFFDECK_RAPIDDOC_OFFLINE=1` 强制离线。
+模型准备可能需要一次网络访问；它只会在你明确执行 `--prepare` 时发生。准备器只下载 RapidDoc 当前版本所需的 6 个版面、表格和 OCR 分类 ONNX 模型，并校验 SHA-256；OCR 检测/识别小模型由官方 wheel 提供。准备完成后，运行时通过 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1` 和 `STAFFDECK_RAPIDDOC_OFFLINE=1` 强制离线。
 
 Windows PowerShell：
 

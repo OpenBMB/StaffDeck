@@ -27,6 +27,7 @@ REQUIRED_FIELDS = (
 )
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+RAPIDDOC_PAGE_BATCH = 64
 
 
 class ProbeExecutionError(RuntimeError):
@@ -158,12 +159,24 @@ def _peak_rss_bytes() -> int:
                 ("PeakPagefileUsage", ctypes.c_size_t),
             ]
 
-        counters = ProcessMemoryCounters()
-        counters.cb = ctypes.sizeof(counters)
-        handle = ctypes.windll.kernel32.GetCurrentProcess()
-        ok = ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb)
-        if ok:
-            return int(counters.PeakWorkingSetSize)
+        try:
+            counters = ProcessMemoryCounters()
+            counters.cb = ctypes.sizeof(counters)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            get_process_memory_info = psapi.GetProcessMemoryInfo
+            get_process_memory_info.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(ProcessMemoryCounters),
+                wintypes.DWORD,
+            ]
+            get_process_memory_info.restype = wintypes.BOOL
+            handle = kernel32.GetCurrentProcess()
+            if get_process_memory_info(handle, ctypes.byref(counters), counters.cb):
+                return int(counters.PeakWorkingSetSize)
+        except (AttributeError, OSError):
+            pass
         return 0
 
     import resource
@@ -181,7 +194,34 @@ def _extract_warnings(raw: Any) -> list[str]:
     return [str(item) for item in warnings if str(item).strip()]
 
 
-def _extract_pages(raw: Any) -> list[Any]:
+def _extract_pages(raw: Any, page_count: int | None = None) -> list[Any]:
+    content_list = raw.get("content_list_json") if isinstance(raw, dict) else getattr(raw, "content_list_json", None)
+    if isinstance(content_list, list):
+        grouped: dict[int, dict[str, Any]] = {}
+        for item in content_list:
+            if not isinstance(item, dict):
+                continue
+            try:
+                page_idx = max(0, int(item.get("page_idx", 0)))
+            except (TypeError, ValueError):
+                page_idx = 0
+            page = grouped.setdefault(page_idx, {"text_parts": [], "tables": []})
+            text = _content_item_text(item)
+            if text:
+                page["text_parts"].append(text)
+            if "table" in str(item.get("type", "")).lower():
+                page["tables"].append(item)
+
+        inferred_page_count = max(grouped, default=-1) + 1
+        total_pages = max(page_count or 0, inferred_page_count)
+        return [
+            {
+                "text": "\n\n".join(grouped.get(index, {}).get("text_parts", [])),
+                "tables": grouped.get(index, {}).get("tables", []),
+            }
+            for index in range(total_pages)
+        ]
+
     if isinstance(raw, dict) and isinstance(raw.get("pages"), list):
         return raw["pages"]
     pages = getattr(raw, "pages", None)
@@ -190,6 +230,19 @@ def _extract_pages(raw: Any) -> list[Any]:
     if isinstance(raw, list):
         return raw
     raise ProbeExecutionError("DOCUMENT_EXTRACTION_FAILED: RapidDoc did not return a pages collection")
+
+
+def _content_item_text(item: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("text", "table_body"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value)
+    for key in ("table_caption", "table_footnote", "image_caption", "image_footnote"):
+        value = item.get(key)
+        if isinstance(value, list):
+            parts.extend(str(entry) for entry in value if str(entry).strip())
+    return "\n".join(parts).strip()
 
 
 def _page_text(page: Any) -> str:
@@ -222,30 +275,61 @@ def _page_table_count(page: Any) -> int:
 def _call_rapiddoc(pdf_path: Path, model_dir: Path) -> Any:
     try:
         importlib.import_module("onnxruntime")
-        rapiddoc = importlib.import_module("rapiddoc")
-    except ImportError as exc:
+        rapid_doc = importlib.import_module("rapid_doc")
+        rapidocr = importlib.import_module("rapidocr")
+    except Exception as exc:
         raise ProbeExecutionError(f"OCR_DEPENDENCY_MISSING: {exc}") from exc
 
-    analyze = getattr(rapiddoc, "doc_analyze", None)
-    if not callable(analyze):
-        raise ProbeExecutionError("OCR_DEPENDENCY_MISSING: rapiddoc.doc_analyze is unavailable")
+    rapid_doc_cls = getattr(rapid_doc, "RapidDoc", None)
+    engine_type = getattr(rapidocr, "EngineType", None)
+    ort_engine = getattr(engine_type, "ONNXRUNTIME", None)
+    if not callable(rapid_doc_cls) or ort_engine is None:
+        raise ProbeExecutionError(
+            "OCR_DEPENDENCY_MISSING: rapid_doc.RapidDoc or rapidocr ONNX Runtime engine is unavailable"
+        )
+
+    os.environ["RAPID_MODELS_DIR"] = str(model_dir)
 
     try:
-        return analyze(
-            str(pdf_path),
-            mode="auto",
-            model_dir=str(model_dir),
-            table_enable=True,
-            reading_order=True,
+        analyzer = rapid_doc_cls(
+            parse_method="auto",
             formula_enable=False,
-            table_formula_enable=False,
-            extract_images=False,
-            checkbox_enable=False,
+            table_enable=True,
+            lang="ch",
+            ocr_config={"engine_type": ort_engine},
+            pdf_pages_batch=RAPIDDOC_PAGE_BATCH,
+            image_output_mode="url",
         )
+        return analyzer(
+            pdf_path.read_bytes(),
+            image_output_mode="url",
+            f_dump_middle_json=False,
+            f_dump_content_list=False,
+            f_draw_layout_bbox=False,
+            f_draw_span_bbox=False,
+        )
+    except TimeoutError as exc:
+        raise ProbeExecutionError(f"OCR_TIMEOUT: {exc}") from exc
     except TypeError as exc:
         raise ProbeExecutionError(f"DOCUMENT_EXTRACTION_FAILED: incompatible RapidDoc API: {exc}") from exc
-    except Exception as exc:  # pragma: no cover - guarded by behavioral tests
+    except ProbeExecutionError:
+        raise
+    except Exception as exc:
         raise ProbeExecutionError(f"DOCUMENT_EXTRACTION_FAILED: {exc}") from exc
+
+
+def _pdf_page_count(pdf_path: Path) -> int:
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(pdf_path))
+        if getattr(reader, "is_encrypted", False):
+            raise ProbeExecutionError("PDF_ENCRYPTED: pdf is encrypted")
+        return len(reader.pages)
+    except ProbeExecutionError:
+        raise
+    except Exception as exc:
+        raise ProbeExecutionError(f"PDF_CORRUPTED: {exc}") from exc
 
 
 def execute_probe(*, pdf_path: Path, model_dir: Path, offline: bool) -> dict[str, Any]:
@@ -257,8 +341,17 @@ def execute_probe(*, pdf_path: Path, model_dir: Path, offline: bool) -> dict[str
         "TRANSFORMERS_OFFLINE": "1",
         "STAFFDECK_RAPIDDOC_OFFLINE": "1",
     }
-    saved_env = {key: os.environ.get(key) for key in offline_updates}
+    runtime_updates = {
+        "RAPID_MODELS_DIR": str(model_dir),
+        "MINERU_DEVICE_MODE": "cpu",
+        "MINERU_PROCESSING_WINDOW_SIZE": str(RAPIDDOC_PAGE_BATCH),
+    }
+    saved_env = {key: os.environ.get(key) for key in (*offline_updates, *runtime_updates)}
+    if offline:
+        runtime_updates.update({"HTTP_PROXY": "", "HTTPS_PROXY": "", "ALL_PROXY": ""})
+        saved_env.update({key: os.environ.get(key) for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")})
 
+    os.environ.update(runtime_updates)
     if offline:
         os.environ.update(offline_updates)
 
@@ -266,7 +359,7 @@ def execute_probe(*, pdf_path: Path, model_dir: Path, offline: bool) -> dict[str
         started = time.perf_counter()
         raw = _call_rapiddoc(pdf_path, model_dir)
         elapsed_seconds = time.perf_counter() - started
-        pages = _extract_pages(raw)
+        pages = _extract_pages(raw, _pdf_page_count(pdf_path))
         page_texts = [_page_text(page) for page in pages]
         page_sha256 = [_sha256_text(text) for text in page_texts]
         non_empty_pages = sum(1 for text in page_texts if text.strip())
@@ -274,7 +367,7 @@ def execute_probe(*, pdf_path: Path, model_dir: Path, offline: bool) -> dict[str
         warnings = _extract_warnings(raw)
 
         return {
-            "engine": "rapiddoc-ort",
+            "engine": "rapid-doc-onnxruntime",
             "peak_rss_bytes": _peak_rss_bytes(),
             "elapsed_seconds": elapsed_seconds,
             "page_count": len(pages),
@@ -285,12 +378,11 @@ def execute_probe(*, pdf_path: Path, model_dir: Path, offline: bool) -> dict[str
             "page_sha256": page_sha256,
         }
     finally:
-        if offline:
-            for key, old_value in saved_env.items():
-                if old_value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = old_value
+        for key, old_value in saved_env.items():
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
 
 
 def run_probe_subprocess(

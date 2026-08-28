@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,7 +29,7 @@ def _workspace_tempdir() -> tempfile.TemporaryDirectory[str]:
 
 def _valid_report() -> dict[str, object]:
     return {
-        "engine": "rapiddoc-ort",
+        "engine": "rapid-doc-onnxruntime",
         "package_bytes": 1,
         "model_bytes": 2,
         "peak_rss_bytes": 3,
@@ -51,7 +52,7 @@ def _valid_report() -> dict[str, object]:
 
 def _raw_probe_result(*, page_sha256: list[str], text_chars: int = 120, table_count: int = 1) -> dict[str, object]:
     return {
-        "engine": "rapiddoc-ort",
+        "engine": "rapid-doc-onnxruntime",
         "peak_rss_bytes": 2048,
         "elapsed_seconds": 1.5,
         "page_count": len(page_sha256),
@@ -68,7 +69,7 @@ def test_validate_benchmark_report_accepts_required_schema() -> None:
 
     report = benchmark.validate_benchmark_report(_valid_report())
 
-    assert report["engine"] == "rapiddoc-ort"
+    assert report["engine"] == "rapid-doc-onnxruntime"
     assert report["offline_replay"]["matched"] is True
 
 
@@ -201,7 +202,7 @@ def test_ensure_probe_environment_creates_probe_venv_when_missing() -> None:
         assert python_path == benchmark.probe_python_path(probe_dir, platform="win32")
 
 
-def test_execute_probe_collects_metrics_from_rapiddoc_module(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_probe_collects_metrics_from_official_rapid_doc_module(monkeypatch: pytest.MonkeyPatch) -> None:
     benchmark = _load_script("benchmark_rapiddoc")
     with _workspace_tempdir() as temp_dir:
         tmp_path = Path(temp_dir)
@@ -211,49 +212,65 @@ def test_execute_probe_collects_metrics_from_rapiddoc_module(monkeypatch: pytest
         model_dir.mkdir()
         captured: dict[str, object] = {"calls": 0}
 
-        def fake_doc_analyze(pdf: str, **kwargs):
-            captured["pdf"] = pdf
-            captured["kwargs"] = kwargs
-            return {
-                "pages": [
-                    {"text": "alpha", "tables": [{"id": 1}]},
-                    {"markdown": "beta", "tables": []},
-                ],
-                "warnings": ["engine warning"],
-            }
+        def fake_rapid_doc_init(**kwargs):
+            captured["init"] = kwargs
+
+            def analyze(pdf_bytes: bytes, **call_kwargs):
+                captured["pdf_bytes"] = pdf_bytes
+                captured["call"] = call_kwargs
+                return SimpleNamespace(
+                    content_list_json=[
+                        {"page_idx": 0, "type": "text", "text": "alpha"},
+                        {
+                            "page_idx": 0,
+                            "type": "table",
+                            "table_body": "<table><tr><td>one</td></tr></table>",
+                        },
+                        {"page_idx": 1, "type": "text", "text": "beta"},
+                    ],
+                    warnings=["engine warning"],
+                )
+
+            return analyze
 
         class FakeRapidDocModule:
-            doc_analyze = staticmethod(fake_doc_analyze)
+            RapidDoc = staticmethod(fake_rapid_doc_init)
+
+        class FakeRapidOcrModule:
+            EngineType = SimpleNamespace(ONNXRUNTIME="onnxruntime")
 
         def fake_import(name: str):
-            captured["calls"] = int(captured["calls"]) + 1
             if name == "onnxruntime":
                 return object()
-            if name == "rapiddoc":
+            if name == "rapid_doc":
                 return FakeRapidDocModule()
+            if name == "rapidocr":
+                return FakeRapidOcrModule()
             raise ImportError(name)
 
         monkeypatch.setattr(benchmark.importlib, "import_module", fake_import)
-        monkeypatch.setattr(benchmark.time, "perf_counter", lambda: 10.0 if int(captured["calls"]) < 2 else 12.5)
+        monkeypatch.setattr(benchmark, "_pdf_page_count", lambda _path: 2)
+        perf_values = iter([10.0, 12.5])
+        monkeypatch.setattr(benchmark.time, "perf_counter", lambda: next(perf_values))
         monkeypatch.setattr(benchmark, "_peak_rss_bytes", lambda: 4096)
 
         result = benchmark.execute_probe(pdf_path=pdf_path, model_dir=model_dir, offline=False)
 
         assert result["page_count"] == 2
         assert result["non_empty_pages"] == 2
-        assert result["text_chars"] == len("alphabeta")
+        assert result["text_chars"] == len("alpha\n\n<table><tr><td>one</td></tr></table>") + len("beta")
         assert result["table_count"] == 1
         assert result["warnings"] == ["engine warning"]
-        assert captured["pdf"] == str(pdf_path)
-        kwargs = captured["kwargs"]
-        assert kwargs["mode"] == "auto"
-        assert kwargs["model_dir"] == str(model_dir)
-        assert kwargs["table_enable"] is True
-        assert kwargs["reading_order"] is True
-        assert kwargs["formula_enable"] is False
-        assert kwargs["table_formula_enable"] is False
-        assert kwargs["extract_images"] is False
-        assert kwargs["checkbox_enable"] is False
+        assert captured["pdf_bytes"] == b"%PDF-1.4\n"
+        init = captured["init"]
+        assert init["parse_method"] == "auto"
+        assert init["formula_enable"] is False
+        assert init["table_enable"] is True
+        assert init["pdf_pages_batch"] == 64
+        assert init["ocr_config"]["engine_type"] == "onnxruntime"
+        call = captured["call"]
+        assert call["f_dump_middle_json"] is False
+        assert call["f_dump_content_list"] is False
 
 
 def test_execute_probe_fails_clearly_when_dependency_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -266,7 +283,7 @@ def test_execute_probe_fails_clearly_when_dependency_missing(monkeypatch: pytest
         model_dir.mkdir()
 
         def raise_import_error(_name: str):
-            raise ImportError("missing rapiddoc")
+            raise ImportError("missing rapid-doc")
 
         monkeypatch.setattr(benchmark.importlib, "import_module", raise_import_error)
 

@@ -171,7 +171,7 @@ HYBRID_KNOWLEDGE_RETRIEVAL_ENABLED="true"
 
 #### 可选：在 StaffDeck 内处理扫描型 PDF
 
-带文字层的 PDF 默认由原生解析器处理；扫描型 PDF 可在本机启用 RapidDoc + ONNX Runtime CPU 结构化提取。该能力默认关闭，启动时不会自动下载模型。请先阅读[离线 RapidDoc 操作说明](./docs/rapiddoc-offline-operations.md)，使用 `--check-only` 检查模型，再明确执行 `--prepare`，最后在 `backend/.env` 设置 `STRUCTURED_PDF_ENABLED="true"`。启用但未准备模型时，启动会明确提示准备命令，不会静默丢失文本或云端 OCR。
+带文字层的 PDF 默认由原生解析器处理；扫描型 PDF 可在本机启用官方 `rapid-doc==0.9.10` + ONNX Runtime CPU 结构化提取，不启用 OpenVINO、GPU 或云端 OCR。该能力默认关闭，启动时不会自动下载模型。请先阅读[离线 RapidDoc 操作说明](./docs/rapiddoc-offline-operations.md)，安装项目 `.[ocr]` extra，使用 `--check-only` 检查模型，再明确执行 `--prepare`，最后在 `backend/.env` 设置 `STRUCTURED_PDF_ENABLED="true"`。启用但未准备模型时，启动会明确提示准备命令，不会静默丢失文本或云端 OCR。
 
 ### 3. 启动 Web Demo
 

@@ -75,7 +75,7 @@ def test_scanned_pdf_uses_injected_structured_adapter_when_enabled(
                 source_sha256=hashlib.sha256(content).hexdigest(),
                 source_page_count=1,
                 method="structured",
-                engine="rapiddoc-ort",
+                engine="rapid-doc-onnxruntime",
                 engine_version="0.0-test",
                 warnings=["OCR_USED"],
                 char_count=len("structured text"),
@@ -93,7 +93,7 @@ def test_scanned_pdf_uses_injected_structured_adapter_when_enabled(
 
     assert adapter.calls == [("scan.pdf", content)]
     assert result.method == "structured"
-    assert result.engine == "rapiddoc-ort"
+    assert result.engine == "rapid-doc-onnxruntime"
     assert result.warnings == ["OCR_USED"]
 
 
@@ -261,7 +261,7 @@ def test_legacy_extract_text_uses_configured_structured_extractor_for_scanned_pd
                 source_sha256=hashlib.sha256(content).hexdigest(),
                 source_page_count=1,
                 method="structured",
-                engine="rapiddoc-ort",
+                engine="rapid-doc-onnxruntime",
                 engine_version="test",
                 warnings=[],
                 char_count=len("structured route"),

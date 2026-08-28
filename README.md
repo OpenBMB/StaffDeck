@@ -171,7 +171,7 @@ The same panel shows per-version vector totals, ready, failed, and missing count
 
 #### Optional: Process Scanned PDFs Inside StaffDeck
 
-PDFs with a text layer use the native parser by default. Scanned PDFs can use local RapidDoc + ONNX Runtime CPU structured extraction. The feature is disabled by default and startup never downloads OCR models implicitly. Read the [offline RapidDoc operations guide](./docs/rapiddoc-offline-operations.md), run `--check-only`, explicitly run `--prepare`, and then set `STRUCTURED_PDF_ENABLED="true"` in `backend/.env`. If the feature is enabled before its model is prepared, startup reports the required preparation command instead of silently losing text or using cloud OCR.
+PDFs with a text layer use the native parser by default. Scanned PDFs can use local RapidDoc (`rapid-doc==0.9.10`) + ONNX Runtime CPU structured extraction; OpenVINO, GPU, and cloud OCR are not used. The feature is disabled by default and startup never downloads OCR models implicitly. Read the [offline RapidDoc operations guide](./docs/rapiddoc-offline-operations.md), install the project `.[ocr]` extra, run `--check-only`, explicitly run `--prepare`, and then set `STRUCTURED_PDF_ENABLED="true"` in `backend/.env`. If the feature is enabled before its model is prepared, startup reports the required preparation command instead of silently losing text or using cloud OCR.
 
 ### 3. Launch the Web Demo
 

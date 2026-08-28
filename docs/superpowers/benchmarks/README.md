@@ -6,8 +6,8 @@
 
 - 当前仓库已经建立显式 probe orchestration、基准 JSON schema、输入边界和命令行报告脚本。
 - 当前仓库没有提交任何真实审核 PDF、模型文件或 API key。
-- 当前仓库没有把 RapidDoc 依赖安装进生产 `backend/.venv`。
-- 截至 2026-08-27，RapidDoc ORT-only 方案尚未在本仓库内留下实测结果，因此下面所有“实测值”字段都必须保持待补状态，不能用估算值代替。
+- RapidDoc ORT-only 依赖已安装到本机 `backend/.venv`，模型已通过显式准备命令下载并完成 SHA-256 校验；模型文件仍由 Git 忽略，不进入提交。
+- 2026-08-28 已用临时生成的双页中英文扫描样本完成 live 与离线重放。该结果证明本机链路可运行和可离线重放，但不代表真实审核表格的识别准确率已经达标。
 
 ## Probe 约束
 
@@ -45,19 +45,22 @@ RapidDoc 只有在真实材料隔离验证全部通过后才进入生产依赖�
 - `matched` 不接受调用方硬编码输入；脚本会重新计算源 PDF 的 `SHA-256`，并比较 live probe 与 fresh replay 的 `page_count`、`page_sha256`、`text_chars` 和 `table_count`
 - 缺少显式 PDF、模型目录、RapidDoc 或 ONNX Runtime 时，脚本会明确失败，不把未测得值写进报告
 
-## 待补实测记录
+## 当前实测记录（临时合成样本）
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 测试机 | 待实际 probe 填写 |
-| RapidDoc 版本 | 待实际 probe 填写 |
-| Python 版本 | 待实际 probe 填写 |
-| ORT-only 依赖包尺寸 | 待实际 probe 填写 |
-| 模型目录尺寸 | 待实际 probe 填写 |
-| 峰值 RSS | 待实际 probe 填写 |
-| 处理耗时 | 待实际 probe 填写 |
-| 输入 PDF 类型 | 待实际 probe 填写 |
-| 断网重放结果 | 待实际 probe 填写 |
+| 测试机 | Windows PowerShell，本机 `backend/.venv` |
+| RapidDoc / ONNX Runtime / RapidOCR | 0.9.10 / 1.20.1 / 3.9.2 |
+| Python | 3.12.13 |
+| 当前 `backend/.venv` site-packages 总体尺寸 | 629,704,689 bytes；含项目全部依赖，不等同 RapidDoc 增量包尺寸 |
+| 模型目录尺寸 | 170,200,745 bytes |
+| 峰值 RSS | 1,070,432,256 bytes |
+| 处理耗时 | 17.44 秒 / 2 页 |
+| 输入 PDF 类型 | 临时生成的 1600×2200 双页中英文图片型 PDF |
+| 页数 / 非空页 / 字符数 / 表格数 | 2 / 2 / 312 / 0 |
+| 离线重放 | `matched=true`；逐页文本 SHA-256、页数、字符数和表格数一致 |
+
+以上结果不能替代真实脱敏审核材料的 20 页性能、中文表格行列映射和人工准确率验收；这些项目仍保持待补。
 
 ## 建议执行顺序
 
@@ -65,4 +68,4 @@ RapidDoc 只有在真实材料隔离验证全部通过后才进入生产依赖�
 2. 仅在该环境安装 RapidDoc 目标依赖并准备模型目录。
 3. 在仓库外准备待测 PDF，并准备好模型目录。
 4. 运行 `scripts/benchmark_rapiddoc.py`；脚本会生成基准 JSON，并把 fresh offline replay 原始结果写入显式 `--offline-replay` 路径。
-5. 把实测机型、版本、尺寸、耗时、内存和结论回填到本目录文档；未实测项继续保持待补，不写估算值。
+5. 把真实脱敏样本的机型、版本、尺寸、耗时、内存和结论回填到本目录文档；未实测项继续保持待补，不写估算值。

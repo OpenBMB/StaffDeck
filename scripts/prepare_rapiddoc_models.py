@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     modes.add_argument(
         "--prepare",
         action="store_true",
-        help="explicitly ask the installed RapidDoc package to prepare/download models",
+        help="explicitly download and verify the curated RapidDoc model set",
     )
     parser.add_argument(
         "--model-dir",
