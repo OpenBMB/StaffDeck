@@ -85,7 +85,7 @@ def model_config_fingerprint(
     api_protocol: str,
     base_url: str | None,
     model: str,
-    key_revision: int,
+    configuration_revision: int,
     protocol_options: dict[str, Any],
     security_revision: int,
     auth_mode: str = ModelAuthMode.API_KEY,
@@ -95,7 +95,9 @@ def model_config_fingerprint(
         "api_protocol": api_protocol,
         "base_url": _normalize_base_url(base_url),
         "model": model,
-        "key_revision": key_revision,
+        # This is a monotonically increasing non-secret configuration counter.
+        # Keep the persisted payload key for backwards-compatible fingerprints.
+        "key_revision": configuration_revision,
         "protocol_options": protocol_options,
         "security_revision": security_revision,
         "auth_mode": auth_mode,

@@ -113,7 +113,7 @@ def _fingerprint(row: ModelConfig) -> str:
         api_protocol=row.api_protocol,
         base_url=row.base_url,
         model=row.model,
-        key_revision=row.key_revision,
+        configuration_revision=row.key_revision,
         protocol_options=current_protocol_options(row.protocol_options_json, protocol),
         security_revision=row.security_revision,
         auth_mode=getattr(row, "auth_mode", ModelAuthMode.API_KEY),

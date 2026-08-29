@@ -73,12 +73,27 @@ def test_fingerprint_normalizes_equivalent_base_urls() -> None:
     common = {
         "api_protocol": "openai_chat_completions",
         "model": "model-a",
-        "key_revision": 1,
+        "configuration_revision": 1,
         "protocol_options": {},
         "security_revision": 1,
     }
     assert model_config_fingerprint(base_url="HTTPS://EXAMPLE.COM:443/v1/", **common) == (
         model_config_fingerprint(base_url="https://example.com/v1", **common)
+    )
+
+
+def test_fingerprint_keeps_non_secret_configuration_revision_compatible() -> None:
+    assert (
+        model_config_fingerprint(
+            api_protocol="openai_chat_completions",
+            base_url="https://example.com/v1",
+            model="gpt-5",
+            configuration_revision=1,
+            protocol_options={},
+            security_revision=1,
+            auth_mode="api_key",
+        )
+        == "4b6fa0173a7d7f3367451039c32c1b262a50820b615872f70ad2d29407a09b34"
     )
 
 
