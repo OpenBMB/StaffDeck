@@ -736,6 +736,22 @@ class KnowledgeRetrievalConfig(SQLModel, table=True):
     candidate_limit: int = 40
     rerank_limit: int = 12
     enabled: bool = False
+    schema_version: int = 2
+    revision: int = 1
+    status: str = Field(default="active", index=True)
+    embedding_adapter: str = "openai_compatible_embedding"
+    embedding_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    bm25_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    fusion_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    reranker_adapter: str = ""
+    reranker_base_url: str = ""
+    reranker_api_key_encrypted: str = ""
+    reranker_model: str = ""
+    reranker_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    last_tested_at: Optional[datetime] = None
+    tested_fingerprint: Optional[str] = None
+    activated_at: Optional[datetime] = None
+    last_error_code: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

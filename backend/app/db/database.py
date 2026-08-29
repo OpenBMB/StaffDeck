@@ -104,6 +104,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_harness_v2_schema(conn, inspector, tables)
         _migrate_audit_case_schema(conn, inspector, tables)
         _migrate_audit_case_material_schema(conn, inspector, tables)
+        _migrate_knowledge_retrieval_schema(conn, inspector, tables)
 
         if "api_jobs" in tables:
             job_columns = {column["name"] for column in inspector.get_columns("api_jobs")}
@@ -544,6 +545,55 @@ def _sqlite_immediate_connection():
         raise
     finally:
         conn.close()
+
+
+def _migrate_knowledge_retrieval_schema(conn, inspector, tables: set[str]) -> None:
+    if "knowledge_retrieval_configs" not in tables:
+        return
+
+    columns = {
+        column["name"]
+        for column in inspector.get_columns("knowledge_retrieval_configs")
+    }
+    column_sql = {
+        "schema_version": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 2",
+        "revision": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
+        "status": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN status VARCHAR NOT NULL DEFAULT 'active'",
+        "embedding_adapter": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN embedding_adapter VARCHAR NOT NULL DEFAULT 'openai_compatible_embedding'",
+        "embedding_options_json": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN embedding_options_json JSON",
+        "bm25_options_json": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN bm25_options_json JSON",
+        "fusion_options_json": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN fusion_options_json JSON",
+        "reranker_adapter": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN reranker_adapter VARCHAR NOT NULL DEFAULT ''",
+        "reranker_base_url": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN reranker_base_url VARCHAR NOT NULL DEFAULT ''",
+        "reranker_api_key_encrypted": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN reranker_api_key_encrypted VARCHAR NOT NULL DEFAULT ''",
+        "reranker_model": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN reranker_model VARCHAR NOT NULL DEFAULT ''",
+        "reranker_options_json": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN reranker_options_json JSON",
+        "last_tested_at": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN last_tested_at DATETIME",
+        "tested_fingerprint": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN tested_fingerprint VARCHAR",
+        "activated_at": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN activated_at DATETIME",
+        "last_error_code": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN last_error_code VARCHAR",
+    }
+    for column_name, ddl in column_sql.items():
+        if column_name not in columns:
+            conn.execute(text(ddl))
+
+    conn.execute(
+        text(
+            "UPDATE knowledge_retrieval_configs "
+            "SET schema_version = COALESCE(schema_version, 2), "
+            "revision = COALESCE(revision, 1), "
+            "status = COALESCE(NULLIF(status, ''), 'active'), "
+            "embedding_adapter = COALESCE(NULLIF(embedding_adapter, ''), 'openai_compatible_embedding'), "
+            "embedding_options_json = COALESCE(embedding_options_json, '{}'), "
+            "bm25_options_json = COALESCE(bm25_options_json, '{}'), "
+            "fusion_options_json = COALESCE(fusion_options_json, '{}'), "
+            "reranker_adapter = COALESCE(reranker_adapter, ''), "
+            "reranker_base_url = COALESCE(reranker_base_url, ''), "
+            "reranker_api_key_encrypted = COALESCE(reranker_api_key_encrypted, ''), "
+            "reranker_model = COALESCE(reranker_model, ''), "
+            "reranker_options_json = COALESCE(reranker_options_json, '{}')"
+        )
+    )
 
 
 def _migrate_default_model_output_limit(conn, tables: set[str]) -> None:
