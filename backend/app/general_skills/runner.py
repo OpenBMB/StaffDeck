@@ -725,6 +725,10 @@ class GeneralSkillRunner:
                 "SKILL_NAME": skill.name,
                 "USER_ID": user_id,
                 "SKILL_FILES_JSON": json.dumps([file["path"] for file in _skill_files(skill)], ensure_ascii=False),
+                # The runner returns JSON and may contain Chinese text. On
+                # Windows, Python otherwise uses the active code page for a
+                # piped stdout, while the parent decodes the protocol as UTF-8.
+                "PYTHONIOENCODING": "utf-8",
             }
         )
         if runtime == "bash" and not _bash_supported():

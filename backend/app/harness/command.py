@@ -850,6 +850,9 @@ def _managed_process_environment(env: dict[str, str] | None) -> dict[str, str]:
             "PATH", "HOME", "PWD", "TMPDIR", "LANG", "LC_ALL",
             "ARGUMENTS", "QUERY", "SKILL_WORKSPACE", "ARTIFACT_DIR", "SKILL_SLUG",
             "SKILL_NAME", "USER_ID", "SKILL_FILES_JSON", "SSL_CERT_FILE", "PIP_CERT",
+            # Python runners must emit the UTF-8 JSON protocol even when the
+            # Windows host code page is not UTF-8.
+            "PYTHONIOENCODING",
         }
     }
     return {**baseline, **allowed}
