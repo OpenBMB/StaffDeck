@@ -91,7 +91,7 @@ def test_fingerprint_keeps_non_secret_configuration_revision_compatible() -> Non
             configuration_revision=1,
             protocol_options={},
             security_revision=1,
-            auth_mode="api_key",
+            model_mode="api_key",
         )
         == "4b6fa0173a7d7f3367451039c32c1b262a50820b615872f70ad2d29407a09b34"
     )

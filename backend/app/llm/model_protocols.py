@@ -88,7 +88,7 @@ def model_config_fingerprint(
     configuration_revision: int,
     protocol_options: dict[str, Any],
     security_revision: int,
-    auth_mode: str = ModelAuthMode.API_KEY,
+    model_mode: str = ModelAuthMode.API_KEY,
 ) -> str:
     payload = {
         "fingerprint_version": 1,
@@ -100,7 +100,7 @@ def model_config_fingerprint(
         "key_revision": configuration_revision,
         "protocol_options": protocol_options,
         "security_revision": security_revision,
-        "auth_mode": auth_mode,
+        "auth_mode": model_mode,
     }
     canonical = json.dumps(
         payload,
