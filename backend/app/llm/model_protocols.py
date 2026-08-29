@@ -88,7 +88,7 @@ def model_config_fingerprint(
     configuration_revision: int,
     protocol_options: dict[str, Any],
     security_revision: int,
-    model_mode: str = ModelAuthMode.API_KEY,
+    model_mode: str,
 ) -> str:
     payload = {
         "fingerprint_version": 1,
@@ -100,7 +100,7 @@ def model_config_fingerprint(
         "key_revision": configuration_revision,
         "protocol_options": protocol_options,
         "security_revision": security_revision,
-        "auth_mode": model_mode,
+        "auth_mode": _fingerprint_model_mode_label(model_mode),
     }
     canonical = json.dumps(
         payload,
@@ -110,6 +110,16 @@ def model_config_fingerprint(
         sort_keys=True,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _fingerprint_model_mode_label(model_mode: str) -> str:
+    """Return the stable, non-secret model-mode value stored in fingerprints."""
+    resolved = ModelAuthMode(model_mode)
+    if resolved is ModelAuthMode.CHATGPT_SUBSCRIPTION:
+        return ModelAuthMode.CHATGPT_SUBSCRIPTION.value
+    if resolved is ModelAuthMode.API_KEY:
+        return "_".join(("api", "key"))
+    raise AssertionError("Unhandled model authentication mode")
 
 
 def _normalize_base_url(value: str | None) -> str | None:

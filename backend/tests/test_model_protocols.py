@@ -14,6 +14,7 @@ from app.llm.model_config_resolver import (
 )
 from app.llm.client import _normalize_extra_body
 from app.llm.model_protocols import (
+    ModelAuthMode,
     ModelApiProtocol,
     available_model_protocols,
     model_config_fingerprint,
@@ -76,6 +77,7 @@ def test_fingerprint_normalizes_equivalent_base_urls() -> None:
         "configuration_revision": 1,
         "protocol_options": {},
         "security_revision": 1,
+        "model_mode": ModelAuthMode.API_KEY,
     }
     assert model_config_fingerprint(base_url="HTTPS://EXAMPLE.COM:443/v1/", **common) == (
         model_config_fingerprint(base_url="https://example.com/v1", **common)
