@@ -53,6 +53,7 @@ from app.knowledge.retrieval.indexer import KnowledgeVectorIndexer
 from app.knowledge.retrieval.options import BM25Options, FusionOptions
 from app.knowledge.retrieval.providers import (
     DedicatedRerankProvider,
+    OpenAICompatibleChatRerankClient,
     embedding_options_for_config,
     reranker_options_for_config,
 )
@@ -689,9 +690,6 @@ class KnowledgeService:
         job: KnowledgeIngestJob,
         document: KnowledgeDocument,
     ) -> None:
-        settings = get_settings()
-        if not settings.hybrid_knowledge_retrieval_enabled:
-            return
         config = self.db.exec(
             select(KnowledgeRetrievalConfig)
             .where(
@@ -743,7 +741,7 @@ class KnowledgeService:
             if (
                 config is None
                 or config.tenant_id != tenant_id
-                or not config.enabled
+                or (not config.enabled and config.status != "pending_index")
                 or not _retrieval_config_is_valid(config)
             ):
                 return
@@ -1691,13 +1689,22 @@ class KnowledgeService:
         return None
 
     def _active_retrieval_config(self, tenant_id: str) -> KnowledgeRetrievalConfig | None:
-        if not get_settings().hybrid_knowledge_retrieval_enabled:
-            return None
         return self.db.exec(
             select(KnowledgeRetrievalConfig)
             .where(
                 KnowledgeRetrievalConfig.tenant_id == tenant_id,
                 KnowledgeRetrievalConfig.enabled == True,
+                KnowledgeRetrievalConfig.status == "active",
+            )
+            .order_by(KnowledgeRetrievalConfig.updated_at.desc())
+        ).first()
+
+    def _pending_retrieval_config(self, tenant_id: str) -> KnowledgeRetrievalConfig | None:
+        return self.db.exec(
+            select(KnowledgeRetrievalConfig)
+            .where(
+                KnowledgeRetrievalConfig.tenant_id == tenant_id,
+                KnowledgeRetrievalConfig.status == "pending_index",
             )
             .order_by(KnowledgeRetrievalConfig.updated_at.desc())
         ).first()
@@ -1721,7 +1728,18 @@ class KnowledgeService:
             except Exception:  # noqa: BLE001 - model setup must not break retrieval.
                 reranker = PassthroughReranker("RERANKER_MODEL_UNAVAILABLE")
         elif reranker_options.mode == "llm" or retrieval_config.reranker_mode == "llm":
-            reranker_config = model_config
+            if reranker_options.base_url and reranker_options.model:
+                try:
+                    rerank_client = OpenAICompatibleChatRerankClient(
+                        retrieval_config,
+                        reranker_options,
+                    )
+                    reranker = LLMReranker(rerank_client, reranker_options)
+                except Exception:  # noqa: BLE001 - model setup must not break retrieval.
+                    reranker = PassthroughReranker("RERANKER_MODEL_UNAVAILABLE")
+                reranker_config = None
+            else:
+                reranker_config = model_config
             if retrieval_config.reranker_model_config_id:
                 try:
                     reranker_config = resolve_model_config_for_runtime(

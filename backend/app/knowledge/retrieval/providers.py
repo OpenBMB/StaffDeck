@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import json
 from typing import Any
 
 import httpx
@@ -196,3 +197,69 @@ class DedicatedRerankProvider:
             seen.add(index)
             result.append((index, score))
         return result[:top_n]
+
+
+class OpenAICompatibleChatRerankClient:
+    """Small independent chat client used when LLM reranking is configured."""
+
+    def __init__(
+        self,
+        config: KnowledgeRetrievalConfig,
+        options: RerankerOptions,
+        *,
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.options = options
+        self.base_url = (options.base_url or config.reranker_base_url).rstrip("/")
+        self.model = options.model or config.reranker_model
+        try:
+            self.api_key = decrypt_secret(config.reranker_api_key_encrypted)
+        except ValueError as exc:
+            raise RerankProviderError("RERANK_SECRET_INVALID") from exc
+        self.client = client or httpx.Client(timeout=options.timeout_seconds)
+
+    def generate_json_with_options(
+        self,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        *,
+        temperature: float,
+        max_output_tokens: int,
+        input_budget_tokens: int,
+    ) -> dict[str, Any]:
+        del input_budget_tokens  # The caller already applied the prompt budget.
+        response = post_json_with_retries(
+            self.client,
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            payload={
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": json.dumps(user_payload, ensure_ascii=False),
+                    },
+                ],
+                "temperature": temperature,
+                "max_tokens": max_output_tokens,
+            },
+            timeout_seconds=self.options.timeout_seconds,
+            max_retries=self.options.max_retries,
+            retry_backoff_ms=self.options.retry_backoff_ms,
+        )
+        try:
+            content = response["choices"][0]["message"]["content"]
+            if not isinstance(content, str):
+                raise TypeError("chat content must be text")
+            text = content.strip()
+            if text.startswith("```"):
+                text = text.strip("`").strip()
+                if text.startswith("json"):
+                    text = text[4:].strip()
+            parsed = json.loads(text)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise RerankProviderError("RERANK_RESPONSE_INVALID") from exc
+        if not isinstance(parsed, dict):
+            raise RerankProviderError("RERANK_RESPONSE_INVALID")
+        return parsed

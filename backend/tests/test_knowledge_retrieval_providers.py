@@ -13,6 +13,7 @@ from app.knowledge.retrieval.contracts import RetrievalCandidate
 from app.knowledge.retrieval.hybrid import reciprocal_rank_fusion
 from app.knowledge.retrieval.options import BM25Options, EmbeddingOptions, RerankerOptions
 from app.knowledge.retrieval.providers import DedicatedRerankProvider
+from app.knowledge.retrieval.providers import OpenAICompatibleChatRerankClient
 from app.knowledge.retrieval.providers import post_json_with_retries
 from app.knowledge.retrieval.indexer import KnowledgeVectorIndexer
 from app.knowledge.retrieval.reranker import LLMReranker
@@ -279,3 +280,55 @@ def test_llm_reranker_applies_prompt_and_input_limits() -> None:
         "max_output_tokens": 321,
         "input_budget_tokens": 50,
     }
+
+
+def test_independent_chat_rerank_client_uses_its_own_endpoint_and_model() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"ranked":[{"chunk_id":"c1","score":0.9}]}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    config = _retrieval_config()
+    config.reranker_base_url = "https://rerank.example/v1"
+    config.reranker_model = "deepseek-rerank"
+    config.reranker_api_key_encrypted = encrypt_secret("rerank-secret")
+    options = RerankerOptions(
+        mode="llm",
+        base_url=config.reranker_base_url,
+        model=config.reranker_model,
+        temperature=0.2,
+        max_output_tokens=321,
+    )
+    client = OpenAICompatibleChatRerankClient(
+        config,
+        options,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    response = client.generate_json_with_options(
+        "rank safely",
+        {"query": "能源绩效", "candidates": []},
+        temperature=options.temperature,
+        max_output_tokens=options.max_output_tokens,
+        input_budget_tokens=options.input_budget_tokens,
+    )
+
+    assert response == {"ranked": [{"chunk_id": "c1", "score": 0.9}]}
+    assert str(captured[0].url) == "https://rerank.example/v1/chat/completions"
+    payload = json.loads(captured[0].content)
+    assert payload["model"] == "deepseek-rerank"
+    assert payload["temperature"] == 0.2
+    assert payload["max_tokens"] == 321
+    assert "rerank-secret" not in captured[0].content.decode("utf-8")
