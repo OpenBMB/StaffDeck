@@ -279,7 +279,12 @@ export function KnowledgeRetrievalPanel({
         `/api/enterprise/knowledge-retrieval/test/${kind}`,
         retrievalDraftPayload(nextDraft, tenantId),
       );
-      if (response.ok) notify.success(kind === 'embedding' ? `Embedding 连接成功，维度 ${response.dimensions}` : 'Reranker 连接成功');
+      if (response.ok) {
+        if (kind === 'embedding' && response.dimensions && nextDraft.embedding.options.dimension_mode === 'auto') {
+          setDraft((current) => ({ ...current, embedding: { ...nextDraft.embedding, options: { ...nextDraft.embedding.options, dimensions: response.dimensions ?? null } } }));
+        }
+        notify.success(kind === 'embedding' ? `Embedding 连接成功，维度 ${response.dimensions}` : 'Reranker 连接成功');
+      }
       else setError(response.error_code || '连接测试失败');
     } catch (testError) {
       setError(testError instanceof Error ? testError.message : '连接测试失败');
@@ -303,12 +308,13 @@ export function KnowledgeRetrievalPanel({
   }
 
   const change = config ? classifyRetrievalChange(mergeRetrievalConfig(defaultRetrievalDraft(), config), draft) : null;
+  const capabilityState = Object.keys(capabilities).length ? '插件参数已加载' : '使用内置默认参数';
 
   return (
     <KCard title="混合检索配置" extra={config?.enabled ? <KTag color="green">已启用</KTag> : <KTag>未启用</KTag>}>
       <div className="flex flex-col gap-[14px]" data-testid="knowledge-retrieval-panel">
         <p className="m-0 text-[12px] leading-[1.6] text-[#858b9c]">
-          BM25 负责关键词命中，Embedding 负责语义召回，候选集合再交给 reranker 重排。四组参数独立维护；API Key 只写入不回显，保存后即时生效。Embedding 身份变化会先创建待重建索引，原索引保持可用。
+          BM25 负责关键词命中，Embedding 负责语义召回，候选集合再交给 reranker 重排。四组参数独立维护；API Key 只写入不回显，保存后即时生效。Embedding 身份变化会先创建待重建索引，原索引保持可用。{capabilityState}。
         </p>
         {error ? <p className="m-0 rounded-[8px] bg-[#fff1f0] px-[10px] py-[8px] text-[12px] text-[#d20b0b]">{error}</p> : null}
         <label className="flex items-center gap-[8px] text-[12px] text-[#5b6273]"><input type="checkbox" checked={draft.enabled} onChange={(event) => updateDraft('enabled', event.target.checked)} />启用混合检索（保存后新入库文档会自动排队向量化）</label>
@@ -331,10 +337,10 @@ export function KnowledgeRetrievalPanel({
           </UIButton>
           {loading ? <span className="text-[12px] text-[#858b9c]">加载中…</span> : null}
         </div>
-        <EmbeddingSettingsDialog open={openDialog === 'embedding'} value={draft.embedding} onOpenChange={(open) => setOpenDialog(open ? 'embedding' : null)} onChange={(value) => setDraft((current) => ({ ...current, embedding: value }))} onTest={(value) => void testConnection('embedding', { ...draft, embedding: value })} />
+        <EmbeddingSettingsDialog open={openDialog === 'embedding'} value={draft.embedding} capabilities={capabilities} onOpenChange={(open) => setOpenDialog(open ? 'embedding' : null)} onChange={(value) => setDraft((current) => ({ ...current, embedding: value }))} onTest={(value) => void testConnection('embedding', { ...draft, embedding: value })} />
         <Bm25SettingsDialog open={openDialog === 'bm25'} value={draft.bm25} onOpenChange={(open) => setOpenDialog(open ? 'bm25' : null)} onChange={(value) => setDraft((current) => ({ ...current, bm25: value }))} />
         <FusionSettingsDialog open={openDialog === 'fusion'} value={draft.fusion} onOpenChange={(open) => setOpenDialog(open ? 'fusion' : null)} onChange={(value) => setDraft((current) => ({ ...current, fusion: value }))} />
-        <RerankerSettingsDialog open={openDialog === 'reranker'} value={draft.reranker} onOpenChange={(open) => setOpenDialog(open ? 'reranker' : null)} onChange={(value) => setDraft((current) => ({ ...current, reranker: value }))} onTest={(value) => void testConnection('reranker', { ...draft, reranker: value })} />
+        <RerankerSettingsDialog open={openDialog === 'reranker'} value={draft.reranker} onOpenChange={(open) => setOpenDialog(open ? 'reranker' : null)} onChange={(value) => setDraft((current) => ({ ...current, reranker: value, candidateLimit: value.options.candidate_limit, rerankLimit: value.options.rerank_limit }))} onTest={(value) => void testConnection('reranker', { ...draft, reranker: value, candidateLimit: value.options.candidate_limit, rerankLimit: value.options.rerank_limit })} />
         <div className="overflow-x-auto rounded-[10px] border border-[#eceef1]">
           <table className="w-full min-w-[620px] text-left text-[12px]">
             <thead className="bg-[#fafbfc] text-[#858b9c]"><tr><th className="px-[10px] py-[8px] font-normal">知识库版本</th><th className="px-[10px] py-[8px] font-normal">向量模型</th><th className="px-[10px] py-[8px] font-normal">就绪</th><th className="px-[10px] py-[8px] font-normal">失败</th><th className="px-[10px] py-[8px] font-normal">缺失</th><th className="px-[10px] py-[8px] font-normal">更新时间</th></tr></thead>

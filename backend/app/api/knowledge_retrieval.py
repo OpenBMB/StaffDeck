@@ -34,8 +34,10 @@ from app.knowledge.retrieval.options import (
 )
 from app.knowledge.retrieval.providers import (
     DedicatedRerankProvider,
+    OpenAICompatibleChatRerankClient,
     RerankProviderError,
 )
+from app.knowledge.retrieval.reranker import RerankResponse, RERANK_PROMPT
 from app.knowledge.retrieval.vector import EmbeddingError, OpenAICompatibleEmbeddingProvider
 from app.security.auth import get_current_user
 from app.security.encryption import decrypt_secret, encrypt_secret, mask_secret
@@ -433,6 +435,31 @@ def test_reranker_connection(
             "latency_ms": 0,
             "error_code": None,
         }
+    if options.reranker.mode == "llm" and options.reranker.base_url and options.reranker.model:
+        draft = _draft_config(request, options, embedding_api_key, reranker_api_key)
+        try:
+            client = OpenAICompatibleChatRerankClient(draft, options.reranker)
+            response = client.generate_json_with_options(
+                RERANK_PROMPT,
+                {"query": "connection test", "candidates": [{"chunk_id": "test", "content": "test document"}]},
+                temperature=options.reranker.temperature,
+                max_output_tokens=options.reranker.max_output_tokens,
+                input_budget_tokens=options.reranker.input_budget_tokens,
+            )
+            RerankResponse.model_validate(response)
+            return {
+                "ok": True,
+                "adapter": options.reranker.adapter or "llm_rerank",
+                "latency_ms": max(0, int((perf_counter() - started) * 1000)),
+                "error_code": None,
+            }
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not expose provider secrets.
+            return {
+                "ok": False,
+                "adapter": options.reranker.adapter or "llm_rerank",
+                "latency_ms": max(0, int((perf_counter() - started) * 1000)),
+                "error_code": _provider_error_code(exc, "RERANK_PROVIDER_UNAVAILABLE"),
+            }
     if options.reranker.mode != "dedicated_api":
         return {
             "ok": False,

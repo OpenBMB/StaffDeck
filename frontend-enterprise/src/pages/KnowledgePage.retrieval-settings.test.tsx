@@ -18,7 +18,7 @@ describe('retrieval settings dialogs', () => {
     const onChange = () => undefined;
     render(
       <>
-        <EmbeddingSettingsDialog open value={draft.embedding} onOpenChange={onChange} onChange={onChange} />
+        <EmbeddingSettingsDialog open value={draft.embedding} onOpenChange={onChange} onChange={onChange} capabilities={{ embedding: [{ id: 'zhipu_embedding', label: '智谱 Embedding', fields: { dimensions: { options: [256, 512, 1024, 2048] }, batch_size: { max: 64 } } }], bm25: [], fusion: [], reranker: [] }} />
         <Bm25SettingsDialog open value={draft.bm25} onOpenChange={onChange} onChange={onChange} />
         <FusionSettingsDialog open value={draft.fusion} onOpenChange={onChange} onChange={onChange} />
         <RerankerSettingsDialog open value={draft.reranker} onOpenChange={onChange} onChange={onChange} />
@@ -29,5 +29,6 @@ describe('retrieval settings dialogs', () => {
     expect(screen.getByText('BM25 关键词检索设置')).toBeTruthy();
     expect(screen.getByText('融合与候选集设置')).toBeTruthy();
     expect(screen.getByText('Reranker 重排设置')).toBeTruthy();
+    expect(document.querySelector('option[value="2048"]')).toBeTruthy();
   });
 });

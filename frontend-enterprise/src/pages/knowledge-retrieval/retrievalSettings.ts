@@ -238,7 +238,7 @@ export function mergeRetrievalConfig(
     rerankLimit: typeof config.rerank_limit === 'number' ? config.rerank_limit : current.rerankLimit,
     embedding: {
       ...current.embedding,
-      adapter: typeof config.embedding_adapter === 'string' ? config.embedding_adapter : current.embedding.adapter,
+      adapter: typeof config.embedding_adapter === 'string' && config.embedding_adapter ? config.embedding_adapter : current.embedding.adapter,
       baseUrl: typeof embedding.base_url === 'string' ? embedding.base_url : (config.embedding_base_url || current.embedding.baseUrl),
       model: typeof embedding.model === 'string' ? embedding.model : (config.embedding_model || current.embedding.model),
       apiKey: '',
@@ -249,7 +249,7 @@ export function mergeRetrievalConfig(
     fusion: { ...current.fusion, options: { ...current.fusion.options, ...withoutSecrets(fusion) } },
     reranker: {
       ...current.reranker,
-      adapter: typeof config.reranker_adapter === 'string' ? config.reranker_adapter : (typeof reranker.adapter === 'string' ? reranker.adapter : current.reranker.adapter),
+      adapter: typeof config.reranker_adapter === 'string' && config.reranker_adapter ? config.reranker_adapter : (typeof reranker.adapter === 'string' && reranker.adapter ? reranker.adapter : current.reranker.adapter),
       baseUrl: typeof config.reranker_base_url === 'string' ? config.reranker_base_url : (typeof reranker.base_url === 'string' ? reranker.base_url : current.reranker.baseUrl),
       model: typeof config.reranker_model === 'string' ? config.reranker_model : (typeof reranker.model === 'string' ? reranker.model : current.reranker.model),
       apiKey: '',
