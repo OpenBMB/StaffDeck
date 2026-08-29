@@ -85,6 +85,17 @@ import {
 import { useClientPagination } from '../hooks/useClientPagination';
 import { renderMarkdownBlocks } from './chat/chatHelpers';
 import { getDateLocale } from '@/i18n';
+import { EmbeddingSettingsDialog } from './knowledge-retrieval/EmbeddingSettingsDialog';
+import { Bm25SettingsDialog } from './knowledge-retrieval/Bm25SettingsDialog';
+import { FusionSettingsDialog } from './knowledge-retrieval/FusionSettingsDialog';
+import { RerankerSettingsDialog } from './knowledge-retrieval/RerankerSettingsDialog';
+import {
+  classifyRetrievalChange,
+  defaultRetrievalDraft,
+  mergeRetrievalConfig,
+  retrievalDraftPayload,
+  type RetrievalDraft,
+} from './knowledge-retrieval/retrievalSettings';
 import type {
   CapabilityScope,
   KnowledgeBaseRead,
@@ -173,75 +184,41 @@ function effectiveKnowledgeAgentId(rows: AgentProfileRead[], agentId: string): s
   return agent && !agent.is_overall ? agent.id : '';
 }
 
-type KnowledgeRetrievalDraft = {
-  name: string;
-  embedding_base_url: string;
-  embedding_api_key: string;
-  embedding_model: string;
-  embedding_dimensions: string;
-  reranker_mode: 'llm' | 'none';
-  reranker_model_config_id: string;
-  candidate_limit: string;
-  rerank_limit: string;
-  enabled: boolean;
-};
-
-const DEFAULT_KNOWLEDGE_RETRIEVAL_DRAFT: KnowledgeRetrievalDraft = {
-  name: '知识库混合检索',
-  embedding_base_url: '',
-  embedding_api_key: '',
-  embedding_model: '',
-  embedding_dimensions: '1536',
-  reranker_mode: 'llm',
-  reranker_model_config_id: '',
-  candidate_limit: '40',
-  rerank_limit: '12',
-  enabled: false,
-};
-
 export function KnowledgeRetrievalPanel({
   tenantId = TENANT_ID,
-  modelConfigs = [],
 }: {
   tenantId?: string;
   modelConfigs?: ModelConfigRead[];
 }) {
   const [config, setConfig] = useState<KnowledgeRetrievalConfigRead | null>(null);
   const [statuses, setStatuses] = useState<KnowledgeVectorIndexStatus[]>([]);
-  const [draft, setDraft] = useState<KnowledgeRetrievalDraft>(DEFAULT_KNOWLEDGE_RETRIEVAL_DRAFT);
+  const [draft, setDraft] = useState<RetrievalDraft>(() => defaultRetrievalDraft());
+  const [capabilities, setCapabilities] = useState<Record<string, unknown>>({});
+  const [pendingConfigId, setPendingConfigId] = useState<string | null>(null);
+  const [openDialog, setOpenDialog] = useState<'embedding' | 'bm25' | 'fusion' | 'reranker' | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [reindexing, setReindexing] = useState(false);
   const [error, setError] = useState('');
 
-  async function loadPanel() {
+  async function loadPanel(resetDraft = true) {
     setLoading(true);
     setError('');
-    const [configResult, statusResult] = await Promise.allSettled([
+    const [configResult, statusResult, capabilitiesResult] = await Promise.allSettled([
       api.get<KnowledgeRetrievalConfigRead>(
         `/api/enterprise/knowledge-retrieval/config?tenant_id=${encodeURIComponent(tenantId)}`,
       ),
       api.get<KnowledgeVectorIndexStatus[]>(
         `/api/enterprise/knowledge-retrieval/index-status?tenant_id=${encodeURIComponent(tenantId)}`,
       ),
+      api.get<Record<string, unknown>>(
+        `/api/enterprise/knowledge-retrieval/capabilities?tenant_id=${encodeURIComponent(tenantId)}`,
+      ),
     ]);
     if (configResult.status === 'fulfilled') {
       const next = configResult.value;
       setConfig(next);
-      setDraft((current) => ({
-        ...current,
-        name: next.name,
-        embedding_base_url: next.embedding_base_url,
-        embedding_model: next.embedding_model,
-        embedding_dimensions: String(next.embedding_dimensions),
-        reranker_mode: next.reranker_mode === 'none' ? 'none' : 'llm',
-        reranker_model_config_id: next.reranker_model_config_id || '',
-        candidate_limit: String(next.candidate_limit),
-        rerank_limit: String(next.rerank_limit),
-        enabled: next.enabled,
-        // The API key is write-only and is intentionally never populated here.
-        embedding_api_key: '',
-      }));
+      if (resetDraft) setDraft((current) => mergeRetrievalConfig(current, next));
     } else if (!(configResult.reason instanceof ApiError && configResult.reason.status === 404)) {
       setError(configResult.reason instanceof Error ? configResult.reason.message : '加载检索配置失败');
     }
@@ -250,6 +227,7 @@ export function KnowledgeRetrievalPanel({
     } else if (!error) {
       setError(statusResult.reason instanceof Error ? statusResult.reason.message : '加载索引状态失败');
     }
+    if (capabilitiesResult.status === 'fulfilled') setCapabilities(capabilitiesResult.value);
     setLoading(false);
   }
 
@@ -257,34 +235,19 @@ export function KnowledgeRetrievalPanel({
     void loadPanel();
   }, [tenantId]);
 
-  function updateDraft<K extends keyof KnowledgeRetrievalDraft>(key: K, value: KnowledgeRetrievalDraft[K]) {
-    setDraft((current) => ({ ...current, [key]: value }));
-  }
-
   async function saveConfig() {
     setSaving(true);
     setError('');
     try {
       const response = await api.put<KnowledgeRetrievalConfigRead>(
         '/api/enterprise/knowledge-retrieval/config',
-        {
-          tenant_id: tenantId,
-          name: draft.name.trim(),
-          embedding_base_url: draft.embedding_base_url.trim(),
-          ...(draft.embedding_api_key ? { embedding_api_key: draft.embedding_api_key } : {}),
-          embedding_model: draft.embedding_model.trim(),
-          embedding_dimensions: Number(draft.embedding_dimensions),
-          reranker_mode: draft.reranker_mode,
-          reranker_model_config_id: draft.reranker_model_config_id || null,
-          candidate_limit: Number(draft.candidate_limit),
-          rerank_limit: Number(draft.rerank_limit),
-          enabled: draft.enabled,
-        },
+        retrievalDraftPayload(draft, tenantId),
       );
       setConfig(response);
-      setDraft((current) => ({ ...current, embedding_api_key: '' }));
-      notify.success('已保存混合检索配置');
-      await loadPanel();
+      setDraft((current) => mergeRetrievalConfig(current, response));
+      setPendingConfigId(response.pending_config_id || null);
+      notify.success(response.requires_reindex ? '已保存，等待向量索引重建' : '已热应用检索配置');
+      await loadPanel(false);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : '保存检索配置失败');
     } finally {
@@ -298,7 +261,7 @@ export function KnowledgeRetrievalPanel({
     try {
       const response = await api.post<KnowledgeReindexResponse>(
         '/api/enterprise/knowledge-retrieval/reindex',
-        { tenant_id: tenantId },
+        { tenant_id: tenantId, ...(pendingConfigId ? { config_id: pendingConfigId } : {}) },
       );
       notify.success(`已排队 ${response.queued_document_ids.length} 个文档的向量化`);
       await loadPanel();
@@ -309,70 +272,69 @@ export function KnowledgeRetrievalPanel({
     }
   }
 
+  async function testConnection(kind: 'embedding' | 'reranker', nextDraft: RetrievalDraft) {
+    setError('');
+    try {
+      const response = await api.post<{ ok: boolean; error_code?: string | null; dimensions?: number | null }>(
+        `/api/enterprise/knowledge-retrieval/test/${kind}`,
+        retrievalDraftPayload(nextDraft, tenantId),
+      );
+      if (response.ok) notify.success(kind === 'embedding' ? `Embedding 连接成功，维度 ${response.dimensions}` : 'Reranker 连接成功');
+      else setError(response.error_code || '连接测试失败');
+    } catch (testError) {
+      setError(testError instanceof Error ? testError.message : '连接测试失败');
+    }
+  }
+
+  async function activatePending() {
+    if (!pendingConfigId) return;
+    try {
+      await api.post('/api/enterprise/knowledge-retrieval/activate', { tenant_id: tenantId, config_id: pendingConfigId });
+      setPendingConfigId(null);
+      notify.success('已切换到新的向量索引');
+      await loadPanel();
+    } catch (activateError) {
+      setError(activateError instanceof Error ? activateError.message : '激活新索引失败');
+    }
+  }
+
+  function updateDraft<K extends keyof RetrievalDraft>(key: K, value: RetrievalDraft[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  const change = config ? classifyRetrievalChange(mergeRetrievalConfig(defaultRetrievalDraft(), config), draft) : null;
+
   return (
     <KCard title="混合检索配置" extra={config?.enabled ? <KTag color="green">已启用</KTag> : <KTag>未启用</KTag>}>
       <div className="flex flex-col gap-[14px]" data-testid="knowledge-retrieval-panel">
         <p className="m-0 text-[12px] leading-[1.6] text-[#858b9c]">
-          BM25 负责关键词命中，Embedding 负责语义召回，候选集合再交给 reranker 重排。API Key 只写入不回显；首次启用前还需在 backend/.env 设置 HYBRID_KNOWLEDGE_RETRIEVAL_ENABLED=true 并重启服务。
+          BM25 负责关键词命中，Embedding 负责语义召回，候选集合再交给 reranker 重排。四组参数独立维护；API Key 只写入不回显，保存后即时生效。Embedding 身份变化会先创建待重建索引，原索引保持可用。
         </p>
         {error ? <p className="m-0 rounded-[8px] bg-[#fff1f0] px-[10px] py-[8px] text-[12px] text-[#d20b0b]">{error}</p> : null}
-        <div className="grid gap-[12px] md:grid-cols-2">
-          <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
-            配置名称
-            <input value={draft.name} onChange={(event) => updateDraft('name', event.target.value)} className="h-[34px] rounded-[8px] border border-[#e3e7f1] px-[10px] text-[#18181a] outline-none" />
-          </label>
-          <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
-            Embedding 地址
-            <input value={draft.embedding_base_url} onChange={(event) => updateDraft('embedding_base_url', event.target.value)} placeholder="https://api.example.com/v1" className="h-[34px] rounded-[8px] border border-[#e3e7f1] px-[10px] text-[#18181a] outline-none" />
-          </label>
-          <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
-            Embedding 模型
-            <input value={draft.embedding_model} onChange={(event) => updateDraft('embedding_model', event.target.value)} placeholder="text-embedding-3-small" className="h-[34px] rounded-[8px] border border-[#e3e7f1] px-[10px] text-[#18181a] outline-none" />
-          </label>
-          <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
-            API Key（只写入）
-            <input type="password" value={draft.embedding_api_key} onChange={(event) => updateDraft('embedding_api_key', event.target.value)} placeholder={config?.embedding_api_key_masked ? `已配置 ${config.embedding_api_key_masked}，留空保持不变` : '请输入 API Key'} autoComplete="new-password" className="h-[34px] rounded-[8px] border border-[#e3e7f1] px-[10px] text-[#18181a] outline-none" />
-          </label>
-          <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
-            向量维度
-            <input type="number" min="1" value={draft.embedding_dimensions} onChange={(event) => updateDraft('embedding_dimensions', event.target.value)} className="h-[34px] rounded-[8px] border border-[#e3e7f1] px-[10px] text-[#18181a] outline-none" />
-          </label>
-          <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
-            Reranker 模式
-            <select value={draft.reranker_mode} onChange={(event) => updateDraft('reranker_mode', event.target.value as 'llm' | 'none')} className="h-[34px] rounded-[8px] border border-[#e3e7f1] bg-white px-[10px] text-[12px] text-[#18181a] outline-none">
-              <option value="llm">大模型重排</option>
-              <option value="none">不重排（使用 RRF）</option>
-            </select>
-          </label>
-          <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
-            Reranker 模型
-            <select value={draft.reranker_model_config_id} onChange={(event) => updateDraft('reranker_model_config_id', event.target.value)} disabled={draft.reranker_mode === 'none'} className="h-[34px] rounded-[8px] border border-[#e3e7f1] bg-white px-[10px] text-[12px] text-[#18181a] outline-none disabled:opacity-60">
-              <option value="">使用当前知识检索模型</option>
-              {modelConfigs.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
-            候选数量
-            <input type="number" min="1" max="500" value={draft.candidate_limit} onChange={(event) => updateDraft('candidate_limit', event.target.value)} className="h-[34px] rounded-[8px] border border-[#e3e7f1] px-[10px] text-[#18181a] outline-none" />
-          </label>
-          <label className="flex flex-col gap-[6px] text-[12px] text-[#5b6273]">
-            重排数量
-            <input type="number" min="1" max="100" value={draft.rerank_limit} onChange={(event) => updateDraft('rerank_limit', event.target.value)} className="h-[34px] rounded-[8px] border border-[#e3e7f1] px-[10px] text-[#18181a] outline-none" />
-          </label>
+        <label className="flex items-center gap-[8px] text-[12px] text-[#5b6273]"><input type="checkbox" checked={draft.enabled} onChange={(event) => updateDraft('enabled', event.target.checked)} />启用混合检索（保存后新入库文档会自动排队向量化）</label>
+        <div className="grid gap-[10px] md:grid-cols-4">
+          {[
+            ['embedding', 'Embedding 向量化', `${draft.embedding.adapter} · ${draft.embedding.model} · ${draft.embedding.options.dimensions ?? '自动'} 维`],
+            ['bm25', 'BM25 关键词检索', `k1 ${draft.bm25.options.k1} · b ${draft.bm25.options.b} · 候选 ${draft.bm25.options.candidate_limit}`],
+            ['fusion', '融合与候选集', `${draft.fusion.options.mode} · RRF ${draft.fusion.options.rrf_k} · 最终 ${draft.fusion.options.final_limit}`],
+            ['reranker', 'Reranker 重排', `${draft.reranker.options.mode} · 候选 ${draft.reranker.options.candidate_limit} · 重排 ${draft.reranker.options.rerank_limit}`],
+          ].map(([key, title, summary]) => <button key={key} type="button" onClick={() => setOpenDialog(key as typeof openDialog)} className="rounded-[10px] border border-[#e3e7f1] bg-white p-[12px] text-left transition hover:border-[#1677ff]" data-testid={`${key}-settings-card`}><span className="block text-[13px] font-medium text-[#18181a]">{title}</span><span className="mt-[6px] block text-[11px] leading-[1.5] text-[#858b9c]">{summary}</span><span className="mt-[8px] block text-[11px] text-[#1677ff]">打开详细设置 →</span></button>)}
         </div>
-        <label className="flex items-center gap-[8px] text-[12px] text-[#5b6273]">
-          <input type="checkbox" checked={draft.enabled} onChange={(event) => updateDraft('enabled', event.target.checked)} />
-          启用混合检索（保存后新入库文档会自动排队向量化）
-        </label>
+        {change?.requiresReindex ? <p className="m-0 rounded-[8px] bg-[#fff8e6] px-[10px] py-[8px] text-[12px] text-[#8a5a00]">当前草稿会触发新的向量索引，BM25、融合和 Reranker 参数仍可热应用。</p> : null}
+        {pendingConfigId ? <div className="flex flex-wrap items-center justify-between gap-[8px] rounded-[8px] bg-[#eef6ff] px-[10px] py-[8px] text-[12px] text-[#245b9e]"><span>新 Embedding 配置等待索引完成，原配置仍在使用。</span><div className="flex gap-[8px]"><UIButton variant="outline" onClick={() => void reindex()} disabled={reindexing}>{reindexing ? '排队中…' : '重建向量'}</UIButton><UIButton onClick={() => void activatePending()}>索引完成后激活</UIButton></div></div> : null}
         <div className="flex flex-wrap items-center gap-[8px]">
           <UIButton onClick={() => void saveConfig()} disabled={loading || saving} className="h-[34px] rounded-[8px] px-[14px] text-[12px]">
-            {saving ? '保存中…' : '保存配置'}
+            {saving ? '保存中…' : '保存并热应用'}
           </UIButton>
           <UIButton variant="outline" onClick={() => void reindex()} disabled={loading || reindexing || !config?.enabled} className="h-[34px] rounded-[8px] px-[14px] text-[12px]">
             {reindexing ? '排队中…' : '重建缺失向量'}
           </UIButton>
           {loading ? <span className="text-[12px] text-[#858b9c]">加载中…</span> : null}
         </div>
+        <EmbeddingSettingsDialog open={openDialog === 'embedding'} value={draft.embedding} onOpenChange={(open) => setOpenDialog(open ? 'embedding' : null)} onChange={(value) => setDraft((current) => ({ ...current, embedding: value }))} onTest={(value) => void testConnection('embedding', { ...draft, embedding: value })} />
+        <Bm25SettingsDialog open={openDialog === 'bm25'} value={draft.bm25} onOpenChange={(open) => setOpenDialog(open ? 'bm25' : null)} onChange={(value) => setDraft((current) => ({ ...current, bm25: value }))} />
+        <FusionSettingsDialog open={openDialog === 'fusion'} value={draft.fusion} onOpenChange={(open) => setOpenDialog(open ? 'fusion' : null)} onChange={(value) => setDraft((current) => ({ ...current, fusion: value }))} />
+        <RerankerSettingsDialog open={openDialog === 'reranker'} value={draft.reranker} onOpenChange={(open) => setOpenDialog(open ? 'reranker' : null)} onChange={(value) => setDraft((current) => ({ ...current, reranker: value }))} onTest={(value) => void testConnection('reranker', { ...draft, reranker: value })} />
         <div className="overflow-x-auto rounded-[10px] border border-[#eceef1]">
           <table className="w-full min-w-[620px] text-left text-[12px]">
             <thead className="bg-[#fafbfc] text-[#858b9c]"><tr><th className="px-[10px] py-[8px] font-normal">知识库版本</th><th className="px-[10px] py-[8px] font-normal">向量模型</th><th className="px-[10px] py-[8px] font-normal">就绪</th><th className="px-[10px] py-[8px] font-normal">失败</th><th className="px-[10px] py-[8px] font-normal">缺失</th><th className="px-[10px] py-[8px] font-normal">更新时间</th></tr></thead>

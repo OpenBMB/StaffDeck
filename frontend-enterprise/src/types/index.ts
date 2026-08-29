@@ -187,11 +187,28 @@ export type KnowledgeRetrievalConfigRead = {
   embedding_api_key_masked: string;
   embedding_model: string;
   embedding_dimensions: number;
-  reranker_mode: 'llm' | 'none' | string;
+  reranker_mode: 'llm' | 'none' | 'dedicated_api' | string;
   reranker_model_config_id?: string | null;
   candidate_limit: number;
   rerank_limit: number;
   enabled: boolean;
+  schema_version: number;
+  revision: number;
+  status: string;
+  embedding_adapter: string;
+  embedding: Record<string, unknown>;
+  bm25: Record<string, unknown>;
+  fusion: Record<string, unknown>;
+  reranker: Record<string, unknown>;
+  reranker_adapter: string;
+  reranker_base_url: string;
+  reranker_model: string;
+  reranker_api_key_masked: string;
+  requires_reindex?: boolean;
+  active_config_id?: string | null;
+  pending_config_id?: string | null;
+  last_tested_at?: string | null;
+  tested_fingerprint?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -208,6 +225,7 @@ export type KnowledgeVectorIndexStatus = {
 
 export type KnowledgeReindexResponse = {
   status: string;
+  config_id?: string;
   job_ids: string[];
   queued_document_ids: string[];
   skipped_document_ids: string[];

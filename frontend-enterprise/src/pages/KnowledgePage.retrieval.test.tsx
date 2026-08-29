@@ -11,12 +11,12 @@ describe('KnowledgeRetrievalPanel', () => {
     );
 
     expect(rendered).toContain('混合检索配置');
-    expect(rendered).toContain('Embedding 地址');
-    expect(rendered).toContain('Reranker 模式');
-    expect(rendered).toContain('Reranker 模型');
+    expect(rendered).toContain('Embedding 向量化');
+    expect(rendered).toContain('BM25 关键词检索');
+    expect(rendered).toContain('融合与候选集');
+    expect(rendered).toContain('Reranker 重排');
     expect(rendered).toContain('重建缺失向量');
-    expect(rendered).toContain('API Key（只写入）');
-    expect(rendered).toContain('请输入 API Key');
+    expect(rendered).toContain('保存并热应用');
     expect(rendered).not.toContain('embedding_api_key_masked');
   });
 });
