@@ -50,7 +50,13 @@ from app.knowledge.retrieval.hybrid import (
     PassthroughReranker,
 )
 from app.knowledge.retrieval.indexer import KnowledgeVectorIndexer
-from app.knowledge.retrieval.reranker import LLMReranker
+from app.knowledge.retrieval.options import BM25Options, FusionOptions
+from app.knowledge.retrieval.providers import (
+    DedicatedRerankProvider,
+    embedding_options_for_config,
+    reranker_options_for_config,
+)
+from app.knowledge.retrieval.reranker import DedicatedApiReranker, LLMReranker
 from app.knowledge.retrieval.vector import (
     EmbeddingError,
     OpenAICompatibleEmbeddingProvider,
@@ -1701,8 +1707,20 @@ class KnowledgeService:
         retrieval_config: KnowledgeRetrievalConfig,
         model_config: ModelConfig | None,
     ) -> HybridKnowledgeRetriever:
+        embedding_options = embedding_options_for_config(retrieval_config)
+        bm25_options = BM25Options(**(retrieval_config.bm25_options_json or {}))
+        fusion_options = FusionOptions(**(retrieval_config.fusion_options_json or {}))
+        reranker_options = reranker_options_for_config(retrieval_config)
         reranker = PassthroughReranker()
-        if retrieval_config.reranker_mode == "llm":
+        if reranker_options.mode == "dedicated_api" or retrieval_config.reranker_mode == "dedicated_api":
+            try:
+                reranker = DedicatedApiReranker(
+                    DedicatedRerankProvider(retrieval_config, reranker_options),
+                    reranker_options,
+                )
+            except Exception:  # noqa: BLE001 - model setup must not break retrieval.
+                reranker = PassthroughReranker("RERANKER_MODEL_UNAVAILABLE")
+        elif reranker_options.mode == "llm" or retrieval_config.reranker_mode == "llm":
             reranker_config = model_config
             if retrieval_config.reranker_model_config_id:
                 try:
@@ -1715,16 +1733,23 @@ class KnowledgeService:
                     reranker_config = None
             if reranker_config is not None:
                 try:
-                    reranker = LLMReranker(LLMClient(reranker_config))
+                    reranker = LLMReranker(
+                        LLMClient(reranker_config),
+                        reranker_options,
+                    )
                 except Exception:  # noqa: BLE001 - model setup must not break retrieval.
                     reranker = PassthroughReranker("RERANKER_MODEL_UNAVAILABLE")
 
-        embedding_provider = OpenAICompatibleEmbeddingProvider(retrieval_config)
+        embedding_provider = OpenAICompatibleEmbeddingProvider(
+            retrieval_config,
+            embedding_options,
+        )
         return HybridKnowledgeRetriever(
-            bm25=BM25Retriever(),
-            vector=VectorRetriever(self.db, retrieval_config),
+            bm25=BM25Retriever(bm25_options),
+            vector=VectorRetriever(self.db, retrieval_config, embedding_options),
             reranker=reranker,
             embedding_provider=embedding_provider,
+            fusion_options=fusion_options,
         )
 
     def ensure_default_knowledge_base(self, tenant_id: str) -> KnowledgeBase:

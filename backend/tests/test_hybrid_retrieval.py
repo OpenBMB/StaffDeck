@@ -284,6 +284,7 @@ def test_embedding_provider_uses_openai_compatible_contract() -> None:
     assert json.loads(captured[0].content) == {
         "model": config.embedding_model,
         "input": ["能源评审"],
+        "dimensions": config.embedding_dimensions,
     }
     assert "embedding-secret" not in captured[0].content.decode("utf-8")
 

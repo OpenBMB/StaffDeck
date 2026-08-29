@@ -97,6 +97,7 @@ class RerankerOptions(_OptionModel):
     max_document_chars: int = Field(default=2000, ge=200, le=100_000)
     timeout_seconds: float = Field(default=120.0, ge=5.0, le=600.0)
     max_retries: int = Field(default=2, ge=0, le=5)
+    retry_backoff_ms: int = Field(default=500, ge=100, le=10_000)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_output_tokens: int = Field(default=2048, ge=1, le=32_000)
     input_budget_tokens: int = Field(default=32_000, ge=1, le=1_000_000)

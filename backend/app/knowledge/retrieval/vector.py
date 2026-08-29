@@ -12,6 +12,8 @@ from app.db.models import KnowledgeChunk, KnowledgeChunkEmbedding, KnowledgeRetr
 from app.security.encryption import decrypt_secret
 
 from .contracts import RetrievalCandidate, RetrievalResult
+from .options import EmbeddingOptions
+from .providers import ProviderRequestError, embedding_options_for_config, post_json_with_retries
 
 
 class EmbeddingError(RuntimeError):
@@ -31,40 +33,69 @@ class OpenAICompatibleEmbeddingProvider:
     def __init__(
         self,
         config: KnowledgeRetrievalConfig,
+        options: EmbeddingOptions | None = None,
         *,
         client: httpx.Client | None = None,
     ) -> None:
-        self.base_url = config.embedding_base_url.rstrip("/")
+        self.options = embedding_options_for_config(config, options)
+        self.base_url = (self.options.base_url or config.embedding_base_url).rstrip("/")
         try:
             self.api_key = decrypt_secret(config.embedding_api_key_encrypted)
         except ValueError as exc:
             raise EmbeddingError("EMBEDDING_SECRET_INVALID") from exc
-        self.model = config.embedding_model
-        self.dimensions = config.embedding_dimensions
-        self.client = client or httpx.Client(timeout=120.0)
+        self.model = self.options.model or config.embedding_model
+        self.dimensions = self.options.dimensions or config.embedding_dimensions
+        self.client = client or httpx.Client(timeout=self.options.timeout_seconds)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        prepared_texts = [self._prepare_text(text) for text in texts]
+        payload: dict[str, object] = {"model": self.model, "input": prepared_texts}
+        if self.options.dimension_mode == "explicit":
+            payload["dimensions"] = self.options.dimensions
+        for key, value in self.options.extra_params.items():
+            if key not in {"model", "input", "dimensions"}:
+                payload[key] = value
         try:
-            response = self.client.post(
+            response_payload = post_json_with_retries(
+                self.client,
                 f"{self.base_url}/embeddings",
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"model": self.model, "input": texts},
+                payload=payload,
+                timeout_seconds=self.options.timeout_seconds,
+                max_retries=self.options.max_retries,
+                retry_backoff_ms=self.options.retry_backoff_ms,
             )
-            response.raise_for_status()
-            rows = sorted(response.json()["data"], key=lambda item: int(item["index"]))
+            rows = sorted(response_payload["data"], key=lambda item: int(item["index"]))
             vectors = [[float(value) for value in row["embedding"]] for row in rows]
         except EmbeddingError:
             raise
-        except (httpx.HTTPError, KeyError, TypeError, ValueError, IndexError) as exc:
+        except ProviderRequestError as exc:
+            raise EmbeddingError(str(exc)) from exc
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
             raise EmbeddingError("EMBEDDING_PROVIDER_UNAVAILABLE") from exc
 
-        if len(vectors) != len(texts) or any(
-            len(vector) != self.dimensions for vector in vectors
+        expected_dimensions = self.options.dimensions or self.dimensions
+        if len(vectors) != len(texts) or (
+            expected_dimensions is not None
+            and any(len(vector) != expected_dimensions for vector in vectors)
         ):
             raise EmbeddingError("EMBEDDING_DIMENSION_MISMATCH")
         return vectors
+
+    def _prepare_text(self, text: str) -> str:
+        max_input_tokens = self.options.max_input_tokens
+        if not max_input_tokens:
+            return text
+        # A conservative character budget keeps the adapter limit bounded without
+        # pretending that a local tokenizer is equivalent to the provider tokenizer.
+        character_limit = max_input_tokens * 2
+        if len(text) <= character_limit:
+            return text
+        if self.options.oversize_policy == "safe_truncate":
+            return text[:character_limit]
+        raise EmbeddingError("EMBEDDING_INPUT_TOO_LONG")
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -78,9 +109,15 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
 
 
 class VectorRetriever:
-    def __init__(self, db: Session, config: KnowledgeRetrievalConfig) -> None:
+    def __init__(
+        self,
+        db: Session,
+        config: KnowledgeRetrievalConfig,
+        options: EmbeddingOptions | None = None,
+    ) -> None:
         self.db = db
         self.config = config
+        self.options = embedding_options_for_config(config, options)
 
     def retrieve(
         self,
@@ -101,7 +138,8 @@ class VectorRetriever:
                     }
                 ],
             )
-        if len(query_vector) != self.config.embedding_dimensions:
+        expected_dimensions = self.options.dimensions or self.config.embedding_dimensions
+        if expected_dimensions and len(query_vector) != expected_dimensions:
             raise VectorIndexError("VECTOR_DIMENSION_MISMATCH")
 
         chunk_ids = [chunk.id for chunk in chunks]
@@ -117,7 +155,7 @@ class VectorRetriever:
         row_by_identity = {
             (row.chunk_id, row.content_sha256): row
             for row in rows
-            if row.dimensions == self.config.embedding_dimensions
+            if expected_dimensions is None or row.dimensions == expected_dimensions
         }
         scored: list[tuple[KnowledgeChunk, float]] = []
         for chunk in chunks:
@@ -126,7 +164,8 @@ class VectorRetriever:
             if row is None:
                 continue
             score = cosine_similarity(query_vector, [float(value) for value in row.vector_json])
-            scored.append((chunk, score))
+            if score >= self.options.similarity_threshold:
+                scored.append((chunk, score))
 
         scored.sort(key=lambda item: (-item[1], item[0].chunk_index, item[0].id))
         selected = [

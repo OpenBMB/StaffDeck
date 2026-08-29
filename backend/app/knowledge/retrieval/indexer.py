@@ -8,6 +8,8 @@ from sqlmodel import Session, select
 
 from app.db.models import KnowledgeChunk, KnowledgeChunkEmbedding, KnowledgeRetrievalConfig
 
+from .options import EmbeddingOptions
+from .providers import embedding_options_for_config
 from .vector import EmbeddingError, EmbeddingProvider
 
 MAX_EMBEDDING_BATCH_SIZE = 32
@@ -26,10 +28,13 @@ class KnowledgeVectorIndexer:
         db: Session,
         config: KnowledgeRetrievalConfig,
         provider: EmbeddingProvider,
+        options: EmbeddingOptions | None = None,
     ) -> None:
         self.db = db
         self.config = config
         self.provider = provider
+        self.options = embedding_options_for_config(config, options)
+        self.batch_size = self.options.batch_size
 
     def index_version(
         self,
@@ -65,7 +70,7 @@ class KnowledgeVectorIndexer:
             if (
                 row is not None
                 and row.status == "ready"
-                and row.dimensions == self.config.embedding_dimensions
+                and row.dimensions == self._expected_dimensions()
             ):
                 skipped += 1
                 continue
@@ -73,12 +78,17 @@ class KnowledgeVectorIndexer:
 
         indexed = 0
         failed = 0
-        for batch in _batches(pending, MAX_EMBEDDING_BATCH_SIZE):
+        for batch in _batches(pending, self.batch_size):
             texts = [chunk.content for chunk, _ in batch]
             try:
                 vectors = self.provider.embed(texts)
-                if len(vectors) != len(batch) or any(
-                    len(vector) != self.config.embedding_dimensions for vector in vectors
+                expected_dimensions = self._expected_dimensions()
+                if expected_dimensions is None and vectors:
+                    expected_dimensions = len(vectors[0])
+                    self.config.embedding_dimensions = expected_dimensions
+                if len(vectors) != len(batch) or (
+                    expected_dimensions is not None
+                    and any(len(vector) != expected_dimensions for vector in vectors)
                 ):
                     raise EmbeddingError("EMBEDDING_DIMENSION_MISMATCH")
             except Exception as exc:  # noqa: BLE001 - isolate failures to this batch.
@@ -96,7 +106,7 @@ class KnowledgeVectorIndexer:
                             retrieval_config_id=self.config.id,
                             embedding_model=self.config.embedding_model,
                             content_sha256=content_sha256,
-                            dimensions=self.config.embedding_dimensions,
+                            dimensions=self._expected_dimensions() or 0,
                             vector_json=[],
                         )
                         self.db.add(row)
@@ -122,7 +132,7 @@ class KnowledgeVectorIndexer:
                         retrieval_config_id=self.config.id,
                         embedding_model=self.config.embedding_model,
                         content_sha256=content_sha256,
-                        dimensions=self.config.embedding_dimensions,
+                        dimensions=self._expected_dimensions() or 0,
                         vector_json=[],
                     )
                     self.db.add(row)
@@ -136,6 +146,11 @@ class KnowledgeVectorIndexer:
             indexed += len(batch)
 
         return IndexSummary(indexed=indexed, skipped=skipped, failed=failed)
+
+    def _expected_dimensions(self) -> int | None:
+        return self.options.dimensions or (
+            self.config.embedding_dimensions if self.config.embedding_dimensions > 0 else None
+        )
 
 
 def _batches(
