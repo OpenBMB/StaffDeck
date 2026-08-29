@@ -25,6 +25,7 @@ engine: Engine = create_engine(database_url, echo=False, connect_args=connect_ar
 _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID = "20260712_default_model_output_tokens_8192"
 _LEGACY_DEFAULT_MODEL_OUTPUT_TOKENS = 2048
 _MODEL_API_PROTOCOLS_MIGRATION_ID = "20260722_model_api_protocols_v1"
+_MODEL_AUTH_MODE_MIGRATION_ID = "20260828_model_auth_mode_v1"
 _DEFAULT_MODEL_OUTPUT_TOKENS = 8192
 _MODEL_API_PROTOCOL_COLUMNS = {
     "extra_body_json",
@@ -1436,9 +1437,41 @@ def _migrate_channel_account_key_schema(conn, tables: set[str]) -> None:
         )
 
 
+def _migrate_model_auth_modes(conn, tables: set[str]) -> None:
+    if "model_configs" not in tables:
+        return
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(model_configs)")).all()
+    }
+    if "auth_mode" not in columns:
+        conn.execute(
+            text(
+                "ALTER TABLE model_configs ADD COLUMN auth_mode VARCHAR "
+                "NOT NULL DEFAULT 'api_key'"
+            )
+        )
+    conn.execute(
+        text("INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _MODEL_AUTH_MODE_MIGRATION_ID},
+    )
+
+
 def _migrate_model_api_protocols(conn, tables: set[str]) -> None:
     if "model_configs" not in tables:
         return
+
+    _migrate_model_auth_modes(conn, tables)
 
     conn.execute(
         text(

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { ApiError } from '../api/client';
-import { modelActionError, modelProviderDiagnosticText, modelProviderErrorMessage } from './ModelsPage';
+import {
+  modelActionError,
+  modelAuthModeLabel,
+  modelProviderDiagnosticText,
+  modelProviderErrorMessage,
+} from './ModelsPage';
 
 describe('model provider diagnostics', () => {
   it('shows a friendly message and keeps raw upstream fields out of it', () => {
@@ -75,5 +80,14 @@ describe('model provider diagnostics', () => {
     const error = new ApiError(422, JSON.stringify({ detail: 'MODEL_NEW_FAILURE' }), '');
 
     expect(modelActionError(error, '保存失败')).toBe('操作失败（错误码：MODEL_NEW_FAILURE）');
+  });
+
+  it('labels authentication modes and explains subscription-specific failures', () => {
+    expect(modelAuthModeLabel('api_key')).toBe('API Key');
+    expect(modelAuthModeLabel('chatgpt_subscription')).toBe('ChatGPT 订阅（Codex）');
+    expect(modelProviderErrorMessage({
+      code: 'MODEL_SUBSCRIPTION_AUTH_REQUIRED',
+      message: 'login required',
+    }, '测试失败')).toBe('请先连接本机的 ChatGPT 订阅，再测试或启用此模型。');
   });
 });

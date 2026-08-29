@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import pytest
 from fastapi import HTTPException
@@ -14,6 +15,7 @@ from app.api.model_configs import (
     set_default_model_config,
     update_model_config,
 )
+import app.api.model_configs as model_configs_module
 from app.api.model_configs import (
     test_model_config as run_model_config_test,
 )
@@ -199,6 +201,131 @@ def test_openai_responses_model_config_can_be_created(tmp_path) -> None:
         assert created.api_protocol == "openai_responses"
         assert created.protocol_options == {}
         assert created.enabled is False
+
+
+def test_subscription_model_config_can_be_created_without_an_api_key(tmp_path) -> None:
+    with _db(tmp_path) as db:
+        try:
+            created = create_model_config(
+                ModelConfigCreateRequest(
+                    tenant_id="tenant_a",
+                    name="Codex subscription",
+                    auth_mode="chatgpt_subscription",
+                    model="gpt-5.1-codex",
+                ),
+                db=db,
+                current_user=_admin(),
+            )
+        except HTTPException as exc:
+            pytest.fail(f"subscription model should not require an API key: {exc.detail}")
+
+        assert created.auth_mode == "chatgpt_subscription"
+        assert created.api_protocol == "codex_app_server"
+        assert created.api_key_masked == ""
+        stored = db.get(ModelConfig, created.id)
+        assert stored is not None
+        assert stored.api_key_encrypted == ""
+
+
+def test_switching_to_subscription_clears_direct_model_credentials(tmp_path) -> None:
+    with _db(tmp_path) as db:
+        db.add(
+            ModelConfig(
+                id="direct_model",
+                tenant_id="tenant_a",
+                name="Direct model",
+                api_protocol="openai_responses",
+                base_url="https://example.invalid/v1",
+                api_key_encrypted=encrypt_secret("direct-secret"),
+                model="gpt-direct",
+                extra_body_json={"vendor": "value"},
+                protocol_options_json={"openai_responses": {}},
+            )
+        )
+        db.commit()
+
+        updated = update_model_config(
+            "direct_model",
+            ModelConfigUpdateRequest(
+                tenant_id="tenant_a",
+                auth_mode="chatgpt_subscription",
+                model="gpt-5.1-codex",
+            ),
+            db=db,
+            current_user=_admin(),
+        )
+
+        assert updated.auth_mode == "chatgpt_subscription"
+        assert updated.api_protocol == "codex_app_server"
+        assert updated.base_url is None
+        stored = db.get(ModelConfig, "direct_model")
+        assert stored is not None
+        assert stored.api_key_encrypted == ""
+        assert stored.extra_body_json == {}
+        assert stored.protocol_options_json == {}
+
+
+@dataclass
+class _SubscriptionAccount:
+    status: str
+    plan_type: str | None
+    message: str
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "status": self.status,
+            "plan_type": self.plan_type,
+            "message": self.message,
+        }
+
+
+class _SubscriptionRuntime:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def account_status(self) -> _SubscriptionAccount:
+        self.calls.append("status")
+        return _SubscriptionAccount("connected", "plus", "已连接 ChatGPT 订阅")
+
+    def start_login(self) -> _SubscriptionAccount:
+        self.calls.append("login")
+        return _SubscriptionAccount("pending", None, "已在默认浏览器中打开 ChatGPT 授权页面")
+
+    def cancel_login(self) -> _SubscriptionAccount:
+        self.calls.append("cancel")
+        return _SubscriptionAccount("requires_login", None, "尚未连接 ChatGPT 订阅")
+
+    def logout(self) -> _SubscriptionAccount:
+        self.calls.append("logout")
+        return _SubscriptionAccount("requires_login", None, "尚未连接 ChatGPT 订阅")
+
+
+def test_subscription_account_routes_return_only_safe_status(monkeypatch) -> None:
+    required = (
+        "get_codex_subscription_account",
+        "start_codex_subscription_login",
+        "cancel_codex_subscription_login",
+        "logout_codex_subscription",
+    )
+    if any(not hasattr(model_configs_module, name) for name in required):
+        pytest.fail("model configuration API must expose subscription account controls")
+
+    runtime = _SubscriptionRuntime()
+    monkeypatch.setattr(model_configs_module, "get_codex_app_server", lambda: runtime)
+
+    connected = model_configs_module.get_codex_subscription_account("tenant_a", _admin())
+    pending = model_configs_module.start_codex_subscription_login("tenant_a", _admin())
+    cancelled = model_configs_module.cancel_codex_subscription_login("tenant_a", _admin())
+    logged_out = model_configs_module.logout_codex_subscription("tenant_a", _admin())
+
+    assert connected.status == "connected"
+    assert connected.plan_type == "plus"
+    assert pending.status == "pending"
+    assert cancelled.status == "requires_login"
+    assert logged_out.status == "requires_login"
+    assert runtime.calls == ["status", "login", "cancel", "logout"]
+    assert "authUrl" not in str(connected.model_dump())
+    assert "secret" not in str(pending.model_dump())
 
 
 def test_chat_extra_body_is_not_validated_as_protocol_options(tmp_path) -> None:

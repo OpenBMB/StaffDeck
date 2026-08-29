@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, FlaskConical, LoaderCircle, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Check, FlaskConical, LoaderCircle, LogIn, LogOut, Trash2 } from 'lucide-react';
 
 import { api, ApiError, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
@@ -39,15 +39,17 @@ import IconRefresh from '../assets/icons/refresh.svg?react';
 import IconSearch from '../assets/icons/search.svg?react';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { useClientPagination } from '../hooks/useClientPagination';
-import type { ModelConfigRead } from '../types';
+import type { CodexSubscriptionAccountRead, ModelAuthMode, ModelConfigRead } from '../types';
 import { OPEN_MODEL_CREATE_EVENT } from '@/components/QuickStartGuide';
 
 const MODEL_PAGE_SIZE = 8;
 const MODEL_TEST_UI_TIMEOUT_MS = 100_000;
+type ApiKeyProtocol = Exclude<ModelConfigRead['api_protocol'], 'codex_app_server'>;
 
 type ModelForm = {
   name: string;
-  api_protocol: 'openai_chat_completions' | 'openai_responses' | 'anthropic_messages' | 'gemini_generate_content';
+  auth_mode: ModelAuthMode;
+  api_protocol: ApiKeyProtocol;
   base_url: string;
   model: string;
   api_key: string;
@@ -79,6 +81,7 @@ type ModelTestResponse = {
 
 const BLANK_MODEL_FORM: ModelForm = {
   name: '',
+  auth_mode: 'api_key',
   api_protocol: 'openai_chat_completions',
   base_url: '',
   model: '',
@@ -109,6 +112,9 @@ const MODEL_PROVIDER_USER_MESSAGES: Record<string, string> = {
   MODEL_PROVIDER_UNSUPPORTED: '当前模型服务商暂不受支持。',
   MODEL_RATE_LIMITED: '请求过于频繁，已被限流，请稍后重试。',
   MODEL_REQUEST_TOO_LARGE: '请求内容过大，请精简后重试。',
+  MODEL_SUBSCRIPTION_ACCESS_DENIED: '当前 ChatGPT 订阅无权使用此模型，请检查订阅权益或模型名称。',
+  MODEL_SUBSCRIPTION_AUTH_REQUIRED: '请先连接本机的 ChatGPT 订阅，再测试或启用此模型。',
+  MODEL_SUBSCRIPTION_RUNTIME_UNAVAILABLE: '本机 Codex 订阅运行时不可用，请确认已安装 Codex 并重新连接订阅。',
   MODEL_TIMEOUT: '连接模型服务超时，请检查网络后重试。',
   MODEL_TOO_MANY_IMAGES: '图片数量超出限制，请减少图片数量后重试。',
   MODEL_UPSTREAM_CONFLICT: '模型服务状态发生冲突，请稍后重试。',
@@ -120,6 +126,10 @@ const MODEL_PROVIDER_USER_MESSAGES: Record<string, string> = {
 };
 
 const MODEL_PROVIDER_GENERIC_MESSAGE = '连接模型服务失败，请稍后重试或联系管理员。';
+
+export function modelAuthModeLabel(authMode: ModelAuthMode | string | null | undefined): string {
+  return authMode === 'chatgpt_subscription' ? 'ChatGPT 订阅（Codex）' : 'API Key';
+}
 
 export function modelProviderErrorMessage(
   error: ModelProviderErrorDetail | null | undefined,
@@ -214,10 +224,13 @@ export default function ModelsPage({
   const [saveStage, setSaveStage] = useState<'saving' | 'testing' | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelConfigRead | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [subscriptionAccount, setSubscriptionAccount] = useState<CodexSubscriptionAccountRead | null>(null);
+  const [subscriptionLoading, setSubscriptionLoading] = useState(false);
+  const [subscriptionLogoutConfirmOpen, setSubscriptionLogoutConfirmOpen] = useState(false);
   const testingModelIdsRef = useRef(new Set<string>());
   const [testingModelIds, setTestingModelIds] = useState<Set<string>>(new Set());
   const [form, setForm] = useState<ModelForm>(BLANK_MODEL_FORM);
-  const [availableProtocols, setAvailableProtocols] = useState<ModelForm['api_protocol'][]>(['openai_chat_completions']);
+  const [availableProtocols, setAvailableProtocols] = useState<ApiKeyProtocol[]>(['openai_chat_completions']);
 
   const updateForm = <K extends keyof ModelForm>(key: K, value: ModelForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -236,12 +249,30 @@ export default function ModelsPage({
       });
   };
 
+  const loadSubscriptionAccount = useCallback(async () => {
+    try {
+      const account = await api.get<CodexSubscriptionAccountRead>(
+        `/api/enterprise/model-configs/codex-subscription/account?tenant_id=${TENANT_ID}`,
+      );
+      setSubscriptionAccount(account);
+    } catch (error) {
+      notify.error(apiErrorMessage(error, '无法读取 ChatGPT 订阅状态'));
+    }
+  }, []);
+
   useEffect(() => {
     void load();
     void api
-      .get<{ protocols: ModelForm['api_protocol'][] }>(`/api/enterprise/model-configs/protocols?tenant_id=${TENANT_ID}`)
+      .get<{ protocols: ApiKeyProtocol[] }>(`/api/enterprise/model-configs/protocols?tenant_id=${TENANT_ID}`)
       .then((result) => setAvailableProtocols(result.protocols));
-  }, []);
+    void loadSubscriptionAccount();
+  }, [loadSubscriptionAccount]);
+
+  useEffect(() => {
+    if (subscriptionAccount?.status !== 'pending') return;
+    const intervalId = window.setInterval(() => void loadSubscriptionAccount(), 2_000);
+    return () => window.clearInterval(intervalId);
+  }, [loadSubscriptionAccount, subscriptionAccount?.status]);
 
   useEffect(() => {
     const openCreate = () => createBlank();
@@ -253,7 +284,7 @@ export default function ModelsPage({
     const keyword = searchText.trim().toLowerCase();
     if (!keyword) return rows;
     return rows.filter((row) =>
-      [row.name, row.model, row.api_protocol, row.base_url || ''].some((value) =>
+      [row.name, row.model, row.api_protocol, row.base_url || '', modelAuthModeLabel(row.auth_mode)].some((value) =>
         (value || '').toLowerCase().includes(keyword),
       ),
     );
@@ -264,12 +295,16 @@ export default function ModelsPage({
   const enabledCount = rows.filter((item) => item.enabled).length;
   const defaultRow = rows.find((item) => item.is_default);
   const providerCount = new Set(rows.map((item) => item.api_protocol).filter(Boolean)).size;
+  const isSubscriptionForm = form.auth_mode === 'chatgpt_subscription';
 
   function edit(row: ModelConfigRead) {
     setSelected(row);
     setForm({
       name: row.name,
-      api_protocol: row.api_protocol,
+      auth_mode: row.auth_mode || 'api_key',
+      api_protocol: row.auth_mode === 'chatgpt_subscription'
+        ? 'openai_chat_completions'
+        : row.api_protocol as ApiKeyProtocol,
       base_url: row.base_url || '',
       model: row.model,
       api_key: '',
@@ -307,29 +342,34 @@ export default function ModelsPage({
       notify.error('Temperature 与 Max Tokens 必须是数字');
       return;
     }
-    let extraBody: Record<string, unknown>;
-    try {
-      const parsed = JSON.parse(form.extra_body.trim() || '{}') as unknown;
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('not an object');
+    let extraBody: Record<string, unknown> = {};
+    if (!isSubscriptionForm) {
+      try {
+        const parsed = JSON.parse(form.extra_body.trim() || '{}') as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('not an object');
+        }
+        extraBody = parsed as Record<string, unknown>;
+      } catch {
+        notify.error('额外参数必须是合法的 JSON 对象');
+        return;
       }
-      extraBody = parsed as Record<string, unknown>;
-    } catch {
-      notify.error('额外参数必须是合法的 JSON 对象');
-      return;
     }
     const payload = {
       tenant_id: TENANT_ID,
       name,
-      api_protocol: form.api_protocol,
-      base_url: form.base_url.trim() || undefined,
+      auth_mode: form.auth_mode,
       model,
       temperature,
       max_output_tokens: maxOutputTokens,
-      extra_body: extraBody,
       is_default: form.enabled && form.is_default,
       enabled: form.enabled,
-      api_key: form.api_key || undefined,
+      ...(isSubscriptionForm ? {} : {
+        api_protocol: form.api_protocol,
+        base_url: form.base_url.trim() || undefined,
+        extra_body: extraBody,
+        api_key: form.api_key || undefined,
+      }),
     };
     setSaving(true);
     setSaveStage(form.enabled ? 'testing' : 'saving');
@@ -363,6 +403,37 @@ export default function ModelsPage({
       setSaving(false);
       setSaveStage(null);
     }
+  }
+
+  async function updateSubscriptionAccount(
+    action: 'login' | 'login/cancel' | 'logout',
+    fallback: string,
+  ) {
+    setSubscriptionLoading(true);
+    try {
+      const account = await api.post<CodexSubscriptionAccountRead>(
+        `/api/enterprise/model-configs/codex-subscription/${action}?tenant_id=${TENANT_ID}`,
+      );
+      setSubscriptionAccount(account);
+      notify.success(account.message);
+    } catch (error) {
+      notify.error(apiErrorMessage(error, fallback));
+    } finally {
+      setSubscriptionLoading(false);
+    }
+  }
+
+  function startSubscriptionLogin() {
+    void updateSubscriptionAccount('login', '无法打开 ChatGPT 授权页面');
+  }
+
+  function cancelSubscriptionLogin() {
+    void updateSubscriptionAccount('login/cancel', '无法取消 ChatGPT 授权');
+  }
+
+  function confirmSubscriptionLogout() {
+    setSubscriptionLogoutConfirmOpen(false);
+    void updateSubscriptionAccount('logout', '无法退出本机 ChatGPT 订阅');
   }
 
   async function confirmDelete() {
@@ -481,23 +552,32 @@ export default function ModelsPage({
             {row.is_default && <StatusBadge tone="green">默认</StatusBadge>}
           </span>
           <span className="truncate text-[#858b9c]">
-            {row.enabled ? '已启用' : '已停用'} · {row.api_protocol}
+            {row.enabled ? '已启用' : '已停用'} · {modelAuthModeLabel(row.auth_mode)}
           </span>
         </div>
       ),
     },
     { key: 'model', title: '模型', width: 180, render: (row) => <span className="block truncate">{row.model}</span> },
     {
-      key: 'base_url',
-      title: 'Base URL',
+      key: 'auth_mode',
+      title: '认证方式',
       className: 'whitespace-normal',
-      render: (row) => <span className="line-clamp-1 wrap-break-word text-[#858b9c]">{row.base_url || '-'}</span>,
+      render: (row) => (
+        <div className="flex min-w-0 flex-col gap-[2px]">
+          <span className="line-clamp-1 wrap-break-word text-[#464c5e]">{modelAuthModeLabel(row.auth_mode)}</span>
+          <span className="line-clamp-1 wrap-break-word text-[#858b9c]">
+            {row.auth_mode === 'chatgpt_subscription' ? '本机 Codex' : row.base_url || '未设置 Base URL'}
+          </span>
+        </div>
+      ),
     },
     {
       key: 'api_key',
       title: 'API Key',
       width: 180,
-      render: (row) => <span className="block truncate font-mono text-[#858b9c]">{row.api_key_masked || '-'}</span>,
+      render: (row) => <span className="block truncate font-mono text-[#858b9c]">
+        {row.auth_mode === 'chatgpt_subscription' ? '无需 API Key' : row.api_key_masked || '-'}
+      </span>,
     },
     {
       key: 'actions',
@@ -520,14 +600,14 @@ export default function ModelsPage({
             {row.is_default && <StatusBadge tone="green">默认</StatusBadge>}
           </span>
           <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">
-            {row.enabled ? '已启用' : '已停用'} · {row.api_protocol}
+            {row.enabled ? '已启用' : '已停用'} · {modelAuthModeLabel(row.auth_mode)}
           </span>
         </div>
         {renderActions(row)}
       </div>
       <p className="mt-[8px] line-clamp-1 wrap-break-word text-[12px] text-[#858b9c]">{row.model}</p>
       <p className="mt-[4px] line-clamp-1 wrap-break-word font-mono text-[12px] text-[#858b9c]">
-        {row.api_key_masked || '-'}
+        {row.auth_mode === 'chatgpt_subscription' ? '本机 Codex 订阅' : row.api_key_masked || '-'}
       </p>
     </article>
   );
@@ -642,48 +722,113 @@ export default function ModelsPage({
               <LabeledField label="名称">
                 <Input value={form.name} placeholder="例如 GPT-4o" onChange={(event) => updateForm('name', event.target.value)} />
               </LabeledField>
-              <LabeledField label="API 协议">
+              <LabeledField label="认证方式">
                 <Select
-                  value={form.api_protocol}
-                  onValueChange={(value) => updateForm('api_protocol', value as ModelForm['api_protocol'])}
+                  value={form.auth_mode}
+                  onValueChange={(value) => updateForm('auth_mode', value as ModelAuthMode)}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {availableProtocols.includes('openai_chat_completions') && (
-                      <SelectItem value="openai_chat_completions">OpenAI Chat Completions</SelectItem>
-                    )}
-                    {availableProtocols.includes('openai_responses') && (
-                      <SelectItem value="openai_responses">OpenAI Responses API</SelectItem>
-                    )}
-                    {availableProtocols.includes('anthropic_messages') && (
-                      <SelectItem value="anthropic_messages">Anthropic Messages</SelectItem>
-                    )}
-                    {availableProtocols.includes('gemini_generate_content') && (
-                      <SelectItem value="gemini_generate_content">Gemini Generate Content</SelectItem>
-                    )}
+                    <SelectItem value="api_key">API Key</SelectItem>
+                    <SelectItem value="chatgpt_subscription">ChatGPT 订阅（Codex）</SelectItem>
                   </SelectContent>
                 </Select>
-              </LabeledField>
-              <LabeledField label="Base URL">
-                <Input
-                  value={form.base_url}
-                  placeholder={form.api_protocol === 'openai_chat_completions' || form.api_protocol === 'openai_responses'
-                    ? 'https://llm-center.modelbest.cn/llm/v1'
-                    : 'https://llm-center.modelbest.cn/llm'}
-                  onChange={(event) => updateForm('base_url', event.target.value)}
-                />
               </LabeledField>
               <LabeledField label="Model">
                 <Input value={form.model} placeholder="例如 gpt-4o" onChange={(event) => updateForm('model', event.target.value)} />
               </LabeledField>
-              <LabeledField label="API Key">
-                <Input
-                  type="password"
-                  value={form.api_key}
-                  placeholder={selected ? '不修改请留空' : 'sk-...'}
-                  onChange={(event) => updateForm('api_key', event.target.value)}
-                />
-              </LabeledField>
+              {isSubscriptionForm ? (
+                <div className="flex flex-col gap-[10px] rounded-[10px] border border-[#dce7ff] bg-[#f6f9ff] p-[12px] sm:col-span-2">
+                  <div className="flex flex-wrap items-start justify-between gap-[10px]">
+                    <div className="min-w-0">
+                      <p className="text-[12px] font-medium text-[#29466f]">本机 ChatGPT 订阅</p>
+                      <p className="mt-[3px] text-[12px] leading-[18px] text-[#5d6f8c]">
+                        {subscriptionAccount?.message || '正在读取本机 Codex 订阅状态…'}
+                        {subscriptionAccount?.status === 'connected' && subscriptionAccount.plan_type
+                          ? `（${subscriptionAccount.plan_type}）`
+                          : ''}
+                      </p>
+                    </div>
+                    {subscriptionAccount?.status === 'connected' ? (
+                      <UIButton
+                        type="button"
+                        variant="outline"
+                        disabled={subscriptionLoading}
+                        onClick={() => setSubscriptionLogoutConfirmOpen(true)}
+                        className="h-[30px] gap-[4px] border-[#cbd8f2] bg-white px-[10px] text-[12px] text-[#464c5e]"
+                      >
+                        <LogOut className="size-[13px]" />
+                        退出本机订阅
+                      </UIButton>
+                    ) : subscriptionAccount?.status === 'pending' ? (
+                      <UIButton
+                        type="button"
+                        variant="outline"
+                        disabled={subscriptionLoading}
+                        onClick={cancelSubscriptionLogin}
+                        className="h-[30px] border-[#cbd8f2] bg-white px-[10px] text-[12px] text-[#464c5e]"
+                      >
+                        取消授权
+                      </UIButton>
+                    ) : (
+                      <UIButton
+                        type="button"
+                        disabled={subscriptionLoading}
+                        onClick={startSubscriptionLogin}
+                        className="h-[30px] gap-[4px] bg-[#1a71ff] px-[10px] text-[12px] text-white hover:bg-[#1463df]"
+                      >
+                        {subscriptionLoading ? <LoaderCircle className="size-[13px] animate-spin" /> : <LogIn className="size-[13px]" />}
+                        连接 ChatGPT 订阅
+                      </UIButton>
+                    )}
+                  </div>
+                  <p className="text-[11px] leading-[16px] text-[#7483a0]">
+                    授权会在默认浏览器中完成。StaffDeck 不保存 API Key、OAuth code 或访问令牌。
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <LabeledField label="API 协议">
+                    <Select
+                      value={form.api_protocol}
+                      onValueChange={(value) => updateForm('api_protocol', value as ApiKeyProtocol)}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {availableProtocols.includes('openai_chat_completions') && (
+                          <SelectItem value="openai_chat_completions">OpenAI Chat Completions</SelectItem>
+                        )}
+                        {availableProtocols.includes('openai_responses') && (
+                          <SelectItem value="openai_responses">OpenAI Responses API</SelectItem>
+                        )}
+                        {availableProtocols.includes('anthropic_messages') && (
+                          <SelectItem value="anthropic_messages">Anthropic Messages</SelectItem>
+                        )}
+                        {availableProtocols.includes('gemini_generate_content') && (
+                          <SelectItem value="gemini_generate_content">Gemini Generate Content</SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </LabeledField>
+                  <LabeledField label="Base URL">
+                    <Input
+                      value={form.base_url}
+                      placeholder={form.api_protocol === 'openai_chat_completions' || form.api_protocol === 'openai_responses'
+                        ? 'https://llm-center.modelbest.cn/llm/v1'
+                        : 'https://llm-center.modelbest.cn/llm'}
+                      onChange={(event) => updateForm('base_url', event.target.value)}
+                    />
+                  </LabeledField>
+                  <LabeledField label="API Key">
+                    <Input
+                      type="password"
+                      value={form.api_key}
+                      placeholder={selected ? '不修改请留空' : 'sk-...'}
+                      onChange={(event) => updateForm('api_key', event.target.value)}
+                    />
+                  </LabeledField>
+                </>
+              )}
               <div className="grid grid-cols-2 gap-[14px]">
                 <LabeledField label="Temperature">
                   <Input
@@ -705,7 +850,7 @@ export default function ModelsPage({
                   />
                 </LabeledField>
               </div>
-              {form.api_protocol === 'openai_chat_completions' && <div className="sm:col-span-2">
+              {!isSubscriptionForm && form.api_protocol === 'openai_chat_completions' && <div className="sm:col-span-2">
                 <LabeledField label="额外请求参数（extra_body JSON）">
                   <Textarea
                     rows={5}
@@ -760,6 +905,17 @@ export default function ModelsPage({
           : '删除后，相关数字员工中的模型绑定也会一并移除，操作不可撤销。'}
         confirmText="删除"
         onConfirm={() => void confirmDelete()}
+      />
+
+      <ConfirmDialog
+        open={subscriptionLogoutConfirmOpen}
+        onOpenChange={setSubscriptionLogoutConfirmOpen}
+        loading={subscriptionLoading}
+        destructive={false}
+        title="退出本机 ChatGPT 订阅？"
+        description="这会退出当前设备上 Codex 使用的 ChatGPT 订阅。所有采用“ChatGPT 订阅（Codex）”的模型都会失去授权；API Key 模型不受影响。"
+        confirmText="退出订阅"
+        onConfirm={confirmSubscriptionLogout}
       />
     </div>
   );

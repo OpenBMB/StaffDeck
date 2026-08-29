@@ -15,6 +15,7 @@ from openai import OpenAI
 from anthropic import Anthropic
 
 from app.config import get_settings
+from app.codex_subscription import get_codex_app_server
 from app.db.models import ModelConfig
 from app.llm.model_protocols import ModelApiProtocol
 from app.llm.output_policy import (
@@ -25,6 +26,7 @@ from app.llm.protocol_drivers import (
     AnthropicMessagesDriver,
     CancellationToken,
     ChatCompletionsDriver,
+    CodexAppServerDriver,
     GeminiGenerateContentDriver,
     OpenAIResponsesDriver,
     ProtocolCallError,
@@ -102,16 +104,21 @@ class LLMClient:
             )
         except ValueError as exc:
             raise LLMError("MODEL_PROTOCOL_UNSUPPORTED") from exc
-        api_key = decrypt_secret(model_config.api_key_encrypted)
-        if not api_key:
-            raise LLMError("Model API key is not configured")
+        api_key = ""
+        if protocol is not ModelApiProtocol.CODEX_APP_SERVER:
+            api_key = decrypt_secret(model_config.api_key_encrypted)
+            if not api_key:
+                raise LLMError("Model API key is not configured")
         self.timeout_seconds = (
             getattr(model_config, "timeout_seconds", None)
             or get_settings().model_api_timeout_seconds
             or DEFAULT_MODEL_API_TIMEOUT_SECONDS
         )
         self.base_url = str(model_config.base_url or "")
-        if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
+        if protocol is ModelApiProtocol.CODEX_APP_SERVER:
+            self.client = None
+            self.driver = CodexAppServerDriver(get_codex_app_server(), model_config.model)
+        elif protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
             self.client = OpenAI(
                 api_key=api_key,
                 base_url=self.base_url,
@@ -528,6 +535,7 @@ class LLMClient:
         self,
     ) -> (
         ChatCompletionsDriver
+        | CodexAppServerDriver
         | OpenAIResponsesDriver
         | AnthropicMessagesDriver
         | GeminiGenerateContentDriver

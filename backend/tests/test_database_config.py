@@ -313,6 +313,14 @@ def test_model_protocol_migration_preserves_legacy_chat_and_normalizes_defaults(
 
         _migrate_model_api_protocols(conn, {"model_configs"})
 
+        columns = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(model_configs)")).all()
+        }
+        assert "auth_mode" in columns
+        assert conn.execute(
+            text("SELECT auth_mode FROM model_configs WHERE id = 'older'")
+        ).scalar_one() == "api_key"
+
         rows = {
             row["id"]: row
             for row in conn.execute(

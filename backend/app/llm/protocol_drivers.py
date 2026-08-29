@@ -13,6 +13,8 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
+from app.codex_subscription import CodexAppServer, CodexAppServerError
+
 
 _DATA_URL = re.compile(r"^data:(image/(?:jpeg|png|gif|webp));base64,(.+)$", re.DOTALL)
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -105,6 +107,90 @@ class ChatCompletionsDriver:
                     close()
 
         return iterate()
+
+
+@dataclass(frozen=True)
+class CodexAppServerDriver:
+    """Map StaffDeck's internal prompt shape to a local Codex subscription turn."""
+
+    app_server: CodexAppServer
+    model: str
+    request_kind: str = "codex.app_server"
+
+    def observable_request(
+        self,
+        request: dict[str, Any],
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "messages": request.get("messages") or [],
+            "stream": stream,
+        }
+
+    def complete(self, request: dict[str, Any]) -> Any:
+        text = "".join(self._text_stream(request))
+        return SimpleNamespace(
+            id=None,
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=text),
+                    finish_reason="stop",
+                )
+            ],
+        )
+
+    def stream(self, request: dict[str, Any]) -> Iterator[Any]:
+        def iterate() -> Iterator[Any]:
+            for text in self._text_stream(request):
+                yield _stream_chunk(None, text=text)
+            yield _stream_chunk(None, finish_reason="stop")
+
+        return iterate()
+
+    def _text_stream(self, request: dict[str, Any]) -> Iterator[str]:
+        _raise_if_cancelled(request)
+        system_prompt, user_prompt = _codex_prompts(request.get("messages") or [])
+        try:
+            for text in self.app_server.stream_text(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=self.model,
+                cancellation=request.get("_cancellation"),
+            ):
+                _raise_if_cancelled(request)
+                if text:
+                    yield text
+        except ProtocolCallError:
+            raise
+        except CodexAppServerError as exc:
+            raise ProtocolCallError(exc.code) from exc
+
+
+def _codex_prompts(messages: list[dict[str, Any]]) -> tuple[str, str]:
+    system_parts: list[str] = []
+    conversation_parts: list[str] = []
+    user_parts: list[str] = []
+    for message in messages:
+        role = str(message.get("role") or "user")
+        content = _content_text(message.get("content"))
+        if not content:
+            continue
+        if role in {"system", "developer"}:
+            system_parts.append(content)
+        elif role == "user":
+            user_parts.append(content)
+            conversation_parts.append(f"用户：{content}")
+        elif role == "assistant":
+            conversation_parts.append(f"助手：{content}")
+
+    system_prompt = "\n\n".join(system_parts)
+    if len(conversation_parts) == 1 and len(user_parts) == 1:
+        return system_prompt, user_parts[0]
+    if conversation_parts:
+        return system_prompt, "\n\n".join(conversation_parts)
+    return system_prompt, ""
 
 
 @dataclass(frozen=True)

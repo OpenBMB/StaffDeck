@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from time import monotonic
 from uuid import uuid4
@@ -9,6 +10,11 @@ from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from app.codex_subscription import (
+    CodexAppServerError,
+    CodexSubscriptionAccount,
+    get_codex_app_server,
+)
 from app.db import get_session
 from app.db.models import AgentModelBinding, ModelConfig, User, utc_now
 from app.llm import LLMClient, LLMError
@@ -20,14 +26,17 @@ from app.llm.model_config_resolver import (
 from app.llm.model_protocols import (
     LEGACY_OPENAI_PROVIDER,
     ModelApiProtocol,
+    ModelAuthMode,
     available_model_protocols,
     current_protocol_options,
     model_config_fingerprint,
     normalize_chat_protocol_options,
     resolve_api_protocol,
+    resolve_auth_mode,
     validate_model_base_url,
 )
 from app.llm.schemas import (
+    CodexSubscriptionAccountRead,
     ModelCapabilityTestResult,
     ModelConfigCreateRequest,
     ModelConfigRead,
@@ -63,13 +72,19 @@ def list_model_protocols(tenant_id: str = Query(...)) -> dict[str, list[str]]:
 
 
 def model_config_read(row: ModelConfig) -> ModelConfigRead:
-    api_key = decrypt_secret(row.api_key_encrypted)
+    auth_mode = resolve_auth_mode(getattr(row, "auth_mode", None))
+    api_key = (
+        decrypt_secret(row.api_key_encrypted)
+        if auth_mode is ModelAuthMode.API_KEY and row.api_key_encrypted
+        else ""
+    )
     extra_body = row.extra_body_json if isinstance(row.extra_body_json, dict) else {}
     return ModelConfigRead(
         id=row.id,
         tenant_id=row.tenant_id,
         name=row.name,
         provider=row.provider,
+        auth_mode=auth_mode.value,
         api_protocol=row.api_protocol,
         base_url=row.base_url,
         api_key_masked=mask_secret(api_key),
@@ -103,6 +118,54 @@ def list_model_configs(
     return [model_config_read(row) for row in rows]
 
 
+@router.get(
+    "/codex-subscription/account",
+    response_model=CodexSubscriptionAccountRead,
+    dependencies=[Depends(require_current_tenant)],
+)
+def get_codex_subscription_account(
+    tenant_id: str = Query(...), current_user: User = Depends(get_current_user)
+) -> CodexSubscriptionAccountRead:
+    ensure_tenant_admin(tenant_id, current_user)
+    return _subscription_account_response(get_codex_app_server().account_status)
+
+
+@router.post(
+    "/codex-subscription/login",
+    response_model=CodexSubscriptionAccountRead,
+    dependencies=[Depends(require_current_tenant)],
+)
+def start_codex_subscription_login(
+    tenant_id: str = Query(...), current_user: User = Depends(get_current_user)
+) -> CodexSubscriptionAccountRead:
+    ensure_tenant_admin(tenant_id, current_user)
+    return _subscription_account_response(get_codex_app_server().start_login)
+
+
+@router.post(
+    "/codex-subscription/login/cancel",
+    response_model=CodexSubscriptionAccountRead,
+    dependencies=[Depends(require_current_tenant)],
+)
+def cancel_codex_subscription_login(
+    tenant_id: str = Query(...), current_user: User = Depends(get_current_user)
+) -> CodexSubscriptionAccountRead:
+    ensure_tenant_admin(tenant_id, current_user)
+    return _subscription_account_response(get_codex_app_server().cancel_login)
+
+
+@router.post(
+    "/codex-subscription/logout",
+    response_model=CodexSubscriptionAccountRead,
+    dependencies=[Depends(require_current_tenant)],
+)
+def logout_codex_subscription(
+    tenant_id: str = Query(...), current_user: User = Depends(get_current_user)
+) -> CodexSubscriptionAccountRead:
+    ensure_tenant_admin(tenant_id, current_user)
+    return _subscription_account_response(get_codex_app_server().logout)
+
+
 @router.post("", response_model=ModelConfigRead)
 def create_model_config(
     request: ModelConfigCreateRequest,
@@ -112,20 +175,32 @@ def create_model_config(
 ) -> ModelConfigRead:
     ensure_tenant_admin(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
-    protocol = resolve_api_protocol(request.api_protocol, request.provider)
-    if not request.api_key:
-        raise HTTPException(status_code=422, detail="MODEL_API_KEY_REQUIRED")
-    validate_model_base_url(request.base_url)
+    auth_mode = resolve_auth_mode(request.auth_mode)
+    if auth_mode is ModelAuthMode.CHATGPT_SUBSCRIPTION:
+        _validate_subscription_request(request)
+        protocol = ModelApiProtocol.CODEX_APP_SERVER
+        base_url = None
+        api_key_encrypted = ""
+        options = {}
+        extra_body = {}
+    else:
+        protocol = resolve_api_protocol(request.api_protocol, request.provider)
+        if not request.api_key:
+            raise HTTPException(status_code=422, detail="MODEL_API_KEY_REQUIRED")
+        validate_model_base_url(request.base_url)
+        base_url = request.base_url
+        api_key_encrypted = encrypt_secret(request.api_key)
+        options = _request_protocol_options(request.protocol_options, protocol)
+        extra_body = _request_extra_body(request.extra_body, protocol)
     _validate_sampling(protocol, request.temperature, request.max_output_tokens)
-    options = _request_protocol_options(request.protocol_options, protocol)
-    extra_body = _request_extra_body(request.extra_body, protocol)
     row = ModelConfig(
         tenant_id=request.tenant_id,
         name=request.name,
         provider=LEGACY_OPENAI_PROVIDER,
+        auth_mode=auth_mode.value,
         api_protocol=protocol.value,
-        base_url=request.base_url,
-        api_key_encrypted=encrypt_secret(request.api_key),
+        base_url=base_url,
+        api_key_encrypted=api_key_encrypted,
         model=request.model,
         temperature=request.temperature,
         max_output_tokens=request.max_output_tokens,
@@ -160,11 +235,23 @@ def update_model_config(
     has_other_available_model = _has_available_model(
         db, request.tenant_id, exclude_config_id=config_id
     )
-    protocol = (
-        resolve_api_protocol(request.api_protocol, request.provider)
-        if (request.api_protocol is not None or request.provider is not None)
-        else ModelApiProtocol(row.api_protocol)
-    )
+    current_auth_mode = resolve_auth_mode(getattr(row, "auth_mode", None))
+    auth_mode = resolve_auth_mode(request.auth_mode or current_auth_mode)
+    if auth_mode is ModelAuthMode.CHATGPT_SUBSCRIPTION:
+        _validate_subscription_update_request(request)
+        protocol = ModelApiProtocol.CODEX_APP_SERVER
+    else:
+        if (
+            current_auth_mode is ModelAuthMode.CHATGPT_SUBSCRIPTION
+            and request.auth_mode is not None
+            and not request.api_key
+        ):
+            raise HTTPException(status_code=422, detail="MODEL_API_KEY_REQUIRED")
+        protocol = (
+            resolve_api_protocol(request.api_protocol, request.provider)
+            if (request.api_protocol is not None or request.provider is not None)
+            else ModelApiProtocol(row.api_protocol)
+        )
     target_temperature = request.temperature if request.temperature is not None else row.temperature
     target_tokens = (
         request.max_output_tokens
@@ -172,33 +259,45 @@ def update_model_config(
         else row.max_output_tokens
     )
     _validate_sampling(protocol, target_temperature, target_tokens)
-    if request.base_url is not None:
+    if auth_mode is ModelAuthMode.API_KEY and request.base_url is not None:
         validate_model_base_url(request.base_url)
-    security_changed = protocol.value != row.api_protocol
+    security_changed = (
+        auth_mode is not current_auth_mode or protocol.value != row.api_protocol
+    )
     for field in ("base_url", "model"):
         value = getattr(request, field)
         if value is not None and value != getattr(row, field):
             security_changed = True
-    if request.api_key not in {None, ""}:
+    if auth_mode is ModelAuthMode.API_KEY and request.api_key not in {None, ""}:
         security_changed = True
     requested_options = None
-    if request.protocol_options is not None:
+    if auth_mode is ModelAuthMode.API_KEY and request.protocol_options is not None:
         requested_options = _request_protocol_options(request.protocol_options, protocol)
         if requested_options != current_protocol_options(row.protocol_options_json, protocol):
             security_changed = True
     requested_extra_body = None
-    if request.extra_body is not None:
+    if auth_mode is ModelAuthMode.API_KEY and request.extra_body is not None:
         requested_extra_body = _request_extra_body(request.extra_body, protocol)
         if requested_extra_body != dict(row.extra_body_json or {}):
             security_changed = True
 
-    for field in ("name", "base_url", "model", "temperature", "max_output_tokens"):
+    for field in ("name", "model", "temperature", "max_output_tokens"):
         value = getattr(request, field)
         if value is not None:
             setattr(row, field, value)
+    if auth_mode is ModelAuthMode.API_KEY and request.base_url is not None:
+        row.base_url = request.base_url
+    row.auth_mode = auth_mode.value
     row.api_protocol = protocol.value
     row.provider = LEGACY_OPENAI_PROVIDER
-    if request.api_key not in {None, ""}:
+    if auth_mode is ModelAuthMode.CHATGPT_SUBSCRIPTION:
+        if row.api_key_encrypted:
+            row.key_revision += 1
+        row.api_key_encrypted = ""
+        row.base_url = None
+        row.protocol_options_json = {}
+        row.extra_body_json = {}
+    elif request.api_key not in {None, ""}:
         row.api_key_encrypted = encrypt_secret(request.api_key)
         row.key_revision += 1
     if requested_options is not None:
@@ -539,6 +638,34 @@ def _clear_default(db: Session, tenant_id: str) -> None:
     )
 
 
+def _validate_subscription_request(request: ModelConfigCreateRequest) -> None:
+    if request.api_key:
+        raise HTTPException(status_code=422, detail="MODEL_SUBSCRIPTION_API_KEY_FORBIDDEN")
+    if request.base_url or request.provider or request.api_protocol:
+        raise HTTPException(status_code=422, detail="MODEL_SUBSCRIPTION_DIRECT_CONFIG_FORBIDDEN")
+    if request.extra_body or request.protocol_options:
+        raise HTTPException(status_code=422, detail="MODEL_SUBSCRIPTION_DIRECT_CONFIG_FORBIDDEN")
+
+
+def _subscription_account_response(
+    operation: Callable[[], CodexSubscriptionAccount],
+) -> CodexSubscriptionAccountRead:
+    try:
+        result = operation()
+    except CodexAppServerError as exc:
+        raise HTTPException(status_code=503, detail=exc.code) from exc
+    return CodexSubscriptionAccountRead(**result.to_dict())
+
+
+def _validate_subscription_update_request(request: ModelConfigUpdateRequest) -> None:
+    if request.api_key:
+        raise HTTPException(status_code=422, detail="MODEL_SUBSCRIPTION_API_KEY_FORBIDDEN")
+    if request.base_url or request.provider or request.api_protocol:
+        raise HTTPException(status_code=422, detail="MODEL_SUBSCRIPTION_DIRECT_CONFIG_FORBIDDEN")
+    if request.extra_body or request.protocol_options:
+        raise HTTPException(status_code=422, detail="MODEL_SUBSCRIPTION_DIRECT_CONFIG_FORBIDDEN")
+
+
 def _request_protocol_options(
     protocol_options: dict | None,
     protocol: ModelApiProtocol,
@@ -587,6 +714,7 @@ def _fingerprint(row: ModelConfig) -> str:
         key_revision=row.key_revision,
         protocol_options=current_protocol_options(row.protocol_options_json, protocol),
         security_revision=row.security_revision,
+        auth_mode=getattr(row, "auth_mode", ModelAuthMode.API_KEY),
     )
 
 

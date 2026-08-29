@@ -594,9 +594,10 @@ class ModelConfig(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     name: str
     provider: str = "openai_compatible"
+    auth_mode: str = Field(default="api_key", index=True)
     api_protocol: str = Field(default="openai_chat_completions", index=True)
     base_url: Optional[str] = None
-    api_key_encrypted: str
+    api_key_encrypted: str = ""
     model: str
     temperature: float = 0.2
     max_output_tokens: int = 8192

@@ -12,6 +12,11 @@ const API_ERROR_MESSAGES: Record<string, string> = {
   MODEL_PROTOCOL_CONFLICT: '模型协议参数与额外请求参数冲突，请分别配置',
   MODEL_PROTOCOL_OPTIONS_INVALID: '模型协议选项无效，请检查 API 协议与协议参数',
   MODEL_PROTOCOL_UNSUPPORTED: '当前 API 协议不受支持',
+  MODEL_SUBSCRIPTION_ACCESS_DENIED: '当前 ChatGPT 订阅无权使用此模型，请检查订阅权益或模型名称。',
+  MODEL_SUBSCRIPTION_API_KEY_FORBIDDEN: 'ChatGPT 订阅模型不能配置 API Key。',
+  MODEL_SUBSCRIPTION_AUTH_REQUIRED: '请先连接本机的 ChatGPT 订阅。',
+  MODEL_SUBSCRIPTION_DIRECT_CONFIG_FORBIDDEN: 'ChatGPT 订阅模型不能配置 Base URL 或 API 协议。',
+  MODEL_SUBSCRIPTION_RUNTIME_UNAVAILABLE: '本机 Codex 订阅运行时不可用，请确认已安装 Codex。',
   MODEL_TEMPERATURE_INVALID: 'Temperature 超出当前协议允许范围',
   MODEL_VERIFICATION_STALE: '模型测试状态已变化，请重新测试',
 };
