@@ -42,6 +42,9 @@ from app.llm.schemas import (
     ModelConfigRead,
     ModelConfigTestResponse,
     ModelConfigUpdateRequest,
+    ModelListModelsRequest,
+    ModelListModelsResponse,
+    ModelOption,
     ModelProviderErrorDetail,
 )
 from app.security.auth import get_current_user, require_current_tenant
@@ -69,6 +72,57 @@ MODEL_VERIFICATION_PROBES = (
 )
 def list_model_protocols(tenant_id: str = Query(...)) -> dict[str, list[str]]:
     return {"protocols": available_model_protocols()}
+
+
+@router.post("/list-models", response_model=ModelListModelsResponse)
+def list_provider_models(
+    request: ModelListModelsRequest,
+    current_user: User = Depends(get_current_user),
+) -> ModelListModelsResponse:
+    """按渠道自身的接口拉取可用模型，供新建模型向导自动填充；不落库、不需要已存在的模型配置。"""
+    ensure_tenant_admin(request.tenant_id, current_user)
+    protocol = resolve_api_protocol(request.api_protocol, None)
+    is_subscription = protocol is ModelApiProtocol.CODEX_APP_SERVER
+    if is_subscription:
+        base_url = None
+        api_key_encrypted = ""
+        auth_mode = ModelAuthMode.CHATGPT_SUBSCRIPTION
+    else:
+        if not request.api_key:
+            raise HTTPException(status_code=422, detail="MODEL_API_KEY_REQUIRED")
+        validate_model_base_url(request.base_url)
+        base_url = request.base_url
+        api_key_encrypted = encrypt_secret(request.api_key)
+        auth_mode = ModelAuthMode.API_KEY
+    config = ResolvedModelConfig(
+        id="",
+        tenant_id=request.tenant_id,
+        api_protocol=protocol,
+        base_url=base_url,
+        api_key_encrypted=api_key_encrypted,
+        model="",
+        temperature=0.2,
+        max_output_tokens=1,
+        protocol_options={},
+        legacy_extra_body={},
+        config_revision=0,
+        security_revision=0,
+        purpose="verification",
+        auth_mode=auth_mode,
+        timeout_seconds=15.0,
+    )
+    try:
+        options = LLMClient(config).list_models()
+    except LLMError as exc:
+        return ModelListModelsResponse(
+            success=False,
+            models=[],
+            error=ModelProviderErrorDetail.model_validate(exc.public_detail()),
+        )
+    return ModelListModelsResponse(
+        success=True,
+        models=[ModelOption(id=item["id"], label=item["label"]) for item in options],
+    )
 
 
 def model_config_read(row: ModelConfig) -> ModelConfigRead:

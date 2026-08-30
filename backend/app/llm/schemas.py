@@ -100,3 +100,22 @@ class ModelConfigTestResponse(BaseModel):
     attempt_status: Optional[str] = None
     capabilities: list[ModelCapabilityTestResult] = Field(default_factory=list)
     error: Optional[ModelProviderErrorDetail] = None
+
+
+class ModelListModelsRequest(BaseModel):
+    tenant_id: str
+    api_protocol: str
+    base_url: Optional[str] = None
+    # Absent for the ChatGPT/Codex subscription channel, which needs no API key.
+    api_key: Optional[str] = None
+
+
+class ModelOption(BaseModel):
+    id: str
+    label: str
+
+
+class ModelListModelsResponse(BaseModel):
+    success: bool
+    models: list[ModelOption] = Field(default_factory=list)
+    error: Optional[ModelProviderErrorDetail] = None

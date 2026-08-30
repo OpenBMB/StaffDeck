@@ -263,7 +263,7 @@ class CodexAppServerDriver:
                         continue
                     if params.get("turnId") not in {None, turn_id}:
                         continue
-                    if method == "agentMessage/delta":
+                    if method == "item/agentMessage/delta":
                         delta = params.get("delta")
                         if isinstance(delta, str) and delta:
                             yield _stream_chunk(
@@ -670,6 +670,17 @@ def _gemini_endpoint(
     query = parse_qsl(parsed.query, keep_blank_values=True)
     if stream and ("alt", "sse") not in query:
         query.append(("alt", "sse"))
+    return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query), ""))
+
+
+def _gemini_list_endpoint(base_url: str) -> str:
+    parsed = urlsplit(base_url.rstrip("/"))
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/v1beta"):
+        path = f"{path}/v1beta"
+    path = f"{path}/models"
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query.append(("pageSize", "200"))
     return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query), ""))
 
 

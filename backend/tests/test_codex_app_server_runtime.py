@@ -71,6 +71,22 @@ class _FakeProcess:
             result = {"thread": {"id": "thread-1"}}
         elif method == "turn/start":
             result = {"turn": {"id": "turn-1"}}
+        elif method == "model/list":
+            result = {
+                "data": [
+                    {
+                        "id": "gpt-5.6-terra",
+                        "model": "gpt-5.6-terra",
+                        "displayName": "GPT-5.6-Terra",
+                        "hidden": False,
+                        "isDefault": True,
+                        "defaultReasoningEffort": "medium",
+                        "description": "Balanced agentic coding model.",
+                        "supportedReasoningEfforts": [],
+                    },
+                ],
+                "nextCursor": None,
+            }
         else:
             result = {}
         self.stdout.put({"id": request["id"], "result": result})
@@ -118,6 +134,28 @@ def test_session_initializes_reads_account_and_removes_platform_api_key() -> Non
     assert [request["method"] for request in process.requests] == ["initialize", "account/read"]
     assert process.environment == {"PATH": "/usr/bin"}
     assert process.terminated is True
+
+
+def test_session_lists_available_models() -> None:
+    """model/list 是只读目录查询，返回本机 Codex 管理的可用模型。"""
+    from app.codex_subscription.app_server import CodexAppServerSession
+
+    process = _FakeProcess()
+
+    session = CodexAppServerSession(
+        command="/opt/codex",
+        timeout_seconds=1,
+        command_resolver=lambda configured: configured,
+        process_factory=lambda command, environment: process,
+        environment={},
+    )
+
+    response = session.model_list()
+    session.close()
+
+    assert response["data"][0]["id"] == "gpt-5.6-terra"
+    assert response["data"][0]["displayName"] == "GPT-5.6-Terra"
+    assert [request["method"] for request in process.requests] == ["initialize", "model/list"]
 
 
 def test_session_resolves_the_configured_codex_command_before_starting() -> None:

@@ -43,7 +43,7 @@ def test_driver_completes_a_prompt_with_a_runtime_agent_message() -> None:
     session = _GenerationSession(
         [
             {
-                "method": "agentMessage/delta",
+                "method": "item/agentMessage/delta",
                 "params": {"threadId": "thread-1", "turnId": "turn-1", "delta": "草稿"},
             },
             {
@@ -91,11 +91,11 @@ def test_driver_streams_runtime_text_deltas_then_emits_a_terminal_chunk() -> Non
     session = _GenerationSession(
         [
             {
-                "method": "agentMessage/delta",
+                "method": "item/agentMessage/delta",
                 "params": {"threadId": "thread-1", "turnId": "turn-1", "delta": "你好"},
             },
             {
-                "method": "agentMessage/delta",
+                "method": "item/agentMessage/delta",
                 "params": {"threadId": "thread-1", "turnId": "turn-1", "delta": "，世界"},
             },
             {

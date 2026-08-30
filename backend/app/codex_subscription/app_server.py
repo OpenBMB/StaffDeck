@@ -105,6 +105,10 @@ class CodexAppServerSession:
         """请求 Codex 清除其自身管理的登录状态，不访问 StaffDeck 数据库。"""
         return self._request("account/logout", {})
 
+    def model_list(self) -> dict[str, Any]:
+        """拉取本机 Codex 管理的可用模型目录；只读查询，不改变账户或线程状态。"""
+        return self._request("model/list", {})
+
     def thread_start(self, model: str) -> dict[str, Any]:
         """创建只读、无需批准的临时线程；模型名必须来自已保存的模型配置。"""
         return self._request(

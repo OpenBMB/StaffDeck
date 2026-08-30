@@ -184,8 +184,8 @@ describe('model provider diagnostics', () => {
         );
       });
       window.dispatchEvent(new CustomEvent(OPEN_MODEL_CREATE_EVENT));
-      await user.click((await screen.findAllByRole('combobox'))[0]);
       await user.click(await screen.findByRole('option', { name: 'ChatGPT Subscription (Codex)' }));
+      await user.click(await screen.findByRole('button', { name: 'Next' }));
       expect(await screen.findByText(account.translation)).toBeTruthy();
       expect(screen.queryByText(/local Codex subscription runtime/i)).toBeNull();
 
@@ -211,8 +211,8 @@ describe('model provider diagnostics', () => {
       );
     });
     window.dispatchEvent(new CustomEvent(OPEN_MODEL_CREATE_EVENT));
-    await user.click((await screen.findAllByRole('combobox'))[0]);
     await user.click(await screen.findByRole('option', { name: 'ChatGPT 订阅（Codex）' }));
+    await user.click(await screen.findByRole('button', { name: '下一步' }));
 
     expect(await screen.findByText(
       '登录由本机 Codex runtime 管理。StaffDeck 不保存 ChatGPT OAuth code、access token 或 refresh token。',
