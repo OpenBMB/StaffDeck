@@ -150,6 +150,47 @@ def test_initial_projection_expands_only_kernel_and_sop_explicit_capabilities() 
     assert all(not hasattr(item, "metadata") for item in projected.catalog)
 
 
+def test_shared_knowledge_actions_stay_discoverable_without_exposing_authorization_ids() -> None:
+    """共享知识变更动作留在目录中，展开后只显示安全的授权数量。"""
+    actions = [
+        _descriptor(
+            name,
+            kind="knowledge",
+            description="维护共享知识草稿与正式版本",
+            metadata={
+                "allowed_knowledge_base_ids": ["kb-secret"],
+                "allowed_knowledge_base_version_ids": ["kbver-secret"],
+                "knowledge_version_by_base_id": {"kb-secret": "kbver-secret"},
+                "required_permission": permission,
+            },
+        )
+        for name, permission in (
+            ("knowledge_list_versions", "reader"),
+            ("knowledge_create_draft", "editor"),
+            ("knowledge_update_draft", "editor"),
+            ("knowledge_publish_draft", "publisher"),
+            ("knowledge_reject_draft", "publisher"),
+            ("knowledge_rollback", "publisher"),
+        )
+    ]
+
+    projected = project_capability_manifest(CapabilityManifest(available=actions))
+    discovered = search_capability_descriptors(
+        actions,
+        "knowledge",
+        kinds={"knowledge"},
+        limit=20,
+    )
+    expanded = [model_descriptor(item) for item in discovered]
+
+    assert projected.available == []
+    assert {item.name for item in projected.catalog} == {
+        item.name for item in actions
+    }
+    assert {item.name for item in expanded} == {item.name for item in actions}
+    assert all(item.metadata == {"authorized_knowledge_base_count": 1} for item in expanded)
+
+
 def test_capability_search_honors_kind_limit_and_stable_name_order() -> None:
     tools = [
         _descriptor(f"tool_{index:02d}", description="zzzz shared capability")

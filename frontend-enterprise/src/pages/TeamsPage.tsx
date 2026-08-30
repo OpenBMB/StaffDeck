@@ -23,7 +23,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 import { EnterpriseRoute } from '../enums/routes';
 import { parseBackendDateTime } from '../lib/timezone';
-import type { AgentProfileRead, TeamRead, TeamThreadRead } from '../types';
+import type { AgentProfileRead, KnowledgeBaseRead, TeamRead, TeamThreadRead } from '../types';
 
 export function teamStatusLabel(status: string): string {
   if (status === 'active') return '正常';
@@ -155,6 +155,10 @@ export default function TeamsPage({
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [sharedKnowledgeBases, setSharedKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
+  const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([]);
+  const [defaultKnowledgeSelection, setDefaultKnowledgeSelection] = useState('');
+  const [newSharedKnowledgeName, setNewSharedKnowledgeName] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<TeamRead | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [startingTeamId, setStartingTeamId] = useState('');
@@ -233,6 +237,10 @@ export default function TeamsPage({
       .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
       .then(setAgents)
       .catch(() => setAgents([]));
+    api
+      .get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}`)
+      .then((rows) => setSharedKnowledgeBases(rows.filter((row) => row.mode === 'shared')))
+      .catch(() => setSharedKnowledgeBases([]));
   }, []);
 
   async function loadThreads() {
@@ -278,15 +286,34 @@ export default function TeamsPage({
     }
     setCreating(true);
     try {
+      const knowledgeBases: Array<{
+        existing_knowledge_base_id?: string;
+        create_shared?: { name: string };
+        is_default: boolean;
+      }> = selectedKnowledgeBaseIds.map((knowledgeBaseId) => ({
+        existing_knowledge_base_id: knowledgeBaseId,
+        is_default: defaultKnowledgeSelection === `existing:${knowledgeBaseId}`,
+      }));
+      const newSharedName = newSharedKnowledgeName.trim();
+      if (newSharedName) {
+        knowledgeBases.push({
+          create_shared: { name: newSharedName },
+          is_default: defaultKnowledgeSelection === 'new',
+        });
+      }
       await api.post<TeamRead>('/api/enterprise/teams', {
         tenant_id: TENANT_ID,
         name: trimmed,
         description: description.trim() || undefined,
+        knowledge_bases: knowledgeBases,
       });
       notify.success('团队已创建');
       setCreateOpen(false);
       setName('');
       setDescription('');
+      setSelectedKnowledgeBaseIds([]);
+      setDefaultKnowledgeSelection('');
+      setNewSharedKnowledgeName('');
       await load();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '创建团队失败');
@@ -571,6 +598,86 @@ export default function TeamsPage({
                 aria-label="团队名称"
               />
             </label>
+            <section
+              aria-label="团队知识库配置"
+              className="rounded-[12px] border border-[#e7eaf1] bg-[#fafbfd] p-[12px]"
+            >
+              <div>
+                <h3 className="text-[13px] font-medium text-[#18181a]">团队知识库</h3>
+                <p className="mt-[2px] text-[11px] leading-[17px] text-[#858b9c]">
+                  可绑定多个共享知识库，并任选一个作为默认写入目标；成员权限在团队详情中配置。
+                </p>
+              </div>
+              <div className="mt-[10px] flex flex-col gap-[7px]">
+                {sharedKnowledgeBases.map((knowledgeBase) => {
+                  const selected = selectedKnowledgeBaseIds.includes(knowledgeBase.id);
+                  return (
+                    <div
+                      key={knowledgeBase.id}
+                      className="flex items-center justify-between gap-[10px] rounded-[9px] bg-white px-[9px] py-[7px]"
+                    >
+                      <label className="flex min-w-0 items-center gap-[7px] text-[12px] text-[#464c5e]">
+                        <input
+                          type="checkbox"
+                          aria-label={`选择${knowledgeBase.name}`}
+                          checked={selected}
+                          onChange={(event) => {
+                            setSelectedKnowledgeBaseIds((current) => (
+                              event.target.checked
+                                ? [...current, knowledgeBase.id]
+                                : current.filter((id) => id !== knowledgeBase.id)
+                            ));
+                            if (!event.target.checked && defaultKnowledgeSelection === `existing:${knowledgeBase.id}`) {
+                              setDefaultKnowledgeSelection('');
+                            }
+                          }}
+                        />
+                        <span className="truncate">{knowledgeBase.name}</span>
+                      </label>
+                      <label className="flex shrink-0 items-center gap-[5px] text-[11px] text-[#858b9c]">
+                        <input
+                          type="radio"
+                          name="team-default-knowledge"
+                          aria-label={`设为默认 ${knowledgeBase.name}`}
+                          checked={defaultKnowledgeSelection === `existing:${knowledgeBase.id}`}
+                          disabled={!selected}
+                          onChange={() => setDefaultKnowledgeSelection(`existing:${knowledgeBase.id}`)}
+                        />
+                        默认
+                      </label>
+                    </div>
+                  );
+                })}
+                {sharedKnowledgeBases.length === 0 && (
+                  <p className="py-[4px] text-center text-[11px] text-[#a7adbb]">暂无可绑定的共享知识库</p>
+                )}
+              </div>
+              <div className="mt-[10px] flex items-center gap-[8px]">
+                <Input
+                  value={newSharedKnowledgeName}
+                  onChange={(event) => {
+                    setNewSharedKnowledgeName(event.target.value);
+                    if (!event.target.value.trim() && defaultKnowledgeSelection === 'new') {
+                      setDefaultKnowledgeSelection('');
+                    }
+                  }}
+                  placeholder="新建并绑定共享知识库（可选）"
+                  aria-label="新建共享知识库名称"
+                  className="h-[32px] flex-1 text-[12px]"
+                />
+                <label className="flex shrink-0 items-center gap-[5px] text-[11px] text-[#858b9c]">
+                  <input
+                    type="radio"
+                    name="team-default-knowledge"
+                    aria-label="将新建共享知识库设为默认"
+                    checked={defaultKnowledgeSelection === 'new'}
+                    disabled={!newSharedKnowledgeName.trim()}
+                    onChange={() => setDefaultKnowledgeSelection('new')}
+                  />
+                  默认
+                </label>
+              </div>
+            </section>
             <label className="flex flex-col gap-[6px] text-[12px] text-[#464c5e]">
               团队描述
               <Textarea

@@ -15,8 +15,13 @@ from app.db.models import (
     AgentProfile,
     ChatSession,
     HarnessInvocationRecord,
+    KnowledgeBase,
+    KnowledgeBaseVersion,
     Message,
     Team,
+    TeamKnowledgeBaseBinding,
+    TeamKnowledgeBaseGrant,
+    TeamMember,
     TeamRun,
     TeamTask,
     TeamTaskEvent,
@@ -35,6 +40,8 @@ from app.teams import wakeup
 from app.teams.schema import (
     ReviewOverrideRequest,
     TeamCreateRequest,
+    TeamKnowledgeGrantsUpdateRequest,
+    TeamKnowledgeSelection,
     TeamLeaderUpdateRequest,
     TeamMemberAddRequest,
     TeamTaskResumeRequest,
@@ -48,6 +55,7 @@ from app.teams.service import (
     create_team,
     parse_tl_review,
     parse_tl_task_assignments,
+    remove_member,
     set_leader,
     task_activation_state,
 )
@@ -172,6 +180,102 @@ def test_team_crud_and_unique_name() -> None:
         assert teams_api.list_teams("tenant_demo", db, admin) == []
 
 
+def test_team_create_and_knowledge_endpoints_expose_binding_revision() -> None:
+    """团队创建可直接绑定共享库，后续授权端点返回递增修订号。"""
+    with _test_session() as db:
+        _seed_agents(db)
+        version = KnowledgeBaseVersion(
+            id="kbver_api_shared",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_api_shared",
+            version="1.0.0",
+            name="API 共享库",
+            publication_state="released",
+        )
+        base = KnowledgeBase(
+            id="kb_api_shared",
+            tenant_id="tenant_demo",
+            name="API 共享库",
+            mode="shared",
+            published_version_id=version.id,
+        )
+        db.add(base)
+        db.add(version)
+        db.commit()
+
+        team = teams_api.create_team_endpoint(
+            TeamCreateRequest(
+                tenant_id="tenant_demo",
+                name="API 知识团队",
+                knowledge_bases=[
+                    TeamKnowledgeSelection(
+                        existing_knowledge_base_id=base.id,
+                        is_default=True,
+                    )
+                ],
+            ),
+            db,
+            _admin_user(),
+        )
+        teams_api.add_member_endpoint(
+            team.id,
+            TeamMemberAddRequest(tenant_id="tenant_demo", agent_id="agent_worker"),
+            db,
+            _admin_user(),
+        )
+
+        [binding] = teams_api.list_team_knowledge_bases(
+            team.id,
+            "tenant_demo",
+            db,
+            _admin_user(),
+        )
+        assert binding.is_default is True
+        assert binding.revision == 1
+
+        updated = teams_api.replace_team_knowledge_grants_endpoint(
+            team.id,
+            base.id,
+            TeamKnowledgeGrantsUpdateRequest(
+                tenant_id="tenant_demo",
+                expected_revision=1,
+                grants=[{"agent_id": "agent_worker", "permission": "editor"}],
+            ),
+            db,
+            _admin_user(),
+        )
+        assert updated.revision == 2
+        assert [(grant.agent_id, grant.permission) for grant in updated.grants] == [
+            ("agent_worker", "editor")
+        ]
+
+
+def test_team_create_maps_invalid_knowledge_selection_to_stable_http_error() -> None:
+    """团队初始知识库选择失败时，端点返回稳定领域载荷而不是泄漏 500。"""
+    with _test_session() as db:
+        _seed_agents(db)
+
+        with pytest.raises(HTTPException) as exc_info:
+            teams_api.create_team_endpoint(
+                TeamCreateRequest(
+                    tenant_id="tenant_demo",
+                    name="无效知识团队",
+                    knowledge_bases=[
+                        TeamKnowledgeSelection(
+                            existing_knowledge_base_id="kb_missing",
+                            is_default=True,
+                        )
+                    ],
+                ),
+                db,
+                _admin_user(),
+            )
+
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail["code"] == "KNOWLEDGE_CONTEXT_MISMATCH"
+        assert db.exec(select(Team).where(Team.name == "无效知识团队")).first() is None
+
+
 def test_delete_team_cascades_members_and_tasks() -> None:
     with _test_session() as db:
         team = _seed_team(db)
@@ -223,6 +327,81 @@ def test_member_add_remove_and_constraints() -> None:
         assert teams_api.remove_member_endpoint(
             team.id, "agent_worker2", "tenant_demo", db, admin
         ) == {"ok": True}
+
+
+def test_remove_member_rolls_back_grants_when_commit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """移除成员事务提交失败时，成员、授权和绑定修订必须一起回滚。"""
+    with _test_session() as db:
+        team = _seed_team(db)
+        version = KnowledgeBaseVersion(
+            id="kbver_remove_rollback",
+            tenant_id=team.tenant_id,
+            knowledge_base_id="kb_remove_rollback",
+            version="1.0.0",
+            name="事务知识库",
+            publication_state="released",
+        )
+        base = KnowledgeBase(
+            id="kb_remove_rollback",
+            tenant_id=team.tenant_id,
+            name="事务知识库",
+            mode="shared",
+            published_version_id=version.id,
+        )
+        binding = TeamKnowledgeBaseBinding(
+            id="teamkb_remove_rollback",
+            tenant_id=team.tenant_id,
+            team_id=team.id,
+            knowledge_base_id=base.id,
+            revision=1,
+            created_by_user_id="user_admin",
+        )
+        grant = TeamKnowledgeBaseGrant(
+            id="teamkbgrant_remove_rollback",
+            tenant_id=team.tenant_id,
+            team_id=team.id,
+            knowledge_base_id=base.id,
+            agent_id="agent_worker",
+            permission="editor",
+            created_by_user_id="user_admin",
+        )
+        db.add(base)
+        db.add(version)
+        db.add(binding)
+        db.add(grant)
+        db.commit()
+        original_rollback = db.rollback
+        rollbacks: list[bool] = []
+
+        def fail_commit() -> None:
+            raise RuntimeError("commit failed")
+
+        def record_rollback() -> None:
+            rollbacks.append(True)
+            original_rollback()
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+        monkeypatch.setattr(db, "rollback", record_rollback)
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            remove_member(db, team, "agent_worker", actor_user_id="user_admin")
+
+        db.expire_all()
+        persisted_member = db.exec(
+            select(TeamMember).where(
+                TeamMember.team_id == team.id,
+                TeamMember.agent_id == "agent_worker",
+            )
+        ).first()
+        persisted_grant = db.get(TeamKnowledgeBaseGrant, grant.id)
+        persisted_binding = db.get(TeamKnowledgeBaseBinding, binding.id)
+
+    assert rollbacks == [True]
+    assert persisted_member is not None
+    assert persisted_grant is not None and persisted_grant.status == "active"
+    assert persisted_binding is not None and persisted_binding.revision == 1
 
 
 def test_leader_uniqueness_and_reassign() -> None:

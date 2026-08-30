@@ -35,8 +35,17 @@ from app.db.models import (
     utc_now,
 )
 from app.teams import wakeup
-from app.teams.schema import AwardOverrideRequest, TeamBlackboardPromoteRequest
-from app.teams.service import member_concurrency, record_task_event
+from app.teams.schema import (
+    AwardOverrideRequest,
+    TeamBlackboardPromoteRequest,
+    TeamKnowledgeSelection,
+    TeamSharedKnowledgeCreate,
+)
+from app.teams.service import (
+    bind_team_knowledge_base,
+    member_concurrency,
+    record_task_event,
+)
 from app.teams.sweeper import (
     DEFAULT_TASK_TIMEOUT_MINUTES,
     sweep_timed_out_tasks,
@@ -409,6 +418,15 @@ def test_blackboard_promote_creates_ingest_job_idempotent(
     with _test_session() as db:
         team = _seed_pool_team(db)
         admin = _admin_user()
+        binding = bind_team_knowledge_base(
+            db,
+            team=team,
+            selection=TeamKnowledgeSelection(
+                create_shared=TeamSharedKnowledgeCreate(name="团队黑板共享库"),
+                is_default=True,
+            ),
+            actor_user_id=admin.id,
+        )
         task = _make_pool_task(db, team, title="来源任务")
         entry = TeamBlackboardEntry(
             team_id=team.id, tenant_id=team.tenant_id,
@@ -432,7 +450,7 @@ def test_blackboard_promote_creates_ingest_job_idempotent(
         )
 
         assert resp.already_promoted is False
-        assert resp.knowledge_base_id
+        assert resp.knowledge_base_id == binding.knowledge_base_id
         job = db.get(KnowledgeIngestJob, resp.ingest_job_id)
         assert job is not None
         assert job.status == "queued"

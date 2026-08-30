@@ -16,6 +16,8 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
+    KnowledgeBase,
+    KnowledgeBaseVersion,
     Message,
     Skill,
     Tenant,
@@ -558,7 +560,12 @@ def test_resource_wrappers_derive_tenant_and_mask_tool_secrets(monkeypatch) -> N
         json={"name": "Policy", "description": "Expense policy", "capability_scope": "general"},
     )
     assert knowledge.status_code == 201, knowledge.text
-    assert client.get("/agents/agent_api/knowledge-bases", headers=auth).status_code == 200
+    assert knowledge.json()["mode"] == "dedicated"
+    listed_knowledge = client.get("/agents/agent_api/knowledge-bases", headers=auth)
+    assert listed_knowledge.status_code == 200
+    assert [row["id"] for row in listed_knowledge.json()["data"]] == [
+        knowledge.json()["id"]
+    ]
 
     skill = client.post(
         "/agents/agent_api/general-skills",
@@ -606,6 +613,103 @@ def test_resource_wrappers_derive_tenant_and_mask_tool_secrets(monkeypatch) -> N
     )
     assert scheduled.status_code == 201, scheduled.text
     assert client.get("/agents/agent_api/scheduled-tasks", headers=auth).status_code == 200
+
+
+def test_public_employee_resource_create_rejects_shared_knowledge_mode(monkeypatch) -> None:
+    """员工资源 API 只能创建专用知识库，不能绕过团队共享配置入口。"""
+    client, engine, admin_token = _client(monkeypatch)
+    key = _tenant_key(client, admin_token, ["knowledge:read", "knowledge:write"])
+    auth = {"Authorization": f"Bearer {key}"}
+
+    response = client.post(
+        "/agents/agent_api/knowledge-bases",
+        headers=auth,
+        json={"name": "Forbidden shared", "mode": "shared"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "KNOWLEDGE_MODE_INVALID"
+    with Session(engine) as db:
+        assert db.exec(
+            select(KnowledgeBase).where(KnowledgeBase.name == "Forbidden shared")
+        ).first() is None
+
+
+def test_public_employee_resource_write_rejects_shared_knowledge_base(monkeypatch) -> None:
+    """员工资源写入口不能向共享正式库排队写入任务。"""
+    client, engine, admin_token = _client(monkeypatch)
+    key = _tenant_key(client, admin_token, ["knowledge:read", "knowledge:write"])
+    auth = {
+        "Authorization": f"Bearer {key}",
+        "Idempotency-Key": "shared-write-denied-1",
+    }
+    with Session(engine) as db:
+        shared = KnowledgeBase(
+            id="kb_public_shared",
+            tenant_id="tenant_api",
+            name="Shared managed elsewhere",
+            mode="shared",
+            status="active",
+        )
+        db.add(shared)
+        db.flush()
+        released = KnowledgeBaseVersion(
+            id="kbver_public_shared",
+            tenant_id="tenant_api",
+            knowledge_base_id=shared.id,
+            version="1.0.0",
+            name=shared.name,
+            status="active",
+            publication_state="released",
+        )
+        db.add(released)
+        db.flush()
+        shared.published_version_id = released.id
+        db.add(shared)
+        db.commit()
+
+    response = client.post(
+        "/agents/agent_api/knowledge-bases/kb_public_shared/entries",
+        headers=auth,
+        json={"entries": [{"title": "blocked", "content": "must not enqueue"}]},
+    )
+
+    assert response.status_code == 404
+    with Session(engine) as db:
+        assert db.exec(
+            select(APIJob).where(APIJob.kind == "knowledge.ingest")
+        ).first() is None
+
+
+def test_public_employee_resource_update_rejects_shared_knowledge_base(monkeypatch) -> None:
+    """员工资源 API 不能通过通用更新入口修改团队管理的共享知识库。"""
+    client, engine, admin_token = _client(monkeypatch)
+    key = _tenant_key(client, admin_token, ["knowledge:read", "knowledge:write"])
+    auth = {"Authorization": f"Bearer {key}"}
+    with Session(engine) as db:
+        db.add(
+            KnowledgeBase(
+                id="kb_public_shared_patch",
+                tenant_id="tenant_api",
+                name="Shared before patch",
+                mode="shared",
+                status="active",
+            )
+        )
+        db.commit()
+
+    response = client.patch(
+        "/agents/agent_api/knowledge-bases/kb_public_shared_patch",
+        headers=auth,
+        json={"name": "Shared after patch"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "KNOWLEDGE_BASE_NOT_FOUND"
+    with Session(engine) as db:
+        row = db.get(KnowledgeBase, "kb_public_shared_patch")
+        assert row is not None
+        assert row.name == "Shared before patch"
 
 
 def test_run_handler_relays_live_public_trace_and_returns_citations(monkeypatch) -> None:

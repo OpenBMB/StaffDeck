@@ -28,11 +28,13 @@ class CapabilityContext:
     session_id: str
     turn_id: str
     channel: str
+    team_id: str | None = None
     trace_id: str | None = None
     deadline_at: datetime | None = None
     attempt: int = 1
 
     def __post_init__(self) -> None:
+        """校验 Core 注入的稳定标识；可选团队标识一旦出现也必须非空。"""
         required = {
             "request_id": self.request_id,
             "tenant_id": self.tenant_id,
@@ -51,6 +53,10 @@ class CapabilityContext:
             raise ValueError(
                 "CapabilityContext requires non-empty fields: " + ", ".join(missing)
             )
+        if self.team_id is not None and (
+            not isinstance(self.team_id, str) or not self.team_id.strip()
+        ):
+            raise ValueError("CapabilityContext team_id must be non-empty when provided")
         if (
             not isinstance(self.attempt, int)
             or isinstance(self.attempt, bool)
@@ -75,6 +81,7 @@ class KnowledgeSearchQuery:
     query: str
     query_type: str = "answer"
     scope: Mapping[str, JsonValue] = field(default_factory=dict)
+    knowledge_base_ids: tuple[str, ...] = ()
     max_chunks: int = 8
     budget_tokens: int = 4000
     cursor: str | None = None

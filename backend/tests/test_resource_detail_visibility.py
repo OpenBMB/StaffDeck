@@ -8,13 +8,16 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.agents.branching import (
     ensure_agent_private_knowledge_branch,
     ensure_knowledge_base_version,
+    ensure_open_gallery_binding,
     ensure_private_resource_binding,
 )
 from app.api.knowledge import get_document, get_document_buckets, get_job, list_documents, list_jobs
 from app.api.knowledge_bases import get_knowledge_base, list_knowledge_base_versions
 from app.api.skills import get_skill, get_skill_version, list_skill_versions
 from app.db.models import (
+    AgentKnowledgeBranch,
     AgentProfile,
+    AgentResourceBinding,
     KnowledgeBase,
     KnowledgeDocument,
     KnowledgeIngestJob,
@@ -119,6 +122,123 @@ def test_private_knowledge_details_documents_and_jobs_require_the_bound_agent_sc
         assert get_job(job.id, "tenant_demo", owner_agent.id, db).id == job.id
         assert [row.id for row in list_documents("tenant_demo", None, owner_agent.id, True, db)] == [document.id]
         assert [row.id for row in list_jobs("tenant_demo", owner_agent.id, None, 8, db)] == [job.id]
+
+
+def test_legacy_dedicated_detail_accepts_unmarked_owner_branch_binding() -> None:
+    """旧版无 scope 元数据的专用分支仍允许所属员工读取详情，但拒绝其他员工。"""
+    with _test_session() as db:
+        owner_agent, other_agent = _seed_private_scope(db)
+        knowledge_base = KnowledgeBase(
+            id="kb_legacy_detail",
+            tenant_id="tenant_demo",
+            name="旧版员工详情",
+            mode="dedicated",
+            status="active",
+        )
+        db.add(knowledge_base)
+        db.flush()
+        version = ensure_knowledge_base_version(db, knowledge_base, "1.0.0")
+        db.add(
+            AgentKnowledgeBranch(
+                id="branch_legacy_detail",
+                tenant_id="tenant_demo",
+                agent_id=owner_agent.id,
+                knowledge_base_id=knowledge_base.id,
+                base_version="1.0.0",
+                head_version="1.0.0",
+                status="active",
+                sync_state="synced",
+                metadata_json={},
+            )
+        )
+        db.add(
+            AgentResourceBinding(
+                id="binding_legacy_detail",
+                tenant_id="tenant_demo",
+                agent_id=owner_agent.id,
+                resource_type="knowledge_base",
+                resource_id=knowledge_base.id,
+                status="active",
+                metadata_json={},
+            )
+        )
+        document = KnowledgeDocument(
+            id="kdoc_legacy_detail",
+            tenant_id="tenant_demo",
+            knowledge_base_id=knowledge_base.id,
+            knowledge_base_version_id=version.id,
+            filename="legacy.md",
+            file_type="md",
+            status="ready",
+        )
+        db.add(document)
+        db.commit()
+
+        detail = get_knowledge_base(
+            knowledge_base.id,
+            "tenant_demo",
+            owner_agent.id,
+            db,
+        )
+        assert detail.id == knowledge_base.id
+        assert get_document(document.id, "tenant_demo", owner_agent.id, db).id == document.id
+        with pytest.raises(HTTPException) as other_error:
+            get_knowledge_base(
+                knowledge_base.id,
+                "tenant_demo",
+                other_agent.id,
+                db,
+            )
+        assert other_error.value.status_code == 404
+
+
+def test_dedicated_open_gallery_knowledge_detail_remains_visible_to_overall_scope() -> None:
+    """专用模板仍可经显式开放广场绑定供整体员工读取详情。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        overall = AgentProfile(
+            id="agent_overall",
+            tenant_id="tenant_demo",
+            name="整体智能体",
+            is_overall=True,
+        )
+        knowledge_base = KnowledgeBase(
+            id="kb_gallery_detail",
+            tenant_id="tenant_demo",
+            name="开放广场模板",
+            mode="dedicated",
+            status="active",
+        )
+        db.add(overall)
+        db.add(knowledge_base)
+        db.flush()
+        version = ensure_knowledge_base_version(db, knowledge_base, "1.0.0")
+        document = KnowledgeDocument(
+            id="kdoc_gallery_detail",
+            tenant_id="tenant_demo",
+            knowledge_base_id=knowledge_base.id,
+            knowledge_base_version_id=version.id,
+            filename="gallery.md",
+            file_type="md",
+            status="ready",
+        )
+        db.add(document)
+        ensure_open_gallery_binding(
+            db,
+            "tenant_demo",
+            "knowledge_base",
+            knowledge_base.id,
+            "active",
+        )
+        db.commit()
+
+        assert get_knowledge_base(
+            knowledge_base.id,
+            "tenant_demo",
+            overall.id,
+            db,
+        ).id == knowledge_base.id
+        assert get_document(document.id, "tenant_demo", overall.id, db).id == document.id
 
 
 def test_visible_knowledge_history_has_consistent_list_and_detail_access() -> None:

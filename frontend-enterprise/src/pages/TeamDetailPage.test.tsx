@@ -6,7 +6,16 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
-import type { AgentProfileRead, TeamBlackboardEntryRead, TeamEventRead, TeamRead, TeamTaskBidRead, TeamTaskRead } from '@/types';
+import { notify } from '@/components/ui/app-toast';
+import type {
+  AgentProfileRead,
+  TeamBlackboardEntryRead,
+  TeamEventRead,
+  TeamKnowledgeBindingRead,
+  TeamRead,
+  TeamTaskBidRead,
+  TeamTaskRead,
+} from '@/types';
 
 import TeamDetailPage from './TeamDetailPage';
 
@@ -39,6 +48,23 @@ const team: TeamRead = {
   created_at: '2026-08-01T00:00:00Z',
   updated_at: '2026-08-01T00:00:00Z',
 };
+
+const knowledgeBindings: TeamKnowledgeBindingRead[] = [
+  {
+    id: 'teamkb-1',
+    team_id: 'team-1',
+    knowledge_base_id: 'kb-shared-1',
+    knowledge_base_name: '共享制度库',
+    status: 'active',
+    revision: 4,
+    is_default: false,
+    published_version_id: 'kbver-shared-1',
+    published_version: '1.0.0',
+    grants: [{ agent_id: 'agent-1', permission: 'reader', status: 'active' }],
+    created_at: '2026-08-01T00:00:00Z',
+    updated_at: '2026-08-01T00:00:00Z',
+  },
+];
 
 const crowdedTeam: TeamRead = {
   ...team,
@@ -158,6 +184,16 @@ function jsonResponse(body: unknown): Response {
   } as Response;
 }
 
+function errorResponse(status: number, body: unknown): Response {
+  /** Build a failed fetch response for stable API error-code rendering tests. */
+  return {
+    ok: false,
+    status,
+    statusText: 'Conflict',
+    text: async () => JSON.stringify(body),
+  } as Response;
+}
+
 function makeEntry(overrides: Partial<TeamBlackboardEntryRead>): TeamBlackboardEntryRead {
   return {
     id: 'entry-1',
@@ -184,10 +220,56 @@ function stubDetailFetch(overrides?: {
   taskList?: TeamTaskRead[];
   onTlSession?: () => { session_id: string };
   taskDetails?: Record<string, TeamTaskRead>;
+  knowledgeRows?: TeamKnowledgeBindingRead[];
+  conflictOnGrantSave?: boolean;
+  onGrantSave?: (
+    knowledgeBaseId: string,
+    init: RequestInit,
+  ) => Promise<Response>;
 }) {
   let boardRows = [...(overrides?.entries ?? [])];
+  let teamKnowledgeRows = [...(overrides?.knowledgeRows ?? [])];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url.includes('/knowledge-bases')) {
+      const method = (init?.method || 'GET').toUpperCase();
+      if (method === 'PUT' && url.includes('/grants')) {
+        const knowledgeBaseId = url.split('/knowledge-bases/')[1]?.split('/')[0] || '';
+        if (overrides?.onGrantSave) return overrides.onGrantSave(knowledgeBaseId, init || {});
+        if (overrides?.conflictOnGrantSave) {
+          return errorResponse(409, {
+            detail: {
+              code: 'KNOWLEDGE_BINDING_REVISION_CONFLICT',
+              message: '配置已变化',
+            },
+          });
+        }
+        const body = JSON.parse(String(init?.body)) as {
+          grants: Array<{ agent_id: string; permission: 'reader' | 'editor' | 'publisher' | null }>;
+        };
+        teamKnowledgeRows = teamKnowledgeRows.map((row) => (
+          url.includes(row.knowledge_base_id)
+            ? {
+              ...row,
+              revision: row.revision + 1,
+              grants: body.grants
+                .filter((grant) => grant.permission)
+                .map((grant) => ({ ...grant, permission: grant.permission!, status: 'active' })),
+            }
+            : row
+        ));
+        return jsonResponse(teamKnowledgeRows[0]);
+      }
+      if (method === 'PUT') {
+        teamKnowledgeRows = teamKnowledgeRows.map((row) => ({
+          ...row,
+          revision: row.revision + 1,
+          is_default: url.includes(row.knowledge_base_id),
+        }));
+        return jsonResponse(teamKnowledgeRows[0]);
+      }
+      return jsonResponse(teamKnowledgeRows);
+    }
     if (url.includes('/blackboard')) {
       const method = (init?.method || 'GET').toUpperCase();
       if (url.includes('/archive')) {
@@ -311,6 +393,114 @@ beforeAll(() => {
 });
 
 describe('TeamDetailPage', () => {
+  it('explains the group-read union, private isolation, and shared-only team writes', async () => {
+    stubDetailFetch({ knowledgeRows: knowledgeBindings });
+    renderDetail();
+
+    const section = await screen.findByLabelText('团队知识库');
+    expect(within(section).getByText(
+      '团队群聊会读取当前执行员工自己的专用知识库，以及这里绑定并授予该员工的共享知识库；不会读取其他员工的专用知识库。员工私聊只读取自己的专用知识库，不读取团队共享知识库。团队默认写入目标仍只能是共享知识库。',
+    )).toBeTruthy();
+  });
+
+  it('renders and saves the per-member shared knowledge permission matrix', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubDetailFetch({ knowledgeRows: knowledgeBindings });
+    renderDetail();
+
+    const section = await screen.findByLabelText('团队知识库');
+    expect(within(section).getByText('共享制度库')).toBeTruthy();
+    await user.selectOptions(
+      within(section).getByLabelText('小艾 在 共享制度库 的权限'),
+      'publisher',
+    );
+    await user.click(within(section).getByRole('button', { name: '保存 共享制度库 权限' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([input, init]) => (
+        String(input).includes('/knowledge-bases/kb-shared-1/grants')
+        && init?.method === 'PUT'
+      ));
+      const body = JSON.parse(String(call?.[1]?.body)) as Record<string, unknown>;
+      expect(body.expected_revision).toBe(4);
+      expect(body.grants).toEqual([
+        { agent_id: 'agent-1', permission: 'publisher' },
+        { agent_id: 'agent-2', permission: null },
+      ]);
+    });
+  });
+
+  it('sets the default shared knowledge base with its displayed revision', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubDetailFetch({ knowledgeRows: knowledgeBindings });
+    renderDetail();
+
+    const section = await screen.findByLabelText('团队知识库');
+    await user.click(within(section).getByRole('button', { name: '设为默认 共享制度库' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([input, init]) => (
+        String(input).endsWith('/knowledge-bases/kb-shared-1')
+        && init?.method === 'PUT'
+      ));
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        tenant_id: 'tenant_demo',
+        expected_revision: 4,
+        is_default: true,
+      });
+    });
+  });
+
+  it('shows a safe reload instruction on permission revision conflict', async () => {
+    const user = userEvent.setup();
+    const errorNotice = vi.spyOn(notify, 'error');
+    stubDetailFetch({ knowledgeRows: knowledgeBindings, conflictOnGrantSave: true });
+    renderDetail();
+
+    const section = await screen.findByLabelText('团队知识库');
+    await user.click(within(section).getByRole('button', { name: '保存 共享制度库 权限' }));
+
+    await waitFor(() => {
+      expect(errorNotice).toHaveBeenCalledWith('权限配置已被其他管理员更新，请刷新后重新确认。');
+    });
+  });
+
+  it('keeps each knowledge binding busy until its own overlapping save completes', async () => {
+    const user = userEvent.setup();
+    const secondBinding: TeamKnowledgeBindingRead = {
+      ...knowledgeBindings[0],
+      id: 'teamkb-2',
+      knowledge_base_id: 'kb-shared-2',
+      knowledge_base_name: '共享选题库',
+    };
+    let resolveFirst!: (response: Response) => void;
+    let resolveSecond!: (response: Response) => void;
+    const first = new Promise<Response>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<Response>((resolve) => { resolveSecond = resolve; });
+    stubDetailFetch({
+      knowledgeRows: [...knowledgeBindings, secondBinding],
+      onGrantSave: (knowledgeBaseId) => (
+        knowledgeBaseId === 'kb-shared-1' ? first : second
+      ),
+    });
+    renderDetail();
+
+    const section = await screen.findByLabelText('团队知识库');
+    const firstButton = within(section).getByRole('button', { name: '保存 共享制度库 权限' });
+    const secondButton = within(section).getByRole('button', { name: '保存 共享选题库 权限' });
+    await user.click(firstButton);
+    await user.click(secondButton);
+    expect((firstButton as HTMLButtonElement).disabled).toBe(true);
+    expect((secondButton as HTMLButtonElement).disabled).toBe(true);
+
+    resolveFirst(jsonResponse({ ...knowledgeBindings[0], revision: 5 }));
+    await waitFor(() => expect((firstButton as HTMLButtonElement).disabled).toBe(false));
+    expect((secondButton as HTMLButtonElement).disabled).toBe(true);
+
+    resolveSecond(jsonResponse({ ...secondBinding, revision: 5 }));
+    await waitFor(() => expect((secondButton as HTMLButtonElement).disabled).toBe(false));
+  });
+
   it('opens the complete team execution log online and keeps JSON download available', async () => {
     const user = userEvent.setup();
     const fetchMock = stubDetailFetch();

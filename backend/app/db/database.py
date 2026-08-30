@@ -2107,7 +2107,122 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
     )
 
 
+def _migrate_shared_knowledge_schema(conn, inspector, tables: set[str]) -> None:
+    """补齐共享知识库持久化结构；旧数据只回填为专用，不创建任何共享关系。"""
+    if "knowledge_bases" in tables:
+        knowledge_base_columns = {
+            column["name"] for column in inspector.get_columns("knowledge_bases")
+        }
+        if "mode" not in knowledge_base_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE knowledge_bases ADD COLUMN mode "
+                    "VARCHAR NOT NULL DEFAULT 'dedicated'"
+                )
+            )
+        if "published_version_id" not in knowledge_base_columns:
+            conn.execute(
+                text("ALTER TABLE knowledge_bases ADD COLUMN published_version_id VARCHAR")
+            )
+        conn.execute(
+            text(
+                "UPDATE knowledge_bases SET mode = 'dedicated' "
+                "WHERE mode IS NULL OR mode = ''"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_knowledge_bases_mode "
+                "ON knowledge_bases(mode)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_knowledge_bases_published_version_id "
+                "ON knowledge_bases(published_version_id)"
+            )
+        )
+
+    if "knowledge_base_versions" in tables:
+        version_columns = {
+            column["name"]
+            for column in inspector.get_columns("knowledge_base_versions")
+        }
+        version_column_sql = {
+            "parent_version_id": (
+                "ALTER TABLE knowledge_base_versions ADD COLUMN parent_version_id VARCHAR"
+            ),
+            "publication_state": (
+                "ALTER TABLE knowledge_base_versions ADD COLUMN publication_state "
+                "VARCHAR NOT NULL DEFAULT 'released'"
+            ),
+            "source_team_id": (
+                "ALTER TABLE knowledge_base_versions ADD COLUMN source_team_id VARCHAR"
+            ),
+            "created_by_agent_id": (
+                "ALTER TABLE knowledge_base_versions ADD COLUMN created_by_agent_id VARCHAR"
+            ),
+            "created_by_user_id": (
+                "ALTER TABLE knowledge_base_versions ADD COLUMN created_by_user_id VARCHAR"
+            ),
+            "change_reason": (
+                "ALTER TABLE knowledge_base_versions ADD COLUMN change_reason VARCHAR"
+            ),
+            "published_at": (
+                "ALTER TABLE knowledge_base_versions ADD COLUMN published_at DATETIME"
+            ),
+        }
+        for column_name, ddl in version_column_sql.items():
+            if column_name not in version_columns:
+                conn.execute(text(ddl))
+        conn.execute(
+            text(
+                "UPDATE knowledge_base_versions SET publication_state = 'released' "
+                "WHERE publication_state IS NULL OR publication_state = ''"
+            )
+        )
+        for column_name in (
+            "parent_version_id",
+            "publication_state",
+            "source_team_id",
+            "created_by_agent_id",
+            "created_by_user_id",
+        ):
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS "
+                    f"ix_knowledge_base_versions_{column_name} "
+                    f"ON knowledge_base_versions({column_name})"
+                )
+            )
+
+    if "teams" in tables:
+        team_columns = {column["name"] for column in inspector.get_columns("teams")}
+        if "default_knowledge_base_id" not in team_columns:
+            conn.execute(
+                text("ALTER TABLE teams ADD COLUMN default_knowledge_base_id VARCHAR")
+            )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_teams_default_knowledge_base_id "
+                "ON teams(default_knowledge_base_id)"
+            )
+        )
+
+    # 新关系表没有历史数据可回填，只按模型约束安全建空表。
+    from app.db import models as _models  # noqa: F401
+
+    for table_name in (
+        "team_knowledge_base_bindings",
+        "team_knowledge_base_grants",
+        "knowledge_base_audit_events",
+    ):
+        SQLModel.metadata.tables[table_name].create(bind=conn, checkfirst=True)
+
+
 def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
+    """迁移知识库版本关联，并在任何历史数据处理前补齐共享知识库结构。"""
+    _migrate_shared_knowledge_schema(conn, inspector, tables)
     tenant_ids = _tenant_ids(conn, tables)
     if "knowledge_bases" in tables:
         for tenant_id in tenant_ids:
@@ -2122,11 +2237,11 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                         """
                         INSERT INTO knowledge_bases (
                             id, tenant_id, name, description, status, capability_scope,
-                            metadata_json, created_at, updated_at
+                            mode, metadata_json, created_at, updated_at
                         )
                         VALUES (
                             :id, :tenant_id, :name, :description, 'active', 'general',
-                            '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                            'dedicated', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
                         """
                     ),
@@ -2195,11 +2310,12 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                         """
                         INSERT INTO knowledge_base_versions (
                             id, tenant_id, knowledge_base_id, version, name, description,
-                            status, capability_scope, metadata_json, created_at, updated_at
+                            status, publication_state, capability_scope, metadata_json,
+                            created_at, updated_at
                         )
                         VALUES (
                             :id, :tenant_id, :knowledge_base_id, '1.0.0', :name, :description,
-                            :status, :capability_scope, :metadata_json,
+                            :status, 'released', :capability_scope, :metadata_json,
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
                         """
@@ -2263,6 +2379,7 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
 
 
 def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
+    """把旧专用多文档根拆为独立专用库；共享库保持原样，写入发生在当前迁移事务。"""
     required_tables = {"knowledge_bases", "knowledge_base_versions", "knowledge_documents"}
     if not required_tables.issubset(tables):
         return
@@ -2290,7 +2407,7 @@ def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
             text("SELECT * FROM knowledge_bases WHERE id = :id"),
             {"id": source_knowledge_base_id},
         ).mappings().first()
-        if not source:
+        if not source or source.get("mode") != "dedicated":
             continue
         documents = conn.execute(
             text(
@@ -2331,11 +2448,12 @@ def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
                     text(
                         """
                         INSERT INTO knowledge_bases (
-                            id, tenant_id, name, description, status, capability_scope,
+                            id, tenant_id, name, description, status, mode, capability_scope,
                             metadata_json, created_at, updated_at
                         )
                         VALUES (
-                            :id, :tenant_id, :name, :description, :status, :capability_scope,
+                            :id, :tenant_id, :name, :description, :status, 'dedicated',
+                            :capability_scope,
                             :metadata_json, :created_at, CURRENT_TIMESTAMP
                         )
                         """
@@ -2366,11 +2484,12 @@ def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
                         """
                         INSERT INTO knowledge_base_versions (
                             id, tenant_id, knowledge_base_id, version, name, description,
-                            status, capability_scope, metadata_json, created_at, updated_at
+                            status, publication_state, capability_scope, metadata_json,
+                            created_at, updated_at
                         )
                         VALUES (
                             :id, :tenant_id, :knowledge_base_id, '1.0.0', :name, :description,
-                            'active', :capability_scope, :metadata_json,
+                            'active', 'released', :capability_scope, :metadata_json,
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
                         """

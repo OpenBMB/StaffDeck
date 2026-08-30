@@ -420,6 +420,8 @@ class KnowledgeBase(SQLModel, table=True):
     name: str
     description: Optional[str] = None
     status: str = Field(default="active", index=True)
+    mode: str = Field(default="dedicated", index=True)
+    published_version_id: str | None = Field(default=None, index=True)
     capability_scope: str = Field(default="general", index=True)
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
@@ -439,6 +441,13 @@ class KnowledgeBaseVersion(SQLModel, table=True):
     name: str
     description: Optional[str] = None
     status: str = Field(default="active", index=True)
+    parent_version_id: str | None = Field(default=None, index=True)
+    publication_state: str = Field(default="released", index=True)
+    source_team_id: str | None = Field(default=None, index=True)
+    created_by_agent_id: str | None = Field(default=None, index=True)
+    created_by_user_id: str | None = Field(default=None, index=True)
+    change_reason: str | None = None
+    published_at: datetime | None = None
     capability_scope: str = Field(default="general", index=True)
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
@@ -1441,6 +1450,7 @@ class Team(SQLModel, table=True):
     name: str
     description: Optional[str] = None
     owner_user_id: str = Field(index=True)
+    default_knowledge_base_id: str | None = Field(default=None, index=True)
     # 预留:并发策略/竞标等团队级配置
     config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     status: str = Field(default="active", index=True)
@@ -1457,6 +1467,78 @@ class TeamMember(SQLModel, table=True):
     agent_id: str = Field(index=True)
     # role: leader(TL,每团队至多一名)/ member
     role: str = Field(default="member", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class TeamKnowledgeBaseBinding(SQLModel, table=True):
+    __tablename__ = "team_knowledge_base_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "team_id",
+            "knowledge_base_id",
+            name="uq_team_knowledge_base_binding",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("teamkb"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    team_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
+    status: str = Field(default="active", index=True)
+    revision: int = Field(default=1, sa_column=Column(Integer, nullable=False))
+    created_by_user_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TeamKnowledgeBaseGrant(SQLModel, table=True):
+    __tablename__ = "team_knowledge_base_grants"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "team_id",
+            "knowledge_base_id",
+            "agent_id",
+            name="uq_team_knowledge_base_grant",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("teamkbgrant"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    team_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    permission: str = Field(index=True)
+    status: str = Field(default="active", index=True)
+    created_by_user_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class KnowledgeBaseAuditEvent(SQLModel, table=True):
+    __tablename__ = "knowledge_base_audit_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "actor_id",
+            "action",
+            "idempotency_key",
+            name="uq_knowledge_audit_idempotency",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("kbaudit"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
+    team_id: str | None = Field(default=None, index=True)
+    knowledge_base_version_id: str | None = Field(default=None, index=True)
+    actor_type: str = Field(index=True)
+    actor_id: str = Field(index=True)
+    action: str = Field(index=True)
+    idempotency_key: str | None = Field(default=None, index=True)
+    reason: str | None = None
+    details_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
 
 

@@ -24,15 +24,20 @@ import type { EnterpriseAuthUser } from '../auth';
 import AppHeader from '../components/AppHeader';
 import BiddingArena from '../components/BiddingArena';
 import EmployeeAvatar from '../components/EmployeeAvatar';
+import TeamKnowledgePermissionMatrix from '../components/knowledge/TeamKnowledgePermissionMatrix';
 import { employeeDisplayName } from '../employee';
 import { EnterpriseRoute } from '../enums/routes';
+import { apiErrorCode, apiErrorMessage } from '../lib/apiErrorMessages';
 import { formatClientDateTime, parseBackendDateTime } from '../lib/timezone';
 import { MarkdownMessage } from './chat/chatHelpers';
 import type {
   AgentProfileRead,
+  KnowledgeBaseRead,
   TeamBlackboardEntryRead,
   TeamEventRead,
   TeamMemberRead,
+  TeamKnowledgeBindingRead,
+  TeamKnowledgeGrantInput,
   TeamRead,
   TeamReviewVerdict,
   TeamTaskBidRead,
@@ -214,6 +219,11 @@ export default function TeamDetailPage({
   const [teamLog, setTeamLog] = useState<TeamLogPayload | null>(null);
   const [loadingTeamLog, setLoadingTeamLog] = useState(false);
   const [promotingEntryId, setPromotingEntryId] = useState<string | null>(null);
+  const [knowledgeBindings, setKnowledgeBindings] = useState<TeamKnowledgeBindingRead[]>([]);
+  const [availableSharedKnowledge, setAvailableSharedKnowledge] = useState<KnowledgeBaseRead[]>([]);
+  const [knowledgeBusyIds, setKnowledgeBusyIds] = useState<Set<string>>(() => new Set());
+  const [addKnowledgeBaseId, setAddKnowledgeBaseId] = useState('');
+  const [newSharedKnowledgeName, setNewSharedKnowledgeName] = useState('');
   const openedTaskParamRef = useRef<string | null>(null);
   const memberScrollRef = useRef<HTMLDivElement | null>(null);
   const [memberScrollEdges, setMemberScrollEdges] = useState({
@@ -308,6 +318,31 @@ export default function TeamDetailPage({
     }
   }, [teamId]);
 
+  const loadKnowledgeBindings = useCallback(async () => {
+    /** Load team-local binding revisions and permission matrices. */
+    try {
+      const rows = await api.get<TeamKnowledgeBindingRead[]>(
+        `/api/enterprise/teams/${teamId}/knowledge-bases?tenant_id=${TENANT_ID}`,
+      );
+      setKnowledgeBindings(rows.filter((row) => row.status === 'active'));
+    } catch (error) {
+      notify.error(apiErrorMessage(error, '加载团队知识库失败'));
+      setKnowledgeBindings([]);
+    }
+  }, [teamId]);
+
+  const loadAvailableSharedKnowledge = useCallback(async () => {
+    /** Load reusable shared bases that may be added to this team. */
+    try {
+      const rows = await api.get<KnowledgeBaseRead[]>(
+        `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}`,
+      );
+      setAvailableSharedKnowledge(rows.filter((row) => row.mode === 'shared'));
+    } catch {
+      setAvailableSharedKnowledge([]);
+    }
+  }, []);
+
   useEffect(() => {
     setLoading(true);
     void Promise.all([
@@ -315,12 +350,21 @@ export default function TeamDetailPage({
       loadTasks(),
       loadBoard(),
       loadEvents(),
+      loadKnowledgeBindings(),
+      loadAvailableSharedKnowledge(),
       api
         .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
         .then(setAgents)
         .catch(() => setAgents([])),
     ]).finally(() => setLoading(false));
-  }, [loadTeam, loadTasks, loadBoard, loadEvents]);
+  }, [
+    loadAvailableSharedKnowledge,
+    loadBoard,
+    loadEvents,
+    loadKnowledgeBindings,
+    loadTasks,
+    loadTeam,
+  ]);
 
   useEffect(() => {
     const config = team?.config || {};
@@ -372,7 +416,7 @@ export default function TeamDetailPage({
       });
       notify.success('成员已添加');
       setAddAgentId('');
-      await loadTeam();
+      await Promise.all([loadTeam(), loadKnowledgeBindings()]);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '添加成员失败');
     } finally {
@@ -384,7 +428,7 @@ export default function TeamDetailPage({
     try {
       await api.delete(`/api/enterprise/teams/${teamId}/members/${agentId}?tenant_id=${TENANT_ID}`);
       notify.success('成员已移除');
-      await loadTeam();
+      await Promise.all([loadTeam(), loadKnowledgeBindings()]);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '移除成员失败');
     }
@@ -586,6 +630,152 @@ export default function TeamDetailPage({
       notify.error(error instanceof Error ? error.message : '沉淀到知识库失败');
     } finally {
       setPromotingEntryId(null);
+    }
+  }
+
+  async function saveKnowledgeGrants(
+    binding: TeamKnowledgeBindingRead,
+    grants: TeamKnowledgeGrantInput[],
+  ) {
+    /** Save the complete displayed matrix under the binding's optimistic-lock revision. */
+    setKnowledgeBusyIds((current) => new Set(current).add(binding.id));
+    try {
+      const updated = await api.put<TeamKnowledgeBindingRead>(
+        `/api/enterprise/teams/${teamId}/knowledge-bases/${binding.knowledge_base_id}/grants`,
+        {
+          tenant_id: TENANT_ID,
+          expected_revision: binding.revision,
+          grants,
+        },
+      );
+      setKnowledgeBindings((current) => current.map((row) => (
+        row.id === updated.id ? updated : row
+      )));
+      notify.success('知识库权限已保存');
+    } catch (error) {
+      notify.error(apiErrorMessage(error, '保存知识库权限失败'));
+      if (apiErrorCode(error) === 'KNOWLEDGE_BINDING_REVISION_CONFLICT') {
+        await loadKnowledgeBindings();
+      }
+    } finally {
+      setKnowledgeBusyIds((current) => {
+        const next = new Set(current);
+        next.delete(binding.id);
+        return next;
+      });
+    }
+  }
+
+  async function setDefaultKnowledgeBase(binding: TeamKnowledgeBindingRead) {
+    /** Select one bound shared base as the team's default write target. */
+    setKnowledgeBusyIds((current) => new Set(current).add(binding.id));
+    try {
+      await api.put<TeamKnowledgeBindingRead>(
+        `/api/enterprise/teams/${teamId}/knowledge-bases/${binding.knowledge_base_id}`,
+        {
+          tenant_id: TENANT_ID,
+          expected_revision: binding.revision,
+          is_default: true,
+        },
+      );
+      notify.success('默认写入知识库已更新');
+      await Promise.all([loadTeam(), loadKnowledgeBindings()]);
+    } catch (error) {
+      notify.error(apiErrorMessage(error, '设置默认知识库失败'));
+      if (apiErrorCode(error) === 'KNOWLEDGE_BINDING_REVISION_CONFLICT') {
+        await loadKnowledgeBindings();
+      }
+    } finally {
+      setKnowledgeBusyIds((current) => {
+        const next = new Set(current);
+        next.delete(binding.id);
+        return next;
+      });
+    }
+  }
+
+  async function removeKnowledgeBase(binding: TeamKnowledgeBindingRead) {
+    /** Revoke only this team's binding and grants after explicit confirmation. */
+    if (!window.confirm(
+      `确认从团队移除「${binding.knowledge_base_name}」？团队权限会被撤销，但共享知识库本身不会删除。`,
+    )) return;
+    setKnowledgeBusyIds((current) => new Set(current).add(binding.id));
+    try {
+      await api.delete(
+        `/api/enterprise/teams/${teamId}/knowledge-bases/${binding.knowledge_base_id}`,
+        {
+          tenant_id: TENANT_ID,
+          expected_revision: binding.revision,
+        },
+      );
+      notify.success('团队知识库绑定已移除');
+      await Promise.all([loadTeam(), loadKnowledgeBindings()]);
+    } catch (error) {
+      notify.error(apiErrorMessage(error, '移除团队知识库失败'));
+      if (apiErrorCode(error) === 'KNOWLEDGE_BINDING_REVISION_CONFLICT') {
+        await loadKnowledgeBindings();
+      }
+    } finally {
+      setKnowledgeBusyIds((current) => {
+        const next = new Set(current);
+        next.delete(binding.id);
+        return next;
+      });
+    }
+  }
+
+  async function bindExistingKnowledgeBase() {
+    /** Bind one reusable shared base selected from the tenant management list. */
+    if (!addKnowledgeBaseId) return;
+    setKnowledgeBusyIds((current) => new Set(current).add('add-existing'));
+    try {
+      await api.post<TeamKnowledgeBindingRead>(
+        `/api/enterprise/teams/${teamId}/knowledge-bases`,
+        {
+          tenant_id: TENANT_ID,
+          existing_knowledge_base_id: addKnowledgeBaseId,
+          is_default: false,
+        },
+      );
+      setAddKnowledgeBaseId('');
+      notify.success('共享知识库已绑定');
+      await loadKnowledgeBindings();
+    } catch (error) {
+      notify.error(apiErrorMessage(error, '绑定共享知识库失败'));
+    } finally {
+      setKnowledgeBusyIds((current) => {
+        const next = new Set(current);
+        next.delete('add-existing');
+        return next;
+      });
+    }
+  }
+
+  async function createAndBindSharedKnowledgeBase() {
+    /** Create a generic shared base and bind it to this team in one request. */
+    const name = newSharedKnowledgeName.trim();
+    if (!name) return;
+    setKnowledgeBusyIds((current) => new Set(current).add('create-shared'));
+    try {
+      await api.post<TeamKnowledgeBindingRead>(
+        `/api/enterprise/teams/${teamId}/knowledge-bases`,
+        {
+          tenant_id: TENANT_ID,
+          create_shared: { name },
+          is_default: false,
+        },
+      );
+      setNewSharedKnowledgeName('');
+      notify.success('共享知识库已创建并绑定');
+      await Promise.all([loadKnowledgeBindings(), loadAvailableSharedKnowledge()]);
+    } catch (error) {
+      notify.error(apiErrorMessage(error, '创建共享知识库失败'));
+    } finally {
+      setKnowledgeBusyIds((current) => {
+        const next = new Set(current);
+        next.delete('create-shared');
+        return next;
+      });
     }
   }
 
@@ -1047,6 +1237,87 @@ export default function TeamDetailPage({
           </div>
         </section>
       </div>
+
+      <section
+        aria-label="团队知识库"
+        className="mt-[20px] rounded-[20px] bg-white p-[20px] shadow-[0_0_6px_rgba(0,0,0,0.05)]"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-[12px]">
+          <div>
+            <h2 className="text-[16px] font-medium text-[#18181a]">团队知识库</h2>
+            <p className="mt-[3px] text-[12px] text-[#858b9c]">
+              团队群聊会读取当前执行员工自己的专用知识库，以及这里绑定并授予该员工的共享知识库；不会读取其他员工的专用知识库。员工私聊只读取自己的专用知识库，不读取团队共享知识库。团队默认写入目标仍只能是共享知识库。
+            </p>
+          </div>
+          <Badge className="rounded-full bg-[#f2f3f7] text-[11px] font-normal text-[#464c5e]">
+            {`${knowledgeBindings.length} 个绑定`}
+          </Badge>
+        </div>
+
+        <div className="mt-[14px] flex flex-col gap-[10px]">
+          {knowledgeBindings.map((binding) => (
+            <TeamKnowledgePermissionMatrix
+              key={binding.id}
+              binding={binding}
+              members={team?.members || []}
+              busy={knowledgeBusyIds.has(binding.id)}
+              onSave={saveKnowledgeGrants}
+              onSetDefault={setDefaultKnowledgeBase}
+              onRemove={removeKnowledgeBase}
+            />
+          ))}
+          {knowledgeBindings.length === 0 && (
+            <p className="rounded-[12px] bg-[#fafbfd] py-[18px] text-center text-[12px] text-[#a7adbb]">
+              尚未绑定共享知识库
+            </p>
+          )}
+        </div>
+
+        <div className="mt-[14px] grid gap-[10px] border-t border-[#eef1f6] pt-[14px] lg:grid-cols-2">
+          <div className="flex items-center gap-[8px]">
+            <select
+              aria-label="选择要绑定的共享知识库"
+              value={addKnowledgeBaseId}
+              onChange={(event) => setAddKnowledgeBaseId(event.target.value)}
+              className="h-[34px] min-w-0 flex-1 rounded-[9px] border border-[#dfe4ed] bg-white px-[9px] text-[12px] text-[#464c5e]"
+            >
+              <option value="">选择现有共享知识库</option>
+              {availableSharedKnowledge
+                .filter((knowledgeBase) => !knowledgeBindings.some(
+                  (binding) => binding.knowledge_base_id === knowledgeBase.id,
+                ))
+                .map((knowledgeBase) => (
+                  <option key={knowledgeBase.id} value={knowledgeBase.id}>{knowledgeBase.name}</option>
+                ))}
+            </select>
+            <Button
+              type="button"
+              disabled={!addKnowledgeBaseId || knowledgeBusyIds.size > 0}
+              onClick={() => void bindExistingKnowledgeBase()}
+              className="h-[34px] shrink-0 rounded-[9px] bg-[#18181a] px-[12px] text-[12px] text-white"
+            >
+              绑定
+            </Button>
+          </div>
+          <div className="flex items-center gap-[8px]">
+            <Input
+              value={newSharedKnowledgeName}
+              onChange={(event) => setNewSharedKnowledgeName(event.target.value)}
+              aria-label="新建团队共享知识库名称"
+              placeholder="新建共享知识库"
+              className="h-[34px] min-w-0 flex-1 text-[12px]"
+            />
+            <Button
+              type="button"
+              disabled={!newSharedKnowledgeName.trim() || knowledgeBusyIds.size > 0}
+              onClick={() => void createAndBindSharedKnowledgeBase()}
+              className="h-[34px] shrink-0 rounded-[9px] bg-[#18181a] px-[12px] text-[12px] text-white"
+            >
+              新建并绑定
+            </Button>
+          </div>
+        </div>
+      </section>
 
       <section aria-label="团队黑板" className="mt-[20px] rounded-[20px] bg-white p-[20px] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
         <h2 className="mb-[12px] text-[16px] font-medium text-[#18181a]">团队黑板</h2>

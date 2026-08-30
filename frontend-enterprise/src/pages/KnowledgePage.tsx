@@ -32,6 +32,9 @@ import {
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import KnowledgeGraphCanvas from '@/components/KnowledgeGraphCanvas';
+import { KnowledgeTypeBadge } from '@/components/knowledge/KnowledgeTypeBadge';
+import { SharedKnowledgeConversionDialog } from '@/components/knowledge/SharedKnowledgeConversionDialog';
+import { SharedKnowledgeVersionsDialog } from '@/components/knowledge/SharedKnowledgeVersionsDialog';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
 import { Paginator } from '@/components/Paginator';
 import { ResourceImportDialog } from '@/components/ResourceImportDialog';
@@ -97,6 +100,8 @@ import type {
   KnowledgeSearchResponse,
   AgentProfileRead,
   ModelConfigRead,
+  KnowledgeBaseConversionRead,
+  KnowledgeBaseVersionRead,
 } from '../types';
 
 const KNOWLEDGE_PAGE_SIZE = 10;
@@ -105,18 +110,6 @@ const TERMINAL_KNOWLEDGE_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancell
 const KnowledgeGraphVisualization = lazy(() => import('@/components/knowledge/KnowledgeGraphVisualization').then(
   (module) => ({ default: module.KnowledgeGraphVisualization }),
 ));
-
-type KnowledgeBaseVersionRead = {
-  id: string;
-  version: string;
-  name: string;
-  description?: string;
-  status: string;
-  is_head: boolean;
-  is_base: boolean;
-  updated_at: string;
-  created_at: string;
-};
 
 type IngestStepView = {
   key: string;
@@ -197,6 +190,8 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
   });
   const [versionKnowledgeBase, setVersionKnowledgeBase] = useState<KnowledgeBaseRead | null>(null);
   const [knowledgeBaseVersions, setKnowledgeBaseVersions] = useState<KnowledgeBaseVersionRead[]>([]);
+  const [versionTeamOptions, setVersionTeamOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [conversionKnowledgeBase, setConversionKnowledgeBase] = useState<KnowledgeBaseRead | null>(null);
   const [editingDocument, setEditingDocument] = useState<KnowledgeDocumentRead | null>(null);
   const [documentDraft, setDocumentDraft] = useState({ title: '', status: 'ready', content_md: '' });
   const [documentEditorMode, setDocumentEditorMode] = useState<'edit' | 'preview'>('edit');
@@ -800,12 +795,31 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
     }
   }
 
+  async function loadSharedVersionTeams(row: KnowledgeBaseRead) {
+    /** 找出当前账号可管理且已绑定此共享库的团队，供生命周期动作选择。 */
+    return api.get<Array<{ id: string; name: string }>>(
+      `/api/enterprise/knowledge-bases/${row.id}/teams?tenant_id=${TENANT_ID}`,
+    );
+  }
+
   async function openKnowledgeBaseVersions(row: KnowledgeBaseRead) {
+    /** 共享库进入全局生命周期面板，专用库继续使用员工分支版本表。 */
+    if (row.mode === 'shared') {
+      try {
+        const teamOptions = await loadSharedVersionTeams(row);
+        setVersionTeamOptions(teamOptions);
+        setVersionKnowledgeBase(row);
+      } catch (error) {
+        notify.error(error instanceof Error ? error.message : '加载团队知识库绑定失败');
+      }
+      return;
+    }
     const suffix = effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
     try {
       const versions = await api.get<KnowledgeBaseVersionRead[]>(
         `/api/enterprise/knowledge-bases/${row.id}/versions?tenant_id=${TENANT_ID}${suffix}`,
       );
+      setVersionTeamOptions([]);
       setVersionKnowledgeBase(row);
       setKnowledgeBaseVersions(versions);
     } catch (error) {
@@ -855,6 +869,36 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '回滚失败');
     }
+  }
+
+  function openSharedKnowledgeConversion(row: KnowledgeBaseRead) {
+    /** 只为当前可管理员工的活动专用实例打开转换向导。 */
+    if (!effectiveAgentId || row.mode === 'shared' || row.status === 'archived') return;
+    setConversionKnowledgeBase(row);
+  }
+
+  async function handleKnowledgeConversion(result: KnowledgeBaseConversionRead) {
+    /** 用转换响应原子替换页面中的来源实例，并把视图定位到新共享库。 */
+    // 先更新列表，避免员工私聊作用域的下一次读取把已归档来源继续显示为活动项。
+    setKnowledgeBases((current) => [
+      result.new_knowledge_base,
+      ...current.filter((row) => (
+        row.id !== result.source_knowledge_base_id
+        && row.id !== result.new_knowledge_base.id
+      )),
+    ]);
+    setDocuments((current) => current.filter(
+      (document) => document.knowledge_base_id !== result.source_knowledge_base_id,
+    ));
+
+    // 再清理来源内容选中态并定位新共享库，确保成功后不会继续编辑已归档分支。
+    setSelectedDocument(null);
+    setBuckets([]);
+    setSearchResult(null);
+    setOkfConcepts([]);
+    setKnowledgeBaseFilter(result.new_knowledge_base.id);
+    setConversionKnowledgeBase(null);
+    await loadOkfConcepts(result.new_knowledge_base.id, false);
   }
 
   function openEditDocument(row: KnowledgeDocumentRead) {
@@ -962,6 +1006,18 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
             <HistoryOutlined />
             版本管理
           </DropdownMenuItem>
+          {canManageCurrentScope
+            && Boolean(effectiveAgentId)
+            && item.mode !== 'shared'
+            && item.status !== 'archived' ? (
+              <DropdownMenuItem
+                className={MENU_ITEM_CLASS}
+                onSelect={() => openSharedKnowledgeConversion(item)}
+              >
+                <TeamOutlined />
+                转换为共享知识库
+              </DropdownMenuItem>
+            ) : null}
           <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void exportOkfBundle(item)}>
             <DownloadOutlined />
             导出知识库备份包
@@ -970,12 +1026,12 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
             <AuditOutlined />
             知识图谱检查
           </DropdownMenuItem>
-          {!isOverallAgent && (
+          {!isOverallAgent && item.mode !== 'shared' && (
             <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void syncKnowledgeBaseFromOverall(item)}>
               从广场同步
             </DropdownMenuItem>
           )}
-          {!isOverallAgent && (
+          {!isOverallAgent && item.mode !== 'shared' && (
             <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void promoteKnowledgeBaseToOverall(item)}>
               发布到广场
             </DropdownMenuItem>
@@ -1011,7 +1067,13 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       title: '名称',
       render: (row) => (
         <div className="min-w-0">
-          <strong className="block truncate text-[13px] font-medium text-[#18181a]">{row.name}</strong>
+          <div className="flex min-w-0 flex-wrap items-center gap-[6px]">
+            <strong className="truncate text-[13px] font-medium text-[#18181a]">{row.name}</strong>
+            <KnowledgeTypeBadge mode={row.mode} />
+            {row.mode === 'shared' ? (
+              <span className="text-[11px] text-[#858b9c]">{row.bound_team_count || 0} 个团队</span>
+            ) : null}
+          </div>
           {row.description ? (
             <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">{row.description}</span>
           ) : null}
@@ -1076,6 +1138,12 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       <div className="flex min-w-0 items-start justify-between gap-[10px]">
         <div className="min-w-0">
           <strong className="block truncate text-[14px] font-semibold text-[#18181a]">{item.name}</strong>
+          <div className="mt-[4px] flex flex-wrap items-center gap-[6px]">
+            <KnowledgeTypeBadge mode={item.mode} />
+            {item.mode === 'shared' ? (
+              <span className="text-[11px] text-[#858b9c]">{item.bound_team_count || 0} 个团队</span>
+            ) : null}
+          </div>
           <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">{item.description || '未填写描述'}</span>
           <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">创建者：{resourceCreatorName(item) || '-'}</span>
         </div>
@@ -1523,7 +1591,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
         </div>
       </KDialog>
       <KDialog
-        open={Boolean(versionKnowledgeBase)}
+        open={Boolean(versionKnowledgeBase && versionKnowledgeBase.mode !== 'shared')}
         title={versionKnowledgeBase ? `版本管理：${versionKnowledgeBase.name}` : '版本管理'}
         width={840}
         onClose={() => setVersionKnowledgeBase(null)}
@@ -1554,6 +1622,23 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
           ] as DataTableColumn<KnowledgeBaseVersionRead>[]}
         />
       </KDialog>
+      <SharedKnowledgeVersionsDialog
+        open={Boolean(versionKnowledgeBase?.mode === 'shared')}
+        knowledgeBase={versionKnowledgeBase?.mode === 'shared' ? versionKnowledgeBase : null}
+        teamOptions={versionTeamOptions}
+        onClose={() => {
+          setVersionKnowledgeBase(null);
+          setVersionTeamOptions([]);
+        }}
+        onChanged={() => refresh()}
+      />
+      <SharedKnowledgeConversionDialog
+        open={Boolean(conversionKnowledgeBase)}
+        knowledgeBase={conversionKnowledgeBase}
+        agentId={effectiveAgentId}
+        onClose={() => setConversionKnowledgeBase(null)}
+        onConverted={handleKnowledgeConversion}
+      />
       <KDialog
         open={Boolean(editingDocument)}
         title="在线编辑知识文档"
@@ -1707,6 +1792,10 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
   const navigate = useNavigate();
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('general');
+  const [newBaseMode, setNewBaseMode] = useState<'dedicated' | 'shared'>('dedicated');
+  const [newBaseName, setNewBaseName] = useState('');
+  const [newBaseDescription, setNewBaseDescription] = useState('');
+  const [creatingBase, setCreatingBase] = useState(false);
   const [jobs, setJobs] = useState<Record<string, KnowledgeIngestJobRead>>({});
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
@@ -1831,6 +1920,36 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
     }
   }
 
+  async function createEmptyKnowledgeBase() {
+    /** 创建显式类型的空知识库；共享库后续由团队详情绑定并配置权限。 */
+    const name = newBaseName.trim();
+    if (!name) {
+      notify.warning('请输入知识库名称');
+      return;
+    }
+    if (newBaseMode === 'shared' && !isEnterpriseAdmin(currentUser)) {
+      notify.error('只有管理员可以直接创建共享知识库');
+      return;
+    }
+    setCreatingBase(true);
+    try {
+      await api.post<KnowledgeBaseRead>('/api/enterprise/knowledge-bases', {
+        tenant_id: TENANT_ID,
+        name,
+        description: newBaseDescription.trim() || undefined,
+        mode: newBaseMode,
+        agent_id: newBaseMode === 'dedicated' && agentId ? agentId : undefined,
+        capability_scope: capabilityScope,
+      });
+      notify.success(newBaseMode === 'shared' ? '共享知识库已创建' : '专用知识库已创建');
+      navigate('/enterprise/knowledge');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '创建知识库失败');
+    } finally {
+      setCreatingBase(false);
+    }
+  }
+
   async function uploadFile(file: File) {
     if (!isEnterpriseAdmin(currentUser) && !agentId) {
       notify.warning('请先选择一个数字员工');
@@ -1928,6 +2047,81 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
               返回
             </UIButton>
         </div>
+
+        <KCard title="创建空知识库">
+          <section aria-label="新建知识库配置" className="flex flex-col gap-[16px]">
+            <div className="grid gap-[10px] sm:grid-cols-2">
+              <label className={cn(
+                'flex cursor-pointer items-start gap-[10px] rounded-[12px] border p-[14px]',
+                newBaseMode === 'dedicated' && 'border-[#1a71ff] bg-[#1a71ff]/5',
+              )}>
+                <input
+                  type="radio"
+                  name="knowledge-base-mode"
+                  value="dedicated"
+                  checked={newBaseMode === 'dedicated'}
+                  onChange={() => setNewBaseMode('dedicated')}
+                />
+                <span>
+                  <strong className="block text-[14px] text-foreground">专用知识库</strong>
+                  <small className="mt-[3px] block text-[12px] leading-5 text-[#858b9c]">
+                    员工私聊使用，按员工分支保持隔离。
+                  </small>
+                </span>
+              </label>
+              <label className={cn(
+                'flex items-start gap-[10px] rounded-[12px] border p-[14px]',
+                isEnterpriseAdmin(currentUser) ? 'cursor-pointer' : 'cursor-not-allowed opacity-60',
+                newBaseMode === 'shared' && 'border-[#6d28d9] bg-[#6d28d9]/5',
+              )}>
+                <input
+                  type="radio"
+                  name="knowledge-base-mode"
+                  value="shared"
+                  checked={newBaseMode === 'shared'}
+                  disabled={!isEnterpriseAdmin(currentUser)}
+                  onChange={() => setNewBaseMode('shared')}
+                />
+                <span>
+                  <strong className="block text-[14px] text-foreground">共享知识库</strong>
+                  <small className="mt-[3px] block text-[12px] leading-5 text-[#858b9c]">
+                    绑定到一个或多个团队，并按员工分别授予读取、编辑或发布权限。
+                  </small>
+                </span>
+              </label>
+            </div>
+            <div className="grid gap-[12px] md:grid-cols-2">
+              <label className="flex flex-col gap-[7px] text-[13px] font-medium text-[#464c5e]">
+                知识库名称
+                <Input
+                  aria-label="知识库名称"
+                  value={newBaseName}
+                  onChange={(event) => setNewBaseName(event.target.value)}
+                  placeholder="例如：内容团队选题库"
+                />
+              </label>
+              <label className="flex flex-col gap-[7px] text-[13px] font-medium text-[#464c5e]">
+                知识库描述
+                <Input
+                  aria-label="知识库描述"
+                  value={newBaseDescription}
+                  onChange={(event) => setNewBaseDescription(event.target.value)}
+                  placeholder="说明知识范围与维护目的"
+                />
+              </label>
+            </div>
+            <CapabilityScopeControl
+              value={capabilityScope}
+              onChange={setCapabilityScope}
+              resourceType="knowledge_base"
+            />
+            <div className="flex justify-end">
+              <UIButton disabled={creatingBase} onClick={() => void createEmptyKnowledgeBase()}>
+                {creatingBase ? '正在创建…' : '创建知识库'}
+              </UIButton>
+            </div>
+          </section>
+        </KCard>
 
         <KCard className="knowledge-upload-card" bodyClassName="flex flex-col gap-[16px]">
           <div className="knowledge-upload-controls">

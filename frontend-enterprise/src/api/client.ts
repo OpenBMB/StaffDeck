@@ -80,7 +80,10 @@ export const api = {
     request<T>(path, { method: 'POST', body: JSON.stringify(body), signal }),
   postKeepalive: <T>(path: string, body?: unknown) => keepalivePost<T>(path, body),
   put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
-  delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  delete: <T>(path: string, body?: unknown) => request<T>(path, {
+    method: 'DELETE',
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }),
   blob: async (path: string) => {
     const response = await fetch(`${API_BASE}${path}`, {
       headers: {

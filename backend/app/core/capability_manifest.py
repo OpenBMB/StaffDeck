@@ -1,7 +1,10 @@
+"""构建 Harness 每轮冻结能力清单，并把实时授权投影为可调用描述符。"""
+
 from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from sqlmodel import Session, select
@@ -23,6 +26,7 @@ from app.db.models import (
     AgentResourceBinding,
     GeneralSkill,
     KnowledgeBase,
+    KnowledgeBaseVersion,
     MCPServer,
     Skill,
     Tool,
@@ -34,6 +38,8 @@ from app.harness import (
     register_skill_script_tools,
 )
 from app.harness.sandbox import available_backend
+from app.knowledge.access import KnowledgeAccessService
+from app.knowledge.errors import KnowledgeError
 
 RESERVED_HARNESS_CAPABILITY_NAMES = {
     "capability_search",
@@ -43,7 +49,23 @@ RESERVED_HARNESS_CAPABILITY_NAMES = {
     "exec_command",
     "run_skill_script",
     "knowledge_search",
+    "knowledge_list_versions",
+    "knowledge_create_draft",
+    "knowledge_update_draft",
+    "knowledge_publish_draft",
+    "knowledge_reject_draft",
+    "knowledge_rollback",
 }
+
+
+@dataclass(frozen=True)
+class _ManifestKnowledgeAccess:
+    """能力清单中一项已授权知识的冻结版本与实时权限。"""
+
+    version: KnowledgeBaseVersion
+    permission: str
+    is_default_write: bool
+    mode: str = "dedicated"
 
 
 class CapabilityAuthorizationError(RuntimeError):
@@ -60,13 +82,19 @@ class CapabilityManifestBuilder:
         agent_id: str | None,
         skill: Skill | None,
         step_id: str | None,
+        *,
+        team_id: str | None = None,
+        frozen_knowledge_versions: dict[str, str] | None = None,
     ) -> CapabilityManifest:
+        """构建当前上下文能力清单，并可固定本轮已经选择的知识版本。"""
+        # 先验证员工身份并解析当前 SOP 的显式能力引用，建立 fail-closed 起点。
         if agent_id and get_agent(self.db, tenant_id, agent_id) is None:
             raise CapabilityAuthorizationError("当前员工不存在、已归档或不属于该租户。")
         refs = current_step_capability_refs(skill, step_id)
         available: list[CapabilityDescriptor] = []
         unavailable: list[CapabilityDescriptor] = []
 
+        # 再加入 Harness 内核与本地文件能力，它们不依赖租户资源可见性。
         available.extend(_internal_capability_descriptors())
         ui_config = self.db.get(UIConfig, tenant_id)
         sandbox_enabled = bool(getattr(ui_config, "sandbox_enabled", False))
@@ -103,6 +131,7 @@ class CapabilityManifestBuilder:
                 )
             )
 
+        # 然后按员工可见性和 SOP 范围投影通用技能。
         visible_general = _visible_general_skills(self.db, tenant_id, agent_id)
         general_by_ref = {ref: row for row in visible_general for ref in (row.id, row.slug)}
         for row in visible_general:
@@ -162,6 +191,7 @@ class CapabilityManifestBuilder:
                 )
             )
 
+        # 外部工具沿用同一范围门禁，并保留执行时需要的不可见内部元数据。
         visible_tools = visible_tool_rows(self.db, tenant_id, agent_id, include_inactive=False)
         tool_by_ref = {ref: row for row in visible_tools for ref in (row.id, row.name)}
         for row in visible_tools:
@@ -221,8 +251,13 @@ class CapabilityManifestBuilder:
                 )
             )
 
-        visible_knowledge = visible_knowledge_base_versions(
-            self.db, tenant_id, agent_id, include_inactive=False
+        # 知识能力最后解析，以便同时冻结本轮版本并按团队实时授权生成维护动作。
+        visible_knowledge = _visible_knowledge_versions_for_manifest(
+            self.db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            team_id=team_id,
+            frozen_knowledge_versions=frozen_knowledge_versions,
         )
         allowed_knowledge_ids: list[str] = []
         allowed_knowledge_version_ids: list[str] = []
@@ -230,7 +265,8 @@ class CapabilityManifestBuilder:
         knowledge_scope_by_base_id: dict[str, str] = {}
         knowledge_scopes: list[str] = []
         valid_knowledge_ids: set[str] = set()
-        for kb_id, version in visible_knowledge.items():
+        for kb_id, knowledge_access in visible_knowledge.items():
+            version = knowledge_access.version
             scope = _scope(version)
             if scope == "general":
                 root = self.db.get(KnowledgeBase, kb_id)
@@ -291,7 +327,17 @@ class CapabilityManifestBuilder:
                     },
                 )
             )
+        if team_id is not None and agent_id is not None:
+            available.extend(
+                _shared_knowledge_action_descriptors(
+                    visible_knowledge=visible_knowledge,
+                    allowed_knowledge_ids=allowed_knowledge_ids,
+                    knowledge_version_by_base_id=knowledge_version_by_base_id,
+                    knowledge_scope_by_base_id=knowledge_scope_by_base_id,
+                )
+            )
 
+        # 最后记录显式引用但不可用的资源，并对完整冻结清单计算稳定修订号。
         unavailable.extend(
             self._unavailable_explicit_refs(
                 tenant_id,
@@ -351,6 +397,256 @@ class CapabilityManifestBuilder:
                     )
                 )
         return unavailable
+
+
+def _visible_knowledge_versions_for_manifest(
+    db: Session,
+    *,
+    tenant_id: str,
+    agent_id: str | None,
+    team_id: str | None,
+    frozen_knowledge_versions: dict[str, str] | None,
+) -> dict[str, _ManifestKnowledgeAccess]:
+    """按可信上下文返回知识冻结版本，并保留动作过滤所需的实时权限。"""
+    # 无员工身份只支持原有租户级可见路径；团队上下文必须有员工身份。
+    if agent_id is None:
+        if team_id is not None:
+            raise CapabilityAuthorizationError("团队知识上下文缺少员工身份。")
+        visible = visible_knowledge_base_versions(
+            db,
+            tenant_id,
+            agent_id,
+            include_inactive=False,
+        )
+        selected = (
+            visible
+            if frozen_knowledge_versions is None
+            else {
+                knowledge_base_id: version
+                for knowledge_base_id, version in visible.items()
+                if frozen_knowledge_versions.get(knowledge_base_id) == version.id
+            }
+        )
+        return {
+            knowledge_base_id: _ManifestKnowledgeAccess(
+                version=version,
+                permission="reader",
+                is_default_write=False,
+            )
+            for knowledge_base_id, version in selected.items()
+        }
+
+    # 有员工身份时统一走知识访问解析器，避免能力清单复制授权规则。
+    try:
+        projections = KnowledgeAccessService(db).resolve_projections(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            team_id=team_id,
+        )
+    except KnowledgeError as exc:
+        raise CapabilityAuthorizationError(exc.message) from exc
+
+    # 冻结映射只锁定版本，不锁定权限；权限仍来自本次实时解析。
+    visible: dict[str, _ManifestKnowledgeAccess] = {}
+    for projection in projections:
+        if frozen_knowledge_versions is not None:
+            version_id = frozen_knowledge_versions.get(projection.knowledge_base_id)
+            if version_id is None:
+                continue
+        else:
+            version_id = projection.knowledge_base_version_id
+        version = db.get(KnowledgeBaseVersion, version_id)
+        if (
+            version is None
+            or version.tenant_id != tenant_id
+            or version.knowledge_base_id != projection.knowledge_base_id
+        ):
+            continue
+        if projection.mode == "shared" and version.publication_state != "released":
+            continue
+        visible[projection.knowledge_base_id] = _ManifestKnowledgeAccess(
+            version=version,
+            permission=projection.permission,
+            is_default_write=projection.is_default_write,
+            mode=projection.mode,
+        )
+    return visible
+
+
+def _shared_knowledge_action_descriptors(
+    *,
+    visible_knowledge: dict[str, _ManifestKnowledgeAccess],
+    allowed_knowledge_ids: list[str],
+    knowledge_version_by_base_id: dict[str, str],
+    knowledge_scope_by_base_id: dict[str, str],
+) -> list[CapabilityDescriptor]:
+    """按每个共享库的实时授权等级生成 Agent 可发现的显式维护动作。"""
+    # 先把批准合同固化为动作、最低权限、说明和模型输入约束。
+    action_specs: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
+        (
+            "knowledge_list_versions",
+            "reader",
+            "列出当前团队已授权共享知识库的正式版本、草稿和允许动作。",
+            {
+                "type": "object",
+                "properties": {
+                    "knowledge_base_id": {"type": "string"},
+                    "publication_state": {
+                        "type": "string",
+                        "enum": ["draft", "released", "rejected"],
+                    },
+                },
+            },
+        ),
+        (
+            "knowledge_create_draft",
+            "editor",
+            "从共享知识库当前正式版本创建可编辑草稿。",
+            {
+                "type": "object",
+                "properties": {
+                    "knowledge_base_id": {"type": "string"},
+                    "expected_published_version_id": {"type": "string"},
+                    "change_reason": {"type": "string", "minLength": 1},
+                    "source_task_id": {"type": "string"},
+                    "source_references": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                    "idempotency_key": {"type": "string", "minLength": 1},
+                },
+                "required": ["change_reason", "idempotency_key"],
+            },
+        ),
+        (
+            "knowledge_update_draft",
+            "editor",
+            "向已授权共享知识草稿写入一份带来源的文本或 Markdown 文档。",
+            {
+                "type": "object",
+                "properties": {
+                    "draft_version_id": {"type": "string"},
+                    "title": {"type": "string", "minLength": 1},
+                    "filename": {"type": "string", "minLength": 1},
+                    "content": {"type": "string", "minLength": 1},
+                    "source_references": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                    "idempotency_key": {"type": "string", "minLength": 1},
+                },
+                "required": [
+                    "draft_version_id",
+                    "title",
+                    "filename",
+                    "content",
+                    "idempotency_key",
+                ],
+            },
+        ),
+        (
+            "knowledge_publish_draft",
+            "publisher",
+            "校验共享知识草稿后原子发布为所有绑定团队的唯一正式版本。",
+            {
+                "type": "object",
+                "properties": {
+                    "draft_version_id": {"type": "string"},
+                    "expected_published_version_id": {"type": "string"},
+                    "change_reason": {"type": "string", "minLength": 1},
+                    "idempotency_key": {"type": "string", "minLength": 1},
+                },
+                "required": [
+                    "draft_version_id",
+                    "expected_published_version_id",
+                    "change_reason",
+                    "idempotency_key",
+                ],
+            },
+        ),
+        (
+            "knowledge_reject_draft",
+            "publisher",
+            "驳回共享知识草稿并保留其历史与来源。",
+            {
+                "type": "object",
+                "properties": {
+                    "draft_version_id": {"type": "string"},
+                    "change_reason": {"type": "string", "minLength": 1},
+                    "idempotency_key": {"type": "string", "minLength": 1},
+                },
+                "required": [
+                    "draft_version_id",
+                    "change_reason",
+                    "idempotency_key",
+                ],
+            },
+        ),
+        (
+            "knowledge_rollback",
+            "publisher",
+            "把共享知识库全局正式指针回滚到同库历史正式版本。",
+            {
+                "type": "object",
+                "properties": {
+                    "knowledge_base_id": {"type": "string"},
+                    "target_version_id": {"type": "string"},
+                    "expected_published_version_id": {"type": "string"},
+                    "change_reason": {"type": "string", "minLength": 1},
+                    "idempotency_key": {"type": "string", "minLength": 1},
+                },
+                "required": [
+                    "target_version_id",
+                    "expected_published_version_id",
+                    "change_reason",
+                    "idempotency_key",
+                ],
+            },
+        ),
+    )
+    # 再逐动作筛选可操作知识库；没有任何合格目标的动作不进入冻结清单。
+    descriptors: list[CapabilityDescriptor] = []
+    for name, required_permission, description, input_schema in action_specs:
+        permitted_ids = [
+            knowledge_base_id
+            for knowledge_base_id in allowed_knowledge_ids
+            if visible_knowledge[knowledge_base_id].mode == "shared"
+            and KnowledgeAccessService.permission_allows(
+                visible_knowledge[knowledge_base_id].permission,
+                required_permission,
+            )
+        ]
+        if not permitted_ids:
+            continue
+        frozen_versions = {
+            knowledge_base_id: knowledge_version_by_base_id[knowledge_base_id]
+            for knowledge_base_id in permitted_ids
+        }
+        # 每个动作携带同一轮的正式版本映射，实时执行时仅收窄权限而不换版本。
+        descriptors.append(
+            CapabilityDescriptor(
+                capability_id=f"knowledge.{name.removeprefix('knowledge_')}",
+                name=name,
+                kind="knowledge",
+                capability_scope=(
+                    "sop_specific"
+                    if all(
+                        knowledge_scope_by_base_id[knowledge_base_id] == "sop_specific"
+                        for knowledge_base_id in permitted_ids
+                    )
+                    else "general"
+                ),
+                description=description,
+                input_schema=input_schema,
+                metadata={
+                    "allowed_knowledge_base_ids": permitted_ids,
+                    "allowed_knowledge_base_version_ids": list(frozen_versions.values()),
+                    "knowledge_version_by_base_id": frozen_versions,
+                    "required_permission": required_permission,
+                },
+            )
+        )
+    return descriptors
 
 
 def _internal_capability_descriptors() -> list[CapabilityDescriptor]:

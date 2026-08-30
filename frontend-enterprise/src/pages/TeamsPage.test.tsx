@@ -40,6 +40,20 @@ const team: TeamRead = {
   updated_at: '2026-08-01T00:00:00Z',
 };
 
+const sharedKnowledgeBase = {
+  id: 'kb-shared-1',
+  tenant_id: 'tenant_demo',
+  name: '共享制度库',
+  mode: 'shared',
+  status: 'active',
+  version: '1.0.0',
+  document_count: 0,
+  bucket_count: 0,
+  chunk_count: 0,
+  created_at: '2026-08-01T00:00:00Z',
+  updated_at: '2026-08-01T00:00:00Z',
+};
+
 function jsonResponse(body: unknown): Response {
   return {
     ok: true,
@@ -106,6 +120,44 @@ describe('TeamsPage', () => {
       const body = JSON.parse(String(createCall?.[1]?.body)) as Record<string, unknown>;
       expect(body.name).toBe('新团队');
       expect(body.tenant_id).toBeTruthy();
+    });
+  });
+
+  it('creates a team with selected shared knowledge and one default target', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'POST') return jsonResponse({ ...team, id: 'team-2' });
+      if (url.includes('/knowledge-bases')) return jsonResponse([sharedKnowledgeBase]);
+      if (url.includes('/team-threads')) return jsonResponse([]);
+      return jsonResponse([team]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <TeamsPage />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    await screen.findByText('增长团队');
+    await user.click(screen.getByRole('button', { name: /创建新团队/ }));
+    await user.type(screen.getByLabelText('团队名称'), '知识团队');
+    const knowledgeStep = await screen.findByLabelText('团队知识库配置');
+    await user.click(within(knowledgeStep).getByRole('checkbox', { name: '选择共享制度库' }));
+    await user.click(within(knowledgeStep).getByRole('radio', { name: '设为默认 共享制度库' }));
+    await user.click(screen.getByRole('button', { name: '创建' }));
+
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+      const body = JSON.parse(String(createCall?.[1]?.body)) as {
+        knowledge_bases?: Array<Record<string, unknown>>;
+      };
+      expect(body.knowledge_bases).toEqual([
+        { existing_knowledge_base_id: 'kb-shared-1', is_default: true },
+      ]);
     });
   });
 

@@ -1,8 +1,10 @@
 from pathlib import Path
 
 from sqlalchemy import create_engine, inspect, text
+from sqlmodel import Session, SQLModel
 
 from app import paths
+from app.agents.branching import visible_knowledge_base_versions
 from app.db import database
 from app.db.database import (
     _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID,
@@ -12,6 +14,7 @@ from app.db.database import (
     _migrate_model_api_protocols,
     _normalize_database_url,
 )
+from app.db.models import KnowledgeBase, KnowledgeBaseVersion, KnowledgeDocument, Tenant
 
 
 def test_sqlite_startup_migration_adds_display_name_login_index(
@@ -164,6 +167,748 @@ def test_knowledge_base_migration_accepts_existing_noncanonical_version_id(tmp_p
             assert conn.execute(
                 text(f"SELECT knowledge_base_version_id FROM {table_name}")
             ).scalar_one() == "legacy-version-id"
+
+
+def test_knowledge_base_migration_creates_dedicated_default_in_current_schema(
+    tmp_path,
+) -> None:
+    """Fresh current schemas must receive a default KB with every required column."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'current-schema.db'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_current", name="Current schema"))
+        db.commit()
+
+    with engine.begin() as conn:
+        tables = set(inspect(conn).get_table_names())
+        _migrate_knowledge_base_schema(conn, inspect(conn), tables)
+        row = conn.execute(
+            text(
+                "SELECT mode, published_version_id FROM knowledge_bases "
+                "WHERE id = 'kb_tenant_current_default'"
+            )
+        ).one()
+
+    assert row.mode == "dedicated"
+    assert row.published_version_id is None
+
+
+def test_document_split_migration_sets_current_required_knowledge_fields(
+    tmp_path,
+) -> None:
+    """当前结构拆分旧多文档知识库时，新根记录与版本必须保持专用和已发布语义。"""
+    engine = create_engine(f"sqlite:///{tmp_path / 'document-split-current.db'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_split", name="Document split"))
+        db.add(
+            KnowledgeBase(
+                id="kb_split_source",
+                tenant_id="tenant_split",
+                name="旧多文档知识库",
+                mode="dedicated",
+            )
+        )
+        db.add(
+            KnowledgeBaseVersion(
+                id="kbver_split_source",
+                tenant_id="tenant_split",
+                knowledge_base_id="kb_split_source",
+                version="1.0.0",
+                name="旧多文档知识库",
+                publication_state="released",
+            )
+        )
+        db.add_all(
+            [
+                KnowledgeDocument(
+                    id="kdoc_split_a",
+                    tenant_id="tenant_split",
+                    knowledge_base_id="kb_split_source",
+                    knowledge_base_version_id="kbver_split_source",
+                    filename="a.md",
+                    file_type="md",
+                    status="ready",
+                ),
+                KnowledgeDocument(
+                    id="kdoc_split_b",
+                    tenant_id="tenant_split",
+                    knowledge_base_id="kb_split_source",
+                    knowledge_base_version_id="kbver_split_source",
+                    filename="b.md",
+                    file_type="md",
+                    status="ready",
+                ),
+            ]
+        )
+        db.commit()
+
+    with engine.begin() as conn:
+        tables = set(inspect(conn).get_table_names())
+        _migrate_knowledge_base_schema(conn, inspect(conn), tables)
+        migrated = conn.execute(
+            text(
+                """
+                SELECT kb.mode, kb.published_version_id, kbv.publication_state
+                FROM knowledge_bases AS kb
+                JOIN knowledge_base_versions AS kbv ON kbv.knowledge_base_id = kb.id
+                WHERE kb.id IN ('kb_doc_kdoc_split_a', 'kb_doc_kdoc_split_b')
+                ORDER BY kb.id
+                """
+            )
+        ).all()
+
+    assert migrated == [
+        ("dedicated", None, "released"),
+        ("dedicated", None, "released"),
+    ]
+
+
+def test_document_split_migration_leaves_shared_multi_document_base_intact(
+    tmp_path,
+) -> None:
+    """共享正式版本允许多个文档，旧数据拆分迁移不得改变其根记录或文档归属。"""
+    engine = create_engine(f"sqlite:///{tmp_path / 'document-split-shared.db'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_shared_split", name="Shared document split"))
+        db.add(
+            KnowledgeBase(
+                id="kb_shared_multi_document",
+                tenant_id="tenant_shared_split",
+                name="共享多文档知识库",
+                mode="shared",
+                published_version_id="kbver_shared_multi_document",
+            )
+        )
+        db.add(
+            KnowledgeBaseVersion(
+                id="kbver_shared_multi_document",
+                tenant_id="tenant_shared_split",
+                knowledge_base_id="kb_shared_multi_document",
+                version="1.0.0",
+                name="共享多文档知识库",
+                publication_state="released",
+            )
+        )
+        db.add_all(
+            [
+                KnowledgeDocument(
+                    id="kdoc_shared_a",
+                    tenant_id="tenant_shared_split",
+                    knowledge_base_id="kb_shared_multi_document",
+                    knowledge_base_version_id="kbver_shared_multi_document",
+                    filename="shared-a.md",
+                    file_type="md",
+                    status="ready",
+                ),
+                KnowledgeDocument(
+                    id="kdoc_shared_b",
+                    tenant_id="tenant_shared_split",
+                    knowledge_base_id="kb_shared_multi_document",
+                    knowledge_base_version_id="kbver_shared_multi_document",
+                    filename="shared-b.md",
+                    file_type="md",
+                    status="ready",
+                ),
+            ]
+        )
+        db.commit()
+
+    with engine.begin() as conn:
+        tables = set(inspect(conn).get_table_names())
+        _migrate_knowledge_base_schema(conn, inspect(conn), tables)
+        document_base_ids = conn.execute(
+            text(
+                """
+                SELECT knowledge_base_id
+                FROM knowledge_documents
+                WHERE id IN ('kdoc_shared_a', 'kdoc_shared_b')
+                ORDER BY id
+                """
+            )
+        ).scalars().all()
+        split_target_count = conn.execute(
+            text("SELECT COUNT(*) FROM knowledge_bases WHERE id LIKE 'kb_doc_kdoc_shared_%'")
+        ).scalar_one()
+
+    assert document_base_ids == [
+        "kb_shared_multi_document",
+        "kb_shared_multi_document",
+    ]
+    assert split_target_count == 0
+
+
+def test_shared_knowledge_migration_preserves_private_data_and_is_idempotent(
+    tmp_path,
+) -> None:
+    """旧库迁移两次后仍保持专用语义，并原样保留员工分支与资源绑定。"""
+    engine = create_engine(f"sqlite:///{tmp_path / 'shared-knowledge.db'}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE knowledge_bases (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    status VARCHAR NOT NULL,
+                    capability_scope VARCHAR NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE knowledge_base_versions (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    knowledge_base_id VARCHAR NOT NULL,
+                    version VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    status VARCHAR NOT NULL,
+                    capability_scope VARCHAR NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    UNIQUE (tenant_id, knowledge_base_id, version)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE teams (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    owner_user_id VARCHAR NOT NULL,
+                    config_json JSON,
+                    status VARCHAR NOT NULL,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE agent_knowledge_branches (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    agent_id VARCHAR NOT NULL,
+                    knowledge_base_id VARCHAR NOT NULL,
+                    base_version VARCHAR NOT NULL,
+                    head_version VARCHAR NOT NULL,
+                    status VARCHAR NOT NULL,
+                    sync_state VARCHAR NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE agent_resource_bindings (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    agent_id VARCHAR NOT NULL,
+                    resource_type VARCHAR NOT NULL,
+                    resource_id VARCHAR NOT NULL,
+                    status VARCHAR NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO knowledge_bases
+                    (id, tenant_id, name, status, capability_scope, metadata_json)
+                VALUES ('kb_private', 'tenant_demo', '私有资料', 'active', 'general', '{}')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO knowledge_base_versions
+                    (id, tenant_id, knowledge_base_id, version, name, status,
+                     capability_scope, metadata_json)
+                VALUES (
+                    'kbver_private', 'tenant_demo', 'kb_private', '1.0.0',
+                    '私有资料', 'active', 'general', '{}'
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO teams
+                    (id, tenant_id, name, owner_user_id, config_json, status)
+                VALUES ('team_a', 'tenant_demo', '项目 A', 'user_admin', '{}', 'active')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO agent_knowledge_branches
+                    (id, tenant_id, agent_id, knowledge_base_id, base_version,
+                     head_version, status, sync_state, metadata_json)
+                VALUES (
+                    'branch_private', 'tenant_demo', 'agent_writer', 'kb_private',
+                    '1.0.0', '1.0.0', 'active', 'synced', '{"owner": "agent_writer"}'
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO agent_resource_bindings
+                    (id, tenant_id, agent_id, resource_type, resource_id, status, metadata_json)
+                VALUES (
+                    'binding_private', 'tenant_demo', 'agent_writer', 'knowledge',
+                    'kb_private', 'active', '{"scope": "private"}'
+                )
+                """
+            )
+        )
+
+    for _ in range(2):
+        with engine.begin() as conn:
+            current_inspector = inspect(conn)
+            _migrate_knowledge_base_schema(
+                conn,
+                current_inspector,
+                set(current_inspector.get_table_names()),
+            )
+
+    migrated_inspector = inspect(engine)
+    assert {
+        "mode",
+        "published_version_id",
+    }.issubset({column["name"] for column in migrated_inspector.get_columns("knowledge_bases")})
+    assert {
+        "parent_version_id",
+        "publication_state",
+        "source_team_id",
+        "created_by_agent_id",
+        "created_by_user_id",
+        "change_reason",
+        "published_at",
+    }.issubset(
+        {
+            column["name"]
+            for column in migrated_inspector.get_columns("knowledge_base_versions")
+        }
+    )
+    assert "default_knowledge_base_id" in {
+        column["name"] for column in migrated_inspector.get_columns("teams")
+    }
+    assert {
+        "team_knowledge_base_bindings",
+        "team_knowledge_base_grants",
+        "knowledge_base_audit_events",
+    }.issubset(set(migrated_inspector.get_table_names()))
+
+    with engine.connect() as conn:
+        private_base = conn.execute(
+            text(
+                "SELECT mode, published_version_id FROM knowledge_bases "
+                "WHERE id = 'kb_private'"
+            )
+        ).mappings().one()
+        private_version = conn.execute(
+            text(
+                "SELECT publication_state, parent_version_id FROM knowledge_base_versions "
+                "WHERE id = 'kbver_private'"
+            )
+        ).mappings().one()
+        assert dict(private_base) == {
+            "mode": "dedicated",
+            "published_version_id": None,
+        }
+        assert dict(private_version) == {
+            "publication_state": "released",
+            "parent_version_id": None,
+        }
+        assert conn.execute(
+            text("SELECT default_knowledge_base_id FROM teams WHERE id = 'team_a'")
+        ).scalar_one() is None
+        assert conn.execute(
+            text("SELECT COUNT(*) FROM team_knowledge_base_bindings")
+        ).scalar_one() == 0
+        assert conn.execute(
+            text("SELECT COUNT(*) FROM team_knowledge_base_grants")
+        ).scalar_one() == 0
+        assert conn.execute(
+            text("SELECT COUNT(*) FROM knowledge_base_audit_events")
+        ).scalar_one() == 0
+        assert conn.execute(
+            text(
+                "SELECT tenant_id, agent_id, knowledge_base_id, base_version, "
+                "head_version, status, sync_state, metadata_json "
+                "FROM agent_knowledge_branches WHERE id = 'branch_private'"
+            )
+        ).one() == (
+            "tenant_demo",
+            "agent_writer",
+            "kb_private",
+            "1.0.0",
+            "1.0.0",
+            "active",
+            "synced",
+            '{"owner": "agent_writer"}',
+        )
+        assert conn.execute(
+            text(
+                "SELECT tenant_id, agent_id, resource_type, resource_id, status, metadata_json "
+                "FROM agent_resource_bindings WHERE id = 'binding_private'"
+            )
+        ).one() == (
+            "tenant_demo",
+            "agent_writer",
+            "knowledge",
+            "kb_private",
+            "active",
+            '{"scope": "private"}',
+        )
+
+    knowledge_base_indexes = {
+        index["name"] for index in migrated_inspector.get_indexes("knowledge_bases")
+    }
+    version_indexes = {
+        index["name"]
+        for index in migrated_inspector.get_indexes("knowledge_base_versions")
+    }
+    team_indexes = {index["name"] for index in migrated_inspector.get_indexes("teams")}
+    assert {
+        "ix_knowledge_bases_mode",
+        "ix_knowledge_bases_published_version_id",
+    }.issubset(knowledge_base_indexes)
+    assert "ix_knowledge_base_versions_publication_state" in version_indexes
+    assert "ix_teams_default_knowledge_base_id" in team_indexes
+
+
+def test_shared_knowledge_startup_migration_preserves_legacy_visibility_twice(
+    monkeypatch, tmp_path
+) -> None:
+    """旧版数据库连续启动两次后，开放广场、私有分支、文档与团队边界保持不变。"""
+    database_path = tmp_path / "legacy-shared-knowledge-startup.db"
+    database_url = f"sqlite:///{database_path}"
+    engine = create_engine(database_url)
+
+    # 先构造共享知识库功能上线前的代表性表结构与可见关系。
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE knowledge_bases (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    status VARCHAR NOT NULL,
+                    capability_scope VARCHAR NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE knowledge_base_versions (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    knowledge_base_id VARCHAR NOT NULL,
+                    version VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    status VARCHAR NOT NULL,
+                    capability_scope VARCHAR NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    UNIQUE (tenant_id, knowledge_base_id, version)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE agent_profiles (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    persona_prompt VARCHAR,
+                    is_overall BOOLEAN NOT NULL,
+                    status VARCHAR NOT NULL,
+                    harness_max_actions INTEGER NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    UNIQUE (tenant_id, name)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE agent_resource_bindings (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    agent_id VARCHAR NOT NULL,
+                    resource_type VARCHAR NOT NULL,
+                    resource_id VARCHAR NOT NULL,
+                    status VARCHAR NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    UNIQUE (tenant_id, agent_id, resource_type, resource_id)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE agent_knowledge_branches (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    agent_id VARCHAR NOT NULL,
+                    knowledge_base_id VARCHAR NOT NULL,
+                    base_version VARCHAR NOT NULL,
+                    head_version VARCHAR NOT NULL,
+                    status VARCHAR NOT NULL,
+                    sync_state VARCHAR NOT NULL,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    UNIQUE (tenant_id, agent_id, knowledge_base_id)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE knowledge_documents (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    knowledge_base_id VARCHAR,
+                    knowledge_base_version_id VARCHAR,
+                    filename VARCHAR NOT NULL,
+                    file_type VARCHAR NOT NULL,
+                    title VARCHAR,
+                    status VARCHAR NOT NULL,
+                    bucket_count INTEGER NOT NULL,
+                    chunk_count INTEGER NOT NULL,
+                    metadata_json JSON,
+                    error VARCHAR,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE teams (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    owner_user_id VARCHAR NOT NULL,
+                    config_json JSON,
+                    status VARCHAR NOT NULL,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    UNIQUE (tenant_id, name)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO agent_profiles (
+                    id, tenant_id, name, is_overall, status, harness_max_actions,
+                    metadata_json, created_at, updated_at
+                ) VALUES
+                    ('agent_tenant_demo_overall', 'tenant_demo', '整体智能体', 1,
+                     'active', 32, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                    ('agent_writer', 'tenant_demo', '内容员工', 0,
+                     'active', 32, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO knowledge_bases (
+                    id, tenant_id, name, status, capability_scope, metadata_json,
+                    created_at, updated_at
+                ) VALUES
+                    ('kb_gallery', 'tenant_demo', '开放广场模板', 'active', 'general', '{}',
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                    ('kb_private', 'tenant_demo', '员工私有资料', 'active', 'general', '{}',
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO knowledge_base_versions (
+                    id, tenant_id, knowledge_base_id, version, name, status,
+                    capability_scope, metadata_json, created_at, updated_at
+                ) VALUES
+                    ('kbver_gallery', 'tenant_demo', 'kb_gallery', '1.0.0',
+                     '开放广场模板', 'active', 'general', '{}',
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                    ('kbver_private', 'tenant_demo', 'kb_private', '1.0.0',
+                     '员工私有资料', 'active', 'general', '{}',
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO agent_resource_bindings (
+                    id, tenant_id, agent_id, resource_type, resource_id, status,
+                    metadata_json, created_at, updated_at
+                ) VALUES
+                    ('binding_gallery', 'tenant_demo', 'agent_tenant_demo_overall',
+                     'knowledge_base', 'kb_gallery', 'active', '{}',
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                    ('binding_private', 'tenant_demo', 'agent_writer',
+                     'knowledge_base', 'kb_private', 'active', '{}',
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO agent_knowledge_branches (
+                    id, tenant_id, agent_id, knowledge_base_id, base_version,
+                    head_version, status, sync_state, metadata_json, created_at, updated_at
+                ) VALUES (
+                    'branch_private', 'tenant_demo', 'agent_writer', 'kb_private',
+                    '1.0.0', '1.0.0', 'active', 'synced', '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO knowledge_documents (
+                    id, tenant_id, knowledge_base_id, knowledge_base_version_id,
+                    filename, file_type, title, status, bucket_count, chunk_count,
+                    metadata_json, created_at, updated_at
+                ) VALUES (
+                    'doc_private', 'tenant_demo', 'kb_private', NULL,
+                    'private.md', 'md', '私有文档', 'ready', 1, 1, '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO teams (
+                    id, tenant_id, name, owner_user_id, config_json, status,
+                    created_at, updated_at
+                ) VALUES (
+                    'team_legacy', 'tenant_demo', '旧项目组', 'user_admin', '{}', 'active',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+
+    monkeypatch.setattr(database, "engine", engine)
+    monkeypatch.setattr(database, "database_url", database_url)
+
+    # 真实走两次应用启动入口，验证迁移重放不会扩大或缩小既有可见范围。
+    database.init_db()
+    database.init_db()
+
+    with Session(engine) as db:
+        assert set(
+            visible_knowledge_base_versions(
+                db, "tenant_demo", "agent_tenant_demo_overall"
+            )
+        ) == {"kb_gallery"}
+        assert set(
+            visible_knowledge_base_versions(db, "tenant_demo", "agent_writer")
+        ) == {"kb_private"}
+
+    # 迁移只补 dedicated/released 兼容字段，不创建共享指针或团队关系。
+    with engine.connect() as conn:
+        bases = conn.execute(
+            text(
+                """
+                SELECT id, mode, published_version_id
+                FROM knowledge_bases
+                WHERE id IN ('kb_gallery', 'kb_private')
+                ORDER BY id
+                """
+            )
+        ).all()
+        assert bases == [
+            ("kb_gallery", "dedicated", None),
+            ("kb_private", "dedicated", None),
+        ]
+        assert conn.execute(
+            text(
+                """
+                SELECT knowledge_base_id, knowledge_base_version_id
+                FROM knowledge_documents
+                WHERE id = 'doc_private'
+                """
+            )
+        ).one() == ("kb_private", "kbver_private")
+        assert conn.execute(
+            text(
+                "SELECT default_knowledge_base_id FROM teams WHERE id = 'team_legacy'"
+            )
+        ).scalar_one() is None
+        assert conn.execute(
+            text("SELECT COUNT(*) FROM team_knowledge_base_bindings")
+        ).scalar_one() == 0
+        assert conn.execute(
+            text("SELECT COUNT(*) FROM team_knowledge_base_grants")
+        ).scalar_one() == 0
 
 
 def test_relative_sqlite_url_resolves_under_backend_dir() -> None:

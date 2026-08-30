@@ -67,7 +67,11 @@ import {
   visibleEmployeeAgents,
 } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
-import { isTeamScope, readEmployeeScope } from '../lib/agent-scope-storage';
+import {
+  emitAgentScopeChange,
+  isTeamScope,
+  readEmployeeScope,
+} from '../lib/agent-scope-storage';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import type {
   AgentProfileRead,
@@ -89,7 +93,6 @@ type ToolPageProps = {
   onLogout?: () => void;
 };
 
-const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const TOOL_PAGE_SIZE = 10;
 const TOOL_FORM_INITIAL_VALUES = {
   tool_type: 'http' as 'http' | 'a2a' | 'mcp',
@@ -421,8 +424,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       });
       setImportOpen(false);
       if (targetAgentId !== agentId) {
-        window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, targetAgentId);
-        window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: targetAgentId } }));
+        emitAgentScopeChange(targetAgentId);
         setAgentId(targetAgentId);
       } else {
         await load();

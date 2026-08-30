@@ -22,7 +22,6 @@ from app.core.harness_attachments import (
     validated_task_image_payloads,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
-from app.core.published_deliverables import list_published_deliverables
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
@@ -33,6 +32,7 @@ from app.core.harness_session_lock import (
     release_harness_session,
 )
 from app.core.harness_turn_store import HarnessTurnStore
+from app.core.published_deliverables import list_published_deliverables
 from app.core.slash_commands import (
     SlashCommandError,
     SlashCommandSelection,
@@ -62,6 +62,7 @@ from app.db.models import (
     Skill,
     Team,
 )
+from app.knowledge.access import KnowledgeAccessService
 from app.knowledge.citations import compact_knowledge_citation_labels
 from app.memory.service import memory_read
 from app.session.helpers import public_session
@@ -180,6 +181,7 @@ class HarnessV2Engine:
     """Outer planner + durable TaskFrame scheduler + isolated Harness runs."""
 
     def __init__(self, owner: Any) -> None:
+        """绑定一次 Harness 执行所需服务，并初始化当前轮的冻结知识投影。"""
         self.owner = owner
         self.db = owner.db
         self.events = owner.events
@@ -200,10 +202,12 @@ class HarnessV2Engine:
         self.active_frame_attempt_no: int | None = None
         self.active_run_id: str | None = None
         self.slash_command: SlashCommandSelection | None = None
+        self.turn_knowledge_versions: dict[str, str] | None = None
         self._session_lock: Any | None = None
         self._session_lock_id: str | None = None
 
     def run(self, request: ChatTurnRequest) -> ChatTurnResponse:
+        """执行一轮对话，并在任何规划或能力调用前冻结该轮可读知识版本。"""
         session_request = _with_recoverable_first_session(request)
         if session_request.session_id:
             self._session_lock_id = session_request.session_id
@@ -220,6 +224,10 @@ class HarnessV2Engine:
         self.turn_record = turn_claim.record
         if turn_claim.replay is not None:
             return turn_claim.replay
+        self.turn_knowledge_versions = self._freeze_turn_knowledge_versions(
+            request.tenant_id,
+            session,
+        )
         self.owner._mark_session_running(session)
         user_message = self.owner._append_message(
             request.tenant_id,
@@ -334,6 +342,8 @@ class HarnessV2Engine:
                     session.agent_id,
                     None,
                     None,
+                    team_id=session.team_id,
+                    frozen_knowledge_versions=self.turn_knowledge_versions,
                 )
                 resolve_capability(self.slash_command, direct_manifest)
             plan = build_slash_turn_plan(
@@ -731,6 +741,24 @@ class HarnessV2Engine:
     ) -> ChatSession:
         return get_or_create_harness_session(self.owner, request)
 
+    def _freeze_turn_knowledge_versions(
+        self,
+        tenant_id: str,
+        session: ChatSession,
+    ) -> dict[str, str] | None:
+        """从服务端会话团队标识解析本轮版本；无员工的兼容会话继续使用旧清单逻辑。"""
+        if not session.agent_id:
+            return None
+        projections = KnowledgeAccessService(self.db).resolve_projections(
+            tenant_id=tenant_id,
+            agent_id=session.agent_id,
+            team_id=session.team_id,
+        )
+        return {
+            projection.knowledge_base_id: projection.knowledge_base_version_id
+            for projection in projections
+        }
+
     def _renew_session_lease(self) -> None:
         self.session_leases.renew(self.session_lease)
         self.turn_store.renew(self.turn_record)
@@ -770,6 +798,7 @@ class HarnessV2Engine:
         prior_frame_results: list[dict[str, Any]],
         max_actions: int,
     ) -> tuple[TaskExecutionResult, StepAgentResult]:
+        """执行一个任务帧，并在重复动作循环中复用当前轮冻结的知识版本映射。"""
         self.store.mark_running(row)
         agent_loop = self.store.ensure_agent_loop(row)
         loop_checkpoint = dict(agent_loop.checkpoint_json or {})
@@ -831,6 +860,8 @@ class HarnessV2Engine:
                 session.agent_id,
                 active_skill,
                 frame.target_step_id,
+                team_id=session.team_id,
+                frozen_knowledge_versions=self.turn_knowledge_versions,
             )
             # Keep the complete frozen manifest server-side for authorization,
             # while compiling the TaskRequirement only from the safe model
@@ -1880,7 +1911,7 @@ def get_or_create_harness_session(
     owner: Any,
     request: ChatTurnRequest,
 ) -> ChatSession:
-    """Create or recover one Harness session, including concurrent PK races."""
+    """Create or recover one Harness session and fence untrusted team-mode fallbacks."""
 
     db = owner.db
     try:
@@ -1917,6 +1948,12 @@ def get_or_create_harness_session(
         session.agent_id = request.agent_id
         db.add(session)
         db.commit()
+    # Team execution must be anchored to a persisted server-side team id. If
+    # it is absent, do not silently fall back to the employee's dedicated KB.
+    if request.interaction_mode in {"team_task", "team_tl"} and not session.team_id:
+        raise HarnessExecutionFenced(
+            "Harness team context is missing from the persisted session."
+        )
     db.refresh(session)
     return session
 

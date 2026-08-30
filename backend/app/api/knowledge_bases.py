@@ -6,8 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from app.capability_scope import normalize_capability_scope
-from app.db import get_session
 from app.agents.branching import (
     ensure_agent_private_knowledge_branch,
     ensure_knowledge_base_version,
@@ -25,6 +23,8 @@ from app.agents.branching import (
     sync_knowledge_branch_from_overall,
     user_creator_metadata,
 )
+from app.capability_scope import normalize_capability_scope
+from app.db import get_session
 from app.db.models import (
     AgentKnowledgeBranch,
     AgentResourceBinding,
@@ -36,16 +36,22 @@ from app.db.models import (
     KnowledgeDiscoverySuggestion,
     KnowledgeDocument,
     KnowledgeIngestJob,
+    Team,
+    TeamKnowledgeBaseBinding,
+    TeamMember,
     User,
     utc_now,
 )
-from app.knowledge.schema import (
-    KnowledgeBaseCreateRequest,
-    KnowledgeConceptRead,
-    KnowledgeConceptUpdateRequest,
-    KnowledgeBaseRead,
-    KnowledgeBaseRollbackRequest,
-    KnowledgeBaseUpdateRequest,
+from app.knowledge.access import KnowledgeAccessService
+from app.knowledge.audit import KnowledgeAuditService
+from app.knowledge.conversion import (
+    KnowledgeConversionError,
+    KnowledgeConversionService,
+)
+from app.knowledge.errors import KNOWLEDGE_MODE_INVALID, KnowledgeError, knowledge_error
+from app.knowledge.management import (
+    require_shared_knowledge_history_viewer,
+    require_team_knowledge_manager,
 )
 from app.knowledge.okf import (
     build_okf_for_document,
@@ -56,10 +62,30 @@ from app.knowledge.okf import (
     persist_lint_issues,
     upsert_concepts,
 )
+from app.knowledge.schema import (
+    KnowledgeBaseAuditEventRead,
+    KnowledgeBaseAuditPageRead,
+    KnowledgeBaseConversionRead,
+    KnowledgeBaseConvertToSharedRequest,
+    KnowledgeBaseCreateRequest,
+    KnowledgeBaseRead,
+    KnowledgeBaseRollbackRequest,
+    KnowledgeBaseUpdateRequest,
+    KnowledgeBaseVersionRead,
+    KnowledgeConceptRead,
+    KnowledgeConceptUpdateRequest,
+    SharedKnowledgeDraftCreateRequest,
+    SharedKnowledgePublishRequest,
+    SharedKnowledgeRejectRequest,
+    SharedKnowledgeRollbackRequest,
+    SharedKnowledgeTeamRead,
+)
+from app.knowledge.versioning import SharedKnowledgeVersionService
 from app.security.auth import get_current_user
 from app.security.permissions import (
     ensure_agent_scope_manager,
     ensure_open_gallery_admin,
+    is_admin_user,
     require_agent_scope_viewer,
 )
 from app.security.tenant import ensure_tenant
@@ -69,6 +95,97 @@ router = APIRouter(
     tags=["enterprise:knowledge-bases"],
     dependencies=[Depends(get_current_user)],
 )
+
+
+def _knowledge_http_error(exc: KnowledgeError) -> HTTPException:
+    """把共享知识领域错误映射为不泄漏内容的稳定 HTTP 载荷。"""
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": exc.message, **exc.details},
+    )
+
+
+def _shared_version_read(
+    version: KnowledgeBaseVersion,
+    *,
+    published_version_id: str | None,
+) -> KnowledgeBaseVersionRead:
+    """将共享版本行投影为包含来源和当前正式状态的 API 模型。"""
+    return KnowledgeBaseVersionRead(
+        id=version.id,
+        tenant_id=version.tenant_id,
+        knowledge_base_id=version.knowledge_base_id,
+        version=version.version,
+        name=version.name,
+        description=version.description,
+        status=version.status,
+        publication_state=version.publication_state,
+        parent_version_id=version.parent_version_id,
+        source_team_id=version.source_team_id,
+        created_by_agent_id=version.created_by_agent_id,
+        created_by_user_id=version.created_by_user_id,
+        change_reason=version.change_reason,
+        published_at=version.published_at,
+        is_published_head=version.id == published_version_id,
+        capability_scope=normalize_capability_scope(version.capability_scope),
+        metadata=dict(version.metadata_json or {}),
+        created_at=version.created_at,
+        updated_at=version.updated_at,
+    )
+
+
+def _agent_shared_management_versions(
+    db: Session,
+    *,
+    tenant_id: str,
+    agent_id: str,
+) -> tuple[dict[str, KnowledgeBaseVersion], dict[str, dict[str, object]]]:
+    """聚合员工在全部活动团队中获授权的共享正式版，仅供管理页展示。"""
+    team_ids = sorted(
+        set(
+            db.exec(
+                select(TeamMember.team_id).where(TeamMember.agent_id == agent_id)
+            ).all()
+        )
+    )
+    access = KnowledgeAccessService(db)
+    versions: dict[str, KnowledgeBaseVersion] = {}
+    team_ids_by_base: dict[str, set[str]] = {}
+    permissions_by_base: dict[str, dict[str, str]] = {}
+    for team_id in team_ids:
+        try:
+            projections = access.resolve_projections(
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                team_id=team_id,
+            )
+        except KnowledgeError:
+            continue
+        for projection in projections:
+            if projection.mode != "shared":
+                continue
+            version = db.get(
+                KnowledgeBaseVersion,
+                projection.knowledge_base_version_id,
+            )
+            if version is None:
+                continue
+            versions[projection.knowledge_base_id] = version
+            team_ids_by_base.setdefault(projection.knowledge_base_id, set()).add(team_id)
+            permissions_by_base.setdefault(projection.knowledge_base_id, {})[
+                team_id
+            ] = projection.permission
+    contexts = {
+        knowledge_base_id: {
+            "mode": "shared",
+            "team_ids": sorted(team_ids_by_base.get(knowledge_base_id, set())),
+            "permissions": dict(
+                sorted(permissions_by_base.get(knowledge_base_id, {}).items())
+            ),
+        }
+        for knowledge_base_id in versions
+    }
+    return versions, contexts
 
 
 @router.get(
@@ -91,8 +208,6 @@ def list_knowledge_bases(
             )
             .order_by(AgentKnowledgeBranch.updated_at.desc())
         ).all()
-        if not branches:
-            return []
         knowledge_base_ids = [branch.knowledge_base_id for branch in branches]
         rows_by_id = {
             row.id: row
@@ -103,23 +218,65 @@ def list_knowledge_bases(
                 )
             ).all()
         }
-        versions: dict[str, KnowledgeBaseVersion] = {}
-        for branch in branches:
+        dedicated_branches = [
+            branch
+            for branch in branches
+            if rows_by_id.get(branch.knowledge_base_id)
+            and rows_by_id[branch.knowledge_base_id].mode == "dedicated"
+        ]
+        dedicated_versions: dict[str, KnowledgeBaseVersion] = {}
+        for branch in dedicated_branches:
             kb = rows_by_id.get(branch.knowledge_base_id)
             if kb:
-                versions[kb.id] = ensure_knowledge_base_version(db, kb, branch.head_version)
-        stats = _knowledge_base_stats(db, tenant_id, [version.id for version in versions.values()])
+                dedicated_versions[kb.id] = ensure_knowledge_base_version(
+                    db,
+                    kb,
+                    branch.head_version,
+                )
+        shared_versions, shared_contexts = _agent_shared_management_versions(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+        )
+        all_versions = {**dedicated_versions, **shared_versions}
+        stats = _knowledge_base_stats(
+            db,
+            tenant_id,
+            [version.id for version in all_versions.values()],
+        )
         branch_meta = _knowledge_branch_meta(db, tenant_id, agent_id)
-        return [
+        dedicated_reads = [
             knowledge_base_read(
                 rows_by_id[branch.knowledge_base_id],
                 stats.get(branch.knowledge_base_id, {}),
-                version_row=versions.get(branch.knowledge_base_id),
+                version_row=dedicated_versions.get(branch.knowledge_base_id),
                 branch_meta=branch_meta.get(branch.knowledge_base_id),
             )
-            for branch in branches
+            for branch in dedicated_branches
             if branch.knowledge_base_id in rows_by_id
         ]
+        shared_ids = list(shared_versions)
+        shared_rows = db.exec(
+            select(KnowledgeBase)
+            .where(
+                KnowledgeBase.tenant_id == tenant_id,
+                KnowledgeBase.mode == "shared",
+                KnowledgeBase.id.in_(shared_ids)
+                if shared_ids
+                else KnowledgeBase.id == "__none__",
+            )
+            .order_by(KnowledgeBase.updated_at.desc())
+        ).all()
+        shared_reads = [
+            knowledge_base_read(
+                row,
+                stats.get(row.id, {}),
+                version_row=shared_versions.get(row.id),
+                management_context=shared_contexts.get(row.id),
+            )
+            for row in shared_rows
+        ]
+        return dedicated_reads + shared_reads
     visible_versions = _management_knowledge_base_versions(db, tenant_id, agent_id)
     visible_ids = list(visible_versions.keys())
     rows = db.exec(
@@ -149,9 +306,10 @@ def list_knowledge_bases(
 def create_knowledge_base(
     request: KnowledgeBaseCreateRequest,
     agent_id: str | None = Query(None),
-    db: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
 ) -> KnowledgeBaseRead:
+    """按请求模式创建员工专用库或不隐式绑定团队的共享库。"""
     ensure_tenant(db, request.tenant_id)
     name = request.name.strip()
     if not name:
@@ -163,7 +321,24 @@ def create_knowledge_base(
     ).first()
     if existing:
         raise HTTPException(status_code=409, detail="Knowledge base name already exists")
-    agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
+    query_agent_id = agent_id if isinstance(agent_id, str) and agent_id else None
+    if request.agent_id and query_agent_id and request.agent_id != query_agent_id:
+        raise HTTPException(status_code=400, detail="Conflicting employee knowledge scope")
+    resolved_agent_id = request.agent_id or query_agent_id
+    if request.mode == "shared" and resolved_agent_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "KNOWLEDGE_MODE_INVALID",
+                "message": "共享知识库不能归属单个员工。",
+            },
+        )
+    agent = ensure_agent_scope_manager(
+        db,
+        request.tenant_id,
+        resolved_agent_id,
+        current_user,
+    )
     if not (agent and not agent.is_overall):
         ensure_open_gallery_admin(request.tenant_id, current_user)
     creator_metadata = user_creator_metadata(current_user, request.metadata)
@@ -171,12 +346,42 @@ def create_knowledge_base(
         tenant_id=request.tenant_id,
         name=name,
         description=request.description,
+        mode=request.mode,
         capability_scope=request.capability_scope,
         metadata_json=creator_metadata,
         status="active",
     )
     db.add(row)
     db.flush()
+    if request.mode == "shared":
+        # 共享库先产生空的首个正式快照；团队绑定和员工授权必须另行配置。
+        version = ensure_knowledge_base_version(db, row)
+        version.publication_state = "released"
+        version.created_by_user_id = current_user.id
+        version.change_reason = "创建共享知识库"
+        version.published_at = utc_now()
+        version.metadata_json = dict(creator_metadata)
+        row.published_version_id = version.id
+        row.metadata_json = {
+            **dict(creator_metadata),
+            "current_version": version.version,
+        }
+        db.add(row)
+        db.add(version)
+        KnowledgeAuditService(db).append_event(
+            tenant_id=request.tenant_id,
+            knowledge_base_id=row.id,
+            team_id=None,
+            knowledge_base_version_id=version.id,
+            actor_type="user",
+            actor_id=current_user.id,
+            action="shared_created",
+            reason="创建共享知识库",
+            details={"published_version_id": version.id},
+        )
+        db.commit()
+        db.refresh(row)
+        return knowledge_base_read(row, {}, version_row=version)
     if agent and not agent.is_overall:
         mark_resource_private_for_agent(row, agent.id, creator_metadata)
         ensure_agent_private_knowledge_branch(
@@ -199,6 +404,97 @@ def create_knowledge_base(
     db.commit()
     db.refresh(row)
     return knowledge_base_read(row, {}, version_row=ensure_knowledge_base_version(db, row))
+
+
+@router.post(
+    "/{knowledge_base_id}/convert-to-shared",
+    response_model=KnowledgeBaseConversionRead,
+)
+def convert_knowledge_base_to_shared(
+    knowledge_base_id: str,
+    request: KnowledgeBaseConvertToSharedRequest,
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> KnowledgeBaseConversionRead:
+    """复制并验证一个员工专用分支，再原子公开为新的共享知识库。"""
+    ensure_tenant(db, request.tenant_id)
+    source = _get_knowledge_base(db, request.tenant_id, knowledge_base_id)
+    if source.mode != "dedicated":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "KNOWLEDGE_MODE_INVALID",
+                "message": "共享知识库不能转换回专用知识库。",
+            },
+        )
+    agent = ensure_agent_scope_manager(
+        db,
+        request.tenant_id,
+        request.agent_id,
+        current_user,
+    )
+    if agent is None or agent.is_overall:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "KNOWLEDGE_MODE_INVALID",
+                "message": "只能转换具体员工的专用知识分支。",
+            },
+        )
+
+    try:
+        result = KnowledgeConversionService(db).convert_to_shared(
+            tenant_id=request.tenant_id,
+            source_knowledge_base_id=source.id,
+            source_agent_id=agent.id,
+            source_version_id=request.source_version_id,
+            name=request.name,
+            description=request.description,
+            change_reason=request.change_reason,
+            team_ids=request.team_bindings,
+            default_for_team_id=request.default_for_team_id,
+            actor_user_id=current_user.id,
+        )
+        db.commit()
+    except KnowledgeConversionError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    shared = db.get(KnowledgeBase, result.shared_knowledge_base_id)
+    released = db.get(KnowledgeBaseVersion, result.released_version_id)
+    if shared is None or released is None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "KNOWLEDGE_CONVERSION_INCOMPLETE",
+                "message": "转换结果未能完整回读。",
+            },
+        )
+    stats = _knowledge_base_stats(db, request.tenant_id, [released.id]).get(shared.id, {})
+    stats["bound_team_count"] = len(result.team_binding_ids)
+    return KnowledgeBaseConversionRead(
+        source_knowledge_base_id=result.source_knowledge_base_id,
+        source_version_id=result.source_version_id,
+        new_knowledge_base=knowledge_base_read(
+            shared,
+            stats,
+            version_row=released,
+        ),
+        released_version=_shared_version_read(
+            released,
+            published_version_id=shared.published_version_id,
+        ),
+        binding_ids=list(result.team_binding_ids),
+        default_for_team_id=result.default_for_team_id,
+        source_archived=result.source_archival_state == "archived",
+        audit_event_id=result.audit_event_id,
+    )
 
 
 @router.get(
@@ -378,14 +674,83 @@ def update_knowledge_base(
     )
 
 
+@router.get(
+    "/{knowledge_base_id}/teams",
+    response_model=list[SharedKnowledgeTeamRead],
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
+def list_shared_knowledge_teams(
+    knowledge_base_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> list[SharedKnowledgeTeamRead]:
+    """一次查询返回当前用户可管理且活动绑定到共享库的团队。"""
+    ensure_tenant(db, tenant_id)
+    try:
+        require_shared_knowledge_history_viewer(
+            db,
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            current_user=current_user,
+        )
+    except KnowledgeError as exc:
+        raise _knowledge_http_error(exc) from exc
+
+    statement = (
+        select(Team)
+        .join(
+            TeamKnowledgeBaseBinding,
+            TeamKnowledgeBaseBinding.team_id == Team.id,
+        )
+        .where(
+            Team.tenant_id == tenant_id,
+            Team.status == "active",
+            TeamKnowledgeBaseBinding.tenant_id == tenant_id,
+            TeamKnowledgeBaseBinding.knowledge_base_id == knowledge_base_id,
+            TeamKnowledgeBaseBinding.status == "active",
+        )
+        .order_by(Team.name, Team.id)
+    )
+    if not is_admin_user(current_user):
+        statement = statement.where(Team.owner_user_id == current_user.id)
+    return [
+        SharedKnowledgeTeamRead(id=team.id, name=team.name)
+        for team in db.exec(statement).all()
+    ]
+
+
 @router.get("/{knowledge_base_id}/versions", dependencies=[Depends(require_agent_scope_viewer)])
 def list_knowledge_base_versions(
     knowledge_base_id: str,
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),  # noqa: B008
 ) -> list[dict[str, object]]:
+    """共享库返回全局生命周期历史，专用库保留原员工分支历史。"""
     row = _get_knowledge_base(db, tenant_id, knowledge_base_id)
+    if row.mode == "shared":
+        try:
+            require_shared_knowledge_history_viewer(
+                db,
+                tenant_id=tenant_id,
+                knowledge_base_id=knowledge_base_id,
+                current_user=current_user,
+            )
+            versions = SharedKnowledgeVersionService(db).list_versions(
+                tenant_id=tenant_id,
+                knowledge_base_id=knowledge_base_id,
+            )
+        except KnowledgeError as exc:
+            raise _knowledge_http_error(exc) from exc
+        return [
+            _shared_version_read(
+                version,
+                published_version_id=row.published_version_id,
+            ).model_dump(mode="json")
+            for version in versions
+        ]
     _visible_knowledge_version(db, tenant_id, knowledge_base_id, agent_id)
     agent = get_agent(db, tenant_id, agent_id)
     branch = None
@@ -433,6 +798,180 @@ def list_knowledge_base_versions(
         }
         for version in rows
     ]
+
+
+@router.post(
+    "/{knowledge_base_id}/drafts",
+    response_model=KnowledgeBaseVersionRead,
+)
+def create_shared_knowledge_draft(
+    knowledge_base_id: str,
+    request: SharedKnowledgeDraftCreateRequest,
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> KnowledgeBaseVersionRead:
+    """由团队所有者或管理员从当前正式版创建共享草稿。"""
+    try:
+        require_team_knowledge_manager(
+            db,
+            tenant_id=request.tenant_id,
+            team_id=request.team_id,
+            knowledge_base_id=knowledge_base_id,
+            current_user=current_user,
+        )
+        draft = SharedKnowledgeVersionService(db).create_draft(
+            tenant_id=request.tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            source_team_id=request.team_id,
+            actor_type="user",
+            actor_id=current_user.id,
+            change_reason=request.change_reason,
+            expected_published_version_id=request.expected_published_version_id,
+        )
+        db.commit()
+        db.refresh(draft)
+        base = db.get(KnowledgeBase, knowledge_base_id)
+        return _shared_version_read(
+            draft,
+            published_version_id=base.published_version_id if base else None,
+        )
+    except KnowledgeError as exc:
+        db.rollback()
+        raise _knowledge_http_error(exc) from exc
+
+
+@router.post(
+    "/{knowledge_base_id}/versions/{version_id}/publish",
+    response_model=KnowledgeBaseVersionRead,
+)
+def publish_shared_knowledge_version(
+    knowledge_base_id: str,
+    version_id: str,
+    request: SharedKnowledgePublishRequest,
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> KnowledgeBaseVersionRead:
+    """在活动团队绑定下发布草稿并更新唯一全局正式指针。"""
+    try:
+        require_team_knowledge_manager(
+            db,
+            tenant_id=request.tenant_id,
+            team_id=request.team_id,
+            knowledge_base_id=knowledge_base_id,
+            current_user=current_user,
+        )
+        version = SharedKnowledgeVersionService(db).publish_draft(
+            tenant_id=request.tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            draft_version_id=version_id,
+            expected_published_version_id=request.expected_published_version_id,
+            actor_type="user",
+            actor_id=current_user.id,
+            source_team_id=request.team_id,
+            change_reason=request.change_reason,
+        )
+        db.commit()
+        db.refresh(version)
+        return _shared_version_read(
+            version,
+            published_version_id=version.id,
+        )
+    except KnowledgeError as exc:
+        db.rollback()
+        raise _knowledge_http_error(exc) from exc
+
+
+@router.post(
+    "/{knowledge_base_id}/versions/{version_id}/reject",
+    response_model=KnowledgeBaseVersionRead,
+)
+def reject_shared_knowledge_version(
+    knowledge_base_id: str,
+    version_id: str,
+    request: SharedKnowledgeRejectRequest,
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> KnowledgeBaseVersionRead:
+    """驳回共享草稿但保留快照和审计历史。"""
+    try:
+        require_team_knowledge_manager(
+            db,
+            tenant_id=request.tenant_id,
+            team_id=request.team_id,
+            knowledge_base_id=knowledge_base_id,
+            current_user=current_user,
+        )
+        version = SharedKnowledgeVersionService(db).reject_draft(
+            tenant_id=request.tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            draft_version_id=version_id,
+            actor_type="user",
+            actor_id=current_user.id,
+            source_team_id=request.team_id,
+            change_reason=request.change_reason,
+        )
+        db.commit()
+        db.refresh(version)
+        base = db.get(KnowledgeBase, knowledge_base_id)
+        return _shared_version_read(
+            version,
+            published_version_id=base.published_version_id if base else None,
+        )
+    except KnowledgeError as exc:
+        db.rollback()
+        raise _knowledge_http_error(exc) from exc
+
+
+@router.get(
+    "/{knowledge_base_id}/audit-events",
+    response_model=KnowledgeBaseAuditPageRead,
+)
+def list_shared_knowledge_audit_events(
+    knowledge_base_id: str,
+    tenant_id: str = Query(...),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    team_id: str | None = Query(None),
+    action: str | None = Query(None),
+    actor_type: str | None = Query(None),
+    actor_id: str | None = Query(None),
+    version_id: str | None = Query(None),
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> KnowledgeBaseAuditPageRead:
+    """返回共享知识库的可筛选审计页，并补齐操作者、团队和版本来源。"""
+    try:
+        require_shared_knowledge_history_viewer(
+            db,
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            current_user=current_user,
+        )
+    except KnowledgeError as exc:
+        raise _knowledge_http_error(exc) from exc
+    resolved_offset = offset if isinstance(offset, int) else 0
+    resolved_limit = limit if isinstance(limit, int) else 100
+    page = KnowledgeAuditService(db).query_events(
+        tenant_id=tenant_id,
+        knowledge_base_id=knowledge_base_id,
+        offset=resolved_offset,
+        limit=resolved_limit,
+        team_id=team_id if isinstance(team_id, str) else None,
+        action=action if isinstance(action, str) else None,
+        actor_type=actor_type if isinstance(actor_type, str) else None,
+        actor_id=actor_id if isinstance(actor_id, str) else None,
+        knowledge_base_version_id=version_id if isinstance(version_id, str) else None,
+    )
+    return KnowledgeBaseAuditPageRead(
+        items=[
+            KnowledgeBaseAuditEventRead.model_validate(item, from_attributes=True)
+            for item in page.items
+        ],
+        total=page.total,
+        offset=page.offset,
+        limit=page.limit,
+        has_more=page.has_more,
+    )
 
 
 @router.get(
@@ -700,10 +1239,40 @@ def promote_knowledge_base_to_overall(
 @router.post("/{knowledge_base_id}/rollback")
 def rollback_knowledge_base(
     knowledge_base_id: str,
-    request: KnowledgeBaseRollbackRequest,
-    db: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    request: KnowledgeBaseRollbackRequest | SharedKnowledgeRollbackRequest,
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict[str, object]:
+    """共享库移动全局正式指针，专用库继续回滚员工分支头。"""
+    if isinstance(request, SharedKnowledgeRollbackRequest):
+        try:
+            require_team_knowledge_manager(
+                db,
+                tenant_id=request.tenant_id,
+                team_id=request.team_id,
+                knowledge_base_id=knowledge_base_id,
+                current_user=current_user,
+            )
+            target = SharedKnowledgeVersionService(db).rollback(
+                tenant_id=request.tenant_id,
+                knowledge_base_id=knowledge_base_id,
+                target_version_id=request.target_version_id,
+                expected_published_version_id=request.expected_published_version_id,
+                actor_type="user",
+                actor_id=current_user.id,
+                source_team_id=request.team_id,
+                change_reason=request.change_reason,
+            )
+            db.commit()
+            return {
+                "status": "rolled_back",
+                "knowledge_base_id": knowledge_base_id,
+                "previous_published_version_id": request.expected_published_version_id,
+                "target_version_id": target.id,
+            }
+        except KnowledgeError as exc:
+            db.rollback()
+            raise _knowledge_http_error(exc) from exc
     agent = ensure_agent_scope_manager(db, request.tenant_id, request.agent_id, current_user)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -727,7 +1296,9 @@ def knowledge_base_read(
     stats: dict[str, int],
     version_row: KnowledgeBaseVersion | None = None,
     branch_meta: dict[str, str] | None = None,
+    management_context: dict[str, object] | None = None,
 ) -> KnowledgeBaseRead:
+    """统一投影专用分支和共享正式指针，同时保持旧字段兼容。"""
     branch_status = (branch_meta or {}).get("status")
     if branch_status == "inactive":
         effective_status = "archived"
@@ -743,6 +1314,17 @@ def knowledge_base_read(
         name=version_row.name if version_row else row.name,
         description=version_row.description if version_row else row.description,
         status=effective_status,
+        mode=row.mode,
+        published_version_id=row.published_version_id,
+        published_version=(
+            version_row.version
+            if row.mode == "shared"
+            and version_row
+            and version_row.id == row.published_version_id
+            else None
+        ),
+        bound_team_count=int(stats.get("bound_team_count", 0)),
+        management_context={"mode": row.mode, **(management_context or {})},
         capability_scope=normalize_capability_scope(
             version_row.capability_scope if version_row else row.capability_scope
         ),
@@ -802,7 +1384,15 @@ def _writable_knowledge_version(
     agent_id: str | None,
     current_user: User,
 ) -> KnowledgeBaseVersion:
-    _get_knowledge_base(db, tenant_id, knowledge_base_id)
+    """保留专用分支写入；共享库必须通过显式草稿入口。"""
+    base = _get_knowledge_base(db, tenant_id, knowledge_base_id)
+    if base.mode == "shared":
+        raise _knowledge_http_error(
+            knowledge_error(
+                KNOWLEDGE_MODE_INVALID,
+                message="共享知识库必须先创建草稿，不能直接修改正式版本。",
+            )
+        )
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
     if agent and not agent.is_overall:
         version = knowledge_version_for_upload(
@@ -1004,6 +1594,18 @@ def _knowledge_base_stats(
         chunk_stmt.group_by(KnowledgeChunk.knowledge_base_id)
     ).all():
         stats.setdefault(knowledge_base_id, {})["chunk_count"] = int(count or 0)
+    for knowledge_base_id, count in db.exec(
+        select(
+            TeamKnowledgeBaseBinding.knowledge_base_id,
+            func.count(TeamKnowledgeBaseBinding.id),
+        )
+        .where(
+            TeamKnowledgeBaseBinding.tenant_id == tenant_id,
+            TeamKnowledgeBaseBinding.status == "active",
+        )
+        .group_by(TeamKnowledgeBaseBinding.knowledge_base_id)
+    ).all():
+        stats.setdefault(knowledge_base_id, {})["bound_team_count"] = int(count or 0)
     return stats
 
 

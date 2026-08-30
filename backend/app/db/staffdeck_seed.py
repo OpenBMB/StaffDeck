@@ -869,6 +869,7 @@ def _knowledge_version_with_seed_content(session: Session, kb_id: str, agent_id:
 
 
 def _publish_gallery_resources(session: Session, id_maps: dict[str, dict[str, str]]) -> None:
+    """Publish only dedicated templates; shared knowledge remains team-grant-only."""
     metadata = _open_gallery_seed_metadata({})
     for resource_type, model, map_key in (
         ("skill", Skill, "skill"),
@@ -879,6 +880,11 @@ def _publish_gallery_resources(session: Session, id_maps: dict[str, dict[str, st
         for resource_id in set(id_maps[map_key].values()):
             resource = session.get(model, resource_id)
             if resource is None:
+                continue
+            if (
+                resource_type == "knowledge_base"
+                and getattr(resource, "mode", "dedicated") != "dedicated"
+            ):
                 continue
             if hasattr(resource, "metadata_json"):
                 resource.metadata_json = _open_gallery_seed_metadata(getattr(resource, "metadata_json", None))

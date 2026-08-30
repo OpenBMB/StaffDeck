@@ -13,17 +13,27 @@ from test_teams_api import (
 )
 
 from app.api import teams as teams_api
-from app.db.models import TeamBlackboardEntry, TeamTaskEvent, TeamWakeEvent
+from app.db.models import (
+    KnowledgeBase,
+    KnowledgeBaseVersion,
+    TeamBlackboardEntry,
+    TeamTaskEvent,
+    TeamWakeEvent,
+)
 from app.teams import wakeup
 from app.teams.schema import (
     TeamBlackboardEntryArchiveRequest,
     TeamBlackboardEntryCreateRequest,
     TeamBlackboardEntryUpdateRequest,
+    TeamBlackboardPromoteRequest,
+    TeamKnowledgeSelection,
 )
 from app.teams.service import (
+    bind_team_knowledge_base,
     blackboard_context_lines,
     parse_blackboard_suggestions,
     parse_tl_review,
+    set_team_default_knowledge_base,
     write_blackboard_entries,
 )
 from app.teams.wakeup import (
@@ -548,3 +558,89 @@ def test_delete_team_cascades_blackboard() -> None:
             "ok": True
         }
         assert db.exec(select(TeamBlackboardEntry)).all() == []
+
+
+def test_blackboard_promotion_uses_only_explicit_or_team_default_shared_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """黑板沉淀无默认时失败，显式目标与团队默认都只落入已绑定共享库。"""
+    with _test_session() as db:
+        team = _seed_team(db)
+        version = KnowledgeBaseVersion(
+            id="kbver_blackboard_shared",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_blackboard_shared",
+            version="1.0.0",
+            name="黑板共享库",
+            publication_state="released",
+        )
+        base = KnowledgeBase(
+            id="kb_blackboard_shared",
+            tenant_id="tenant_demo",
+            name="黑板共享库",
+            mode="shared",
+            published_version_id=version.id,
+        )
+        db.add(base)
+        db.add(version)
+        db.commit()
+        binding = bind_team_knowledge_base(
+            db,
+            team=team,
+            selection=TeamKnowledgeSelection(existing_knowledge_base_id=base.id),
+            actor_user_id="user_admin",
+        )
+        first, _ = write_blackboard_entries(
+            db,
+            team=team,
+            entries=[{"content": "显式目标内容"}],
+            source_type="human",
+        )
+        second, _ = write_blackboard_entries(
+            db,
+            team=team,
+            entries=[{"content": "默认目标内容"}],
+            source_type="human",
+        )
+        db.commit()
+        monkeypatch.setattr(teams_api, "enqueue_async_job", lambda *args, **kwargs: None)
+
+        with pytest.raises(HTTPException) as missing_default:
+            teams_api.promote_blackboard_entry(
+                team.id,
+                first[0].id,
+                TeamBlackboardPromoteRequest(tenant_id="tenant_demo"),
+                db,
+                _admin_user(),
+            )
+        assert missing_default.value.detail["code"] == "KNOWLEDGE_DEFAULT_NOT_CONFIGURED"
+
+        explicit = teams_api.promote_blackboard_entry(
+            team.id,
+            first[0].id,
+            TeamBlackboardPromoteRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_id=base.id,
+            ),
+            db,
+            _admin_user(),
+        )
+        assert explicit.knowledge_base_id == base.id
+
+        binding = set_team_default_knowledge_base(
+            db,
+            team=team,
+            knowledge_base_id=base.id,
+            is_default=True,
+            expected_revision=binding.revision,
+            actor_user_id="user_admin",
+        )
+        assert binding.revision == 2
+        defaulted = teams_api.promote_blackboard_entry(
+            team.id,
+            second[0].id,
+            TeamBlackboardPromoteRequest(tenant_id="tenant_demo"),
+            db,
+            _admin_user(),
+        )
+        assert defaulted.knowledge_base_id == base.id

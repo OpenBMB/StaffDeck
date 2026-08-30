@@ -31,7 +31,6 @@ from app.llm.model_config_resolver import (
     resolve_model_config_for_runtime,
 )
 
-
 DEFAULT_AGENT_ROLES = ("default", "router", "step", "response", "general_skill")
 OPEN_GALLERY_SCOPE = "open_gallery"
 AGENT_PRIVATE_SCOPE = "agent_private"
@@ -288,8 +287,14 @@ def resource_binding_metadata(
 def is_open_gallery_resource(
     db: Session, tenant_id: str, resource_type: str, resource: object
 ) -> bool:
+    """Return whether a resource belongs to the tenant's dedicated gallery template pool."""
     resource_id = getattr(resource, "id", None)
     if not resource_id or getattr(resource, "tenant_id", None) != tenant_id:
+        return False
+    if (
+        resource_type == "knowledge_base"
+        and getattr(resource, "mode", "dedicated") != "dedicated"
+    ):
         return False
     overall = get_overall_agent(db, tenant_id)
     if not overall:
@@ -314,10 +319,14 @@ def is_bound_resource_visible_for_agent(
     resource: object,
     binding: AgentResourceBinding,
 ) -> bool:
+    """Evaluate one employee binding without treating shared knowledge as a private resource."""
     if binding.status == "deleted":
         return False
     if getattr(resource, "tenant_id", None) != tenant_id:
         return False
+    if resource_type == "knowledge_base":
+        # Legacy dedicated branches are authoritative even when old bindings lack scope metadata.
+        return getattr(resource, "mode", "dedicated") == "dedicated"
     if _binding_is_private(binding) or _metadata_is_private(_resource_metadata(resource)):
         return True
     return is_open_gallery_resource(db, tenant_id, resource_type, resource)
@@ -894,6 +903,59 @@ def ensure_agent_private_knowledge_branch(
     return branch
 
 
+def archive_agent_private_knowledge_branch(
+    db: Session,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    knowledge_base_id: str,
+    converted_to_knowledge_base_id: str,
+    converted_to_version_id: str,
+) -> AgentKnowledgeBranch:
+    """Archive exactly one employee branch and its private binding after conversion."""
+    branch = db.exec(
+        select(AgentKnowledgeBranch).where(
+            AgentKnowledgeBranch.tenant_id == tenant_id,
+            AgentKnowledgeBranch.agent_id == agent_id,
+            AgentKnowledgeBranch.knowledge_base_id == knowledge_base_id,
+            AgentKnowledgeBranch.status == "active",
+        )
+    ).first()
+    binding = db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == agent_id,
+            AgentResourceBinding.resource_type == "knowledge_base",
+            AgentResourceBinding.resource_id == knowledge_base_id,
+            AgentResourceBinding.status == "active",
+        )
+    ).first()
+    if branch is None or binding is None:
+        raise RuntimeError("Selected dedicated knowledge branch is not active.")
+
+    conversion_metadata = {
+        "converted_to_knowledge_base_id": converted_to_knowledge_base_id,
+        "converted_to_version_id": converted_to_version_id,
+        "converted_at": utc_now().isoformat(),
+    }
+    branch.status = "archived"
+    branch.sync_state = "converted"
+    branch.metadata_json = {
+        **dict(branch.metadata_json or {}),
+        **conversion_metadata,
+    }
+    branch.updated_at = utc_now()
+    binding.status = "archived"
+    binding.metadata_json = {
+        **dict(binding.metadata_json or {}),
+        **conversion_metadata,
+    }
+    binding.updated_at = utc_now()
+    db.add(branch)
+    db.add(binding)
+    return branch
+
+
 def sync_knowledge_branch_from_overall(
     db: Session,
     tenant_id: str,
@@ -1284,8 +1346,12 @@ def clone_knowledge_version_assets(
     knowledge_base_id: str,
     source_version_id: str,
     target_version_id: str,
+    *,
+    target_knowledge_base_id: str | None = None,
 ) -> None:
-    if source_version_id == target_version_id:
+    """Clone versioned assets within one base or into a separate target lineage."""
+    target_base_id = target_knowledge_base_id or knowledge_base_id
+    if source_version_id == target_version_id and knowledge_base_id == target_base_id:
         return
 
     document_id_map: dict[str, str] = {}
@@ -1302,7 +1368,7 @@ def clone_knowledge_version_assets(
     target_has_documents = db.exec(
         select(KnowledgeDocument.id).where(
             KnowledgeDocument.tenant_id == tenant_id,
-            KnowledgeDocument.knowledge_base_id == knowledge_base_id,
+            KnowledgeDocument.knowledge_base_id == target_base_id,
             KnowledgeDocument.knowledge_base_version_id == target_version_id,
         )
     ).first()
@@ -1311,7 +1377,7 @@ def clone_knowledge_version_assets(
         for document in source_documents:
             clone = KnowledgeDocument(
                 tenant_id=document.tenant_id,
-                knowledge_base_id=document.knowledge_base_id,
+                knowledge_base_id=target_base_id,
                 knowledge_base_version_id=target_version_id,
                 filename=document.filename,
                 file_type=document.file_type,
@@ -1340,7 +1406,7 @@ def clone_knowledge_version_assets(
         for bucket in source_buckets:
             clone = KnowledgeBucket(
                 tenant_id=bucket.tenant_id,
-                knowledge_base_id=bucket.knowledge_base_id,
+                knowledge_base_id=target_base_id,
                 knowledge_base_version_id=target_version_id,
                 document_id=document_id_map.get(bucket.document_id, bucket.document_id),
                 bucket_key=bucket.bucket_key,
@@ -1367,7 +1433,7 @@ def clone_knowledge_version_assets(
         for chunk in source_chunks:
             clone = KnowledgeChunk(
                 tenant_id=chunk.tenant_id,
-                knowledge_base_id=chunk.knowledge_base_id,
+                knowledge_base_id=target_base_id,
                 knowledge_base_version_id=target_version_id,
                 document_id=document_id_map.get(chunk.document_id, chunk.document_id),
                 bucket_id=bucket_id_map.get(chunk.bucket_id, chunk.bucket_id),
@@ -1393,7 +1459,7 @@ def clone_knowledge_version_assets(
         for suggestion in source_suggestions:
             clone = KnowledgeDiscoverySuggestion(
                 tenant_id=suggestion.tenant_id,
-                knowledge_base_id=suggestion.knowledge_base_id,
+                knowledge_base_id=target_base_id,
                 knowledge_base_version_id=target_version_id,
                 document_id=document_id_map.get(suggestion.document_id, suggestion.document_id),
                 bucket_id=bucket_id_map.get(suggestion.bucket_id or "", suggestion.bucket_id),
@@ -1414,7 +1480,7 @@ def clone_knowledge_version_assets(
         target_documents = db.exec(
             select(KnowledgeDocument).where(
                 KnowledgeDocument.tenant_id == tenant_id,
-                KnowledgeDocument.knowledge_base_id == knowledge_base_id,
+                KnowledgeDocument.knowledge_base_id == target_base_id,
                 KnowledgeDocument.knowledge_base_version_id == target_version_id,
             )
         ).all()
@@ -1436,7 +1502,7 @@ def clone_knowledge_version_assets(
         existing_target_concepts = db.exec(
             select(KnowledgeConcept).where(
                 KnowledgeConcept.tenant_id == tenant_id,
-                KnowledgeConcept.knowledge_base_id == knowledge_base_id,
+                KnowledgeConcept.knowledge_base_id == target_base_id,
                 KnowledgeConcept.knowledge_base_version_id == target_version_id,
             )
         ).all()
@@ -1459,7 +1525,7 @@ def clone_knowledge_version_assets(
         for concept_id in db.exec(
             select(KnowledgeConcept.concept_id).where(
                 KnowledgeConcept.tenant_id == tenant_id,
-                KnowledgeConcept.knowledge_base_id == knowledge_base_id,
+                KnowledgeConcept.knowledge_base_id == target_base_id,
                 KnowledgeConcept.knowledge_base_version_id == target_version_id,
             )
         ).all()
@@ -1479,7 +1545,7 @@ def clone_knowledge_version_assets(
             continue
         clone = KnowledgeConcept(
             tenant_id=concept.tenant_id,
-            knowledge_base_id=concept.knowledge_base_id,
+            knowledge_base_id=target_base_id,
             knowledge_base_version_id=target_version_id,
             document_id=document_id_map.get(concept.document_id or "", concept.document_id),
             concept_id=concept.concept_id,

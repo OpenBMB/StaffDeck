@@ -1,3 +1,5 @@
+"""执行单个 TaskFrame 冻结能力，并在副作用前进行实时授权复核。"""
+
 from __future__ import annotations
 
 import base64
@@ -13,8 +15,14 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from app.async_jobs import enqueue_async_job
+from app.capabilities.contracts import CapabilityContext
 from app.capabilities.local_general_skill import (
     package_from_row,
+)
+from app.capabilities.local_knowledge import (
+    SharedKnowledgeAgentActionResult,
+    SharedKnowledgeAgentRuntime,
 )
 from app.core.capability_discovery import (
     CAPABILITY_SEARCH_MAX_RESULTS,
@@ -29,12 +37,12 @@ from app.core.capability_manifest import (
     tool_snapshot_digest,
 )
 from app.core.harness_agent import HarnessExecutionCancelled
+from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.published_deliverables import (
     MAX_PUBLISHED_DELIVERABLES,
     find_published_deliverable,
     list_published_deliverables,
 )
-from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
 from app.core.tool_replay_policy import ToolReplayPolicy
 from app.db.models import (
@@ -60,15 +68,15 @@ from app.harness import (
     register_skill_script_tools,
     snapshot_harness_workspace,
 )
-from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
+from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
+from app.knowledge.errors import KnowledgeError
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import KnowledgeService
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
-
 
 _INLINE_JSON_TOOL_RESULT_MAX_CHARS = 2_000
 _INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
@@ -165,6 +173,8 @@ class HarnessCapabilityInvoker:
         )
 
     def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """执行一个已展开能力，记录幂等调用，并在结束后调度持久摄取任务。"""
+        # 先确认本轮仍可执行，并从冻结清单取得唯一能力描述。
         self._raise_if_cancelled()
         if callable(self.ensure_execution_lease):
             self.ensure_execution_lease()
@@ -217,7 +227,9 @@ class HarnessCapabilityInvoker:
                 if replayed is not None:
                     return replayed
             raise
+        post_commit_ingest_job_id: str | None = None
         try:
+            # 按能力类型调用唯一适配器；知识维护动作额外保留提交后调度标记。
             self._raise_if_cancelled()
             if descriptor.kind == "internal":
                 result = self._invoke_internal(name, arguments)
@@ -230,14 +242,30 @@ class HarnessCapabilityInvoker:
                     arguments,
                 )
             elif descriptor.kind == "knowledge":
-                result = self._search_knowledge(
-                    _intersect_knowledge_metadata(
-                        descriptor.metadata,
-                        current_descriptor.metadata,
-                    ),
-                    arguments,
-                    call_id=call_id,
+                live_metadata = _intersect_knowledge_metadata(
+                    descriptor.metadata,
+                    current_descriptor.metadata,
                 )
+                if name == "knowledge_search":
+                    result = self._search_knowledge(
+                        live_metadata,
+                        arguments,
+                        call_id=call_id,
+                    )
+                else:
+                    try:
+                        action_result = self._invoke_shared_knowledge_action(
+                            name,
+                            arguments,
+                            live_metadata,
+                            call_id=call_id,
+                        )
+                    except KnowledgeError as exc:
+                        result = _failure(exc.code, exc.message, **exc.details)
+                    else:
+                        result = {"success": True, "data": action_result.data}
+                        if not action_result.replayed:
+                            post_commit_ingest_job_id = action_result.ingest_job_id
             elif descriptor.kind == "tool":
                 result = self._invoke_external_tool(
                     descriptor.capability_id,
@@ -258,8 +286,9 @@ class HarnessCapabilityInvoker:
             self.db.add(invocation)
             self.db.commit()
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - map provider failures to a stable tool result.
             result = _failure("HARNESS_TOOL_ERROR", str(exc))
+        # 将业务结果与调用记录一次提交；失败类型决定 Harness 是否释放重试声明。
         if result.get("success") is True:
             invocation.status = "completed"
         elif _failure_was_not_sent(result):
@@ -279,6 +308,17 @@ class HarnessCapabilityInvoker:
         invocation.updated_at = utc_now()
         self.db.add(invocation)
         self.db.commit()
+        if post_commit_ingest_job_id:
+            # 持久任务必须先提交，再交给复用的异步知识摄取执行器读取。
+            enqueue_async_job(
+                "knowledge_ingest",
+                KnowledgeService(self.db).run_ingest_job,
+                post_commit_ingest_job_id,
+                metadata={
+                    "tenant_id": self.tenant_id,
+                    "source": "shared_knowledge_agent",
+                },
+            )
         return result
 
     def discover_artifacts(self) -> list[dict[str, Any]]:
@@ -384,12 +424,14 @@ class HarnessCapabilityInvoker:
         self,
         frozen: CapabilityDescriptor,
     ) -> CapabilityDescriptor | None:
+        """按会话的实时团队权限重验能力；返回值不替换冻结清单中的知识版本。"""
         try:
             current = CapabilityManifestBuilder(self.db).build(
                 self.tenant_id,
                 self.agent_id,
                 self.active_skill,
                 self.active_step_id,
+                team_id=self.session.team_id,
             )
         except CapabilityAuthorizationError:
             return None
@@ -947,20 +989,30 @@ class HarnessCapabilityInvoker:
             for kb_id in selected
             if str(version_by_base.get(kb_id) or "").strip()
         ]
-        response = KnowledgeService(self.db).search(
-            KnowledgeSearchRequest(
-                tenant_id=self.tenant_id,
-                agent_id=self.agent_id,
-                query=query,
-                mode="chat",
-                knowledge_base_ids=selected,
-                knowledge_base_version_ids=selected_version_ids,
-                max_chunks=max(
-                    1, min(int(arguments.get("max_chunks") or 8), 12)
+        authorized_versions = {
+            knowledge_base_id: str(version_by_base[knowledge_base_id])
+            for knowledge_base_id in selected
+            if str(version_by_base.get(knowledge_base_id) or "").strip()
+        }
+        try:
+            response = KnowledgeService(self.db).search(
+                KnowledgeSearchRequest(
+                    tenant_id=self.tenant_id,
+                    agent_id=self.agent_id,
+                    query=query,
+                    mode="chat",
+                    knowledge_base_ids=selected,
+                    knowledge_base_version_ids=selected_version_ids,
+                    max_chunks=max(
+                        1, min(int(arguments.get("max_chunks") or 8), 12)
+                    ),
                 ),
-            ),
-            self.model_config,
-        )
+                self.model_config,
+                trusted_team_id=self.session.team_id,
+                authorized_knowledge_versions=authorized_versions,
+            )
+        except KnowledgeError as exc:
+            return _failure(exc.code, exc.message, **exc.details)
         payload = response.model_dump(mode="json")
         result = {
             "success": True,
@@ -968,6 +1020,45 @@ class HarnessCapabilityInvoker:
             "citations": knowledge_citations_from_results([payload]),
         }
         return self._persist_large_json_result(result, call_id=call_id)
+
+    def _invoke_shared_knowledge_action(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        metadata: dict[str, Any],
+        *,
+        call_id: str,
+    ) -> SharedKnowledgeAgentActionResult:
+        """用 Harness 服务端身份执行共享知识动作，并传入本轮冻结版本映射。"""
+        if not self.agent_id:
+            raise KnowledgeError(
+                "KNOWLEDGE_CONTEXT_MISMATCH",
+                "共享知识 Agent 动作缺少员工身份。",
+            )
+        context = CapabilityContext(
+            request_id=call_id,
+            tenant_id=self.tenant_id,
+            agent_id=self.agent_id,
+            user_id=str(self.session.user_id or "harness"),
+            session_id=self.session.id,
+            turn_id=self.task_frame_id,
+            channel=str(self.session.channel or "harness_v2"),
+            team_id=self.session.team_id,
+        )
+        frozen_versions = (
+            metadata.get("knowledge_version_by_base_id")
+            if isinstance(metadata.get("knowledge_version_by_base_id"), dict)
+            else {}
+        )
+        return SharedKnowledgeAgentRuntime(self.db).execute(
+            context,
+            name,
+            arguments,
+            frozen_knowledge_versions={
+                str(knowledge_base_id): str(version_id)
+                for knowledge_base_id, version_id in frozen_versions.items()
+            },
+        )
 
     def _invoke_external_tool(
         self,
@@ -1458,6 +1549,7 @@ def _safe_general_skill_file_path(path: str) -> str:
 
 
 def _failure_was_not_sent(result: dict[str, Any]) -> bool:
+    """判断失败是否发生在任何外部或持久副作用之前，以决定是否释放重试声明。"""
     error = result.get("error")
     code = str(error.get("code") or "") if isinstance(error, dict) else ""
     return code in {
@@ -1471,6 +1563,14 @@ def _failure_was_not_sent(result: dict[str, Any]) -> bool:
         "CAPABILITY_NOT_ACTIVATED",
         "CAPABILITY_NOT_AVAILABLE",
         "INVALID_ARGUMENTS",
+        "KNOWLEDGE_CONTEXT_MISMATCH",
+        "KNOWLEDGE_GRANT_REQUIRED",
+        "KNOWLEDGE_DEFAULT_NOT_CONFIGURED",
+        "KNOWLEDGE_PUBLISH_CONFLICT",
+        "KNOWLEDGE_VERSION_NOT_READY",
+        "KNOWLEDGE_MODE_INVALID",
+        "KNOWLEDGE_IDEMPOTENCY_CONFLICT",
+        "KNOWLEDGE_IDEMPOTENCY_REQUIRED",
     }
 
 

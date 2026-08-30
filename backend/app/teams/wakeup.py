@@ -55,8 +55,8 @@ from app.teams.service import (
     parse_tl_task_assignments,
     record_task_event,
     select_bid_candidates,
-    team_roster_lines,
     task_activation_state,
+    team_roster_lines,
     write_blackboard_entries,
 )
 
@@ -742,13 +742,21 @@ def run_agent_turn(
     allow_needs_input=True 时,turn 落在 awaiting_user/needs_input 不抛异常,
     由调用方决定如何安置(如成员任务转人工补充信息)。
     """
+    # Resolve the session again at the execution boundary. Wake payloads and
+    # caller-supplied ids never decide which team's knowledge is visible.
+    session = _trusted_team_execution_session(
+        db,
+        team=team,
+        agent=agent,
+        session_id=session_id,
+    )
     turn_id = client_turn_id or wake_event_id
     request = ChatTurnRequest(
         tenant_id=team.tenant_id,
         session_id=session_id,
         agent_id=agent.id,
         client_turn_id=turn_id,
-        user_id=team.owner_user_id,
+        user_id=session.user_id,
         message=message,
         channel="team",
         interaction_mode=interaction_mode,
@@ -783,6 +791,25 @@ def run_agent_turn(
         citations=list(citations) if isinstance(citations, list) else [],
         artifacts=list(artifacts) if isinstance(artifacts, list) else [],
     )
+
+
+def _trusted_team_execution_session(
+    db: Session,
+    *,
+    team: Team,
+    agent: AgentProfile,
+    session_id: str,
+) -> ChatSession:
+    """Return one server-validated team session for a wakeup Agent turn."""
+    session = db.get(ChatSession, session_id)
+    if (
+        session is None
+        or session.tenant_id != team.tenant_id
+        or session.team_id != team.id
+        or session.agent_id != agent.id
+    ):
+        raise RuntimeError("团队执行会话不属于当前团队或目标员工")
+    return session
 
 
 def execute_wake_event(db: Session, event: TeamWakeEvent) -> TeamWakeEvent:

@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import (
+    ensure_agent_private_knowledge_branch,
     ensure_knowledge_base_version,
     ensure_open_gallery_binding,
     ensure_private_resource_binding,
@@ -27,14 +28,19 @@ from app.api.tools import (
     update_tool,
 )
 from app.capability_scope import normalize_capability_scope
+from app.core.capability_manifest import CapabilityManifestBuilder
 from app.db.database import _migrate_capability_scope_schema
 from app.db.models import (
-    AgentProfile,
     AgentKnowledgeBranch,
+    AgentProfile,
     GeneralSkill,
     KnowledgeBase,
     KnowledgeBaseVersion,
     MCPServer,
+    Team,
+    TeamKnowledgeBaseBinding,
+    TeamKnowledgeBaseGrant,
+    TeamMember,
     Tenant,
     Tool,
     User,
@@ -183,6 +189,309 @@ def test_capability_scope_request_defaults_and_update_compatibility() -> None:
             name="非法范围",
             capability_scope="unsupported",  # type: ignore[arg-type]
         )
+
+
+def test_team_manifest_freezes_the_global_shared_version_for_one_turn() -> None:
+    """群聊冻结员工专用与团队共享读版本，但共享维护动作只携带共享库。"""
+    with _test_session() as db:
+        agent = AgentProfile(
+            id="agent_writer",
+            tenant_id="tenant_demo",
+            name="内容员工",
+        )
+        team = Team(
+            id="team_a",
+            tenant_id="tenant_demo",
+            name="项目 A",
+            owner_user_id="user_admin",
+        )
+        knowledge_base = KnowledgeBase(
+            id="kb_shared",
+            tenant_id="tenant_demo",
+            name="团队内容库",
+            mode="shared",
+            published_version_id="kbver_1",
+        )
+        version_1 = KnowledgeBaseVersion(
+            id="kbver_1",
+            tenant_id="tenant_demo",
+            knowledge_base_id=knowledge_base.id,
+            version="1.0.0",
+            name=knowledge_base.name,
+            publication_state="released",
+        )
+        version_2 = KnowledgeBaseVersion(
+            id="kbver_2",
+            tenant_id="tenant_demo",
+            knowledge_base_id=knowledge_base.id,
+            version="2.0.0",
+            name=knowledge_base.name,
+            parent_version_id=version_1.id,
+            publication_state="released",
+        )
+        dedicated_base = KnowledgeBase(
+            id="kb_writer_dedicated",
+            tenant_id="tenant_demo",
+            name="内容员工专用知识",
+            mode="dedicated",
+        )
+        db.add_all(
+            [
+                agent,
+                team,
+                TeamMember(team_id=team.id, agent_id=agent.id),
+                knowledge_base,
+                version_1,
+                version_2,
+                dedicated_base,
+                TeamKnowledgeBaseBinding(
+                    tenant_id="tenant_demo",
+                    team_id=team.id,
+                    knowledge_base_id=knowledge_base.id,
+                    created_by_user_id="user_admin",
+                ),
+                TeamKnowledgeBaseGrant(
+                    tenant_id="tenant_demo",
+                    team_id=team.id,
+                    knowledge_base_id=knowledge_base.id,
+                    agent_id=agent.id,
+                    permission="reader",
+                    created_by_user_id="user_admin",
+                ),
+            ]
+        )
+        db.flush()
+        ensure_agent_private_knowledge_branch(
+            db,
+            "tenant_demo",
+            agent.id,
+            dedicated_base,
+        )
+        db.commit()
+        dedicated_version = db.exec(
+            select(KnowledgeBaseVersion).where(
+                KnowledgeBaseVersion.knowledge_base_id == dedicated_base.id
+            )
+        ).one()
+        dedicated_base_id = dedicated_base.id
+        dedicated_version_id = dedicated_version.id
+        shared_base_id = knowledge_base.id
+        version_1_id = version_1.id
+        version_2_id = version_2.id
+
+        first = CapabilityManifestBuilder(db).build(
+            "tenant_demo",
+            agent.id,
+            None,
+            None,
+            team_id=team.id,
+        )
+        first_search = next(item for item in first.available if item.name == "knowledge_search")
+        first_version_list = next(
+            item for item in first.available if item.name == "knowledge_list_versions"
+        )
+        frozen_versions = dict(first_search.metadata["knowledge_version_by_base_id"])
+
+        knowledge_base.published_version_id = version_2.id
+        db.add(knowledge_base)
+        db.commit()
+
+        frozen = CapabilityManifestBuilder(db).build(
+            "tenant_demo",
+            agent.id,
+            None,
+            None,
+            team_id=team.id,
+            frozen_knowledge_versions=frozen_versions,
+        )
+        fresh = CapabilityManifestBuilder(db).build(
+            "tenant_demo",
+            agent.id,
+            None,
+            None,
+            team_id=team.id,
+        )
+        frozen_search = next(
+            item for item in frozen.available if item.name == "knowledge_search"
+        )
+        fresh_search = next(item for item in fresh.available if item.name == "knowledge_search")
+
+    assert frozen_versions == {
+        dedicated_base_id: dedicated_version_id,
+        shared_base_id: version_1_id,
+    }
+    assert first_version_list.metadata["allowed_knowledge_base_ids"] == [
+        shared_base_id
+    ]
+    assert frozen_search.metadata["knowledge_version_by_base_id"] == {
+        dedicated_base_id: dedicated_version_id,
+        shared_base_id: version_1_id,
+    }
+    assert fresh_search.metadata["knowledge_version_by_base_id"] == {
+        dedicated_base_id: dedicated_version_id,
+        shared_base_id: version_2_id,
+    }
+
+
+def _seed_shared_capability_matrix(
+    db: Session,
+) -> tuple[Team, KnowledgeBase, KnowledgeBaseVersion, dict[str, str]]:
+    """建立读者、编辑者、发布者共用一个共享库的能力授权矩阵。"""
+    team = Team(
+        id="team_capabilities",
+        tenant_id="tenant_demo",
+        name="能力验证团队",
+        owner_user_id="user_admin",
+    )
+    shared_base = KnowledgeBase(
+        id="kb_shared_capabilities",
+        tenant_id="tenant_demo",
+        name="团队能力知识库",
+        mode="shared",
+        published_version_id="kbver_shared_capabilities",
+    )
+    published = KnowledgeBaseVersion(
+        id="kbver_shared_capabilities",
+        tenant_id="tenant_demo",
+        knowledge_base_id=shared_base.id,
+        version="1.0.0",
+        name=shared_base.name,
+        publication_state="released",
+    )
+    grants = {
+        "agent_reader": "reader",
+        "agent_editor": "editor",
+        "agent_publisher": "publisher",
+    }
+    db.add(team)
+    db.add(shared_base)
+    db.add(published)
+    db.add(
+        TeamKnowledgeBaseBinding(
+            tenant_id="tenant_demo",
+            team_id=team.id,
+            knowledge_base_id=shared_base.id,
+            created_by_user_id="user_admin",
+        )
+    )
+    for agent_id, permission in grants.items():
+        db.add(AgentProfile(id=agent_id, tenant_id="tenant_demo", name=agent_id))
+        db.add(TeamMember(team_id=team.id, agent_id=agent_id))
+        db.add(
+            TeamKnowledgeBaseGrant(
+                tenant_id="tenant_demo",
+                team_id=team.id,
+                knowledge_base_id=shared_base.id,
+                agent_id=agent_id,
+                permission=permission,
+                created_by_user_id="user_admin",
+            )
+        )
+    db.commit()
+    return team, shared_base, published, grants
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "expected_actions"),
+    [
+        ("agent_reader", {"knowledge_search", "knowledge_list_versions"}),
+        (
+            "agent_editor",
+            {
+                "knowledge_search",
+                "knowledge_list_versions",
+                "knowledge_create_draft",
+                "knowledge_update_draft",
+            },
+        ),
+        (
+            "agent_publisher",
+            {
+                "knowledge_search",
+                "knowledge_list_versions",
+                "knowledge_create_draft",
+                "knowledge_update_draft",
+                "knowledge_publish_draft",
+                "knowledge_reject_draft",
+                "knowledge_rollback",
+            },
+        ),
+    ],
+)
+def test_team_manifest_filters_shared_knowledge_actions_by_live_grant(
+    agent_id: str,
+    expected_actions: set[str],
+) -> None:
+    """团队清单只公开当前授权等级包含的共享知识动作与冻结正式版本。"""
+    with _test_session() as db:
+        team, shared_base, published, _grants = _seed_shared_capability_matrix(db)
+
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant_demo",
+            agent_id,
+            None,
+            None,
+            team_id=team.id,
+        )
+
+    actions = {
+        item.name: item
+        for item in manifest.available
+        if item.kind == "knowledge"
+    }
+    assert set(actions) == expected_actions
+    assert all(
+        item.metadata["allowed_knowledge_base_ids"] == [shared_base.id]
+        for item in actions.values()
+    )
+    assert all(
+        item.metadata["knowledge_version_by_base_id"]
+        == {shared_base.id: published.id}
+        for item in actions.values()
+    )
+
+
+def test_private_manifest_never_exposes_shared_knowledge_maintenance_actions() -> None:
+    """员工私聊即使在团队中拥有发布权，也只能检索自己的专用知识。"""
+    with _test_session() as db:
+        _team, shared_base, _published, _grants = _seed_shared_capability_matrix(db)
+        shared_base_id = shared_base.id
+        dedicated_base = KnowledgeBase(
+            id="kb_dedicated_publisher",
+            tenant_id="tenant_demo",
+            name="发布员工专用知识",
+            mode="dedicated",
+        )
+        db.add(dedicated_base)
+        db.flush()
+        dedicated_base_id = dedicated_base.id
+        ensure_agent_private_knowledge_branch(
+            db,
+            "tenant_demo",
+            "agent_publisher",
+            dedicated_base,
+        )
+        db.commit()
+
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant_demo",
+            "agent_publisher",
+            None,
+            None,
+        )
+
+    knowledge_actions = {
+        item.name: item
+        for item in manifest.available
+        if item.kind == "knowledge"
+    }
+    assert set(knowledge_actions) == {"knowledge_search"}
+    assert knowledge_actions["knowledge_search"].metadata[
+        "allowed_knowledge_base_ids"
+    ] == [dedicated_base_id]
+    assert shared_base_id not in knowledge_actions["knowledge_search"].metadata[
+        "allowed_knowledge_base_ids"
+    ]
 
 
 def test_create_update_and_read_apis_round_trip_capability_scope() -> None:

@@ -13,12 +13,12 @@ from app.api import knowledge_bases as internal_knowledge_bases
 from app.api import scheduled_tasks as internal_scheduled_tasks
 from app.api import tools as internal_tools
 from app.db import get_session
-from app.db.models import APIJob, AgentResourceBinding, KnowledgeIngestJob, Tool, utc_now
+from app.db.models import AgentResourceBinding, APIJob, KnowledgeIngestJob, Tool, utc_now
 from app.general_skills.schema import GeneralSkillImportRequest, GeneralSkillRunRequest
 from app.knowledge.schema import (
     KnowledgeBaseCreateRequest,
-    KnowledgeBaseUpdateRequest,
     KnowledgeBaseRollbackRequest,
+    KnowledgeBaseUpdateRequest,
     KnowledgeDocumentUpdateRequest,
     KnowledgeDocumentUploadRequest,
     KnowledgeSearchRequest,
@@ -41,7 +41,6 @@ from app.tools.tool_schema import (
     ToolUpdateRequest,
 )
 
-
 router = APIRouter(tags=["resources"])
 
 
@@ -60,6 +59,32 @@ def _masked_tool(value: Any) -> dict[str, Any]:
         connection["headers"] = {key: "********" for key in (connection.get("headers") or {})}
         connection["env"] = {key: "********" for key in (connection.get("env") or {})}
     return payload
+
+
+def _ensure_public_dedicated_knowledge_base(
+    db: Session,
+    principal: PublicPrincipal,
+    agent_id: str,
+    knowledge_base_id: str,
+) -> Any:
+    """Resolve an employee-owned dedicated base before a public async mutation is queued."""
+    ensure_public_agent(db, principal, agent_id)
+    rows = internal_knowledge_bases.list_knowledge_bases(
+        principal.tenant_id,
+        agent_id,
+        db,
+    )
+    knowledge_base = next(
+        (row for row in rows if row.id == knowledge_base_id and row.mode == "dedicated"),
+        None,
+    )
+    if knowledge_base is None:
+        raise PublicAPIError(
+            404,
+            "KNOWLEDGE_BASE_NOT_FOUND",
+            "Knowledge base not found for this employee.",
+        )
+    return knowledge_base
 
 
 # Knowledge bases
@@ -82,7 +107,14 @@ def create_knowledge_base(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
     db: Session = Depends(get_session),
 ) -> dict:
+    """Create an employee-owned dedicated base through the public resource API."""
     enforce_agent_access(principal, agent_id, write=True)
+    if str(body.get("mode") or "dedicated") != "dedicated":
+        raise PublicAPIError(
+            409,
+            "KNOWLEDGE_MODE_INVALID",
+            "Shared knowledge bases must be created through team knowledge management.",
+        )
     request = KnowledgeBaseCreateRequest(tenant_id=principal.tenant_id, **body)
     return _dump(internal_knowledge_bases.create_knowledge_base(request, agent_id, db, principal.actor_user))
 
@@ -96,6 +128,12 @@ def update_knowledge_base(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id, write=True)
+    _ensure_public_dedicated_knowledge_base(
+        db,
+        principal,
+        agent_id,
+        knowledge_base_id,
+    )
     request = KnowledgeBaseUpdateRequest(tenant_id=principal.tenant_id, **body)
     return _dump(internal_knowledge_bases.update_knowledge_base(knowledge_base_id, request, agent_id, db, principal.actor_user))
 
@@ -145,7 +183,14 @@ def upsert_knowledge_entries(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
     db: Session = Depends(get_session),
 ) -> dict:
+    """Queue entries only for the employee's currently visible dedicated base."""
     enforce_agent_access(principal, agent_id, write=True)
+    _ensure_public_dedicated_knowledge_base(
+        db,
+        principal,
+        agent_id,
+        knowledge_base_id,
+    )
     replay = replay_idempotent_response(db, principal, request, body.model_dump(mode="json"))
     if replay:
         response.status_code = replay[0]
@@ -180,7 +225,14 @@ async def upload_knowledge_document(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
     db: Session = Depends(get_session),
 ) -> dict:
+    """Queue an uploaded document only for an employee-owned dedicated base."""
     enforce_agent_access(principal, agent_id, write=True)
+    _ensure_public_dedicated_knowledge_base(
+        db,
+        principal,
+        agent_id,
+        knowledge_base_id,
+    )
     content = await file.read()
     if len(content) > 20 * 1024 * 1024:
         raise PublicAPIError(413, "DOCUMENT_TOO_LARGE", "Documents are limited to 20 MB.")

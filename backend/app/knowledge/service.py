@@ -14,12 +14,13 @@ from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.capability_scope import normalize_capability_scope
 from app import paths
+from app.capability_scope import normalize_capability_scope
 from app.db import engine
 from app.db.models import (
-    KnowledgeBucket,
     KnowledgeBase,
+    KnowledgeBaseVersion,
+    KnowledgeBucket,
     KnowledgeChunk,
     KnowledgeConcept,
     KnowledgeDiscoverySuggestion,
@@ -30,14 +31,8 @@ from app.db.models import (
     Tool,
     utc_now,
 )
-from app.knowledge.parser import KnowledgeParseError, extract_text
-from app.llm.model_config_resolver import resolve_model_config_for_runtime
-from app.knowledge.schema import (
-    KnowledgeBucketRead,
-    KnowledgeChunkRead,
-    KnowledgeSearchRequest,
-    KnowledgeSearchResponse,
-)
+from app.knowledge.access import KnowledgeAccessService
+from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
 from app.knowledge.okf import (
     build_okf_for_document,
     okf_citations_for_concepts,
@@ -45,11 +40,17 @@ from app.knowledge.okf import (
     selected_concept_cards,
     upsert_concepts,
 )
-from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
+from app.knowledge.parser import KnowledgeParseError, extract_text
+from app.knowledge.schema import (
+    KnowledgeBucketRead,
+    KnowledgeChunkRead,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
+)
 from app.llm import LLMClient, LLMError
+from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.observability.spans import llm_operation, observed_span
 from app.skills.skill_schema import SkillCard, SkillGraphEdge, SkillGraphNode
-
 
 PROMPT_DIR = paths.resource_dir() / "app" / "llm" / "prompts"
 BUCKET_PROMPT = PROMPT_DIR / "knowledge_bucket_prompt.md"
@@ -586,7 +587,31 @@ class KnowledgeService:
             )
             self._clear_embedded_content(job)
 
-    def search(self, request: KnowledgeSearchRequest, model_config: ModelConfig | None = None) -> KnowledgeSearchResponse:
+    def search(
+        self,
+        request: KnowledgeSearchRequest,
+        model_config: ModelConfig | None = None,
+        *,
+        trusted_team_id: str | None = None,
+        authorized_knowledge_versions: dict[str, str] | None = None,
+    ) -> KnowledgeSearchResponse:
+        """检索知识；内部调用可附带服务端授权映射以执行实时二次校验。"""
+        authorization_scope_applied = authorized_knowledge_versions is not None
+        if authorized_knowledge_versions is not None:
+            request = self._authorized_search_request(
+                request,
+                trusted_team_id=trusted_team_id,
+                authorized_knowledge_versions=authorized_knowledge_versions,
+            )
+        if (
+            authorization_scope_applied
+            and not request.knowledge_base_ids
+            and not request.knowledge_base_version_ids
+        ):
+            route_trace = [
+                {"phase": "no_visible_knowledge", "message": "当前上下文没有可见知识"}
+            ]
+            return KnowledgeSearchResponse(trace=route_trace, route_trace=route_trace)
         with observed_span(
             "knowledge_span",
             "knowledge.search",
@@ -596,6 +621,55 @@ class KnowledgeService:
             max_depth=request.max_depth,
         ):
             return self._search(request, model_config)
+
+    def _authorized_search_request(
+        self,
+        request: KnowledgeSearchRequest,
+        *,
+        trusted_team_id: str | None,
+        authorized_knowledge_versions: dict[str, str],
+    ) -> KnowledgeSearchRequest:
+        """实时重验上下文并只保留仍授权且版本归属正确的服务端冻结映射。"""
+        live_by_base = {}
+        if request.agent_id:
+            live = KnowledgeAccessService(self.db).resolve_projections(
+                tenant_id=request.tenant_id,
+                agent_id=request.agent_id,
+                team_id=trusted_team_id,
+            )
+            live_by_base = {
+                projection.knowledge_base_id: projection for projection in live
+            }
+        requested_ids = set(request.knowledge_base_ids) or set(
+            authorized_knowledge_versions
+        )
+        allowed_ids = set(live_by_base) if request.agent_id else set(
+            authorized_knowledge_versions
+        )
+        selected_versions: dict[str, str] = {}
+        for knowledge_base_id in sorted(
+            requested_ids & allowed_ids & set(authorized_knowledge_versions)
+        ):
+            version_id = authorized_knowledge_versions[knowledge_base_id]
+            version = self.db.get(KnowledgeBaseVersion, version_id)
+            knowledge_base = self.db.get(KnowledgeBase, knowledge_base_id)
+            if (
+                version is None
+                or knowledge_base is None
+                or knowledge_base.tenant_id != request.tenant_id
+                or version.tenant_id != request.tenant_id
+                or version.knowledge_base_id != knowledge_base_id
+            ):
+                continue
+            if knowledge_base.mode == "shared" and version.publication_state != "released":
+                continue
+            selected_versions[knowledge_base_id] = version.id
+        return request.model_copy(
+            update={
+                "knowledge_base_ids": list(selected_versions),
+                "knowledge_base_version_ids": list(selected_versions.values()),
+            }
+        )
 
     def _search(self, request: KnowledgeSearchRequest, model_config: ModelConfig | None = None) -> KnowledgeSearchResponse:
         query = request.query.strip()

@@ -20,44 +20,45 @@ from app.agents.branching import (
     mark_resource_private_for_agent,
     metadata_preserving_creator,
     user_creator_metadata,
-    visible_knowledge_base_versions,
     visible_knowledge_base_version_ids,
+    visible_knowledge_base_versions,
 )
 from app.async_jobs import enqueue_async_job
 from app.db import get_session
 from app.db.models import (
+    KnowledgeBase,
+    KnowledgeBaseVersion,
     KnowledgeBucket,
     KnowledgeChunk,
     KnowledgeConcept,
     KnowledgeDiscoverySuggestion,
     KnowledgeDocument,
     KnowledgeIngestJob,
-    KnowledgeBase,
-    KnowledgeBaseVersion,
     ModelConfig,
     User,
     utc_now,
 )
-from app.llm.model_config_resolver import resolve_model_config_for_runtime
+from app.knowledge.errors import KNOWLEDGE_MODE_INVALID, KnowledgeError, knowledge_error
+from app.knowledge.management import require_team_knowledge_manager
+from app.knowledge.okf import (
+    build_okf_for_document,
+    create_concept_evidence_rows,
+    parse_okf_bundle,
+    upsert_concepts,
+)
 from app.knowledge.schema import (
     KnowledgeBucketRead,
+    KnowledgeBucketUpdateRequest,
     KnowledgeChunkRead,
     KnowledgeChunkUpdateRequest,
     KnowledgeDiscoveryRead,
     KnowledgeDocumentRead,
     KnowledgeDocumentUpdateRequest,
     KnowledgeDocumentUploadRequest,
-    KnowledgeBucketUpdateRequest,
-    KnowledgeOkfImportRequest,
     KnowledgeIngestJobRead,
+    KnowledgeOkfImportRequest,
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
-)
-from app.knowledge.okf import (
-    build_okf_for_document,
-    create_concept_evidence_rows,
-    parse_okf_bundle,
-    upsert_concepts,
 )
 from app.knowledge.service import (
     IngestPayload,
@@ -68,6 +69,8 @@ from app.knowledge.service import (
     chunk_read,
     validate_discovered_skill,
 )
+from app.knowledge.versioning import SharedKnowledgeVersionService
+from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.permissions import (
     ensure_agent_scope_manager,
@@ -83,13 +86,66 @@ router = APIRouter(
 )
 
 
+def _knowledge_http_error(exc: KnowledgeError) -> HTTPException:
+    """将共享知识写入门禁错误转换为稳定 HTTP 响应。"""
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": exc.message, **exc.details},
+    )
+
+
+def _shared_writable_asset_version(
+    db: Session,
+    *,
+    tenant_id: str,
+    knowledge_base_id: str,
+    version_id: str | None,
+    current_user: User,
+) -> KnowledgeBaseVersion | None:
+    """专用库沿用旧写入；共享资产只允许写入其来源团队的活动草稿。"""
+    base = db.get(KnowledgeBase, knowledge_base_id)
+    if base is None or base.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    if base.mode != "shared":
+        return None
+    if not version_id:
+        raise _knowledge_http_error(
+            knowledge_error(
+                KNOWLEDGE_MODE_INVALID,
+                message="共享知识写入必须明确指定草稿版本。",
+            )
+        )
+    try:
+        version = SharedKnowledgeVersionService(db).require_writable_draft(
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            version_id=version_id,
+        )
+        if not version.source_team_id:
+            raise knowledge_error(
+                KNOWLEDGE_MODE_INVALID,
+                message="共享知识草稿缺少来源团队，不能写入。",
+            )
+        require_team_knowledge_manager(
+            db,
+            tenant_id=tenant_id,
+            team_id=version.source_team_id,
+            knowledge_base_id=knowledge_base_id,
+            current_user=current_user,
+        )
+        return version
+    except KnowledgeError as exc:
+        raise _knowledge_http_error(exc) from exc
+
+
 @router.post("/documents", response_model=KnowledgeIngestJobRead)
 def upload_document(
     request: KnowledgeDocumentUploadRequest,
     agent_id: str | None = Query(None),
-    db: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
 ) -> KnowledgeIngestJobRead:
+    """上传到专用分支或显式共享草稿，绝不直接写共享正式版。"""
     ensure_tenant(db, request.tenant_id)
     creator_metadata = user_creator_metadata(current_user, request.metadata or {})
     knowledge_base = _resolve_upload_knowledge_base(
@@ -99,7 +155,14 @@ def upload_document(
         current_user,
         creator_metadata=creator_metadata,
     )
-    version = knowledge_version_for_upload(
+    shared_version = _shared_writable_asset_version(
+        db,
+        tenant_id=request.tenant_id,
+        knowledge_base_id=knowledge_base.id,
+        version_id=request.knowledge_base_version_id,
+        current_user=current_user,
+    )
+    version = shared_version or knowledge_version_for_upload(
         db,
         request.tenant_id,
         knowledge_base.id,
@@ -134,6 +197,7 @@ def import_okf_bundle(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, object]:
+    """将 OKF 导入专用分支或显式共享草稿。"""
     ensure_tenant(db, request.tenant_id)
     try:
         content = base64.b64decode(request.content_base64)
@@ -148,6 +212,7 @@ def import_okf_bundle(
     upload_request = KnowledgeDocumentUploadRequest(
         tenant_id=request.tenant_id,
         knowledge_base_id=request.knowledge_base_id,
+        knowledge_base_version_id=request.knowledge_base_version_id,
         filename=request.filename,
         title=Path(request.filename).stem or "OKF Bundle",
         content_base64="",
@@ -161,7 +226,14 @@ def import_okf_bundle(
         current_user,
         creator_metadata=creator_metadata,
     )
-    version = knowledge_version_for_upload(
+    shared_version = _shared_writable_asset_version(
+        db,
+        tenant_id=request.tenant_id,
+        knowledge_base_id=knowledge_base.id,
+        version_id=request.knowledge_base_version_id,
+        current_user=current_user,
+    )
+    version = shared_version or knowledge_version_for_upload(
         db,
         request.tenant_id,
         knowledge_base.id,
@@ -253,7 +325,7 @@ def _resolve_upload_knowledge_base(
             or knowledge_base.status == "archived"
         ):
             raise HTTPException(status_code=404, detail="Knowledge base not found")
-        if not (agent and not agent.is_overall):
+        if knowledge_base.mode != "shared" and not (agent and not agent.is_overall):
             _ensure_open_gallery_knowledge_admin(
                 db, request.tenant_id, knowledge_base.id, current_user
             )
@@ -459,41 +531,52 @@ def update_document(
     current_user: User = Depends(get_current_user),
     agent_id: str | None = Query(None),
 ) -> KnowledgeDocumentRead:
+    """更新专用文档或共享草稿文档，正式共享快照保持只读。"""
     source_row = _get_document(db, request.tenant_id, document_id)
     if request.expected_updated_at and source_row.updated_at.isoformat() != request.expected_updated_at:
         raise HTTPException(
             status_code=409,
             detail="文档已被其他人修改，请刷新后再保存。",
         )
-    resolved_agent_id = agent_id if isinstance(agent_id, str) and agent_id else None
-    agent = (
-        ensure_agent_scope_manager(
-            db,
-            request.tenant_id,
-            resolved_agent_id,
-            current_user,
-        )
-        if resolved_agent_id
-        else None
+    shared_version = _shared_writable_asset_version(
+        db,
+        tenant_id=request.tenant_id,
+        knowledge_base_id=source_row.knowledge_base_id,
+        version_id=source_row.knowledge_base_version_id,
+        current_user=current_user,
     )
-    if agent and not agent.is_overall:
-        version = knowledge_version_for_upload(
-            db,
-            request.tenant_id,
-            source_row.knowledge_base_id,
-            agent.id,
-            metadata_json=user_creator_metadata(current_user),
-        )
-        db.commit()
-        row = _document_for_version(db, source_row, version.id)
-    else:
-        _ensure_open_gallery_knowledge_admin(
-            db,
-            request.tenant_id,
-            source_row.knowledge_base_id,
-            current_user,
-        )
+    if shared_version:
         row = source_row
+    else:
+        resolved_agent_id = agent_id if isinstance(agent_id, str) and agent_id else None
+        agent = (
+            ensure_agent_scope_manager(
+                db,
+                request.tenant_id,
+                resolved_agent_id,
+                current_user,
+            )
+            if resolved_agent_id
+            else None
+        )
+        if agent and not agent.is_overall:
+            version = knowledge_version_for_upload(
+                db,
+                request.tenant_id,
+                source_row.knowledge_base_id,
+                agent.id,
+                metadata_json=user_creator_metadata(current_user),
+            )
+            db.commit()
+            row = _document_for_version(db, source_row, version.id)
+        else:
+            _ensure_open_gallery_knowledge_admin(
+                db,
+                request.tenant_id,
+                source_row.knowledge_base_id,
+                current_user,
+            )
+            row = source_row
 
     if request.content_md is not None:
         try:
@@ -586,11 +669,25 @@ def update_bucket(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> KnowledgeBucketRead:
+    """更新专用桶或共享草稿桶，拒绝共享正式快照。"""
     ensure_tenant(db, request.tenant_id)
     row = db.get(KnowledgeBucket, bucket_id)
     if not row or row.tenant_id != request.tenant_id:
         raise HTTPException(status_code=404, detail="Knowledge bucket not found")
-    _ensure_open_gallery_knowledge_admin(db, request.tenant_id, row.knowledge_base_id, current_user)
+    shared_version = _shared_writable_asset_version(
+        db,
+        tenant_id=request.tenant_id,
+        knowledge_base_id=row.knowledge_base_id,
+        version_id=row.knowledge_base_version_id,
+        current_user=current_user,
+    )
+    if shared_version is None:
+        _ensure_open_gallery_knowledge_admin(
+            db,
+            request.tenant_id,
+            row.knowledge_base_id,
+            current_user,
+        )
     if request.title is not None:
         row.title = request.title.strip() or row.title
     if request.summary is not None:
@@ -643,11 +740,25 @@ def update_chunk(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> KnowledgeChunkRead:
+    """更新专用片段或共享草稿片段，拒绝共享正式快照。"""
     ensure_tenant(db, request.tenant_id)
     row = db.get(KnowledgeChunk, chunk_id)
     if not row or row.tenant_id != request.tenant_id:
         raise HTTPException(status_code=404, detail="Knowledge chunk not found")
-    _ensure_open_gallery_knowledge_admin(db, request.tenant_id, row.knowledge_base_id, current_user)
+    shared_version = _shared_writable_asset_version(
+        db,
+        tenant_id=request.tenant_id,
+        knowledge_base_id=row.knowledge_base_id,
+        version_id=row.knowledge_base_version_id,
+        current_user=current_user,
+    )
+    if shared_version is None:
+        _ensure_open_gallery_knowledge_admin(
+            db,
+            request.tenant_id,
+            row.knowledge_base_id,
+            current_user,
+        )
     if request.content is not None:
         row.content = request.content
     if request.summary is not None:
@@ -777,8 +888,22 @@ def confirm_discovery(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, object]:
+    """确认专用或共享草稿中的发现建议。"""
     row = _get_discovery(db, tenant_id, suggestion_id)
-    _ensure_open_gallery_knowledge_admin(db, tenant_id, row.knowledge_base_id, current_user)
+    shared_version = _shared_writable_asset_version(
+        db,
+        tenant_id=tenant_id,
+        knowledge_base_id=row.knowledge_base_id,
+        version_id=row.knowledge_base_version_id,
+        current_user=current_user,
+    )
+    if shared_version is None:
+        _ensure_open_gallery_knowledge_admin(
+            db,
+            tenant_id,
+            row.knowledge_base_id,
+            current_user,
+        )
     try:
         result = KnowledgeService(db).confirm_discovery(row)
     except KnowledgeDiscoveryValidationError as exc:
@@ -795,8 +920,22 @@ def reject_discovery(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
+    """拒绝专用或共享草稿中的发现建议。"""
     row = _get_discovery(db, tenant_id, suggestion_id)
-    _ensure_open_gallery_knowledge_admin(db, tenant_id, row.knowledge_base_id, current_user)
+    shared_version = _shared_writable_asset_version(
+        db,
+        tenant_id=tenant_id,
+        knowledge_base_id=row.knowledge_base_id,
+        version_id=row.knowledge_base_version_id,
+        current_user=current_user,
+    )
+    if shared_version is None:
+        _ensure_open_gallery_knowledge_admin(
+            db,
+            tenant_id,
+            row.knowledge_base_id,
+            current_user,
+        )
     try:
         KnowledgeService(db).reject_discovery(row)
     except KnowledgeDiscoveryConflictError as exc:

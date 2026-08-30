@@ -18,9 +18,13 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
+    KnowledgeBase,
+    KnowledgeBaseVersion,
     Message,
     Team,
     TeamBlackboardEntry,
+    TeamKnowledgeBaseBinding,
+    TeamKnowledgeBaseGrant,
     TeamTask,
     TeamTaskBid,
     TeamTaskEvent,
@@ -29,12 +33,13 @@ from app.db.models import (
     new_id,
     utc_now,
 )
+from app.knowledge.errors import KnowledgeError
 from app.knowledge.service import IngestPayload, KnowledgeService
 from app.security.auth import get_current_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
-from app.session.message_visibility import visible_message_content, visible_message_rows
 from app.session.message_read import message_read
+from app.session.message_visibility import visible_message_content, visible_message_rows
 from app.session.session_schema import ChatTurnRequest
 from app.teams import service as team_service
 from app.teams.schema import (
@@ -50,11 +55,17 @@ from app.teams.schema import (
     TeamConversationKind,
     TeamConversationMessageRead,
     TeamConversationRead,
-    TeamConversationStreamRead,
     TeamConversationsResponse,
+    TeamConversationStreamRead,
     TeamConversationTLRead,
     TeamCreateRequest,
     TeamEventRead,
+    TeamKnowledgeBindingRead,
+    TeamKnowledgeBindingUpdateRequest,
+    TeamKnowledgeBindRequest,
+    TeamKnowledgeGrantRead,
+    TeamKnowledgeGrantsUpdateRequest,
+    TeamKnowledgeUnbindRequest,
     TeamLeaderUpdateRequest,
     TeamMemberAddRequest,
     TeamMemberRead,
@@ -79,13 +90,17 @@ from app.teams.service import (
     delete_team,
     get_team,
     get_team_leader,
+    list_team_knowledge_bindings,
     list_team_members,
     normalize_blackboard_content,
     normalize_blackboard_tags,
     record_task_event,
     remove_member,
+    replace_team_knowledge_grants,
     set_leader,
+    set_team_default_knowledge_base,
     strip_json_blocks,
+    unbind_team_knowledge_base,
     write_blackboard_entries,
 )
 from app.teams.wakeup import (
@@ -96,6 +111,7 @@ from app.teams.wakeup import (
     start_bidding,
     start_wakeup_async,
 )
+
 router = APIRouter(prefix="/api/enterprise/teams", tags=["enterprise:teams"])
 
 TEAM_LOG_EXPORT_SCHEMA = "staffdeck.team-conversation-log.v1"
@@ -131,6 +147,7 @@ def _member_read(db: Session, member) -> TeamMemberRead:
 
 
 def _team_read(db: Session, team: Team) -> TeamRead:
+    """投影团队详情，并公开其当前默认共享写入目标。"""
     members = [_member_read(db, item) for item in list_team_members(db, team.id)]
     return TeamRead(
         id=team.id,
@@ -138,6 +155,7 @@ def _team_read(db: Session, team: Team) -> TeamRead:
         name=team.name,
         description=team.description,
         owner_user_id=team.owner_user_id,
+        default_knowledge_base_id=team.default_knowledge_base_id,
         config=dict(team.config_json or {}),
         status=team.status,
         members=members,
@@ -230,15 +248,205 @@ def create_team_endpoint(
 ) -> TeamRead:
     ensure_tenant(db, request.tenant_id)
     _ensure_request_tenant(request.tenant_id, current_user)
-    team = create_team(
-        db,
-        tenant_id=request.tenant_id,
-        name=request.name,
-        description=request.description,
-        owner_user_id=current_user.id,
-        config=request.config,
-    )
+    try:
+        team = create_team(
+            db,
+            tenant_id=request.tenant_id,
+            name=request.name,
+            description=request.description,
+            owner_user_id=current_user.id,
+            config=request.config,
+            knowledge_bases=request.knowledge_bases,
+        )
+    except KnowledgeError as exc:
+        raise _knowledge_http_error(exc) from exc
     return _team_read(db, team)
+
+
+def _knowledge_http_error(exc: KnowledgeError) -> HTTPException:
+    """把共享知识库领域错误映射为稳定 HTTP 载荷，不暴露受保护内容。"""
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": exc.message, **exc.details},
+    )
+
+
+def _team_knowledge_binding_read(
+    db: Session,
+    team: Team,
+    binding: TeamKnowledgeBaseBinding,
+) -> TeamKnowledgeBindingRead:
+    """将绑定、正式版本与当前有效授权合并成管理界面读取模型。"""
+    knowledge_base = db.get(KnowledgeBase, binding.knowledge_base_id)
+    if knowledge_base is None or knowledge_base.tenant_id != team.tenant_id:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    version = (
+        db.get(KnowledgeBaseVersion, knowledge_base.published_version_id)
+        if knowledge_base.published_version_id
+        else None
+    )
+    grants = db.exec(
+        select(TeamKnowledgeBaseGrant)
+        .where(
+            TeamKnowledgeBaseGrant.tenant_id == team.tenant_id,
+            TeamKnowledgeBaseGrant.team_id == team.id,
+            TeamKnowledgeBaseGrant.knowledge_base_id == knowledge_base.id,
+            TeamKnowledgeBaseGrant.status == "active",
+        )
+        .order_by(TeamKnowledgeBaseGrant.agent_id)
+    ).all()
+    return TeamKnowledgeBindingRead(
+        id=binding.id,
+        team_id=team.id,
+        knowledge_base_id=knowledge_base.id,
+        knowledge_base_name=knowledge_base.name,
+        status=binding.status,
+        revision=binding.revision,
+        is_default=team.default_knowledge_base_id == knowledge_base.id,
+        published_version_id=knowledge_base.published_version_id,
+        published_version=version.version if version else None,
+        grants=[
+            TeamKnowledgeGrantRead(
+                agent_id=grant.agent_id,
+                permission=grant.permission,
+                status=grant.status,
+            )
+            for grant in grants
+        ],
+        created_at=binding.created_at,
+        updated_at=binding.updated_at,
+    )
+
+
+@router.get("/{team_id}/knowledge-bases", response_model=list[TeamKnowledgeBindingRead])
+def list_team_knowledge_bases(
+    team_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> list[TeamKnowledgeBindingRead]:
+    """列出团队的共享知识绑定、默认目标、修订号与当前授权矩阵。"""
+    ensure_tenant(db, tenant_id)
+    _ensure_request_tenant(tenant_id, current_user)
+    team = get_team(db, tenant_id, team_id)
+    _ensure_team_manager(team, current_user)
+    return [
+        _team_knowledge_binding_read(db, team, binding)
+        for binding in list_team_knowledge_bindings(db, team)
+    ]
+
+
+@router.post("/{team_id}/knowledge-bases", response_model=TeamKnowledgeBindingRead)
+def bind_team_knowledge_base_endpoint(
+    team_id: str,
+    request: TeamKnowledgeBindRequest,
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> TeamKnowledgeBindingRead:
+    """为现有团队新增一个共享知识库绑定，或在同一事务中新建并绑定。"""
+    ensure_tenant(db, request.tenant_id)
+    _ensure_request_tenant(request.tenant_id, current_user)
+    team = get_team(db, request.tenant_id, team_id)
+    _ensure_team_manager(team, current_user)
+    try:
+        binding = team_service.bind_team_knowledge_base(
+            db,
+            team=team,
+            selection=request,
+            actor_user_id=current_user.id,
+        )
+    except KnowledgeError as exc:
+        raise _knowledge_http_error(exc) from exc
+    return _team_knowledge_binding_read(db, team, binding)
+
+
+@router.put(
+    "/{team_id}/knowledge-bases/{knowledge_base_id}",
+    response_model=TeamKnowledgeBindingRead,
+)
+def update_team_knowledge_binding_endpoint(
+    team_id: str,
+    knowledge_base_id: str,
+    request: TeamKnowledgeBindingUpdateRequest,
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> TeamKnowledgeBindingRead:
+    """按预期修订号设置或清除团队默认写入目标。"""
+    ensure_tenant(db, request.tenant_id)
+    _ensure_request_tenant(request.tenant_id, current_user)
+    team = get_team(db, request.tenant_id, team_id)
+    _ensure_team_manager(team, current_user)
+    try:
+        binding = set_team_default_knowledge_base(
+            db,
+            team=team,
+            knowledge_base_id=knowledge_base_id,
+            is_default=request.is_default,
+            expected_revision=request.expected_revision,
+            actor_user_id=current_user.id,
+        )
+    except KnowledgeError as exc:
+        raise _knowledge_http_error(exc) from exc
+    return _team_knowledge_binding_read(db, team, binding)
+
+
+@router.delete(
+    "/{team_id}/knowledge-bases/{knowledge_base_id}",
+    response_model=TeamKnowledgeBindingRead,
+)
+def remove_team_knowledge_binding_endpoint(
+    team_id: str,
+    knowledge_base_id: str,
+    request: TeamKnowledgeUnbindRequest,
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> TeamKnowledgeBindingRead:
+    """撤销团队绑定、全部团队内授权及对应默认目标，但保留共享库本身。"""
+    ensure_tenant(db, request.tenant_id)
+    _ensure_request_tenant(request.tenant_id, current_user)
+    team = get_team(db, request.tenant_id, team_id)
+    _ensure_team_manager(team, current_user)
+    try:
+        binding = unbind_team_knowledge_base(
+            db,
+            team=team,
+            knowledge_base_id=knowledge_base_id,
+            expected_revision=request.expected_revision,
+            actor_user_id=current_user.id,
+        )
+    except KnowledgeError as exc:
+        raise _knowledge_http_error(exc) from exc
+    return _team_knowledge_binding_read(db, team, binding)
+
+
+@router.put(
+    "/{team_id}/knowledge-bases/{knowledge_base_id}/grants",
+    response_model=TeamKnowledgeBindingRead,
+)
+def replace_team_knowledge_grants_endpoint(
+    team_id: str,
+    knowledge_base_id: str,
+    request: TeamKnowledgeGrantsUpdateRequest,
+    db: Session = Depends(get_session),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> TeamKnowledgeBindingRead:
+    """按绑定修订号原子替换一个共享库的团队员工权限矩阵。"""
+    ensure_tenant(db, request.tenant_id)
+    _ensure_request_tenant(request.tenant_id, current_user)
+    team = get_team(db, request.tenant_id, team_id)
+    _ensure_team_manager(team, current_user)
+    try:
+        binding = replace_team_knowledge_grants(
+            db,
+            team=team,
+            knowledge_base_id=knowledge_base_id,
+            expected_revision=request.expected_revision,
+            grants={grant.agent_id: grant.permission for grant in request.grants},
+            actor_user_id=current_user.id,
+        )
+    except KnowledgeError as exc:
+        raise _knowledge_http_error(exc) from exc
+    return _team_knowledge_binding_read(db, team, binding)
 
 
 @router.get("", response_model=list[TeamRead])
@@ -345,7 +553,7 @@ def remove_member_endpoint(
     _ensure_request_tenant(tenant_id, current_user)
     team = get_team(db, tenant_id, team_id)
     _ensure_team_manager(team, current_user)
-    remove_member(db, team, agent_id)
+    remove_member(db, team, agent_id, actor_user_id=current_user.id)
     return {"ok": True}
 
 
@@ -1285,7 +1493,14 @@ def promote_blackboard_entry(
             already_promoted=True,
         )
     service = KnowledgeService(db)
-    knowledge_base = service.ensure_default_knowledge_base(team.tenant_id)
+    try:
+        knowledge_base = team_service.resolve_team_knowledge_write_base(
+            db,
+            team=team,
+            knowledge_base_id=request.knowledge_base_id,
+        )
+    except KnowledgeError as exc:
+        raise _knowledge_http_error(exc) from exc
     source_task_title = ""
     if entry.source_task_id:
         source_task = db.get(TeamTask, entry.source_task_id)
@@ -1304,6 +1519,7 @@ def promote_blackboard_entry(
         IngestPayload(
             tenant_id=team.tenant_id,
             knowledge_base_id=knowledge_base.id,
+            knowledge_base_version_id=knowledge_base.published_version_id,
             filename=filename,
             content_base64=base64.b64encode(markdown.encode("utf-8")).decode("ascii"),
             title=f"团队黑板:{entry.content[:30]}",

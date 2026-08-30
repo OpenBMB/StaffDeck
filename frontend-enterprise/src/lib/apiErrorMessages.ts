@@ -3,6 +3,13 @@ import { ApiError } from '@/api/client';
 const STABLE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]+$/;
 
 const API_ERROR_MESSAGES: Record<string, string> = {
+  KNOWLEDGE_BINDING_REVISION_CONFLICT: '权限配置已被其他管理员更新，请刷新后重新确认。',
+  KNOWLEDGE_CONTEXT_MISMATCH: '当前团队、知识库或会话范围不匹配，请刷新后重试。',
+  KNOWLEDGE_DEFAULT_NOT_CONFIGURED: '团队尚未设置默认写入知识库，请先选择目标知识库。',
+  KNOWLEDGE_GRANT_REQUIRED: '当前员工没有执行此知识库操作所需的权限。',
+  KNOWLEDGE_MODE_INVALID: '当前知识库类型不支持此操作。',
+  KNOWLEDGE_PUBLISH_CONFLICT: '正式版本已变化，请基于最新版本重新操作。',
+  KNOWLEDGE_VERSION_NOT_READY: '知识版本尚未处理完成，暂不能发布。',
   MODEL_API_KEY_REQUIRED: '请填写模型 API Key',
   MODEL_CONFIG_DISABLED: '请先启用该模型，再设为默认',
   MODEL_CONFIG_VERIFICATION_REQUIRED: '请先完成模型测试，再启用或设为默认',

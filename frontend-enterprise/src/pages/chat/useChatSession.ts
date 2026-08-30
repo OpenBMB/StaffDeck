@@ -781,18 +781,25 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
   }, [userId]);
 
-  // 进入团队会话（如画廊团队卡片点开即聊）时，把共享作用域同步为 team:{team_id}，
-  // 让管理端导航栏的"当前员工"切换器跟随显示当前团队。
+  // 会话作用域以服务端会话归属为准：团队群聊跟随 team:{team_id}，员工私聊回到 agent_id。
+  // 这样从团队切换到员工时不会把上一团队的共享作用域遗留在私聊界面。
   useEffect(() => {
     if (embedded) return;
-    const teamId = currentSession?.team_id;
-    if (!teamId) return;
-    const scope = toTeamScope(teamId);
+    const scope = currentSession?.team_id
+      ? toTeamScope(currentSession.team_id)
+      : currentSession?.agent_id;
+    if (!scope) return;
     if (selectedAgentId === scope) return;
     setSelectedAgentId(scope);
     persistSharedAgentScope(scope, userId);
     emitAgentScopeChange(scope);
-  }, [currentSession?.team_id, embedded, selectedAgentId, userId]);
+  }, [
+    currentSession?.agent_id,
+    currentSession?.team_id,
+    embedded,
+    selectedAgentId,
+    userId,
+  ]);
 
   useEffect(() => {
     if (
@@ -3438,14 +3445,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [navigate]);
 
   const changeSessionAgentFilter = useCallback((value: string) => {
-    const next = value || 'all';
-    persistChatSessionAgentFilter(next);
-    if (next !== 'all') {
-      setSelectedAgentId(next);
-      persistSharedAgentScope(next, userId);
-      emitAgentScopeChange(next);
-    }
-  }, [persistChatSessionAgentFilter, userId]);
+    persistChatSessionAgentFilter(value || 'all');
+  }, [persistChatSessionAgentFilter]);
 
   return {
     auth,

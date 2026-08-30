@@ -62,6 +62,10 @@ export type KnowledgeBaseRead = {
   description?: string;
   capability_scope?: CapabilityScope;
   status: string;
+  mode?: 'dedicated' | 'shared';
+  published_version_id?: string | null;
+  published_version?: string | null;
+  bound_team_count?: number;
   version?: string;
   branch_sync_state?: string;
   branch_base_version?: string;
@@ -72,6 +76,65 @@ export type KnowledgeBaseRead = {
   chunk_count: number;
   created_at: string;
   updated_at: string;
+};
+
+export type KnowledgeBaseVersionRead = {
+  id: string;
+  tenant_id: string;
+  knowledge_base_id: string;
+  version: string;
+  name: string;
+  description?: string;
+  status: string;
+  publication_state?: 'draft' | 'released' | 'rejected';
+  parent_version_id?: string | null;
+  source_team_id?: string | null;
+  created_by_agent_id?: string | null;
+  created_by_user_id?: string | null;
+  change_reason?: string | null;
+  published_at?: string | null;
+  is_published_head?: boolean;
+  is_head?: boolean;
+  is_base?: boolean;
+  capability_scope?: CapabilityScope;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KnowledgeBaseConversionRead = {
+  source_knowledge_base_id: string;
+  source_version_id: string;
+  new_knowledge_base: KnowledgeBaseRead;
+  released_version: KnowledgeBaseVersionRead;
+  binding_ids: string[];
+  default_for_team_id?: string | null;
+  source_archived: boolean;
+  audit_event_id: string;
+};
+
+export type KnowledgeBaseAuditEventRead = {
+  id: string;
+  knowledge_base_id: string;
+  team_id?: string | null;
+  team_name?: string | null;
+  knowledge_base_version_id?: string | null;
+  knowledge_base_version?: string | null;
+  actor_type: 'user' | 'agent' | 'system' | string;
+  actor_id: string;
+  actor_name: string;
+  action: string;
+  reason?: string | null;
+  details: Record<string, unknown>;
+  created_at: string;
+};
+
+export type KnowledgeBaseAuditPageRead = {
+  items: KnowledgeBaseAuditEventRead[];
+  total: number;
+  offset: number;
+  limit: number;
+  has_more: boolean;
 };
 
 export type KnowledgeDocumentRead = {
@@ -1068,11 +1131,40 @@ export type TeamRead = {
   name: string;
   description?: string | null;
   owner_user_id: string;
+  default_knowledge_base_id?: string | null;
   config: Record<string, unknown>;
   status: 'active' | 'archived' | string;
   members: TeamMemberRead[];
   created_at: string;
   updated_at: string;
+};
+
+export type KnowledgePermission = 'reader' | 'editor' | 'publisher';
+
+export type TeamKnowledgeGrantRead = {
+  agent_id: string;
+  permission: KnowledgePermission;
+  status: string;
+};
+
+export type TeamKnowledgeBindingRead = {
+  id: string;
+  team_id: string;
+  knowledge_base_id: string;
+  knowledge_base_name: string;
+  status: string;
+  revision: number;
+  is_default: boolean;
+  published_version_id?: string | null;
+  published_version?: string | null;
+  grants: TeamKnowledgeGrantRead[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type TeamKnowledgeGrantInput = {
+  agent_id: string;
+  permission: KnowledgePermission | null;
 };
 
 export type TeamConversationKind = 'tl_chat' | 'member_task' | 'member_bid' | 'tl_review';

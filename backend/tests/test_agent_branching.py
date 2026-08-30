@@ -10,9 +10,9 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import (
     copy_overall_scope_to_agent,
-    ensure_private_resource_binding,
-    ensure_open_gallery_binding,
     ensure_knowledge_base_version,
+    ensure_open_gallery_binding,
+    ensure_private_resource_binding,
     hide_open_gallery_binding,
     knowledge_version_for_upload,
     require_overall_agent,
@@ -34,6 +34,7 @@ from app.api.skills import (
     update_skill,
 )
 from app.api.tools import list_tools
+from app.db import staffdeck_seed
 from app.db.models import (
     AgentKnowledgeBranch,
     AgentProfile,
@@ -633,6 +634,173 @@ def test_copy_overall_scope_to_agent_does_not_auto_bind_open_gallery_knowledge_b
             tenant_id="tenant_demo", agent_id="agent_overall", db=db
         )
         assert [row.id for row in open_knowledge] == [kb.id]
+
+
+def test_legacy_dedicated_branch_binding_without_scope_metadata_remains_private_visible() -> None:
+    """旧员工分支只凭 branch+binding 也必须可见，且不能因此进入开放广场。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        overall = AgentProfile(
+            id="agent_overall",
+            tenant_id="tenant_demo",
+            name="整体智能体",
+            is_overall=True,
+        )
+        owner = AgentProfile(
+            id="agent_owner",
+            tenant_id="tenant_demo",
+            name="资料员工",
+            is_overall=False,
+        )
+        other = AgentProfile(
+            id="agent_other",
+            tenant_id="tenant_demo",
+            name="其他员工",
+            is_overall=False,
+        )
+        knowledge_base = KnowledgeBase(
+            id="kb_legacy_dedicated",
+            tenant_id="tenant_demo",
+            name="旧版员工资料",
+            mode="dedicated",
+            status="active",
+        )
+        db.add(overall)
+        db.add(owner)
+        db.add(other)
+        db.add(knowledge_base)
+        db.flush()
+        ensure_knowledge_base_version(db, knowledge_base, "1.0.0")
+        db.add(
+            AgentKnowledgeBranch(
+                id="branch_legacy_dedicated",
+                tenant_id="tenant_demo",
+                agent_id=owner.id,
+                knowledge_base_id=knowledge_base.id,
+                base_version="1.0.0",
+                head_version="1.0.0",
+                status="active",
+                sync_state="synced",
+                metadata_json={},
+            )
+        )
+        db.add(
+            AgentResourceBinding(
+                id="binding_legacy_dedicated",
+                tenant_id="tenant_demo",
+                agent_id=owner.id,
+                resource_type="knowledge_base",
+                resource_id=knowledge_base.id,
+                status="active",
+                metadata_json={},
+            )
+        )
+        db.commit()
+
+        assert set(visible_knowledge_base_versions(db, "tenant_demo", owner.id)) == {
+            knowledge_base.id
+        }
+        assert visible_knowledge_base_versions(db, "tenant_demo", other.id) == {}
+        assert visible_knowledge_base_versions(db, "tenant_demo", overall.id) == {}
+
+
+def test_shared_knowledge_base_cannot_be_exposed_by_stale_open_gallery_binding() -> None:
+    """共享知识库即使残留整体员工绑定，也只能走团队授权链路。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        overall = AgentProfile(
+            id="agent_overall",
+            tenant_id="tenant_demo",
+            name="整体智能体",
+            is_overall=True,
+        )
+        shared = KnowledgeBase(
+            id="kb_shared_not_gallery",
+            tenant_id="tenant_demo",
+            name="团队共享资料",
+            mode="shared",
+            status="active",
+        )
+        db.add(overall)
+        db.add(shared)
+        db.flush()
+        released = ensure_knowledge_base_version(db, shared, "1.0.0")
+        shared.published_version_id = released.id
+        db.add(shared)
+        ensure_open_gallery_binding(
+            db,
+            "tenant_demo",
+            "knowledge_base",
+            shared.id,
+            "active",
+        )
+        db.commit()
+
+        assert visible_knowledge_base_versions(db, "tenant_demo", overall.id) == {}
+
+
+def test_staffdeck_gallery_seed_skips_shared_knowledge_bases() -> None:
+    """内置开放广场种子不能把共享知识库重新发布成整体员工模板。"""
+    with _test_session() as db:
+        db.add(Tenant(id=staffdeck_seed.TENANT_ID, name="StaffDeck"))
+        overall = AgentProfile(
+            id="agent_staffdeck_overall",
+            tenant_id=staffdeck_seed.TENANT_ID,
+            name="整体智能体",
+            is_overall=True,
+        )
+        shared = KnowledgeBase(
+            id="kb_seed_shared",
+            tenant_id=staffdeck_seed.TENANT_ID,
+            name="共享知识库",
+            mode="shared",
+            status="active",
+            metadata_json={"source": "team"},
+        )
+        dedicated = KnowledgeBase(
+            id="kb_seed_dedicated",
+            tenant_id=staffdeck_seed.TENANT_ID,
+            name="专用知识库模板",
+            mode="dedicated",
+            status="active",
+            metadata_json={"source": "seed"},
+        )
+        db.add(overall)
+        db.add(shared)
+        db.add(dedicated)
+        db.flush()
+
+        staffdeck_seed._publish_gallery_resources(
+            db,
+            {
+                "skill": {},
+                "general_skill": {},
+                "tool": {},
+                "knowledge_base": {
+                    shared.id: shared.id,
+                    dedicated.id: dedicated.id,
+                },
+            },
+        )
+        db.commit()
+
+        assert db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.agent_id == overall.id,
+                AgentResourceBinding.resource_type == "knowledge_base",
+                AgentResourceBinding.resource_id == shared.id,
+            )
+        ).first() is None
+        assert db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.agent_id == overall.id,
+                AgentResourceBinding.resource_type == "knowledge_base",
+                AgentResourceBinding.resource_id == dedicated.id,
+                AgentResourceBinding.status == "active",
+            )
+        ).first() is not None
+        db.refresh(shared)
+        assert shared.metadata_json == {"source": "team"}
 
 
 def test_list_agents_knowledge_count_ignores_stale_or_empty_default_bindings() -> None:
