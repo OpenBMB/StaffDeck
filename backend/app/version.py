@@ -4,9 +4,23 @@ import os
 import sys
 from pathlib import Path
 
-DEFAULT_APP_VERSION = "0.1.0"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _read_repo_version() -> str | None:
+    version_file = Path(__file__).resolve().parents[1] / "VERSION"
+    try:
+        value = version_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+# Single source of truth for the "no better signal available" version: backend/VERSION
+# (also what backend/pyproject.toml's dynamic version reads). Packaged builds never
+# reach this — _bundled_version() wins first.
+DEFAULT_APP_VERSION = _read_repo_version() or "0.0.0-dev"
 
 
 def _bundled_version() -> str | None:

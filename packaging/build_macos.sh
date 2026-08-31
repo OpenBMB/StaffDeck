@@ -2,7 +2,7 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-$(cat "$REPO/backend/VERSION" 2>/dev/null || echo 0.0.0-dev)}"
 HOST_ARCH="$(uname -m)"
 TARGET_ARCH="${STAFFDECK_MACOS_ARCH:-$HOST_ARCH}"
 MAC_SIGN_ID="${MAC_SIGN_ID:-}"

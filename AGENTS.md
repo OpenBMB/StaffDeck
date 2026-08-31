@@ -30,6 +30,23 @@ Follow the history’s concise Conventional Commit pattern, such as `feat(channe
 
 Copy `backend/.env.example` to `backend/.env`; never commit secrets or channel credentials. Use strong `APP_SECRET` values and least-privilege external credentials. The supported production migration path currently assumes SQLite.
 
+## Release & Versioning
+
+`backend/VERSION` (bare semver, no `v` prefix) is the single source of truth for the app version.
+`backend/pyproject.toml` reads it dynamically — never hand-edit its `version` field.
+`frontend-enterprise/package.json` can't read it (no such npm mechanism), so run
+`scripts/sync_version.py` in the same commit whenever you edit `backend/VERSION`; `release.yml`
+fails the build if it drifts.
+
+Only bump `backend/VERSION` when preparing a release, not on routine PRs — parallel
+branches/worktrees would conflict on it otherwise. Classify the most severe change since the last
+tag: patch = compatible bug fix only, minor = new backward-compatible functionality, major =
+breaking change — except pre-1.0 (current line `0.x.y`), where breaking changes bump minor instead
+and major is reserved for a deliberate `1.0.0` milestone.
+
+Flow: edit `backend/VERSION` → run `scripts/sync_version.py` → commit → merge → `git tag vX.Y.Z`
+(must match the file) → `git push --tags`.
+
 ## Agent skills
 
 ### Issue tracker
