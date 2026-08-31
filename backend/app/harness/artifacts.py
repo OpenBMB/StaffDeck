@@ -5,7 +5,9 @@ import os
 import stat
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import BinaryIO
 
 HarnessWorkspaceSnapshot = dict[str, tuple[int, int, int, int]]
 
@@ -46,6 +48,26 @@ class OpenedHarnessArtifact:
                 yield block
         finally:
             self.close()
+
+    @contextmanager
+    def open_reader(self) -> Iterator[BinaryIO]:
+        """Yield a reader for the verified file while preserving this descriptor's offset."""
+
+        descriptor = self._require_descriptor()
+        original_offset = os.lseek(descriptor, 0, os.SEEK_CUR)
+        reader_descriptor = os.dup(descriptor)
+        try:
+            reader = os.fdopen(reader_descriptor, "rb")
+        except Exception:
+            os.close(reader_descriptor)
+            raise
+        try:
+            with reader as handle:
+                yield handle
+        finally:
+            held_descriptor = self._descriptor
+            if held_descriptor is not None:
+                os.lseek(held_descriptor, original_offset, os.SEEK_SET)
 
     def close(self) -> None:
         descriptor, self._descriptor = self._descriptor, None

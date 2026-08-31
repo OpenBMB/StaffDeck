@@ -33,7 +33,10 @@ from app.core.harness_capability_invoker import (
     HarnessCapabilityInvoker,
     _failure_was_not_sent,
 )
-from app.core.harness_session_cleanup import harness_task_workspace_path
+from app.core.harness_session_cleanup import (
+    harness_task_workspace_candidates,
+    harness_task_workspace_path,
+)
 from app.core.harness_v2_engine import (
     HarnessV2Engine,
     _combine_results,
@@ -78,9 +81,12 @@ from app.db.models import (
     Skill,
     Tenant,
     Tool,
+    UIConfig,
     utc_now,
 )
 from app.general_skills.schema import GeneralSkillRunResponse
+from app.harness import artifacts as harness_artifacts
+from app.harness import publish_harness_artifacts
 from app.harness.errors import HarnessExecutionError
 from app.knowledge.schema import KnowledgeSearchResponse
 from app.observability.event_log import EventLog
@@ -91,6 +97,7 @@ from app.scheduled_tasks.service import (
     _skip_misfired_run,
     due_scheduled_tasks,
 )
+from app.session.attachment_store import stage_chat_attachment
 from app.session.session_schema import (
     ChatAttachmentRead,
     ChatTurnRequest,
@@ -101,7 +108,6 @@ from app.session.session_schema import (
     TeamPlannerMember,
     TurnPlan,
 )
-from app.session.attachment_store import stage_chat_attachment
 from app.skills.skill_schema import SkillCapabilityRefs
 from app.tools.tool_schema import ToolResult
 
@@ -1847,6 +1853,7 @@ def test_harness_reads_published_deliverable_from_an_earlier_task_frame(
     tmp_path,
     monkeypatch,
 ) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
     engine = _test_engine()
     content = "# 开发排期\n\n第一阶段完成接口设计。\n"
@@ -1876,6 +1883,7 @@ def test_harness_reads_published_deliverable_from_an_earlier_task_frame(
             task_frame_id="task-previous",
             db=db,
         )
+        assert workspace.is_relative_to(tmp_path / "data" / "harness_workspaces")
         (workspace / "results").mkdir(parents=True)
         (workspace / "results" / "schedule.md").write_text(content, encoding="utf-8")
         db.add(
@@ -1931,6 +1939,46 @@ def test_harness_reads_published_deliverable_from_an_earlier_task_frame(
         assert read["data"]["content"] == content
         assert read["data"]["task_frame_id"] == "task-previous"
 
+        artifact_path = workspace / "results" / "schedule.md"
+        original_sha256 = harness_artifacts.OpenedHarnessArtifact.sha256
+        replaced = False
+        sha256_calls = 0
+
+        def replace_path_after_validation(
+            opened: harness_artifacts.OpenedHarnessArtifact,
+        ) -> str:
+            nonlocal replaced, sha256_calls
+            sha256_calls += 1
+            digest = original_sha256(opened)
+            if not replaced:
+                replacement = artifact_path.with_suffix(".replacement")
+                replacement.write_text("replacement content", encoding="utf-8")
+                replacement.replace(artifact_path)
+                replaced = True
+            return digest
+
+        monkeypatch.setattr(
+            harness_artifacts.OpenedHarnessArtifact,
+            "sha256",
+            replace_path_after_validation,
+        )
+        descriptor_bound = invoker.invoke(
+            "read_published_deliverable",
+            {
+                "task_frame_id": "task-previous",
+                "path": "results/schedule.md",
+            },
+        )
+        monkeypatch.setattr(
+            harness_artifacts.OpenedHarnessArtifact,
+            "sha256",
+            original_sha256,
+        )
+
+        assert descriptor_bound["success"] is True
+        assert descriptor_bound["data"]["content"] == content
+        assert sha256_calls == 1
+
         denied = invoker.invoke(
             "read_published_deliverable",
             {
@@ -1952,6 +2000,82 @@ def test_harness_reads_published_deliverable_from_an_earlier_task_frame(
 
     assert changed["success"] is False
     assert changed["error"]["code"] == "PUBLISHED_DELIVERABLE_CHANGED"
+
+
+def test_harness_rejects_conflicting_snapshot_and_legacy_deliverables(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """An internal deliverable read must fail when both compatible roots contain the same path."""
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "app-data"))
+    engine = _test_engine()
+    snapshot_root = tmp_path / "snapshot-workspace"
+    with Session(engine) as db:
+        session = _chat_session()
+        db.add(session)
+        db.add(
+            HarnessTaskFrameRecord(
+                tenant_id="tenant-demo",
+                session_id=session.id,
+                source_turn_id="turn-previous",
+                task_id="task-previous",
+                workspace_root=str(snapshot_root),
+            )
+        )
+        db.flush()
+        snapshot_workspace, legacy_workspace = harness_task_workspace_candidates(
+            tenant_id="tenant-demo",
+            session_id=session.id,
+            task_frame_id="task-previous",
+            db=db,
+        )
+        snapshot_file = snapshot_workspace / "results" / "schedule.md"
+        snapshot_file.parent.mkdir(parents=True)
+        snapshot_file.write_text("snapshot artifact", encoding="utf-8")
+        published = publish_harness_artifacts(
+            snapshot_workspace,
+            "task-previous",
+            ["results/schedule.md"],
+            operation="general_skill",
+        )
+        legacy_file = legacy_workspace / "results" / "schedule.md"
+        legacy_file.parent.mkdir(parents=True)
+        legacy_file.write_text("legacy artifact", encoding="utf-8")
+        db.add(
+            Message(
+                tenant_id="tenant-demo",
+                session_id=session.id,
+                role="assistant",
+                content="已生成开发排期文档。",
+                metadata_json={"harness_artifacts": published},
+            )
+        )
+        db.commit()
+
+        manifest = CapabilityManifestBuilder(db).build("tenant-demo", None, None, None)
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=session,
+            task_frame_id="task-current",
+            model_config=_model_config(),
+            manifest=manifest,
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        read = invoker.invoke(
+            "read_published_deliverable",
+            {
+                "task_frame_id": "task-previous",
+                "path": "results/schedule.md",
+            },
+        )
+
+    assert read["success"] is False
+    assert read["error"]["code"] == "PUBLISHED_DELIVERABLE_LOCATION_CONFLICT"
 
 
 def test_workspace_discovery_returns_source_and_generated_image(
@@ -4219,6 +4343,51 @@ def test_task_frame_store_persists_frames_and_projects_only_active_sop_work() ->
             }
         ]
 
+
+def test_task_frame_store_snapshots_workspace_root_only_on_first_persist(tmp_path) -> None:
+    """Replanning one task must retain its first resolved Harness workspace root."""
+
+    engine = _test_engine()
+    initial_root = tmp_path / "workspace-initial"
+    revised_root = tmp_path / "workspace-revised"
+    plan = TurnPlan(
+        decision="answer_only",
+        user_intent="生成交付物",
+        task_frames=[
+            PlannedTaskFrame(
+                task_id="task-workspace-snapshot",
+                kind="conversation",
+                decision="answer_only",
+                user_intent="生成交付物",
+                requirements=["写入交付物"],
+            )
+        ],
+    )
+
+    with Session(engine) as db:
+        session = _chat_session()
+        config = UIConfig(
+            tenant_id=session.tenant_id,
+            sandbox_enabled=False,
+            harness_storage_path=str(initial_root),
+        )
+        db.add_all([session, config])
+        db.commit()
+
+        store = TaskFrameStore(db)
+        initial_records = store.persist_plan(session, "turn-initial", plan)
+        db.commit()
+
+        assert initial_records[0].workspace_root == str(initial_root.resolve())
+
+        config.harness_storage_path = str(revised_root)
+        db.add(config)
+        db.commit()
+
+        replayed_records = store.persist_plan(session, "turn-replayed", plan)
+        db.commit()
+
+        assert replayed_records[0].workspace_root == str(initial_root.resolve())
 
 def test_agent_loop_identity_is_durable_per_general_session_and_sop_frame() -> None:
     engine = _test_engine()

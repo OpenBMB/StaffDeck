@@ -9,6 +9,12 @@ describe('apiErrorMessage', () => {
     );
   });
 
+  it('maps a Harness workspace validation code without depending on a dynamic backend message', () => {
+    expect(apiErrorMessage('HARNESS_WORKSPACE_PATH_ABSOLUTE', '保存失败')).toBe(
+      'Harness 工作区目录必须是绝对路径',
+    );
+  });
+
   it('wraps an unknown stable error code without rewriting normal diagnostics', () => {
     expect(apiErrorMessage('SOME_NEW_BACKEND_FAILURE', '操作失败')).toBe(
       '操作失败（错误码：SOME_NEW_BACKEND_FAILURE）',

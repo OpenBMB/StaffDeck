@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlmodel import Session
 
-from app import paths
+from app.core.harness_session_cleanup import default_harness_storage_root
 from app.db import get_session
 from app.db.models import UIConfig, User, utc_now
 from app.harness.sandbox import diagnostics, windows_install_command
@@ -246,29 +246,46 @@ def get_chat_ui_config(
 
 
 def _validate_storage_path(value: str) -> str | None:
+    """Validate a custom Harness workspace root without changing other application data paths."""
+
     normalized = str(value or "").strip()
     if not normalized:
         return None
     candidate = Path(normalized).expanduser()
     if not candidate.is_absolute():
-        raise HTTPException(status_code=422, detail="文件存储目录必须是绝对路径")
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "HARNESS_WORKSPACE_PATH_ABSOLUTE"},
+        )
     resolved = candidate.resolve(strict=False)
     if resolved == Path(resolved.anchor):
-        raise HTTPException(status_code=422, detail="文件存储目录不能是文件系统根目录")
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "HARNESS_WORKSPACE_PATH_ROOT_FORBIDDEN"},
+        )
     try:
         resolved.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise HTTPException(status_code=422, detail=f"无法创建文件存储目录：{exc}") from exc
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "HARNESS_WORKSPACE_PATH_CREATE_FAILED"},
+        ) from exc
     if not resolved.is_dir() or not os.access(resolved, os.W_OK | os.X_OK):
-        raise HTTPException(status_code=422, detail="文件存储目录不可写")
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "HARNESS_WORKSPACE_PATH_NOT_WRITABLE"},
+        )
     return str(resolved)
 
 
 def _effective_storage_path(row: UIConfig) -> str:
-    if not row.sandbox_enabled and row.harness_storage_path:
-        return str(Path(row.harness_storage_path).expanduser().resolve())
+    """Return the current Harness root used for new workspaces under this row's sandbox policy."""
+
+    configured = str(row.harness_storage_path or "").strip()
+    if not row.sandbox_enabled and configured:
+        return str(Path(configured).expanduser().resolve())
     try:
-        return str((paths.user_data_dir() / "harness_workspaces").resolve())
+        return str(default_harness_storage_root())
     except OSError:
         # Diagnostics and API reads must remain side-effect safe even when the
         # configured home directory is not writable (for example unit tests).

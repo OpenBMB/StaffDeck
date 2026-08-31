@@ -69,6 +69,7 @@ def test_harness_v2_schema_migration_is_complete_and_idempotent(
         "attempt_no",
         "lease_owner",
         "lease_expires_at",
+        "workspace_root",
     } <= task_frame_columns
     run_columns = {
         column["name"] for column in inspector.get_columns("harness_runs")
@@ -91,11 +92,11 @@ def test_harness_v2_schema_migration_is_complete_and_idempotent(
     with engine.begin() as conn:
         task_defaults = conn.execute(
             text(
-                "SELECT decision, attempt_no FROM harness_task_frames "
+                "SELECT decision, attempt_no, workspace_root FROM harness_task_frames "
                 "WHERE id = 'task_1'"
             )
         ).one()
-        assert task_defaults == ("answer_only", 0)
+        assert task_defaults == ("answer_only", 0, None)
         run_attempt = conn.execute(
             text("SELECT attempt_no FROM harness_runs WHERE id = 'run_1'")
         ).scalar_one()

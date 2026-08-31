@@ -3,6 +3,10 @@ import { ApiError } from '@/api/client';
 const STABLE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]+$/;
 
 const API_ERROR_MESSAGES: Record<string, string> = {
+  HARNESS_WORKSPACE_PATH_ABSOLUTE: 'Harness 工作区目录必须是绝对路径',
+  HARNESS_WORKSPACE_PATH_CREATE_FAILED: '无法创建 Harness 工作区目录，请检查路径和权限',
+  HARNESS_WORKSPACE_PATH_NOT_WRITABLE: 'Harness 工作区目录不可写，请检查权限',
+  HARNESS_WORKSPACE_PATH_ROOT_FORBIDDEN: 'Harness 工作区目录不能是文件系统根目录',
   MODEL_API_KEY_REQUIRED: '请填写模型 API Key',
   MODEL_CONFIG_DISABLED: '请先启用该模型，再设为默认',
   MODEL_CONFIG_VERIFICATION_REQUIRED: '请先完成模型测试，再启用或设为默认',

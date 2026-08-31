@@ -81,6 +81,21 @@ def test_setup_network_saves_local_mode(monkeypatch, tmp_path) -> None:
     )
 
 
+def test_network_config_does_not_follow_the_harness_workspace_root(monkeypatch, tmp_path) -> None:
+    """Desktop runtime configuration must remain in application data, not Harness workspaces."""
+
+    home = tmp_path / "home"
+    app_data = tmp_path / "app-data"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(app_data))
+
+    config_path = desktop_launcher._save_network_config("local", "", 5180)
+
+    assert config_path == app_data / "network.json"
+    assert not (home / ".staffdeck" / "workspaces").exists()
+
+
+
 def test_apply_network_config_uses_persisted_lan_mode(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(desktop_launcher, "user_data_dir", lambda: tmp_path)
     desktop_launcher._save_network_config("lan", "", 5190)

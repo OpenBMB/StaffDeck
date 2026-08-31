@@ -1206,6 +1206,7 @@ class HarnessTaskFrameRecord(SQLModel, table=True):
     sequence: int = 0
     skill_id: Optional[str] = Field(default=None, index=True)
     step_id: Optional[str] = Field(default=None, index=True)
+    workspace_root: Optional[str] = None
     user_intent: Optional[str] = None
     requirements_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     slots_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))

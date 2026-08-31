@@ -11,16 +11,17 @@ import shutil
 import stat
 import tempfile
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.harness.artifacts import OpenedHarnessArtifact
 from app.harness.contracts import HarnessToolContext
-from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
+from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.registry import HarnessRegistry
 from app.knowledge.parser import KnowledgeParseError, extract_text
 
@@ -400,21 +401,70 @@ def read_file(
     path = workspace.resolve(args.path)
     metadata = workspace.require_file(path)
     workspace.ensure_file_size(metadata.st_size)
-    digest = _sha256(path)
+    return _read_file_from_verified_reader(
+        context,
+        args,
+        path=workspace.relative(path),
+        size=metadata.st_size,
+        digest=_sha256(path),
+        open_reader=lambda: path.open("rb"),
+    )
+
+
+def read_opened_harness_artifact(
+    context: HarnessToolContext,
+    arguments: BaseModel,
+    opened: OpenedHarnessArtifact,
+    *,
+    path: str,
+    sha256: str | None = None,
+) -> dict[str, Any]:
+    """Read a published artifact from its verified descriptor without reopening its workspace path."""
+
+    args = _as(arguments, ReadFileArguments)
+    if opened.size > context.limits.max_file_bytes:
+        raise HarnessExecutionError(
+            "FILE_TOO_LARGE",
+            "File exceeds the Harness per-file size limit.",
+            details={
+                "actual_bytes": opened.size,
+                "max_bytes": context.limits.max_file_bytes,
+            },
+        )
+    return _read_file_from_verified_reader(
+        context,
+        args,
+        path=path,
+        size=opened.size,
+        digest=sha256 if sha256 is not None else opened.sha256(),
+        open_reader=opened.open_reader,
+    )
+
+
+def _read_file_from_verified_reader(
+    context: HarnessToolContext,
+    args: ReadFileArguments,
+    *,
+    path: str,
+    size: int,
+    digest: str,
+    open_reader: Callable[[], Any],
+) -> dict[str, Any]:
+    """Build the standard paged UTF-8 read response from a trusted file reader."""
+
     requested_offset = args.offset
     if args.continuation_token:
         continuation = _decode_read_continuation(args.continuation_token)
-        relative_path = workspace.relative(path)
-        if continuation["path"] != relative_path or continuation["sha256"] != digest:
+        if continuation["path"] != path or continuation["sha256"] != digest:
             raise HarnessExecutionError(
                 "STALE_CONTINUATION",
                 "Read continuation no longer matches this file.",
-                details={"path": relative_path, "sha256": digest},
+                details={"path": path, "sha256": digest},
             )
         requested_offset = int(continuation["offset"])
     # EOF is an ordinary terminal state.  Returning it deterministically keeps
     # an AgentLoop from burning actions by guessing ever larger byte offsets.
-    requested_offset = min(requested_offset, metadata.st_size)
+    requested_offset = min(requested_offset, size)
 
     safe_result_bytes = max(1, context.limits.max_result_bytes // 8)
     requested_bytes = args.max_bytes or min(context.limits.max_read_bytes, safe_result_bytes)
@@ -429,8 +479,8 @@ def read_file(
         )
     read_bytes = min(requested_bytes, safe_result_bytes)
     try:
-        with path.open("rb") as handle:
-            actual_offset = _align_utf8_offset(handle, requested_offset, metadata.st_size)
+        with open_reader() as handle:
+            actual_offset = _align_utf8_offset(handle, requested_offset, size)
             handle.seek(actual_offset)
             content_bytes = handle.read(read_bytes)
     except OSError as exc:
@@ -438,21 +488,21 @@ def read_file(
 
     content, consumed_bytes = _decode_utf8_chunk(content_bytes)
     next_offset = actual_offset + consumed_bytes
-    truncated = next_offset < metadata.st_size
+    truncated = next_offset < size
     result = {
-        "path": workspace.relative(path),
+        "path": path,
         "content": content,
         "requested_offset": requested_offset,
         "offset": actual_offset,
         "next_offset": next_offset,
         "truncated": truncated,
         "eof": not truncated,
-        "size": metadata.st_size,
+        "size": size,
         "sha256": digest,
     }
     if truncated:
         result["continuation_token"] = _encode_read_continuation(
-            path=workspace.relative(path),
+            path=path,
             sha256=digest,
             offset=next_offset,
         )
@@ -1455,6 +1505,7 @@ __all__ = [
     "move_file",
     "publish_artifact",
     "read_file",
+    "read_opened_harness_artifact",
     "register_file_tools",
     "write_file",
 ]

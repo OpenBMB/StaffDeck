@@ -197,6 +197,24 @@ def test_frozen_sqlite_honors_data_dir_override(monkeypatch, tmp_path) -> None:
     assert result == f"sqlite:///{expected}"
 
 
+def test_frozen_sqlite_does_not_follow_the_harness_workspace_root(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """The frozen SQLite database must remain in application data when Harness uses a home workspace."""
+
+    home = tmp_path / "home"
+    app_data = tmp_path / "app-data"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(app_data))
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+
+    result = _normalize_database_url("sqlite:///./skill_agent_loop.db")
+
+    assert result == f"sqlite:///{(app_data / 'skill_agent_loop.db').resolve()}"
+    assert not (home / ".staffdeck" / "workspaces").exists()
+
+
 def test_default_model_output_limit_migration_is_scoped_and_runs_once(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'models.db'}")
     with engine.begin() as conn:

@@ -94,12 +94,18 @@ def _purge_orphaned_chat_sessions() -> None:
         ]
         if not orphaned:
             return
-        workspace_keys = [(session.tenant_id, session.id) for session in orphaned]
+        workspace_cleanups = []
         for session in orphaned:
-            purge_chat_session_records(db, session)
+            cleanup = purge_chat_session_records(db, session)
+            workspace_cleanups.append((session.tenant_id, session.id, cleanup.workspace_roots))
         db.commit()
-        for tenant_id, session_id in workspace_keys:
-            remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
+        for tenant_id, session_id, workspace_roots in workspace_cleanups:
+            remove_chat_session_workspace(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                db=db,
+                workspace_roots=workspace_roots,
+            )
 
 
 def _configure_sqlite_runtime() -> None:
@@ -2028,6 +2034,9 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
             ),
             "lease_expires_at": (
                 "ALTER TABLE harness_task_frames ADD COLUMN lease_expires_at DATETIME"
+            ),
+            "workspace_root": (
+                "ALTER TABLE harness_task_frames ADD COLUMN workspace_root VARCHAR"
             ),
         }
         for column_name, ddl in task_frame_column_sql.items():

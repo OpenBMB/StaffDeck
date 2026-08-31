@@ -9,8 +9,13 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.api.chat import download_harness_artifact
-from app.core.harness_session_cleanup import harness_task_workspace_path
+from app.core.harness_session_cleanup import (
+    default_harness_storage_root,
+    harness_task_workspace_candidates,
+    harness_task_workspace_path,
+)
 from app.db.models import (
+    APIJob,
     ChatSession,
     HarnessTaskFrameRecord,
     Message,
@@ -25,6 +30,9 @@ from app.harness import (
     publish_harness_artifacts,
     snapshot_harness_workspace,
 )
+from app.public_api.auth import PublicPrincipal
+from app.public_api.errors import PublicAPIError
+from app.public_api.runs import download_run_artifact
 
 
 def _test_engine():
@@ -44,6 +52,7 @@ def _seed_artifact(
     session_id: str = "session_demo",
     task_frame_id: str = "task_demo",
     artifact_path: str = "reports/result.txt",
+    workspace_root: str | None = None,
 ) -> User:
     db.add(Tenant(id=tenant_id, name="Demo"))
     user = User(
@@ -67,6 +76,7 @@ def _seed_artifact(
             session_id=session_id,
             source_turn_id="turn_demo",
             task_id=task_frame_id,
+            workspace_root=workspace_root,
         )
     )
     db.add(
@@ -109,7 +119,7 @@ def test_downloads_only_a_published_file_from_the_exact_frame(
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
     engine = _test_engine()
     with Session(engine) as db:
-        user = _seed_artifact(db)
+        user = _seed_artifact(db, workspace_root=str(default_harness_storage_root()))
         workspace = harness_task_workspace_path(
             tenant_id="tenant_demo",
             session_id="session_demo",
@@ -147,6 +157,199 @@ def test_downloads_only_a_published_file_from_the_exact_frame(
         )
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["etag"] == f'"sha256:{published[0]["sha256"]}"'
+
+
+def test_download_reads_legacy_workspace_artifact_after_default_root_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A TaskFrame without a root snapshot must keep serving its old-default artifact."""
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "app-data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        user = _seed_artifact(db)
+        workspace = harness_task_workspace_candidates(
+            tenant_id="tenant_demo",
+            session_id="session_demo",
+            task_frame_id="task_demo",
+            db=db,
+        )[0]
+        assert workspace.is_relative_to(tmp_path / "app-data" / "harness_workspaces")
+        file_path = workspace / "reports" / "result.txt"
+        file_path.parent.mkdir(parents=True)
+        file_path.write_text("legacy artifact", encoding="utf-8")
+        published = publish_harness_artifacts(
+            workspace,
+            "task_demo",
+            ["reports/result.txt"],
+            operation="general_skill",
+        )
+        assistant = db.get(Message, "msg_assistant")
+        assert assistant is not None
+        assistant.metadata_json = {"harness_artifacts": published}
+        db.add(assistant)
+        db.commit()
+
+        response = download_harness_artifact(
+            "session_demo",
+            "task_demo",
+            tenant_id="tenant_demo",
+            path="reports/result.txt",
+            current_user=user,
+            db=db,
+        )
+
+        assert asyncio.run(_read_response_body(response)) == b"legacy artifact"
+
+
+def test_public_download_checks_legacy_artifact_integrity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public artifact endpoint must validate the same legacy file digest as chat downloads."""
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "app-data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        user = _seed_artifact(db)
+        db.add(
+            APIJob(
+                id="run_demo",
+                tenant_id="tenant_demo",
+                credential_id="credential_demo",
+                kind="run",
+                session_id="session_demo",
+            )
+        )
+        workspace = harness_task_workspace_candidates(
+            tenant_id="tenant_demo",
+            session_id="session_demo",
+            task_frame_id="task_demo",
+            db=db,
+        )[0]
+        file_path = workspace / "reports" / "result.txt"
+        file_path.parent.mkdir(parents=True)
+        file_path.write_text("legacy artifact", encoding="utf-8")
+        published = publish_harness_artifacts(
+            workspace,
+            "task_demo",
+            ["reports/result.txt"],
+            operation="general_skill",
+        )
+        assistant = db.get(Message, "msg_assistant")
+        assert assistant is not None
+        assistant.metadata_json = {
+            "client_turn_id": "run_demo",
+            "harness_artifacts": published,
+        }
+        db.add(assistant)
+        db.commit()
+        principal = PublicPrincipal(
+            tenant_id="tenant_demo",
+            actor_user=user,
+            scopes=frozenset({"runs:read"}),
+        )
+
+        response = download_run_artifact(
+            "run_demo",
+            "task_demo",
+            path="reports/result.txt",
+            principal=principal,
+            db=db,
+        )
+        assert asyncio.run(_read_response_body(response)) == b"legacy artifact"
+
+        file_path.write_text("tampered", encoding="utf-8")
+        with pytest.raises(PublicAPIError) as changed:
+            download_run_artifact(
+                "run_demo",
+                "task_demo",
+                path="reports/result.txt",
+                principal=principal,
+                db=db,
+            )
+
+        assert changed.value.status_code == 409
+        assert changed.value.code == "ARTIFACT_CHANGED"
+
+
+def test_download_rejects_conflicting_snapshot_and_legacy_artifact_locations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two candidate roots with the same published path must fail closed instead of choosing one."""
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "app-data"))
+    engine = _test_engine()
+    snapshot_root = tmp_path / "snapshot-workspace"
+    with Session(engine) as db:
+        user = _seed_artifact(db, workspace_root=str(snapshot_root))
+        db.add(
+            APIJob(
+                id="run_conflict",
+                tenant_id="tenant_demo",
+                credential_id="credential_demo",
+                kind="run",
+                session_id="session_demo",
+            )
+        )
+        snapshot_workspace, legacy_workspace = harness_task_workspace_candidates(
+            tenant_id="tenant_demo",
+            session_id="session_demo",
+            task_frame_id="task_demo",
+            db=db,
+        )
+        snapshot_file = snapshot_workspace / "reports" / "result.txt"
+        snapshot_file.parent.mkdir(parents=True)
+        snapshot_file.write_text("snapshot artifact", encoding="utf-8")
+        published = publish_harness_artifacts(
+            snapshot_workspace,
+            "task_demo",
+            ["reports/result.txt"],
+            operation="general_skill",
+        )
+        legacy_file = legacy_workspace / "reports" / "result.txt"
+        legacy_file.parent.mkdir(parents=True)
+        legacy_file.write_text("legacy artifact", encoding="utf-8")
+        assistant = db.get(Message, "msg_assistant")
+        assert assistant is not None
+        assistant.metadata_json = {
+            "client_turn_id": "run_conflict",
+            "harness_artifacts": published,
+        }
+        db.add(assistant)
+        db.commit()
+        principal = PublicPrincipal(
+            tenant_id="tenant_demo",
+            actor_user=user,
+            scopes=frozenset({"runs:read"}),
+        )
+
+        with pytest.raises(HTTPException) as chat_conflict:
+            download_harness_artifact(
+                "session_demo",
+                "task_demo",
+                tenant_id="tenant_demo",
+                path="reports/result.txt",
+                current_user=user,
+                db=db,
+            )
+        assert chat_conflict.value.status_code == 409
+
+        with pytest.raises(PublicAPIError) as public_conflict:
+            download_run_artifact(
+                "run_conflict",
+                "task_demo",
+                path="reports/result.txt",
+                principal=principal,
+                db=db,
+            )
+        assert public_conflict.value.status_code == 409
+        assert public_conflict.value.code == "ARTIFACT_LOCATION_CONFLICT"
 
 
 def test_publisher_builds_relative_hashed_metadata(tmp_path: Path) -> None:
@@ -225,6 +428,21 @@ def test_windows_artifact_open_does_not_require_posix_flags(
         opened.close()
 
 
+def test_opened_artifact_reader_preserves_descriptor_offset(tmp_path: Path) -> None:
+    workspace = (tmp_path / "task").resolve()
+    workspace.mkdir()
+    payload = b"the original artifact bytes"
+    (workspace / "result.txt").write_bytes(payload)
+
+    opened = open_harness_artifact(workspace, "result.txt")
+    try:
+        with opened.open_reader() as reader:
+            assert reader.read(3) == payload[:3]
+        assert b"".join(opened.iter_bytes()) == payload
+    finally:
+        opened.close()
+
+
 def test_publisher_rejects_hard_linked_files(tmp_path: Path) -> None:
     workspace = (tmp_path / "task").resolve()
     workspace.mkdir()
@@ -246,7 +464,7 @@ def test_download_rejects_a_file_changed_after_publication(
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
     engine = _test_engine()
     with Session(engine) as db:
-        user = _seed_artifact(db)
+        user = _seed_artifact(db, workspace_root=str(default_harness_storage_root()))
         workspace = harness_task_workspace_path(
             tenant_id="tenant_demo",
             session_id="session_demo",

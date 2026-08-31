@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import update
 from sqlmodel import Session, select
 
+from app.core.harness_session_cleanup import harness_storage_root
 from app.db.models import (
     ChatSession,
     HarnessAgentLoopRecord,
@@ -16,7 +17,6 @@ from app.db.models import (
     utc_now,
 )
 from app.session.session_schema import PlannedTaskFrame, TurnPlan
-
 
 TERMINAL_FRAME_STATUSES = {"completed", "cancelled", "failed"}
 DEPENDENCY_WAITING_ERROR_CODES = {
@@ -138,7 +138,15 @@ class TaskFrameStore:
         source_turn_id: str,
         plan: TurnPlan,
     ) -> list[HarnessTaskFrameRecord]:
+        """Persist a bounded plan while retaining every TaskFrame's first effective workspace root.
+
+        Updates the provided session and database rows. Active concurrent TaskFrames can still raise
+        ``RuntimeError`` when their execution lease has not expired.
+        """
+
+        # Project session state before reconciling its durable TaskFrame rows.
         self._apply_updates(session, plan)
+        # Bound one turn before calculating dependencies between its TaskFrames.
         bounded_frames = list(plan.task_frames[:MAX_TASK_FRAMES_PER_TURN])
         bounded_task_ids = {
             str(frame.task_id or "").strip()
@@ -163,6 +171,9 @@ class TaskFrameStore:
                     session_id=session.id,
                     source_turn_id=source_turn_id,
                     task_id=task_id,
+                    workspace_root=str(
+                        harness_storage_root(tenant_id=session.tenant_id, db=self.db)
+                    ),
                 )
             elif row.status in TERMINAL_FRAME_STATUSES:
                 continue

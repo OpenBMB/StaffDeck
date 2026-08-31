@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
-
-from app.api import ui_config as ui_config_module
-from app.api.ui_config import UIConfigUpdateRequest, ui_config_read
-from app.api.ui_config import update_enterprise_ui_config
-from app.core.agent_loop import AgentLoop
-from app.db.models import Tenant, UIConfig, User
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
+
+from app.api import ui_config as ui_config_module
+from app.api.ui_config import UIConfigUpdateRequest, ui_config_read, update_enterprise_ui_config
+from app.core.agent_loop import AgentLoop
+from app.core.harness_session_cleanup import harness_storage_root
+from app.db.models import Tenant, UIConfig, User
 from app.harness.sandbox import SandboxDiagnostics
 
 
@@ -25,6 +26,84 @@ def test_runtime_settings_action_limit_matches_backend_contract() -> None:
     assert request.context_allowed_roles == ["user", "assistant"]
     with pytest.raises(ValidationError):
         UIConfigUpdateRequest(tenant_id="tenant_demo", agent_loop_max_actions=101)
+
+
+def test_harness_workspace_config_uses_user_default_and_preserves_stable_path_contract(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The UI config field affects only the Harness root and rejects relative paths semantically."""
+
+    home = tmp_path / "home"
+    configured_root = tmp_path / "configured-harness-workspace"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "app-data"))
+
+    default_read = ui_config_read(UIConfig(tenant_id="tenant_demo"))
+    assert default_read.effective_harness_storage_path == str(home / ".staffdeck" / "workspaces")
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+        admin = User(
+            id="user_admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            password_hash="unused",
+            role="admin",
+        )
+
+        updated = update_enterprise_ui_config(
+            UIConfigUpdateRequest(
+                tenant_id="tenant_demo",
+                harness_storage_path=str(configured_root),
+            ),
+            db,
+            admin,
+        )
+
+        assert updated.harness_storage_path == str(configured_root.resolve())
+        assert updated.effective_harness_storage_path == str(configured_root.resolve())
+        assert harness_storage_root(tenant_id="tenant_demo", db=db) == configured_root.resolve()
+
+        with pytest.raises(HTTPException) as error:
+            update_enterprise_ui_config(
+                UIConfigUpdateRequest(
+                    tenant_id="tenant_demo",
+                    harness_storage_path="relative-workspace",
+                ),
+                db,
+                admin,
+            )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == {"code": "HARNESS_WORKSPACE_PATH_ABSOLUTE"}
+
+
+def test_harness_workspace_config_treats_legacy_whitespace_as_the_default_root(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A whitespace-only stored path must not resolve to the server working directory."""
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+
+    result = ui_config_read(
+        UIConfig(
+            tenant_id="tenant_demo",
+            sandbox_enabled=False,
+            harness_storage_path="  ",
+        )
+    )
+
+    assert result.effective_harness_storage_path == str(home / ".staffdeck" / "workspaces")
 
 
 def test_context_runtime_settings_validate_related_limits() -> None:

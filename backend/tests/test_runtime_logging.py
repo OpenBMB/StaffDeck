@@ -15,6 +15,21 @@ def test_runtime_log_path_uses_platform_user_data_directory(
     assert runtime_logging.runtime_log_path() == tmp_path / "logs" / "staffdeck.log"
 
 
+def test_runtime_log_path_does_not_follow_the_harness_workspace_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Runtime logs must remain in application data when Harness uses a separate home workspace."""
+
+    home = tmp_path / "home"
+    app_data = tmp_path / "app-data"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(app_data))
+
+    assert runtime_logging.runtime_log_path() == app_data / "logs" / "staffdeck.log"
+    assert not (home / ".staffdeck" / "workspaces").exists()
+
+
 def test_runtime_queue_drops_instead_of_blocking_when_full() -> None:
     record_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=1)
     handler = runtime_logging._DroppingQueueHandler(record_queue)

@@ -391,15 +391,21 @@ def delete_team(db: Session, team: Team) -> None:
     sessions = list(
         db.exec(select(ChatSession).where(ChatSession.team_id == team.id)).all()
     )
-    workspace_keys = [(session.tenant_id, session.id) for session in sessions]
+    workspace_cleanups = []
     for row in [*members, *runs, *tasks, *bids, *events, *wakes, *entries]:
         db.delete(row)
     for session in sessions:
-        purge_chat_session_records(db, session)
+        cleanup = purge_chat_session_records(db, session)
+        workspace_cleanups.append((session.tenant_id, session.id, cleanup.workspace_roots))
     db.delete(team)
     db.commit()
-    for tenant_id, session_id in workspace_keys:
-        remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
+    for tenant_id, session_id, workspace_roots in workspace_cleanups:
+        remove_chat_session_workspace(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            db=db,
+            workspace_roots=workspace_roots,
+        )
 
 
 def _ensure_team_agent(db: Session, team: Team, agent_id: str) -> AgentProfile:

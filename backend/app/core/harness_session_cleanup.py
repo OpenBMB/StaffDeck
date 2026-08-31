@@ -17,15 +17,27 @@ from app.db.models import (
     UIConfig,
     utc_now,
 )
+from app.harness.artifacts import (
+    HarnessArtifactAccessError,
+    OpenedHarnessArtifact,
+    open_harness_artifact,
+)
 
 
 @dataclass(frozen=True)
 class HarnessSessionRecordCleanup:
+    """Describe deleted Harness records and the persisted workspace roots needed after commit."""
+
     session_lease_count: int
     turn_count: int
     invocation_count: int
     run_count: int
     task_frame_count: int
+    workspace_roots: tuple[str, ...]
+
+
+class HarnessWorkspaceArtifactConflictError(HarnessArtifactAccessError):
+    """Raised when more than one bounded workspace root contains one requested artifact path."""
 
 
 def stage_harness_session_execution_reset(
@@ -139,6 +151,9 @@ def stage_harness_session_record_deletion(
         )
     ).all()
 
+    workspace_roots = _workspace_roots_from_task_frames(task_frames)
+
+    # Delete in foreign-key dependency order after capturing roots needed for post-commit cleanup.
     for invocation in invocations:
         db.delete(invocation)
     db.flush()
@@ -161,7 +176,21 @@ def stage_harness_session_record_deletion(
         invocation_count=len(invocations),
         run_count=len(runs),
         task_frame_count=len(task_frames),
+        workspace_roots=workspace_roots,
     )
+
+
+def _workspace_roots_from_task_frames(
+    task_frames: list[HarnessTaskFrameRecord],
+) -> tuple[str, ...]:
+    """Extract distinct non-empty TaskFrame root snapshots before their database rows are deleted."""
+
+    roots: list[str] = []
+    for task_frame in task_frames:
+        root = str(task_frame.workspace_root or "").strip()
+        if root and root not in roots:
+            roots.append(root)
+    return tuple(roots)
 
 
 def harness_path_segment(value: str) -> str:
@@ -181,7 +210,7 @@ def harness_path_segment(value: str) -> str:
 def harness_storage_root(*, tenant_id: str, db: Session | None = None) -> Path:
     """Resolve the administrator-selected root for new non-sandboxed workspaces."""
 
-    default_root = paths.user_data_dir().resolve() / "harness_workspaces"
+    default_root = default_harness_storage_root()
     if db is not None:
         row = db.get(UIConfig, tenant_id)
         configured = str(getattr(row, "harness_storage_path", "") or "").strip()
@@ -190,14 +219,95 @@ def harness_storage_root(*, tenant_id: str, db: Session | None = None) -> Path:
     return default_root
 
 
+def default_harness_storage_root() -> Path:
+    """Return the user-owned default root for newly created Harness workspaces."""
+
+    return Path.home() / ".staffdeck" / "workspaces"
+
+
+def legacy_harness_storage_root() -> Path:
+    """Return the pre-migration default root used only for deterministic compatibility reads."""
+
+    return paths.user_data_dir().resolve() / "harness_workspaces"
+
+
 def harness_session_workspace_path(
     *, tenant_id: str, session_id: str, db: Session | None = None
 ) -> Path:
+    """Return the current effective workspace path for one session's newly created TaskFrames."""
+
     return (
         harness_storage_root(tenant_id=tenant_id, db=db)
         / harness_path_segment(tenant_id)
         / harness_path_segment(session_id)
     )
+
+
+def harness_session_workspace_candidates(
+    *,
+    tenant_id: str,
+    session_id: str,
+    db: Session | None = None,
+    workspace_roots: tuple[str, ...] = (),
+) -> tuple[Path, ...]:
+    """Return bounded session roots for cleanup without scanning arbitrary workspace directories.
+
+    ``workspace_roots`` carries snapshots captured before their TaskFrame rows were
+    deleted, so post-commit cleanup can still remove the exact historical root.
+    """
+
+    snapshot_roots = list(
+        _session_workspace_snapshot_roots(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            db=db,
+        )
+    )
+    for workspace_root in workspace_roots:
+        value = str(workspace_root or "").strip()
+        root = Path(value).expanduser() if value else None
+        if root is not None and root not in snapshot_roots:
+            snapshot_roots.append(root)
+    roots = list(snapshot_roots)
+    if not roots:
+        roots.append(default_harness_storage_root())
+    roots.append(legacy_harness_storage_root())
+    session_paths: list[Path] = []
+    for root in roots:
+        session_path = (
+            root
+            / harness_path_segment(tenant_id)
+            / harness_path_segment(session_id)
+        )
+        if session_path not in session_paths:
+            session_paths.append(session_path)
+    return tuple(session_paths)
+
+
+def _session_workspace_snapshot_roots(
+    *,
+    tenant_id: str,
+    session_id: str,
+    db: Session | None,
+) -> tuple[Path, ...]:
+    """Return distinct persisted roots for one session, preserving stored symlink components for checks."""
+
+    if db is None:
+        return ()
+    configured_roots = db.exec(
+        select(HarnessTaskFrameRecord.workspace_root).where(
+            HarnessTaskFrameRecord.tenant_id == tenant_id,
+            HarnessTaskFrameRecord.session_id == session_id,
+            HarnessTaskFrameRecord.workspace_root.is_not(None),
+        )
+    ).all()
+    roots: list[Path] = []
+    for configured in configured_roots:
+        value = str(configured or "").strip()
+        root = Path(value).expanduser() if value else None
+        if root is not None and root not in roots:
+            roots.append(root)
+    return tuple(roots)
 
 
 def harness_task_workspace_path(
@@ -207,13 +317,127 @@ def harness_task_workspace_path(
     task_frame_id: str,
     db: Session | None = None,
 ) -> Path:
-    session_path = harness_session_workspace_path(
+    """Return the single write root selected for a TaskFrame without probing the filesystem."""
+
+    return harness_task_workspace_candidates(
         tenant_id=tenant_id,
         session_id=session_id,
+        task_frame_id=task_frame_id,
         db=db,
+    )[0]
+
+
+def harness_task_workspace_candidates(
+    *,
+    tenant_id: str,
+    session_id: str,
+    task_frame_id: str,
+    db: Session | None = None,
+) -> tuple[Path, ...]:
+    """Return bounded TaskFrame roots in read order while rejecting symlinked path segments."""
+
+    snapshot_root, has_task_frame = _task_frame_workspace_root(
+        tenant_id=tenant_id,
+        session_id=session_id,
+        task_frame_id=task_frame_id,
+        db=db,
+    )
+    if snapshot_root is not None:
+        roots = [snapshot_root, legacy_harness_storage_root()]
+    elif has_task_frame:
+        roots = [
+            legacy_harness_storage_root(),
+            harness_storage_root(tenant_id=tenant_id, db=db),
+        ]
+    else:
+        roots = [harness_storage_root(tenant_id=tenant_id, db=db)]
+    task_paths: list[Path] = []
+    for root in roots:
+        task_path = _task_workspace_path_under_root(
+            root=root,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            task_frame_id=task_frame_id,
+        )
+        if task_path not in task_paths:
+            task_paths.append(task_path)
+    return tuple(task_paths)
+
+
+def open_harness_task_artifact(
+    *,
+    tenant_id: str,
+    session_id: str,
+    task_frame_id: str,
+    path: str,
+    db: Session | None = None,
+) -> tuple[OpenedHarnessArtifact, Path]:
+    """Open one artifact from exactly one bounded TaskFrame root or fail closed on a location conflict."""
+
+    opened_candidates: list[tuple[OpenedHarnessArtifact, Path]] = []
+    for workspace_root in harness_task_workspace_candidates(
+        tenant_id=tenant_id,
+        session_id=session_id,
+        task_frame_id=task_frame_id,
+        db=db,
+    ):
+        try:
+            opened = open_harness_artifact(workspace_root, path)
+        except HarnessArtifactAccessError:
+            continue
+        opened_candidates.append((opened, workspace_root))
+
+    if not opened_candidates:
+        raise HarnessArtifactAccessError("Harness artifact is unavailable in its permitted workspace roots.")
+    if len(opened_candidates) == 1:
+        return opened_candidates[0]
+
+    for opened, _workspace_root in opened_candidates:
+        opened.close()
+    raise HarnessWorkspaceArtifactConflictError(
+        "Harness artifact exists in multiple permitted workspace roots."
+    )
+
+
+def _task_frame_workspace_root(
+    *,
+    tenant_id: str,
+    session_id: str,
+    task_frame_id: str,
+    db: Session | None,
+) -> tuple[Path | None, bool]:
+    """Return one durable root snapshot and whether its exact TaskFrame record exists."""
+
+    if db is None:
+        return None, False
+    frame = db.exec(
+        select(HarnessTaskFrameRecord).where(
+            HarnessTaskFrameRecord.tenant_id == tenant_id,
+            HarnessTaskFrameRecord.session_id == session_id,
+            HarnessTaskFrameRecord.task_id == task_frame_id,
+        )
+    ).first()
+    configured = str(getattr(frame, "workspace_root", "") or "").strip()
+    return (Path(configured).expanduser() if configured else None), frame is not None
+
+
+def _task_workspace_path_under_root(
+    *,
+    root: Path,
+    tenant_id: str,
+    session_id: str,
+    task_frame_id: str,
+) -> Path:
+    """Build one isolated TaskFrame path and reject a root or child redirected through a symlink."""
+
+    session_path = (
+        root
+        / harness_path_segment(tenant_id)
+        / harness_path_segment(session_id)
     )
     task_path = session_path / harness_path_segment(task_frame_id)
     for parent in (
+        root,
         session_path.parents[1],
         session_path.parent,
         session_path,
@@ -227,20 +451,33 @@ def harness_task_workspace_path(
 
 
 def remove_harness_session_workspace(
-    *, tenant_id: str, session_id: str, db: Session | None = None
+    *,
+    tenant_id: str,
+    session_id: str,
+    db: Session | None = None,
+    workspace_roots: tuple[str, ...] = (),
 ) -> bool:
-    """Remove only one exact tenant/session Harness workspace.
+    """Remove exact tenant/session paths from the persisted snapshot and legacy compatibility roots.
 
     Parent symlinks are rejected so cleanup can never traverse a redirected
-    ``harness_workspaces`` or tenant directory. A symlink at the exact session
-    path is unlinked without touching its target.
+    workspace or tenant directory. A symlink at an exact session path is
+    unlinked without touching its target.
     """
 
-    session_path = harness_session_workspace_path(
+    removed = False
+    for session_path in harness_session_workspace_candidates(
         tenant_id=tenant_id,
         session_id=session_id,
         db=db,
-    )
+        workspace_roots=workspace_roots,
+    ):
+        removed = _remove_harness_session_workspace_path(session_path) or removed
+    return removed
+
+
+def _remove_harness_session_workspace_path(session_path: Path) -> bool:
+    """Remove one exact session path while leaving a symlink target and sibling sessions untouched."""
+
     harness_root = session_path.parents[1]
     tenant_path = session_path.parent
 

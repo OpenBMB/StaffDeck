@@ -23,7 +23,10 @@ from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
 from app.core.capability_manifest import CapabilityManifestBuilder
-from app.core.harness_session_cleanup import harness_task_workspace_path
+from app.core.harness_session_cleanup import (
+    HarnessWorkspaceArtifactConflictError,
+    open_harness_task_artifact,
+)
 from app.core.harness_turn_store import HarnessTurnStore
 from app.core.slash_commands import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
@@ -31,8 +34,8 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
-    HarnessTurnRecord,
     HarnessTaskFrameRecord,
+    HarnessTurnRecord,
     HumanHandoffRequest,
     Message,
     MessageFeedback,
@@ -48,7 +51,6 @@ from app.feedback import enqueue_feedback_analysis
 from app.harness import (
     HarnessArtifactAccessError,
     normalize_harness_artifact_path,
-    open_harness_artifact,
 )
 from app.llm import LLMClient, LLMError
 from app.observability.spans import (
@@ -71,12 +73,12 @@ from app.session.cleanup import (
     remove_chat_session_workspace,
 )
 from app.session.helpers import public_session
+from app.session.message_read import message_read
 from app.session.message_visibility import (
     internal_message_turn_ids,
     visible_message_content,
     visible_message_rows,
 )
-from app.session.message_read import message_read
 from app.session.origin import pilotdeck_origin_session_ids
 from app.session.session_schema import (
     ChatAttachmentRead,
@@ -2130,11 +2132,18 @@ def delete_chat_session(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> dict[str, str]:
+    """Delete one user's chat session and then remove its captured Harness workspace roots."""
+
     _ensure_request_tenant(tenant_id, current_user)
     row = _get_user_chat_session(db, tenant_id, current_user.id, session_id)
-    purge_chat_session_records(db, row)
+    harness_cleanup = purge_chat_session_records(db, row)
     db.commit()
-    remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
+    remove_chat_session_workspace(
+        tenant_id=tenant_id,
+        session_id=session_id,
+        db=db,
+        workspace_roots=harness_cleanup.workspace_roots,
+    )
     return {"status": "deleted"}
 
 
@@ -2211,14 +2220,12 @@ def download_harness_artifact(
 
     opened = None
     try:
-        opened = open_harness_artifact(
-            harness_task_workspace_path(
-                tenant_id=tenant_id,
-                session_id=session_id,
-                task_frame_id=task_frame_id,
-                db=db,
-            ),
-            path,
+        opened, _workspace_root = open_harness_task_artifact(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            task_frame_id=task_frame_id,
+            path=path,
+            db=db,
         )
         digest = opened.sha256()
         expected_digest = str(artifact.get("sha256") or "").strip().lower()
@@ -2229,6 +2236,10 @@ def download_harness_artifact(
         ):
             opened.close()
             raise HTTPException(status_code=409, detail="Artifact has changed")
+    except HarnessWorkspaceArtifactConflictError:
+        if opened is not None:
+            opened.close()
+        raise HTTPException(status_code=409, detail="Artifact location conflict") from None
     except (HarnessArtifactAccessError, OSError):
         if opened is not None:
             opened.close()

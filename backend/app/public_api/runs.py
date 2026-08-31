@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import mimetypes
 import re
-from typing import Any
 import threading
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
@@ -13,19 +13,22 @@ from starlette.background import BackgroundTask
 
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn
-from app.core.harness_session_cleanup import harness_task_workspace_path
+from app.core.harness_session_cleanup import (
+    HarnessWorkspaceArtifactConflictError,
+    open_harness_task_artifact,
+)
 from app.db import engine, get_session
 from app.db.models import (
+    AgentEvent,
     APIClient,
     APICredential,
     APIJob,
-    AgentEvent,
     HarnessInvocationRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
     Message,
 )
-from app.harness import HarnessArtifactAccessError, normalize_harness_artifact_path, open_harness_artifact
+from app.harness import HarnessArtifactAccessError, normalize_harness_artifact_path
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.idempotency import replay_idempotent_response, store_idempotent_response
@@ -34,13 +37,16 @@ from app.public_api.jobs import (
     ensure_not_cancelled,
     job_read,
     register_job_handler,
+    stream_job_events,
     update_job,
 )
-from app.public_api.jobs import stream_job_events
 from app.public_api.schemas import AgentRunCreate, PublicSessionCreate
-from app.public_api.sessions import create_public_session_row, ensure_public_agent, owned_public_session
+from app.public_api.sessions import (
+    create_public_session_row,
+    ensure_public_agent,
+    owned_public_session,
+)
 from app.session.session_schema import ChatAttachmentRead, ChatTurnRequest, ChatTurnResponse
-
 
 router = APIRouter(tags=["runs"])
 
@@ -148,6 +154,27 @@ def _latest_artifacts(
             if isinstance(artifact, dict):
                 artifacts.append(_redact(dict(artifact)))
     return artifacts[-100:]
+
+
+def _artifacts_for_run(db: Session, job: APIJob) -> list[dict[str, Any]]:
+    """Return only published artifacts correlated with one public API job's client turn."""
+
+    if not job.session_id:
+        return []
+    turn = db.exec(
+        select(HarnessTurnRecord).where(
+            HarnessTurnRecord.tenant_id == job.tenant_id,
+            HarnessTurnRecord.session_id == job.session_id,
+            HarnessTurnRecord.client_turn_id == job.id,
+        )
+    ).first()
+    return _latest_artifacts(
+        db,
+        job.tenant_id,
+        job.session_id,
+        job.id,
+        turn.user_message_id if turn is not None else None,
+    )
 
 
 @register_job_handler("run")
@@ -536,7 +563,7 @@ def list_run_artifacts(
     row = _owned_run(db, principal, run_id)
     if not row.session_id:
         return {"data": []}
-    return {"data": _latest_artifacts(db, row.tenant_id, row.session_id)}
+    return {"data": _artifacts_for_run(db, row)}
 
 
 @router.get("/runs/{run_id}/artifacts/{task_frame_id}")
@@ -547,6 +574,8 @@ def download_run_artifact(
     principal: PublicPrincipal = Depends(require_scopes("runs:read")),
     db: Session = Depends(get_session),
 ) -> StreamingResponse:
+    """Download one run-scoped artifact after bounded-root and publication-integrity validation."""
+
     row = _owned_run(db, principal, run_id)
     if not row.session_id:
         raise PublicAPIError(404, "ARTIFACT_NOT_FOUND", "Artifact not found.")
@@ -557,7 +586,7 @@ def download_run_artifact(
     artifact = next(
         (
             item
-            for item in _latest_artifacts(db, row.tenant_id, row.session_id)
+            for item in _artifacts_for_run(db, row)
             if item.get("type") == "workspace_file"
             and str(item.get("task_frame_id") or "") == task_frame_id
             and item.get("path") == normalized
@@ -566,17 +595,35 @@ def download_run_artifact(
     )
     if not artifact:
         raise PublicAPIError(404, "ARTIFACT_NOT_FOUND", "Artifact not found.")
+    opened = None
     try:
-        opened = open_harness_artifact(
-            harness_task_workspace_path(
-                tenant_id=row.tenant_id,
-                session_id=row.session_id,
-                task_frame_id=task_frame_id,
-                db=db,
-            ),
-            normalized,
+        opened, _workspace_root = open_harness_task_artifact(
+            tenant_id=row.tenant_id,
+            session_id=row.session_id,
+            task_frame_id=task_frame_id,
+            path=normalized,
+            db=db,
         )
+        digest = opened.sha256()
+        expected_digest = str(artifact.get("sha256") or "").strip().lower()
+        expected_size = artifact.get("size")
+        if (
+            (expected_digest and expected_digest != digest.lower())
+            or (isinstance(expected_size, int) and expected_size != opened.size)
+        ):
+            opened.close()
+            raise PublicAPIError(409, "ARTIFACT_CHANGED", "Artifact has changed.")
+    except HarnessWorkspaceArtifactConflictError as exc:
+        if opened is not None:
+            opened.close()
+        raise PublicAPIError(
+            409,
+            "ARTIFACT_LOCATION_CONFLICT",
+            "Artifact location is ambiguous.",
+        ) from exc
     except (HarnessArtifactAccessError, OSError) as exc:
+        if opened is not None:
+            opened.close()
         raise PublicAPIError(404, "ARTIFACT_NOT_FOUND", "Artifact not found.") from exc
     filename = _safe_artifact_download_name(
         str(artifact.get("display_name") or opened.filename)

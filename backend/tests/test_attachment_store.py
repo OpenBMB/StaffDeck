@@ -94,3 +94,24 @@ def test_attachment_directory_rejects_intermediate_symlink_escape(
             user_id="user",
             attachment_id="attachment",
         )
+
+
+def test_attachment_directory_does_not_follow_the_harness_workspace_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Uploads must remain in application data when Harness uses a separate home workspace."""
+
+    home = tmp_path / "home"
+    app_data = tmp_path / "app-data"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(app_data))
+
+    directory = _attachment_directory(
+        tenant_id="tenant_demo",
+        user_id="user_demo",
+        attachment_id="attachment_demo",
+    )
+
+    assert directory.is_relative_to(app_data / "harness_uploads")
+    assert not (home / ".staffdeck" / "workspaces").exists()

@@ -450,6 +450,8 @@ def delete_agent(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
+    """Delete an employee and clean each deleted session's captured Harness workspace roots."""
+
     row = _get_agent(db, tenant_id, agent_id)
     _ensure_can_manage_agent(row, current_user)
     if row.is_overall:
@@ -491,9 +493,10 @@ def delete_agent(
             ChatSession.tenant_id == tenant_id, ChatSession.agent_id == row.id
         )
     ).all()
-    workspace_keys = [(session.tenant_id, session.id) for session in sessions]
+    workspace_cleanups = []
     for session in sessions:
-        purge_chat_session_records(db, session)
+        cleanup = purge_chat_session_records(db, session)
+        workspace_cleanups.append((session.tenant_id, session.id, cleanup.workspace_roots))
     # 团队成员关系同步清理,避免花名册/TL 会话悬挂在已删除员工上。
     memberships = db.exec(select(TeamMember).where(TeamMember.agent_id == row.id)).all()
     for membership in memberships:
@@ -525,8 +528,13 @@ def delete_agent(
         db.add(handoff)
     db.delete(row)
     db.commit()
-    for session_tenant_id, session_id in workspace_keys:
-        remove_chat_session_workspace(tenant_id=session_tenant_id, session_id=session_id, db=db)
+    for session_tenant_id, session_id, workspace_roots in workspace_cleanups:
+        remove_chat_session_workspace(
+            tenant_id=session_tenant_id,
+            session_id=session_id,
+            db=db,
+            workspace_roots=workspace_roots,
+        )
     return {"status": "deleted"}
 
 

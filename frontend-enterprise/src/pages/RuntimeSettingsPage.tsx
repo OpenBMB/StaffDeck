@@ -6,6 +6,7 @@ import type { EnterpriseAuthUser } from '../auth';
 import AccountApiKeyDialog from '../components/AccountApiKeyDialog';
 import type { UIConfigRead } from '../types';
 import { BrainCircuit, KeyRound, RotateCcw, ShieldCheck } from 'lucide-react';
+import { apiErrorMessage } from '../lib/apiErrorMessages';
 
 type UiConfigForm = {
   show_thinking_trace: boolean;
@@ -53,6 +54,7 @@ function formatDateOnly(value: string): string {
   return Number.isNaN(date.getTime()) ? value.slice(0, 10) : date.toISOString().slice(0, 10);
 }
 
+/** Renders tenant runtime controls, including the Harness-only workspace setting and effective root. */
 export default function RuntimeSettingsPage({ currentUser }: { currentUser: EnterpriseAuthUser }) {
   const [form, setForm] = useState<UiConfigForm>(DEFAULT_UI_CONFIG);
   const [loading, setLoading] = useState(false);
@@ -95,6 +97,8 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
   }, []);
 
   async function save() {
+    /** Saves runtime controls while preserving the compatible Harness workspace API field. */
+
     const reflectionMaxRounds = Number(form.reflection_max_rounds);
     const agentLoopMaxActions = Number(form.agent_loop_max_actions);
     if (Number.isNaN(reflectionMaxRounds) || Number.isNaN(agentLoopMaxActions)) {
@@ -139,7 +143,7 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
       }
       notify.success('运行设置已保存');
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '保存失败');
+      notify.error(apiErrorMessage(error, '保存失败'));
     } finally {
       setLoading(false);
     }
@@ -240,7 +244,7 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
         </CardContent>
       </Card>
       <Card className="editor-card settings-card">
-        <CardHeader><CardTitle className="flex items-center gap-[8px]"><ShieldCheck className="size-[16px]" />执行隔离与文件存储</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="flex items-center gap-[8px]"><ShieldCheck className="size-[16px]" />执行隔离与 Harness 工作区</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-[16px]">
           <SwitchRow label="启用 SRT 沙盒" checked={form.sandbox_enabled} onChange={(next) => update({ sandbox_enabled: next })} hint="仅管理员可修改。打开或关闭后保存将自动重启 StaffDeck。默认关闭。" />
           <div className={`whitespace-pre-line rounded-md border px-[12px] py-[10px] text-[12px] leading-[18px] ${sandboxStatus.sandbox_status === 'ready' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : sandboxStatus.sandbox_status === 'degraded' ? 'border-red-300 bg-red-50 text-red-900' : sandboxStatus.sandbox_status === 'disabled' ? 'border-slate-200 bg-slate-50 text-slate-700' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
@@ -249,7 +253,12 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
             {sandboxStatus.sandbox_status_remediation && <div>{sandboxStatus.sandbox_status_remediation}</div>}
           </div>
           {setupMessage && <div className="whitespace-pre-line rounded-md border border-amber-200 bg-amber-50 px-[12px] py-[10px] text-[12px] leading-[18px] text-amber-900">{setupMessage}</div>}
-          {!form.sandbox_enabled && <LabeledField label="文件存储目录" hint={`沙盒关闭时，附件、任务文件与生成产物写入此目录。留空使用默认目录${effectiveStoragePath ? `：${effectiveStoragePath}` : ''}。`}><Input value={form.harness_storage_path} onChange={(e) => update({ harness_storage_path: e.target.value })} placeholder={effectiveStoragePath || '/data/staffdeck-files'} /></LabeledField>}
+          <div className="rounded-md border border-[#dce8fb] bg-[#f7faff] px-[12px] py-[10px] text-[12px] leading-[18px] text-[#52637d]">
+            <div className="font-medium text-[#2f3442]">当前生效的 Harness 工作区</div>
+            <code className="mt-[4px] block break-all text-[11px]">{effectiveStoragePath || '—'}</code>
+          </div>
+          {!form.sandbox_enabled && <LabeledField label="Harness 工作区目录" hint="仅用于 Harness 的任务文件和生成产物；不会配置、迁移或改变数据库、日志、上传附件和运行配置。留空使用默认工作区。"><Input value={form.harness_storage_path} onChange={(e) => update({ harness_storage_path: e.target.value })} placeholder={effectiveStoragePath || '~/.staffdeck/workspaces'} /></LabeledField>}
+          {form.sandbox_enabled && <p className="rounded-md border border-amber-200 bg-amber-50 px-[12px] py-[10px] text-[12px] leading-[18px] text-amber-900">启用沙盒时，当前实际工作区以沙盒策略为准；上方路径仅显示当前生效位置。</p>}
           {form.sandbox_enabled && <LabeledField label="网络访问" hint="统一影响所有 Harness/SRT 执行。默认联网按运行环境放行；白名单只允许列出的域名；全拒绝禁止外网。">
             <select className="h-[36px] rounded-md border border-input bg-background px-[10px] text-[13px]" value={form.sandbox_network_mode} onChange={(e) => update({ sandbox_network_mode: e.target.value as UiConfigForm['sandbox_network_mode'] })}>
               <option value="all">默认联网</option><option value="allowlist">白名单</option><option value="deny">全拒绝</option>

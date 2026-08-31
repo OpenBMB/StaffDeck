@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -29,12 +30,16 @@ from app.core.capability_manifest import (
     tool_snapshot_digest,
 )
 from app.core.harness_agent import HarnessExecutionCancelled
+from app.core.harness_session_cleanup import (
+    HarnessWorkspaceArtifactConflictError,
+    harness_task_workspace_path,
+    open_harness_task_artifact,
+)
 from app.core.published_deliverables import (
     MAX_PUBLISHED_DELIVERABLES,
     find_published_deliverable,
     list_published_deliverables,
 )
-from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
 from app.core.tool_replay_policy import ToolReplayPolicy
 from app.db.models import (
@@ -60,15 +65,15 @@ from app.harness import (
     register_skill_script_tools,
     snapshot_harness_workspace,
 )
-from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
+from app.harness.execution_context import SANDBOX_WORKSPACE
+from app.harness.filesystem import ReadFileArguments, read_opened_harness_artifact
 from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import KnowledgeService
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
-
 
 _INLINE_JSON_TOOL_RESULT_MAX_CHARS = 2_000
 _INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
@@ -549,15 +554,28 @@ class HarnessCapabilityInvoker:
                 "PUBLISHED_DELIVERABLE_NOT_FOUND",
                 "当前会话中没有该历史交付物。",
             )
-        workspace_root = _workspace_root(
-            self.tenant_id,
-            self.session.id,
-            task_frame_id,
-            db=self.db,
-        )
+        read_arguments = {
+            key: arguments[key]
+            for key in ("path", "offset", "max_bytes", "continuation_token")
+            if key in arguments
+        }
+        try:
+            read_file_arguments = ReadFileArguments.model_validate(read_arguments)
+        except ValidationError:
+            return _failure(
+                "INVALID_ARGUMENTS",
+                "Tool arguments failed schema validation.",
+            )
+
         opened = None
         try:
-            opened = open_harness_artifact(workspace_root, path)
+            opened, _workspace_root = open_harness_task_artifact(
+                tenant_id=self.tenant_id,
+                session_id=self.session.id,
+                task_frame_id=task_frame_id,
+                path=path,
+                db=self.db,
+            )
             actual_sha256 = opened.sha256()
             expected_sha256 = str(artifact.get("sha256") or "").strip().lower()
             expected_size = artifact.get("size")
@@ -569,55 +587,34 @@ class HarnessCapabilityInvoker:
                     "PUBLISHED_DELIVERABLE_CHANGED",
                     "历史交付物在发布后已发生变化，拒绝读取。",
                 )
+            data = read_opened_harness_artifact(
+                self._file_context,
+                read_file_arguments,
+                opened,
+                path=str(artifact.get("path") or path),
+                sha256=actual_sha256,
+            )
+        except HarnessWorkspaceArtifactConflictError:
+            return _failure(
+                "PUBLISHED_DELIVERABLE_LOCATION_CONFLICT",
+                "历史交付物在多个兼容工作区位置同时存在，拒绝读取。",
+            )
         except (HarnessArtifactAccessError, OSError):
             return _failure(
                 "PUBLISHED_DELIVERABLE_NOT_FOUND",
                 "历史交付物不存在或无法安全读取。",
             )
+        except HarnessExecutionError as exc:
+            return _failure(
+                exc.error.code,
+                exc.error.message,
+                retryable=exc.error.retryable,
+                details=dict(exc.error.details),
+            )
         finally:
             if opened is not None:
                 opened.close()
 
-        read_arguments = {
-            key: arguments[key]
-            for key in ("path", "offset", "max_bytes", "continuation_token")
-            if key in arguments
-        }
-        read_context = HarnessToolContext(
-            run_id=self.run_id,
-            task_frame_id=task_frame_id,
-            tenant_id=self.tenant_id,
-            workspace_root=workspace_root,
-            limits=self._file_context.limits,
-            sandbox_enabled=self._file_context.sandbox_enabled,
-            sandbox_network_mode=self._file_context.sandbox_network_mode,
-            sandbox_allowed_domains=self._file_context.sandbox_allowed_domains,
-        )
-        result = self._file_executor.execute(
-            read_context,
-            HarnessToolCall(
-                call_id=new_id("hcall"),
-                name="read_file",
-                arguments=read_arguments,
-            ),
-        )
-        if not result.success:
-            return {
-                "success": False,
-                "error": {
-                    "code": (
-                        result.error.code
-                        if result.error
-                        else "PUBLISHED_DELIVERABLE_READ_FAILED"
-                    ),
-                    "message": (
-                        result.error.message if result.error else "历史交付物读取失败。"
-                    ),
-                    "retryable": bool(result.error.retryable) if result.error else False,
-                    "details": dict(result.error.details) if result.error else {},
-                },
-            }
-        data = dict(result.data or {})
         data.update(
             {
                 "task_frame_id": task_frame_id,
