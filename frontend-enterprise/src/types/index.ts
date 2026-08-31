@@ -323,12 +323,21 @@ export type GeneralSkillRunResponse = {
   reply: string;
 };
 
+export type ModelAuthMode = 'api_key' | 'chatgpt_subscription';
+
+export type CodexSubscriptionAccountRead = {
+  status: 'connected' | 'pending' | 'requires_login' | 'unavailable';
+  plan_type?: string | null;
+  message: string;
+};
+
 export type ModelConfigRead = {
   id: string;
   tenant_id: string;
   name: string;
   provider: string;
-  api_protocol: 'openai_chat_completions' | 'openai_responses' | 'anthropic_messages' | 'gemini_generate_content';
+  auth_mode: ModelAuthMode;
+  api_protocol: 'openai_chat_completions' | 'openai_responses' | 'anthropic_messages' | 'gemini_generate_content' | 'codex_app_server';
   base_url?: string;
   api_key_masked: string;
   model: string;

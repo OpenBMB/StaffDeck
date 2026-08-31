@@ -125,6 +125,18 @@ class APIIdempotencyRecord(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class CodexSubscriptionCredential(SQLModel, table=True):
+    """安装级 ChatGPT 订阅凭据；令牌 JSON 始终以加密形式保存。"""
+
+    __tablename__ = "codex_subscription_credentials"
+
+    id: str = Field(default="default", primary_key=True)
+    credential_encrypted: str
+    access_token_expires_at: datetime
+    plan_type: Optional[str] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class APIJob(SQLModel, table=True):
     __tablename__ = "api_jobs"
 
@@ -594,9 +606,10 @@ class ModelConfig(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     name: str
     provider: str = "openai_compatible"
+    auth_mode: str = Field(default="api_key", index=True)
     api_protocol: str = Field(default="openai_chat_completions", index=True)
     base_url: Optional[str] = None
-    api_key_encrypted: str
+    api_key_encrypted: str = ""
     model: str
     temperature: float = 0.2
     max_output_tokens: int = 8192

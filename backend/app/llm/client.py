@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator, Mapping
 import copy
 import hashlib
 import json
 import math
 import re
+from collections.abc import Iterator, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from openai import OpenAI
 from anthropic import Anthropic
+from openai import OpenAI
 
+from app.codex_subscription import get_codex_subscription_service
 from app.config import get_settings
 from app.db.models import ModelConfig
 from app.llm.model_protocols import ModelApiProtocol
@@ -25,6 +26,7 @@ from app.llm.protocol_drivers import (
     AnthropicMessagesDriver,
     CancellationToken,
     ChatCompletionsDriver,
+    CodexAppServerDriver,
     GeminiGenerateContentDriver,
     OpenAIResponsesDriver,
     ProtocolCallError,
@@ -90,22 +92,30 @@ class _CurrentStageText(str):
 
 class LLMClient:
     def __init__(self, model_config: ModelConfig):
+        """按模型协议构造 SDK 或本机 runtime 驱动；订阅协议不读取 API Key。"""
         try:
             protocol = ModelApiProtocol(
                 getattr(model_config, "api_protocol", "openai_chat_completions")
             )
         except ValueError as exc:
             raise LLMError("MODEL_PROTOCOL_UNSUPPORTED") from exc
-        api_key = decrypt_secret(model_config.api_key_encrypted)
-        if not api_key:
-            raise LLMError("Model API key is not configured")
+        api_key = ""
+        if protocol is not ModelApiProtocol.CODEX_APP_SERVER:
+            api_key = decrypt_secret(model_config.api_key_encrypted)
+            if not api_key:
+                raise LLMError("Model API key is not configured")
         self.timeout_seconds = (
             getattr(model_config, "timeout_seconds", None)
             or get_settings().model_api_timeout_seconds
             or DEFAULT_MODEL_API_TIMEOUT_SECONDS
         )
         self.base_url = str(model_config.base_url or "")
-        if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
+        if protocol is ModelApiProtocol.CODEX_APP_SERVER:
+            self.client = None
+            self.driver = CodexAppServerDriver(
+                get_codex_subscription_service().create_session,
+            )
+        elif protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
             self.client = OpenAI(
                 api_key=api_key,
                 base_url=self.base_url,
@@ -517,6 +527,7 @@ class LLMClient:
     ) -> (
         ChatCompletionsDriver
         | OpenAIResponsesDriver
+        | CodexAppServerDriver
         | AnthropicMessagesDriver
         | GeminiGenerateContentDriver
     ):
@@ -531,6 +542,10 @@ class LLMClient:
                     self.base_url,
                     getattr(self, "api_key", ""),
                     self.model,
+                )
+            elif protocol is ModelApiProtocol.CODEX_APP_SERVER:
+                driver = CodexAppServerDriver(
+                    get_codex_subscription_service().create_session,
                 )
             elif protocol is ModelApiProtocol.OPENAI_RESPONSES:
                 driver = OpenAIResponsesDriver(self.client)

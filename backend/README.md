@@ -29,6 +29,15 @@ database URLs are not a supported deployment configuration.
 sets the local single-port origin by default and can add a public tunnel origin with
 `PUBLIC_APP_ORIGIN`.
 
+## ChatGPT Subscription Runtime
+
+ChatGPT subscription models use the local Codex CLI's `app-server` runtime. Install and sign in
+to Codex on the same machine, then set `CODEX_SUBSCRIPTION_COMMAND` only when `codex` is not
+already on the service process `PATH`. StaffDeck resolves that command when a session starts and
+does not store ChatGPT OAuth codes, access tokens, refresh tokens, or subscription credentials.
+Signing out from the model configuration signs the local Codex CLI out of ChatGPT and can affect
+other local applications that use the same Codex login.
+
 ## Agent process sandbox
 
 Commands exposed by the Harness are always executed through an OS process

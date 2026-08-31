@@ -13,6 +13,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.specify/
 .mypy_cache/
 .venv/
 venv/

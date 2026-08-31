@@ -10,9 +10,11 @@ from sqlmodel import Session
 
 from app.db.models import ModelConfig
 from app.llm.model_protocols import (
+    ModelAuthMode,
     ModelApiProtocol,
     current_protocol_options,
     model_config_fingerprint,
+    resolve_auth_mode,
 )
 
 
@@ -31,6 +33,7 @@ class ResolvedModelConfig:
     config_revision: int
     security_revision: int
     purpose: Literal["runtime", "verification"]
+    auth_mode: ModelAuthMode = ModelAuthMode.API_KEY
     timeout_seconds: float | None = None
 
 
@@ -99,6 +102,7 @@ def _snapshot(
         config_revision=row.config_revision,
         security_revision=row.security_revision,
         purpose=purpose,
+        auth_mode=resolve_auth_mode(getattr(row, "auth_mode", None)),
         timeout_seconds=None,
     )
 
@@ -112,6 +116,7 @@ def _fingerprint(row: ModelConfig) -> str:
         key_revision=row.key_revision,
         protocol_options=current_protocol_options(row.protocol_options_json, protocol),
         security_revision=row.security_revision,
+        auth_mode=getattr(row, "auth_mode", ModelAuthMode.API_KEY),
     )
 
 
@@ -173,6 +178,7 @@ def snapshot_model_config(
         ),
         config_revision=getattr(model_config, "config_revision", 1),
         security_revision=getattr(model_config, "security_revision", 1),
+        auth_mode=resolve_auth_mode(getattr(model_config, "auth_mode", None)),
         timeout_seconds=getattr(model_config, "timeout_seconds", None),
     )
 

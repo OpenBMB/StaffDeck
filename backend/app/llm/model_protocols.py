@@ -15,13 +15,30 @@ class ModelApiProtocol(StrEnum):
     OPENAI_RESPONSES = "openai_responses"
     ANTHROPIC_MESSAGES = "anthropic_messages"
     GEMINI_GENERATE_CONTENT = "gemini_generate_content"
+    CODEX_APP_SERVER = "codex_app_server"
+
+
+class ModelAuthMode(StrEnum):
+    API_KEY = "api_key"
+    CHATGPT_SUBSCRIPTION = "chatgpt_subscription"
 
 
 LEGACY_OPENAI_PROVIDER = "openai_compatible"
 
 
 def available_model_protocols() -> list[str]:
-    return [protocol.value for protocol in ModelApiProtocol]
+    return [
+        protocol.value
+        for protocol in ModelApiProtocol
+        if protocol is not ModelApiProtocol.CODEX_APP_SERVER
+    ]
+
+
+def resolve_auth_mode(auth_mode: str | None) -> ModelAuthMode:
+    try:
+        return ModelAuthMode(auth_mode or ModelAuthMode.API_KEY)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="MODEL_AUTH_MODE_UNSUPPORTED") from exc
 
 
 def resolve_api_protocol(api_protocol: str | None, provider: str | None) -> ModelApiProtocol:
@@ -71,6 +88,7 @@ def model_config_fingerprint(
     key_revision: int,
     protocol_options: dict[str, Any],
     security_revision: int,
+    auth_mode: str = ModelAuthMode.API_KEY,
 ) -> str:
     payload = {
         "fingerprint_version": 1,
@@ -80,6 +98,7 @@ def model_config_fingerprint(
         "key_revision": key_revision,
         "protocol_options": protocol_options,
         "security_revision": security_revision,
+        "auth_mode": auth_mode,
     }
     canonical = json.dumps(
         payload,
