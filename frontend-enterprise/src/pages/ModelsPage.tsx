@@ -8,21 +8,10 @@ import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { Paginator } from '@/components/Paginator';
 import { StatCard } from '@/components/StatCard';
 import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-  Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Switch,
-  Textarea,
 } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
@@ -39,24 +28,15 @@ import IconRefresh from '../assets/icons/refresh.svg?react';
 import IconSearch from '../assets/icons/search.svg?react';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { useClientPagination } from '../hooks/useClientPagination';
-import type { ModelConfigRead } from '../types';
+import type { ModelAuthMode, ModelConfigRead } from '../types';
 import { OPEN_MODEL_CREATE_EVENT } from '@/components/QuickStartGuide';
+import ModelSetupWizard from './models/ModelSetupWizard';
+import ModelEditDialog from './models/ModelEditDialog';
+import type { ApiKeyProtocol } from './models/channelPresets';
+import { useCodexSubscriptionAccount } from './models/useCodexSubscriptionAccount';
 
 const MODEL_PAGE_SIZE = 8;
 const MODEL_TEST_UI_TIMEOUT_MS = 100_000;
-
-type ModelForm = {
-  name: string;
-  api_protocol: 'openai_chat_completions' | 'openai_responses' | 'anthropic_messages' | 'gemini_generate_content';
-  base_url: string;
-  model: string;
-  api_key: string;
-  temperature: string;
-  max_output_tokens: string;
-  extra_body: string;
-  is_default: boolean;
-  enabled: boolean;
-};
 
 export type ModelProviderErrorDetail = {
   code: string;
@@ -77,24 +57,29 @@ type ModelTestResponse = {
   error?: ModelProviderErrorDetail | null;
 };
 
-const BLANK_MODEL_FORM: ModelForm = {
-  name: '',
-  api_protocol: 'openai_chat_completions',
-  base_url: '',
-  model: '',
-  api_key: '',
-  temperature: '0.2',
-  max_output_tokens: '8192',
-  extra_body: '{}',
-  is_default: false,
-  enabled: true,
+const SUBSCRIPTION_PROVIDER_USER_MESSAGES: Record<string, string> = {
+  MODEL_SUBSCRIPTION_ACCESS_DENIED: '当前 ChatGPT 订阅无权使用此模型，请检查订阅权益或模型名称。',
+  MODEL_SUBSCRIPTION_AUTH_FAILED: '本机 Codex 登录未完成，请重新连接 ChatGPT 订阅。',
+  MODEL_SUBSCRIPTION_AUTH_REQUIRED: '请先在本机 Codex 中登录 ChatGPT 订阅，再测试或启用此模型。',
+  MODEL_SUBSCRIPTION_BROWSER_UNAVAILABLE: '无法打开本机 Codex 登录页面，请检查桌面浏览器后重试。',
+  MODEL_SUBSCRIPTION_NETWORK_UNAVAILABLE: '暂时无法连接 ChatGPT 订阅服务，请检查网络后重试。',
+  MODEL_SUBSCRIPTION_QUOTA_EXCEEDED: 'ChatGPT 订阅额度暂不可用，请稍后重试。',
+  MODEL_SUBSCRIPTION_REFRESH_FAILED: 'ChatGPT 授权已失效，请在浏览器中重新连接订阅。',
+  MODEL_SUBSCRIPTION_RUNTIME_FAILED: '本机 Codex runtime 未能完成模型请求，请检查登录状态和模型名称后重试。',
+  MODEL_SUBSCRIPTION_RUNTIME_PROTOCOL_ERROR: '本机 Codex runtime 返回了无法识别的结果，请升级 Codex 后重试。',
+  MODEL_SUBSCRIPTION_RUNTIME_TIMEOUT: '本机 Codex runtime 请求超时，请稍后重试。',
+  MODEL_SUBSCRIPTION_RUNTIME_UNAVAILABLE: '未找到可用的本机 Codex runtime，请安装并登录 Codex 后重试。',
 };
-
+export function modelAuthModeLabel(authMode: ModelAuthMode | string | null | undefined): string {
+  return authMode === 'chatgpt_subscription' ? 'ChatGPT 订阅（Codex）' : 'API Key';
+}
 export function modelProviderErrorMessage(
   error: ModelProviderErrorDetail | null | undefined,
   fallback: string,
 ): string {
   if (!error) return fallback;
+  const subscriptionMessage = SUBSCRIPTION_PROVIDER_USER_MESSAGES[error.code];
+  if (subscriptionMessage) return subscriptionMessage;
   const parts = [error.code || fallback];
   if (typeof error.upstream_status === 'number') parts.push(`HTTP ${error.upstream_status}`);
   if (error.provider_code) parts.push(`上游错误码：${error.provider_code}`);
@@ -104,7 +89,55 @@ export function modelProviderErrorMessage(
   return parts.join('；');
 }
 
-function providerErrorFromApiError(error: ApiError): ModelProviderErrorDetail | null {
+// 把上游诊断字段（HTTP 状态、上游错误码/消息、原始响应体、Request ID）整理成一段纯文本，
+// 只用于「查看详情」这类默认折叠的交互，不进入主提示文案。
+export function modelProviderDiagnosticText(
+  error: ModelProviderErrorDetail | null | undefined,
+): string | null {
+  if (!error) return null;
+  const parts: string[] = [];
+  if (typeof error.upstream_status === 'number') parts.push(`HTTP 状态码：${error.upstream_status}`);
+  if (error.provider_code) parts.push(`上游错误码：${error.provider_code}`);
+  if (error.provider_message) parts.push(`上游消息：${error.provider_message}`);
+  if (error.upstream_body) parts.push(`上游响应：${error.upstream_body}`);
+  if (error.request_id) parts.push(`Request ID：${error.request_id}`);
+  return parts.length ? parts.join('\n') : null;
+}
+
+// 折叠的诊断详情展示：默认只显示友好文案，点击「查看详情」才展开原始诊断文本；
+// 诊断文本按纯文本渲染（React children 天然转义），不使用 dangerouslySetInnerHTML。
+function ModelErrorToast({ message, diagnostic }: { message: string; diagnostic: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <span className="flex flex-col items-start gap-[6px]">
+      <span>{message}</span>
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        className="text-[12px] underline underline-offset-2 opacity-80 hover:opacity-100"
+      >
+        {expanded ? '收起详情' : '查看详情'}
+      </button>
+      {expanded && (
+        <pre className="max-h-[160px] w-full max-w-[420px] overflow-auto whitespace-pre-wrap break-all rounded-[8px] bg-black/5 p-[8px] text-[11px] text-[#464c5e]">
+          {diagnostic}
+        </pre>
+      )}
+    </span>
+  );
+}
+
+// 组装模型上游错误的 toast 内容：有可展示的诊断详情就附加折叠区域，否则只返回友好文案。
+export function toastContentForProviderError(
+  error: ModelProviderErrorDetail | null | undefined,
+  fallback: string,
+): ReactNode {
+  const message = modelProviderErrorMessage(error, fallback);
+  const diagnostic = modelProviderDiagnosticText(error);
+  return diagnostic ? <ModelErrorToast message={message} diagnostic={diagnostic} /> : message;
+}
+
+export function providerErrorFromApiError(error: ApiError): ModelProviderErrorDetail | null {
   try {
     const payload = JSON.parse(error.body) as { detail?: unknown };
     if (!payload.detail || typeof payload.detail !== 'object' || Array.isArray(payload.detail)) return null;
@@ -125,6 +158,7 @@ export function modelActionError(error: unknown, fallback: string): string {
 }
 const MODEL_CONFIGS_UPDATED_EVENT = 'ultrarag-enterprise-model-configs-updated';
 
+/** 展示当前租户的模型配置，并复用统一向导与订阅账号状态。 */
 export default function ModelsPage({
   currentUser,
   onLogout,
@@ -135,19 +169,21 @@ export default function ModelsPage({
   const [rows, setRows] = useState<ModelConfigRead[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
-  const [selected, setSelected] = useState<ModelConfigRead | null>(null);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveStage, setSaveStage] = useState<'saving' | 'testing' | null>(null);
+  const [editingModel, setEditingModel] = useState<ModelConfigRead | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ModelConfigRead | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [subscriptionLogoutConfirmOpen, setSubscriptionLogoutConfirmOpen] = useState(false);
   const testingModelIdsRef = useRef(new Set<string>());
   const [testingModelIds, setTestingModelIds] = useState<Set<string>>(new Set());
-  const [form, setForm] = useState<ModelForm>(BLANK_MODEL_FORM);
-  const [availableProtocols, setAvailableProtocols] = useState<ModelForm['api_protocol'][]>(['openai_chat_completions']);
-
-  const updateForm = <K extends keyof ModelForm>(key: K, value: ModelForm[K]) =>
-    setForm((prev) => ({ ...prev, [key]: value }));
+  const [availableProtocols, setAvailableProtocols] = useState<ApiKeyProtocol[]>(['openai_chat_completions']);
+  const {
+    account: subscriptionAccount,
+    loading: subscriptionLoading,
+    startLogin: startSubscriptionLogin,
+    cancelLogin: cancelSubscriptionLogin,
+    logout: logoutSubscription,
+  } = useCodexSubscriptionAccount({ tenantId: TENANT_ID });
 
   const load = (showLoading = true) => {
     if (showLoading) setLoading(true);
@@ -166,12 +202,12 @@ export default function ModelsPage({
   useEffect(() => {
     void load();
     void api
-      .get<{ protocols: ModelForm['api_protocol'][] }>(`/api/enterprise/model-configs/protocols?tenant_id=${TENANT_ID}`)
+      .get<{ protocols: ApiKeyProtocol[] }>(`/api/enterprise/model-configs/protocols?tenant_id=${TENANT_ID}`)
       .then((result) => setAvailableProtocols(result.protocols));
   }, []);
 
   useEffect(() => {
-    const openCreate = () => createBlank();
+    const openCreate = () => setWizardOpen(true);
     window.addEventListener(OPEN_MODEL_CREATE_EVENT, openCreate);
     return () => window.removeEventListener(OPEN_MODEL_CREATE_EVENT, openCreate);
   }, []);
@@ -180,7 +216,7 @@ export default function ModelsPage({
     const keyword = searchText.trim().toLowerCase();
     if (!keyword) return rows;
     return rows.filter((row) =>
-      [row.name, row.model, row.api_protocol, row.base_url || ''].some((value) =>
+      [row.name, row.model, row.api_protocol, row.base_url || '', modelAuthModeLabel(row.auth_mode)].some((value) =>
         (value || '').toLowerCase().includes(keyword),
       ),
     );
@@ -191,100 +227,15 @@ export default function ModelsPage({
   const enabledCount = rows.filter((item) => item.enabled).length;
   const defaultRow = rows.find((item) => item.is_default);
   const providerCount = new Set(rows.map((item) => item.api_protocol).filter(Boolean)).size;
-
-  function edit(row: ModelConfigRead) {
-    setSelected(row);
-    setForm({
-      name: row.name,
-      api_protocol: row.api_protocol,
-      base_url: row.base_url || '',
-      model: row.model,
-      api_key: '',
-      temperature: String(row.temperature),
-      max_output_tokens: String(row.max_output_tokens),
-      extra_body: JSON.stringify(row.extra_body || {}, null, 2),
-      is_default: row.is_default,
-      enabled: row.enabled,
-    });
-    setEditorOpen(true);
+  /** 打开退出本机 Codex 的影响确认。 */
+  function requestSubscriptionLogout() {
+    setSubscriptionLogoutConfirmOpen(true);
   }
 
-  function createBlank() {
-    setSelected(null);
-    setForm(BLANK_MODEL_FORM);
-    setEditorOpen(true);
-  }
-
-  function closeEditor() {
-    if (saving) return;
-    setEditorOpen(false);
-    setSelected(null);
-  }
-
-  async function save() {
-    const name = form.name.trim();
-    const model = form.model.trim();
-    if (!name || !model) {
-      notify.error('请填写名称和 Model');
-      return;
-    }
-    const temperature = Number(form.temperature);
-    const maxOutputTokens = Number(form.max_output_tokens);
-    if (Number.isNaN(temperature) || Number.isNaN(maxOutputTokens)) {
-      notify.error('Temperature 与 Max Tokens 必须是数字');
-      return;
-    }
-    let extraBody: Record<string, unknown>;
-    try {
-      const parsed = JSON.parse(form.extra_body.trim() || '{}') as unknown;
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('not an object');
-      }
-      extraBody = parsed as Record<string, unknown>;
-    } catch {
-      notify.error('额外参数必须是合法的 JSON 对象');
-      return;
-    }
-    const payload = {
-      tenant_id: TENANT_ID,
-      name,
-      api_protocol: form.api_protocol,
-      base_url: form.base_url.trim() || undefined,
-      model,
-      temperature,
-      max_output_tokens: maxOutputTokens,
-      extra_body: extraBody,
-      is_default: form.enabled && form.is_default,
-      enabled: form.enabled,
-      api_key: form.api_key || undefined,
-    };
-    setSaving(true);
-    setSaveStage(form.enabled ? 'testing' : 'saving');
-    try {
-      const verifyQuery = form.enabled ? '?verify_before_save=true' : '';
-      if (selected) {
-        await api.put<ModelConfigRead>(
-          `/api/enterprise/model-configs/${selected.id}${verifyQuery}`,
-          payload,
-        );
-      } else {
-        await api.post<ModelConfigRead>(`/api/enterprise/model-configs${verifyQuery}`, payload);
-      }
-      if (form.enabled) {
-        notify.success(form.is_default ? '测试通过，已启用并设为默认模型' : '测试通过，已启用');
-      } else {
-        notify.success('已保存');
-      }
-      setEditorOpen(false);
-      setSelected(null);
-      setForm(BLANK_MODEL_FORM);
-      await load();
-    } catch (error) {
-      notify.error(modelActionError(error, '保存失败'));
-    } finally {
-      setSaving(false);
-      setSaveStage(null);
-    }
+  /** 确认退出后关闭提示，并交由共享订阅账号逻辑执行。 */
+  function confirmSubscriptionLogout() {
+    setSubscriptionLogoutConfirmOpen(false);
+    void logoutSubscription();
   }
 
   async function confirmDelete() {
@@ -360,7 +311,7 @@ export default function ModelsPage({
           {isTesting ? <LoaderCircle className="size-3.5 animate-spin" /> : <IconMore className="size-3.5" />}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className={MENU_CONTENT_CLASS}>
-          <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={isTesting} onSelect={() => edit(row)}>
+          <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={isTesting} onSelect={() => setEditingModel(row)}>
             <IconEdit />
             编辑
           </DropdownMenuItem>
@@ -403,23 +354,32 @@ export default function ModelsPage({
             {row.is_default && <StatusBadge tone="green">默认</StatusBadge>}
           </span>
           <span className="truncate text-[#858b9c]">
-            {row.enabled ? '已启用' : '已停用'} · {row.api_protocol}
+            {row.enabled ? '已启用' : '已停用'} · {modelAuthModeLabel(row.auth_mode)}
           </span>
         </div>
       ),
     },
     { key: 'model', title: '模型', width: 180, render: (row) => <span className="block truncate">{row.model}</span> },
     {
-      key: 'base_url',
-      title: 'Base URL',
+      key: 'auth_mode',
+      title: '认证方式',
       className: 'whitespace-normal',
-      render: (row) => <span className="line-clamp-1 wrap-break-word text-[#858b9c]">{row.base_url || '-'}</span>,
+      render: (row) => (
+        <div className="flex min-w-0 flex-col gap-[2px]">
+          <span className="line-clamp-1 wrap-break-word text-[#464c5e]">{modelAuthModeLabel(row.auth_mode)}</span>
+          <span className="line-clamp-1 wrap-break-word text-[#858b9c]">
+            {row.auth_mode === 'chatgpt_subscription' ? '本机 Codex runtime' : row.base_url || '未设置 Base URL'}
+          </span>
+        </div>
+      ),
     },
     {
       key: 'api_key',
       title: 'API Key',
       width: 180,
-      render: (row) => <span className="block truncate font-mono text-[#858b9c]">{row.api_key_masked || '-'}</span>,
+      render: (row) => <span className="block truncate font-mono text-[#858b9c]">
+        {row.auth_mode === 'chatgpt_subscription' ? '无需 API Key' : row.api_key_masked || '-'}
+      </span>,
     },
     {
       key: 'actions',
@@ -442,14 +402,14 @@ export default function ModelsPage({
             {row.is_default && <StatusBadge tone="green">默认</StatusBadge>}
           </span>
           <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">
-            {row.enabled ? '已启用' : '已停用'} · {row.api_protocol}
+            {row.enabled ? '已启用' : '已停用'} · {modelAuthModeLabel(row.auth_mode)}
           </span>
         </div>
         {renderActions(row)}
       </div>
       <p className="mt-[8px] line-clamp-1 wrap-break-word text-[12px] text-[#858b9c]">{row.model}</p>
       <p className="mt-[4px] line-clamp-1 wrap-break-word font-mono text-[12px] text-[#858b9c]">
-        {row.api_key_masked || '-'}
+        {row.auth_mode === 'chatgpt_subscription' ? 'ChatGPT 订阅' : row.api_key_masked || '-'}
       </p>
     </article>
   );
@@ -470,7 +430,7 @@ export default function ModelsPage({
         </UIButton>
         <UIButton
           data-guide-target="models-create"
-          onClick={createBlank}
+          onClick={() => setWizardOpen(true)}
           className="h-[34px] gap-[4px] rounded-[10px] bg-[#18181a] px-[20px] text-[12px] font-normal text-white hover:bg-[#303030]"
         >
           <IconAdd className="size-[14px]" />
@@ -482,7 +442,11 @@ export default function ModelsPage({
         <div className="flex flex-wrap items-stretch gap-[20px]" aria-label="模型统计">
           <StatCard label="模型" value={rows.length} />
           <StatCard label="已启用" value={enabledCount} tone="green" />
-          <StatCard label="默认模型" value={defaultRow?.name || '-'} valueClassName="text-[18px] leading-[26px]" />
+          <StatCard
+            label="默认模型"
+            value={<span title={defaultRow?.name || undefined}>{defaultRow?.name || '-'}</span>}
+            valueClassName="min-w-0 flex-1 shrink truncate text-[18px] leading-[26px]"
+          />
           <StatCard label="API 协议" value={providerCount} />
         </div>
 
@@ -547,130 +511,38 @@ export default function ModelsPage({
         </div>
       </div>
 
-      <Dialog open={editorOpen} onOpenChange={(next) => !next && closeEditor()}>
-        <DialogContent
-          aria-describedby={undefined}
-          className="flex max-h-[calc(100dvh-4rem)] w-[calc(100%-2rem)] flex-col gap-[16px] overflow-hidden rounded-[14px] px-[20px] py-[16px] sm:max-w-[640px]"
-        >
-          <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
-            <IconModels className="size-[14px] shrink-0" />
-            <DialogTitle className="min-w-0 truncate text-[14px] font-normal leading-none text-[#757f9c]">
-              {selected ? `编辑模型：${selected.name}` : '新建模型'}
-            </DialogTitle>
-          </div>
+      <ModelSetupWizard
+        open={wizardOpen}
+        tenantId={TENANT_ID}
+        onOpenChange={setWizardOpen}
+        onCreated={(model, options) => {
+          void load();
+          notify.success(
+            options?.tested
+              ? `模型「${model.name}」已创建并通过测试`
+              : `模型「${model.name}」已保存为草稿，点击「测试」后即可启用`,
+          );
+        }}
+        availableProtocols={availableProtocols}
+        subscriptionAccount={subscriptionAccount}
+        subscriptionLoading={subscriptionLoading}
+        onStartSubscriptionLogin={startSubscriptionLogin}
+        onCancelSubscriptionLogin={cancelSubscriptionLogin}
+        onRequestSubscriptionLogout={requestSubscriptionLogout}
+      />
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-[12px]">
-            <div className="grid grid-cols-1 gap-[14px] sm:grid-cols-2">
-              <LabeledField label="名称">
-                <Input value={form.name} placeholder="例如 GPT-4o" onChange={(event) => updateForm('name', event.target.value)} />
-              </LabeledField>
-              <LabeledField label="API 协议">
-                <Select
-                  value={form.api_protocol}
-                  onValueChange={(value) => updateForm('api_protocol', value as ModelForm['api_protocol'])}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {availableProtocols.includes('openai_chat_completions') && (
-                      <SelectItem value="openai_chat_completions">OpenAI Chat Completions</SelectItem>
-                    )}
-                    {availableProtocols.includes('openai_responses') && (
-                      <SelectItem value="openai_responses">OpenAI Responses API</SelectItem>
-                    )}
-                    {availableProtocols.includes('anthropic_messages') && (
-                      <SelectItem value="anthropic_messages">Anthropic Messages</SelectItem>
-                    )}
-                    {availableProtocols.includes('gemini_generate_content') && (
-                      <SelectItem value="gemini_generate_content">Gemini Generate Content</SelectItem>
-                    )}
-                  </SelectContent>
-                </Select>
-              </LabeledField>
-              <LabeledField label="Base URL">
-                <Input
-                  value={form.base_url}
-                  placeholder={form.api_protocol === 'openai_chat_completions' || form.api_protocol === 'openai_responses'
-                    ? 'https://llm-center.modelbest.cn/llm/v1'
-                    : 'https://llm-center.modelbest.cn/llm'}
-                  onChange={(event) => updateForm('base_url', event.target.value)}
-                />
-              </LabeledField>
-              <LabeledField label="Model">
-                <Input value={form.model} placeholder="例如 gpt-4o" onChange={(event) => updateForm('model', event.target.value)} />
-              </LabeledField>
-              <LabeledField label="API Key">
-                <Input
-                  type="password"
-                  value={form.api_key}
-                  placeholder={selected ? '不修改请留空' : 'sk-...'}
-                  onChange={(event) => updateForm('api_key', event.target.value)}
-                />
-              </LabeledField>
-              <div className="grid grid-cols-2 gap-[14px]">
-                <LabeledField label="Temperature">
-                  <Input
-                    type="number"
-                    min={0}
-                    max={form.api_protocol === 'anthropic_messages' ? 1 : 2}
-                    step={0.1}
-                    value={form.temperature}
-                    onChange={(event) => updateForm('temperature', event.target.value)}
-                  />
-                </LabeledField>
-                <LabeledField label="Max Tokens">
-                  <Input
-                    type="number"
-                    min={128}
-                    max={32000}
-                    value={form.max_output_tokens}
-                    onChange={(event) => updateForm('max_output_tokens', event.target.value)}
-                  />
-                </LabeledField>
-              </div>
-              {form.api_protocol === 'openai_chat_completions' && <div className="sm:col-span-2">
-                <LabeledField label="额外请求参数（extra_body JSON）">
-                  <Textarea
-                    rows={5}
-                    value={form.extra_body}
-                    placeholder={'{\n  "thinking": {\n    "type": "disabled"\n  }\n}'}
-                    className="min-h-[116px] resize-y font-mono text-[12px]"
-                    onChange={(event) => updateForm('extra_body', event.target.value)}
-                  />
-                </LabeledField>
-              </div>}
-            </div>
-            <div className="mt-[16px] flex flex-wrap items-center gap-[24px]">
-              <label className="flex cursor-pointer items-center gap-[8px]">
-                <Switch checked={form.is_default} onCheckedChange={(next) => updateForm('is_default', next)} />
-                <span className="text-[12px] font-medium text-[#464c5e]">设为默认</span>
-              </label>
-              <label className="flex cursor-pointer items-center gap-[8px]">
-                <Switch checked={form.enabled} onCheckedChange={(next) => updateForm('enabled', next)} />
-                <span className="text-[12px] font-medium text-[#464c5e]">启用</span>
-              </label>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-end gap-[8px] px-[12px]">
-            <UIButton
-              variant="outline"
-              disabled={saving}
-              onClick={closeEditor}
-              className="h-[32px] w-[80px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:border-[#e3e7f1] hover:bg-[#f6f6f6] hover:text-[#18181a]"
-            >
-              取消
-            </UIButton>
-            <UIButton
-              disabled={saving}
-              onClick={() => void save()}
-              className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030]"
-            >
-              {saving && <LoaderCircle className="size-[14px] animate-spin" />}
-              {saveStage === 'testing' ? '测试并保存中' : saving ? '保存中' : '保存'}
-            </UIButton>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ModelEditDialog
+        open={editingModel !== null}
+        selected={editingModel}
+        availableProtocols={availableProtocols}
+        subscriptionAccount={subscriptionAccount}
+        subscriptionLoading={subscriptionLoading}
+        onStartSubscriptionLogin={startSubscriptionLogin}
+        onCancelSubscriptionLogin={cancelSubscriptionLogin}
+        onRequestSubscriptionLogout={requestSubscriptionLogout}
+        onOpenChange={(open) => !open && setEditingModel(null)}
+        onSaved={() => void load()}
+      />
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
@@ -683,15 +555,17 @@ export default function ModelsPage({
         confirmText="删除"
         onConfirm={() => void confirmDelete()}
       />
-    </div>
-  );
-}
 
-function LabeledField({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="flex flex-col gap-[6px]">
-      <span className="text-[12px] font-medium text-[#464c5e]">{label}</span>
-      {children}
-    </label>
+      <ConfirmDialog
+        open={subscriptionLogoutConfirmOpen}
+        onOpenChange={setSubscriptionLogoutConfirmOpen}
+        loading={subscriptionLoading}
+        destructive={false}
+        title="退出本机 Codex？"
+        description="这会让本机 Codex 退出 ChatGPT。所有采用“ChatGPT 订阅（Codex）”的模型都会失去授权；同一台电脑上使用该 Codex 登录的其他应用也可能受影响。API Key 模型不受影响。"
+        confirmText="退出本机 Codex"
+        onConfirm={confirmSubscriptionLogout}
+      />
+    </div>
   );
 }

@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from dataclasses import dataclass
 import base64
 import binascii
 import json
 import re
-from types import SimpleNamespace
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from threading import Event
+from types import SimpleNamespace
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
+from app.codex_subscription import CodexSubscriptionError
 
 _DATA_URL = re.compile(r"^data:(image/(?:jpeg|png|gif|webp));base64,(.+)$", re.DOTALL)
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -111,6 +112,7 @@ class ChatCompletionsDriver:
 class OpenAIResponsesDriver:
     client: Any
     request_kind: str = "responses"
+    subscription_error_mapping: bool = False
 
     def observable_request(
         self,
@@ -130,7 +132,7 @@ class OpenAIResponsesDriver:
         except ProtocolCallError:
             raise
         except Exception as exc:
-            raise _protocol_call_error(exc) from exc
+            raise self._call_error(exc) from exc
         return _responses_completion(response)
 
     def stream(self, request: dict[str, Any]) -> Iterator[Any]:
@@ -141,7 +143,7 @@ class OpenAIResponsesDriver:
                 stream=True,
             )
         except Exception as exc:
-            raise _protocol_call_error(exc) from exc
+            raise self._call_error(exc) from exc
         response_id = None
         try:
             for event in events:
@@ -172,6 +174,8 @@ class OpenAIResponsesDriver:
                     error = _object_value(event, "error") or _object_value(
                         _object_value(event, "response"), "error"
                     )
+                    if self.subscription_error_mapping:
+                        raise _subscription_stream_error(error)
                     provider_code, provider_message = _provider_error_fields(error)
                     raise ProtocolCallError(
                         "MODEL_UPSTREAM_ERROR",
@@ -188,6 +192,188 @@ class OpenAIResponsesDriver:
             close = getattr(events, "close", None)
             if callable(close):
                 close()
+
+    def _call_error(self, exc: Exception) -> ProtocolCallError:
+        """将 ChatGPT 订阅上游错误映射为可执行的订阅提示，其余协议维持原分类。"""
+        if self.subscription_error_mapping:
+            return subscription_protocol_call_error(exc)
+        return _protocol_call_error(exc)
+
+
+@dataclass(frozen=True)
+class CodexAppServerDriver:
+    """将 StaffDeck 的模型请求映射为本机 Codex app-server 的 thread/turn 会话。"""
+
+    session_factory: Callable[[], Any]
+    request_kind: str = "codex.app_server"
+
+    def observable_request(
+        self,
+        request: dict[str, Any],
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        """返回不含认证数据的可观测 runtime 请求摘要。"""
+        return {
+            "model": request["model"],
+            "input": _codex_turn_prompt(request),
+            "stream": stream,
+        }
+
+    def complete(self, request: dict[str, Any]) -> Any:
+        """执行一个 runtime turn 并将最终 agent message 转换为标准 completion。"""
+        _raise_if_cancelled(request)
+        session = None
+        try:
+            session = self.session_factory()
+            turn_id = _start_codex_turn(session, request)
+            completed_turn = _wait_for_codex_turn(session, turn_id, request)
+            return SimpleNamespace(
+                id=turn_id,
+                provider_response=completed_turn,
+                usage=None,
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=_completed_codex_text(completed_turn)),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+        except CodexSubscriptionError as exc:
+            raise _codex_runtime_call_error(exc) from exc
+        finally:
+            if session is not None:
+                session.close()
+
+    def stream(self, request: dict[str, Any]) -> Iterator[Any]:
+        """逐个转发 runtime agent delta，并在完成 turn 后返回标准终态 chunk。"""
+        _raise_if_cancelled(request)
+
+        def iterate() -> Iterator[Any]:
+            session = None
+            try:
+                session = self.session_factory()
+                turn_id = _start_codex_turn(session, request)
+                while True:
+                    _raise_if_cancelled(request)
+                    notification = session.wait_for_notification()
+                    method = _object_value(notification, "method")
+                    params = _object_value(notification, "params")
+                    if not isinstance(params, dict):
+                        continue
+                    if params.get("turnId") not in {None, turn_id}:
+                        continue
+                    if method == "item/agentMessage/delta":
+                        delta = params.get("delta")
+                        if isinstance(delta, str) and delta:
+                            yield _stream_chunk(
+                                turn_id,
+                                text=delta,
+                                provider_event=notification,
+                            )
+                        continue
+                    if method != "turn/completed":
+                        continue
+                    completed_turn = params.get("turn")
+                    _require_completed_codex_turn(completed_turn, turn_id)
+                    yield _stream_chunk(
+                        turn_id,
+                        finish_reason="stop",
+                        provider_event=notification,
+                    )
+                    return
+            except CodexSubscriptionError as exc:
+                raise _codex_runtime_call_error(exc) from exc
+            finally:
+                if session is not None:
+                    session.close()
+
+        return iterate()
+
+
+def _codex_turn_prompt(request: dict[str, Any]) -> str:
+    """把标准聊天消息压缩为有角色边界的纯文本输入；空输入不能启动 runtime turn。"""
+    sections: list[str] = []
+    for message in request.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in {"system", "developer", "user", "assistant"}:
+            continue
+        content = _content_text(message.get("content"))
+        if content:
+            sections.append(f"[{role}]\n{content}")
+    if not sections:
+        raise ValueError("MODEL_REQUEST_EMPTY")
+    return "\n\n".join(sections)
+
+
+def _start_codex_turn(session: Any, request: dict[str, Any]) -> str:
+    """依次创建 runtime thread 和 turn，返回可用于过滤通知的稳定 turn ID。"""
+    thread_result = session.thread_start(str(request["model"]))
+    thread = _object_value(thread_result, "thread")
+    thread_id = _object_value(thread, "id")
+    if not isinstance(thread_id, str) or not thread_id:
+        raise CodexSubscriptionError("MODEL_SUBSCRIPTION_RUNTIME_PROTOCOL_ERROR")
+    turn_result = session.turn_start(thread_id, _codex_turn_prompt(request))
+    turn = _object_value(turn_result, "turn")
+    turn_id = _object_value(turn, "id")
+    if not isinstance(turn_id, str) or not turn_id:
+        raise CodexSubscriptionError("MODEL_SUBSCRIPTION_RUNTIME_PROTOCOL_ERROR")
+    return turn_id
+
+
+def _wait_for_codex_turn(
+    session: Any,
+    turn_id: str,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    """等待指定 turn 的完成通知；其他线程事件不会改变当前请求的结束状态。"""
+    while True:
+        _raise_if_cancelled(request)
+        notification = session.wait_for_notification()
+        if _object_value(notification, "method") != "turn/completed":
+            continue
+        params = _object_value(notification, "params")
+        if not isinstance(params, dict) or params.get("turnId") not in {None, turn_id}:
+            continue
+        turn = params.get("turn")
+        _require_completed_codex_turn(turn, turn_id)
+        return turn
+
+
+def _require_completed_codex_turn(turn: Any, expected_turn_id: str) -> None:
+    """确认 runtime 返回的是本次成功完成的 turn；失败或错配绝不伪造成正常回复。"""
+    if not isinstance(turn, dict) or turn.get("id") != expected_turn_id:
+        raise CodexSubscriptionError("MODEL_SUBSCRIPTION_RUNTIME_PROTOCOL_ERROR")
+    if turn.get("status") != "completed":
+        raise CodexSubscriptionError("MODEL_SUBSCRIPTION_RUNTIME_FAILED")
+
+
+def _completed_codex_text(turn: dict[str, Any]) -> str:
+    """从完成 turn 提取所有 agent message 文本；空文本保留给上层既有空响应处理。"""
+    items = turn.get("items")
+    if not isinstance(items, list):
+        return ""
+    return "".join(
+        item["text"]
+        for item in items
+        if isinstance(item, dict)
+        and item.get("type") == "agentMessage"
+        and isinstance(item.get("text"), str)
+    )
+
+
+def _codex_runtime_call_error(exc: CodexSubscriptionError) -> ProtocolCallError:
+    """把本机运行时安全错误码映射为 LLMClient 可识别的协议错误。"""
+    return ProtocolCallError(
+        exc.code,
+        retryable=exc.code
+        in {
+            "MODEL_SUBSCRIPTION_RUNTIME_UNAVAILABLE",
+            "MODEL_SUBSCRIPTION_RUNTIME_TIMEOUT",
+        },
+    )
 
 
 @dataclass(frozen=True)
@@ -487,6 +673,19 @@ def _gemini_endpoint(
     return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query), ""))
 
 
+def _gemini_list_endpoint(base_url: str, page_token: str | None = None) -> str:
+    parsed = urlsplit(base_url.rstrip("/"))
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/v1beta"):
+        path = f"{path}/v1beta"
+    path = f"{path}/models"
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query.append(("pageSize", "200"))
+    if page_token:
+        query.append(("pageToken", page_token))
+    return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query), ""))
+
+
 def _gemini_request(request: dict[str, Any]) -> dict[str, Any]:
     contents: list[dict[str, Any]] = []
     system_parts: list[dict[str, Any]] = []
@@ -706,6 +905,52 @@ def _protocol_call_error(exc: Exception) -> ProtocolCallError:
     }
     code, retryable = _model_error_classification(status=status, exception_name=name)
     return ProtocolCallError(code, retryable=retryable, **details)
+
+
+def subscription_protocol_call_error(exc: Exception) -> ProtocolCallError:
+    """把 ChatGPT 订阅端点错误转换为授权、权益、配额或网络的安全错误码。"""
+    generic = _protocol_call_error(exc)
+    status = generic.status_code
+    if status == 401:
+        code, retryable = "MODEL_SUBSCRIPTION_AUTH_REQUIRED", False
+    elif status == 403:
+        code, retryable = "MODEL_SUBSCRIPTION_ACCESS_DENIED", False
+    elif status == 429:
+        code, retryable = "MODEL_SUBSCRIPTION_QUOTA_EXCEEDED", True
+    elif status is None or status >= 500:
+        code, retryable = "MODEL_SUBSCRIPTION_NETWORK_UNAVAILABLE", True
+    else:
+        return generic
+    return ProtocolCallError(
+        code,
+        retryable=retryable,
+        status_code=generic.status_code,
+        provider_code=generic.provider_code,
+        provider_message=generic.provider_message,
+        upstream_body=generic.upstream_body,
+        request_id=generic.request_id,
+    )
+
+
+def _subscription_stream_error(error: Any) -> ProtocolCallError:
+    """分类流式订阅错误事件，避免将额度或授权问题降级为通用上游错误。"""
+    provider_code, provider_message = _provider_error_fields(error)
+    normalized = f"{provider_code or ''} {provider_message or ''}".lower()
+    if any(term in normalized for term in ("quota", "rate", "limit")):
+        code, retryable = "MODEL_SUBSCRIPTION_QUOTA_EXCEEDED", True
+    elif any(term in normalized for term in ("permission", "access", "entitlement")):
+        code, retryable = "MODEL_SUBSCRIPTION_ACCESS_DENIED", False
+    elif any(term in normalized for term in ("auth", "login", "token")):
+        code, retryable = "MODEL_SUBSCRIPTION_AUTH_REQUIRED", False
+    else:
+        code, retryable = "MODEL_SUBSCRIPTION_NETWORK_UNAVAILABLE", True
+    return ProtocolCallError(
+        code,
+        retryable=retryable,
+        provider_code=provider_code,
+        provider_message=provider_message,
+        upstream_body=_safe_upstream_body(error),
+    )
 
 
 def _model_error_classification(

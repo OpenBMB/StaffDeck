@@ -161,6 +161,12 @@ def test_all_implemented_protocols_are_available() -> None:
     ]
 
 
+def test_model_config_defaults_to_api_key_authentication_mode() -> None:
+    config = _row()
+
+    assert getattr(config, "auth_mode", None) == "api_key"
+
+
 def test_snapshot_model_config_preserves_anthropic_protocol_and_options() -> None:
     from app.llm.model_config_resolver import snapshot_model_config
 

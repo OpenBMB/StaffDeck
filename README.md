@@ -114,7 +114,7 @@ plus /workspace/gallery before reporting success.
 - macOS, Linux, WSL, or Windows PowerShell
 - Python **3.11+**
 - Node.js **20+** and npm
-- An OpenAI-compatible Chat Completions endpoint and API key
+- One model connection option: an OpenAI-compatible endpoint and API key, or a ChatGPT subscription through a locally installed and authenticated Codex CLI
 - No CUDA requirement for the application itself; hardware requirements depend on the selected model service
 
 ### 1. Clone and Install
@@ -155,7 +155,18 @@ DEMO_MODEL_NAME="your-model-name"
 DEMO_MODEL_API_KEY="your-api-key"
 ```
 
-The API key is used to create the initial model configuration and is encrypted before being stored in the database. Do not commit `backend/.env`. After startup, model services can also be managed from **Admin → Model Configuration**.
+The API key is used to create the initial model configuration and is encrypted before being stored in the database. Do not commit `backend/.env`.
+
+Alternatively, start StaffDeck, open **Admin → Model Configuration → New Model**, select
+**ChatGPT subscription (Codex)**, and choose **Connect ChatGPT subscription**. StaffDeck opens the
+Codex-managed ChatGPT login page in the default browser on the same machine. The configured
+`CODEX_SUBSCRIPTION_COMMAND` defaults to `codex` and is resolved from `PATH` at runtime, so the
+actual installed Codex CLI is used. StaffDeck does not ask for, return, or store a ChatGPT OAuth
+code, callback, access token, refresh token, or subscription credential. API Key and subscription
+models can coexist. Signing out signs the local Codex CLI out of ChatGPT, affecting every
+subscription model and potentially other applications on the same computer that share that Codex
+login. This flow requires a local Codex CLI that can open a browser; it is not supported from
+remote or headless deployments.
 
 ### 3. Launch the Web Demo
 
@@ -281,13 +292,18 @@ StaffDeck/
 <details>
 <summary><strong>The page opens, but the digital employee does not answer.</strong></summary>
 
-Check the selected model configuration, API key, model name, and model service network. Then inspect the execution record and `.dev/logs/app.log` to identify the exact error returned by the model service.
+Check the selected model configuration, model name, and connection path. For API Key models,
+check the key and model-service network; for subscription models, confirm the intended local Codex
+CLI is installed and signed in to ChatGPT. Then inspect the execution record and `.dev/logs/app.log`
+for the error code.
 </details>
 
 <details>
 <summary><strong>Can StaffDeck run without a local GPU?</strong></summary>
 
-Yes. The application calls an OpenAI-compatible model endpoint, so GPU requirements depend on the model service you deploy or use.
+Yes. API Key models call the endpoint you configure, while subscription models use the local Codex
+runtime; neither path requires a GPU for StaffDeck itself. GPU requirements depend on the model
+service you deploy or use.
 </details>
 
 <details>

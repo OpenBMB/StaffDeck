@@ -39,7 +39,7 @@ export function StatCard({ value, label, tone = 'default', valueClassName, class
   return (
     <div
       className={cn(
-        'flex h-[70px] flex-1 basis-[180px] items-center rounded-[14px] px-[24px] py-[8px]',
+        'flex h-[70px] flex-1 basis-[180px] items-center overflow-hidden rounded-[14px] px-[24px] py-[8px]',
         SURFACE_CLASS[tone],
         className,
       )}

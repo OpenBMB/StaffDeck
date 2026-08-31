@@ -3,13 +3,13 @@ from types import SimpleNamespace
 import pytest
 
 from app.llm.client import LLMClient, LLMError, _thinking_mode_for_model
-from app.llm.protocol_drivers import ChatCompletionsDriver, ProtocolCallError
 from app.llm.output_policy import (
     operation_empty_response_retries,
     operation_output_tokens,
 )
-from app.llm.stage_protocol import TURN_STAGE_MESSAGES_KEY, stage_payload
+from app.llm.protocol_drivers import ChatCompletionsDriver, CodexAppServerDriver, ProtocolCallError
 from app.llm.schemas import ModelConfigCreateRequest
+from app.llm.stage_protocol import TURN_STAGE_MESSAGES_KEY, stage_payload
 from app.observability.spans import bind_span_sink, llm_operation
 
 
@@ -38,6 +38,104 @@ class _FakeOpenAIClient:
     def __init__(self) -> None:
         self.responses = _ForbiddenResponses()
         self.chat = _FakeChat()
+
+
+def test_llm_client_uses_codex_runtime_driver_without_decrypting_an_api_key(monkeypatch) -> None:
+    """订阅模型只保存本机 runtime 会话工厂，构造客户端时不会读取或解密 API Key。"""
+    session = object()
+
+    class _SubscriptionService:
+        """提供可观察的 runtime 会话工厂，不提供遗留 OpenAI client 适配器。"""
+
+        def create_session(self) -> object:
+            """返回供协议驱动在真实请求时创建的短生命周期 runtime 会话。"""
+            return session
+
+    config = SimpleNamespace(
+        api_protocol="codex_app_server",
+        api_key_encrypted="must-not-be-read",
+        base_url="",
+        model="gpt-5.1-codex",
+        temperature=0.2,
+        max_output_tokens=128,
+        protocol_options={},
+        legacy_extra_body={},
+    )
+    monkeypatch.setattr(
+        "app.llm.client.decrypt_secret",
+        lambda _value: (_ for _ in ()).throw(AssertionError("subscription must not decrypt API keys")),
+    )
+    monkeypatch.setattr(
+        "app.llm.client.get_codex_subscription_service",
+        lambda: _SubscriptionService(),
+    )
+    monkeypatch.setattr(
+        "app.llm.client.get_settings",
+        lambda: SimpleNamespace(model_api_timeout_seconds=30.0),
+    )
+
+    client = LLMClient(config)
+
+    assert client.client is None
+    assert isinstance(client.driver, CodexAppServerDriver)
+    assert client.driver.session_factory() is session
+
+
+def test_llm_client_keeps_api_key_sdk_and_subscription_runtime_branches_separate(
+    monkeypatch,
+) -> None:
+    """API Key 模型继续使用官方 OpenAI SDK，订阅模型只使用本机 Codex runtime 驱动。"""
+    api_client = _FakeOpenAIClient()
+    runtime_session = object()
+
+    class _SubscriptionService:
+        """提供订阅 runtime 会话工厂，防止测试意外走 API Key SDK 分支。"""
+
+        def create_session(self) -> object:
+            """返回订阅驱动在请求时需要的短生命周期会话。"""
+            return runtime_session
+
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "platform-api-key")
+    monkeypatch.setattr("app.llm.client.OpenAI", lambda **_kwargs: api_client)
+    monkeypatch.setattr(
+        "app.llm.client.get_codex_subscription_service",
+        lambda: _SubscriptionService(),
+    )
+    monkeypatch.setattr(
+        "app.llm.client.get_settings",
+        lambda: SimpleNamespace(model_api_timeout_seconds=30.0),
+    )
+
+    api_key_client = LLMClient(
+        SimpleNamespace(
+            api_protocol="openai_chat_completions",
+            api_key_encrypted="encrypted-api-key",
+            base_url="https://api.openai.com/v1",
+            model="gpt-5",
+            temperature=0.2,
+            max_output_tokens=128,
+            protocol_options={},
+            legacy_extra_body={},
+        )
+    )
+    subscription_client = LLMClient(
+        SimpleNamespace(
+            api_protocol="codex_app_server",
+            api_key_encrypted="",
+            base_url="",
+            model="gpt-5.1-codex",
+            temperature=0.2,
+            max_output_tokens=128,
+            protocol_options={},
+            legacy_extra_body={},
+        )
+    )
+
+    assert isinstance(api_key_client.driver, ChatCompletionsDriver)
+    assert api_key_client.client is api_client
+    assert isinstance(subscription_client.driver, CodexAppServerDriver)
+    assert subscription_client.client is None
+    assert subscription_client.driver.session_factory() is runtime_session
 
 
 def test_llm_client_uses_600_second_timeout(monkeypatch):

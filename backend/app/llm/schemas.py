@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ModelConfigCreateRequest(BaseModel):
     tenant_id: str
     name: str
+    auth_mode: str = "api_key"
     provider: Optional[str] = None
     api_protocol: Optional[str] = None
     base_url: Optional[str] = None
@@ -24,6 +25,7 @@ class ModelConfigCreateRequest(BaseModel):
 class ModelConfigUpdateRequest(BaseModel):
     tenant_id: str
     name: Optional[str] = None
+    auth_mode: Optional[str] = None
     provider: Optional[str] = None
     api_protocol: Optional[str] = None
     base_url: Optional[str] = None
@@ -42,6 +44,7 @@ class ModelConfigRead(BaseModel):
     tenant_id: str
     name: str
     provider: str
+    auth_mode: str
     api_protocol: str
     base_url: Optional[str]
     api_key_masked: str
@@ -61,6 +64,12 @@ class ModelConfigRead(BaseModel):
     updated_at: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CodexSubscriptionAccountRead(BaseModel):
+    status: str
+    plan_type: Optional[str] = None
+    message: str
 
 
 class ModelCapabilityTestResult(BaseModel):
@@ -90,4 +99,23 @@ class ModelConfigTestResponse(BaseModel):
     trust_status: Optional[str] = None
     attempt_status: Optional[str] = None
     capabilities: list[ModelCapabilityTestResult] = Field(default_factory=list)
+    error: Optional[ModelProviderErrorDetail] = None
+
+
+class ModelListModelsRequest(BaseModel):
+    tenant_id: str
+    api_protocol: str
+    base_url: Optional[str] = None
+    # Absent for the ChatGPT/Codex subscription channel, which needs no API key.
+    api_key: Optional[str] = None
+
+
+class ModelOption(BaseModel):
+    id: str
+    label: str
+
+
+class ModelListModelsResponse(BaseModel):
+    success: bool
+    models: list[ModelOption] = Field(default_factory=list)
     error: Optional[ModelProviderErrorDetail] = None

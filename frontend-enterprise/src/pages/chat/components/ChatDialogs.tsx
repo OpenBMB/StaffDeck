@@ -34,8 +34,9 @@ import {
   MarkdownMessage,
 } from '../chatHelpers';
 import type { UseChatSession } from '../useChatSession';
-import ModelSetupDialog from './ModelSetupDialog';
+import ChatModelSetupGate from './ChatModelSetupGate';
 
+/** 汇总聊天页的模型门禁、交接、引用、重命名和删除弹窗。 */
 export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
   const {
     showHandoffInbox,
@@ -68,7 +69,7 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
 
   return (
     <>
-      <ModelSetupDialog
+      <ChatModelSetupGate
         open={modelSetupOpen}
         tenantId={tenantId}
         canConfigure={canConfigureModels}
