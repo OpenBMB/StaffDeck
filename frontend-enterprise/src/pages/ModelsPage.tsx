@@ -90,18 +90,91 @@ const BLANK_MODEL_FORM: ModelForm = {
   enabled: true,
 };
 
+// 调用/验证模型时可能出现的错误码的用户提示；配置校验类错误码已在 apiErrorMessages.ts
+// 的 API_ERROR_MESSAGES 里有文案，不在此重复。
+const MODEL_PROVIDER_USER_MESSAGES: Record<string, string> = {
+  MODEL_AUTHENTICATION_FAILED: 'API Key 无效或未通过身份验证，请检查密钥配置。',
+  MODEL_BASE_URL_INVALID: 'Base URL 格式不正确，请检查后重试。',
+  MODEL_CANCELLED: '请求已取消。',
+  MODEL_CONFIG_NOT_FOUND: '未找到该模型配置，请刷新后重试。',
+  MODEL_CONNECTION_FAILED: '无法连接到模型服务，请检查网络或 Base URL 配置。',
+  MODEL_EMPTY_OUTPUT: '模型未返回任何内容，请检查配置或稍后重试。',
+  MODEL_ENDPOINT_NOT_FOUND: '未找到指定的模型或接口地址，请检查 Base URL 与模型名称。',
+  MODEL_IMAGE_DATA_URL_INVALID: '图片数据格式不正确，请重新上传。',
+  MODEL_IMAGE_TOO_LARGE: '图片体积过大，请压缩后重试。',
+  MODEL_INVALID_JSON: '请求参数不是合法的 JSON，请检查配置。',
+  MODEL_INVALID_PROVIDER_RESPONSE: '模型服务返回了无法识别的响应，请稍后重试或联系管理员。',
+  MODEL_INVALID_REQUEST: '请求参数不合法，请检查配置后重试。',
+  MODEL_PERMISSION_DENIED: '模型服务拒绝了此次请求，可能是网络中间设备拦截或权限不足，请检查配置或稍后重试。',
+  MODEL_PROVIDER_UNSUPPORTED: '当前模型服务商暂不受支持。',
+  MODEL_RATE_LIMITED: '请求过于频繁，已被限流，请稍后重试。',
+  MODEL_REQUEST_TOO_LARGE: '请求内容过大，请精简后重试。',
+  MODEL_TIMEOUT: '连接模型服务超时，请检查网络后重试。',
+  MODEL_TOO_MANY_IMAGES: '图片数量超出限制，请减少图片数量后重试。',
+  MODEL_UPSTREAM_CONFLICT: '模型服务状态发生冲突，请稍后重试。',
+  MODEL_UPSTREAM_ERROR: '模型服务返回了错误，请稍后重试或联系管理员。',
+  MODEL_UPSTREAM_UNAVAILABLE: '模型服务暂时不可用，请稍后重试。',
+  MODEL_VERIFICATION_DEADLINE_EXCEEDED: '模型测试超时，请检查网络后重试。',
+  MODEL_VERIFICATION_FAILED: '模型测试未通过，请检查配置。',
+  MODEL_VERIFICATION_INTERNAL_ERROR: '模型测试过程中发生内部错误，请稍后重试或联系管理员。',
+};
+
+const MODEL_PROVIDER_GENERIC_MESSAGE = '连接模型服务失败，请稍后重试或联系管理员。';
+
 export function modelProviderErrorMessage(
   error: ModelProviderErrorDetail | null | undefined,
   fallback: string,
 ): string {
   if (!error) return fallback;
-  const parts = [error.code || fallback];
-  if (typeof error.upstream_status === 'number') parts.push(`HTTP ${error.upstream_status}`);
+  return MODEL_PROVIDER_USER_MESSAGES[error.code] || MODEL_PROVIDER_GENERIC_MESSAGE;
+}
+
+// 把上游诊断字段（HTTP 状态、上游错误码/消息、原始响应体、Request ID）整理成一段纯文本，
+// 只用于「查看详情」这类默认折叠的交互，不进入主提示文案。
+export function modelProviderDiagnosticText(
+  error: ModelProviderErrorDetail | null | undefined,
+): string | null {
+  if (!error) return null;
+  const parts: string[] = [];
+  if (typeof error.upstream_status === 'number') parts.push(`HTTP 状态码：${error.upstream_status}`);
   if (error.provider_code) parts.push(`上游错误码：${error.provider_code}`);
   if (error.provider_message) parts.push(`上游消息：${error.provider_message}`);
   if (error.upstream_body) parts.push(`上游响应：${error.upstream_body}`);
   if (error.request_id) parts.push(`Request ID：${error.request_id}`);
-  return parts.join('；');
+  return parts.length ? parts.join('\n') : null;
+}
+
+// 折叠的诊断详情展示：默认只显示友好文案，点击「查看详情」才展开原始诊断文本；
+// 诊断文本按纯文本渲染（React children 天然转义），不使用 dangerouslySetInnerHTML。
+function ModelErrorToast({ message, diagnostic }: { message: string; diagnostic: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <span className="flex flex-col items-start gap-[6px]">
+      <span>{message}</span>
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        className="text-[12px] underline underline-offset-2 opacity-80 hover:opacity-100"
+      >
+        {expanded ? '收起详情' : '查看详情'}
+      </button>
+      {expanded && (
+        <pre className="max-h-[160px] w-full max-w-[420px] overflow-auto whitespace-pre-wrap break-all rounded-[8px] bg-black/5 p-[8px] text-[11px] text-[#464c5e]">
+          {diagnostic}
+        </pre>
+      )}
+    </span>
+  );
+}
+
+// 组装模型上游错误的 toast 内容：有可展示的诊断详情就附加折叠区域，否则只返回友好文案。
+function toastContentForProviderError(
+  error: ModelProviderErrorDetail | null | undefined,
+  fallback: string,
+): ReactNode {
+  const message = modelProviderErrorMessage(error, fallback);
+  const diagnostic = modelProviderDiagnosticText(error);
+  return diagnostic ? <ModelErrorToast message={message} diagnostic={diagnostic} /> : message;
 }
 
 function providerErrorFromApiError(error: ApiError): ModelProviderErrorDetail | null {
@@ -280,7 +353,12 @@ export default function ModelsPage({
       setForm(BLANK_MODEL_FORM);
       await load();
     } catch (error) {
-      notify.error(modelActionError(error, '保存失败'));
+      const providerError = error instanceof ApiError ? providerErrorFromApiError(error) : null;
+      notify.error(
+        providerError
+          ? toastContentForProviderError(providerError, '保存失败')
+          : apiErrorMessage(error, '保存失败'),
+      );
     } finally {
       setSaving(false);
       setSaveStage(null);
@@ -331,14 +409,14 @@ export default function ModelsPage({
       } else if (result.message === 'MODEL_VERIFICATION_STALE') {
         notify.warning('模型配置或测试状态已发生变化，本次结果未生效，请刷新后重新测试');
       } else {
-        notify.error(modelProviderErrorMessage(result.error, result.message));
+        notify.error(toastContentForProviderError(result.error, result.message));
       }
       return false;
     } catch (error) {
       notify.error(
         error instanceof DOMException && error.name === 'AbortError'
           ? '模型连接测试超时，请检查本地模型服务地址和网络后重试'
-          : error instanceof Error ? error.message : '测试失败',
+          : modelActionError(error, '测试失败'),
       );
       return false;
     } finally {

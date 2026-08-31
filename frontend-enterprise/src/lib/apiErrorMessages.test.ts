@@ -17,4 +17,15 @@ describe('apiErrorMessage', () => {
       'upstream request failed: timeout',
     );
   });
+
+  it('replaces an oversized raw message and fallback with the generic notice', () => {
+    const rawHtml = `<html><body>${'blocked by intercepting proxy '.repeat(10)}</body></html>`;
+    expect(rawHtml.length).toBeGreaterThan(160);
+
+    expect(apiErrorMessage(rawHtml, rawHtml)).toBe('操作失败，请稍后重试。');
+  });
+
+  it('keeps a normal short message intact even when it is not a stable error code', () => {
+    expect(apiErrorMessage('invalid_model', '操作失败')).toBe('invalid_model');
+  });
 });

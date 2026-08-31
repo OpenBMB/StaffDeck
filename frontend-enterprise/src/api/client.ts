@@ -253,6 +253,23 @@ type ParsedApiError = {
 
 const STABLE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]+$/;
 
+const MAX_PLAUSIBLE_MESSAGE_LENGTH = 160;
+
+export const GENERIC_ERROR_MESSAGE = '操作失败，请稍后重试。';
+
+/**
+ * Accepts arbitrary response text as a user-facing message only when it is
+ * short enough to plausibly be a real error string. This is a length/shape
+ * heuristic, not content sniffing — it lets us discard oversized bodies
+ * (e.g. an intercepting proxy's HTML page) without special-casing any
+ * particular gateway or content type.
+ */
+export function plausibleShortMessage(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  return Array.from(trimmed).length <= MAX_PLAUSIBLE_MESSAGE_LENGTH ? trimmed : null;
+}
+
 function stableErrorCode(value: unknown): string | undefined {
   return typeof value === 'string' && STABLE_ERROR_CODE_PATTERN.test(value)
     ? value
@@ -293,9 +310,9 @@ function parseErrorPayload(text: string): ParsedApiError {
       if (message || code) return { message: message || String(code), code };
     }
   } catch {
-    return { message: text };
+    return { message: plausibleShortMessage(text) ?? GENERIC_ERROR_MESSAGE };
   }
-  return { message: text };
+  return { message: plausibleShortMessage(text) ?? GENERIC_ERROR_MESSAGE };
 }
 
 function formatValidationDetail(item: unknown): string {
