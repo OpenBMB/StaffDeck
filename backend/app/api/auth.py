@@ -417,6 +417,20 @@ def revoke_account_api_credential(
     return _account_api_credential_read(row, current_user.id)
 
 
+@router.delete("/me/api-credentials/{credential_id}", status_code=204)
+def delete_account_api_credential(
+    credential_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> None:
+    """永久删除当前账号拥有的 API 密钥。"""
+    row = _get_account_api_credential(
+        db, current_user.tenant_id, current_user.id, credential_id
+    )
+    db.delete(row)
+    db.commit()
+
+
 @router.put("/users/{user_id}", response_model=UserRead)
 def update_user(
     user_id: str,

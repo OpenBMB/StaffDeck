@@ -309,6 +309,22 @@ def revoke_agent_api_credential(
     return _agent_api_credential_read(row)
 
 
+@enterprise_router.delete("/{agent_id}/api-credentials/{credential_id}", status_code=204)
+def delete_agent_api_credential(
+    agent_id: str,
+    credential_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    """永久删除当前用户有管理权的员工 API 密钥。"""
+    agent = _get_agent(db, tenant_id, agent_id)
+    _ensure_can_manage_agent(agent, current_user)
+    row = _get_agent_api_credential(db, tenant_id, agent_id, credential_id)
+    db.delete(row)
+    db.commit()
+
+
 @enterprise_router.get("/{agent_id}/work-record", response_model=AgentWorkRecordRead)
 def get_agent_work_record(
     agent_id: str,

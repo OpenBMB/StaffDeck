@@ -15,6 +15,7 @@ import {
   LoaderCircle,
   RefreshCw,
   TerminalSquare,
+  Trash2,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -22,6 +23,7 @@ import { api, TENANT_ID } from '../api/client';
 import { employeeDisplayName } from '../employee';
 import { copyTextToClipboard } from '../lib/clipboard';
 import type { AgentProfileRead } from '../types';
+import { ConfirmDialog } from './ConfirmDialog';
 
 type KeyAccess = 'runtime';
 type CredentialAccess = KeyAccess | 'full_access';
@@ -56,6 +58,7 @@ function accessLabel(access: CredentialAccess): string {
   return access === 'full_access' ? '旧版员工全量密钥' : ACCESS_META.runtime.label;
 }
 
+/** 展示并管理指定员工 API 密钥的创建、轮换、禁用和删除操作。 */
 export default function EmployeeApiKeyDialog({
   agent,
   open,
@@ -69,6 +72,8 @@ export default function EmployeeApiKeyDialog({
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState<KeyAccess | null>(null);
   const [actingId, setActingId] = useState<string | null>(null);
+  const [pendingRevoke, setPendingRevoke] = useState<AgentApiCredential | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<AgentApiCredential | null>(null);
   const [revealed, setRevealed] = useState<AgentApiCredentialCreated | null>(null);
   const [copied, setCopied] = useState(false);
   const revealedKeyRef = useRef<HTMLInputElement | null>(null);
@@ -138,8 +143,9 @@ export default function EmployeeApiKeyDialog({
     }
   }
 
+  /** 在用户已明确确认后禁用指定员工密钥，并刷新列表中的持久化状态。 */
   async function revokeCredential(row: AgentApiCredential) {
-    if (!agent || !window.confirm(`确认禁用「${row.name}」？禁用后调用会立即失败。`)) return;
+    if (!agent) return;
     setActingId(row.id);
     try {
       await api.post(
@@ -153,6 +159,26 @@ export default function EmployeeApiKeyDialog({
       notify.error(error instanceof Error ? error.message : '禁用 API 密钥失败');
     } finally {
       setActingId(null);
+      setPendingRevoke(null);
+    }
+  }
+
+  /** 在用户已明确确认后永久删除指定员工密钥，并移除可能展示的明文。 */
+  async function deleteCredential(row: AgentApiCredential) {
+    if (!agent) return;
+    setActingId(row.id);
+    try {
+      await api.delete(
+        `/api/enterprise/agents/${encodeURIComponent(agent.id)}/api-credentials/${encodeURIComponent(row.id)}?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+      );
+      if (revealed?.id === row.id) setRevealed(null);
+      await load();
+      notify.success('API 密钥已永久删除');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '删除 API 密钥失败');
+    } finally {
+      setActingId(null);
+      setPendingDelete(null);
     }
   }
 
@@ -171,7 +197,7 @@ export default function EmployeeApiKeyDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next && !creating && !actingId) onClose(); }}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next && !creating && !actingId && !pendingRevoke && !pendingDelete) onClose(); }}>
       <DialogContent
         aria-describedby="employee-api-key-description"
         data-i18n-ignore
@@ -285,9 +311,13 @@ export default function EmployeeApiKeyDialog({
                       <RefreshCw className={actingId === row.id ? 'size-[12px] animate-spin' : 'size-[12px]'} />
                       轮换
                     </Button>
-                    <Button type="button" variant="outline" disabled={row.status !== 'active' || Boolean(actingId)} onClick={() => void revokeCredential(row)} className="h-[29px] rounded-[9px] border-[#f0d8d8] px-[9px] text-[10px] text-[#bd4141] hover:bg-[#fff1f1] hover:text-[#a62d2d]">
+                    <Button type="button" variant="outline" disabled={row.status !== 'active' || Boolean(actingId)} onClick={() => setPendingRevoke(row)} className="h-[29px] rounded-[9px] border-[#f0d8d8] px-[9px] text-[10px] text-[#bd4141] hover:bg-[#fff1f1] hover:text-[#a62d2d]">
                       <Ban className="size-[12px]" />
                       禁用
+                    </Button>
+                    <Button type="button" variant="outline" disabled={Boolean(actingId)} onClick={() => setPendingDelete(row)} className="h-[29px] rounded-[9px] border-[#f0d8d8] px-[9px] text-[10px] text-[#bd4141] hover:bg-[#fff1f1] hover:text-[#a62d2d]">
+                      <Trash2 className="size-[12px]" />
+                      删除
                     </Button>
                   </div>
                 </div>
@@ -301,6 +331,25 @@ export default function EmployeeApiKeyDialog({
           </section>
         </div>
       </DialogContent>
+      <ConfirmDialog
+        open={Boolean(pendingRevoke)}
+        onOpenChange={(next) => { if (!next && !actingId) setPendingRevoke(null); }}
+        title="确认禁用 API 密钥"
+        description={pendingRevoke ? `确认禁用「${pendingRevoke.name}」？禁用后调用会立即失败。` : undefined}
+        confirmText="确认禁用"
+        destructive={false}
+        loading={Boolean(actingId)}
+        onConfirm={() => { if (pendingRevoke) void revokeCredential(pendingRevoke); }}
+      />
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        onOpenChange={(next) => { if (!next && !actingId) setPendingDelete(null); }}
+        title="确认删除 API 密钥"
+        description={pendingDelete ? `确认永久删除「${pendingDelete.name}」？删除后无法恢复。` : undefined}
+        confirmText="永久删除"
+        loading={Boolean(actingId)}
+        onConfirm={() => { if (pendingDelete) void deleteCredential(pendingDelete); }}
+      />
     </Dialog>
   );
 }

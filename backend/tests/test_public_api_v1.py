@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -24,6 +26,7 @@ from app.db.models import (
 )
 from app.api.agents import (
     create_agent_api_credential,
+    delete_agent_api_credential,
     list_agent_api_credentials,
     revoke_agent_api_credential,
     rotate_agent_api_credential,
@@ -31,6 +34,7 @@ from app.api.agents import (
 from app.api.auth import (
     AccountAPICredentialCreateRequest,
     create_account_api_credential,
+    delete_account_api_credential,
     list_account_api_credentials,
     revoke_account_api_credential,
     rotate_account_api_credential,
@@ -775,6 +779,62 @@ def test_employee_settings_manage_runtime_keys(monkeypatch) -> None:
             "agent_api", created.id, "tenant_api", db, admin
         )
         assert revoked.status == "revoked"
+
+
+def test_api_credential_deletion_is_scoped_and_invalidates_tokens(monkeypatch) -> None:
+    client, engine, _admin_token = _client(monkeypatch)
+    with Session(engine) as db:
+        admin = db.get(User, "user_api_admin")
+        assert admin is not None
+        outsider = User(
+            id="user_api_outsider",
+            tenant_id="tenant_api",
+            username="api_outsider",
+            role="member",
+            password_hash="x",
+        )
+        db.add(outsider)
+        db.commit()
+
+        employee_credential = create_agent_api_credential(
+            "agent_api",
+            AgentAPICredentialCreateRequest(
+                tenant_id="tenant_api",
+                name="待删除员工密钥",
+                access="runtime",
+            ),
+            db,
+            admin,
+        )
+        account_credential = create_account_api_credential(
+            AccountAPICredentialCreateRequest(name="待删除账号密钥"),
+            admin,
+            db,
+        )
+
+        with pytest.raises(HTTPException, match="Only the creator or administrator") as forbidden:
+            delete_agent_api_credential(
+                "agent_api", employee_credential.id, "tenant_api", db, outsider
+            )
+        assert forbidden.value.status_code == 403
+
+        with pytest.raises(HTTPException, match="Account API credential not found") as missing:
+            delete_account_api_credential(account_credential.id, outsider, db)
+        assert missing.value.status_code == 404
+
+        delete_agent_api_credential(
+            "agent_api", employee_credential.id, "tenant_api", db, admin
+        )
+        assert db.get(APICredential, employee_credential.id) is None
+
+        delete_account_api_credential(account_credential.id, admin, db)
+        assert db.get(APICredential, account_credential.id) is None
+
+    response = client.get(
+        "/agents",
+        headers={"Authorization": f"Bearer {account_credential.api_key}"},
+    )
+    assert response.status_code == 401
 
 
 def test_account_master_key_follows_user_visible_agents(monkeypatch) -> None:
