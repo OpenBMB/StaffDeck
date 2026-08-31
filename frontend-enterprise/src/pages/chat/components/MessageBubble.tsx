@@ -1,8 +1,13 @@
+import { Check, Copy } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+
 import EmployeeAvatar from '@/components/EmployeeAvatar';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 import IconThumbUp from '@/assets/icons/thumb-up.svg?react';
 import IconThumbDown from '@/assets/icons/thumb-down.svg?react';
+import { notify } from '@/components/ui/app-toast';
 import { employeeDisplayName } from '@/employee';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import { cn } from '@/lib/utils';
 import type {
   ChatAttachmentRead,
@@ -125,8 +130,37 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
     : '项目领导';
   const teamProgress = item.role === 'assistant' ? activeTeamProgress(item) : null;
 
+  const [copied, setCopied] = useState(false);
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    // StrictMode 开发模式会先卸载再重新挂载一次同一组件来检测副作用问题；
+    // 挂载阶段必须显式把标记复位为 true，否则该周期后 mountedRef 会永久停留在 false。
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+    };
+  }, []);
+
+  // 复制当前消息的可见文本到剪贴板；复制失败（如浏览器限制）时提示用户手动复制。
+  // 每次成功复制都重新起算「已复制」提示的显示时长，避免连续点击时提示被上一次的计时器提前收起；
+  // 复制期间组件若已卸载（如切换会话），则不再更新状态或创建悬空计时器。
+  async function handleCopy() {
+    try {
+      await copyTextToClipboard(visibleContent);
+      if (!mountedRef.current) return;
+      setCopied(true);
+      if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      if (!mountedRef.current) return;
+      notify.error('复制失败，请手动选择文本复制');
+    }
+  }
+
   return (
-    <div className={cn(CHAT_MESSAGE_ITEM_CLASS, queuedMessage && CHAT_QUEUED_MESSAGE_ITEM_CLASS)}>
+    <div className={cn('group/message', CHAT_MESSAGE_ITEM_CLASS, queuedMessage && CHAT_QUEUED_MESSAGE_ITEM_CLASS)}>
       <div className={cn(chatRowClass(item.role), groupAssistantMessage && CHAT_GROUP_MESSAGE_ROW_CLASS)}>
         {groupAssistantMessage && (
           <EmployeeAvatar
@@ -218,6 +252,20 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
             )
           ) : null}
 
+          {!statusOnly && visibleContent && item.role === 'user' && (
+            <div className={CHAT_FEEDBACK_CLASS}>
+              <button
+                type="button"
+                className={CHAT_FEEDBACK_BTN_CLASS}
+                aria-label={copied ? '已复制' : '复制'}
+                title={copied ? '已复制' : '复制'}
+                onClick={() => void handleCopy()}
+              >
+                {copied ? <Check size={15} /> : <Copy size={15} />}
+              </button>
+            </div>
+          )}
+
           {!statusOnly && attachments.length > 0 && (
             <div className={CHAT_ATTACHMENT_LIST_CLASS}>
               {attachments.map((attachment) => (
@@ -262,26 +310,39 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
             />
           )}
 
-          {canRateMessage(item) && !teamProgress && (
+          {!statusOnly && visibleContent && item.role === 'assistant' && !item.isStreaming && !teamProgress && (
             <div className={CHAT_FEEDBACK_CLASS}>
+              {canRateMessage(item) && (
+                <>
+                  <button
+                    type="button"
+                    className={cn(CHAT_FEEDBACK_BTN_CLASS, item.feedback_rating === 'up' && CHAT_FEEDBACK_BTN_ACTIVE_CLASS)}
+                    aria-label="点赞"
+                    onClick={() => rateMessage(item, 'up')}
+                  >
+                    <IconThumbUp width={15} height={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      CHAT_FEEDBACK_BTN_CLASS,
+                      item.feedback_rating === 'down' && CHAT_FEEDBACK_BTN_DISLIKE_ACTIVE_CLASS,
+                    )}
+                    aria-label="点踩"
+                    onClick={() => rateMessage(item, 'down')}
+                  >
+                    <IconThumbDown width={15} height={15} />
+                  </button>
+                </>
+              )}
               <button
                 type="button"
-                className={cn(CHAT_FEEDBACK_BTN_CLASS, item.feedback_rating === 'up' && CHAT_FEEDBACK_BTN_ACTIVE_CLASS)}
-                aria-label="点赞"
-                onClick={() => rateMessage(item, 'up')}
+                className={CHAT_FEEDBACK_BTN_CLASS}
+                aria-label={copied ? '已复制' : '复制'}
+                title={copied ? '已复制' : '复制'}
+                onClick={() => void handleCopy()}
               >
-                <IconThumbUp width={15} height={15} />
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  CHAT_FEEDBACK_BTN_CLASS,
-                  item.feedback_rating === 'down' && CHAT_FEEDBACK_BTN_DISLIKE_ACTIVE_CLASS,
-                )}
-                aria-label="点踩"
-                onClick={() => rateMessage(item, 'down')}
-              >
-                <IconThumbDown width={15} height={15} />
+                {copied ? <Check size={15} /> : <Copy size={15} />}
               </button>
             </div>
           )}

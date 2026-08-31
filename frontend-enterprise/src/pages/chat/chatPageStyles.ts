@@ -199,7 +199,8 @@ export const CHAT_ARTIFACT_IMAGE_DOWNLOAD_CLASS =
 // ---------------------------------------------------------------------------
 // Feedback actions
 // ---------------------------------------------------------------------------
-export const CHAT_FEEDBACK_CLASS = 'mt-[10px] flex items-center gap-[4px]';
+export const CHAT_FEEDBACK_CLASS =
+  'flex max-h-0 items-center gap-[4px] overflow-hidden opacity-0 pointer-events-none transition-[max-height,margin,opacity] duration-150 group-hover/message:mt-[10px] group-hover/message:max-h-[28px] group-hover/message:pointer-events-auto group-hover/message:opacity-100 group-focus-within/message:mt-[10px] group-focus-within/message:max-h-[28px] group-focus-within/message:pointer-events-auto group-focus-within/message:opacity-100';
 export const CHAT_FEEDBACK_BTN_CLASS =
   'inline-grid size-[28px] place-items-center rounded-[8px] border-0 bg-transparent p-0 text-[#a2a8b8] transition-colors hover:bg-[#f1f2f5] hover:text-[#18181a]';
 export const CHAT_FEEDBACK_BTN_ACTIVE_CLASS = 'bg-[#eef0f4] text-[#18181a]';
