@@ -312,6 +312,36 @@ def test_llm_client_adapts_anthropic_full_messages_endpoint(monkeypatch) -> None
     assert captured["base_url"] == "https://llm-center.modelbest.cn/llm"
 
 
+def test_llm_client_sets_outbound_user_agent_for_anthropic(monkeypatch) -> None:
+    from app.llm.client import _OUTBOUND_USER_AGENT
+
+    captured = {}
+
+    def fake_anthropic(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return SimpleNamespace(messages=_Messages())
+
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "secret")
+    monkeypatch.setattr("app.llm.client.Anthropic", fake_anthropic)
+    config = SimpleNamespace(
+        api_protocol="anthropic_messages",
+        purpose="verification",
+        api_key_encrypted="encrypted",
+        base_url="https://api.anthropic.test",
+        model="claude-test",
+        temperature=0.2,
+        max_output_tokens=128,
+        protocol_options={},
+        legacy_extra_body={},
+    )
+
+    LLMClient(config)
+
+    assert captured["default_headers"]["User-Agent"] == _OUTBOUND_USER_AGENT
+    assert not any(key.startswith("X-Stainless") for key in captured["default_headers"])
+    assert captured["base_url"] == "https://api.anthropic.test"
+
+
 def test_locked_anthropic_sdk_uses_messages_wire_contract() -> None:
     captured = {}
 

@@ -113,6 +113,38 @@ def test_llm_client_preserves_custom_openai_base_url(monkeypatch) -> None:
     assert captured["base_url"] == "https://custom-relay.example/llm"
 
 
+def test_llm_client_sets_outbound_user_agent_for_chat_completions(monkeypatch) -> None:
+    from app.llm.client import _OUTBOUND_USER_AGENT
+
+    captured = {}
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "api-key")
+    monkeypatch.setattr(
+        "app.llm.client.OpenAI",
+        lambda **kwargs: captured.update(kwargs) or _FakeOpenAIClient(),
+    )
+    monkeypatch.setattr(
+        "app.llm.client.get_settings",
+        lambda: type("Settings", (), {"model_api_timeout_seconds": 30.0})(),
+    )
+    config = type(
+        "ModelConfig",
+        (),
+        {
+            "api_key_encrypted": "encrypted",
+            "base_url": "https://gateway.example.test/v1",
+            "model": "demo-model",
+            "temperature": 0.2,
+            "max_output_tokens": 128,
+            "extra_body_json": {},
+        },
+    )()
+
+    LLMClient(config)
+
+    assert captured["default_headers"]["User-Agent"] == _OUTBOUND_USER_AGENT
+    assert not any(key.startswith("X-Stainless") for key in captured["default_headers"])
+
+
 def test_model_config_create_defaults_to_8192_output_tokens():
     request = ModelConfigCreateRequest(
         tenant_id="tenant_demo",

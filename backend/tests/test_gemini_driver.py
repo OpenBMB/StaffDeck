@@ -180,3 +180,30 @@ def test_llm_client_builds_gemini_driver(monkeypatch) -> None:
 
     assert isinstance(client.driver, GeminiGenerateContentDriver)
     assert client.driver.base_url == "https://llm-center.modelbest.cn/llm"
+
+
+def test_llm_client_sets_outbound_user_agent_for_gemini(monkeypatch) -> None:
+    from app.llm.client import _OUTBOUND_USER_AGENT
+
+    http_client = httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(200)))
+    captured = {}
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "secret")
+    monkeypatch.setattr(
+        "app.llm.client.httpx.Client",
+        lambda **kwargs: captured.update(kwargs) or http_client,
+    )
+    config = SimpleNamespace(
+        api_protocol="gemini_generate_content",
+        purpose="verification",
+        api_key_encrypted="encrypted",
+        base_url="https://llm-center.modelbest.cn/llm",
+        model="gemini-2.5-flash",
+        temperature=0.2,
+        max_output_tokens=128,
+        protocol_options={},
+        legacy_extra_body={},
+    )
+
+    LLMClient(config)
+
+    assert captured["headers"]["User-Agent"] == _OUTBOUND_USER_AGENT

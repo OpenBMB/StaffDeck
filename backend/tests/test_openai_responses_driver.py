@@ -196,3 +196,34 @@ def test_llm_client_selects_responses_driver(monkeypatch) -> None:
         {"role": "system", "content": "system"},
         {"role": "user", "content": "ping"},
     ]
+
+
+def test_llm_client_sets_outbound_user_agent_for_responses(monkeypatch) -> None:
+    from app.llm.client import _OUTBOUND_USER_AGENT
+
+    fake_client = SimpleNamespace(responses=_Responses(response=None))
+    captured = {}
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "secret")
+    monkeypatch.setattr(
+        "app.llm.client.OpenAI",
+        lambda **kwargs: captured.update(kwargs) or fake_client,
+    )
+    monkeypatch.setattr(
+        "app.llm.client.get_settings",
+        lambda: SimpleNamespace(model_api_timeout_seconds=30.0),
+    )
+    config = SimpleNamespace(
+        api_protocol="openai_responses",
+        api_key_encrypted="encrypted",
+        base_url="https://api.openai.com/v1",
+        model="gpt-test",
+        temperature=0.2,
+        max_output_tokens=128,
+        protocol_options={},
+        legacy_extra_body={},
+    )
+
+    LLMClient(config)
+
+    assert captured["default_headers"]["User-Agent"] == _OUTBOUND_USER_AGENT
+    assert not any(key.startswith("X-Stainless") for key in captured["default_headers"])

@@ -83,6 +83,12 @@ EMPTY_RESPONSE_RETRIES = 2
 EMPTY_RESPONSE_MESSAGE = "Model returned an empty response"
 DEFAULT_MODEL_API_TIMEOUT_SECONDS = 600.0
 DEFAULT_INPUT_TOKEN_BUDGET = 32_000
+# Some third-party OpenAI/Anthropic-compatible gateways run a WAF that blocks
+# requests carrying the official SDKs' default User-Agent (e.g. "OpenAI/Python
+# 2.48.0"). Send an honest, identifiable UA instead of spoofing a browser: a
+# browser UA that doesn't match the connection's TLS/HTTP2 fingerprint risks
+# being flagged as suspicious by stricter WAFs.
+_OUTBOUND_USER_AGENT = "StaffDeck"
 TURN_STAGE_MESSAGE_MARKER = "_agent_turn_message"
 class _CurrentStageText(str):
     pass
@@ -110,6 +116,7 @@ class LLMClient:
                 api_key=api_key,
                 base_url=self.base_url,
                 timeout=self.timeout_seconds,
+                default_headers={"User-Agent": _OUTBOUND_USER_AGENT},
             )
             self.driver = ChatCompletionsDriver(self.client)
         elif protocol is ModelApiProtocol.OPENAI_RESPONSES:
@@ -117,6 +124,7 @@ class LLMClient:
                 api_key=api_key,
                 base_url=self.base_url,
                 timeout=self.timeout_seconds,
+                default_headers={"User-Agent": _OUTBOUND_USER_AGENT},
             )
             self.driver = OpenAIResponsesDriver(self.client)
         elif protocol is ModelApiProtocol.ANTHROPIC_MESSAGES:
@@ -124,6 +132,7 @@ class LLMClient:
                 "api_key": api_key,
                 "timeout": self.timeout_seconds,
                 "max_retries": 0,
+                "default_headers": {"User-Agent": _OUTBOUND_USER_AGENT},
             }
             if self.base_url:
                 # Anthropic's SDK always appends /v1/messages. If an operator
@@ -140,7 +149,10 @@ class LLMClient:
             self.client = Anthropic(**kwargs)
             self.driver = AnthropicMessagesDriver(self.client)
         elif protocol is ModelApiProtocol.GEMINI_GENERATE_CONTENT:
-            self.client = httpx.Client(timeout=self.timeout_seconds)
+            self.client = httpx.Client(
+                timeout=self.timeout_seconds,
+                headers={"User-Agent": _OUTBOUND_USER_AGENT},
+            )
             self.driver = GeminiGenerateContentDriver(
                 self.client,
                 self.base_url,
