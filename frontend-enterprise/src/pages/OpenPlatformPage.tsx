@@ -33,20 +33,21 @@ import type { AgentProfileRead, GeneralSkillRead, KnowledgeBaseRead, SkillRead, 
 
 import AppHeader from '@/components/AppHeader';
 import {
-  PlatformColumn,
+  PlatformCategoryPanel,
   PlatformEmployeeCard,
   PlatformEmployeeDrawer,
   PlatformKindDetailView,
   PlatformResourceCard,
   PlatformResourceDrawer,
+  PlatformTabBar,
+  type PlatformKind,
   type PlatformResourceAccent,
   type PlatformStat,
+  type PlatformTabItem,
 } from '@/components/openPlatform';
 import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
-
-type PlatformKind = 'agents' | 'knowledge' | 'general-skills' | 'skills' | 'tools';
 
 type PlatformConfig = {
   kind: PlatformKind;
@@ -171,6 +172,14 @@ function resourceDrawerBadge(kind: PlatformKind, item: PlatformItem): string {
   return item.tags[0] || '';
 }
 
+// 按标题、描述、编号、标签做包含匹配过滤当前分类下的卡片，关键词为空时原样返回。
+function filterPlatformItems(items: PlatformItem[], keyword: string): PlatformItem[] {
+  const trimmed = keyword.trim().toLowerCase();
+  if (!trimmed) return items;
+  return items.filter((item) => [item.title, item.description, item.meta, item.tags.join(' ')]
+    .some((value) => value.toLowerCase().includes(trimmed)));
+}
+
 export default function OpenPlatformPage({
   currentUser,
   isAdmin = false,
@@ -193,6 +202,8 @@ export default function OpenPlatformPage({
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [detailItem, setDetailItem] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
+  const [activeKind, setActiveKind] = useState<PlatformKind>('agents');
+  const [searchText, setSearchText] = useState('');
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
@@ -558,6 +569,20 @@ export default function OpenPlatformPage({
     );
   }
 
+  const activeConfig = PLATFORM_BY_KIND.get(activeKind) || PLATFORM_CONFIGS[0];
+  const ActivePlatformIcon = PLATFORM_ICON[activeKind];
+  const activeItems = platformItems[activeKind];
+  const activeItemsFiltered = filterPlatformItems(activeItems, searchText);
+  const tabItems: PlatformTabItem[] = platformStats.map((platform) => {
+    const TabIcon = PLATFORM_ICON[platform.kind];
+    return {
+      kind: platform.kind,
+      label: platform.title,
+      count: platform.count,
+      icon: <TabIcon className="size-[14px]" />,
+    };
+  });
+
   return (
     <div className="flex min-h-full flex-col box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px] xl:h-full xl:min-h-0 xl:overflow-hidden">
       <AppHeader
@@ -566,66 +591,67 @@ export default function OpenPlatformPage({
         userName={currentUser?.username}
         title="开放广场平台"
       />
-      <div className="mx-auto grid w-full grid-cols-1 gap-[12px] sm:grid-cols-2 xl:min-h-0 xl:flex-1 xl:grid-cols-5 xl:grid-rows-1">
-        {platformStats.map((platform) => {
-          const items = platformItems[platform.kind];
-          const previews = items;
-          const PlatformIcon = PLATFORM_ICON[platform.kind];
-          return (
-            <PlatformColumn
-              key={platform.kind}
-              icon={<PlatformIcon className="size-[14px]" />}
-              title={platform.title}
-              count={platform.count}
-              countLabel={platformCountLabel(platform.kind)}
-              filters={platform.signals}
-              loading={loading}
-              isEmpty={previews.length === 0}
-              onViewAll={() => navigate(`/enterprise/platform/${platform.kind}`)}
-            >
-              {previews.map((item) => (
-                platform.kind === 'agents' && item.agent ? (
-                  <PlatformEmployeeCard
-                    key={item.id}
-                    avatar={(
-                      <EmployeeAvatar
-                        agent={item.agent}
-                        width={50}
-                        height={59}
-                        fit="contain"
-                        objectPosition="center bottom"
-                        className="overflow-visible! rounded-none! border-0! bg-transparent! bg-none! shadow-none! after:hidden!"
-                      />
-                    )}
-                    name={item.title}
-                    role={item.meta}
-                    online={item.agent.status === 'active'}
-                    description={item.description}
-                    stats={employeeStats(item.agent)}
-                    onOpen={() => setDetailItem({ kind: platform.kind, item })}
-                    onUnpublish={canManagePlatform
-                      ? () => setConfirmTarget({ kind: platform.kind, item })
-                      : undefined}
-                    unpublishing={deletingItemKey === platformItemDeleteKey(platform.kind, item)}
+      <div className="flex w-full flex-col items-center gap-[20px] xl:min-h-0 xl:flex-1">
+        <PlatformTabBar
+          items={tabItems}
+          activeKind={activeKind}
+          onChange={(nextKind) => { setActiveKind(nextKind); setSearchText(''); }}
+        />
+        <PlatformCategoryPanel
+          className="rounded-[14px] border-[0.5px] border-[#e3e7f1] px-[16px] py-[16px]"
+          icon={<ActivePlatformIcon className="size-[16px]" />}
+          title={activeConfig.title}
+          count={activeItems.length}
+          filters={activeConfig.signals}
+          searchValue={searchText}
+          searchPlaceholder={`搜索${platformCountLabel(activeKind)}`}
+          onSearchChange={setSearchText}
+          loading={loading}
+          isEmpty={activeItemsFiltered.length === 0}
+          emptyText={searchText.trim() ? '没有匹配的广场内容' : '暂无开放内容'}
+          emptyHint={searchText.trim() ? '换个关键词试试' : '发布内容后会在这里展示'}
+        >
+          {activeItemsFiltered.map((item) => (
+            activeKind === 'agents' && item.agent ? (
+              <PlatformEmployeeCard
+                key={item.id}
+                avatar={(
+                  <EmployeeAvatar
+                    agent={item.agent}
+                    width={50}
+                    height={59}
+                    fit="contain"
+                    objectPosition="center bottom"
+                    className="overflow-visible! rounded-none! border-0! bg-transparent! bg-none! shadow-none! after:hidden!"
                   />
-                ) : (
-                  <PlatformResourceCard
-                    key={item.id}
-                    icon={PLATFORM_RESOURCE_ICON[platform.kind]
-                      ? <img src={PLATFORM_RESOURCE_ICON[platform.kind]} alt="" className="size-[32px] shrink-0 object-contain" />
-                      : undefined}
-                    accent={PLATFORM_ACCENT[platform.kind]}
-                    title={item.title}
-                    meta={item.meta}
-                    description={item.description}
-                    tags={item.tags.slice(0, 2)}
-                    onClick={() => setDetailItem({ kind: platform.kind, item })}
-                  />
-                )
-              ))}
-            </PlatformColumn>
-          );
-        })}
+                )}
+                name={item.title}
+                role={item.meta}
+                online={item.agent.status === 'active'}
+                description={item.description}
+                stats={employeeStats(item.agent)}
+                onOpen={() => setDetailItem({ kind: activeKind, item })}
+                onUnpublish={canManagePlatform
+                  ? () => setConfirmTarget({ kind: activeKind, item })
+                  : undefined}
+                unpublishing={deletingItemKey === platformItemDeleteKey(activeKind, item)}
+              />
+            ) : (
+              <PlatformResourceCard
+                key={item.id}
+                icon={PLATFORM_RESOURCE_ICON[activeKind]
+                  ? <img src={PLATFORM_RESOURCE_ICON[activeKind]} alt="" className="size-[32px] shrink-0 object-contain" />
+                  : undefined}
+                accent={PLATFORM_ACCENT[activeKind]}
+                title={item.title}
+                meta={item.meta}
+                description={item.description}
+                tags={item.tags.slice(0, 2)}
+                onClick={() => setDetailItem({ kind: activeKind, item })}
+              />
+            )
+          ))}
+        </PlatformCategoryPanel>
       </div>
       {renderItemDrawer()}
       {renderConfirm()}

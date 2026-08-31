@@ -1,5 +1,8 @@
-export { default as PlatformColumn } from './PlatformColumn';
-export type { PlatformColumnProps } from './PlatformColumn';
+export { default as PlatformCategoryPanel } from './PlatformCategoryPanel';
+export type { PlatformCategoryPanelProps } from './PlatformCategoryPanel';
+export { default as PlatformTabBar } from './PlatformTabBar';
+export type { PlatformTabBarProps, PlatformTabItem } from './PlatformTabBar';
+export type { PlatformKind } from './types';
 export { default as PlatformEmployeeCard } from './PlatformEmployeeCard';
 export type { PlatformEmployeeCardProps, PlatformStat } from './PlatformEmployeeCard';
 export { default as PlatformEmployeeDrawer } from './PlatformEmployeeDrawer';
