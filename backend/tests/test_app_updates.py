@@ -9,12 +9,13 @@ from app import version
 from app.api import app_updates
 
 
-def _feed(*entries: tuple[str, str]) -> bytes:
+def _feed(*entries: tuple[str, str], repository: str = "OpenBMB/StaffDeck") -> bytes:
+    """Build a literal GitHub Atom feed for one repository and the supplied release entries."""
     body = "".join(
         (
             "<entry>"
             f"<updated>{published_at}</updated>"
-            f'<link rel="alternate" href="https://github.com/OpenBMB/StaffDeck/releases/tag/{tag}" />'
+            f'<link rel="alternate" href="https://github.com/{repository}/releases/tag/{tag}" />'
             f"<title>{tag}</title>"
             "</entry>"
         )
@@ -24,10 +25,11 @@ def _feed(*entries: tuple[str, str]) -> bytes:
 
 
 def _response(content: bytes) -> httpx.Response:
+    """Wrap feed bytes in the complete HTTP response shape consumed by the update checker."""
     return httpx.Response(
         200,
         content=content,
-        request=httpx.Request("GET", app_updates.RELEASES_FEED_URL),
+        request=httpx.Request("GET", "https://github.com/OpenBMB/StaffDeck/releases.atom"),
     )
 
 
@@ -86,8 +88,15 @@ def test_prerelease_build_can_advance_to_newer_prerelease_or_stable() -> None:
 
 
 def test_fetch_version_uses_validated_github_release_url(monkeypatch) -> None:
+    """Catch regressions that stop returning a validated configured-repository release link."""
     monkeypatch.setattr(app_updates, "app_version", lambda: "0.2.0")
     monkeypatch.setattr(app_updates, "update_check_enabled", lambda: True)
+    monkeypatch.setattr(
+        app_updates,
+        "release_repository",
+        lambda: "OpenBMB/StaffDeck",
+        raising=False,
+    )
     monkeypatch.setattr(
         app_updates.httpx,
         "get",
@@ -122,6 +131,7 @@ def test_source_deployment_skips_network_check_by_default(monkeypatch) -> None:
 
 
 def test_fetch_version_fails_silently_and_failure_is_cached(monkeypatch) -> None:
+    """Catch repeated network calls or surfaced errors after a cached feed failure."""
     calls = 0
 
     def fail(*args, **kwargs):
@@ -131,6 +141,12 @@ def test_fetch_version_fails_silently_and_failure_is_cached(monkeypatch) -> None
 
     monkeypatch.setattr(app_updates, "app_version", lambda: "0.2.0")
     monkeypatch.setattr(app_updates, "update_check_enabled", lambda: True)
+    monkeypatch.setattr(
+        app_updates,
+        "release_repository",
+        lambda: "OpenBMB/StaffDeck",
+        raising=False,
+    )
     monkeypatch.setattr(app_updates.httpx, "get", fail)
 
     first = app_updates.get_app_version()
@@ -143,6 +159,7 @@ def test_fetch_version_fails_silently_and_failure_is_cached(monkeypatch) -> None
 
 
 def test_release_tag_rejects_untrusted_alternate_link() -> None:
+    """Catch off-domain alternate links being salvaged into a trusted-looking release entry."""
     content = b"""<feed xmlns="http://www.w3.org/2005/Atom">
       <entry>
         <id>tag:github.com,2008:Repository/1/v0.2.1</id>
@@ -153,9 +170,89 @@ def test_release_tag_rejects_untrusted_alternate_link() -> None:
 
     release = app_updates._parse_release_feed(content, "0.2.0")
 
-    assert release is not None
-    assert release.version == "0.2.1"
-    assert release.url == app_updates.RELEASES_PAGE_URL
+    assert release is None
+
+
+def test_fetch_version_uses_packaged_repository_for_feed_and_release_url(monkeypatch) -> None:
+    """Catch a Fork package querying or linking to the upstream release repository."""
+    requested_urls: list[str] = []
+
+    def fetch(url: str, **kwargs) -> httpx.Response:
+        """Record the real boundary argument while returning a complete matching feed response."""
+        requested_urls.append(url)
+        return httpx.Response(
+            200,
+            content=_feed(
+                ("v0.2.1", "2026-08-05T12:00:00Z"),
+                repository="JnyRoad/StaffDeck",
+            ),
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(app_updates, "app_version", lambda: "0.2.0")
+    monkeypatch.setattr(app_updates, "update_check_enabled", lambda: True)
+    monkeypatch.setattr(
+        app_updates,
+        "release_repository",
+        lambda: "JnyRoad/StaffDeck",
+        raising=False,
+    )
+    monkeypatch.setattr(app_updates.httpx, "get", fetch)
+
+    result = app_updates._fetch_version()
+
+    assert requested_urls == ["https://github.com/JnyRoad/StaffDeck/releases.atom"]
+    assert result.release_repository == "JnyRoad/StaffDeck"
+    assert result.release_url == "https://github.com/JnyRoad/StaffDeck/releases/tag/v0.2.1"
+    assert result.update_available is True
+    assert result.check_succeeded is True
+
+
+def test_fetch_version_rejects_release_entry_from_other_repository(monkeypatch) -> None:
+    """Catch a valid GitHub tag from another repository becoming an actionable update."""
+    monkeypatch.setattr(app_updates, "app_version", lambda: "0.2.0")
+    monkeypatch.setattr(app_updates, "update_check_enabled", lambda: True)
+    monkeypatch.setattr(
+        app_updates,
+        "release_repository",
+        lambda: "JnyRoad/StaffDeck",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        app_updates.httpx,
+        "get",
+        lambda url, **kwargs: httpx.Response(
+            200,
+            content=_feed(("v9.9.9", "2026-08-05T12:00:00Z")),
+            request=httpx.Request("GET", url),
+        ),
+    )
+
+    result = app_updates._fetch_version()
+
+    assert result.release_repository == "JnyRoad/StaffDeck"
+    assert result.release_url == ""
+    assert result.update_available is False
+    assert result.check_succeeded is False
+
+
+def test_fetch_version_skips_network_when_distribution_identity_is_invalid(monkeypatch) -> None:
+    """Catch a frozen package without trusted metadata falling back to any network release feed."""
+    monkeypatch.setattr(app_updates, "app_version", lambda: "0.2.0")
+    monkeypatch.setattr(app_updates, "update_check_enabled", lambda: True)
+    monkeypatch.setattr(app_updates, "release_repository", lambda: None, raising=False)
+    monkeypatch.setattr(
+        app_updates.httpx,
+        "get",
+        lambda *args, **kwargs: pytest.fail("invalid identity must not access GitHub"),
+    )
+
+    result = app_updates._fetch_version()
+
+    assert result.release_repository is None
+    assert result.release_url == ""
+    assert result.update_available is False
+    assert result.check_succeeded is False
 
 
 def test_app_version_priority_and_macos_resources(monkeypatch, tmp_path: Path) -> None:

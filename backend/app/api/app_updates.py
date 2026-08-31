@@ -11,28 +11,61 @@ from fastapi import APIRouter
 from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel
 
+from app.distribution import (
+    DEFAULT_RELEASE_REPOSITORY,
+    release_repository,
+    validate_release_repository,
+)
 from app.version import app_version, update_check_enabled
 
 router = APIRouter(prefix="/api/app", tags=["app"])
 
-RELEASES_FEED_URL = "https://github.com/OpenBMB/StaffDeck/releases.atom"
-RELEASES_PAGE_URL = "https://github.com/OpenBMB/StaffDeck/releases"
-RELEASE_TAG_PATH = "/OpenBMB/StaffDeck/releases/tag/"
 SUCCESS_CACHE_SECONDS = 6 * 60 * 60
 FAILURE_CACHE_SECONDS = 15 * 60
 
 _cache_lock = threading.Lock()
 
 
+@dataclass(frozen=True)
+class ReleaseSource:
+    """Trusted GitHub endpoints derived from one validated distribution identity."""
+
+    repository: str
+    feed_url: str
+    page_url: str
+    tag_path: str
+
+
+def _release_source(repository: str | None) -> ReleaseSource | None:
+    """Derive HTTPS GitHub release endpoints, returning None for an invalid identity."""
+    validated = validate_release_repository(repository)
+    if validated is None:
+        return None
+    return ReleaseSource(
+        repository=validated,
+        feed_url=f"https://github.com/{validated}/releases.atom",
+        page_url=f"https://github.com/{validated}/releases",
+        tag_path=f"/{validated}/releases/tag/",
+    )
+
+
+_DEFAULT_RELEASE_SOURCE = _release_source(DEFAULT_RELEASE_REPOSITORY)
+assert _DEFAULT_RELEASE_SOURCE is not None
+RELEASES_FEED_URL = _DEFAULT_RELEASE_SOURCE.feed_url
+RELEASES_PAGE_URL = _DEFAULT_RELEASE_SOURCE.page_url
+RELEASE_TAG_PATH = _DEFAULT_RELEASE_SOURCE.tag_path
+
+
 class AppVersionRead(BaseModel):
     current_version: str
     latest_version: str | None = None
     update_available: bool = False
-    release_url: str = RELEASES_PAGE_URL
+    release_url: str = ""
     release_name: str | None = None
     published_at: str | None = None
     check_enabled: bool = True
     check_succeeded: bool = True
+    release_repository: str | None = None
 
 
 _cached_result: tuple[float, AppVersionRead] | None = None
@@ -48,6 +81,7 @@ class ReleaseEntry:
 
 
 def _parse_version(value: str) -> Version | None:
+    """Parse StaffDeck's optional-v SemVer representation without build metadata."""
     normalized = value.strip()
     if normalized[:1].lower() == "v":
         normalized = normalized[1:]
@@ -59,6 +93,7 @@ def _parse_version(value: str) -> Version | None:
 
 
 def _is_newer(latest: str, current: str) -> bool:
+    """Return whether a valid latest version is strictly newer than the current version."""
     latest_version = _parse_version(latest)
     current_version = _parse_version(current)
     return bool(
@@ -68,7 +103,12 @@ def _is_newer(latest: str, current: str) -> bool:
     )
 
 
-def _release_tag(entry: ElementTree.Element, namespace: dict[str, str]) -> tuple[str, str]:
+def _release_tag(
+    entry: ElementTree.Element,
+    namespace: dict[str, str],
+    source: ReleaseSource,
+) -> tuple[str, str]:
+    """Extract a tag only when an alternate link belongs to the trusted release source."""
     link = entry.find("atom:link[@rel='alternate']", namespace)
     release_url = link.get("href", "").strip() if link is not None else ""
     if release_url:
@@ -77,20 +117,27 @@ def _release_tag(entry: ElementTree.Element, namespace: dict[str, str]) -> tuple
         if (
             parsed_url.scheme == "https"
             and parsed_url.netloc == "github.com"
-            and path.startswith(RELEASE_TAG_PATH)
+            and path.startswith(source.tag_path)
         ):
-            tag = path.removeprefix(RELEASE_TAG_PATH).strip("/")
+            tag = path.removeprefix(source.tag_path).strip("/")
             if _parse_version(tag) is not None:
                 return tag, release_url
+        return "", source.page_url
 
     entry_id = (entry.findtext("atom:id", default="", namespaces=namespace) or "").strip()
     tag = unquote(entry_id.rsplit("/", 1)[-1]) if "/" in entry_id else ""
     if _parse_version(tag) is not None:
-        return tag, RELEASES_PAGE_URL
-    return "", RELEASES_PAGE_URL
+        return tag, source.page_url
+    return "", source.page_url
 
 
-def _parse_release_feed(content: bytes, current: str) -> ReleaseEntry | None:
+def _parse_release_feed(
+    content: bytes,
+    current: str,
+    source: ReleaseSource | None = None,
+) -> ReleaseEntry | None:
+    """Select the newest compatible release from the trusted repository's Atom feed."""
+    selected_source = source or _DEFAULT_RELEASE_SOURCE
     root = ElementTree.fromstring(content)
     namespace = {"atom": "http://www.w3.org/2005/Atom"}
     current_version = _parse_version(current)
@@ -98,7 +145,7 @@ def _parse_release_feed(content: bytes, current: str) -> ReleaseEntry | None:
         return None
     releases: list[ReleaseEntry] = []
     for entry in root.findall("atom:entry", namespace):
-        tag, release_url = _release_tag(entry, namespace)
+        tag, release_url = _release_tag(entry, namespace, selected_source)
         parsed = _parse_version(tag)
         if parsed is None:
             continue
@@ -120,24 +167,33 @@ def _parse_release_feed(content: bytes, current: str) -> ReleaseEntry | None:
 
 
 def _fetch_version() -> AppVersionRead:
+    """Fetch one trusted feed when enabled, returning non-actionable failure states otherwise."""
     current = app_version()
+    source = _release_source(release_repository())
     if not update_check_enabled():
         return AppVersionRead(
             current_version=current,
             check_enabled=False,
             check_succeeded=False,
+            release_repository=source.repository if source is not None else None,
         )
+    if source is None:
+        return AppVersionRead(current_version=current, check_succeeded=False)
     try:
         response = httpx.get(
-            RELEASES_FEED_URL,
+            source.feed_url,
             headers={"Accept": "application/atom+xml", "User-Agent": "StaffDeck"},
             timeout=4.0,
             follow_redirects=True,
         )
         response.raise_for_status()
-        release = _parse_release_feed(response.content, current)
+        release = _parse_release_feed(response.content, current, source)
         if release is None:
-            return AppVersionRead(current_version=current, check_succeeded=False)
+            return AppVersionRead(
+                current_version=current,
+                check_succeeded=False,
+                release_repository=source.repository,
+            )
         return AppVersionRead(
             current_version=current,
             latest_version=release.version,
@@ -145,13 +201,19 @@ def _fetch_version() -> AppVersionRead:
             release_url=release.url,
             release_name=release.name,
             published_at=release.published_at,
+            release_repository=source.repository,
         )
     except (httpx.HTTPError, ElementTree.ParseError, ValueError, TypeError):
-        return AppVersionRead(current_version=current, check_succeeded=False)
+        return AppVersionRead(
+            current_version=current,
+            check_succeeded=False,
+            release_repository=source.repository,
+        )
 
 
 @router.get("/version", response_model=AppVersionRead)
 def get_app_version() -> AppVersionRead:
+    """Return a cached update result with shorter caching for unavailable release checks."""
     global _cached_result
     now = time.monotonic()
     with _cache_lock:

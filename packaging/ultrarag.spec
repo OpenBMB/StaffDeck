@@ -7,6 +7,10 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 BACKEND = Path.cwd()                      # 约定在 backend/ 下执行
+sys.path.insert(0, str(BACKEND))
+
+from app.distribution import resolve_build_release_repository, write_distribution_metadata  # noqa: E402
+
 REPO = BACKEND.parent
 DIST = REPO / "frontend-enterprise" / "dist"
 ASSETS = REPO / "packaging" / "assets"
@@ -26,6 +30,12 @@ VERSION_FILE = REPO / "packaging" / "build" / "staffdeck-version.txt"
 VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
 VERSION_FILE.write_text(BUNDLE_VERSION + "\n", encoding="utf-8")
 
+DISTRIBUTION_REPOSITORY = resolve_build_release_repository(REPO)
+DISTRIBUTION_METADATA_FILE = (
+    REPO / "packaging" / "build" / "staffdeck-distribution.json"
+)
+write_distribution_metadata(DISTRIBUTION_METADATA_FILE, DISTRIBUTION_REPOSITORY)
+
 # 平台图标：macOS 用 .icns，Windows 用 .ico，Linux(EXE) 不用
 _exe_icon = None
 if sys.platform == "win32" and ICO.exists():
@@ -34,6 +44,7 @@ if sys.platform == "win32" and ICO.exists():
 datas = [
     (str(DIST), "frontend-enterprise/dist"),
     (str(VERSION_FILE), "."),
+    (str(DISTRIBUTION_METADATA_FILE), "."),
     (str(ASSETS / "staffdeck.png"), "packaging/assets"),
     (str(BACKEND / "app" / "llm" / "prompts"), "app/llm/prompts"),
     (str(BACKEND / "app" / "db" / "seed_fixtures"), "app/db/seed_fixtures"),

@@ -120,6 +120,7 @@ jobs:
       - name: Build
         env:
           VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+          STAFFDECK_RELEASE_REPOSITORY: ${{ github.repository }}
           STAFFDECK_MACOS_ARCH: ${{ matrix.macos_arch }}
         run: ${{ matrix.script }}
 
