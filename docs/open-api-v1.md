@@ -77,6 +77,44 @@ curl -X POST "$BASE/api-clients/$CLIENT_ID/credentials" \
 
 不传 `agent_id` 时创建租户密钥；传入后创建只能访问指定员工的密钥。Credential scope 必须是 API Client scope 的子集。
 
+## Public Run 附件
+
+外部系统可以使用同一个 `runs:create` scope 上传原始文件。上传接口复用对话端的 staging 存储，不依赖用户 JWT，也不会把文件直接写入尚未创建的 TaskFrame：
+
+```bash
+curl -X POST "$BASE/agents/$AGENT_ID/attachments" \
+  -H "Authorization: Bearer $STAFFDECK_API_KEY" \
+  -F "files[]=@URS.docx" \
+  -F "files[]=@appendix.pdf"
+```
+
+接口返回现有 `ChatAttachmentRead[]`。外部系统应保存完整响应，并在创建 Run 时原样放入 `attachments`：
+
+```json
+{
+  "input": "请分析附件中的 URS",
+  "session_id": "session_xxx",
+  "session_mode": "stateful",
+  "attachments": [
+    {
+      "id": "file_xxx",
+      "filename": "URS.docx",
+      "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 123456,
+      "kind": "binary",
+      "sandbox_path": "/workspace/attachments/...",
+      "sha256": "..."
+    }
+  ]
+}
+```
+
+Run 创建前 StaffDeck 会重新校验附件的 staging 内容、租户、用户、大小、路径和 SHA-256；失败时返回 `400 INVALID_ATTACHMENT`，不会创建 Job。Run 执行时，StaffDeck 会把附件复制到每个 TaskFrame 自己的 workspace，Skill 使用 `/workspace/attachments/...` 的相对路径读取。
+
+同一 Session 的后续 Run 不会自动继承附件。调用方无需重新上传，但必须再次传入之前保存的 `attachments` 描述。只传 `session_id` 时，模型可以看到历史对话文字，但新 TaskFrame 不保证能打开历史文件。
+
+默认单文件上传上限为 12 MiB，可通过 `CHAT_ATTACHMENT_MAX_BYTES` 调整。该限制是传输限制；Harness 文件工具和具体 Skill 可能有更低的处理限制。
+
 ## 最小调用链
 
 ### 1. 创建持续会话

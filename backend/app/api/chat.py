@@ -20,6 +20,7 @@ from starlette.background import BackgroundTask
 
 from app.agents.branching import model_for_agent, visible_published_skills
 from app.channels.service_outbox import stage_channel_delivery
+from app.config import get_settings
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
 from app.core.capability_manifest import CapabilityManifestBuilder
@@ -31,8 +32,8 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
-    HarnessTurnRecord,
     HarnessTaskFrameRecord,
+    HarnessTurnRecord,
     HumanHandoffRequest,
     Message,
     MessageFeedback,
@@ -63,6 +64,7 @@ from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
 from app.session.attachments import (
+    MAX_CHAT_ATTACHMENTS,
     parse_chat_attachment,
     validate_chat_turn_attachments,
 )
@@ -71,12 +73,12 @@ from app.session.cleanup import (
     remove_chat_session_workspace,
 )
 from app.session.helpers import public_session
+from app.session.message_read import message_read
 from app.session.message_visibility import (
     internal_message_turn_ids,
     visible_message_content,
     visible_message_rows,
 )
-from app.session.message_read import message_read
 from app.session.origin import pilotdeck_origin_session_ids
 from app.session.session_schema import (
     ChatAttachmentRead,
@@ -101,8 +103,6 @@ STREAM_RELAY_POLL_SECONDS = 0.08
 STREAM_RELAY_HEARTBEAT_SECONDS = 5.0
 STREAM_RELAY_IDLE_TIMEOUT_SECONDS = 660.0
 STREAM_INTERRUPTED_TRACEBACK_CHAR_LIMIT = 6000
-MAX_CHAT_ATTACHMENT_BYTES = 12 * 1024 * 1024
-MAX_CHAT_ATTACHMENTS = 8
 SESSION_TITLE_SUMMARY_EVENT = "session_title_summarized"
 SCHEDULE_WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 EVENT_PAYLOAD_META_KEYS = {"id", "event", "type", "event_type", "created_at", "data"}
@@ -907,7 +907,7 @@ def _validate_chat_turn_attachments(
         attachments = validate_chat_turn_attachments(
             request.attachments,
             max_attachments=MAX_CHAT_ATTACHMENTS,
-            max_attachment_bytes=MAX_CHAT_ATTACHMENT_BYTES,
+            max_attachment_bytes=get_settings().chat_attachment_max_bytes,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -954,9 +954,10 @@ async def upload_chat_attachments(
     parsed: list[ChatAttachmentRead] = []
     from app.session.attachment_store import stage_chat_attachment
 
+    max_attachment_bytes = get_settings().chat_attachment_max_bytes
     for file in files:
         data = await file.read()
-        if len(data) > MAX_CHAT_ATTACHMENT_BYTES:
+        if len(data) > max_attachment_bytes:
             raise HTTPException(status_code=413, detail=f"{file.filename or '文件'} 超过上传大小限制")
         attachment = parse_chat_attachment(
             file.filename or "uploaded-file",
