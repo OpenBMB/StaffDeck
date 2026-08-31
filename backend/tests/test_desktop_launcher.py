@@ -81,6 +81,33 @@ def test_setup_network_saves_local_mode(monkeypatch, tmp_path) -> None:
     )
 
 
+def test_save_network_config_rejects_invalid_update_without_replacing_existing_file(
+    monkeypatch, tmp_path
+) -> None:
+    """Validate the complete update before replacing the existing user-local configuration."""
+    monkeypatch.setattr(desktop_launcher, "user_data_dir", lambda: tmp_path)
+    config_path = desktop_launcher._save_network_config("local", "", 5180)
+    previous_content = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="端口"):
+        desktop_launcher._save_network_config("local", "", 0)
+
+    assert config_path.read_text(encoding="utf-8") == previous_content
+
+
+def test_apply_runtime_env_records_the_actual_selected_runtime_port(monkeypatch) -> None:
+    """Expose the launcher's chosen port to the ASGI API without using request headers."""
+    monkeypatch.delenv("STAFFDECK_RUNTIME_NETWORK", raising=False)
+
+    desktop_launcher.apply_runtime_env(
+        {"mode": "lan", "host": "0.0.0.0", "port": 6204, "public_url": ""}
+    )
+
+    assert desktop_launcher.os.environ["STAFFDECK_RUNTIME_NETWORK"] == (
+        '{"mode":"lan","host":"0.0.0.0","port":6204,"public_url":""}'
+    )
+
+
 def test_apply_network_config_uses_persisted_lan_mode(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(desktop_launcher, "user_data_dir", lambda: tmp_path)
     desktop_launcher._save_network_config("lan", "", 5190)

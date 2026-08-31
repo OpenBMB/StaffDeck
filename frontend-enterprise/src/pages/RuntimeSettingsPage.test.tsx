@@ -2,7 +2,11 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { validateContextSettings } from './RuntimeSettingsPage';
+import {
+  buildApiEndpointLinks,
+  validateContextSettings,
+  validateNetworkSettings,
+} from './RuntimeSettingsPage';
 
 const validForm = {
   show_thinking_trace: true,
@@ -45,5 +49,34 @@ describe('runtime context settings validation', () => {
       ...validForm,
       context_medium_summary_prefix: '   ',
     })).toBe('摘要前缀不能为空');
+  });
+});
+
+describe('network and API endpoint helpers', () => {
+  it('derives exactly one current same-machine Base URL for display', () => {
+    expect(buildApiEndpointLinks('http://127.0.0.1:6204/api/v1/')).toEqual({
+      baseUrl: 'http://127.0.0.1:6204/api/v1',
+    });
+  });
+
+  it('validates local, LAN, and public next-launch input before save', () => {
+    expect(validateNetworkSettings({ mode: 'local', port: '6204', public_url: '' })).toBeNull();
+    expect(validateNetworkSettings({ mode: 'lan', port: '6205', public_url: '' })).toBeNull();
+    expect(validateNetworkSettings({
+      mode: 'public',
+      port: '443',
+      public_url: 'https://staff.example.com',
+    })).toBeNull();
+    expect(validateNetworkSettings({ mode: 'local', port: '0', public_url: '' })).toBe(
+      '端口必须是 1 到 65535 之间的整数',
+    );
+    expect(validateNetworkSettings({ mode: 'public', port: '6204', public_url: '' })).toBe(
+      '公网访问需要填写完整的 HTTP(S) URL',
+    );
+    expect(validateNetworkSettings({
+      mode: 'public',
+      port: '6204',
+      public_url: 'https://user:secret@staff.example.com',
+    })).toBe('公网 URL 不能包含用户名、密码、查询参数、片段或路径');
   });
 });

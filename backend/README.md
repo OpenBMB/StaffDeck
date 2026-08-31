@@ -20,7 +20,13 @@ cp .env.example .env
 .venv/bin/uvicorn single_port_app:app --host 127.0.0.1 --port 5173
 ```
 
-Swagger UI: `http://localhost:5173/docs`
+StaffDeck Open API documentation: `http://localhost:5173/api/v1/docs`
+
+When using the packaged desktop application, do not assume port `5173`. An administrator can
+open **运行设置 → 网络与 API** to copy the active same-machine API Base URL. The same card can
+save a local, LAN, or externally published next-launch port; a full desktop restart is required
+before the new listener takes effect. Account API keys are managed separately and are never
+embedded in a Base URL.
 
 The current production schema migration path supports SQLite only. Non-SQLite
 database URLs are not a supported deployment configuration.

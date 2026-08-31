@@ -17,6 +17,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from app.version import app_version
+from runtime_network import (
+    NetworkSettingsValidationError,
+    normalize_network_settings,
+    runtime_network_snapshot,
+)
 
 APP_NAME = "StaffDeck"
 APP_ID = "ai.staffdeck.desktop"
@@ -40,11 +45,13 @@ LARK_PACKAGING_SMOKE_IMPORTS = (
 
 def build_server_config() -> dict:
     host = os.environ.get("ULTRARAG_HOST", "127.0.0.1")
+    public_url = os.environ.get("STAFFDECK_PUBLIC_URL", "").strip()
     return {
         "app": "single_port_app:app",
         "host": host,
         "port": find_available_port(host),
-        "public_url": os.environ.get("STAFFDECK_PUBLIC_URL", "").strip(),
+        "public_url": public_url,
+        "mode": "public" if public_url else ("local" if host == "127.0.0.1" else "lan"),
     }
 
 
@@ -67,18 +74,15 @@ def _load_network_config() -> dict[str, str]:
 
 
 def _save_network_config(mode: str, host: str, port: int, public_url: str = "") -> Path:
-    if mode not in NETWORK_MODES:
-        raise ValueError(f"网络模式必须是 local、lan 或 public，当前为 {mode!r}")
-    if mode == "local":
-        host = "127.0.0.1"
-    elif mode in {"lan", "public"}:
-        host = "0.0.0.0"
-    if mode == "public" and not public_url:
-        raise ValueError("公网模式需要提供 --public-url，例如 https://staff.example.com")
+    """Validate every field before atomically replacing the user-local network configuration."""
+    try:
+        normalized = normalize_network_settings(mode, port, public_url)
+    except NetworkSettingsValidationError as exc:
+        raise ValueError(str(exc)) from exc
     path = _network_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"mode": mode, "host": host, "port": port, "public_url": public_url}, indent=2)
+        json.dumps(normalized, indent=2)
         + "\n",
         encoding="utf-8",
     )
@@ -204,6 +208,7 @@ def apply_runtime_env(cfg: dict | None = None) -> None:
     existing_cors = os.environ.get("CORS_ORIGINS", "")
     origins = [item for item in (existing_cors, local_origin, origin) if item]
     os.environ["CORS_ORIGINS"] = ",".join(dict.fromkeys(",".join(origins).split(",")))
+    os.environ["STAFFDECK_RUNTIME_NETWORK"] = runtime_network_snapshot(cfg)
 
     # frozen 态把 .env 指向用户数据目录（不存在则 pydantic 不加载），避免误加载启动 cwd 的陌生 .env
     if getattr(sys, "frozen", False):

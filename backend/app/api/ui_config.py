@@ -16,8 +16,14 @@ from app.db import get_session
 from app.db.models import UIConfig, User, utc_now
 from app.harness.sandbox import diagnostics, windows_install_command
 from app.security.auth import get_current_user, require_current_tenant
-from app.security.permissions import ensure_tenant_admin
+from app.security.permissions import ensure_tenant_admin, require_tenant_admin
 from app.security.tenant import ensure_tenant
+from runtime_network import (
+    NetworkSettingsValidationError,
+    normalize_network_settings,
+    parse_runtime_network_snapshot,
+    runtime_network_snapshot,
+)
 
 enterprise_router = APIRouter(
     prefix="/api/enterprise/ui-config",
@@ -25,6 +31,10 @@ enterprise_router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 chat_router = APIRouter(prefix="/api/chat/ui-config", tags=["chat:ui-config"])
+network_router = APIRouter(
+    prefix="/api/enterprise/network-settings",
+    tags=["enterprise:network-settings"],
+)
 
 
 class UIConfigRead(BaseModel):
@@ -105,6 +115,35 @@ class UIConfigUpdateRequest(BaseModel):
         self.context_medium_summary_prefix = self.context_medium_summary_prefix.strip()
         if not self.context_long_summary_prefix or not self.context_medium_summary_prefix:
             raise ValueError("摘要前缀不能为空")
+        return self
+
+
+class NetworkSettingsRead(BaseModel):
+    active_base_url: str
+    active_docs_url: str
+    active_openapi_url: str
+    active_mode: Literal["local", "lan", "public"]
+    active_public_base_url: str | None = None
+    mode: Literal["local", "lan", "public"]
+    port: int
+    public_url: str
+    pending_base_url: str
+    restart_required: bool
+
+
+class NetworkSettingsUpdateRequest(BaseModel):
+    tenant_id: str
+    mode: Literal["local", "lan", "public"]
+    port: int = Field(strict=True)
+    public_url: str = Field(default="", max_length=2048)
+
+    @model_validator(mode="after")
+    def validate_network_settings(self) -> NetworkSettingsUpdateRequest:
+        """Reject unsafe network data before an update handler can write the launcher file."""
+        try:
+            normalize_network_settings(self.mode, self.port, self.public_url)
+        except NetworkSettingsValidationError as exc:
+            raise ValueError(str(exc)) from exc
         return self
 
 
@@ -234,6 +273,43 @@ def update_enterprise_ui_config(
     return ui_config_read(row, restart_scheduled=sandbox_changed)
 
 
+@network_router.get("", response_model=NetworkSettingsRead)
+def get_network_settings(
+    _current_user: User = Depends(require_tenant_admin),
+) -> NetworkSettingsRead:
+    """Return launcher-owned active endpoint data only to a tenant administrator."""
+    return _network_settings_read()
+
+
+@network_router.put("", response_model=NetworkSettingsRead)
+def update_network_settings(
+    request: NetworkSettingsUpdateRequest,
+    current_user: User = Depends(get_current_user),
+) -> NetworkSettingsRead:
+    """Persist a fully validated next-launch endpoint without changing the running listener."""
+    ensure_tenant_admin(request.tenant_id, current_user)
+    normalized = normalize_network_settings(request.mode, request.port, request.public_url)
+    active = _active_runtime_network()
+
+    # The current listener necessarily occupies its own port; every other requested port is checked.
+    if normalized["port"] != active["port"]:
+        from desktop_launcher import port_in_use
+
+        if port_in_use(str(normalized["host"]), int(normalized["port"])):
+            raise HTTPException(status_code=409, detail="所选端口已被其他进程占用")
+
+    # Import only during a request so the launcher still controls the pre-ASGI startup sequence.
+    from desktop_launcher import _save_network_config
+
+    _save_network_config(
+        str(normalized["mode"]),
+        str(normalized["host"]),
+        int(normalized["port"]),
+        str(normalized["public_url"]),
+    )
+    return _network_settings_read()
+
+
 @chat_router.get("", response_model=UIConfigRead)
 def get_chat_ui_config(
     tenant_id: str = Query(...),
@@ -243,6 +319,106 @@ def get_chat_ui_config(
     if tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
     return ui_config_read(get_or_create_ui_config(db, tenant_id))
+
+
+def _active_runtime_network() -> dict[str, str | int]:
+    """Read desktop runtime state first, then derive a trusted web-server runtime state."""
+    raw_snapshot = os.environ.get("STAFFDECK_RUNTIME_NETWORK", "")
+    if raw_snapshot:
+        try:
+            return parse_runtime_network_snapshot(raw_snapshot)
+        except NetworkSettingsValidationError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="当前运行网络状态不可用，请通过 StaffDeck 桌面启动器重新启动",
+            ) from exc
+    try:
+        return _web_runtime_network()
+    except NetworkSettingsValidationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="当前运行网络状态不可用，请检查 Web 服务的监听配置",
+        ) from exc
+
+
+def _web_runtime_network() -> dict[str, str | int]:
+    """Build a stable API display value from trusted Web-process configuration only."""
+    app_host = os.environ.get("APP_HOST")
+    app_port = os.environ.get("APP_PORT")
+    if app_host or app_port:
+        host = app_host or "127.0.0.1"
+        raw_port = app_port or "5173"
+    else:
+        host = os.environ.get("ULTRARAG_HOST") or "127.0.0.1"
+        raw_port = os.environ.get("ULTRARAG_PORT") or "5173"
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise NetworkSettingsValidationError("Web 服务监听端口无效") from exc
+    public_url = os.environ.get("STAFFDECK_PUBLIC_URL", "").strip()
+    mode = (
+        "public"
+        if public_url
+        else ("local" if host in {"127.0.0.1", "localhost", "::1"} else "lan")
+    )
+    return parse_runtime_network_snapshot(
+        runtime_network_snapshot(
+            {"mode": mode, "host": host, "port": port, "public_url": public_url}
+        )
+    )
+
+
+def _next_launch_network(active: dict[str, str | int]) -> dict[str, str | int]:
+    """Load a pending configuration while leaving malformed historical data recoverable."""
+    from desktop_launcher import _load_network_config
+
+    saved = _load_network_config()
+    try:
+        return normalize_network_settings(
+            str(saved.get("mode") or active["mode"]),
+            saved.get("port", active["port"]),
+            str(saved.get("public_url") or active["public_url"]),
+        )
+    except NetworkSettingsValidationError:
+        # Do not rewrite historical data during a read; the next valid save repairs it.
+        return normalize_network_settings(
+            str(active["mode"]), int(active["port"]), str(active["public_url"])
+        )
+
+
+def _network_settings_read() -> NetworkSettingsRead:
+    """Compose active and next-launch endpoint views without exposing a credential."""
+    active = _active_runtime_network()
+    pending = _next_launch_network(active)
+    active_base_url = _api_base_url(str(active["local_origin"]))
+    active_public_base_url = (
+        _api_base_url(str(active["public_url"])) if active["public_url"] else None
+    )
+    pending_base_url = _api_base_url(
+        str(pending["public_url"])
+        if pending["mode"] == "public"
+        else f"http://127.0.0.1:{pending['port']}"
+    )
+    active_persistable = normalize_network_settings(
+        str(active["mode"]), int(active["port"]), str(active["public_url"])
+    )
+    return NetworkSettingsRead(
+        active_base_url=active_base_url,
+        active_docs_url=f"{active_base_url}/docs",
+        active_openapi_url=f"{active_base_url}/openapi.json",
+        active_mode=str(active["mode"]),
+        active_public_base_url=active_public_base_url,
+        mode=str(pending["mode"]),
+        port=int(pending["port"]),
+        public_url=str(pending["public_url"]),
+        pending_base_url=pending_base_url,
+        restart_required=pending != active_persistable,
+    )
+
+
+def _api_base_url(origin: str) -> str:
+    """Append the StaffDeck Open API root exactly once to a validated runtime origin."""
+    return f"{origin.rstrip('/')}/api/v1"
 
 
 def _validate_storage_path(value: str) -> str | None:

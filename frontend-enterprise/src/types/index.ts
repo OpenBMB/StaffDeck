@@ -383,6 +383,19 @@ export type UIConfigRead = {
   updated_at: string;
 };
 
+export type NetworkSettingsRead = {
+  active_base_url: string;
+  active_docs_url: string;
+  active_openapi_url: string;
+  active_mode: 'local' | 'lan' | 'public';
+  active_public_base_url?: string | null;
+  mode: 'local' | 'lan' | 'public';
+  port: number;
+  public_url: string;
+  pending_base_url: string;
+  restart_required: boolean;
+};
+
 export type MemoryRead = {
   id: string;
   tenant_id: string;

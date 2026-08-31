@@ -4,8 +4,9 @@ import { Button as UIButton, Card, CardContent, CardHeader, CardTitle, Input, Sw
 import { api, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
 import AccountApiKeyDialog from '../components/AccountApiKeyDialog';
-import type { UIConfigRead } from '../types';
-import { BrainCircuit, KeyRound, RotateCcw, ShieldCheck } from 'lucide-react';
+import { copyTextToClipboard } from '../lib/clipboard';
+import type { NetworkSettingsRead, UIConfigRead } from '../types';
+import { BrainCircuit, Copy, KeyRound, Network, RotateCcw, ShieldCheck } from 'lucide-react';
 
 type UiConfigForm = {
   show_thinking_trace: boolean;
@@ -47,6 +48,18 @@ const DEFAULT_UI_CONFIG: UiConfigForm = {
   sandbox_allowed_domains: '',
 };
 
+export type NetworkSettingsForm = {
+  mode: 'local' | 'lan' | 'public';
+  port: string;
+  public_url: string;
+};
+
+const DEFAULT_NETWORK_SETTINGS: NetworkSettingsForm = {
+  mode: 'local',
+  port: '5173',
+  public_url: '',
+};
+
 function formatDateOnly(value: string): string {
   const normalized = /(?:z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`;
   const date = new Date(normalized);
@@ -61,6 +74,9 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
   const [effectiveStoragePath, setEffectiveStoragePath] = useState('');
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [networkSettings, setNetworkSettings] = useState<NetworkSettingsRead | null>(null);
+  const [networkForm, setNetworkForm] = useState<NetworkSettingsForm>(DEFAULT_NETWORK_SETTINGS);
+  const [networkLoading, setNetworkLoading] = useState(false);
   const [sandboxStatus, setSandboxStatus] = useState<Pick<UIConfigRead, 'sandbox_status' | 'sandbox_status_message' | 'sandbox_status_remediation'>>({});
   const update = (patch: Partial<UiConfigForm>) => setForm((prev) => ({ ...prev, ...patch }));
 
@@ -92,6 +108,15 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
         setSandboxStatus({ sandbox_status: row.sandbox_status, sandbox_status_message: row.sandbox_status_message, sandbox_status_remediation: row.sandbox_status_remediation });
       })
       .catch((error) => notify.error(error.message));
+  }, []);
+
+  useEffect(() => {
+    api.get<NetworkSettingsRead>(`/api/enterprise/network-settings?tenant_id=${TENANT_ID}`)
+      .then((row) => {
+        setNetworkSettings(row);
+        setNetworkForm({ mode: row.mode, port: String(row.port), public_url: row.public_url || '' });
+      })
+      .catch((error) => notify.error(error instanceof Error ? error.message : '无法读取网络与 API 设置'));
   }, []);
 
   async function save() {
@@ -142,6 +167,30 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
       notify.error(error instanceof Error ? error.message : '保存失败');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function saveNetworkSettings() {
+    const validationError = validateNetworkSettings(networkForm);
+    if (validationError) {
+      notify.error(validationError);
+      return;
+    }
+    setNetworkLoading(true);
+    try {
+      const row = await api.put<NetworkSettingsRead>('/api/enterprise/network-settings', {
+        tenant_id: TENANT_ID,
+        mode: networkForm.mode,
+        port: Number(networkForm.port),
+        public_url: networkForm.public_url.trim(),
+      });
+      setNetworkSettings(row);
+      setNetworkForm({ mode: row.mode, port: String(row.port), public_url: row.public_url || '' });
+      notify.success(row.restart_required ? '网络配置已保存，请完全退出并重新启动 StaffDeck 后生效' : '网络配置已保存');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '网络配置保存失败');
+    } finally {
+      setNetworkLoading(false);
     }
   }
 
@@ -240,6 +289,35 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
         </CardContent>
       </Card>
       <Card className="editor-card settings-card">
+        <CardHeader><CardTitle className="flex items-center gap-[8px]"><Network className="size-[16px]" />网络与 API</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-[16px]">
+          {networkSettings && <NetworkEndpointDetails settings={networkSettings} />}
+          <div className="grid gap-[14px] md:grid-cols-2">
+            <LabeledField label="下次启动访问范围" hint="保存后不改变当前服务；端口或访问范围变更需完全退出并重启 StaffDeck。">
+              <select
+                className="h-[36px] rounded-md border border-input bg-background px-[10px] text-[13px]"
+                value={networkForm.mode}
+                onChange={(event) => setNetworkForm((current) => ({ ...current, mode: event.target.value as NetworkSettingsForm['mode'] }))}
+              >
+                <option value="local">仅本机</option><option value="lan">局域网</option><option value="public">外部发布</option>
+              </select>
+            </LabeledField>
+            <LabeledField label="下次启动监听端口" hint="范围 1–65535。若端口被其他进程占用，保存会被拒绝。">
+              <Input type="number" min={1} max={65535} step={1} value={networkForm.port} onChange={(event) => setNetworkForm((current) => ({ ...current, port: event.target.value }))} />
+            </LabeledField>
+          </div>
+          {networkForm.mode === 'lan' && <p className="rounded-md border border-amber-200 bg-amber-50 px-[12px] py-[10px] text-[12px] leading-[18px] text-amber-900">局域网模式会在重启后允许局域网访问；当前本机调用仍使用上方的 127.0.0.1 地址。请从局域网设备实际访问的地址配置远端调用方。</p>}
+          {networkForm.mode === 'public' && <>
+            <LabeledField label="外部发布 URL" hint="填写由你维护的 HTTP(S) 站点根地址，例如 https://staff.example.com。">
+              <Input value={networkForm.public_url} onChange={(event) => setNetworkForm((current) => ({ ...current, public_url: event.target.value }))} placeholder="https://staff.example.com" />
+            </LabeledField>
+            <p className="rounded-md border border-amber-200 bg-amber-50 px-[12px] py-[10px] text-[12px] leading-[18px] text-amber-900">StaffDeck 不会创建 DNS、TLS 证书、反向代理或防火墙规则。请优先使用 HTTPS，并独立验证外部访问后再提供给远端调用方。</p>
+          </>}
+          {networkSettings?.restart_required && <p className="rounded-md border border-[#dce8fb] bg-[#f7faff] px-[12px] py-[10px] text-[12px] leading-[18px] text-[#52637d]">已保存的下次启动地址：{networkSettings.pending_base_url}。当前服务仍运行在上方地址，完全退出并重新启动后才会切换。</p>}
+          <div><UIButton variant="outline" disabled={networkLoading} onClick={() => void saveNetworkSettings()}>{networkLoading ? <RotateCcw className="size-[15px] animate-spin" /> : <SaveOutlined />}{networkLoading ? '正在保存网络配置' : '保存下次启动配置'}</UIButton></div>
+        </CardContent>
+      </Card>
+      <Card className="editor-card settings-card">
         <CardHeader><CardTitle className="flex items-center gap-[8px]"><ShieldCheck className="size-[16px]" />执行隔离与文件存储</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-[16px]">
           <SwitchRow label="启用 SRT 沙盒" checked={form.sandbox_enabled} onChange={(next) => update({ sandbox_enabled: next })} hint="仅管理员可修改。打开或关闭后保存将自动重启 StaffDeck。默认关闭。" />
@@ -312,6 +390,66 @@ export function validateContextSettings(form: UiConfigForm): string | null {
     return '摘要前缀不能为空';
   }
   return null;
+}
+
+/** Normalizes the one current same-machine API Base URL that the settings card displays. */
+export function buildApiEndpointLinks(activeBaseUrl: string): { baseUrl: string } {
+  const baseUrl = activeBaseUrl.replace(/\/+$/, '');
+  return { baseUrl };
+}
+
+/** Validates next-launch browser input before the backend repeats the authoritative validation. */
+export function validateNetworkSettings(form: NetworkSettingsForm): string | null {
+  const port = Number(form.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    return '端口必须是 1 到 65535 之间的整数';
+  }
+  if (form.mode !== 'public') return null;
+  if (!form.public_url.trim()) return '公网访问需要填写完整的 HTTP(S) URL';
+  try {
+    const parsed = new URL(form.public_url.trim());
+    if (
+      !['http:', 'https:'].includes(parsed.protocol)
+      || !parsed.hostname
+      || parsed.username
+      || parsed.password
+      || parsed.search
+      || parsed.hash
+      || !['', '/'].includes(parsed.pathname)
+    ) {
+      return '公网 URL 不能包含用户名、密码、查询参数、片段或路径';
+    }
+  } catch {
+    return '公网访问需要填写完整的 HTTP(S) URL';
+  }
+  return null;
+}
+
+function NetworkEndpointDetails({ settings }: { settings: NetworkSettingsRead }) {
+  /** Copies only a caller-safe integration value and informs the administrator of the result. */
+  async function copyApiValue(value: string, label: string): Promise<void> {
+    try {
+      await copyTextToClipboard(value);
+      notify.success(`已复制${label}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '复制失败');
+    }
+  }
+
+  const links = buildApiEndpointLinks(settings.active_base_url);
+  return <div className="flex flex-col gap-[10px] rounded-[11px] border border-[#e6e9f0] bg-[#fbfbfc] px-[13px] py-[12px]">
+    <EndpointRow label="当前本机 API Base URL" value={links.baseUrl} onCopy={() => void copyApiValue(links.baseUrl, 'Base URL')} />
+  </div>;
+}
+
+function EndpointRow({ label, value, onCopy }: { label: string; value: string; onCopy: () => void }) {
+  /** Renders the one read-only API Base URL and its explicit copy action. */
+  return <div className="flex flex-wrap items-center justify-between gap-[8px] border-b border-[#e8ebf0] pb-[10px] last:border-0 last:pb-0">
+    <div className="min-w-0"><p className="text-[11px] font-medium text-[#464c5e]">{label}</p><code className="mt-[3px] block break-all text-[11px] text-[#52637d]">{value}</code></div>
+    <div className="flex shrink-0 gap-[6px]">
+      <UIButton type="button" variant="outline" size="sm" onClick={onCopy}><Copy className="size-[13px]" />复制</UIButton>
+    </div>
+  </div>;
 }
 
 function toggleContextRole(
