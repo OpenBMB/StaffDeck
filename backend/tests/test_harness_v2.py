@@ -102,6 +102,7 @@ from app.session.session_schema import (
     TurnPlan,
 )
 from app.session.attachment_store import stage_chat_attachment
+from app.skills.nesting import expand_sop_for_execution
 from app.skills.skill_schema import SkillCapabilityRefs
 from app.tools.tool_schema import ToolResult
 
@@ -1353,6 +1354,85 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     assert shared_descriptor.input_schema["required"] == ["query", "operation"]
     assert shared_descriptor.metadata["execution_policy"] == "instructions_only"
     assert shared_descriptor.metadata["script_execution"] == "use_harness_tools"
+
+
+def test_nested_sop_tool_grant_survives_parent_expansion() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant-demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent-overall",
+                tenant_id="tenant-demo",
+                name="整体智能体",
+                is_overall=True,
+            )
+        )
+        tool = Tool(
+            id="tool-child",
+            tenant_id="tenant-demo",
+            name="child.lookup",
+            method="POST",
+            url="https://example.test/lookup",
+            capability_scope="sop_specific",
+            allowed_skills_json=["child"],
+        )
+        db.add(tool)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant-demo", "tool", tool.id)
+        db.commit()
+
+        child = Skill(
+            id="skill-child",
+            tenant_id="tenant-demo",
+            skill_id="child",
+            name="子流程",
+            status="published",
+            content_json={
+                "capability_scope": "sop_specific",
+                "start_node_id": "lookup",
+                "terminal_node_ids": ["lookup"],
+                "nodes": [
+                    {
+                        "node_id": "lookup",
+                        "type": "tool_call",
+                        "name": "查询",
+                        "capability_refs": {"tool_ids": [tool.id]},
+                    }
+                ],
+                "edges": [],
+            },
+        )
+        parent = Skill(
+            id="skill-parent",
+            tenant_id="tenant-demo",
+            skill_id="parent",
+            name="父流程",
+            status="published",
+            content_json={
+                "capability_scope": "general",
+                "start_node_id": "nested",
+                "terminal_node_ids": ["nested"],
+                "nodes": [
+                    {
+                        "node_id": "nested",
+                        "type": "subflow",
+                        "name": "调用子流程",
+                        "sub_sop_id": "child",
+                    }
+                ],
+                "edges": [],
+            },
+        )
+        expanded = expand_sop_for_execution(parent, [parent, child])
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant-demo",
+            "agent-overall",
+            expanded,
+            "nested::child::lookup",
+        )
+
+    assert "child.lookup" in manifest.allowed_names()
 
 
 def test_general_tools_remain_discoverable_across_sop_steps() -> None:

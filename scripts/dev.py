@@ -227,6 +227,64 @@ def _ensure_frontend_dependencies() -> None:
     )
 
 
+def _installed_distribution_version(name: str) -> str | None:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version(name)
+    except PackageNotFoundError:
+        return None
+
+
+def _backend_dependencies_complete() -> bool:
+    """Check current pyproject runtime requirements against the active venv."""
+    try:
+        import tomllib
+
+        from packaging.requirements import Requirement
+
+        document = tomllib.loads(
+            (ROOT_DIR / "backend" / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        requirements = document.get("project", {}).get("dependencies", [])
+    except (ImportError, OSError, ValueError):
+        return False
+    if not isinstance(requirements, list):
+        return False
+    for raw in requirements:
+        try:
+            requirement = Requirement(str(raw))
+        except ValueError:
+            return False
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        installed = _installed_distribution_version(requirement.name)
+        if installed is None or (
+            requirement.specifier and not requirement.specifier.contains(installed)
+        ):
+            return False
+    return True
+
+
+def _ensure_backend_dependencies() -> None:
+    """Refresh the editable backend install after a pull changes dependencies."""
+    if _backend_dependencies_complete():
+        return
+    print("Backend dependencies changed or are incomplete; refreshing the active environment...")
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-e",
+            str(ROOT_DIR / "backend"),
+        ],
+        cwd=ROOT_DIR,
+        check=True,
+    )
+
+
 def _ensure_sandbox_runtime() -> None:
     runtime = ROOT_DIR / "packaging" / "sandbox_runtime"
     cli = runtime / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
@@ -319,6 +377,7 @@ def _start_detached(supervisor) -> int:
 def command_up(detach_flag: bool) -> int:
     detach = detach_flag or _env_flag("DETACH")
     os.environ.setdefault("AUTO_RESTART", "1" if detach else "0")
+    _ensure_backend_dependencies()
     supervisor = _load_supervisor()
     _ensure_frontend_dependencies()
     supervisor.validate_prerequisites()

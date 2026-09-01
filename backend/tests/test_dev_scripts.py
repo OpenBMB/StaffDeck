@@ -120,6 +120,49 @@ def test_dev_cli_refreshes_incomplete_frontend_dependencies(monkeypatch) -> None
     assert calls[1][-3:] == ["ci", "--no-audit", "--no-fund"]
 
 
+def test_dev_cli_detects_missing_backend_dependency(tmp_path, monkeypatch) -> None:
+    dev = _load_script("dev")
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["present>=1", "missing>=1"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dev, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        dev,
+        "_installed_distribution_version",
+        lambda name: "1.2" if name == "present" else None,
+    )
+
+    assert dev._backend_dependencies_complete() is False
+
+
+def test_dev_cli_refreshes_incomplete_backend_dependencies(monkeypatch) -> None:
+    dev = _load_script("dev")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(dev, "_backend_dependencies_complete", lambda: False)
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(dev.subprocess, "run", run)
+
+    dev._ensure_backend_dependencies()
+
+    assert calls == [
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-e",
+            str(ROOT_DIR / "backend"),
+        ]
+    ]
+
+
 def test_supervisor_does_not_restart_during_startup_grace(monkeypatch) -> None:
     supervisor = _load_script("dev_supervisor")
 

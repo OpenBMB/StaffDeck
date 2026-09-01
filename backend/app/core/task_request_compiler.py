@@ -215,6 +215,33 @@ def current_step_capability_refs(skill: Skill | None, step_id: str | None) -> di
     return result
 
 
+def current_step_authorization_skill_ids(
+    skill: Skill | None,
+    step_id: str | None,
+) -> set[str]:
+    """Return every SOP identity that authorizes the current expanded node.
+
+    Nested SOP nodes execute inside the parent's persisted task frame, so the
+    runtime ``Skill`` keeps the parent ``skill_id``.  The expansion metadata is
+    the authoritative source for the child call path.  Keeping both identities
+    preserves parent-level tool grants while allowing a child-only grant to
+    remain valid after expansion.
+    """
+    if skill is None:
+        return set()
+    authorized = {str(skill.skill_id or "").strip()}
+    node = _current_node(skill, step_id)
+    metadata = (node or {}).get("metadata")
+    if isinstance(metadata, dict):
+        nested_path = metadata.get("nested_sop_path")
+        if isinstance(nested_path, list):
+            authorized.update(_text_list(nested_path))
+        source_sop_id = str(metadata.get("source_sop_id") or "").strip()
+        if source_sop_id:
+            authorized.add(source_sop_id)
+    return {value for value in authorized if value}
+
+
 def _current_node(skill: Skill | None, step_id: str | None) -> dict[str, Any] | None:
     if skill is None:
         return None

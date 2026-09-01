@@ -17,6 +17,7 @@ from app.capabilities.local_general_skill import package_from_row
 from app.core.task_request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
+    current_step_authorization_skill_ids,
     current_step_capability_refs,
 )
 from app.db.models import (
@@ -64,6 +65,7 @@ class CapabilityManifestBuilder:
         if agent_id and get_agent(self.db, tenant_id, agent_id) is None:
             raise CapabilityAuthorizationError("当前员工不存在、已归档或不属于该租户。")
         refs = current_step_capability_refs(skill, step_id)
+        authorization_skill_ids = current_step_authorization_skill_ids(skill, step_id)
         available: list[CapabilityDescriptor] = []
         unavailable: list[CapabilityDescriptor] = []
 
@@ -187,8 +189,8 @@ class CapabilityManifestBuilder:
             explicitly_allowed = any(tool_by_ref.get(ref) is row for ref in refs["tool_ids"])
             if scope == "sop_specific" and not explicitly_allowed:
                 continue
-            if row.allowed_skills_json and (
-                skill is None or skill.skill_id not in row.allowed_skills_json
+            if row.allowed_skills_json and not authorization_skill_ids.intersection(
+                str(value).strip() for value in row.allowed_skills_json if str(value).strip()
             ):
                 if explicitly_allowed:
                     unavailable.append(
