@@ -20,6 +20,7 @@ from app.security.auth import (
     hash_password,
     verify_password,
 )
+from app.security.encryption import decrypt_recoverable_api_key, encrypt_secret
 from app.security.permissions import MEMBER_ROLE, is_admin_user
 from app.security.tenant import ensure_tenant
 
@@ -92,6 +93,7 @@ class AccountAPICredentialRead(BaseModel):
     name: str
     access: Literal["user_full_access"] = "user_full_access"
     key_prefix: str
+    can_reveal: bool = False
     scopes: list[str] = Field(default_factory=list)
     status: str
     expires_at: datetime | None = None
@@ -101,6 +103,10 @@ class AccountAPICredentialRead(BaseModel):
 
 
 class AccountAPICredentialCreated(AccountAPICredentialRead):
+    api_key: str
+
+
+class AccountAPICredentialReveal(BaseModel):
     api_key: str
 
 
@@ -348,7 +354,10 @@ def create_account_api_credential(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> AccountAPICredentialCreated:
+    """创建账户密钥并保存仅供受授权复制操作使用的加密副本。"""
+    # 先限定密钥归属到当前账户和租户。
     client = _ensure_account_api_client(db, current_user.tenant_id, current_user)
+    # 再同时持久化认证摘要与不可出现在列表响应中的加密副本。
     token, prefix, digest = generate_api_key()
     row = APICredential(
         tenant_id=current_user.tenant_id,
@@ -357,6 +366,7 @@ def create_account_api_credential(
         name=request.name.strip(),
         key_prefix=prefix,
         key_digest=digest,
+        encrypted_key=encrypt_secret(token),
         scopes_json=sorted(USER_FULL_ACCESS_SCOPES),
         expires_at=request.expires_at,
     )
@@ -378,12 +388,16 @@ def rotate_account_api_credential(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> AccountAPICredentialCreated:
+    """轮换账户密钥并以新值替换认证摘要和加密副本。"""
+    # 先按当前账户所有权定位待轮换的密钥。
     row = _get_account_api_credential(
         db, current_user.tenant_id, current_user.id, credential_id
     )
+    # 再用同一个新值更新验证摘要和受保护的复制副本。
     token, prefix, digest = generate_api_key()
     row.key_prefix = prefix
     row.key_digest = digest
+    row.encrypted_key = encrypt_secret(token)
     row.status = "active"
     row.revoked_at = None
     row.updated_at = utc_now()
@@ -397,6 +411,34 @@ def rotate_account_api_credential(
 
 
 @router.post(
+    "/me/api-credentials/{credential_id}/reveal",
+    response_model=AccountAPICredentialReveal,
+)
+def reveal_account_api_credential(
+    credential_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AccountAPICredentialReveal:
+    """为账户所有者读取一把可用密钥的完整值，不向列表接口扩散明文。"""
+    # 先复用现有归属检查，拒绝其他账户或租户的凭据。
+    row = _get_account_api_credential(
+        db, current_user.tenant_id, current_user.id, credential_id
+    )
+    # 仅启用中的凭据允许读取，禁用后的值不能被重新复制。
+    if row.status != "active":
+        raise HTTPException(status_code=409, detail="API credential is not active")
+    # 历史凭据没有加密副本，或 APP_SECRET 已变更时，提示轮换而不返回部分值。
+    try:
+        api_key = decrypt_recoverable_api_key(row.encrypted_key)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="API credential cannot be recovered; rotate it to create a new key",
+        ) from exc
+    return AccountAPICredentialReveal(api_key=api_key)
+
+
+@router.post(
     "/me/api-credentials/{credential_id}/revoke",
     response_model=AccountAPICredentialRead,
 )
@@ -405,10 +447,14 @@ def revoke_account_api_credential(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> AccountAPICredentialRead:
+    """禁用账户密钥并清除不再需要的加密复制副本。"""
+    # 先按当前账户所有权定位要禁用的凭据。
     row = _get_account_api_credential(
         db, current_user.tenant_id, current_user.id, credential_id
     )
+    # 禁用后不允许再次复制，因此立即减少数据库中可恢复明文的留存。
     row.status = "revoked"
+    row.encrypted_key = None
     row.revoked_at = utc_now()
     row.updated_at = utc_now()
     db.add(row)
@@ -603,6 +649,7 @@ def _account_api_credential_read(
         user_id=user_id,
         name=row.name,
         key_prefix=f"{row.key_prefix}…",
+        can_reveal=row.status == "active" and bool(row.encrypted_key),
         scopes=list(row.scopes_json or []),
         status=row.status,
         expires_at=row.expires_at,

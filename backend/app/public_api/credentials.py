@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.db.models import APIClient, APICredential, AgentProfile, utc_now
+from app.db.models import AgentProfile, APIClient, APICredential, utc_now
 from app.public_api.auth import (
     PublicPrincipal,
     generate_api_key,
@@ -20,7 +20,7 @@ from app.public_api.schemas import (
     APICredentialCreated,
     APICredentialRead,
 )
-
+from app.security.encryption import encrypt_secret
 
 router = APIRouter(tags=["credentials"])
 
@@ -169,6 +169,8 @@ def create_api_credential(
     principal: PublicPrincipal = Depends(get_public_or_admin_principal),
     db: Session = Depends(get_session),
 ) -> APICredentialCreated:
+    """创建公共 API 密钥，并保存与认证摘要对应的加密复制副本。"""
+    # 先验证调用者、客户端归属及请求权限范围。
     _require_credentials_write(principal)
     client = db.get(APIClient, client_id)
     if not client or client.tenant_id != principal.tenant_id:
@@ -183,6 +185,7 @@ def create_api_credential(
             raise PublicAPIError(404, "AGENT_NOT_FOUND", "Agent not found.")
         if not scopes.issubset(AGENT_KEY_ALLOWED_SCOPES):
             raise PublicAPIError(400, "AGENT_SCOPE_INVALID", "Agent key contains management scopes.")
+    # 再以同一个新值同时保存认证摘要和受保护的复制副本。
     token, prefix, digest = generate_api_key()
     row = APICredential(
         tenant_id=principal.tenant_id,
@@ -191,6 +194,7 @@ def create_api_credential(
         name=request.name.strip(),
         key_prefix=prefix,
         key_digest=digest,
+        encrypted_key=encrypt_secret(token),
         scopes_json=sorted(scopes),
         expires_at=request.expires_at,
     )
@@ -207,13 +211,17 @@ def rotate_api_credential(
     principal: PublicPrincipal = Depends(get_public_or_admin_principal),
     db: Session = Depends(get_session),
 ) -> APICredentialCreated:
+    """轮换公共 API 密钥，并替换认证摘要与加密复制副本。"""
+    # 先确认该凭据属于调用者所在租户。
     _require_credentials_write(principal)
     row = db.get(APICredential, credential_id)
     if not row or row.tenant_id != principal.tenant_id:
         raise PublicAPIError(404, "API_CREDENTIAL_NOT_FOUND", "API credential not found.")
+    # 再使用同一个新值更新认证摘要和受保护的复制副本。
     token, prefix, digest = generate_api_key()
     row.key_prefix = prefix
     row.key_digest = digest
+    row.encrypted_key = encrypt_secret(token)
     row.status = "active"
     row.revoked_at = None
     row.updated_at = utc_now()
@@ -229,11 +237,15 @@ def revoke_api_credential(
     principal: PublicPrincipal = Depends(get_public_or_admin_principal),
     db: Session = Depends(get_session),
 ) -> APICredentialRead:
+    """禁用公共 API 密钥并清除不再需要的加密复制副本。"""
+    # 先确认该凭据属于调用者所在租户。
     _require_credentials_write(principal)
     row = db.get(APICredential, credential_id)
     if not row or row.tenant_id != principal.tenant_id:
         raise PublicAPIError(404, "API_CREDENTIAL_NOT_FOUND", "API credential not found.")
+    # 禁用后不允许复制，因此立即减少数据库中可恢复明文的留存。
     row.status = "revoked"
+    row.encrypted_key = None
     row.revoked_at = utc_now()
     row.updated_at = utc_now()
     db.add(row)

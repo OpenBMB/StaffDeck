@@ -78,7 +78,7 @@ class APIClient(SQLModel, table=True):
 
 
 class APICredential(SQLModel, table=True):
-    """Hashed tenant or agent credential. Plaintext is returned exactly once."""
+    """Tenant or agent credential with an authentication digest and optional encrypted recovery copy."""
 
     __tablename__ = "api_credentials"
     __table_args__ = (
@@ -92,6 +92,7 @@ class APICredential(SQLModel, table=True):
     name: str
     key_prefix: str = Field(index=True)
     key_digest: str
+    encrypted_key: Optional[str] = None
     scopes_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     status: str = Field(default="active", index=True)
     expires_at: Optional[datetime] = Field(default=None, index=True)

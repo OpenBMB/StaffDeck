@@ -143,6 +143,7 @@ class AgentAPICredentialRead(BaseModel):
     name: str
     access: Literal["runtime", "full_access"]
     key_prefix: str
+    can_reveal: bool = False
     scopes: list[str] = Field(default_factory=list)
     status: str
     expires_at: datetime | None = None
@@ -152,4 +153,8 @@ class AgentAPICredentialRead(BaseModel):
 
 
 class AgentAPICredentialCreated(AgentAPICredentialRead):
+    api_key: str
+
+
+class AgentAPICredentialReveal(BaseModel):
     api_key: str

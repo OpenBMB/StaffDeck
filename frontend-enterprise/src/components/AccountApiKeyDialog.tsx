@@ -35,6 +35,7 @@ type AccountApiCredential = {
   name: string;
   access: 'user_full_access';
   key_prefix: string;
+  can_reveal: boolean;
   scopes: string[];
   status: string;
   expires_at?: string | null;
@@ -44,7 +45,9 @@ type AccountApiCredential = {
 };
 
 type AccountApiCredentialCreated = AccountApiCredential & { api_key: string };
+type AccountApiCredentialReveal = { api_key: string };
 
+/** 展示并管理当前账户 API 密钥的创建、复制、轮换和禁用操作。 */
 export default function AccountApiKeyDialog({
   account,
   open,
@@ -58,6 +61,7 @@ export default function AccountApiKeyDialog({
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
+  const [revealingId, setRevealingId] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<AccountApiCredentialCreated | null>(null);
   const [copied, setCopied] = useState(false);
   const revealedKeyRef = useRef<HTMLInputElement | null>(null);
@@ -128,6 +132,24 @@ export default function AccountApiKeyDialog({
     }
   }
 
+  /** 只在用户点击时读取单把已授权密钥，并直接交给浏览器剪贴板。 */
+  async function revealAndCopyCredential(row: AccountApiCredential) {
+    setRevealingId(row.id);
+    try {
+      // 完整密钥不进入列表状态，避免页面刷新或其他列表操作意外保留明文。
+      const revealedKey = await api.post<AccountApiCredentialReveal>(
+        `/api/auth/me/api-credentials/${encodeURIComponent(row.id)}/reveal`,
+        {},
+      );
+      await copyTextToClipboard(revealedKey.api_key);
+      notify.success('完整密钥已复制');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '复制完整密钥失败，请轮换后重试');
+    } finally {
+      setRevealingId(null);
+    }
+  }
+
   async function revokeCredential(row: AccountApiCredential) {
     if (!account || !window.confirm(`确认禁用「${row.name}」？禁用后调用会立即失败。`)) return;
     setActingId(row.id);
@@ -161,7 +183,7 @@ export default function AccountApiKeyDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next && !creating && !actingId) onClose(); }}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next && !creating && !actingId && !revealingId) onClose(); }}>
       <DialogContent
         aria-describedby="account-api-key-description"
         data-i18n-ignore
@@ -175,7 +197,7 @@ export default function AccountApiKeyDialog({
             <div>
               <DialogTitle className="text-[16px] font-semibold text-[#18181a]">账号 API 密钥 · {displayName}</DialogTitle>
               <DialogDescription id="account-api-key-description" className="mt-[5px] text-[12px] text-[#757f9c]">
-                这是您自己的账号密钥；明文只显示一次，请创建后立即保存。
+                启用中的新密钥可从列表再次复制；旧密钥需轮换后才能复制完整值。
               </DialogDescription>
             </div>
           </div>
@@ -194,7 +216,7 @@ export default function AccountApiKeyDialog({
             <p className="mt-[10px] text-[10px] leading-[16px] text-[#7f897f]">可按本人界面权限管理员工、SOP、知识、技能、工具和定时任务；不能越过账号权限、跨租户访问、读取供应商密钥或管理其他账号密钥。</p>
             <Button
               type="button"
-              disabled={creating || Boolean(actingId)}
+              disabled={creating || Boolean(actingId || revealingId)}
               onClick={() => void createCredential()}
               className="mt-[14px] h-[32px] w-full rounded-[10px] bg-[#207451] text-[12px] text-white hover:bg-[#185d40]"
             >
@@ -207,10 +229,10 @@ export default function AccountApiKeyDialog({
             <section className="rounded-[16px] border border-[#f0d28e] bg-[#fff9e9] p-[18px]" aria-live="polite">
               <div className="flex items-start justify-between gap-[14px]">
                 <div>
-                  <strong className="text-[13px] text-[#6b4d12]">请现在复制，关闭后无法再次查看</strong>
+                  <strong className="text-[13px] text-[#6b4d12]">建议现在复制，启用期间可从列表再次复制</strong>
                   <p className="mt-[4px] text-[11px] text-[#96732f]">账号全量密钥 · {revealed.name}</p>
                 </div>
-                <span className="rounded-full bg-[#f7e8bc] px-[8px] py-[3px] text-[10px] text-[#7b5c19]">仅显示一次</span>
+                <span className="rounded-full bg-[#f7e8bc] px-[8px] py-[3px] text-[10px] text-[#7b5c19]">可再次复制</span>
               </div>
               <div className="mt-[12px] flex items-center gap-[8px] rounded-[12px] bg-[#1d2027] p-[8px] pl-[12px]">
                 <input
@@ -262,12 +284,20 @@ export default function AccountApiKeyDialog({
                       <span>{row.last_used_at ? `最后使用 ${formatDate(row.last_used_at)}` : '尚未使用'}</span>
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-[6px]">
-                    <Button type="button" variant="outline" disabled={Boolean(actingId)} onClick={() => void rotateCredential(row)} className="h-[29px] rounded-[9px] border-[#e2e6ed] px-[9px] text-[10px] text-[#5e687c] hover:bg-[#f4f6f9]">
+                  <div className="flex shrink-0 flex-wrap items-center gap-[6px]">
+                    {row.status === 'active' && row.can_reveal ? (
+                      <Button type="button" variant="outline" disabled={Boolean(actingId || revealingId)} onClick={() => void revealAndCopyCredential(row)} className="h-[29px] rounded-[9px] border-[#e2e6ed] px-[9px] text-[10px] text-[#5e687c] hover:bg-[#f4f6f9]">
+                        {revealingId === row.id ? <LoaderCircle className="size-[12px] animate-spin" /> : <Copy className="size-[12px]" />}
+                        复制完整密钥
+                      </Button>
+                    ) : row.status === 'active' ? (
+                      <span className="text-[10px] text-[#8a92a3]">旧密钥需轮换后复制</span>
+                    ) : null}
+                    <Button type="button" variant="outline" disabled={Boolean(actingId || revealingId)} onClick={() => void rotateCredential(row)} className="h-[29px] rounded-[9px] border-[#e2e6ed] px-[9px] text-[10px] text-[#5e687c] hover:bg-[#f4f6f9]">
                       <RefreshCw className={actingId === row.id ? 'size-[12px] animate-spin' : 'size-[12px]'} />
                       轮换
                     </Button>
-                    <Button type="button" variant="outline" disabled={row.status !== 'active' || Boolean(actingId)} onClick={() => void revokeCredential(row)} className="h-[29px] rounded-[9px] border-[#f0d8d8] px-[9px] text-[10px] text-[#bd4141] hover:bg-[#fff1f1] hover:text-[#a62d2d]">
+                    <Button type="button" variant="outline" disabled={row.status !== 'active' || Boolean(actingId || revealingId)} onClick={() => void revokeCredential(row)} className="h-[29px] rounded-[9px] border-[#f0d8d8] px-[9px] text-[10px] text-[#bd4141] hover:bg-[#fff1f1] hover:text-[#a62d2d]">
                       <Ban className="size-[12px]" />
                       禁用
                     </Button>

@@ -9,24 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 
-from app.agents.schema import (
-    AgentModelsUpdateRequest,
-    AgentAPICredentialCreateRequest,
-    AgentAPICredentialCreated,
-    AgentAPICredentialRead,
-    AgentProfileCreateRequest,
-    AgentProfileRead,
-    AgentProfileUpdateRequest,
-    AgentResourceBindingInput,
-    AgentResourceImportRequest,
-    AgentResourceBindingRead,
-    AgentResourcesUpdateRequest,
-    AgentScopeRead,
-    AgentSkillRollbackRequest,
-    AgentWorkRecordEventRead,
-    AgentWorkRecordRead,
-    AgentWorkRecordReplyStatsRead,
-)
 from app.agents.branching import (
     agent_private_metadata,
     branch_versions,
@@ -42,17 +24,36 @@ from app.agents.branching import (
     sync_branch_from_overall,
     visible_skill_rows,
 )
+from app.agents.schema import (
+    AgentAPICredentialCreated,
+    AgentAPICredentialCreateRequest,
+    AgentAPICredentialRead,
+    AgentAPICredentialReveal,
+    AgentModelsUpdateRequest,
+    AgentProfileCreateRequest,
+    AgentProfileRead,
+    AgentProfileUpdateRequest,
+    AgentResourceBindingInput,
+    AgentResourceBindingRead,
+    AgentResourceImportRequest,
+    AgentResourcesUpdateRequest,
+    AgentScopeRead,
+    AgentSkillRollbackRequest,
+    AgentWorkRecordEventRead,
+    AgentWorkRecordRead,
+    AgentWorkRecordReplyStatsRead,
+)
 from app.db import get_session
 from app.db.models import (
-    APIClient,
-    APICredential,
-    AgentModelBinding,
     AgentKnowledgeBranch,
+    AgentModelBinding,
     AgentProfile,
     AgentResourceBinding,
     AgentSkillBranch,
     AgentSkillBranchVersion,
     AgentUsage,
+    APIClient,
+    APICredential,
     ChannelBinding,
     ChannelBindingAgent,
     ChatSession,
@@ -68,8 +69,8 @@ from app.db.models import (
     Skill,
     TeamMember,
     Tool,
-    utc_now,
     User,
+    utc_now,
 )
 from app.public_api.auth import generate_api_key
 from app.public_api.credential_profiles import (
@@ -78,6 +79,7 @@ from app.public_api.credential_profiles import (
     scopes_for_agent_access,
 )
 from app.security.auth import get_current_user
+from app.security.encryption import decrypt_recoverable_api_key, encrypt_secret
 from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
@@ -232,11 +234,14 @@ def create_agent_api_credential(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> AgentAPICredentialCreated:
+    """创建员工密钥并保存仅供受授权复制操作使用的加密副本。"""
+    # 先确认当前用户对目标员工有管理权限。
     agent = _get_agent(db, request.tenant_id, agent_id)
     _ensure_can_manage_agent(agent, current_user)
     if agent.is_overall:
         raise HTTPException(status_code=400, detail="Open gallery cannot own an employee API key")
     client = _ensure_staffdeck_agent_api_client(db, request.tenant_id, current_user)
+    # 再同时持久化认证摘要与不可出现在列表响应中的加密副本。
     token, prefix, digest = generate_api_key()
     row = APICredential(
         tenant_id=request.tenant_id,
@@ -245,6 +250,7 @@ def create_agent_api_credential(
         name=request.name.strip(),
         key_prefix=prefix,
         key_digest=digest,
+        encrypted_key=encrypt_secret(token),
         scopes_json=scopes_for_agent_access(request.access),
         expires_at=request.expires_at,
     )
@@ -268,12 +274,16 @@ def rotate_agent_api_credential(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> AgentAPICredentialCreated:
+    """轮换员工密钥并以新值替换认证摘要和加密副本。"""
+    # 先校验管理权限并将凭据限制到员工所在租户。
     agent = _get_agent(db, tenant_id, agent_id)
     _ensure_can_manage_agent(agent, current_user)
     row = _get_agent_api_credential(db, tenant_id, agent_id, credential_id)
+    # 再用同一个新值更新验证摘要和受保护的复制副本。
     token, prefix, digest = generate_api_key()
     row.key_prefix = prefix
     row.key_digest = digest
+    row.encrypted_key = encrypt_secret(token)
     row.status = "active"
     row.revoked_at = None
     row.updated_at = utc_now()
@@ -287,6 +297,36 @@ def rotate_agent_api_credential(
 
 
 @enterprise_router.post(
+    "/{agent_id}/api-credentials/{credential_id}/reveal",
+    response_model=AgentAPICredentialReveal,
+)
+def reveal_agent_api_credential(
+    agent_id: str,
+    credential_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> AgentAPICredentialReveal:
+    """为获授权管理者读取一把可用员工密钥的完整值，不向列表接口扩散明文。"""
+    # 先沿用员工管理权限和租户范围检查。
+    agent = _get_agent(db, tenant_id, agent_id)
+    _ensure_can_manage_agent(agent, current_user)
+    row = _get_agent_api_credential(db, tenant_id, agent_id, credential_id)
+    # 仅启用中的凭据允许读取，禁用后的值不能被重新复制。
+    if row.status != "active":
+        raise HTTPException(status_code=409, detail="API credential is not active")
+    # 历史凭据没有加密副本，或 APP_SECRET 已变更时，提示轮换而不返回部分值。
+    try:
+        api_key = decrypt_recoverable_api_key(row.encrypted_key)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="API credential cannot be recovered; rotate it to create a new key",
+        ) from exc
+    return AgentAPICredentialReveal(api_key=api_key)
+
+
+@enterprise_router.post(
     "/{agent_id}/api-credentials/{credential_id}/revoke",
     response_model=AgentAPICredentialRead,
 )
@@ -297,10 +337,14 @@ def revoke_agent_api_credential(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> AgentAPICredentialRead:
+    """禁用员工密钥并清除不再需要的加密复制副本。"""
+    # 先沿用员工管理权限与租户范围校验。
     agent = _get_agent(db, tenant_id, agent_id)
     _ensure_can_manage_agent(agent, current_user)
     row = _get_agent_api_credential(db, tenant_id, agent_id, credential_id)
+    # 禁用后不允许再次复制，因此立即减少数据库中可恢复明文的留存。
     row.status = "revoked"
+    row.encrypted_key = None
     row.revoked_at = utc_now()
     row.updated_at = utc_now()
     db.add(row)
@@ -1121,6 +1165,7 @@ def _agent_api_credential_read(row: APICredential) -> AgentAPICredentialRead:
         name=row.name,
         access=agent_access_for_scopes(list(row.scopes_json or [])),
         key_prefix=f"{row.key_prefix}…",
+        can_reveal=row.status == "active" and bool(row.encrypted_key),
         scopes=list(row.scopes_json or []),
         status=row.status,
         expires_at=row.expires_at,

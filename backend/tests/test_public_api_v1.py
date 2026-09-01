@@ -2,26 +2,15 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.db import get_session
-from app.db.models import (
-    APIClient,
-    APICredential,
-    APIJob,
-    APIJobEvent,
-    APISOPDraft,
-    AgentEvent,
-    AgentProfile,
-    ChatSession,
-    Message,
-    Skill,
-    Tenant,
-    User,
-    utc_now,
-)
+from app.agents.schema import AgentAPICredentialCreateRequest
+from app.api import agents as agents_api
+from app.api import auth as auth_api
 from app.api.agents import (
     create_agent_api_credential,
     list_agent_api_credentials,
@@ -35,17 +24,33 @@ from app.api.auth import (
     revoke_account_api_credential,
     rotate_account_api_credential,
 )
-from app.agents.schema import AgentAPICredentialCreateRequest
+from app.db import get_session
+from app.db.models import (
+    AgentEvent,
+    AgentProfile,
+    APIClient,
+    APICredential,
+    APIJob,
+    APIJobEvent,
+    APISOPDraft,
+    ChatSession,
+    Message,
+    Skill,
+    Tenant,
+    User,
+    utc_now,
+)
+from app.public_api import jobs as public_jobs
+from app.public_api.app import create_public_api_app
 from app.public_api.credential_profiles import (
     AGENT_RUNTIME_SCOPES,
     USER_FULL_ACCESS_SCOPES,
 )
-from app.public_api.app import create_public_api_app
-from app.public_api import jobs as public_jobs
+from app.public_api.jobs import recover_public_jobs, register_job_handler, run_job
 from app.public_api.json_patch import JSONPatchError, apply_json_patch
 from app.public_api.runs import execute_run
-from app.public_api.jobs import recover_public_jobs, register_job_handler, run_job
 from app.security.auth import create_access_token
+from app.security.encryption import decrypt_recoverable_api_key
 from app.session.helpers import public_session
 from app.session.session_schema import ChatTurnResponse
 
@@ -775,6 +780,170 @@ def test_employee_settings_manage_runtime_keys(monkeypatch) -> None:
             "agent_api", created.id, "tenant_api", db, admin
         )
         assert revoked.status == "revoked"
+
+
+def test_account_credential_reveal_returns_the_created_value_to_its_owner(monkeypatch) -> None:
+    """防止账户密钥没有加密副本时仍声称可以在列表中复制完整值。"""
+    _client_value, engine, _token = _client(monkeypatch)
+    with Session(engine) as db:
+        admin = db.get(User, "user_api_admin")
+        assert admin is not None
+        created = create_account_api_credential(
+            AccountAPICredentialCreateRequest(name="可复制账户密钥"), admin, db
+        )
+        stored = db.get(APICredential, created.id)
+        assert stored is not None
+        assert getattr(stored, "encrypted_key", None) not in (None, created.api_key)
+
+        reveal = getattr(auth_api, "reveal_account_api_credential", None)
+        assert callable(reveal)
+        assert reveal(created.id, admin, db).api_key == created.api_key
+
+        listed = list_account_api_credentials(admin, db)
+        assert created.api_key not in listed[0].model_dump().values()
+        assert getattr(listed[0], "can_reveal", False) is True
+
+
+def test_employee_credential_reveal_returns_the_created_value_to_its_manager(monkeypatch) -> None:
+    """防止员工密钥的完整值绕过员工管理授权或只保留不可恢复的摘要。"""
+    _client_value, engine, _token = _client(monkeypatch)
+    with Session(engine) as db:
+        admin = db.get(User, "user_api_admin")
+        assert admin is not None
+        created = create_agent_api_credential(
+            "agent_api",
+            AgentAPICredentialCreateRequest(
+                tenant_id="tenant_api", name="可复制员工密钥", access="runtime"
+            ),
+            db,
+            admin,
+        )
+        stored = db.get(APICredential, created.id)
+        assert stored is not None
+        assert getattr(stored, "encrypted_key", None) not in (None, created.api_key)
+
+        reveal = getattr(agents_api, "reveal_agent_api_credential", None)
+        assert callable(reveal)
+        assert reveal("agent_api", created.id, "tenant_api", db, admin).api_key == created.api_key
+
+        listed = list_agent_api_credentials("agent_api", "tenant_api", db, admin)
+        assert created.api_key not in listed[0].model_dump().values()
+        assert getattr(listed[0], "can_reveal", False) is True
+
+
+def test_public_api_credential_lifecycle_refreshes_its_recovery_copy(monkeypatch) -> None:
+    """防止公共 API 创建或轮换后，控制台复制到旧值或不可复制的值。"""
+    client, engine, admin_token = _client(monkeypatch)
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    client_response = client.post(
+        "/api-clients",
+        headers=headers,
+        json={"name": "可复制公共客户端", "scopes": ["*"]},
+    )
+    assert client_response.status_code == 201, client_response.text
+
+    created_response = client.post(
+        f"/api-clients/{client_response.json()['id']}/credentials",
+        headers=headers,
+        json={"name": "可复制公共密钥", "scopes": ["runs:create"]},
+    )
+    assert created_response.status_code == 201, created_response.text
+    created = created_response.json()
+    with Session(engine) as db:
+        stored = db.get(APICredential, created["id"])
+        assert stored is not None
+        assert decrypt_recoverable_api_key(stored.encrypted_key) == created["api_key"]
+
+    rotated_response = client.post(f"/credentials/{created['id']}:rotate", headers=headers)
+    assert rotated_response.status_code == 200, rotated_response.text
+    rotated = rotated_response.json()
+    assert rotated["api_key"] != created["api_key"]
+    with Session(engine) as db:
+        stored = db.get(APICredential, created["id"])
+        assert stored is not None
+        assert decrypt_recoverable_api_key(stored.encrypted_key) == rotated["api_key"]
+
+    revoked_response = client.post(f"/credentials/{created['id']}:revoke", headers=headers)
+    assert revoked_response.status_code == 200, revoked_response.text
+    with Session(engine) as db:
+        stored = db.get(APICredential, created["id"])
+        assert stored is not None
+        assert stored.encrypted_key is None
+
+
+def test_credential_reveal_rejects_inactive_legacy_and_unauthorized_access(monkeypatch) -> None:
+    """防止已失效、旧版或无权密钥通过复制完整值重新暴露。"""
+    _client_value, engine, _token = _client(monkeypatch)
+    with Session(engine) as db:
+        admin = db.get(User, "user_api_admin")
+        assert admin is not None
+        outsider = User(
+            id="user_api_reveal_outsider",
+            tenant_id="tenant_api",
+            username="api_reveal_outsider",
+            role="member",
+            password_hash="x",
+        )
+        db.add(outsider)
+        db.commit()
+        account_credential = create_account_api_credential(
+            AccountAPICredentialCreateRequest(name="受限账户密钥"), admin, db
+        )
+        employee_credential = create_agent_api_credential(
+            "agent_api",
+            AgentAPICredentialCreateRequest(
+                tenant_id="tenant_api", name="受限员工密钥", access="runtime"
+            ),
+            db,
+            admin,
+        )
+
+        reveal_account = getattr(auth_api, "reveal_account_api_credential", None)
+        reveal_employee = getattr(agents_api, "reveal_agent_api_credential", None)
+        assert callable(reveal_account)
+        assert callable(reveal_employee)
+
+        with pytest.raises(HTTPException) as account_forbidden:
+            reveal_account(account_credential.id, outsider, db)
+        assert account_forbidden.value.status_code == 404
+
+        with pytest.raises(HTTPException) as employee_forbidden:
+            reveal_employee(
+                "agent_api", employee_credential.id, "tenant_api", db, outsider
+            )
+        assert employee_forbidden.value.status_code == 403
+
+        revoked_account = revoke_account_api_credential(account_credential.id, admin, db)
+        assert revoked_account.can_reveal is False
+        stored_account = db.get(APICredential, account_credential.id)
+        assert stored_account is not None
+        assert stored_account.encrypted_key is None
+        with pytest.raises(HTTPException) as inactive:
+            reveal_account(account_credential.id, admin, db)
+        assert inactive.value.status_code == 409
+
+        stored = db.get(APICredential, employee_credential.id)
+        assert stored is not None
+        stored.encrypted_key = None
+        db.add(stored)
+        db.commit()
+        with pytest.raises(HTTPException) as legacy:
+            reveal_employee("agent_api", employee_credential.id, "tenant_api", db, admin)
+        assert legacy.value.status_code == 409
+
+        stored.encrypted_key = "not-a-valid-encrypted-key"
+        db.add(stored)
+        db.commit()
+        with pytest.raises(HTTPException) as unreadable:
+            reveal_employee("agent_api", employee_credential.id, "tenant_api", db, admin)
+        assert unreadable.value.status_code == 409
+
+        revoked_employee = revoke_agent_api_credential(
+            "agent_api", employee_credential.id, "tenant_api", db, admin
+        )
+        assert revoked_employee.can_reveal is False
+        db.refresh(stored)
+        assert stored.encrypted_key is None
 
 
 def test_account_master_key_follows_user_visible_agents(monkeypatch) -> None:

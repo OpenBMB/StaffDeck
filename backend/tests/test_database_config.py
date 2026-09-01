@@ -55,6 +55,50 @@ def test_sqlite_startup_migration_adds_display_name_login_index(
     ]
 
 
+def test_sqlite_credential_migration_adds_encrypted_recovery_column(
+    monkeypatch, tmp_path
+) -> None:
+    """防止升级后旧 API 密钥表缺少可恢复值字段而无法保存新密钥。"""
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-api-credentials.db'}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE api_credentials (
+                    id VARCHAR PRIMARY KEY,
+                    tenant_id VARCHAR NOT NULL,
+                    client_id VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    key_prefix VARCHAR NOT NULL,
+                    key_digest VARCHAR NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO api_credentials
+                    (id, tenant_id, client_id, name, key_prefix, key_digest)
+                VALUES ('legacy-key', 'tenant', 'client', 'Legacy', 'sd_live_abc', 'digest')
+                """
+            )
+        )
+
+    monkeypatch.setattr(database, "engine", engine)
+    database._migrate_sqlite_skill_schema()
+    database._migrate_sqlite_skill_schema()
+
+    with engine.connect() as conn:
+        columns = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(api_credentials)")).all()
+        }
+        assert "encrypted_key" in columns
+        assert conn.execute(
+            text("SELECT encrypted_key FROM api_credentials WHERE id = 'legacy-key'")
+        ).scalar_one() is None
+
+
 def test_knowledge_base_migration_accepts_existing_noncanonical_version_id(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'knowledge-version.db'}")
     child_tables = (

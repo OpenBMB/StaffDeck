@@ -25,10 +25,16 @@ def decrypt_secret(value: str) -> str:
         raise ValueError("Secret cannot be decrypted with current APP_SECRET") from exc
 
 
+def decrypt_recoverable_api_key(encrypted_value: str | None) -> str:
+    """解密可恢复 API 密钥；空值或当前应用密钥无法解密时抛出 ValueError。"""
+    if not encrypted_value:
+        raise ValueError("API key has no recoverable copy")
+    return decrypt_secret(encrypted_value)
+
+
 def mask_secret(value: str) -> str:
     if not value:
         return ""
     if len(value) <= 8:
         return "****"
     return f"{value[:3]}-****{value[-4:]}"
-

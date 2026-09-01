@@ -111,6 +111,7 @@ def _configure_sqlite_runtime() -> None:
 
 
 def _migrate_sqlite_skill_schema() -> None:
+    """为既有 SQLite 安装补齐应用运行所需的兼容列。"""
     if not database_url.startswith("sqlite"):
         return
 
@@ -136,6 +137,14 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_wechat_kf_accounts(conn, tables)
         _migrate_capability_scope_schema(conn, inspector, tables)
         _migrate_harness_v2_schema(conn, inspector, tables)
+
+        # 旧版 API 密钥只有不可逆摘要；补齐可恢复副本的加密列，但不回填历史明文。
+        if "api_credentials" in tables:
+            credential_columns = {
+                column["name"] for column in inspector.get_columns("api_credentials")
+            }
+            if "encrypted_key" not in credential_columns:
+                conn.execute(text("ALTER TABLE api_credentials ADD COLUMN encrypted_key VARCHAR"))
 
         if "api_jobs" in tables:
             job_columns = {column["name"] for column in inspector.get_columns("api_jobs")}
