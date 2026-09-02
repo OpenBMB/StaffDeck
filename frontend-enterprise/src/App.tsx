@@ -778,7 +778,7 @@ function Shell({
                 path="/enterprise/dsh-runtime"
                 element={
                   isAdmin ? (
-                    <DshRuntimePage currentUser={auth.user} />
+                    <DshRuntimePage currentUser={auth.user} onLogout={onLogout} />
                   ) : (
                     <Navigate to={EnterpriseRoute.Gallery} replace />
                   )

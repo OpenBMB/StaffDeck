@@ -35,6 +35,31 @@ export type DshModule = {
   guarded: boolean;
 };
 
+export type DshTreeSub = {
+  id: string;
+  name: string;
+  description: string;
+  kind: 'A' | 'C' | 'T' | 'K';
+  slots: string[];
+  legacy: string[];
+  modules: DshModule[];
+  enabled: number;
+  total: number;
+};
+
+export type DshTreeBig = {
+  id: string;
+  name: string;
+  root: string;
+  description: string;
+  order: number;
+  pep: boolean;
+  edges: Array<{ to: string; label: string }>;
+  subs: DshTreeSub[];
+  enabled: number;
+  total: number;
+};
+
 export type DshGrant = {
   operation: string;
   resource_type: string;
@@ -106,6 +131,7 @@ const q = (tenantId: string, extra?: Record<string, string | number | undefined>
 export const dshApi = {
   status: (tenantId: string) => api.get<DshStatus>(`/api/enterprise/dsh/status${q(tenantId)}`),
   modules: (tenantId: string) => api.get<DshModule[]>(`/api/enterprise/dsh/modules${q(tenantId)}`),
+  modulesTree: (tenantId: string) => api.get<DshTreeBig[]>(`/api/enterprise/dsh/modules/tree${q(tenantId)}`),
   snapshot: (tenantId: string, agentId?: string) => api.get<DshSnapshot>(`/api/enterprise/dsh/snapshot${q(tenantId, { agent_id: agentId })}`),
   ledgerUnknown: (tenantId: string) => api.get<DshLedgerRow[]>(`/api/enterprise/dsh/ledger/unknown${q(tenantId)}`),
   ledgerRecent: (tenantId: string, sessionId?: string, limit = 50) => api.get<DshLedgerRow[]>(`/api/enterprise/dsh/ledger/recent${q(tenantId, { session_id: sessionId, limit })}`),

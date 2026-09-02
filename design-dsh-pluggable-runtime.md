@@ -84,6 +84,12 @@ DSH_E2E=1 .venv/bin/python -m pytest tests_dsh/test_e2e_dsh_turn.py tests_dsh/te
 - **前端**（`frontend-enterprise`）：新增「运行时与插件」管理页（总览/模块装配/组成快照/调用台账），`DshRuntimePage`；侧边栏 + 路由 + API client；聊天 trace 渲染新增 DSH/PEP 事件行（`composition_snapshot_compiled`、`dsh_process_started`、`capability_provider_selected`、`capability_denied`、`dsh_task_finished`）。部署到 `http://127.0.0.1:5173`（`scripts/dev_up.sh` 单端口，`frontend-enterprise/dist` 已构建）。
 - **真机验证**：服务器网关 `llm-center.modelbest.co`（GLM-5.2 key 可服务 deepseek-v4-flash）经 DSH 完成知识检索 Turn，回复带 `[2]`/`[3]` 引用；Ledger 记录 `knowledge:knowledge.search/v1 completed engine=dsh`；事件流 `composition_snapshot_compiled → dsh_process_started → … → capability_invoked`。
 
+### 6.1 大模块 / 小模块（2026-09-03 晚）
+
+参考架构图的八个业务模块落成 `modules/taxonomy.py`（数据，不是代码路径）：`BigModule → SubModule → 注册表插槽/模块 id`。`GET /api/enterprise/dsh/modules/tree` 把扁平注册表合并进这棵树。新增 `modules/kernel.py`：把 K/T 类内核件（Persona 投影、模型路由、组成投影/编译器、SOP 定义/槽解析/运行态、Handoff Core、取消恢复、团队委派、Web/开放接口/定时入口、Channel Host、Runtime Coordinator、DSH Core、Invocation Ledger）也登记为模块——**不可替换但可禁用、可校验、可见**。注册表由 24 → 41 个模块，8 大模块 / 26 子模块，每个子模块至少一个实现（`test_taxonomy_tree_covers_every_registered_module_once` 保证每个模块恰好出现一次且无空叶子）。新增 `runtime.kernel` 插槽承载信息性内核件，避免污染单提供者的 `runtime.engine`。
+
+前端「运行时与插件」页重做为应用原生风格（AppHeader + StatCard + 白色圆角面板 + DataTable，Tab 用员工档案页的上浮样式），`ModuleTree` 组件渲染 大模块（编号/PEP/计数）→ 子模块（A/C/T/K 徽标/描述）→ 插件（状态点/id/版本/PEP/展开看插槽、契约、能力、策略动作、Hook），并展示模块间调用关系边。
+
 ## 7. 已知差异与后续
 
 - **取消**：DSH 0.1.2 协议无 cancel；`DshTaskAgent` 在事件循环里轮询 `is_chat_turn_cancelled`，命中后抛 `HarnessExecutionCancelled` 并关闭子进程（进程级中断），legacy 的取消回执路径原样生效。

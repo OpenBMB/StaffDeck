@@ -192,6 +192,16 @@ def dsh_modules(tenant_id: str = Query(...), user: User = Depends(get_current_us
     return [ModuleRead(**m) for m in get_registry(get_settings()).describe()]
 
 
+@router.get("/modules/tree")
+def dsh_modules_tree(tenant_id: str = Query(...), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
+    """Big-module → sub-module → plugin tree (the product view of the flat registry)."""
+
+    ensure_current_user_tenant(tenant_id, user)
+    from staffdeck_dsh.modules.taxonomy import tree
+
+    return tree(get_registry(get_settings()).describe())
+
+
 @router.get("/snapshot", response_model=SnapshotRead)
 def dsh_snapshot(tenant_id: str = Query(...), agent_id: str | None = Query(None), db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> SnapshotRead:
     ensure_current_user_tenant(tenant_id, user)

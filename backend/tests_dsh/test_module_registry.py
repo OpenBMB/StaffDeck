@@ -90,3 +90,22 @@ def test_operation_resolution_prefers_registry_provider() -> None:
     assert reg.for_operation("tool.invoke/v1").manifest.module_id == "tool.local"
     assert reg.for_operation("sandbox.execute/v1").manifest.module_id == "sandbox.local"
     assert reg.hook_handlers().get("persona") is not None
+
+
+def test_taxonomy_tree_covers_every_registered_module_once() -> None:
+    from staffdeck_dsh.modules.taxonomy import TAXONOMY, tree
+
+    s = _Settings()
+    reg = discover_and_install(ModuleRegistry(), s)
+    for slot in SlotName:
+        reg.mark_guarded(slot)
+    reg.seal()
+    modules = reg.describe()
+    t = tree(modules)
+    placed = [m["module_id"] for big in t for sub in big["subs"] for m in sub["modules"]]
+    assert sorted(placed) == sorted(m["module_id"] for m in modules), "every module appears exactly once"
+    assert [b["id"] for b in t if b["id"] != "unplaced"] == [b.id for b in sorted(TAXONOMY, key=lambda b: b.order)]
+    assert not any(b["id"] == "unplaced" for b in t), "no module should be unplaced"
+    # every sub-module has at least one registered module behind it (tree is complete)
+    empty = [f"{b['id']}/{sub['id']}" for b in t for sub in b["subs"] if sub["total"] == 0]
+    assert not empty, f"empty sub-modules: {empty}"

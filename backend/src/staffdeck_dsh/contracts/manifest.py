@@ -30,6 +30,7 @@ class ModuleKind(str, Enum):
 
 class SlotName(str, Enum):
     RUNTIME_ENGINE = "runtime.engine"
+    RUNTIME_KERNEL = "runtime.kernel"          # informational: coordinator / DSH core (not swappable)
     TENANT_STAFF = "tenant.staff"
     STAFF_SOP = "staff.sop"
     STAFF_CAPABILITY = "staff.capability"

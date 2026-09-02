@@ -151,6 +151,8 @@ class BusinessBaseProfileModule:
 
 
 def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
+    from staffdeck_dsh.modules import kernel
+
     settings = ctx.get("settings")
     profile_name = str(getattr(settings, "security_profile", None) or "OSS_LOCAL").upper()
     dsh_enabled = bool(getattr(settings, "dsh_enabled", False))
@@ -205,3 +207,6 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
     # security: exactly one active
     registry.install(manifest("security.oss_local", "OSS local PEP", kind=ModuleKind.KERNEL, slots=[SlotName.SECURITY_PEP]), OssLocalProfileModule(), slot=SlotName.SECURITY_PEP, enabled=profile_name == "OSS_LOCAL")
     registry.install(manifest("security.business_base", "Business Base PEP", kind=ModuleKind.KERNEL, slots=[SlotName.SECURITY_PEP]), BusinessBaseProfileModule(), slot=SlotName.SECURITY_PEP, enabled=profile_name == "BUSINESS_BASE")
+
+    # Kernel / trusted leaves: registered so the module tree is complete and disable-able, never swappable.
+    kernel.register(registry, ctx)
