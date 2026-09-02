@@ -219,6 +219,38 @@ def test_staffdeck_seed_adds_expanded_employee_profiles_idempotently() -> None:
             ) == 1
 
 
+def test_staffdeck_seed_expense_quota_tool_handles_missing_employees() -> None:
+    with _seeded_session() as db:
+        quota_tool = db.exec(
+            select(Tool).where(
+                Tool.tenant_id == "tenant_demo",
+                Tool.name == "expense.quota_query",
+            )
+        ).one()
+        quota_skill = db.exec(
+            select(Skill).where(
+                Skill.tenant_id == "tenant_demo",
+                Skill.skill_id == "skill_expense_quota_query",
+            )
+        ).one()
+
+        # The tool runs against the in-repo mock so unknown employees yield a miss
+        # contract instead of an external demo returning fabricated quotas.
+        assert quota_tool.url == "/api/mock/expense/quota_query"
+        output_schema = quota_tool.output_schema
+        assert output_schema["properties"]["found"]["type"] == "boolean"
+        assert "miss_reason" in output_schema["properties"]
+
+        # The response step must treat found=false as "no such employee" and must
+        # not display quota numbers for it.
+        nodes = {node["node_id"]: node for node in quota_skill.content_json["nodes"]}
+        response_instruction = nodes["node_response_result"]["instruction"]
+        assert "found=false" in response_instruction
+        assert "不得展示任何额度数字" in response_instruction
+        collect_instruction = nodes["node_collect_info"]["instruction"]
+        assert "姓名不能替代工号" in collect_instruction
+
+
 def test_staffdeck_seed_applies_reliability_defaults_to_existing_rows() -> None:
     with _seeded_session() as db:
         archive_tool = db.exec(
