@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import mimetypes
 import re
-from typing import Any
 import threading
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
@@ -16,16 +16,21 @@ from app.core.cancellation import cancel_chat_turn
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.db import engine, get_session
 from app.db.models import (
+    AgentEvent,
     APIClient,
     APICredential,
     APIJob,
-    AgentEvent,
     HarnessInvocationRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
     Message,
 )
-from app.harness import HarnessArtifactAccessError, normalize_harness_artifact_path, open_harness_artifact
+from app.harness import (
+    HarnessArtifactAccessError,
+    normalize_harness_artifact_path,
+    open_harness_artifact,
+)
+from app.public_api.attachments import validate_staged_run_attachments
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.idempotency import replay_idempotent_response, store_idempotent_response
@@ -34,13 +39,16 @@ from app.public_api.jobs import (
     ensure_not_cancelled,
     job_read,
     register_job_handler,
+    stream_job_events,
     update_job,
 )
-from app.public_api.jobs import stream_job_events
 from app.public_api.schemas import AgentRunCreate, PublicSessionCreate
-from app.public_api.sessions import create_public_session_row, ensure_public_agent, owned_public_session
+from app.public_api.sessions import (
+    create_public_session_row,
+    ensure_public_agent,
+    owned_public_session,
+)
 from app.session.session_schema import ChatAttachmentRead, ChatTurnRequest, ChatTurnResponse
-
 
 router = APIRouter(tags=["runs"])
 
@@ -187,7 +195,10 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
         event_type="run.executing",
         event_data={"session_id": session_id, "engine": "harness_v2"},
     )
-    attachments = [ChatAttachmentRead.model_validate(item) for item in payload.get("attachments") or []]
+    attachments = [
+        ChatAttachmentRead.model_validate(item)
+        for item in payload.get("attachments") or []
+    ]
     request = ChatTurnRequest(
         tenant_id=job.tenant_id,
         session_id=session_id,
@@ -400,15 +411,24 @@ def create_run_route(
     ensure_public_agent(db, principal, agent_id)
     if body.session_id:
         owned_public_session(db, principal, agent_id, body.session_id)
-    replay = replay_idempotent_response(db, principal, request, body.model_dump(mode="json"))
+    idempotency_payload = body.model_dump(mode="json")
+    replay = replay_idempotent_response(db, principal, request, idempotency_payload)
     if replay:
         response.status_code = replay[0]
         return replay[1]
+    request_payload = dict(idempotency_payload)
+    request_payload["attachments"] = [
+        attachment.model_dump(mode="json")
+        for attachment in validate_staged_run_attachments(
+            body.attachments,
+            principal=principal,
+        )
+    ]
     job = create_job(
         db,
         principal,
         kind="run",
-        request_payload=body.model_dump(mode="json"),
+        request_payload=request_payload,
         agent_id=agent_id,
     )
     payload = job_read(job).model_dump(mode="json")
@@ -416,7 +436,7 @@ def create_run_route(
         db,
         principal,
         request,
-        body.model_dump(mode="json"),
+        idempotency_payload,
         payload,
         status_code=202,
         resource_id=job.id,
@@ -437,12 +457,20 @@ def create_run_stream_route(
     ensure_public_agent(db, principal, agent_id)
     if body.session_id:
         owned_public_session(db, principal, agent_id, body.session_id)
-    request_payload = body.model_dump(mode="json")
-    replay = replay_idempotent_response(db, principal, request, request_payload)
+    idempotency_payload = body.model_dump(mode="json")
+    replay = replay_idempotent_response(db, principal, request, idempotency_payload)
     if replay:
         run_id = str(replay[1].get("id") or "")
         job = _owned_run(db, principal, run_id)
     else:
+        request_payload = dict(idempotency_payload)
+        request_payload["attachments"] = [
+            attachment.model_dump(mode="json")
+            for attachment in validate_staged_run_attachments(
+                body.attachments,
+                principal=principal,
+            )
+        ]
         job = create_job(
             db,
             principal,
@@ -455,7 +483,7 @@ def create_run_stream_route(
             db,
             principal,
             request,
-            request_payload,
+            idempotency_payload,
             payload,
             status_code=202,
             resource_id=job.id,

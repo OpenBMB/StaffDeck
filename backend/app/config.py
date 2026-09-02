@@ -1,6 +1,7 @@
 import os as _os
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     general_skill_network_install: bool = True
     channel_secret: str = ""
     staffdeck_role: str = "all"
+    chat_attachment_max_bytes: int = Field(default=12 * 1024 * 1024, ge=1)
     wechat_ilink_base_url: str = "https://ilinkai.weixin.qq.com"
     channel_delivery_poll_seconds: float = 1.0
     channel_delivery_max_attempts: int = 8
