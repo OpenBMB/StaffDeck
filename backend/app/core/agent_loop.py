@@ -20,6 +20,7 @@ from app.core.conversation_context import (
     build_conversation_context,
 )
 from app.core.conversation_projection import ConversationProjection
+from app.config import get_settings
 from app.core.graph_rules import GraphRules
 from app.core.harness_agent import HarnessExecutionCancelled
 from app.core.harness_session_lock import HarnessSessionBusy
@@ -163,8 +164,23 @@ class AgentLoop:
             data.setdefault("turn_id", user_message_id)
         return data
 
+    def _open_engine(self, request: ChatTurnRequest) -> HarnessV2Engine:
+        # The DSH engine lives in the parallel ``staffdeck_dsh`` package and is
+        # only imported when the deployment opts in, so a legacy deployment
+        # never loads Node/MCP dependencies.
+        settings = get_settings()
+        if not getattr(settings, "dsh_enabled", False):
+            return HarnessV2Engine(self)
+        from staffdeck_dsh.bridge.engine_host import EngineHost
+
+        agent_id = request.agent_id
+        if not agent_id and request.session_id and hasattr(self.db, "get"):
+            row = self.db.get(ChatSession, request.session_id)
+            agent_id = row.agent_id if row is not None else None
+        return EngineHost(settings).open(self, request, agent_id)
+
     def handle_turn(self, request: ChatTurnRequest) -> ChatTurnResponse:
-        engine = HarnessV2Engine(self)
+        engine = self._open_engine(request)
         chat_session: ChatSession | None = None
         user_message_id: str | None = None
         step_result = StepAgentResult(action="reply")

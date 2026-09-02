@@ -61,6 +61,30 @@ class Settings(BaseSettings):
     # 回滚为逐行展示的旧样式；binding 的 config_json.compact_trace=false 可对单个
     # 绑定回滚。
     channel_feishu_trace_compact_sop: bool = True
+    # DSH (DeepSeek Harness) engine switch. Off keeps the in-process Harness v2
+    # loop untouched. On routes step execution to a DSH worker via the
+    # staffdeck_dsh parallel package; dsh_staff_allowlist limits the rollout to
+    # specific agent ids (comma separated) for canary testing.
+    dsh_enabled: bool = False
+    dsh_root: str = ""
+    dsh_home: str = ""
+    dsh_node_bin: str = "node"
+    dsh_permission_mode: str = "danger-full-access"
+    dsh_staff_allowlist: str = ""
+    dsh_fallback_to_legacy: bool = True
+    dsh_initialize_timeout_seconds: float = 90.0
+    dsh_request_timeout_seconds: float = 600.0
+    # OSS_LOCAL or BUSINESS_BASE; one per deployment.
+    security_profile: str = "OSS_LOCAL"
+    base_authz_url: str = ""
+    base_authz_decision_token: str = ""
+    base_authz_control_token: str = ""
+    base_authz_timeout_seconds: float = 3.0
+    base_authz_pending_timeout_seconds: float = 3.0
+    base_identity_internal_url: str = ""
+    base_identity_runtime_client_id: str = "agent-platform-runtime"
+    base_identity_runtime_client_secret: str = ""
+    base_workload_identity_audience: str = "staffdeck-gateway"
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),
