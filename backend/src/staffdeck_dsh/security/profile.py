@@ -80,8 +80,24 @@ def get_profile(settings: Any = None) -> SecurityProfile:
     if _active is None:
         with _lock:
             if _active is None:
-                _active = build_profile(settings)
+                _active = _profile_from_registry(settings) or build_profile(settings)
     return _active
+
+
+def _profile_from_registry(settings: Any) -> SecurityProfile | None:
+    """Exactly one ``security.pep`` module is active; it decides the profile."""
+
+    try:
+        from staffdeck_dsh.contracts.manifest import SlotName
+        from staffdeck_dsh.modules.registry import get_registry
+
+        installed = get_registry(settings).provider(SlotName.SECURITY_PEP)
+    except Exception:
+        return None
+    if installed is None:
+        return None
+    build = getattr(installed.provider, "build", None)
+    return build(settings) if callable(build) else None
 
 
 def reset_profile() -> None:

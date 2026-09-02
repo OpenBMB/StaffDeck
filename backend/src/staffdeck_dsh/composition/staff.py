@@ -25,8 +25,7 @@ from sqlmodel import Session, select
 
 from app.agents.branching import get_agent, visible_published_skills
 from app.core.agent_loop import _agent_identity_prompt
-from app.db.models import AgentProfile, AgentResourceBinding, PersonaConfig, Team, TeamMember, UIConfig
-from app.skills.nesting import expand_visible_sops
+from app.db.models import AgentProfile, AgentResourceBinding, PersonaConfig, Skill, Team, TeamMember, UIConfig
 from staffdeck_dsh.composition import projection
 from staffdeck_dsh.composition.slots import SlotDeclaration, sop_slots
 from staffdeck_dsh.contracts.security import ResourceRef
@@ -151,13 +150,49 @@ def _sop_binding_row(db: Session, tenant_id: str, agent_id: str, skill_id: str) 
     ).first()
 
 
+def _expand_sop_content(published: list[Skill]) -> list[tuple[Skill, dict[str, Any]]]:
+    """Dict-level SOP expansion, immune to SQLAlchemy's detached-row GC bug.
+
+    ``app.skills.nesting.expand_sop_for_execution`` deep-copies ORM ``Skill``
+    rows into a detached instance; assigning ``content_json`` on the copy then
+    raises ``ObjectDereferencedError`` once the parent is collected. The pure
+    helpers ``validate_sop_nesting`` (dict rows) and ``_expand_content``
+    (attribute rows) do the same job without touching the ORM, so the projection
+    works on content dicts and returns (original row, expanded content) pairs.
+    """
+
+    from copy import deepcopy
+
+    from app.skills.nesting import _expand_content, validate_sop_nesting
+
+    class _Row:
+        __slots__ = ("skill_id", "content_json")
+
+        def __init__(self, skill_id: str, content: dict[str, Any]):
+            self.skill_id = skill_id
+            self.content_json = content
+
+    contents: dict[str, dict[str, Any]] = {}
+    for sk in published:
+        contents[sk.skill_id] = deepcopy(sk.content_json or {})
+    dict_rows = [{"skill_id": sid, "status": "published", "content": c} for sid, c in contents.items()]
+    out: list[tuple[Skill, dict[str, Any]]] = []
+    for sk in published:
+        sid = sk.skill_id
+        validate_sop_nesting(sid, contents[sid], dict_rows)
+        by_id = {k: _Row(k, v) for k, v in contents.items()}
+        expanded = _expand_content(sid, deepcopy(contents[sid]), by_id, path=[sid])
+        out.append((sk, expanded))
+    return out
+
+
 def _sops(db: Session, tenant_id: str, agent: AgentProfile | None) -> tuple[SopView, ...]:
     agent_id = agent.id if agent is not None else None
     published = list(visible_published_skills(db, tenant_id, agent_id))
-    expanded = {s.skill_id: s for s in expand_visible_sops(published)}
+    expanded_by_id = {sk.skill_id: content for sk, content in _expand_sop_content(published)}
     out: list[SopView] = []
     for skill in published:
-        content = dict((expanded.get(skill.skill_id) or skill).content_json or {})
+        content = dict(expanded_by_id.get(skill.skill_id) or skill.content_json or {})
         binding = _sop_binding_row(db, tenant_id, agent_id, skill.skill_id) if agent_id else None
         slot_bindings = dict(((binding.metadata_json or {}).get("slot_bindings") or {}) if binding else {})
         ref = projection.bound_resource_ref(db, tenant_id, "sop", skill, agent=agent, binding=binding)

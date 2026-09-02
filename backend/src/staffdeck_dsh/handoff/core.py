@@ -282,8 +282,30 @@ class HandoffCore:
         self.db.commit()
 
 
-def build_handoff_core(db: Session, guard: Guard, *, channels: tuple[str, ...] = ("feishu", "dingtalk", "wecom", "wechat")) -> HandoffCore:
-    notifiers: dict[str, Notifier] = {"web": WebInboxNotifier()}
-    for ch in channels:
-        notifiers[ch] = ChannelNotifier(ch)
-    return HandoffCore(db=db, guard=guard, assignment=DefaultAssignment(), notifiers=notifiers, resolvers={"web": WebReplyResolver(), "channel_command": ChannelCommandReplyResolver()})
+def build_handoff_core(db: Session, guard: Guard, *, channels: tuple[str, ...] = ("feishu", "dingtalk", "wecom", "wechat"), use_registry: bool = True) -> HandoffCore:
+    """Assemble the Core from the Module Registry (``handoff.*`` slots); falls back to shipped defaults."""
+
+    assignment: AssignmentStrategy | None = None
+    notifiers: dict[str, Notifier] = {}
+    resolvers: dict[str, ReplyResolver] = {}
+    if use_registry:
+        try:
+            from staffdeck_dsh.contracts.manifest import SlotName
+            from staffdeck_dsh.modules.registry import get_registry
+
+            reg = get_registry()
+            a = reg.provider(SlotName.HANDOFF_ASSIGNMENT)
+            assignment = a.provider if a is not None else None
+            for item in reg.providers(SlotName.HANDOFF_NOTIFIER):
+                notifiers[getattr(item.provider, "name", item.manifest.module_id)] = item.provider
+            for item in reg.providers(SlotName.HANDOFF_REPLY_ENDPOINT):
+                resolvers[getattr(item.provider, "name", item.manifest.module_id)] = item.provider
+        except Exception:
+            assignment, notifiers, resolvers = None, {}, {}
+    if assignment is None:
+        assignment = DefaultAssignment()
+    if not notifiers:
+        notifiers = {"web": WebInboxNotifier(), **{ch: ChannelNotifier(ch) for ch in channels}}
+    if not resolvers:
+        resolvers = {"web": WebReplyResolver(), "channel_command": ChannelCommandReplyResolver()}
+    return HandoffCore(db=db, guard=guard, assignment=assignment, notifiers=notifiers, resolvers=resolvers)

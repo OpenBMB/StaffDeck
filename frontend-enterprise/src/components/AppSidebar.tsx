@@ -44,6 +44,7 @@ import IconHeaderCollapse from '../assets/icons/header-collapse.svg?react';
 import IconAccounts from '../assets/icons/sys-accounts.svg?react';
 import IconModels from '../assets/icons/sys-models.svg?react';
 import IconSettings from '../assets/icons/action-toggle.svg?react';
+import IconDsh from '../assets/icons/nav-agents.svg?react';
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconAdd from '../assets/icons/add.svg?react';
 import IconSort from '../assets/icons/sort.svg?react';
@@ -86,6 +87,7 @@ const SYSTEM_NAV: NavItem[] = [
   { route: EnterpriseRoute.Accounts, label: '账号管理', Icon: IconAccounts },
   { route: EnterpriseRoute.Models, label: '模型配置', Icon: IconModels },
   { route: EnterpriseRoute.RuntimeSettings, label: '运行设置', Icon: IconSettings },
+  { route: EnterpriseRoute.DshRuntime, label: '运行时与插件', Icon: IconDsh },
 ];
 
 function primaryNavItems(isAdmin: boolean): NavItem[] {

@@ -181,7 +181,14 @@ DEFAULT_HOOKS: tuple[HookContribution, ...] = (
 
 
 class CompositionCompiler:
-    def __init__(self, *, hooks: Sequence[HookContribution] = DEFAULT_HOOKS, supported_contracts: Mapping[str, set[str]] | None = None):
+    def __init__(self, *, hooks: Sequence[HookContribution] | None = None, supported_contracts: Mapping[str, set[str]] | None = None):
+        if hooks is None:
+            try:
+                from staffdeck_dsh.modules.registry import get_registry
+
+                hooks = get_registry().hooks() or DEFAULT_HOOKS
+            except Exception:  # registry unavailable (unit tests without settings) -> shipped defaults
+                hooks = DEFAULT_HOOKS
         self.hooks = tuple(hooks)
         if supported_contracts is not None:
             SUPPORTED_CONTRACTS.update(supported_contracts)

@@ -168,7 +168,11 @@ class DshTaskAgent:
     def __init__(self, runtime: DshRuntime, turn: DshTurnContext, *, pipeline: InteractionPipelineHost | None = None, trace_sink: TraceSink | None = None):
         self.runtime = runtime
         self.turn = turn
-        self.pipeline = pipeline or InteractionPipelineHost(turn.snapshot.hooks, trace=trace_sink)
+        if pipeline is None:
+            from staffdeck_dsh.modules.registry import get_registry
+
+            pipeline = InteractionPipelineHost(turn.snapshot.hooks, handlers=get_registry().hook_handlers(), trace=trace_sink)
+        self.pipeline = pipeline
         self.trace_sink = trace_sink
         self._process: DshProcess | None = None
         self._activation_token: str | None = None

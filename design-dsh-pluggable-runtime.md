@@ -4,7 +4,7 @@
 
 ## 1. 结论先行
 
-- 代码全部在 `backend/src/staffdeck_dsh/`（并行包）。现有 `backend/app/` 只有两处开关：`Settings.dsh_*` / `security_profile`（`app/config.py`）和 `AgentLoop._open_engine()`（`app/core/agent_loop.py`）。`dsh_enabled=False`（默认）时行为与主干完全一致。
+- 代码全部在 `backend/src/staffdeck_dsh/`（并行包）。现有 `backend/app/` 只有三处开关：`Settings.dsh_*` / `security_profile`（`app/config.py`）和 `AgentLoop._open_engine()`（`app/core/agent_loop.py`），以及 `app/main.py` 的 startup/shutdown 钩子与条件路由挂载（`dsh_enabled` 或 `dsh_admin_api_enabled`）。`dsh_enabled=False`（默认）时行为与主干完全一致。
 - DSH（`deepseek-harness 0.1.2-alpha.2`，TypeScript/Node）**以独立子进程运行**，通过官方 Python SDK 的 stdio JSON-RPC 驱动。Python 与 TS 共存：DSH 内核=TS（黑盒，不改），StaffDeck 与 Bridge=Python。
 - 能力回调不走 SDK（协议无 server→client 请求），而是 **StaffDeck 以 MCP Server 形态把能力挂进 DSH**（`@deepseek-ai/dsh-mcp-client` 是 DSH 原生插件）。模型看到的是稳定代理工具 `mcp__staffdeck__{knowledge_search, general_skill_read, tool_invoke, sandbox_execute, capability_describe, finish_task}`。每次调用回到 Python 的 `CapabilityHost`：激活围栏 → Ledger 幂等 → Guarded Facade（PEP + 活行复核 + 复用现有服务）→ Ledger 回执。
 - 已用服务器数据库里的真实模型（网关 `llm-center.modelbest.co`，deepseek-v4-flash）跑通端到端：知识检索 + HTTP 工具调用 + PEP 拒绝未绑定工具 + Ledger 回执 + 引用回流；并做了 Legacy vs DSH 黄金链路对比。
@@ -54,8 +54,9 @@ SECURITY_PROFILE=OSS_LOCAL                       # 或 BUSINESS_BASE（需 BASE_
 cd backend
 .venv/bin/python -m pytest tests_dsh -q                         # 单测（无外部依赖）
 set -a; source ../.codex-tmp/server-models.env; set +a
-.venv/bin/python -m pytest tests_dsh/test_e2e_dsh_turn.py tests_dsh/test_golden_legacy_vs_dsh.py -q -s
+DSH_E2E=1 .venv/bin/python -m pytest tests_dsh/test_e2e_dsh_turn.py tests_dsh/test_golden_legacy_vs_dsh.py -q -s
 ```
+集成测试调用真实模型网关，默认跳过；显式设 `DSH_E2E=1` 才运行（因为该二题模型会因检索措辞/动作预算产生非确定性，仅结构不变量被断言）。
 
 `staffdeck_dsh` 通过 `backend/.venv/lib/python3.12/site-packages/staffdeck_dsh.pth` 加入 sys.path（等价于把 `backend/src` 加进 `pyproject` 的 packages；正式化时在 `pyproject.toml` 加 `[tool.setuptools.packages.find] where=["src", "."]`）。
 
@@ -76,10 +77,17 @@ set -a; source ../.codex-tmp/server-models.env; set +a
 | Channel 不得直接发送未监管文本 | ✅ | `ChannelHost.stage_send(supervised=False)` 拒绝 |
 | Legacy vs DSH 黄金链路对比 | 🟡 | 普通对话+Knowledge+Tool 已对比（`test_golden_legacy_vs_dsh.py`）；SOP/子SOP/Team/Scheduler/Handoff/Channel/Memory/Artifact/Sandbox/取消/恢复待补 |
 
-## 6. 已知差异与后续
+## 6. 本轮新增（2026-09-03）
+
+- **Module Registry**（`modules/`）：所有可插拔物（能力、Hook、Handoff 槽、渠道适配器、Observer、引擎、安全配置）以 `ModuleManifest` 登记，`seal()` 时校验 PEP-bound 插槽、契约版本、单提供者插槽、未满足的 `requires_operations`；内置 24 个模块，可在 `seal` 前用 `dsh_disabled_modules` 禁用，第三方经 entry point `staffdeck_dsh.modules` 接入。`CapabilityHost`/`EngineHost`/`InteractionPipelineHost`/`HandoffCore` 均从注册表解析，而非硬编码 import。
+- **管理 API**（`api/admin.py`，`/api/enterprise/dsh/*`）：`status`、`modules`、`snapshot`（编译一份 Staff 组成快照，含逻辑槽与 DSH 代理工具）、`ledger/unknown|recent` + `ledger/{id}/reconcile`、`staff/{id}/engine`（按员工持久化 `metadata_json.execution_engine` 选择引擎，配合部署默认与灰度名单，下一 Turn 生效）、`events/recent`。
+- **前端**（`frontend-enterprise`）：新增「运行时与插件」管理页（总览/模块装配/组成快照/调用台账），`DshRuntimePage`；侧边栏 + 路由 + API client；聊天 trace 渲染新增 DSH/PEP 事件行（`composition_snapshot_compiled`、`dsh_process_started`、`capability_provider_selected`、`capability_denied`、`dsh_task_finished`）。部署到 `http://127.0.0.1:5173`（`scripts/dev_up.sh` 单端口，`frontend-enterprise/dist` 已构建）。
+- **真机验证**：服务器网关 `llm-center.modelbest.co`（GLM-5.2 key 可服务 deepseek-v4-flash）经 DSH 完成知识检索 Turn，回复带 `[2]`/`[3]` 引用；Ledger 记录 `knowledge:knowledge.search/v1 completed engine=dsh`；事件流 `composition_snapshot_compiled → dsh_process_started → … → capability_invoked`。
+
+## 7. 已知差异与后续
 
 - **取消**：DSH 0.1.2 协议无 cancel；`DshTaskAgent` 在事件循环里轮询 `is_chat_turn_cancelled`，命中后抛 `HarnessExecutionCancelled` 并关闭子进程（进程级中断），legacy 的取消回执路径原样生效。
-- **进程模型**：每个 TaskFrame 一个 `dsh` 子进程（~1s 启动），因为 MCP 激活 token 是插件加载时从 env 读的。后续可改为长驻进程 + 每 Turn 换 token（需 DSH 侧支持 header 动态化，或在 MCP 层按 sessionId 关联）。
+- **进程模型**：每个 TaskFrame 一个 `dsh` 子进程（~1s 启动），因为 MCP 激活 token 是插件加载时从 env 读的。后续改为进程池 + 每帧换绑（进程内串行，避免改 DSH）。
 - **Business 端**：`BUSINESS_BASE` 的 Identity/Workload 与企业版 `app/trust/` 线协议对齐但未在企业库上跑；接入时把 `BaseTrustClient` 适配到 `BaseAuthzClient` 接口即可。
-- **黄金链路**：本轮观察到 legacy 在同一请求上因 action budget 未在一轮内完成，DSH 一轮完成——已在测试里记录为 divergence 而非失败。
+- **黄金链路**：目前已覆盖普通对话 + Knowledge + Tool；SOP/子SOP/Team/Scheduler/Handoff/Channel/Memory/Artifact/Sandbox/取消/恢复的对比仍待补。观察到 legacy 同请求因 action budget 未一轮完成而 DSH 一轮完成（已记为 divergence）。
 - **生产化**：`staffdeck_dsh` 正式纳入 `pyproject`；`DshRuntime` 挂到 app lifespan（`runtime/assembly.py` 已提供 `start_dsh_runtime/stop_dsh_runtime/dsh_health`）；`sandbox_execute` 目前跟随 `UIConfig.sandbox_*`，Business 远程 sandbox 需接 `sandbox_manager_url`。

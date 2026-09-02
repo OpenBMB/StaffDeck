@@ -53,6 +53,7 @@ import KnowledgeManagePage, { KnowledgeAddPage } from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import ModelsPage from "./pages/ModelsPage";
 import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
+import DshRuntimePage from "./pages/DshRuntimePage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
 import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
@@ -768,6 +769,16 @@ function Shell({
                 element={
                   isAdmin ? (
                     <RuntimeSettingsPage currentUser={auth.user} />
+                  ) : (
+                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                  )
+                }
+              />
+              <Route
+                path="/enterprise/dsh-runtime"
+                element={
+                  isAdmin ? (
+                    <DshRuntimePage currentUser={auth.user} />
                   ) : (
                     <Navigate to={EnterpriseRoute.Gallery} replace />
                   )

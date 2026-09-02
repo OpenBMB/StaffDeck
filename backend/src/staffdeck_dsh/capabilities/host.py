@@ -27,10 +27,9 @@ from typing import Any, Callable, Mapping
 
 from sqlmodel import Session
 
-from app.agents.branching import get_agent, visible_knowledge_base_versions
-from app.core.capability_manifest import general_skill_snapshot_digest, tool_snapshot_digest
+from app.agents.branching import get_agent
 from app.db.models import GeneralSkill, ModelConfig, Tool
-from staffdeck_dsh.capabilities.facade import FacadeDeps, GeneralSkillFacade, KnowledgeFacade, SandboxFacade, ToolFacade, workspace_for
+from staffdeck_dsh.capabilities.facade import FacadeDeps, SandboxFacade, workspace_for
 from staffdeck_dsh.capabilities.ledger import InvocationLedger, _Replayed
 from staffdeck_dsh.composition.compiler import CapabilityGrant, CompositionSnapshot
 from staffdeck_dsh.contracts.errors import ActivationFenced, AuthorizationUnavailable, ModuleSdkError, OutcomeUnknown, PermissionDenied
@@ -382,23 +381,24 @@ class CapabilityHost:
         return self._sandbox
 
     def _dispatch(self, inv: ModuleInvocation) -> ModuleResult:
-        op = inv.operation
-        allowed = self.slot.allowed()
-        if op == "knowledge.search/v1":
-            versions = visible_knowledge_base_versions(self.db, inv.context.tenant_id, None if inv.context.agent_id.endswith(":overall") else inv.context.agent_id)
-            version_by_base = {kb_id: v.id for kb_id, v in versions.items()}
-            return KnowledgeFacade(self._deps()).search(inv, allowed_ids=set(allowed.get("knowledge_base", set())), version_by_base=version_by_base)
-        if op == "general_skill.consume/v1":
-            row = self.db.get(GeneralSkill, inv.binding_id) if inv.binding_id else None
-            digest = general_skill_snapshot_digest(row) if row is not None else None
-            return GeneralSkillFacade(self._deps(), self._workspace_root(inv.context)).consume(inv, expected_digest=digest)
-        if op in {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"}:
-            row = self.db.get(Tool, inv.binding_id) if inv.binding_id else None
-            digest = tool_snapshot_digest(self.db, row) if row is not None else None
-            return ToolFacade(self._deps()).invoke(inv, expected_digest=digest, active_skill_id=self.slot.active_sop_id)
-        if op == "sandbox.execute/v1":
-            return self.sandbox(inv.context).execute(inv)
-        return ModuleResult.fail("UNSUPPORTED_CAPABILITY", f"不支持的能力操作 {op}")
+        """Resolve the provider for ``inv.operation`` from the Module Registry and run it.
+
+        Providers are ``A``/``T`` modules installed under ``staff.capability``; the host
+        stays ignorant of which implementation serves an operation. A deployment
+        swaps a provider by installing a different module for the same operation.
+        """
+
+        from staffdeck_dsh.modules.registry import get_registry
+
+        installed = get_registry().for_operation(inv.operation)
+        if installed is None:
+            return ModuleResult.fail("UNSUPPORTED_CAPABILITY", f"没有模块提供能力操作 {inv.operation}")
+        provider = installed.provider
+        invoke = getattr(provider, "invoke", None)
+        if not callable(invoke):
+            return ModuleResult.fail("PROVIDER_INVALID", f"模块 {installed.manifest.module_id} 未实现 invoke()")
+        self._emit("capability_provider_selected", {"operation": inv.operation, "module_id": installed.manifest.module_id, "module_version": installed.manifest.version})
+        return invoke(self, inv)
 
     def discover_artifacts(self, ctx: InvocationContext) -> list[dict[str, Any]]:
         if self._sandbox is None:

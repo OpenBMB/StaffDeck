@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # staffdeck_dsh parallel package; dsh_staff_allowlist limits the rollout to
     # specific agent ids (comma separated) for canary testing.
     dsh_enabled: bool = False
+    # Exposes /api/enterprise/dsh (module registry, snapshot preview, ledger
+    # reconciliation, per-staff engine) even when turns still run on legacy, so
+    # operators can inspect the pluggable tree before switching engines.
+    dsh_admin_api_enabled: bool = True
+    # Comma-separated module ids to disable, and extra "pkg.mod:register" specs.
+    dsh_disabled_modules: str = ""
+    dsh_modules: str = ""
     dsh_root: str = ""
     dsh_home: str = ""
     dsh_node_bin: str = "node"

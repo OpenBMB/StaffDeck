@@ -1554,6 +1554,61 @@ export function harnessEventTraceLine(
     }
     return null;
   }
+  if (eventName === 'capability_provider_selected') {
+    return {
+      id: `capability_provider_${frameId}_${(typeof data.operation === 'string' ? data.operation : 'op')}_${(typeof data.module_id === 'string' ? data.module_id : '')}`,
+      kind: 'decision',
+      text: `能力提供者 ${typeof data.module_id === 'string' ? data.module_id : ''}`,
+      detail: typeof data.operation === 'string' ? data.operation : undefined,
+      state: 'completed',
+      icon: 'advance',
+    };
+  }
+  if (eventName === 'capability_denied') {
+    const reason = typeof data.reason === 'string' ? data.reason : '权限不足';
+    const op = typeof data.operation === 'string' ? data.operation : '';
+    return {
+      id: `capability_denied_${frameId}_${op}_${reason}`,
+      kind: 'decision',
+      text: `权限拒绝 ${op}`,
+      detail: reason,
+      state: 'failed',
+      icon: 'loading',
+    };
+  }
+  if (eventName === 'composition_snapshot_compiled') {
+    const grants = typeof data.grants === 'number' ? data.grants : undefined;
+    return {
+      id: `composition_snapshot_${frameId}`,
+      kind: 'decision',
+      text: `组成快照 ${(typeof data.security_profile === 'string' ? data.security_profile : '')}`,
+      detail: grants === undefined ? 'DSH' : `DSH · ${grants} 个能力 · ${(typeof data.sops === 'object' && Array.isArray(data.sops) ? data.sops.length : '')} 个 SOP`,
+      state: 'completed',
+      icon: 'advance',
+    };
+  }
+  if (eventName === 'dsh_process_started') {
+    const model = typeof data.model === 'string' ? data.model : '';
+    const bootMs = typeof data.boot_ms === 'number' ? `${data.boot_ms}ms` : '';
+    return {
+      id: `dsh_process_${frameId}`,
+      kind: 'decision',
+      text: 'DSH 引擎就绪',
+      detail: [model, bootMs].filter(Boolean).join(' · '),
+      state: 'completed',
+      icon: 'execute',
+    };
+  }
+  if (eventName === 'dsh_task_finished') {
+    const status = typeof data.status === 'string' ? data.status : '';
+    return {
+      id: `dsh_finish_${frameId}`,
+      kind: 'decision',
+      text: `DSH 提交结果 · ${status}`,
+      state: status === 'handoff' ? 'running' : status === 'failed' ? 'failed' : 'completed',
+      icon: 'advance',
+    };
+  }
   if (eventName === 'harness_mcp_app_view') {
     const mcpApp = isPlainRecord(data.mcp_app)
       ? data.mcp_app as TraceLine['mcpApp']

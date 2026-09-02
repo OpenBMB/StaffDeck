@@ -90,6 +90,11 @@ def on_startup() -> None:
             cleanup_public_api_records()
             enqueue_due_webhook_deliveries()
             start_public_api_maintenance()
+        if settings.dsh_enabled or settings.dsh_admin_api_enabled:
+            # Parallel package; imported only when a deployment opts in.
+            from staffdeck_dsh.runtime import start_dsh_runtime
+
+            start_dsh_runtime(settings)
     except Exception:
         release_runtime_instance_lock()
         raise
@@ -98,6 +103,10 @@ def on_startup() -> None:
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     try:
+        if settings.dsh_enabled or settings.dsh_admin_api_enabled:
+            from staffdeck_dsh.runtime import stop_dsh_runtime
+
+            stop_dsh_runtime()
         stop_codex_a2a_tasks()
         stop_public_api_maintenance()
         stop_channel_services()
@@ -144,6 +153,10 @@ app.include_router(sessions.router)
 app.include_router(traces.router)
 app.include_router(mock.router)
 app.include_router(a2a_router)
+if settings.dsh_enabled or settings.dsh_admin_api_enabled:
+    from staffdeck_dsh.runtime import mount_admin_api
+
+    mount_admin_api(app)
 
 if settings.public_api_enabled:
     app.mount("/api/v1", create_public_api_app())

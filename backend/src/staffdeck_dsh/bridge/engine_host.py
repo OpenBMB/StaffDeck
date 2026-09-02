@@ -30,6 +30,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from sqlmodel import Session
+
 
 from app.core.harness_v2_engine import HarnessV2Engine
 from app.db.models import ChatSession, HarnessTaskFrameRecord, Skill, User
@@ -190,23 +192,32 @@ class EngineHost:
         raw = str(_settings_value(self.settings, "dsh_staff_allowlist", "") or "")
         return {x.strip() for x in raw.split(",") if x.strip()}
 
-    def selects_dsh(self, request: ChatTurnRequest, agent_id: str | None) -> bool:
-        if not self.dsh_enabled:
-            return False
-        allow = self.allowlist()
-        if allow and (agent_id or "") not in allow:
-            return False
-        return True
+    def selects_dsh(self, request: ChatTurnRequest, agent_id: str | None, *, db: Session | None = None) -> bool:
+        """Per-staff persisted choice > allowlist > deployment default (see api.admin.effective_engine_for)."""
+
+        from staffdeck_dsh.api.admin import effective_engine_for
+
+        row = None
+        if db is not None and agent_id and hasattr(db, "get"):
+            from app.db.models import AgentProfile
+
+            row = db.get(AgentProfile, agent_id)
+        return effective_engine_for(self.settings, row) == "dsh"
 
     def open(self, loop: Any, request: ChatTurnRequest, agent_id: str | None) -> HarnessV2Engine:
-        if not self.selects_dsh(request, agent_id):
+        if not self.selects_dsh(request, agent_id, db=getattr(loop, "db", None)):
             return HarnessV2Engine(loop)
+        from staffdeck_dsh.contracts.manifest import SlotName
+        from staffdeck_dsh.modules.registry import get_registry
+
+        installed = get_registry(self.settings).provider(SlotName.RUNTIME_ENGINE)
         try:
-            runtime = get_runtime(self.settings)
+            if installed is not None and callable(getattr(installed.provider, "open", None)):
+                return installed.provider.open(loop, request, agent_id)
+            return DshEngine(loop, runtime=get_runtime(self.settings))
         except EngineUnavailable as exc:
             fallback = str(_settings_value(self.settings, "dsh_fallback_to_legacy", "true")).lower() in {"1", "true", "yes", "on"}
             if fallback:
                 logger.warning("DSH unavailable (%s); falling back to legacy engine", exc)
                 return HarnessV2Engine(loop)
             raise
-        return DshEngine(loop, runtime=runtime)
