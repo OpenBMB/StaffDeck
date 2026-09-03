@@ -184,9 +184,10 @@ class CompositionCompiler:
     def __init__(self, *, hooks: Sequence[HookContribution] | None = None, supported_contracts: Mapping[str, set[str]] | None = None):
         if hooks is None:
             try:
-                from staffdeck_dsh.modules.registry import get_registry
+                from staffdeck_dsh.modules.registry import peek_registry
 
-                hooks = get_registry().hooks() or DEFAULT_HOOKS
+                reg = peek_registry()
+                hooks = (reg.hooks() if reg is not None else ()) or DEFAULT_HOOKS
             except Exception:  # registry unavailable (unit tests without settings) -> shipped defaults
                 hooks = DEFAULT_HOOKS
         self.hooks = tuple(hooks)

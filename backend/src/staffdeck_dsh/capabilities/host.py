@@ -20,6 +20,7 @@ registers in DSH. The proxy never executes — every call comes back here.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,8 @@ from staffdeck_dsh.contracts.errors import ActivationFenced, AuthorizationUnavai
 from staffdeck_dsh.contracts.invocation import InvocationContext, ModuleInvocation, ModuleResult, Receipt
 from staffdeck_dsh.contracts.security import SecurityContext
 from staffdeck_dsh.security.profile import Guard
+
+logger = logging.getLogger(__name__)
 
 SIDE_EFFECTING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -124,6 +127,7 @@ class ActivationSlot:
     snapshot: CompositionSnapshot
     generation: int
     turn_id: str
+    session_id: str | None = None
     active_sop_id: str | None = None
     active_node_id: str | None = None
     deadline_monotonic: float | None = None
@@ -388,9 +392,12 @@ class CapabilityHost:
         swaps a provider by installing a different module for the same operation.
         """
 
-        from staffdeck_dsh.modules.registry import get_registry
+        from staffdeck_dsh.modules.registry import peek_registry
 
-        installed = get_registry().for_operation(inv.operation)
+        reg = peek_registry()
+        if reg is None:
+            return ModuleResult.fail("ENGINE_UNAVAILABLE", "运行时正在重启，请稍后重试")
+        installed = reg.for_operation(inv.operation)
         if installed is None:
             return ModuleResult.fail("UNSUPPORTED_CAPABILITY", f"没有模块提供能力操作 {inv.operation}")
         provider = installed.provider
@@ -406,5 +413,12 @@ class CapabilityHost:
         return self._sandbox.discover_artifacts(ctx.task_frame_id or ctx.turn_id)
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
+        full = {**payload, "snapshot_id": self.slot.snapshot.snapshot_id, "execution_engine": "dsh"}
         if self.trace:
-            self.trace(event, {**payload, "snapshot_id": self.slot.snapshot.snapshot_id, "execution_engine": "dsh"})
+            self.trace(event, full)
+        try:
+            from staffdeck_dsh.events.relay import fanout_event
+
+            fanout_event(self.security_context.tenant_id, str(getattr(self.slot, "session_id", "") or self.slot.snapshot.staff_id), event, full)
+        except Exception:  # observers never break a capability call
+            logger.exception("observer fan-out failed for %s", event)

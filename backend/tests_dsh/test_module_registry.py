@@ -67,8 +67,8 @@ def test_disabled_module_list_toggles_before_seal() -> None:
 
 def test_conflicting_two_engines_is_rejected() -> None:
     reg = ModuleRegistry()
-    reg.install(__import__("staffdeck_dsh.modules.registry", fromlist=["manifest"]).manifest("e1", "E1", kind="K", slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"]), LegacyEngine(), slot=SlotName.RUNTIME_ENGINE)
-    reg.install(__import__("staffdeck_dsh.modules.registry", fromlist=["manifest"]).manifest("e2", "E2", kind="T", slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), DshBridgeEngine(), slot=SlotName.RUNTIME_ENGINE)
+    reg.install(__import__("staffdeck_dsh.modules.registry", fromlist=["manifest"]).manifest("test.e1", "E1", kind="K", slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"]), LegacyEngine(), slot=SlotName.RUNTIME_ENGINE)
+    reg.install(__import__("staffdeck_dsh.modules.registry", fromlist=["manifest"]).manifest("test.e2", "E2", kind="T", slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), DshBridgeEngine(), slot=SlotName.RUNTIME_ENGINE)
     reg.mark_guarded(SlotName.RUNTIME_ENGINE)
     with pytest.raises(SlotConflict):
         reg.seal()
@@ -76,7 +76,7 @@ def test_conflicting_two_engines_is_rejected() -> None:
 
 def test_module_requiring_unprovided_operation_fails_seal() -> None:
     reg = ModuleRegistry()
-    reg.install(__import__("staffdeck_dsh.modules.registry", fromlist=["manifest"]).manifest("needy", "Needy", kind="A", slots=[SlotName.STAFF_INTERACTION], requires=["knowledge.search/v1"]), object(), slot=SlotName.STAFF_INTERACTION)
+    reg.install(__import__("staffdeck_dsh.modules.registry", fromlist=["manifest"]).manifest("test.needy", "Needy", kind="A", slots=[SlotName.STAFF_INTERACTION], requires=["knowledge.search/v1"]), object(), slot=SlotName.STAFF_INTERACTION)
     with pytest.raises(UnsatisfiedRequirement):
         reg.seal()
 
@@ -109,3 +109,114 @@ def test_taxonomy_tree_covers_every_registered_module_once() -> None:
     # every sub-module has at least one registered module behind it (tree is complete)
     empty = [f"{b['id']}/{sub['id']}" for b in t for sub in b["subs"] if sub["total"] == 0]
     assert not empty, f"empty sub-modules: {empty}"
+
+
+def test_install_validates_module_identity() -> None:
+    from staffdeck_dsh.contracts.errors import ContractIncompatible
+    from staffdeck_dsh.modules.registry import manifest as mk
+
+    reg = ModuleRegistry()
+    with pytest.raises(ContractIncompatible):
+        reg.install(mk("NoDots", "x", kind="A", slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"]), object(), slot=SlotName.EVENT_OBSERVER)
+    with pytest.raises(ContractIncompatible):
+        reg.install(mk("acme.sink", "x", kind="A", slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"], version="latest"), object(), slot=SlotName.EVENT_OBSERVER)
+    with pytest.raises(ContractIncompatible):
+        reg.install(mk("acme.sink", "x", kind="A", slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"], contract_version="v9"), object(), slot=SlotName.EVENT_OBSERVER)
+    with reg.installing_from("acme_pkg:register"):
+        item = reg.install(mk("acme.sink", "x", kind="A", slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"], metadata={"category": "governance.trace", "vendor": "ACME"}), object(), slot=SlotName.EVENT_OBSERVER)
+    assert item.source == "acme_pkg:register"
+    desc = next(m for m in reg.describe() if m["module_id"] == "acme.sink")
+    assert desc["category"] == "governance.trace" and desc["source"] == "acme_pkg:register" and desc["metadata"] == {"vendor": "ACME"} and desc["switchable"] is True
+
+
+def test_env_snapshot_lets_admin_values_be_cleared_back_to_env(tmp_path) -> None:
+    from staffdeck_dsh.modules import config as cfg
+
+    class S:
+        dsh_enabled = False
+        security_profile = "OSS_LOCAL"
+        dsh_disabled_modules = ""
+        dsh_modules = ""
+        dsh_home = str(tmp_path)
+        dsh_runtime_config_path = ""
+        base_authz_url = "http://env-base:9200"
+        base_authz_decision_token = "ENV-TOKEN"
+        base_authz_control_token = ""
+        base_authz_timeout_seconds = 3.0
+        base_authz_pending_timeout_seconds = 3.0
+        base_identity_internal_url = ""
+        base_identity_runtime_client_id = ""
+        base_identity_runtime_client_secret = ""
+        base_workload_identity_audience = "aud"
+
+    s = S()
+    cfg.reset_env_snapshot()
+    cfg.snapshot_env(s)
+    admin = cfg.RuntimeOverrides(base=cfg.BaseConnection(authz_url="http://admin-base:9200", decision_token="ADMIN-TOKEN"))
+    cfg.apply_overrides(s, admin)
+    assert s.base_authz_url == "http://admin-base:9200" and s.base_authz_decision_token == "ADMIN-TOKEN"
+    cleared = cfg.RuntimeOverrides(base=admin.base.merge_update({"authz_url": None, "decision_token": None}))
+    eff = cleared.base.effective(s)
+    assert eff.authz_url == "http://env-base:9200" and eff.decision_token == "ENV-TOKEN"
+    masked = cleared.base.masked(s)
+    assert masked["authz_url_source"] == "env" and masked["authz_url"] == "http://env-base:9200"
+    cfg.apply_overrides(s, cleared)
+    assert s.base_authz_url == "http://env-base:9200" and s.base_authz_decision_token == "ENV-TOKEN"
+    cfg.reset_env_snapshot()
+
+
+def test_preflight_rejects_policy_actions_on_unguarded_slot(tmp_path, monkeypatch) -> None:
+    """A module that declares policy_actions on a slot no host guards fails the same way at preflight and at build."""
+
+    import sys
+
+    from staffdeck_dsh.modules import config as cfg
+    from staffdeck_dsh.modules.inspect import inspect_spec
+    from staffdeck_dsh.runtime.assembly import AssemblyFailed, preflight_assembly
+
+    pkg = tmp_path / "vendor_audit"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "from staffdeck_dsh.contracts.manifest import ModuleKind, SlotName\n"
+        "from staffdeck_dsh.modules.registry import manifest\n"
+        "class Sink:\n    name='vendor.audit'\n    def on_event(self,*a,**k): pass\n"
+        "def register(registry, ctx):\n"
+        "    registry.install(manifest('vendor.audit','x',kind=ModuleKind.CODE,slots=[SlotName.EVENT_OBSERVER],provides=['event.observe/v1'],policy_actions=['event.observe/v1']), Sink(), slot=SlotName.EVENT_OBSERVER)\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop("vendor_audit", None)
+
+    class S:
+        dsh_enabled = False
+        security_profile = "OSS_LOCAL"
+        dsh_disabled_modules = ""
+        dsh_modules = ""
+        dsh_home = str(tmp_path)
+        dsh_runtime_config_path = str(tmp_path / "rt.json")
+        base_authz_url = ""
+        base_authz_decision_token = ""
+        base_authz_control_token = ""
+        base_authz_timeout_seconds = 3.0
+        base_authz_pending_timeout_seconds = 3.0
+        base_identity_internal_url = ""
+        base_identity_runtime_client_id = ""
+        base_identity_runtime_client_secret = ""
+        base_workload_identity_audience = "aud"
+
+        def model_copy(self, update=None):
+            import copy
+
+            v = copy.copy(self)
+            for k, val in (update or {}).items():
+                setattr(v, k, val)
+            return v
+
+    s = S()
+    cfg.reset_env_snapshot()
+    res = inspect_spec(s, "vendor_audit:register")
+    assert res["ok"] is False and any(e["code"] == "PEP_BINDING_MISSING" for e in res["errors"]), res
+    wanted = cfg.RuntimeOverrides(extra_modules=["vendor_audit:register"])
+    with pytest.raises(AssemblyFailed) as ei:
+        preflight_assembly(s, wanted)
+    assert "PEP_BINDING_MISSING" in str(ei.value) or "PepBindingMissing" in str(ei.value)
+    cfg.reset_env_snapshot()

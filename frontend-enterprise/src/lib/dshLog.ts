@@ -172,6 +172,20 @@ export function formatLogEntry(e: DshLogEntry): FormattedLog {
       const status = typeof d.status === 'string' ? d.status : '';
       return { title: `人工确认调用结果：${STATUS_TEXT[status] ?? status}`, level: 'info' };
     }
+    case 'admin/config':
+      return { title: `管理员保存了装配 · ${engineLabel(String(d.engine ?? ''))} · ${String(d.security_profile ?? '')}${d.pending ? ' · 待重启' : ''}`, detail: [Array.isArray(d.disabled_modules) && d.disabled_modules.length ? `停用 ${d.disabled_modules.length} 个模块` : '', Array.isArray(d.extra_modules) && d.extra_modules.length ? `外部模块 ${d.extra_modules.length} 个` : ''].filter(Boolean).join(' · ') || undefined, level: 'info', meta: str(d.by, 24) };
+    case 'admin/base_test':
+      return { title: `测试权限中心连接 · ${d.ok ? '通过' : '未通过'}`, detail: typeof d.authz_url === 'string' ? d.authz_url : undefined, level: d.ok ? 'success' : 'warn', meta: str(d.by, 24) };
+    case 'admin/placement':
+      return { title: `模块归类 · ${str(d.module_id, 60)} → ${d.sub_id ? str(d.sub_id, 60) : '默认位置'}`, level: 'muted', meta: str(d.by, 24) };
+    case 'admin/inspect':
+      return { title: `预检外部模块 · ${str(d.spec, 80)} · ${d.ok ? '通过' : '未通过'}`, detail: Array.isArray(d.modules) && d.modules.length ? `会安装：${d.modules.join('、')}` : undefined, level: d.ok ? 'info' : 'warn', meta: str(d.by, 24) };
+    case 'admin/restart':
+      return { title: '管理员请求重启运行时', level: 'info', meta: str(d.by, 24) };
+    case 'admin/restarted':
+      return { title: `运行时已重启 · ${String(d.security_profile ?? '')} · ${d.modules ?? '?'} 个模块`, level: 'success', meta: num(d.restart_count) !== undefined ? `第 ${d.restart_count} 次` : undefined };
+    case 'admin/restart_failed':
+      return { title: `重启未成功：${str(d.error, 200)}`, level: 'error', meta: str(d.by, 24) };
     default:
       return { title: e.event_type ?? e.type, detail: str(d, 200), level: 'muted' };
   }

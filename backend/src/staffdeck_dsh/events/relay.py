@@ -44,14 +44,34 @@ def register_observer(observer: EventObserver) -> None:
         _observers[observer.name] = observer
 
 
+def _registry_observers() -> list[Any]:
+    """Observers installed as ``event.observer`` modules (built-in and external)."""
+
+    from staffdeck_dsh.contracts.manifest import SlotName
+    from staffdeck_dsh.modules.registry import peek_registry
+
+    reg = peek_registry()
+    if reg is None:  # not built yet / being rebuilt: observers simply miss this event
+        return []
+    return [item.provider for item in reg.providers(SlotName.EVENT_OBSERVER) if callable(getattr(item.provider, "on_event", None))]
+
+
 def _fanout(tenant_id: str, session_id: str, event_type: str, payload: Mapping[str, Any]) -> None:
     with _lock:
-        items = list(_observers.values())
+        items: list[Any] = list(_observers.values())
+    seen = {id(x) for x in items}
+    items.extend(obs for obs in _registry_observers() if id(obs) not in seen)
     for obs in items:
         try:
             obs.on_event(tenant_id, session_id, event_type, payload)
         except Exception:  # observers never break the turn
-            logger.exception("event observer %s failed on %s", obs.name, event_type)
+            logger.exception("event observer %s failed on %s", getattr(obs, "name", getattr(obs, "module_id", obs)), event_type)
+
+
+def fanout_event(tenant_id: str, session_id: str, event_type: str, payload: Mapping[str, Any]) -> None:
+    """Public entry for hosts that emit StaffDeck-side events (capability host, handoff core)."""
+
+    _fanout(tenant_id, session_id, event_type, payload)
 
 
 def relay_event(ev: Mapping[str, Any]) -> list[RuntimeEvent]:

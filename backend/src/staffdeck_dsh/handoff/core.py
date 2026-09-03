@@ -291,15 +291,18 @@ def build_handoff_core(db: Session, guard: Guard, *, channels: tuple[str, ...] =
     if use_registry:
         try:
             from staffdeck_dsh.contracts.manifest import SlotName
-            from staffdeck_dsh.modules.registry import get_registry
+            from staffdeck_dsh.modules.registry import peek_registry
 
-            reg = get_registry()
-            a = reg.provider(SlotName.HANDOFF_ASSIGNMENT)
-            assignment = a.provider if a is not None else None
-            for item in reg.providers(SlotName.HANDOFF_NOTIFIER):
-                notifiers[getattr(item.provider, "name", item.manifest.module_id)] = item.provider
-            for item in reg.providers(SlotName.HANDOFF_REPLY_ENDPOINT):
-                resolvers[getattr(item.provider, "name", item.manifest.module_id)] = item.provider
+            reg = peek_registry()
+            if reg is not None:
+                # The slot also hosts kernel entries (handoff.core, runtime.cancellation); pick a real strategy.
+                assignment = next((i.provider for i in reg.providers(SlotName.HANDOFF_ASSIGNMENT) if callable(getattr(i.provider, "propose", None))), None)
+                for item in reg.providers(SlotName.HANDOFF_NOTIFIER):
+                    if callable(getattr(item.provider, "notify", None)):
+                        notifiers[getattr(item.provider, "name", item.manifest.module_id)] = item.provider
+                for item in reg.providers(SlotName.HANDOFF_REPLY_ENDPOINT):
+                    if callable(getattr(item.provider, "resolve", None)):
+                        resolvers[getattr(item.provider, "name", item.manifest.module_id)] = item.provider
         except Exception:
             assignment, notifiers, resolvers = None, {}, {}
     if assignment is None:

@@ -41,9 +41,21 @@ def _read(settings: Any, name: str, default: Any = "") -> Any:
     return os.environ.get(name.upper(), default)
 
 
-def build_profile(settings: Any = None) -> SecurityProfile:
-    """Build the profile named by ``security_profile`` (default OSS_LOCAL)."""
+def build_profile(settings: Any = None, *, registry: Any = None) -> SecurityProfile:
+    """Build the profile for ``settings``.
 
+    With ``registry`` given, the active ``security.pep`` module of *that*
+    registry decides (its ``build(settings)``); otherwise the profile named by
+    ``security_profile`` (default OSS_LOCAL) is built directly.
+    """
+
+    if registry is not None:
+        from staffdeck_dsh.contracts.manifest import SlotName
+
+        installed = registry.provider(SlotName.SECURITY_PEP)
+        build = getattr(installed.provider, "build", None) if installed is not None else None
+        if callable(build):
+            return build(settings)
     name = str(_read(settings, "security_profile", "OSS_LOCAL") or "OSS_LOCAL").upper()
     if name == "OSS_LOCAL":
         return build_oss_local_profile()
@@ -76,12 +88,23 @@ def install_profile(profile: SecurityProfile) -> SecurityProfile:
 
 
 def get_profile(settings: Any = None) -> SecurityProfile:
+    """The active profile. Only built lazily for a caller that owns settings; hosts get the installed one."""
+
     global _active
     if _active is None:
         with _lock:
             if _active is None:
+                if settings is None:
+                    from staffdeck_dsh.contracts.errors import ModuleSdkError
+
+                    raise ModuleSdkError("security profile is not installed yet (runtime starting or restarting)")
                 _active = _profile_from_registry(settings) or build_profile(settings)
     return _active
+
+
+def peek_profile() -> SecurityProfile | None:
+    with _lock:
+        return _active
 
 
 def _profile_from_registry(settings: Any) -> SecurityProfile | None:
@@ -89,9 +112,10 @@ def _profile_from_registry(settings: Any) -> SecurityProfile | None:
 
     try:
         from staffdeck_dsh.contracts.manifest import SlotName
-        from staffdeck_dsh.modules.registry import get_registry
+        from staffdeck_dsh.modules.registry import peek_registry
 
-        installed = get_registry(settings).provider(SlotName.SECURITY_PEP)
+        reg = peek_registry()
+        installed = reg.provider(SlotName.SECURITY_PEP) if reg is not None else None
     except Exception:
         return None
     if installed is None:

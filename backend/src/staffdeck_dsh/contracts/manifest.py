@@ -108,6 +108,9 @@ class ModuleManifest:
     def __post_init__(self) -> None:
         if not self.module_id or not self.version or not self.contract_version:
             raise ValueError("module_id, version and contract_version are required")
+        if not isinstance(self.kind, ModuleKind):
+            object.__setattr__(self, "kind", ModuleKind(str(self.kind)))
+        object.__setattr__(self, "attaches_to", tuple(s if isinstance(s, SlotName) else SlotName(str(s)) for s in self.attaches_to))
         for op in (*self.provides_operations, *self.requires_operations):
             if "/" not in op:
                 raise ValueError(f"operation must carry a version suffix (name/vN): {op}")

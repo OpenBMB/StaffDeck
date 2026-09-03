@@ -20,6 +20,9 @@ Endpoints
     POST /restart                    rebuild registry + profile + DSH runtime from the saved assembly
     GET  /sessions/recent            recent chat sessions (for the log picker)
     GET  /log?session_id=            one session's execution log (events + invocation ledger, merged)
+    POST /base/test                  connection test against the enterprise permission centre (no side effects)
+    PUT  /modules/{id}/placement     move a module under a taxonomy sub-module (display only, immediate)
+    POST /modules/inspect            dry-run an external module spec against a throwaway registry
 """
 
 from __future__ import annotations
@@ -35,13 +38,14 @@ from app.config import get_settings
 from app.db import get_session
 from app.db.models import AgentEvent, AgentProfile, ChatSession, HarnessInvocationRecord, User, utc_now
 from app.security.auth import get_current_user
-from app.security.permissions import ensure_tenant_admin, ensure_current_user_tenant
+from app.security.permissions import ensure_current_user_tenant, ensure_tenant_admin, is_admin_user
 from staffdeck_dsh.capabilities.ledger import InvocationLedger
 from staffdeck_dsh.composition.compiler import CompositionCompiler
 from staffdeck_dsh.composition.staff import project_staff
 from staffdeck_dsh.contracts.errors import EngineUnavailable, ModuleSdkError
-from staffdeck_dsh.modules.config import ENGINES, SECURITY_PROFILES, RuntimeOverrides, load_overrides, save_overrides
-from staffdeck_dsh.modules.registry import get_registry
+from staffdeck_dsh.modules.config import ENGINES, SECURITY_PROFILES, BaseConnection, InvalidConnection, RuntimeOverrides, check_url_policy, load_overrides, save_overrides
+from staffdeck_dsh.modules.registry import get_registry, validate_spec
+from staffdeck_dsh.modules.taxonomy import sub_ids, tree as taxonomy_tree, tree_options
 from staffdeck_dsh.security.profile import get_profile
 
 router = APIRouter(prefix="/api/enterprise/dsh", tags=["enterprise:dsh"], dependencies=[Depends(get_current_user)])
@@ -69,18 +73,27 @@ class StatusRead(BaseModel):
     restart_count: int = 0
     config_pending: bool = False
     engine_version: str | None = None
+    last_restart_error: str | None = None
+    last_restart_failed: bool = False
+    restarting: bool = False
+    base_configured: bool = False
+    base_last_test_ok: bool | None = None
 
 
 class ModuleRead(BaseModel):
     module_id: str
     name: str
     summary: str = ""
+    category: str = ""
+    switchable: bool = True
+    metadata: dict[str, Any] = {}
     version: str
     kind: str
     contract_version: str
     slot: str
     enabled: bool
     source: str
+    spec: str = "builtin"
     provides: list[str]
     requires: list[str]
     hooks: list[str]
@@ -181,19 +194,20 @@ def dsh_status(tenant_id: str = Query(...), user: User = Depends(get_current_use
         except EngineUnavailable as exc:
             runtime_ok, runtime_error = False, exc.to_dict()
     else:
-        runtime_ok = False
-        runtime_error = {"code": "DSH_DISABLED", "message": "dsh_enabled is false; turns run on the legacy engine"}
+        # Harness v2 runs in-process: nothing to be "down".
+        runtime_ok = True
+        runtime_error = None
     return StatusRead(
         dsh_enabled=bool(getattr(settings, "dsh_enabled", False)),
         security_profile=get_profile(settings).name,
         default_engine=_settings_engine(settings),
         staff_allowlist=[x.strip() for x in str(getattr(settings, "dsh_staff_allowlist", "") or "").split(",") if x.strip()],
         fallback_to_legacy=bool(getattr(settings, "dsh_fallback_to_legacy", True)),
-        dsh_root=str(getattr(settings, "dsh_root", "") or ""),
-        dsh_home=str(getattr(settings, "dsh_home", "") or ""),
+        dsh_root=str(getattr(settings, "dsh_root", "") or "") if is_admin_user(user) else "",
+        dsh_home=str(getattr(settings, "dsh_home", "") or "") if is_admin_user(user) else "",
         runtime_ok=runtime_ok,
         runtime_error=runtime_error,
-        mcp_url=mcp_url,
+        mcp_url=mcp_url if is_admin_user(user) else None,
         live_activations=live,
         modules_total=len(modules),
         modules_enabled=sum(1 for m in modules if m["enabled"]),
@@ -202,6 +216,11 @@ def dsh_status(tenant_id: str = Query(...), user: User = Depends(get_current_use
         restart_count=int(state.get("restart_count") or 0),
         config_pending=bool(state.get("pending")),
         engine_version=_engine_version(reg),
+        last_restart_error=state.get("last_restart_error") if is_admin_user(user) else None,
+        last_restart_failed=bool(state.get("last_restart_error")),
+        restarting=bool(state.get("restarting")),
+        base_configured=bool(state.get("saved", {}).get("base", {}).get("configured")),
+        base_last_test_ok=state.get("saved", {}).get("base", {}).get("last_test_ok"),
     )
 
 
@@ -223,12 +242,17 @@ def dsh_modules(tenant_id: str = Query(...), user: User = Depends(get_current_us
 
 @router.get("/modules/tree")
 def dsh_modules_tree(tenant_id: str = Query(...), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
-    """Big-module → sub-module → plugin tree (the product view of the flat registry)."""
+    """Big-module → sub-module → plugin tree (the product view of the flat registry), with operator placements applied."""
 
     ensure_current_user_tenant(tenant_id, user)
-    from staffdeck_dsh.modules.taxonomy import tree
+    settings = get_settings()
+    return taxonomy_tree(get_registry(settings).describe(), load_overrides(settings).placements)
 
-    return tree(get_registry(get_settings()).describe())
+
+@router.get("/modules/tree/options")
+def dsh_modules_tree_options(tenant_id: str = Query(...), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
+    ensure_current_user_tenant(tenant_id, user)
+    return tree_options()
 
 
 @router.get("/snapshot", response_model=SnapshotRead)
@@ -360,6 +384,8 @@ class AssemblyRead(BaseModel):
     security_profile: str
     disabled_modules: list[str]
     extra_modules: list[str]
+    placements: dict[str, str] = {}
+    base: dict[str, Any] = {}
     updated_at: str | None = None
     updated_by: str | None = None
 
@@ -371,6 +397,7 @@ class AssemblyStateRead(BaseModel):
     started_at: str | None
     restart_count: int
     last_restart_error: str | None
+    restarting: bool = False
     config_path: str
 
 
@@ -380,10 +407,31 @@ class AssemblyUpdate(BaseModel):
     security_profile: str | None = None
     disabled_modules: list[str] | None = None
     extra_modules: list[str] | None = None
+    placements: dict[str, str | None] | None = None
+    base: dict[str, Any] | None = None
+
+
+class BaseTestRequest(BaseModel):
+    tenant_id: str
+    base: dict[str, Any] | None = None
+
+
+class PlacementUpdate(BaseModel):
+    tenant_id: str
+    sub_id: str | None = None
+
+
+class InspectRequest(BaseModel):
+    tenant_id: str
+    spec: str
 
 
 class RestartRequest(BaseModel):
     tenant_id: str
+
+
+def _assembly_read(d: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in d.items() if k in AssemblyRead.model_fields}
 
 
 def _assembly_state_read(settings: Any) -> AssemblyStateRead:
@@ -392,12 +440,13 @@ def _assembly_state_read(settings: Any) -> AssemblyStateRead:
 
     state = assembly_state(settings)
     return AssemblyStateRead(
-        saved=AssemblyRead(**state["saved"]),
-        applied=AssemblyRead(**state["applied"]) if state["applied"] else None,
+        saved=AssemblyRead(**_assembly_read(state["saved"])),
+        applied=AssemblyRead(**_assembly_read(state["applied"])) if state["applied"] else None,
         pending=bool(state["pending"]),
         started_at=state["started_at"],
         restart_count=int(state["restart_count"]),
         last_restart_error=state["last_restart_error"],
+        restarting=bool(state.get("restarting")),
         config_path=str(config_path(settings)),
     )
 
@@ -409,36 +458,187 @@ def dsh_config(tenant_id: str = Query(...), user: User = Depends(get_current_use
 
 
 @router.put("/config", response_model=AssemblyStateRead)
-def dsh_set_config(request: AssemblyUpdate, user: User = Depends(get_current_user)) -> AssemblyStateRead:
-    """Save a new assembly. Nothing changes until ``POST /restart``."""
+def dsh_set_config(request: AssemblyUpdate, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> AssemblyStateRead:
+    """Save a new assembly. Nothing changes until ``POST /restart`` (placements apply immediately)."""
 
     _admin(request.tenant_id, user)
     settings = get_settings()
     current = load_overrides(settings)
+    reg = get_registry(settings)
+    known = {m["module_id"]: m for m in reg.describe()}
     if request.engine is not None and request.engine not in ENGINES:
         raise HTTPException(status_code=400, detail=f"engine must be one of {list(ENGINES)}")
     if request.security_profile is not None and request.security_profile not in SECURITY_PROFILES:
         raise HTTPException(status_code=400, detail=f"security_profile must be one of {list(SECURITY_PROFILES)}")
     disabled = current.disabled_modules if request.disabled_modules is None else list(request.disabled_modules)
     if request.disabled_modules is not None:
-        reg = get_registry(settings)
         for mid in disabled:
-            item = reg.get(mid)
-            if item is not None and item.manifest.kind.value == "K":
-                raise HTTPException(status_code=400, detail=f"core module cannot be disabled: {mid}")
-            if item is not None and item.slot.value in {"runtime.engine", "security.pep"}:
-                raise HTTPException(status_code=400, detail=f"choose engine / security_profile instead of disabling {mid}")
-    for spec in (request.extra_modules or []):
-        if ":" not in spec and "." not in spec:
-            raise HTTPException(status_code=400, detail=f"module spec must look like package.module:register — got {spec!r}")
+            item = known.get(mid)
+            if item is None:
+                raise HTTPException(status_code=400, detail=f"未知的模块：{mid}")
+            if item["slot"] in {"runtime.engine", "security.pep"}:
+                raise HTTPException(status_code=400, detail=f"{item['name']} 通过选择引擎 / 权限模式切换，不能单独停用")
+            if not item["switchable"]:
+                raise HTTPException(status_code=400, detail=f"{item['name']} 是平台核心组成部分，不能停用")
+    extra = current.extra_modules if request.extra_modules is None else list(request.extra_modules)
+    for spec in extra:
+        try:
+            validate_spec(spec)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    placements = dict(current.placements)
+    if request.placements is not None:
+        valid = set(sub_ids())
+        for mid, sub in request.placements.items():
+            if sub is None or sub == "":
+                placements.pop(mid, None)
+                continue
+            if sub not in valid:
+                raise HTTPException(status_code=400, detail=f"未知的类目：{sub}")
+            item = known.get(mid)
+            if item is not None and not _movable(item):
+                raise HTTPException(status_code=400, detail=f"{item['name']} 的位置由平台决定，不能移动")
+            placements[mid] = sub
+    try:
+        base = current.base if request.base is None else current.base.merge_update(request.base)
+        check_url_policy(base.authz_url, settings, field="权限中心地址")
+        check_url_policy(base.identity_internal_url, settings, field="身份中心地址")
+    except InvalidConnection as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    profile = request.security_profile or current.security_profile
+    switching_to_business = request.security_profile == "BUSINESS_BASE" and current.security_profile != "BUSINESS_BASE"
+    if switching_to_business or (profile == "BUSINESS_BASE" and request.base is not None):
+        eff = base.effective(settings)
+        if not eff.authz_url or not eff.decision_token:
+            raise HTTPException(status_code=400, detail="切换到企业版权限前，请先填写权限中心地址和决策令牌，并通过测试连接")
+    if request.base is not None and base.signature() != current.base.signature():
+        base.last_test_ok = None
+        base.last_test_at = None
     new = RuntimeOverrides(
         engine=request.engine or current.engine,
-        security_profile=request.security_profile or current.security_profile,
+        security_profile=profile,
         disabled_modules=disabled,
-        extra_modules=current.extra_modules if request.extra_modules is None else list(request.extra_modules),
+        extra_modules=extra,
+        placements=placements,
+        base=base,
     )
     save_overrides(settings, new, by=user.id)
+    from staffdeck_dsh.runtime.assembly import assembly_state, clear_restart_error
+
+    state = assembly_state(settings)
+    if not state["pending"]:
+        clear_restart_error()   # the operator reverted to what is running; the old refusal is moot
+    _audit(db, request.tenant_id, "assembly_saved", {
+        "by": user.id,
+        "engine": new.engine, "security_profile": new.security_profile,
+        "disabled_modules": new.disabled_modules, "extra_modules": new.extra_modules,
+        "placements_changed": request.placements is not None,
+        "base_fields_changed": sorted(k for k in (request.base or {}).keys()),
+        "pending": bool(state["pending"]),
+    })
     return _assembly_state_read(settings)
+
+
+def _movable(m: dict[str, Any]) -> bool:
+    from staffdeck_dsh.modules.taxonomy import movable
+
+    return movable(m)
+
+
+def _audit(db: Session, tenant_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    """Admin-surface audit trail (never contains secret values)."""
+
+    db.add(AgentEvent(tenant_id=tenant_id, session_id="runtime", event_type=event_type, payload_json=payload))
+    db.commit()
+
+
+def _supplied_secret(patch: dict[str, Any], field: str) -> bool:
+    from staffdeck_dsh.modules.config import SECRET_MASK
+
+    v = patch.get(field)
+    return isinstance(v, str) and v != "" and v != SECRET_MASK
+
+
+@router.post("/base/test")
+def dsh_base_test(request: BaseTestRequest, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Connection test against the enterprise permission centre. Unsaved field values may be passed in ``base``."""
+
+    _admin(request.tenant_id, user)
+    from staffdeck_dsh.security.base_preflight import preflight_base
+
+    settings = get_settings()
+    current = load_overrides(settings)
+    try:
+        conn: BaseConnection = current.base if request.base is None else current.base.merge_update(request.base)
+        check_url_policy(conn.authz_url, settings, field="权限中心地址")
+        check_url_policy(conn.identity_internal_url, settings, field="身份中心地址")
+    except InvalidConnection as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Never pair a stored/env secret with a URL the operator just typed: a new address needs its own token in the same request.
+    saved_eff = current.base.effective(settings)
+    patch = request.base or {}
+    if conn.authz_url and conn.authz_url != saved_eff.authz_url and not _supplied_secret(patch, "decision_token"):
+        raise HTTPException(status_code=400, detail="更换权限中心地址时，请同时填写该地址对应的决策令牌")
+    if conn.identity_internal_url and conn.identity_internal_url != saved_eff.identity_internal_url and not _supplied_secret(patch, "runtime_client_secret"):
+        raise HTTPException(status_code=400, detail="更换身份中心地址时，请同时填写该地址对应的运行时客户端密钥")
+    try:
+        report = preflight_base(conn.effective(settings), tenant_id=request.tenant_id, principal_id=user.id)
+    except InvalidConnection as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit(db, request.tenant_id, "base_connection_tested", {"by": user.id, "authz_url": conn.effective(settings).authz_url, "ok": report.ok, "unsaved_values": request.base is not None})
+    # Remember the verdict only for the saved values, so a passing test of unsaved edits does not unlock a restart.
+    if request.base is None or conn.signature() == current.base.signature():
+        current.base.last_test_ok = report.ok
+        current.base.last_test_at = report.tested_at
+        save_overrides(settings, current, by=user.id)
+    return {**report.to_dict(), "saved": request.base is None or conn.signature() == current.base.signature()}
+
+
+@router.put("/modules/{module_id}/placement")
+def dsh_set_placement(module_id: str, request: PlacementUpdate, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Move a module under a taxonomy sub-module. Display only — takes effect immediately, no restart, never pending."""
+
+    _admin(request.tenant_id, user)
+    from staffdeck_dsh.modules.registry import MODULE_ID_RE
+
+    if not MODULE_ID_RE.match(module_id):
+        raise HTTPException(status_code=400, detail=f"非法的模块 ID：{module_id}")
+    settings = get_settings()
+    reg = get_registry(settings)
+    item = reg.get(module_id)
+    if request.sub_id is not None and request.sub_id not in set(sub_ids()):
+        raise HTTPException(status_code=400, detail=f"未知的类目：{request.sub_id}")
+    if item is not None:
+        if item.manifest.kind.value == "K":
+            raise HTTPException(status_code=400, detail="平台核心模块的位置由平台决定，不能移动")
+        if item.slot.value in {"runtime.engine", "security.pep"}:
+            raise HTTPException(status_code=400, detail="引擎和权限模式固定在各自的类目下")
+    current = load_overrides(settings)
+    if request.sub_id:
+        current.placements[module_id] = request.sub_id
+    else:
+        current.placements.pop(module_id, None)
+    save_overrides(settings, current, by=user.id)
+    db.add(AgentEvent(tenant_id=request.tenant_id, session_id="runtime", event_type="module_placed", payload_json={"module_id": module_id, "sub_id": request.sub_id, "by": user.id}))
+    db.commit()
+    tree = taxonomy_tree(reg.describe(), current.placements)
+    placement = next((m["placement"] for big in tree for sub in big["subs"] for m in sub["modules"] if m["module_id"] == module_id), None)
+    return {"module_id": module_id, "sub_id": request.sub_id, "installed": item is not None, "placement": placement, "tree": tree}
+
+
+@router.post("/modules/inspect")
+def dsh_inspect_module(request: InspectRequest, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Dry-run an external module spec: what it would install and whether the assembly would still seal."""
+
+    _admin(request.tenant_id, user)
+    from staffdeck_dsh.modules.inspect import inspect_spec
+
+    settings = get_settings()
+    live_ids = {m["module_id"] for m in get_registry(settings).describe()}
+    result = inspect_spec(settings, request.spec, live_ids=live_ids)
+    db.add(AgentEvent(tenant_id=request.tenant_id, session_id="runtime", event_type="module_inspected", payload_json={"spec": request.spec, "ok": result["ok"], "modules": [m["module_id"] for m in result["modules"]], "by": user.id}))
+    db.commit()
+    return result
 
 
 @router.post("/restart")
@@ -449,12 +649,13 @@ def dsh_restart(request: RestartRequest, db: Session = Depends(get_session), use
     from staffdeck_dsh.runtime.assembly import AssemblyFailed, restart_dsh_runtime
 
     settings = get_settings()
+    _audit(db, request.tenant_id, "runtime_restart_requested", {"by": user.id})
     try:
-        info = restart_dsh_runtime(settings)
+        info = restart_dsh_runtime(settings, tenant_id=request.tenant_id, principal_id=user.id)
     except AssemblyFailed as exc:
         db.add(AgentEvent(tenant_id=request.tenant_id, session_id="runtime", event_type="runtime_restart_failed", payload_json={"error": str(exc), "by": user.id}))
         db.commit()
-        raise HTTPException(status_code=409, detail=f"重启失败，已恢复原有配置：{exc}") from exc
+        raise HTTPException(status_code=409, detail=str(exc) if str(exc).startswith(("无法切换", "装配无法", "已有一次")) else f"重启失败，已恢复原有配置：{exc}") from exc
     db.add(AgentEvent(tenant_id=request.tenant_id, session_id="runtime", event_type="runtime_restarted", payload_json={**{k: v for k, v in info.items() if k != "runtime_error"}, "by": user.id}))
     db.commit()
     return {**info, "state": _assembly_state_read(settings).model_dump()}
@@ -519,6 +720,13 @@ LOG_EVENT_TYPES: dict[str, str] = {
     "human_handoff_assigned": "handoff/assigned",
     "human_handoff_notified": "handoff/notified",
     "invocation_reconciled": "ledger/reconciled",
+    "assembly_saved": "admin/config",
+    "base_connection_tested": "admin/base_test",
+    "module_placed": "admin/placement",
+    "module_inspected": "admin/inspect",
+    "runtime_restart_requested": "admin/restart",
+    "runtime_restarted": "admin/restarted",
+    "runtime_restart_failed": "admin/restart_failed",
 }
 
 # Payload keys worth carrying into the log line; everything else stays behind the "details" toggle.
@@ -549,6 +757,13 @@ _LOG_PICK: dict[str, tuple[str, ...]] = {
     "handoff/assigned": ("handoff_id", "assignee_id", "assignee_name"),
     "handoff/notified": ("handoff_id", "channel", "notifier"),
     "ledger/reconciled": ("invocation_id", "status", "by"),
+    "admin/config": ("by", "engine", "security_profile", "disabled_modules", "extra_modules", "pending"),
+    "admin/base_test": ("by", "authz_url", "ok"),
+    "admin/placement": ("by", "module_id", "sub_id"),
+    "admin/inspect": ("by", "spec", "ok", "modules"),
+    "admin/restart": ("by",),
+    "admin/restarted": ("by", "security_profile", "modules", "restart_count"),
+    "admin/restart_failed": ("by", "error"),
 }
 
 
@@ -617,6 +832,23 @@ def _log_entries(db: Session, tenant_id: str, session_id: str, limit: int) -> li
             })
     entries.sort(key=lambda x: (x["ts"], 0 if x["type"] == "tool/call" else 1))
     return entries[-limit:]
+
+
+@router.get("/audit")
+def dsh_audit(tenant_id: str = Query(...), limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Who changed the assembly, tested the permission centre, dry-ran or restarted — admin only."""
+
+    _admin(tenant_id, user)
+    admin_types = [t for t, tag in LOG_EVENT_TYPES.items() if tag.startswith("admin/")]
+    rows = db.exec(
+        select(AgentEvent).where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == "runtime", AgentEvent.event_type.in_(admin_types)).order_by(AgentEvent.created_at.desc()).limit(limit)  # type: ignore[attr-defined]
+    ).all()
+    entries = []
+    for e in reversed(rows):
+        tag = LOG_EVENT_TYPES[e.event_type]
+        payload = e.payload_json if isinstance(e.payload_json, dict) else {}
+        entries.append({"id": f"evt_{e.id}", "ts": _event_ts(e, payload), "type": tag, "source": "event", "event_type": e.event_type, "data": _pick(tag, payload), "engine": None, "turn_id": None})
+    return {"entries": entries}
 
 
 @router.get("/log")

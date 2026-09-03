@@ -171,11 +171,16 @@ class DshCoreModule:
 
 class InvocationLedgerModule:
     module_id = "ledger.invocation"
+    name = "ledger.invocation"
 
     def ledger(self, db: Any):
         from staffdeck_dsh.capabilities.ledger import InvocationLedger
 
         return InvocationLedger(db)
+
+    def on_event(self, tenant_id: str, session_id: str, event_type: str, payload: Any) -> None:
+        # The ledger is written by the capability host itself; as an observer it only listens.
+        return None
 
 
 def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:

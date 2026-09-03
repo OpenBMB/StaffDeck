@@ -87,13 +87,22 @@ def reset_runtime() -> None:
         _runtime = None
 
 
+def get_settings_safe() -> Any:
+    try:
+        from app.config import get_settings
+
+        return get_settings()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class DshEngine(HarnessV2Engine):
     """HarnessV2Engine with DSH as the step executor."""
 
     def __init__(self, owner: Any, *, runtime: DshRuntime, profile: Any = None, compiler: CompositionCompiler | None = None) -> None:
         super().__init__(owner)
         self.runtime = runtime
-        self.profile = profile or get_profile()
+        self.profile = profile or get_profile(getattr(runtime, "settings", None) or get_settings_safe())
         # HarnessV2Engine already owns ``self.compiler`` (TaskRequestCompiler).
         self.composition_compiler = compiler or CompositionCompiler()
         self.snapshot: CompositionSnapshot | None = None

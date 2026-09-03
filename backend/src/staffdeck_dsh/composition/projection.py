@@ -227,7 +227,7 @@ def handoff_ref(row: HumanHandoffRequest, *, agent_owner_user_id: str | None = N
         tenant_id=row.tenant_id,
         attributes={
             "assignee_user_id": getattr(row, "assignee_user_id", None),
-            "requester_user_id": getattr(row, "user_id", None),
+            "requester_user_id": getattr(row, "requester_user_id", None) or getattr(row, "user_id", None),
             "agent_owner_user_id": agent_owner_user_id,
             "status": row.status,
         },

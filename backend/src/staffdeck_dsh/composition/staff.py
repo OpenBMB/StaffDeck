@@ -138,13 +138,15 @@ def _session_policy(db: Session, tenant_id: str, agent: AgentProfile | None) -> 
     )
 
 
-def _sop_binding_row(db: Session, tenant_id: str, agent_id: str, skill_id: str) -> AgentResourceBinding | None:
+def _sop_binding_row(db: Session, tenant_id: str, agent_id: str, skill: Skill) -> AgentResourceBinding | None:
+    # Legacy bindings key on the Skill row id; older data may carry the logical skill_id.
+    ids = [skill.id] + ([skill.skill_id] if skill.skill_id and skill.skill_id != skill.id else [])
     return db.exec(
         select(AgentResourceBinding).where(
             AgentResourceBinding.tenant_id == tenant_id,
             AgentResourceBinding.agent_id == agent_id,
             AgentResourceBinding.resource_type == "skill",
-            AgentResourceBinding.resource_id == skill_id,
+            AgentResourceBinding.resource_id.in_(ids),  # type: ignore[attr-defined]
             AgentResourceBinding.status != "deleted",
         )
     ).first()
@@ -193,7 +195,7 @@ def _sops(db: Session, tenant_id: str, agent: AgentProfile | None) -> tuple[SopV
     out: list[SopView] = []
     for skill in published:
         content = dict(expanded_by_id.get(skill.skill_id) or skill.content_json or {})
-        binding = _sop_binding_row(db, tenant_id, agent_id, skill.skill_id) if agent_id else None
+        binding = _sop_binding_row(db, tenant_id, agent_id, skill) if agent_id else None
         slot_bindings = dict(((binding.metadata_json or {}).get("slot_bindings") or {}) if binding else {})
         ref = projection.bound_resource_ref(db, tenant_id, "sop", skill, agent=agent, binding=binding)
         out.append(

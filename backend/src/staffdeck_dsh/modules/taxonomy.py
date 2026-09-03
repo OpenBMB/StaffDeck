@@ -15,9 +15,13 @@ service, K kernel.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Iterable, Literal, Mapping
 
 from staffdeck_dsh.contracts.manifest import SlotName
+
+PlacementSource = Literal["override", "taxonomy", "manifest", "slot", "none"]
+UNPLACED_BIG = "unplaced"
+UNPLACED_SUB = "unplaced.all"
 
 
 @dataclass(frozen=True)
@@ -129,36 +133,74 @@ def big_module_ids() -> list[str]:
     return [b.id for b in sorted(TAXONOMY, key=lambda b: b.order)]
 
 
-def sub_for(module_id: str, slot: SlotName) -> tuple[BigModule, SubModule] | None:
-    """Resolve where a registry module is displayed (explicit id wins over slot)."""
+SUB_INDEX: dict[str, tuple[BigModule, SubModule]] = {sub.id: (big, sub) for big in TAXONOMY for sub in big.subs}
 
+
+def sub_ids() -> list[str]:
+    return [sub.id for big in sorted(TAXONOMY, key=lambda b: b.order) for sub in big.subs]
+
+
+def resolve_placement(module_id: str, slot: SlotName | None, *, category: str = "", override: str | None = None) -> tuple[BigModule, SubModule, PlacementSource] | None:
+    """Where a module is displayed: operator override > curated taxonomy > manifest category > slot default."""
+
+    if override and override in SUB_INDEX:
+        big, sub = SUB_INDEX[override]
+        return big, sub, "override"
     for big in TAXONOMY:
         for sub in big.subs:
             if module_id in sub.module_ids:
-                return big, sub
-    for big in TAXONOMY:
-        for sub in big.subs:
-            if slot in sub.slots:
-                return big, sub
+                return big, sub, "taxonomy"
+    if category and category in SUB_INDEX:
+        big, sub = SUB_INDEX[category]
+        return big, sub, "manifest"
+    if slot is not None:
+        for big in TAXONOMY:
+            for sub in big.subs:
+                if slot in sub.slots:
+                    return big, sub, "slot"
     return None
 
 
-def tree(registry_modules: Iterable[dict]) -> list[dict]:
-    """Merge the flat registry listing into the taxonomy tree for the API."""
+def sub_for(module_id: str, slot: SlotName) -> tuple[BigModule, SubModule] | None:
+    hit = resolve_placement(module_id, slot)
+    return (hit[0], hit[1]) if hit else None
 
+
+FIXED_SLOTS = {SlotName.RUNTIME_ENGINE.value, SlotName.SECURITY_PEP.value}
+
+
+def movable(module: Mapping) -> bool:
+    """Engines / PEP providers and kernel entries stay where the taxonomy puts them."""
+
+    return module.get("kind") != "K" and module.get("slot") not in FIXED_SLOTS
+
+
+def tree(registry_modules: Iterable[dict], placements: Mapping[str, str] | None = None) -> list[dict]:
+    """Merge the flat registry listing into the taxonomy tree for the API.
+
+    ``placements`` are operator overrides (module_id → sub id) from the saved
+    assembly; they only affect display, never resolution, so they need no
+    restart.
+    """
+
+    placements = dict(placements or {})
     by_key: dict[tuple[str, str], list[dict]] = {}
     unplaced: list[dict] = []
-    for m in registry_modules:
+    for raw in registry_modules:
+        m = dict(raw)
         try:
-            slot = SlotName(m["slot"])
+            slot: SlotName | None = SlotName(m["slot"])
         except ValueError:
-            unplaced.append(m)
-            continue
-        hit = sub_for(m["module_id"], slot)
+            slot = None
+        m["movable"] = movable(m)
+        override = placements.get(m["module_id"]) if m["movable"] else None
+        hit = resolve_placement(m["module_id"], slot, category=str(m.get("category") or ""), override=override)
         if hit is None:
+            m["placement"] = {"big_id": UNPLACED_BIG, "sub_id": UNPLACED_SUB, "source": "none"}
             unplaced.append(m)
             continue
-        big, sub = hit
+        big, sub, source = hit
+        m["placement"] = {"big_id": big.id, "sub_id": sub.id, "source": source}
         by_key.setdefault((big.id, sub.id), []).append(m)
     out: list[dict] = []
     for big in sorted(TAXONOMY, key=lambda b: b.order):
@@ -177,5 +219,16 @@ def tree(registry_modules: Iterable[dict]) -> list[dict]:
             "enabled": sum(s["enabled"] for s in subs), "total": sum(s["total"] for s in subs),
         })
     if unplaced:
-        out.append({"id": "unplaced", "name": "未归类模块", "root": "未归类", "description": "已安装但尚未归入任何类目的模块。", "order": 99, "pep": False, "edges": [], "subs": [{"id": "unplaced.all", "name": "未归类", "description": "", "kind": "A", "slots": [], "legacy": [], "modules": unplaced, "enabled": sum(1 for x in unplaced if x.get("enabled")), "total": len(unplaced)}], "enabled": sum(1 for x in unplaced if x.get("enabled")), "total": len(unplaced)})
+        out.append({
+            "id": UNPLACED_BIG, "name": "未归类模块", "root": "未归类", "order": 99, "pep": False, "edges": [], "hint": "placeable",
+            "description": "已安装但尚未归入任何类目的模块。在每一行选择所属类目后立即生效，不需要重启。",
+            "subs": [{"id": UNPLACED_SUB, "name": "未归类", "description": "", "kind": "A", "slots": [], "legacy": [], "modules": unplaced, "enabled": sum(1 for x in unplaced if x.get("enabled")), "total": len(unplaced)}],
+            "enabled": sum(1 for x in unplaced if x.get("enabled")), "total": len(unplaced),
+        })
     return out
+
+
+def tree_options() -> list[dict]:
+    """Flat list of selectable sub-modules for the placement picker."""
+
+    return [{"sub_id": sub.id, "big_id": big.id, "label": f"{big.name} › {sub.name}"} for big in sorted(TAXONOMY, key=lambda b: b.order) for sub in big.subs]

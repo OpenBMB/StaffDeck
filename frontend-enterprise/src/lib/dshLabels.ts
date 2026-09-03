@@ -219,6 +219,18 @@ export const LEDGER_STATUS_LABEL: Record<string, { text: string; className: stri
   started: { text: '进行中', className: 'bg-[#e8f1ff] text-[#2f6fdb]' },
 };
 
+export const PLACEMENT_SOURCE_LABEL: Record<string, string> = {
+  override: '管理员指定',
+  taxonomy: '平台预设',
+  manifest: '模块自带分类',
+  slot: '按接入点归类',
+  none: '未归类',
+};
+
+export function placementSourceLabel(source: string | undefined): string {
+  return PLACEMENT_SOURCE_LABEL[source ?? 'none'] ?? source ?? '';
+}
+
 export const TECH_MODE_STORAGE_KEY = 'staffdeck_dsh_tech_mode';
 
 export function readTechMode(): boolean {

@@ -31,6 +31,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from importlib import metadata as importlib_metadata
@@ -45,6 +46,12 @@ ENTRY_POINT_GROUP = "staffdeck_dsh.modules"
 ENV_MODULES = "STAFFDECK_DSH_MODULES"
 
 SINGLE_PROVIDER_SLOTS = {SlotName.RUNTIME_ENGINE, SlotName.SECURITY_PEP}
+
+# "pkg.mod:register" (attr optional, defaults to ``register``)
+SPEC_RE = re.compile(r"^[A-Za-z_][\w]*(\.[A-Za-z_]\w*)*(:[A-Za-z_]\w*)?$")
+MODULE_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
+SEMVER_RE = re.compile(r"^\d+(\.\d+){0,2}(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$")
+SUPPORTED_CONTRACT_VERSIONS = {"v1"}
 
 # operation name -> supported versions (shared with the composition compiler)
 SUPPORTED_CONTRACTS: dict[str, set[str]] = {
@@ -98,6 +105,7 @@ class Installed:
     enabled: bool = True
     config: Mapping[str, Any] = field(default_factory=dict)
     source: str = "builtin"
+    spec: str = "builtin"        # the discovery context (builtin / entry_point:<name> / "pkg.mod:register")
 
 
 class ModuleRegistry:
@@ -108,13 +116,20 @@ class ModuleRegistry:
         self._guarded_slots: set[SlotName] = set()
         self._sealed = False
         self.generation = 0
+        self._install_source = "builtin"
 
     # -- install -------------------------------------------------------------------
 
-    def install(self, manifest: ModuleManifest, provider: Any, *, slot: SlotName, enabled: bool = True, config: Mapping[str, Any] | None = None, source: str = "builtin") -> Installed:
+    def install(self, manifest: ModuleManifest, provider: Any, *, slot: SlotName, enabled: bool = True, config: Mapping[str, Any] | None = None, source: str | None = None) -> Installed:
         with self._lock:
             if self._sealed:
                 raise RegistrySealed("module registry is sealed; changing modules requires a new worker generation")
+            if not MODULE_ID_RE.match(manifest.module_id):
+                raise ContractIncompatible(f"invalid module_id {manifest.module_id!r}: expected lowercase dotted name like vendor.name", details={"module_id": manifest.module_id})
+            if not SEMVER_RE.match(manifest.version):
+                raise ContractIncompatible(f"module {manifest.module_id}: version {manifest.version!r} is not semver", details={"version": manifest.version})
+            if manifest.contract_version not in SUPPORTED_CONTRACT_VERSIONS:
+                raise ContractIncompatible(f"module {manifest.module_id}: contract_version {manifest.contract_version!r} unsupported", details={"supported": sorted(SUPPORTED_CONTRACT_VERSIONS)})
             if manifest.module_id in self._by_id:
                 raise DuplicateModule(f"module already installed: {manifest.module_id}")
             if slot not in manifest.attaches_to:
@@ -123,10 +138,28 @@ class ModuleRegistry:
                 name, _, version = op.partition("/")
                 if name not in SUPPORTED_CONTRACTS or version not in SUPPORTED_CONTRACTS[name]:
                     raise ContractIncompatible(f"module {manifest.module_id}: unsupported contract {op}", details={"operation": op})
-            item = Installed(manifest=manifest, provider=provider, slot=slot, enabled=enabled, config=dict(config or {}), source=source)
+            # The registrar currently running decides the source unless the caller is explicit.
+            item = Installed(manifest=manifest, provider=provider, slot=slot, enabled=enabled, config=dict(config or {}), source=source or self._install_source, spec=self._install_source)
             self._by_id[manifest.module_id] = item
             self._by_slot.setdefault(slot, []).append(item)
             return item
+
+    def installing_from(self, source: str):
+        """Context manager: every ``install()`` without an explicit ``source`` inside records this source."""
+
+        registry = self
+
+        class _Ctx:
+            def __enter__(self_inner):
+                self_inner.prev = registry._install_source
+                registry._install_source = source
+                return registry
+
+            def __exit__(self_inner, *exc):
+                registry._install_source = self_inner.prev
+                return False
+
+        return _Ctx()
 
     def mark_guarded(self, slot: SlotName) -> None:
         """A host installed with a Guard declares that this slot is PEP-protected."""
@@ -197,7 +230,10 @@ class ModuleRegistry:
             m = item.manifest
             out.append({
                 "module_id": m.module_id, "name": m.name, "summary": str(m.metadata.get("summary", "")), "version": m.version, "kind": m.kind.value, "contract_version": m.contract_version,
-                "slot": item.slot.value, "enabled": item.enabled, "source": item.source,
+                "slot": item.slot.value, "enabled": item.enabled, "source": item.source, "spec": item.spec,
+                "category": str(m.metadata.get("category", "") or ""),
+                "switchable": bool(m.kind is ModuleKind.CODE or m.metadata.get("switchable")),
+                "metadata": {k: v for k, v in m.metadata.items() if k not in ("summary", "category", "switchable") and isinstance(v, (str, int, float, bool))},
                 "provides": list(m.provides_operations), "requires": list(m.requires_operations),
                 "hooks": [f"{h.point}:{h.handler}" for h in m.hooks], "policy_actions": list(m.policy_actions),
                 "guarded": item.slot in self._guarded_slots,
@@ -211,7 +247,7 @@ class ModuleRegistry:
             if self._sealed:
                 raise RegistrySealed("cannot toggle modules after seal")
             item = self._by_id[module_id]
-            replaced = Installed(manifest=item.manifest, provider=item.provider, slot=item.slot, enabled=enabled, config=item.config, source=item.source)
+            replaced = Installed(manifest=item.manifest, provider=item.provider, slot=item.slot, enabled=enabled, config=item.config, source=item.source, spec=item.spec)
             self._by_id[module_id] = replaced
             self._by_slot[item.slot] = [replaced if i.manifest.module_id == module_id else i for i in self._by_slot[item.slot]]
 
@@ -231,8 +267,15 @@ def _iter_entry_points() -> Iterable[Any]:
         return []
 
 
+def validate_spec(spec: str) -> str:
+    spec = str(spec or "").strip()
+    if not SPEC_RE.match(spec):
+        raise ValueError(f"module spec must look like package.module:register — got {spec!r}")
+    return spec
+
+
 def _load_callable(spec: str) -> Registrar:
-    module_name, _, attr = spec.partition(":")
+    module_name, _, attr = validate_spec(spec).partition(":")
     mod = importlib.import_module(module_name)
     fn = getattr(mod, attr or "register")
     if not callable(fn):
@@ -247,11 +290,13 @@ def discover_and_install(registry: ModuleRegistry, settings: Any, *, include_bui
     if include_builtin:
         from staffdeck_dsh.modules import builtin
 
-        builtin.register(registry, ctx)
+        with registry.installing_from("builtin"):
+            builtin.register(registry, ctx)
     for ep in _iter_entry_points():
         try:
             fn = ep.load()
-            fn(registry, ctx)
+            with registry.installing_from(f"entry_point:{ep.name}"):
+                fn(registry, ctx)
             logger.info("installed staffdeck_dsh modules from entry point %s", ep.name)
         except Exception:
             logger.exception("failed to load staffdeck_dsh module entry point %s", getattr(ep, "name", ep))
@@ -259,11 +304,18 @@ def discover_and_install(registry: ModuleRegistry, settings: Any, *, include_bui
     specs = [s.strip() for s in (str(getattr(settings, "dsh_modules", "") or os.environ.get(ENV_MODULES, "")).split(",")) if s.strip()]
     specs.extend(extra_specs)
     for spec in specs:
-        _load_callable(spec)(registry, ctx)
+        with registry.installing_from(spec):
+            _load_callable(spec)(registry, ctx)
         logger.info("installed staffdeck_dsh modules from %s", spec)
     for mid in ctx["disabled"]:
-        if registry.get(mid) is not None:
-            registry.set_enabled(mid, False)
+        item = registry.get(mid)
+        if item is None:
+            continue
+        # Engines / PEP providers are chosen, never disabled; kernel pieces cannot be switched off.
+        if item.slot in SINGLE_PROVIDER_SLOTS or (item.manifest.kind is ModuleKind.KERNEL and not item.manifest.metadata.get("switchable")):
+            logger.warning("ignoring disabled_modules entry %s: module is not switchable", mid)
+            continue
+        registry.set_enabled(mid, False)
     return registry
 
 
@@ -271,15 +323,59 @@ _active: ModuleRegistry | None = None
 _active_lock = threading.Lock()
 
 
+class RegistryNotBuilt(ModuleSdkError):
+    code = "REGISTRY_NOT_BUILT"
+
+
 def get_registry(settings: Any = None) -> ModuleRegistry:
+    """The active registry.
+
+    Only a caller that *owns* the assembly (``runtime.assembly``) passes
+    ``settings`` and may trigger a build. Settings-less callers (hosts, relays,
+    hooks) get the active registry or ``RegistryNotBuilt`` — they must never
+    silently materialise a default assembly while a restart is in progress.
+    """
+
     global _active
     with _active_lock:
         if _active is None:
+            if settings is None:
+                raise RegistryNotBuilt("module registry is not built yet (runtime starting or restarting)")
             reg = ModuleRegistry()
             discover_and_install(reg, settings)
             reg.seal()
             _active = reg
         return _active
+
+
+def peek_registry() -> ModuleRegistry | None:
+    """The active registry without building; ``None`` while it is being rebuilt."""
+
+    with _active_lock:
+        return _active
+
+
+def build_registry(settings: Any) -> ModuleRegistry:
+    """Build and seal a registry from ``settings`` without touching the active one."""
+
+    reg = ModuleRegistry()
+    discover_and_install(reg, settings)
+    reg.seal()
+    return reg
+
+
+_generation = 0
+
+
+def install_registry(reg: ModuleRegistry) -> ModuleRegistry:
+    """Atomically make ``reg`` the active registry (used by restart to swap without a gap)."""
+
+    global _active, _generation
+    with _active_lock:
+        _generation += 1
+        reg.generation = max(reg.generation, _generation)
+        _active = reg
+        return reg
 
 
 def reset_registry() -> None:

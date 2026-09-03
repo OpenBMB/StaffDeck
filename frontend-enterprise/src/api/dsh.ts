@@ -21,12 +21,27 @@ export type DshStatus = {
   restart_count?: number;
   config_pending?: boolean;
   engine_version?: string | null;
+  last_restart_error?: string | null;
+  last_restart_failed?: boolean;
+  restarting?: boolean;
+  base_configured?: boolean;
+  base_last_test_ok?: boolean | null;
 };
+
+export type DshPlacementSource = 'override' | 'taxonomy' | 'manifest' | 'slot' | 'none';
+
+export type DshPlacement = { big_id: string; sub_id: string; source: DshPlacementSource };
 
 export type DshModule = {
   module_id: string;
   name: string;
   summary?: string;
+  category?: string;
+  switchable?: boolean;
+  metadata?: Record<string, string | number | boolean>;
+  placement?: DshPlacement;
+  movable?: boolean;
+  spec?: string;
   version: string;
   kind: 'A' | 'C' | 'T' | 'K';
   contract_version: string;
@@ -59,6 +74,7 @@ export type DshTreeBig = {
   description: string;
   order: number;
   pep: boolean;
+  hint?: string;
   edges: Array<{ to: string; label: string }>;
   subs: DshTreeSub[];
   enabled: number;
@@ -125,11 +141,34 @@ export type DshEvent = {
   created_at: string;
 };
 
+export type DshBaseConnection = {
+  authz_url: string;
+  decision_token: string;
+  has_decision_token?: boolean;
+  control_token: string;
+  has_control_token?: boolean;
+  timeout_seconds: number | string;
+  pending_timeout_seconds: number | string;
+  identity_internal_url: string;
+  runtime_client_id: string;
+  runtime_client_secret: string;
+  has_runtime_client_secret?: boolean;
+  workload_audience: string;
+  last_test_ok?: boolean | null;
+  last_test_at?: string | null;
+  configured?: boolean;
+  [k: string]: unknown;
+};
+
+export type DshBaseConnectionUpdate = Partial<Record<'authz_url' | 'decision_token' | 'control_token' | 'identity_internal_url' | 'runtime_client_id' | 'runtime_client_secret' | 'workload_audience', string | null>> & { timeout_seconds?: number | null; pending_timeout_seconds?: number | null };
+
 export type DshAssembly = {
   engine: 'dsh' | 'legacy' | string;
   security_profile: string;
   disabled_modules: string[];
   extra_modules: string[];
+  placements: Record<string, string>;
+  base: DshBaseConnection;
   updated_at?: string | null;
   updated_by?: string | null;
 };
@@ -141,6 +180,7 @@ export type DshAssemblyState = {
   started_at: string | null;
   restart_count: number;
   last_restart_error: string | null;
+  restarting?: boolean;
   config_path: string;
 };
 
@@ -149,7 +189,30 @@ export type DshAssemblyUpdate = {
   security_profile?: string;
   disabled_modules?: string[];
   extra_modules?: string[];
+  placements?: Record<string, string | null>;
+  base?: DshBaseConnectionUpdate;
 };
+
+export type DshPreflightCheck = { name: string; ok: boolean | null; message: string; status?: number | null; latency_ms?: number | null; fatal: boolean; detail?: Record<string, unknown> };
+
+export type DshBaseTestResult = { ok: boolean; checks: DshPreflightCheck[]; authz_revision?: string | null; tested_at: string; saved: boolean };
+
+export type DshTreeOption = { sub_id: string; big_id: string; label: string };
+
+export type DshInspectModule = DshModule & { already_installed?: boolean };
+
+export type DshInspectResult = {
+  spec: string;
+  ok: boolean;
+  callable?: string | null;
+  file?: string | null;
+  elapsed_ms: number;
+  modules: DshInspectModule[];
+  errors: Array<{ code: string; message: string; phase?: string; details?: Record<string, unknown> }>;
+  warnings: Array<{ code: string; message: string; module_id?: string }>;
+};
+
+export type DshPlacementResult = { module_id: string; sub_id: string | null; installed: boolean; placement: DshPlacement | null; tree: DshTreeBig[] };
 
 export type DshSessionSummary = {
   session_id: string;
@@ -202,6 +265,12 @@ export const dshApi = {
   config: (tenantId: string) => api.get<DshAssemblyState>(`/api/enterprise/dsh/config${q(tenantId)}`),
   setConfig: (tenantId: string, patch: DshAssemblyUpdate) => api.put<DshAssemblyState>('/api/enterprise/dsh/config', { tenant_id: tenantId, ...patch }),
   restart: (tenantId: string) => api.post<{ restart_count: number; restarted_at: string; state: DshAssemblyState; runtime_error?: { code: string; message: string } }>('/api/enterprise/dsh/restart', { tenant_id: tenantId }),
+  treeOptions: (tenantId: string) => api.get<DshTreeOption[]>(`/api/enterprise/dsh/modules/tree/options${q(tenantId)}`),
+  setPlacement: (tenantId: string, moduleId: string, subId: string | null) =>
+    api.put<DshPlacementResult>(`/api/enterprise/dsh/modules/${encodeURIComponent(moduleId)}/placement`, { tenant_id: tenantId, sub_id: subId }),
+  inspectModule: (tenantId: string, spec: string) => api.post<DshInspectResult>('/api/enterprise/dsh/modules/inspect', { tenant_id: tenantId, spec }),
+  baseTest: (tenantId: string, base?: DshBaseConnectionUpdate) => api.post<DshBaseTestResult>('/api/enterprise/dsh/base/test', { tenant_id: tenantId, ...(base ? { base } : {}) }),
+  audit: (tenantId: string, limit = 100) => api.get<{ entries: DshLogEntry[] }>(`/api/enterprise/dsh/audit${q(tenantId, { limit })}`),
   sessionsRecent: (tenantId: string, limit = 40) => api.get<DshSessionSummary[]>(`/api/enterprise/dsh/sessions/recent${q(tenantId, { limit })}`),
   log: (tenantId: string, sessionId: string, limit = 400) => api.get<DshLog>(`/api/enterprise/dsh/log${q(tenantId, { session_id: sessionId, limit })}`),
 };

@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     # Admin-editable overrides (engine / security profile / disabled / extra modules);
     # defaults to <dsh_home or cwd>/staffdeck-runtime.json.
     dsh_runtime_config_path: str = ""
+    # Where the admin page may point the enterprise permission centre. Comma-separated host[:port]
+    # patterns (fnmatch, e.g. "*.corp.example,10.0.*"); empty = loopback / private ranges only.
+    # Set to "*" to allow any host. https is required for public hosts.
+    base_url_allowlist: str = ""
     dsh_root: str = ""
     dsh_home: str = ""
     dsh_node_bin: str = "node"

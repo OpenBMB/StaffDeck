@@ -171,9 +171,10 @@ class DshTaskAgent:
         self.runtime = runtime
         self.turn = turn
         if pipeline is None:
-            from staffdeck_dsh.modules.registry import get_registry
+            from staffdeck_dsh.modules.registry import peek_registry
 
-            pipeline = InteractionPipelineHost(turn.snapshot.hooks, handlers=get_registry().hook_handlers(), trace=trace_sink)
+            reg = peek_registry()
+            pipeline = InteractionPipelineHost(turn.snapshot.hooks, handlers=reg.hook_handlers() if reg is not None else None, trace=trace_sink)
         self.pipeline = pipeline
         self.trace_sink = trace_sink
         self._process: DshProcess | None = None
@@ -218,6 +219,7 @@ class DshTaskAgent:
             snapshot=t.snapshot,
             generation=t.generation,
             turn_id=t.turn_id,
+            session_id=self.turn.session_id,
             active_sop_id=sop_id,
             active_node_id=step_id,
             deadline_monotonic=step_deadline_monotonic,

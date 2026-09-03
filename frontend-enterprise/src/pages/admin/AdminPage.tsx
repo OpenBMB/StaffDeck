@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -9,8 +9,10 @@ import AppHeader from '@/components/AppHeader';
 import { StatCard } from '@/components/StatCard';
 import ModuleTree from '@/components/dsh/ModuleTree';
 import SessionLog from '@/components/dsh/SessionLog';
+import BaseConnectionPanel from '@/components/dsh/BaseConnectionPanel';
+import ExternalModulesPanel from '@/components/dsh/ExternalModulesPanel';
 import { api, TENANT_ID } from '../../api/client';
-import { dshApi, type DshAssemblyState, type DshEngineChoice, type DshLedgerRow, type DshLogEntry, type DshSessionSummary, type DshSnapshot, type DshStaffEngine, type DshStatus, type DshTreeBig } from '../../api/dsh';
+import { dshApi, type DshAssembly, type DshAssemblyState, type DshAssemblyUpdate, type DshBaseConnectionUpdate, type DshEngineChoice, type DshLedgerRow, type DshLogEntry, type DshSessionSummary, type DshSnapshot, type DshStaffEngine, type DshStatus, type DshTreeBig, type DshTreeOption } from '../../api/dsh';
 import type { AgentProfileRead, ChannelBindingRead, ModelConfigRead, TeamRead } from '../../types';
 import type { EnterpriseAuthUser } from '../../auth';
 import { EnterpriseRoute } from '../../enums/routes';
@@ -23,6 +25,9 @@ import IconError from '../../assets/icons/error-fill.svg?react';
 import IconBack from '../../assets/icons/chevron-down.svg?react';
 
 type TabKey = 'overview' | 'modules' | 'staff' | 'log';
+
+/** Pseudo-session id for the admin audit trail (assembly saves, connection tests, restarts). */
+const ADMIN_AUDIT_SESSION = '__admin_audit__';
 
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'overview', label: '运行状态' },
@@ -71,7 +76,23 @@ function describePending(state: DshAssemblyState | null): string[] {
   const rm = a.extra_modules.filter((m) => !s.extra_modules.includes(m));
   if (add.length) out.push(`接入 ${add.length} 个外部模块`);
   if (rm.length) out.push(`移除 ${rm.length} 个外部模块`);
+  if (out.length === 0) out.push('权限中心连接设置已变化');
   return out;
+}
+
+/** 本地先改，再排队保存：连续点击不会互相覆盖，也不会因为上一次还没返回而被吞掉。 */
+function applyLocally(saved: DshAssembly, patch: DshAssemblyUpdate): DshAssembly {
+  const next: DshAssembly = { ...saved };
+  if (patch.engine) next.engine = patch.engine;
+  if (patch.security_profile) next.security_profile = patch.security_profile;
+  if (patch.disabled_modules) next.disabled_modules = [...patch.disabled_modules].sort();
+  if (patch.extra_modules) next.extra_modules = [...patch.extra_modules];
+  if (patch.placements) {
+    const pl = { ...saved.placements };
+    for (const [k, v] of Object.entries(patch.placements)) { if (v) pl[k] = v; else delete pl[k]; }
+    next.placements = pl;
+  }
+  return next;
 }
 
 export default function AdminPage({ currentUser, onLogout }: { currentUser: EnterpriseAuthUser; onLogout?: () => void }) {
@@ -84,8 +105,12 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
   const [status, setStatus] = useState<DshStatus | null>(null);
   const [tree, setTree] = useState<DshTreeBig[]>([]);
   const [assembly, setAssembly] = useState<DshAssemblyState | null>(null);
+  const [options, setOptions] = useState<DshTreeOption[]>([]);
   const [restartOpen, setRestartOpen] = useState(false);
-  const [extraSpec, setExtraSpec] = useState('');
+  const [restarting, setRestarting] = useState(false);
+  const assemblyRef = useRef<DshAssemblyState | null>(null);
+  const saveChain = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => { assemblyRef.current = assembly; }, [assembly]);
 
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [models, setModels] = useState<ModelConfigRead[]>([]);
@@ -107,15 +132,17 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [st, t, cfg, agts] = await Promise.all([
+      const [st, t, cfg, agts, opts] = await Promise.all([
         dshApi.status(TENANT_ID),
         dshApi.modulesTree(TENANT_ID),
         dshApi.config(TENANT_ID),
         api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
+        dshApi.treeOptions(TENANT_ID).catch(() => [] as DshTreeOption[]),
       ]);
       setStatus(st);
       setTree(t);
       setAssembly(cfg);
+      setOptions(opts);
       setAgents(agts);
       setAgentId((prev) => prev || agts.find((a) => !a.is_overall)?.id || agts[0]?.id || '');
     } catch (error) {
@@ -166,7 +193,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     if (!id) return;
     setLogLoading(true);
     try {
-      const body = await dshApi.log(TENANT_ID, id);
+      const body = id === ADMIN_AUDIT_SESSION ? await dshApi.audit(TENANT_ID) : await dshApi.log(TENANT_ID, id);
       setLogEntries(body.entries);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '读取日志失败');
@@ -179,8 +206,8 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     try {
       const [unknown, ss] = await Promise.all([dshApi.ledgerUnknown(TENANT_ID), dshApi.sessionsRecent(TENANT_ID)]);
       setLedgerUnknown(unknown);
-      setSessions(ss);
-      setSessionId((prev) => prev || ss[0]?.session_id || '');
+      setSessions([{ session_id: ADMIN_AUDIT_SESSION, title: '管理操作记录', agent_id: null, agent_name: '管理后台', channel: 'admin', status: 'active', updated_at: new Date().toISOString() }, ...ss]);
+      setSessionId((prev) => prev || ss[0]?.session_id || ADMIN_AUDIT_SESSION);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载失败');
     }
@@ -197,42 +224,116 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     }
   }
 
-  async function saveAssembly(patch: Parameters<typeof dshApi.setConfig>[1]) {
-    setBusy(true);
-    try {
-      const next = await dshApi.setConfig(TENANT_ID, patch);
-      setAssembly(next);
-      setStatus((s) => (s ? { ...s, config_pending: next.pending } : s));
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '保存失败');
-    } finally {
-      setBusy(false);
+  /**
+   * Optimistic + serialised: the UI reflects the change at once; PUTs run one after another with the
+   * latest full state. Resolves to true on success, false on failure (state is re-read from the server).
+   */
+  function saveAssembly(patch: DshAssemblyUpdate): Promise<boolean> {
+    const current = assemblyRef.current;
+    if (current && !patch.base) {
+      const optimistic = { ...current, saved: applyLocally(current.saved, patch) };
+      assemblyRef.current = optimistic;
+      setAssembly(optimistic);
     }
+    const run = async (): Promise<boolean> => {
+      setBusy(true);
+      try {
+        const next = await dshApi.setConfig(TENANT_ID, patch);
+        assemblyRef.current = next;
+        setAssembly(next);
+        setStatus((s) => (s ? { ...s, config_pending: next.pending } : s));
+        return true;
+      } catch (error) {
+        notify.error(error instanceof Error ? error.message : '保存失败');
+        try {
+          const fresh = await dshApi.config(TENANT_ID);
+          assemblyRef.current = fresh;
+          setAssembly(fresh);
+        } catch { /* keep optimistic state; next load() will reconcile */ }
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    };
+    const next = saveChain.current.then(run, run);
+    saveChain.current = next.then(() => undefined, () => undefined);
+    return next;
   }
 
   function toggleModule(moduleId: string, enabled: boolean) {
-    if (!assembly) return;
-    const set = new Set(assembly.saved.disabled_modules);
+    const saved = assemblyRef.current?.saved;
+    if (!saved) return;
+    const set = new Set(saved.disabled_modules);
     if (enabled) set.delete(moduleId); else set.add(moduleId);
     void saveAssembly({ disabled_modules: [...set] });
   }
 
-  function addExtraModule() {
-    const spec = extraSpec.trim();
-    if (!spec || !assembly) return;
-    if (assembly.saved.extra_modules.includes(spec)) { setExtraSpec(''); return; }
-    void saveAssembly({ extra_modules: [...assembly.saved.extra_modules, spec] }).then(() => setExtraSpec(''));
+  async function placeModule(moduleId: string, subId: string | null) {
+    try {
+      const r = await dshApi.setPlacement(TENANT_ID, moduleId, subId);
+      setTree(r.tree);
+      const current = assemblyRef.current;
+      if (current) {
+        const pl = { ...current.saved.placements };
+        if (subId) pl[moduleId] = subId; else delete pl[moduleId];
+        const next = { ...current, saved: { ...current.saved, placements: pl } };
+        assemblyRef.current = next;
+        setAssembly(next);
+      }
+      notify.success(subId ? '已归入，立即生效' : '已恢复默认位置');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '归类失败');
+    }
   }
 
-  function removeExtraModule(spec: string) {
-    if (!assembly) return;
-    void saveAssembly({ extra_modules: assembly.saved.extra_modules.filter((x) => x !== spec) });
+  async function inspectModule(spec: string) {
+    try {
+      return await dshApi.inspectModule(TENANT_ID, spec);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '预检失败');
+      return null;
+    }
+  }
+
+  async function addExtraModule(spec: string): Promise<boolean> {
+    const saved = assemblyRef.current?.saved;
+    if (!saved || saved.extra_modules.includes(spec)) return true;
+    return saveAssembly({ extra_modules: [...saved.extra_modules, spec] });
+  }
+
+  async function removeExtraModule(spec: string): Promise<boolean> {
+    const saved = assemblyRef.current?.saved;
+    if (!saved) return false;
+    return saveAssembly({ extra_modules: saved.extra_modules.filter((x) => x !== spec) });
+  }
+
+  async function saveBase(patch: DshBaseConnectionUpdate): Promise<boolean> {
+    const ok = await saveAssembly({ base: patch });
+    if (ok) notify.success('权限中心连接已保存，请测试连接');
+    return ok;
+  }
+
+  async function testBase(patch?: DshBaseConnectionUpdate) {
+    try {
+      const r = await dshApi.baseTest(TENANT_ID, patch);
+      if (r.saved) {
+        const fresh = await dshApi.config(TENANT_ID);
+        assemblyRef.current = fresh;
+        setAssembly(fresh);
+      }
+      return r;
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '测试失败');
+      return null;
+    }
   }
 
   async function restart() {
     setRestartOpen(false);
+    setRestarting(true);
     setBusy(true);
     try {
+      await saveChain.current;
       const res = await dshApi.restart(TENANT_ID);
       if (res.runtime_error) notify.warning(`已重启，但 Harness v3 引擎未能启动：${res.runtime_error.message}`);
       else notify.success('运行时已重启，新的装配已生效');
@@ -242,6 +343,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
       await load();
     } finally {
       setBusy(false);
+      setRestarting(false);
     }
   }
 
@@ -261,7 +363,10 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
 
   const pendingLines = useMemo(() => describePending(assembly), [assembly]);
   const applied = assembly?.applied ?? null;
-  const engineRunning = status?.dsh_enabled ? (status.runtime_ok ? 'ok' : 'error') : 'warn';
+  const engineRunning: 'ok' | 'warn' | 'error' = status?.dsh_enabled ? (status.runtime_ok ? 'ok' : 'error') : 'ok';
+  const businessSelected = assembly?.saved.security_profile === 'BUSINESS_BASE';
+  const restartingAny = restarting || Boolean(status?.restarting) || Boolean(assembly?.restarting);
+  const baseReady = !businessSelected || assembly?.saved.base?.last_test_ok === true;
   const modulesTotal = status?.modules_total ?? 0;
   const modulesEnabled = status?.modules_enabled ?? 0;
   const bigCount = tree.length;
@@ -319,16 +424,29 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                 <div className="min-w-0 flex-1 text-[13px] text-[#6f4500]">
                   <span className="font-medium">有已保存但尚未生效的更改：</span>
                   {pendingLines.join('；') || '装配已变化'}。重启运行时后生效；重启期间正在进行的对话会被中断。
-                  {assembly.last_restart_error && <div className="mt-[4px] text-[12px] text-[#b00c0c]">上次重启失败，已恢复原有装配：{assembly.last_restart_error}</div>}
+                  {!baseReady && <div className="mt-[4px] text-[12px] text-[#b00c0c]">已选择企业版权限：请先在下方「企业权限中心连接」保存并通过测试连接，才能重启。</div>}
+                  {assembly.last_restart_error && <div className="mt-[4px] text-[12px] text-[#b00c0c]">{assembly.last_restart_error.startsWith('无法切换') || assembly.last_restart_error.startsWith('装配无法') ? `上次重启被拒绝，运行中的装配未受影响：${assembly.last_restart_error}` : `上次重启失败：${assembly.last_restart_error}`}</div>}
                 </div>
-                <UIButton onClick={() => setRestartOpen(true)} disabled={busy} className="h-[32px] rounded-[8px] bg-[#18181a] px-[14px] text-[12px] text-white hover:bg-[#333]">重启运行时</UIButton>
+                <UIButton onClick={() => setRestartOpen(true)} disabled={busy || restarting || !baseReady} className="h-[32px] rounded-[8px] bg-[#18181a] px-[14px] text-[12px] text-white hover:bg-[#333] disabled:opacity-50">{restarting ? '正在重启…' : '重启运行时'}</UIButton>
+              </div>
+            )}
+
+            {!assembly?.pending && status?.last_restart_error && (
+              <div className="flex items-start gap-[10px] rounded-[12px] border-[0.5px] border-[#f3c4c4] bg-[#fff6f6] px-[16px] py-[10px] text-[12px] text-[#b00c0c]">
+                <IconError className="mt-[2px] size-[14px] shrink-0" />
+                <span className="min-w-0 flex-1">{status.last_restart_error.startsWith('启动时') ? status.last_restart_error : `上次重启未成功（运行中的装配未受影响）：${status.last_restart_error}`}</span>
+              </div>
+            )}
+            {restartingAny && (
+              <div className="flex items-center gap-[10px] rounded-[12px] border-[0.5px] border-[#e3e7f1] bg-[#fafbfd] px-[16px] py-[10px] text-[12px] text-[#464c5e]">
+                <IconRefresh className="size-[14px] animate-spin text-[#757f9c]" />正在按已保存的装配重启运行时，请稍候…
               </div>
             )}
 
             <div className="flex flex-wrap items-stretch gap-[20px]" aria-label="运行概览">
               <StatCard label="执行引擎" value={applied ? engineLabel(applied.engine) : status ? engineLabel(status.default_engine) : '-'} valueClassName="text-[18px] leading-[26px]" />
-              <StatCard label="引擎状态" value={status ? (status.dsh_enabled ? (status.runtime_ok ? '运行中' : '异常') : '主进程内') : '-'} tone={status?.dsh_enabled ? (status.runtime_ok ? 'green' : 'red') : 'default'} valueClassName="text-[18px] leading-[26px]" />
-              <StatCard label="权限模式" value={profileLabel(status?.security_profile).short} valueClassName="text-[18px] leading-[26px]" />
+              <StatCard label="引擎状态" value={status ? (restartingAny ? '重启中' : status.dsh_enabled ? (status.runtime_ok ? '运行中' : '异常') : '运行中') : '-'} tone={status ? (restartingAny ? 'default' : status.runtime_ok ? 'green' : 'red') : 'default'} valueClassName="text-[18px] leading-[26px]" />
+              <StatCard label="权限模式" value={profileLabel(status?.security_profile).short} tone={status?.security_profile === 'BUSINESS_BASE' ? (status.base_last_test_ok === false ? 'red' : 'green') : 'default'} valueClassName="text-[18px] leading-[26px]" />
               <StatCard label="功能模块" value={`${modulesEnabled} / ${modulesTotal} 已启用`} tone={modulesEnabled > 0 ? 'green' : 'default'} valueClassName="text-[18px] leading-[26px]" />
             </div>
 
@@ -357,6 +475,9 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                     </KV>
                     <KV label="权限模式">
                       {profileLabel(status.security_profile).long}
+                      {status.security_profile === 'BUSINESS_BASE' && (
+                        <Hint>{status.base_last_test_ok === true ? '权限中心连接测试通过' : status.base_last_test_ok === false ? '权限中心连接测试失败' : '权限中心未测试'}{assembly?.saved.base?.authz_url ? ` · ${assembly.saved.base.authz_url}` : ''}</Hint>
+                      )}
                       <div className="text-[12px] text-[#9aa0ad]">{profileLabel(status.security_profile).hint}</div>
                     </KV>
                     <KV label="使用 Harness v3 的员工">
@@ -392,39 +513,27 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
 
             {tab === 'modules' && (
               <div className="flex flex-col gap-[16px]">
-                <div className="text-[12px] text-[#757f9c]">打开或关闭开关、选择引擎和权限模式，都会先保存下来；点「重启运行时」后才真正生效。</div>
+                <div className="text-[12px] text-[#757f9c]">打开或关闭开关、选择引擎和权限模式，都会先保存下来；点「重启运行时」后才真正生效。归类（模块放在哪个类目下）只影响展示，改完立即生效。</div>
                 <ModuleTree
                   tree={tree}
                   loading={loading}
                   tech={tech}
                   assembly={assembly?.saved ?? null}
+                  options={options}
                   busy={busy}
                   onToggleModule={toggleModule}
                   onChooseEngine={(engine) => void saveAssembly({ engine })}
-                  onChooseProfile={(security_profile) => void saveAssembly({ security_profile })}
+                  onChooseProfile={(security_profile) => {
+                    if (security_profile === 'BUSINESS_BASE' && !assembly?.saved.base?.configured) {
+                      notify.warning('请先在下方「企业权限中心连接」填写地址和决策令牌并保存，再选择企业版');
+                      return;
+                    }
+                    void saveAssembly({ security_profile });
+                  }}
+                  onPlaceModule={(id, sub) => void placeModule(id, sub)}
                 />
-                <Panel className="p-[16px]">
-                  <div className="mb-[4px] text-[13px] text-[#18181a]">接入外部模块</div>
-                  <div className="mb-[10px] text-[12px] text-[#757f9c]">安装好插件包后，填写它提供的注册入口（形如 <code className="rounded-[4px] bg-[#f6f6f6] px-[4px]">my_plugin.staffdeck:register</code>），重启运行时后加载。加载失败会自动恢复原有装配。</div>
-                  <div className="flex flex-wrap items-center gap-[8px]">
-                    <input value={extraSpec} onChange={(e) => setExtraSpec(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addExtraModule(); }} placeholder="package.module:register" className="h-[34px] w-[360px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] font-mono text-[12px] text-[#17191f] outline-none placeholder:text-[#c0c6d4] focus:border-[#18181a] max-[900px]:w-full" />
-                    <UIButton variant="outline" onClick={addExtraModule} disabled={busy || !extraSpec.trim()} className="h-[34px] rounded-[10px] border-[0.5px] border-[#e3e7f1] px-[14px] text-[12px] font-normal">添加</UIButton>
-                  </div>
-                  {assembly && assembly.saved.extra_modules.length > 0 && (
-                    <div className="mt-[10px] flex flex-col gap-[6px]">
-                      {assembly.saved.extra_modules.map((spec) => {
-                        const live = assembly.applied?.extra_modules.includes(spec);
-                        return (
-                          <div key={spec} className="flex items-center gap-[10px] rounded-[10px] bg-[#fafbfd] px-[12px] py-[8px] text-[12px]">
-                            <code className="min-w-0 flex-1 truncate font-mono text-[#18181a]">{spec}</code>
-                            <span className={cn('rounded-[6px] px-[6px] py-[2px] text-[11px]', live ? 'bg-[#eaf7ef] text-[#1f9d55]' : 'bg-[#fff4e5] text-[#c2740c]')}>{live ? '已加载' : '重启后加载'}</span>
-                            <button type="button" onClick={() => removeExtraModule(spec)} disabled={busy} className="text-[12px] text-[#757f9c] hover:text-[#d20b0b]">移除</button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </Panel>
+                <BaseConnectionPanel base={assembly?.saved.base ?? null} selected={Boolean(businessSelected)} busy={busy} onSave={saveBase} onTest={testBase} />
+                <ExternalModulesPanel assembly={assembly} options={options} tech={tech} busy={busy} onInspect={inspectModule} onAdd={addExtraModule} onRemove={removeExtraModule} onPlace={placeModule} />
               </div>
             )}
 
@@ -550,7 +659,8 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
             <AlertDialogTitle>重启运行时？</AlertDialogTitle>
             <AlertDialogDescription>
               将按已保存的装配重新加载功能模块、权限模式和执行引擎：{pendingLines.join('；') || '无变化'}。
-              正在进行的对话会被中断；如果新的装配无法启动，会自动恢复原有装配。
+              重启前会先做预检（模块能否装配、权限中心是否可用），预检不通过则不会动到运行中的系统；
+              预检通过后正在进行的对话会被中断；如果新的装配仍然无法启动，会自动恢复原有装配。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
