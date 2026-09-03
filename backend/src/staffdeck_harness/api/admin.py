@@ -14,7 +14,7 @@ Endpoints
     POST /ledger/{id}/reconcile      settle one as completed|failed
     GET  /staff/{agent_id}/engine    which engine this staff runs on
     PUT  /staff/{agent_id}/engine    set harness_v2|harness_v3|default for this staff (persisted on AgentProfile.metadata_json)
-    GET  /events/recent?session_id=  DSH-related AgentEvents for one session (trace projection)
+    GET  /events/recent?session_id=  Harness v3-related AgentEvents for one session (trace projection)
     GET  /config                     saved vs applied assembly (engine / profile / disabled / extra modules)
     PUT  /config                     save a new assembly (takes effect after /restart)
     POST /restart                    rebuild registry + profile + Harness v3 runtime from the saved assembly

@@ -118,7 +118,7 @@ def test_provider_observer_trace(module) -> None:
 
 
 def test_provider_observer_trace_receives_relayed_events(registry, monkeypatch) -> None:
-    """The relay fans out every translated DSH event to the registry-installed observer."""
+    """The relay fans out every translated Harness v3 event to the registry-installed observer."""
 
     monkeypatch.setattr(registry_mod, "_active", registry)
     monkeypatch.setattr(relay_mod, "_observers", {})

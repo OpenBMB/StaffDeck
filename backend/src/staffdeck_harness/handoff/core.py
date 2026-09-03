@@ -17,7 +17,7 @@ delivers a notice and may record ``notify_message_id``; a ``ReplyResolver``
 turns an inbound message into ``(handoff_id, reply_text, replier)``. The Core
 runs the PEP (``handoff.create/assign/reply``) before every mutation.
 
-Every human reply creates a **new turn**: the Core never mutates DSH history.
+Every human reply creates a **new turn**: the Core never mutates engine history.
 It reuses the legacy resume path (``_apply_handoff_reply`` → async resume
 worker) so the resumed turn starts from Channel Receive PEP like any other.
 """

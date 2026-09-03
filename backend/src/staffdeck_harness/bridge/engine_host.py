@@ -17,7 +17,7 @@ before delegating to the inherited implementation.
     settings.harness_v3_enabled is False        → HarnessV2Engine (legacy, default)
     settings.harness_v3_enabled is True         → HarnessV3Engine, unless the Staff is
                                             excluded by ``harness_v3_staff_allowlist``
-    settings.harness_v3_staff_allowlist set     → only listed agent ids run on DSH
+    settings.harness_v3_staff_allowlist set     → only listed agent ids run on Harness v3
 
 That gives the "single Staff canary" rollout from the plan.
 """

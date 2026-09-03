@@ -94,7 +94,7 @@ class DefaultInteractions:
 # --------------------------------------------------------------------------- observers
 
 class TraceObserver:
-    """Mirrors relayed DSH events into the legacy trace vocabulary (already done by the relay's trace sink); kept as the canonical observer id."""
+    """Mirrors relayed Harness v3 events into the legacy trace vocabulary (already done by the relay's trace sink); kept as the canonical observer id."""
 
     name = "observer.trace"
 

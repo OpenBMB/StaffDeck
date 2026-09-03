@@ -1,6 +1,6 @@
 """OpenAI-compatible model gateway for the Harness v3 subprocess.
 
-DSH speaks ``POST {baseURL}/chat/completions`` (OpenAI wire, DeepSeek
+The Harness v3 engine speaks ``POST {baseURL}/chat/completions`` (OpenAI wire, DeepSeek
 extensions). Instead of handing the Node process a real API key and letting it
 talk to the provider itself, the bridge points ``baseURL`` at this endpoint,
 served on the same localhost port as the capability MCP server, and uses the
@@ -42,7 +42,7 @@ from staffdeck_harness.bridge.capability_mcp import ActivationRegistry
 logger = logging.getLogger(__name__)
 
 CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
-# DSH sends a 256k default; we never let a single step exceed the model's own cap.
+# The engine sends a 256k default; we never let a single step exceed the model's own cap.
 _MAX_TOKENS_FLOOR = 256
 
 
@@ -171,7 +171,7 @@ class ModelGateway:
                 logger.exception("model gateway stream failed")
                 if trace:
                     trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)[:500]})
-                # Mid-stream: the only thing DSH can act on is an error payload before [DONE]
+                # Mid-stream: the only thing the engine can act on is an error payload before [DONE]
                 yield f"data: {json.dumps({'error': {'code': 'PROVIDER_ERROR', 'message': str(exc)[:500]}})}\n\n".encode()
 
         return StreamingResponse(body_iter(), media_type="text/event-stream", headers={"cache-control": "no-cache", "x-accel-buffering": "no"})

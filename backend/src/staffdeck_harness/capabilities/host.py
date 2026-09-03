@@ -1,4 +1,4 @@
-"""CapabilityHost: the single door through which DSH (or anything else) reaches a capability.
+"""CapabilityHost: the single door through which the Harness v3 engine (or anything else) reaches a capability.
 
 Order of checks for every ``ModuleInvocation`` (matches the architecture's
 "Snapshot Guard is not a PEP" rule):
@@ -15,7 +15,7 @@ Order of checks for every ``ModuleInvocation`` (matches the architecture's
    ``denied`` / ``cancelled`` and a ``Receipt``.
 
 The host also exposes ``tool_schemas()``: the stable proxy schemas the Bridge
-registers in DSH. The proxy never executes — every call comes back here.
+registers in the Harness v3 engine. The proxy never executes — every call comes back here.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 SIDE_EFFECTING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
-# Stable model-facing proxy tools. Names are wire-stable; DSH sees only these.
+# Stable model-facing proxy tools. Names are wire-stable; the engine sees only these.
 PROXY_TOOLS: dict[str, dict[str, Any]] = {
     "knowledge_search": {
         "operation": "knowledge.search/v1",
@@ -194,7 +194,7 @@ class CapabilityHost:
         self._ledger = InvocationLedger(self.db)
         self._agent_row = get_agent(self.db, self.slot.snapshot.tenant_id, None if self.slot.snapshot.staff_id.endswith(":overall") else self.slot.snapshot.staff_id)
 
-    # -- schemas the Bridge registers in DSH -----------------------------------
+    # -- schemas the Bridge registers in the engine -----------------------------------
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         allowed = self.slot.allowed()

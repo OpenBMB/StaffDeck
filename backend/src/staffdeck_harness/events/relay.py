@@ -1,6 +1,6 @@
 """SessionEventRelay and the ``event.observer`` slot.
 
-DSH emits a rich ``session.event`` stream (``turn/start``, ``step/start``,
+The Harness v3 engine emits a rich ``session.event`` stream (``turn/start``, ``step/start``,
 ``request/header``, ``assistant/chunk``, ``tool/call``, ``tool/result``,
 ``assistant/message``, ``turn/end`` ...). StaffDeck's trace/SSE/feedback
 consumers understand the legacy ``AgentEvent`` vocabulary
@@ -86,7 +86,7 @@ def relay_event(ev: Mapping[str, Any]) -> list[RuntimeEvent]:
         out.append(("harness_v3_step_started", {"turn": data.get("turn"), "step": data.get("step")}))
     elif kind == "request/header":
         # The model call itself is observed by the bridge's model gateway (llm_call_started/finished
-        # with tokens and duration); this only records what DSH asked for.
+        # with tokens and duration); this only records what the engine asked for.
         out.append(("harness_v3_model_request", {"provider": data.get("provider"), "model": data.get("model"), "execution_engine": "harness_v3"}))
     elif kind == "assistant/chunk":
         text = data.get("text") if isinstance(data.get("text"), str) else None

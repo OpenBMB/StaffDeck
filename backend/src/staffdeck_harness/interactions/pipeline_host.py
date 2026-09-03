@@ -1,4 +1,4 @@
-"""InteractionPipelineHost: compiles and runs the fixed hook plan around one DSH step.
+"""InteractionPipelineHost: compiles and runs the fixed hook plan around one Harness v3 step.
 
 The host is kernel (K). Modules contribute handlers by name; the host resolves
 names to callables from its registry, runs them in the compiled order, and

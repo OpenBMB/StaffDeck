@@ -138,5 +138,5 @@ def invocation():
 
 
 def pytest_configure(config):
-    # keep the live dev server's DSH out of these tests even if a developer exports HARNESS_V3_ENABLED
+    # keep the live dev server's Harness v3 runtime out of these tests even if a developer exports HARNESS_V3_ENABLED
     os.environ.setdefault("HARNESS_V3_ENABLED", "false")

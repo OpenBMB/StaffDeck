@@ -1,4 +1,4 @@
-"""Golden path: the same ChatTurnRequest on the Harness v2 engine and on DSH.
+"""Golden path: the same ChatTurnRequest on the Harness v2 engine and on Harness v3.
 
 Both engines run against the same seeded tenant (knowledge base + HTTP tool),
 the same model gateway, and the same request. We assert *outcome equivalence*,
@@ -7,7 +7,7 @@ citation, both must call the HTTP tool exactly once with the same argument,
 both must leave the session active, and both must leave a completed ledger
 row per capability call.
 
-Skipped unless DSH is built and server model credentials are present.
+Skipped unless the Harness v3 engine is built and server model credentials are present.
 """
 
 from __future__ import annotations
@@ -31,11 +31,11 @@ from tests_harness.test_e2e_harness_v3_turn import HARNESS_V3_ROOT, MODEL_BASE, 
 pytestmark = [
     pytest.mark.skipif(
         not (Path(HARNESS_V3_ROOT, "apps", "cli", "lib", "bin.js").exists() and MODEL_BASE and MODEL_KEY),
-        reason="needs built DSH and server model credentials",
+        reason="needs a built Harness v3 engine and server model credentials",
     ),
     pytest.mark.skipif(
         not os.environ.get("HARNESS_V3_E2E", "").strip(),
-        reason="live-model legacy-vs-DSH comparison is opt-in: set HARNESS_V3_E2E=1",
+        reason="live-model v2-vs-v3 comparison is opt-in: set HARNESS_V3_E2E=1",
     ),
 ]
 
@@ -97,7 +97,7 @@ def test_golden_legacy_vs_harness_v3(tmp_path, monkeypatch) -> None:
         assert r["status"] in {"active", "handoff"}, name
         assert all(s == "completed" for _, s in r["ledger"]), f"{name}: every capability call must settle"
         assert len(r["tool_calls"]) <= 1, f"{name} must not call the side-effecting tool more than once"
-    # DSH must fully answer: tool result + citations, with both capability kinds in the ledger.
+    # Harness v3 must fully answer: tool result + citations, with both capability kinds in the ledger.
     # KB fact wording is model-dependent; require the tool ran and either answered or said it could not find it.
     assert "已发货" in v3["reply"] or "明天" in v3["reply"], v3["reply"]
     assert v3["tool_calls"] == ["B2002"]

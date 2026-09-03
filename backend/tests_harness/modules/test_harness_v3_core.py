@@ -9,6 +9,7 @@ switched off with ``harness_v3_enabled``, never replaced by a plugin.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from staffdeck_harness.modules.taxonomy import tree
 MODULE_ID = "harness_v3.core"
 CJK = re.compile(r"[一-鿿]")
 REPO_ROOT = Path(__file__).resolve().parents[3]
-VENDORED_DSH = REPO_ROOT / ".codex-tmp" / "dsh-inspect" / "deepseek-harness-dsh-v0.1.2-alpha.2"
+VENDORED_ENGINE = Path(os.environ["HARNESS_V3_ROOT"]) if os.environ.get("HARNESS_V3_ROOT") else REPO_ROOT / ".codex-tmp" / "harness-v3-engine" / "deepseek-harness-0.1.2-alpha.2"
 
 
 def _described(registry, module_id: str = MODULE_ID) -> dict:
@@ -51,7 +52,7 @@ def _guarded_registry(settings) -> ModuleRegistry:
 
 
 @pytest.fixture(autouse=True)
-def _no_dsh_root_env(monkeypatch):
+def _no_harness_v3_root_env(monkeypatch):
     # version() falls back to $HARNESS_V3_ROOT when the module was built without a root; keep the developer's env out
     monkeypatch.delenv("HARNESS_V3_ROOT", raising=False)
 
@@ -140,7 +141,7 @@ def test_disable_harness_v3_core_not_switchable(registry):
     assert d["metadata"].get("switchable") is None
 
 
-def test_disable_dsh_core_is_toggled_by_harness_v3_enabled_only(settings):
+def test_disable_harness_v3_core_is_toggled_by_harness_v3_enabled_only(settings):
     settings.harness_v3_enabled = False
     assert _guarded_registry(settings).get(MODULE_ID).enabled is False
     settings.harness_v3_enabled = True
@@ -177,9 +178,9 @@ def test_provider_harness_v3_core_version_tolerates_bad_package_json(tmp_path):
     assert HarnessV3CoreModule(str(root)).version() == "unknown", "package.json without a version → unknown"
 
 
-@pytest.mark.skipif(not (VENDORED_DSH / "apps" / "cli" / "package.json").is_file(), reason="vendored DSH checkout not present")
+@pytest.mark.skipif(not (VENDORED_ENGINE / "apps" / "cli" / "package.json").is_file(), reason="vendored Harness v3 engine checkout not present")
 def test_provider_harness_v3_core_version_of_vendored_checkout():
-    assert HarnessV3CoreModule(str(VENDORED_DSH)).version() == "0.1.2-alpha.2"
+    assert HarnessV3CoreModule(str(VENDORED_ENGINE)).version() == "0.1.2-alpha.2"
 
 
 def test_provider_harness_v3_core_version_is_what_the_registry_reports(settings, fake_root):

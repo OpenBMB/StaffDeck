@@ -131,7 +131,7 @@ def _build(settings: Any, overrides: RuntimeOverrides) -> dict[str, Any]:
 
 
 def start_harness_runtime(settings: Any) -> dict[str, Any]:
-    """Apply the saved assembly, seal the module registry, pick the security profile, and (if enabled) boot DSH.
+    """Apply the saved assembly, seal the module registry, pick the security profile, and (if enabled) boot Harness v3.
 
     A saved assembly that cannot be built (e.g. BUSINESS_BASE whose permission
     centre is gone) must not brick the process: we fall back to the deployment

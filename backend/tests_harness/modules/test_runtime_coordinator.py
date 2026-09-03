@@ -135,7 +135,7 @@ def test_provider_runtime_coordinator_loop_forwards_kwargs(module, db):
 
 
 def test_provider_runtime_coordinator_loop_opens_legacy_engine(module, db, monkeypatch):
-    """The loop built here is what the engine host wraps; with DSH disabled it opens Harness v2."""
+    """The loop built here is what the engine host wraps; with Harness v3 disabled it opens Harness v2."""
 
     from app.core.harness_v2_engine import HarnessV2Engine
     from app.session.session_schema import ChatTurnRequest

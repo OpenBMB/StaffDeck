@@ -1,17 +1,17 @@
 """CapabilityCallbackPort realized as a local MCP server.
 
 the engine's SDK protocol has no client-callable request channel (server→client
-requests are a "dead capability" in 0.1.2), but DSH mounts external MCP
+requests are a "dead capability" in 0.1.2), but the Harness v3 engine mounts external MCP
 servers natively (``@deepseek-ai/dsh-mcp-client``) and their tools appear to
 the model like any other. So the Bridge exposes the ``CapabilityHost`` proxy
 tools **as an MCP server over Streamable HTTP**, and the Harness v3 profile patch
 mounts it. Every model tool call therefore travels:
 
-    DSH tools/pre-execute → mcp__staffdeck__<proxy> → this server → CapabilityHost
+    engine tools/pre-execute → mcp__staffdeck__<proxy> → this server → CapabilityHost
         → activation fence → ledger → Guarded Facade (PEP) → legacy service
 
 The server is multi-tenant by *activation*: each turn registers an
-``ActivationSlot`` under an opaque token, DSH is told the token through the
+``ActivationSlot`` under an opaque token, the engine is told the token through the
 MCP connection headers, and every tool call resolves its slot from that
 header. A call without a live token is refused (``ACTIVATION_FENCED``).
 

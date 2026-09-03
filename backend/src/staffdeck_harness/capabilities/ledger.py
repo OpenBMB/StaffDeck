@@ -5,7 +5,7 @@ semantics — start record, ``completed`` / ``failed`` / ``outcome_unknown`` /
 ``cancelled``, claim release for pre-side-effect failures, replay-or-block on a
 logical action key — but only for ``kind == "tool"``. This ledger generalizes
 the same rows and the same state machine to *every* ``ModuleInvocation`` so
-knowledge, skills, sandbox and artifacts get receipts too, and DSH-originated
+knowledge, skills, sandbox and artifacts get receipts too, and Harness v3-originated
 calls and legacy calls share one audit trail.
 
 State machine (unchanged from legacy):

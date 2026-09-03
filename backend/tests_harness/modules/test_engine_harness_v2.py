@@ -177,7 +177,7 @@ def test_provider_engine_harness_v2_open_ignores_request_and_agent(module, fake_
     request = ChatTurnRequest(tenant_id="t1", user_id="u1", agent_id="a1", message="hi")
     engine = module(MODULE_ID).provider.open(fake_loop, request, "someone-else")
     assert isinstance(engine, HarnessV2Engine)
-    assert not hasattr(engine, "snapshot"), "Harness v2 engine carries no DSH composition snapshot"
+    assert not hasattr(engine, "snapshot"), "Harness v2 engine carries no Harness v3 composition snapshot"
 
 
 def test_provider_engine_harness_v2_is_what_engine_host_opens_by_default(module, fake_loop, settings):

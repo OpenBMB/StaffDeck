@@ -1,6 +1,6 @@
 """Invocation, result, receipt and cancellation contracts.
 
-A ``ModuleInvocation`` is the only way anything (DSH via the Bridge, the legacy
+A ``ModuleInvocation`` is the only way anything (Harness v3 via the Bridge, the legacy
 engine, a scheduler) asks a capability module to do work. The
 ``CapabilityHost`` executes it, the Invocation Ledger records it, and a
 ``Receipt`` comes back alongside the ``ModuleResult``.

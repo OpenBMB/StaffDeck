@@ -1,7 +1,7 @@
 """Module test: ``engine.harness_v3`` (Harness v3 引擎, trusted, slot runtime.engine).
 
 Provider ``HarnessV3BridgeEngine.open(loop, request, agent_id)`` returns a
-``HarnessV3Engine`` (a ``HarnessV2Engine`` whose step executor is the external DSH
+``HarnessV3Engine`` (a ``HarnessV2Engine`` whose step executor is the external Harness v3 engine
 process). Everything here stays offline: the Harness v3 runtime is never started —
 ``get_runtime`` is either short-circuited by an empty ``harness_v3_root`` (→
 ``EngineUnavailable``) or replaced by a stub.
@@ -159,7 +159,7 @@ def test_disable_engine_harness_v3_not_switchable(registry):
     assert d["slot"] == "runtime.engine", "admin: 通过选择引擎切换，不能单独停用"
 
 
-def test_disable_engine_dsh_activated_by_harness_v3_enabled(settings):
+def test_disable_engine_harness_v3_activated_by_harness_v3_enabled(settings):
     settings.harness_v3_enabled = True
     reg = _guarded_registry(settings)
     item = reg.get(MODULE_ID)
@@ -200,7 +200,7 @@ def test_provider_engine_harness_v3_open_raises_when_root_has_no_build(module, f
     assert engine_host._runtime is None
 
 
-def test_provider_engine_dsh_open_returns_harness_v3_engine_with_stub_runtime(module, fake_loop, db, monkeypatch, settings, profile):
+def test_provider_engine_harness_v3_open_returns_harness_v3_engine_with_stub_runtime(module, fake_loop, db, monkeypatch, settings, profile):
     """With the runtime factory stubbed the provider returns a HarnessV3Engine that is still a HarnessV2Engine."""
 
     import app.config as app_config
@@ -277,7 +277,7 @@ def test_events_or_pep_engine_harness_v3_staff_use_denies_cross_tenant(registry,
 
 
 def test_events_or_pep_engine_harness_v3_turn_context_enforces_staff_use(module, fake_loop, db, monkeypatch, settings, profile):
-    """``HarnessV3Engine._ensure_turn_context`` runs the staff.use/v1 check: a foreign-tenant request is denied before any DSH call."""
+    """``HarnessV3Engine._ensure_turn_context`` runs the staff.use/v1 check: a foreign-tenant request is denied before any engine call."""
 
     from app.db.models import ChatSession
     from app.session.session_schema import ChatTurnRequest
@@ -318,7 +318,7 @@ def security_ctx_for(ns):
 
 
 def test_harness_v3_process_follows_model_config_thinking_policy():
-    """A ModelConfig with thinking disabled must not let DSH default to reasoningEffort=high
+    """A ModelConfig with thinking disabled must not let the engine default to reasoningEffort=high
     (OpenAI-compatible gateways such as Qwen reject it), and the policy must reach the profile patch."""
 
     from types import SimpleNamespace

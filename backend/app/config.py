@@ -61,8 +61,8 @@ class Settings(BaseSettings):
     # 回滚为逐行展示的旧样式；binding 的 config_json.compact_trace=false 可对单个
     # 绑定回滚。
     channel_feishu_trace_compact_sop: bool = True
-    # DSH (DeepSeek Harness) engine switch. Off keeps the in-process Harness v2
-    # loop untouched. On routes step execution to a DSH worker via the
+    # Harness v3 engine switch. Off keeps the in-process Harness v2
+    # loop untouched. On routes step execution to a Harness v3 worker via the
     # staffdeck_harness parallel package; harness_v3_staff_allowlist limits the rollout to
     # specific agent ids (comma separated) for canary testing.
     harness_v3_enabled: bool = False

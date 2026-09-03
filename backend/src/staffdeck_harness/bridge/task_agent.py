@@ -1,4 +1,4 @@
-"""HarnessV3TaskAgent: runs one TaskRequirement on DSH instead of the in-process action loop.
+"""HarnessV3TaskAgent: runs one TaskRequirement on the Harness v3 engine instead of the in-process action loop.
 
 This is the engine seam. ``HarnessV2Engine._run_frame`` calls
 ``self.task_agent.run(requirement, model_config, invoke_tool, ...)`` and gets a
@@ -8,18 +8,18 @@ store, leases, SOP CAS, handoff, memory capture, response generation — is the
 legacy code path unchanged. Only the step execution swaps:
 
     legacy: HarnessTaskAgent  → LLM JSON action protocol → invoke_tool(...)
-    dsh:    HarnessV3TaskAgent      → Harness v3 AgentLoop (Node)      → mcp__staffdeck__* → CapabilityHost
+    v3:     HarnessV3TaskAgent      → Harness v3 AgentLoop (Node)      → mcp__staffdeck__* → CapabilityHost
 
 The ``invoke_tool`` callable handed in by the engine is the legacy
 ``HarnessCapabilityInvoker.invoke``. We do **not** use it for dispatch (the
 CapabilityHost owns PEP + ledger), but we keep its manifest semantics by
 building the ActivationSlot from the same ``CompositionSnapshot``.
 
-Turn shape on DSH:
+Turn shape on Harness v3:
 
 1. pre_step hooks build the step prompt (persona + memory + SOP ExecutionSlice
    + TaskRequirement) — one user message to the engine.
-2. DSH runs its loop; every tool call is an MCP call into ``CapabilityHost``.
+2. The Harness v3 agent loop runs; every tool call is an MCP call into ``CapabilityHost``.
 3. The model ends by calling ``finish_task`` (captured on the ActivationSlot).
    If it stops without calling it, ``turn_stopping`` hooks may steer once; if
    it still does not, the assistant text becomes ``reply_fragment`` and the
@@ -133,7 +133,7 @@ def _model_thinking(model_config: ModelConfig) -> tuple[str, str]:
     """(thinking, reasoning_effort) for the Harness v3 ``llm-deepseek`` row, read from the same ModelConfig
     fields the legacy LLM client honours (``extra_body.thinking.type``, ``extra_body.reasoning_effort``).
 
-    A model configured with thinking disabled must not be sent any effort (DSH would default to
+    A model configured with thinking disabled must not be sent any effort (the engine would default to
     ``high`` and gateways reject it); an unset config leaves both at the provider default.
     """
 
@@ -461,7 +461,7 @@ class HarnessV3TaskAgent:
             while True:
                 if cancelled():
                     raise HarnessExecutionCancelled("cancelled while Harness v3 turn running")
-                # The DSH 0.1.2 protocol has no cancel method and ``NotificationSubscription.next``
+                # The Harness v3 (0.1.2) protocol has no cancel method and ``NotificationSubscription.next``
                 # blocks indefinitely, so we poll with a small timeout: it lets us honour an
                 # up-to-now-cancelled turn and break as soon as ``finish_task`` closed the slot
                 # (a finished step is a closed step; the engine must not keep generating).
@@ -534,9 +534,9 @@ class HarnessV3TaskAgent:
 
     @staticmethod
     def _tool_results(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Pair DSH ``tool/call`` and ``tool/result`` events and decode the StaffDeck proxy payload.
+        """Pair Harness v3 ``tool/call`` and ``tool/result`` events and decode the StaffDeck proxy payload.
 
-        DSH shape (0.1.2): ``tool/call.data = {callId, name, arguments}``;
+        Harness v3 event shape (0.1.2): ``tool/call.data = {callId, name, arguments}``;
         ``tool/result.data.message.content[] = {type: "tool-result", toolCallId, content: [{type: "text", text}], isError}``.
         The proxy always returns one JSON text block.
         """

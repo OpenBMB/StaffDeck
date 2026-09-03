@@ -1,7 +1,7 @@
 """End-to-end: AgentLoop.handle_turn with harness_v3_enabled=True against the real model gateway.
 
 Requires:
-- DSH built at $HARNESS_V3_ROOT (apps/cli/lib/bin.js)
+- Harness v3 engine built at $HARNESS_V3_ROOT (apps/cli/lib/bin.js)
 - server model credentials in ../.codex-tmp/server-models.env (loaded by the shell)
 
 Run:  set -a; source ../.codex-tmp/server-models.env; set +a
@@ -38,14 +38,15 @@ from app.knowledge.service import KnowledgeService
 from app.security.encryption import encrypt_secret
 from app.session.session_schema import ChatTurnRequest
 
-HARNESS_V3_ROOT = os.environ.get("HARNESS_V3_ROOT") or "/Users/hm/Documents/UltraRAG4/.codex-tmp/dsh-inspect/deepseek-harness-dsh-v0.1.2-alpha.2"
+# The engine checkout is deployment-specific: read it from the environment (backend/.env sets it for the dev stack).
+HARNESS_V3_ROOT = os.environ.get("HARNESS_V3_ROOT") or str(Path(__file__).resolve().parents[2] / ".codex-tmp" / "harness-v3-engine" / "deepseek-harness-0.1.2-alpha.2")
 MODEL_BASE = (os.environ.get("STAFFDECK_MODEL_GLM_5_2_BASE_URL") or "").rstrip("/")
 MODEL_KEY = os.environ.get("STAFFDECK_MODEL_GLM_5_2_API_KEY") or ""
 
 pytestmark = [
     pytest.mark.skipif(
         not (Path(HARNESS_V3_ROOT, "apps", "cli", "lib", "bin.js").exists() and MODEL_BASE and MODEL_KEY),
-        reason="needs built DSH and server model credentials",
+        reason="needs a built Harness v3 engine and server model credentials",
     ),
     pytest.mark.skipif(
         not os.environ.get("HARNESS_V3_E2E", "").strip(),
@@ -143,7 +144,7 @@ def test_harness_v3_turn_knowledge_and_tool_with_pep_and_ledger(db: Session, too
     assert "已发货" in resp.reply or "明天" in resp.reply
     # the HTTP tool really ran, exactly once
     assert [c["body"].get("order_id") for c in _ToolServer.calls] == ["A1001"]
-    # ledger has receipts for both capability kinds, executed by the dsh engine
+    # ledger has receipts for both capability kinds, executed by the Harness v3 engine
     rows = db.exec(select(HarnessInvocationRecord).where(HarnessInvocationRecord.tenant_id == "tenant_demo")).all()
     names = sorted(r.tool_name for r in rows)
     print("LEDGER:", [(r.tool_name, r.status, bool(r.logical_action_key)) for r in rows])

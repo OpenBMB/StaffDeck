@@ -36,7 +36,7 @@ def test_builtin_registry_seals_with_exactly_one_engine_and_pep() -> None:
         reg.install(ModuleManifest(module_id="engine.harness_v2", name="x", version="1", kind="K", contract_version="v1", attaches_to=[SlotName.RUNTIME_ENGINE]), LegacyEngine(), slot=SlotName.RUNTIME_ENGINE)
 
 
-def test_dsh_enabled_selects_engine_harness_v3() -> None:
+def test_harness_v3_enabled_selects_engine_harness_v3() -> None:
     s = _Settings()
     s.harness_v3_enabled = True
     reg = discover_and_install(ModuleRegistry(), s)

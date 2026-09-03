@@ -4,8 +4,8 @@
 >
 > - 每条条款标注 **【已实现】** 或 **【待实现】**。【已实现】条款以当前代码为准，出处写成 `文件路径 · 符号名`（函数/类/常量），不写行号；【待实现】条款给出精确设计，供后续按此实现。
 > - 关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
-> - 术语沿用管理后台文案：Harness v3 引擎 = `engine.harness_v3`（DSH bridge），Harness v2 引擎 = `engine.harness_v2`（内置）；权限模式：开源版 · 本地权限 = `OSS_LOCAL`，企业版 · 统一权限中心 = `BUSINESS_BASE`。
-> - 配套文档：`design-dsh-pluggable-runtime.md`（实现说明）。
+> - 术语沿用管理后台文案：Harness v3 引擎 = `engine.harness_v3`（可插拔运行时桥接），Harness v2 引擎 = `engine.harness_v2`（内置）；权限模式：开源版 · 本地权限 = `OSS_LOCAL`，企业版 · 统一权限中心 = `BUSINESS_BASE`。
+> - 配套文档：`design-harness-v3-pluggable-runtime.md`（实现说明）。
 
 ---
 
@@ -14,21 +14,21 @@
 | # | 接口 | 谁调用谁 | 协议 | 鉴权 | 幂等 / 重试 | 状态 |
 |---|---|---|---|---|---|---|
 | 1 | 模块注册 `register(registry, ctx)` | 装配（`modules/registry.py · discover_and_install`）→ 模块包 | 进程内 Python：entry point 组 `staffdeck_harness.modules` 或规格串 `pkg.mod:register` | 进程信任；只有租户管理员能通过 `/admin` 添加规格串 | 每次 restart 重跑，MUST 幂等；失败即整次装配失败 | 【已实现】 |
-| 2 | 能力提供者 `invoke(host, inv) -> ModuleResult` | `capabilities/host.py · CapabilityHost._dispatch` → provider | 进程内 Python，MCP 工作线程 | Guard/PEP（当前落在 Guarded Facade；宿主通用 PEP 待实现） | Ledger `side_effect_key` 去重；副作用不重试 | 【已实现】 |
+| 2 | 能力提供者 `invoke(host, inv) -> ModuleResult` | `capabilities/host.py · CapabilityHost._dispatch` → provider | 进程内 Python，MCP 工作线程 | Guard/PEP（宿主通用 PEP，`CapabilityHost._pep`，未经策略映射 fail closed；Guarded Facade 复核） | Ledger `side_effect_key` 去重；副作用不重试 | 【已实现】 |
 | 3 | 交互 Hook `handlers[name](ctx, state) -> HookDecision` | `interactions/pipeline_host.py · InteractionPipelineHost.run` → provider | 进程内 Python，引擎线程同步 | 无（只收窄，不授权） | 无重试；异常记 `hook_failed` 后跳过 | 【已实现】 |
 | 4 | 转人工三槽 `propose / notify / resolve` | `handoff/core.py · HandoffCore` → provider | 进程内 Python | Core 先 `Guard.require` 再调槽 | notify 异常被吞并记事件；无重试 | 【已实现】（`build_handoff_core` 按能力挑选：只把实现了 `propose` / `notify` / `resolve` 的提供者接进对应槽） |
 | 5 | 事件观察者 `on_event(tenant_id, session_id, event_type, payload)` | `events/relay.py · _fanout` → provider | 进程内 Python，同步 | 无 | 无重试；异常只记日志 | 【已实现】 |
 | 6 | 渠道适配器 `ChannelAdapter`（normalize/send/start_ingress/stop_ingress） | `channels/host.py · ChannelHost` / legacy inbox·outbox → adapter | 进程内 Python | Receive PEP / Send PEP 在 `ChannelHost` | outbox 幂等键 | 【已实现】（第三方适配器注册接线待实现） |
-| 7 | 能力回调 MCP（DSH → StaffDeck） | DSH 子进程 `@deepseek-ai/dsh-mcp-client` → `bridge/capability_mcp.py · CapabilityMcpServer` | MCP Streamable HTTP（JSON-RPC 2.0，`json_response=True, stateless_http=True`），仅 127.0.0.1 | 请求头 `x-staffdeck-activation: <token>`（每 Turn 一枚） | Ledger | 【已实现】（内部接口，不对第三方开放） |
-| 8 | 引擎驱动（StaffDeck → DSH） | `bridge/worker.py · HarnessV3Process` → `dsh --profile sdk` 子进程 | JSON-RPC 2.0 NDJSON over stdio（官方 Python SDK `HarnessClient`） | 进程环境变量；子进程**不持有任何模型提供方凭证** | 无；Turn 取消 = 关闭子进程 | 【已实现】（内部接口） |
-| 8a | 模型调用（DSH → StaffDeck 模型模块） | DSH `llm-deepseek` 适配器 → `bridge/model_gateway.py · ModelGateway`（与能力 MCP 同端口 `/v1/chat/completions`）→ `app.llm.client.LLMClient` + 协议驱动 → 提供方 | OpenAI Chat Completions（SSE 流式透传，含 `reasoning_content` / `tool_calls` 增量） | `Authorization: Bearer <activation token>`（每 Turn 一枚；提供方密钥、思考策略、温度、输出上限全部由 ModelConfig 决定） | 由 `LLMClient` 的重试策略处理；每次调用记 `llm_call_started/finished/failed`（operation=`dsh.step`） | 【已实现】 |
+| 7 | 能力回调 MCP（引擎 → StaffDeck） | 上游 deepseek-harness 0.1.2-alpha.2 子进程 `@deepseek-ai/dsh-mcp-client` → `bridge/capability_mcp.py · CapabilityMcpServer` | MCP Streamable HTTP（JSON-RPC 2.0，`json_response=True, stateless_http=True`），仅 127.0.0.1 | 请求头 `x-staffdeck-activation: <token>`（每 Turn 一枚） | Ledger | 【已实现】（内部接口，不对第三方开放） |
+| 8 | 引擎驱动（StaffDeck → 引擎） | `bridge/worker.py · HarnessV3Process` → `dsh --profile sdk` 子进程 | JSON-RPC 2.0 NDJSON over stdio（官方 Python SDK `HarnessClient`） | 进程环境变量；子进程**不持有任何模型提供方凭证** | 无；Turn 取消 = 关闭子进程 | 【已实现】（内部接口） |
+| 8a | 模型调用（引擎 → StaffDeck 模型模块） | 引擎 `llm-deepseek` 适配器 → `bridge/model_gateway.py · ModelGateway`（与能力 MCP 同端口 `/v1/chat/completions`）→ `app.llm.client.LLMClient` + 协议驱动 → 提供方 | OpenAI Chat Completions（SSE 流式透传，含 `reasoning_content` / `tool_calls` 增量） | `Authorization: Bearer <activation token>`（每 Turn 一枚；提供方密钥、思考策略、温度、输出上限全部由 ModelConfig 决定） | 由 `LLMClient` 的重试策略处理；每次调用记 `llm_call_started/finished/failed`（operation=`harness_v3.step`） | 【已实现】 |
 | 9 | 远程能力提供者（StaffDeck → 第三方） | `capability.mcp_remote` 适配模块 → 第三方 MCP 服务 | MCP Streamable HTTP（JSON-RPC 2.0） | `Authorization: Bearer <workload token>` + `X-StaffDeck-*` | 只读调用最多重试 2 次；副作用调用**永不**自动重试 | 【待实现】 |
 | 10 | Webhook 出站（StaffDeck → 第三方） | `events/webhook.py` 投递器 → 第三方 HTTPS 端点 | HTTPS POST JSON | `X-StaffDeck-Signature: sha256=HMAC-SHA256` | `delivery_id` 去重；5 次指数退避 | 【待实现】 |
 | 11 | Webhook 入站（第三方 → StaffDeck） | 第三方 → `POST /api/enterprise/harness/hooks/{module_id}/inbound` | HTTPS POST JSON | 同一 HMAC 方案或 Bearer workload token | `delivery_id` 去重；重复返回首次应答 | 【待实现】 |
 | 12 | 企业权限中心判定 | `security/business_base.py · BaseAuthzClient` → Base authz | HTTP JSON `POST /internal/v1/authz/check` `/batch-check` | `X-Base-Service-Token: <decision_token>` | 传输错误/502·503·504 重试 1 次；`authorization_pending` 退避轮询至超时 | 【已实现】 |
 | 13 | 工作负载凭证 | `security/business_base.py · BaseWorkload` → Base Identity | HTTP JSON（oauth/token 为 form） | client_credentials → Bearer 服务令牌 + `Idempotency-Key` | 无自动重试 | 【已实现】（线协议对齐企业库，未在企业库实跑） |
 | 14 | 权限中心连接测试 | `security/base_preflight.py · preflight_base` → Base | HTTP | `X-Base-Service-Token` | 只读，无重试 | 【已实现】 |
-| 15 | 管理 API | 前端 `/admin` → `api/admin.py · router`（`/api/enterprise/harness/*`） | HTTP JSON | 登录 JWT + `ensure_tenant_admin`（读接口 `ensure_current_user_tenant`；`/status` 对非管理员隐去路径 / 错误详情） | `/restart` 先预检、再在局部构建、最后原子切换；每次保存 / 测试 / 预检 / 重启写审计事件（`GET /audit`） | 【已实现】 |
+| 15 | 管理 API | 前端 `/admin` → `api/admin.py · router`（`/api/enterprise/harness/*`） | HTTP JSON | 登录 JWT + `ensure_tenant_admin`（读接口 `ensure_current_user_tenant`；`/status` 对非管理员隐去路径 / 错误详情）。`/ledger/recent`、`/events/recent`、`/log` 允许该会话拥有者（`ChatSession.user_id`）读取，非管理员 `arguments` 脱敏为 `<redacted>`（保留键名）；`/sessions/recent`、`/ledger/unknown`、`/audit` 仅管理员；进程级变更（`PUT /config`、`POST /restart`、`PUT /modules/{id}/placement`、`POST /modules/inspect`、`POST /base/test`）还要该租户在 `harness_operator_tenants` 之内（空 = 单操作员部署，操作员自己的租户可变运行时），`PUT /staff/{id}/engine`、`POST /ledger/{id}/reconcile` 保持在租户管理员 | `/restart` 先预检、再在局部构建、最后原子切换（先 `drain_timeout_seconds` 等待在途 Turn，返回 `interrupted_turns`）；每次保存 / 测试 / 预检 / 重启写审计事件（`GET /audit`） | 【已实现】 |
 | 16 | 装配文件 `staffdeck-runtime.json` | 管理 API ↔ 磁盘（`modules/config.py · save_overrides / load_overrides`） | JSON 文件 | 文件权限；Base 密钥字段以 `app.security.encryption` 加密 | 临时文件 + `os.replace` 原子写 | 【已实现】 |
 
 ---
@@ -205,7 +205,7 @@ SUPPORTED_CONTRACT_VERSIONS = {"v1"}
 
 ### 2.3 命名规则
 
-- **`module_id`**：见 `MODULE_ID_RE`。内置保留首段：`knowledge, general_skill, tool, sandbox, interaction, handoff, channel, observer, engine, security, staff, composition, sop, runtime, team, ingress, dsh, ledger`（来源 `modules/builtin.py` 与 `modules/kernel.py`）。第三方 MUST 使用自己的厂商前缀（如 `acme.*`）。【已实现】代码只校验格式，不校验保留前缀；【待实现】`install()` 对 `source != "builtin"` 的模块拒绝保留首段（`CONTRACT_INCOMPATIBLE`）。
+- **`module_id`**：见 `MODULE_ID_RE`。内置保留首段：`knowledge, general_skill, tool, sandbox, interaction, handoff, channel, observer, engine, security, staff, composition, sop, runtime, team, ingress, harness_v3, ledger`（来源 `modules/builtin.py` 与 `modules/kernel.py`）。第三方 MUST 使用自己的厂商前缀（如 `acme.*`）。【已实现】代码只校验格式，不校验保留前缀；【待实现】`install()` 对 `source != "builtin"` 的模块拒绝保留首段（`CONTRACT_INCOMPATIBLE`）。
 - **操作名**：`family.verb/vN`。新增家族 MUST 先加入 `modules/registry.py · SUPPORTED_CONTRACTS`，否则安装即 `CONTRACT_INCOMPATIBLE`。【待实现】`composition/compiler.py · SUPPORTED_CONTRACTS` 是一份更小的副本（只含 SOP 可声明的 9 个操作）；应改为引用注册表单一来源（`CompositionCompiler.__init__` 的 `supported_contracts` 参数目前会 `update` 这份副本）。
 - **Hook handler 名**：全局命名空间。`ModuleRegistry.hook_handlers()` 用 `dict.update` 合并所有启用的 `staff.interaction` 模块的 `handlers`，后装者覆盖；`InteractionPipelineHost.__init__` 再以 `{**DEFAULT_HANDLERS, **handlers}` 合并，注册表条目覆盖默认名。第三方 MUST 用 `<vendor>.<name>`，MUST NOT 覆盖默认 handler 名（`persona, memory.recall, sop.execution_slice, activation.allowlist, capability.pep, ledger.record, citations.collect, sop.output_supervisor, handoff.detect`，见 `interactions/pipeline_host.py · DEFAULT_HANDLERS`）。
 - **事件名**：小写下划线，见 §6。
@@ -266,7 +266,7 @@ SUPPORTED_CONTRACT_VERSIONS = {"v1"}
 
 | SlotName | (A) 进程内 Python SPI | (B) 进程外 MCP 提供者 | (C) HTTP Webhook | 说明 |
 |---|---|---|---|---|
-| `runtime.engine` | 仅内置 | ✗ | ✗ | 引擎内部用 JSON-RPC/stdio 驱动 DSH |
+| `runtime.engine` | 仅内置 | ✗ | ✗ | 引擎内部用 JSON-RPC/stdio 驱动上游 deepseek-harness 0.1.2-alpha.2 子进程 |
 | `runtime.kernel` | 仅内置 | ✗ | ✗ | 信息性 |
 | `security.pep` | 仅内置 | ✗ | ✗ | BUSINESS_BASE 内部经 HTTP 调 Base（§4.4），PEP 模块本身在进程内 |
 | `staff.capability` / `sop.slot.knowledge` / `sop.slot.skill` / `sop.slot.action` | A ✓【已实现】 | A ✓【待实现】 | ✗ | 能力必须同步返回 `ModuleResult` |
@@ -339,17 +339,17 @@ acme = "acme_staffdeck.plugin:register"
 | `handoff.reply_endpoint` | 属性 `name`；`resolve(db, tenant_id, inbound) -> tuple[handoff_id, text] \| None` | `HandoffCore.reply` | Core 之后 `Guard.require("handoff.reply/v1")` |
 | `staff.channel` | legacy `ChannelAdapter` Protocol：`normalize / send / start_ingress / stop_ingress`（`app/channels/adapters/base.py · ChannelAdapter`） | `channels/host.py · ChannelHost.adapter()` → legacy `get_channel_adapter` | 见 §3.A.5 差距 |
 | `event.observer` | 属性 `name`；`on_event(tenant_id, session_id, event_type, payload) -> None` | `events/relay.py · _fanout`；引擎线程或 MCP 工作线程同步 | 无；异常记日志 |
-| `runtime.engine` | `open(loop, request, agent_id) -> HarnessV2Engine` | `bridge/engine_host.py · EngineHost.open` | 仅内置 |
+| `runtime.engine` | `open(loop, request, agent_id) -> HarnessV2Engine` | `bridge/engine_host.py · EngineHost.open`（按模块 id 解析 `engine.harness_v3`，使按 Staff 的 Harness v3 选择可在部署默认为 v2 时作 canary） | 仅内置 |
 | `security.pep` | `build(settings) -> SecurityProfile` | `security/profile.py · _profile_from_registry` | 仅内置 |
 
 #### 3.A.4 能力提供者与 PEP 的分工（精确）
 
-【已实现】`CapabilityHost.invoke` 的固定顺序：① `LifecycleFence.check` + `_fence_resource`（围栏只收窄）→ ② `InvocationLedger.replay_or_block` + `start`（占位）→ ③ `_dispatch`（`for_operation` → `capability_provider_selected` 事件 → `provider.invoke(host, inv)`）→ ④ `ledger.finish` + `capability_invoked` 事件。
+【已实现】`CapabilityHost.invoke` 的固定顺序：① `LifecycleFence.check` + `_fence_resource`（围栏只收窄）→ ② **pre_tool hooks**（`_hooks("pre_tool", inv)`；`deny` 返回 `PRE_TOOL_DENIED`，不写 ledger）→ ③ `InvocationLedger.replay_or_block` + `start`（占位）→ ④ **宿主 PEP**（`CapabilityHost._pep`，在下发提供方前执行）→ ⑤ `_dispatch`（`resolve_operation_provider` 按 pin → `capability_provider_selected` 事件 → `provider.invoke(host, inv)`）→ ⑥ `ledger.finish` + `capability_invoked` 事件 → ⑦ **post_tool hooks**（`ledger.record` 收集回执、`citations.collect` 收集引用；`modify` 决策带 `replacement` 时换掉给模型的 `result`）。
 
-**PEP 目前不在宿主里，而在 Guarded Facade 里**：内置提供者调用 `capabilities/facade.py · KnowledgeFacade.search / GeneralSkillFacade.consume / ToolFacade.invoke / SandboxFacade.execute`，由 Facade 用活行 `projection.live_resource_ref` 调 `deps.guard.require`。因此：
+**PEP 是宿主义务：** `CapabilityHost._pep` 在 `_dispatch` 之前运行——tool/mcp/a2a 对活行 `Tool` 行（`live_resource_ref`）+ 其 `MCPServer`、`general_skill` 对活行、`knowledge` 对选中的每个 Base、`sandbox` 对应资源各 `guard.require` 一次；**没有策略映射的操作一律拒绝（fail closed，`PermissionDenied`）**。因此一个从不调用 `guard.require` 的外部/远程提供者也无法绕过 PEP。Guarded Facade 仍以活行复核作为第二道防线（defence in depth）。
 
-- 【已实现·约定】第三方 `staff.capability` 提供者 MUST 在触碰任何资源前自行调用 `host.guard.require(host.security_context, inv.operation, ref)`，`ref` 按 §4.2 的资源类型用 `staffdeck_harness.composition.projection` 投影（`knowledge.search/v1`：对每个选中的知识库各 require 一次，与 `KnowledgeFacade.search` 一致）。宿主提供 `host.guard`、`host.security_context`、`host.db`、`host.slot`、`host.trace`、`host._deps()`、`host._workspace_root(ctx)`、`host.sandbox(ctx)`。
-- 【待实现】`CapabilityHost._dispatch` 在调用 provider 前，对 `installed.manifest.policy_actions ∋ inv.operation` 的情形执行一次通用 `guard.require`（资源 = `binding_id` 的活行投影；`knowledge.search/v1` 按上面规则）；届时第三方提供者的自查成为第二道防线，远程提供者（§3.B）则完全依赖这一道。
+- 【已实现·约定】第三方 `staff.capability` 提供者在触碰任何资源前仍 SHOULD 自行调用 `host.guard.require(host.security_context, inv.operation, ref)`（资源类型见 §4.2，`knowledge.search/v1` 对每个选中的知识库各 require 一次）；现在这只是复核，不再是必需的豁免缺口。宿主提供 `host.guard`、`host.security_context`、`host.db`、`host.slot`、`host.trace`、`host._deps()`、`host._workspace_root(ctx)`、`host.sandbox(ctx)`。
+- 【已实现】提供者 pin：`CapabilityGrant.provider_module_id` / `provider_version`（来自绑定 `metadata_json.provider_module_id`，否则编译期注册表默认提供者）冻结进 `CompositionSnapshot`（改变 `snapshot_id`）；`_dispatch` 经 `ModuleRegistry.resolve_operation_provider` 遵守 pin，被 pin 的模块停用/缺失时 fail closed 返回 `PROVIDER_UNAVAILABLE`（不会在运行中的 Turn 内静默换提供者）。`ModuleRegistry.providers_for_operation` 列出候选。
 
 #### 3.A.5 线程安全与资源约束（MUST）
 
@@ -371,14 +371,14 @@ acme = "acme_staffdeck.plugin:register"
 
 ### 3.B 进程外能力提供者 —— MCP（Streamable HTTP，JSON-RPC 2.0）【待实现】
 
-> 目标：第三方以独立服务形态提供 `staff.capability` 家族的操作，StaffDeck 作为 **MCP 客户端** 调用它。选型理由：StaffDeck 已以 MCP 服务端形态把能力暴露给 DSH（`bridge/capability_mcp.py · CapabilityMcpServer`，`mcp` Python SDK，`streamable_http_app(json_response=True, stateless_http=True)`），两端使用同一套报文形状；DSH 自身的 MCP 客户端也只支持 `stdio` 与 `streamable-http`（附录 B）。**不支持** SSE-only 旧传输，**不支持** stdio（StaffDeck 不为第三方拉子进程）。
+> 目标：第三方以独立服务形态提供 `staff.capability` 家族的操作，StaffDeck 作为 **MCP 客户端** 调用它。选型理由：StaffDeck 已以 MCP 服务端形态把能力暴露给 Harness v3 引擎（`bridge/capability_mcp.py · CapabilityMcpServer`，`mcp` Python SDK，`streamable_http_app(json_response=True, stateless_http=True)`），两端使用同一套报文形状；上游 deepseek-harness 0.1.2-alpha.2 自身的 MCP 客户端也只支持 `stdio` 与 `streamable-http`（附录 B）。**不支持** SSE-only 旧传输，**不支持** stdio（StaffDeck 不为第三方拉子进程）。
 
 #### 3.B.1 接入形态
 
 - 进程内安装一个通用适配模块 **`capability.mcp_remote`**（kind A，建议文件 `modules/remote_mcp.py`）。每个远程服务对应一个 manifest（`metadata.access="mcp"`，`metadata.endpoint.url`）；它实现 `invoke(host, inv)`，把 `ModuleInvocation` 翻译成 `tools/call`。
 - 远程服务的声明来源：`staffdeck-runtime.json` 新增 `remote_modules: [ {manifest JSON …} ]`（`RuntimeOverrides.remote_modules`；`PUT /config` 接受并按 §2.2 Schema 校验；`same_assembly` 纳入比较；`_build` / `preflight_assembly` / `inspect_spec` 安装）。
-- 与 DSH 无关：DSH 仍只看到 `mcp__staffdeck__*` 代理工具（`capabilities/host.py · PROXY_TOOLS`）；远程提供者不直接出现在模型工具表里。
-- PEP 在 StaffDeck 侧完成（§3.A.4 的宿主通用 PEP 是前置条件）；远程服务 MUST NOT 自行做业务授权判定。
+- 与引擎无关：引擎仍只看到 `mcp__staffdeck__*` 代理工具（`capabilities/host.py · PROXY_TOOLS`）；远程提供者不直接出现在模型工具表里。
+- PEP 在 StaffDeck 侧完成（§3.A.4 的宿主通用 PEP，已在 `CapabilityHost._pep` 落地）；远程服务 MUST NOT 自行做业务授权判定。
 
 #### 3.B.2 传输
 
@@ -472,7 +472,7 @@ acme = "acme_staffdeck.plugin:register"
 
 #### 3.B.9 超时与重试
 
-- 单次超时 = `min(endpoint.timeout_ms, host.slot.remaining_seconds()*1000)`；默认 60 000 ms（对齐 DSH `toolCallTimeoutMs`）。
+- 单次超时 = `min(endpoint.timeout_ms, host.slot.remaining_seconds()*1000)`；默认 60 000 ms（对齐上游 deepseek-harness 0.1.2-alpha.2 的 `toolCallTimeoutMs`）。
 - 只读调用（`side_effecting=false`）：对 `PROVIDER_UNAVAILABLE` / `PROVIDER_THROTTLED` / `TIMEOUT` 最多重试 2 次，退避 500 ms、2 s，`X-StaffDeck-Attempt` 与 `invocation.attempt` 递增。
 - 副作用调用：**永不自动重试**；超时 → `fail("TIMEOUT")`（非 NOT_SENT → ledger `outcome_unknown`，人工在 `POST /ledger/{id}/reconcile` 结算）。
 - 取消：宿主 `LifecycleFence` 命中后客户端中止 HTTP 请求；若副作用请求已发出则结果同上。
@@ -536,7 +536,7 @@ acme = "acme_staffdeck.plugin:register"
 
 ### 4.1 原则
 
-1. **模块声明，宿主执行**：模块只在 manifest `policy_actions` 里声明它的操作需要哪些策略动作；宿主在调用前 `Guard.require(ctx, operation, resource)`（`security/profile.py · Guard.require`）。【已实现】落点：`KnowledgeFacade.search`、`GeneralSkillFacade.consume`、`ToolFacade.invoke`（工具 + MCP server 两次）、`SandboxFacade.execute`、`HandoffCore.create / assign / reply / close / cancel`、`ChannelHost.authorize_receive`（`channel.receive/v1` + `staff.use/v1`）/ `stage_send`（`channel.send/v1`）、`HarnessV3Engine._ensure_turn_context`（`staff.use/v1`）。【待实现】`CapabilityHost._dispatch` 通用 PEP（§3.A.4）。
+1. **模块声明，宿主执行**：模块只在 manifest `policy_actions` 里声明它的操作需要哪些策略动作；宿主在调用前 `Guard.require(ctx, operation, resource)`（`security/profile.py · Guard.require`）。【已实现】落点：`CapabilityHost._pep`（下发给能力提供者之前，对 tool/mcp/a2a 的活行 `Tool` + 其 `MCPServer`、`general_skill`、`knowledge` 选中 Base、`sandbox` 各 require 一次，无策略映射的操作 fail closed）、`KnowledgeFacade.search`、`GeneralSkillFacade.consume`、`ToolFacade.invoke`（工具 + MCP server 两次）、`SandboxFacade.execute`、`HandoffCore.create / assign / reply / close / cancel`、`ChannelHost.authorize_receive`（`channel.receive/v1` + `staff.use/v1`）/ `stage_send`（`channel.send/v1`）、`HarnessV3Engine._ensure_turn_context`（`staff.use/v1`）。Guarded Facade 仍按活行复核（defence in depth）。
 2. **拒绝为默认；失败即关闭**：`contracts/security.py · PepPort` 注释；BUSINESS_BASE 任何传输/契约错误都是 deny（§4.4）。
 3. **快照围栏不是 PEP**：`ActivationSlot` / `LifecycleFence` / `_activation_allowlist` hook 只收窄不授权（`capabilities/host.py` 模块 docstring；`pipeline_host.py · _activation_allowlist`）。
 4. **远程模块不得自行判权**：MCP / Webhook 模块收到的是已通过 PEP 的调用；MAY 做自身的租户隔离校验，MUST NOT 基于用户身份做业务判定，MUST NOT 期待宿主转发用户 token。
@@ -650,7 +650,7 @@ acme = "acme_staffdeck.plugin:register"
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `invocation_id` | str | 宿主生成；DSH 路径 = `ctx.trace_id` = `hcall_<n>_<hex8>`（`CapabilityMcpServer._call_tool`），缺省 `hcall_<ms>` |
+| `invocation_id` | str | 宿主生成；引擎路径 = `ctx.trace_id` = `hcall_<n>_<hex8>`（`CapabilityMcpServer._call_tool`），缺省 `hcall_<ms>` |
 | `module_id` | str | **注意**：宿主传入的是操作家族名（`op.split(".",1)[0]`，如 `knowledge`、`tool`），不是 provider 的 `module_id`（`CapabilityHost.invoke_proxy`）。因此更换提供者不改变 `side_effect_key` / `request_digest`，幂等历史跨实现有效。ledger 的 `tool_name` = `f"{module_id}:{operation}"` |
 | `operation` | str | `name/vN` |
 | `arguments` | JSON 对象 | `tool.invoke/v1` 为 `{"tool_id", **inner}`；`sandbox.execute/v1` 为 `{"tool", "arguments"}` |
@@ -658,6 +658,7 @@ acme = "acme_staffdeck.plugin:register"
 | `binding_id` | str? | 资源 id（`tool_id` / `skill_id`） |
 | `side_effecting` | bool | 推断规则（`invoke_proxy`）：HTTP 工具 `method ∈ {POST, PUT, PATCH, DELETE}`；`config_json.idempotency.enabled=false` 强制 false；`tool_type == "a2a"` 总为 false（A2A 客户端按 `invocation_id` 自去重）；sandbox 写类工具 `{write_file, exec_command, run_skill_script, apply_patch, delete_file}` 为 true；其余 false |
 | `idempotency_key_fields` | tuple[str] | 来自工具 `config_json.idempotency.key_fields` |
+| `replayable` | bool（默认 true） | `config_json.idempotency.enabled=false` 时仍 `side_effecting=True`（模糊失败 → `outcome_unknown`），但 `side_effect_key()` 返回 `None`（不重放、不去重） |
 | `metadata` | JSON | 保留 |
 
 ### 5.2 `side_effect_key` 计算（`ModuleInvocation.canonical_arguments / request_digest / side_effect_key`）【已实现】
@@ -667,7 +668,7 @@ args'           = arguments                                   若 idempotency_ke
                 = {k: arguments.get(k) for k in sorted(fields)} 否则
 canonical_args  = json.dumps(args', ensure_ascii=True, sort_keys=True, separators=(",",":"), default=str)
 request_digest  = sha256(f"{module_id}|{operation}|{canonical_args}")
-side_effect_key = None                                        若 not side_effecting
+side_effect_key = None                                        若 not side_effecting 或 not replayable
                 = sha256("|".join([tenant_id, task_frame_id or session_id, step_id or "", module_id, operation, canonical_args]))
 ```
 
@@ -690,7 +691,7 @@ side_effect_key = None                                        若 not side_effec
 
 `ModuleResult.ok(data, **kw)` / `ModuleResult.fail(code, message, **kw)`。宿主对 SDK 异常统一放 `extensions.details`。
 
-`Receipt{invocation_id, status, request_digest, side_effect_key, replayed_from, ledger_id, started_at, finished_at, error}`；`status ∈ {started, completed, failed, outcome_unknown, cancelled, denied}`。经 MCP 返回给 DSH 时只带 `receipt: {invocation_id, status, replayed_from}`，且 `data` / `error` / `citations` / `artifacts` 只在非空时出现（`CapabilityMcpServer._call_tool`）。
+`Receipt{invocation_id, status, request_digest, side_effect_key, replayed_from, ledger_id, started_at, finished_at, error}`；`status ∈ {started, completed, failed, outcome_unknown, cancelled, denied}`。经 MCP 返回给引擎时只带 `receipt: {invocation_id, status, replayed_from}`，且 `data` / `error` / `citations` / `artifacts` 只在非空时出现（`CapabilityMcpServer._call_tool`）。
 
 ### 5.4 Ledger 状态机与 `outcome_unknown`（`capabilities/ledger.py · InvocationLedger`）【已实现】
 
@@ -717,11 +718,12 @@ started ──success───────────────────�
 - `LifecycleFence.check(slot)`：`closed` → "turn is closed"；generation 不匹配 → "stale generation"；`is_cancelled()`（`HarnessV3TaskAgent` 提供线程安全的 id 版取消检查）→ "turn cancelled"；截止已过 → "step deadline expired"；均抛 `ActivationFenced`。
 - `_fence_resource`：`knowledge.search/v1` 要求 `allowed()["knowledge_base"]` 非空；`general_skill.consume/v1` / `tool.invoke/v1` / `mcp.invoke/v1` / `a2a.invoke/v1` 要求 `binding_id ∈ allowed()[rtype]`；其他操作不围栏。
 - `CapabilityMcpServer._call_tool` 无活跃 activation token → `ACTIVATION_FENCED`；`_list_tools` 返回空表。
+- `task.finish/v1`（`CapabilityHost._finish_task`）关闭 `ActivationSlot`（`slot.closed=True`）：本轮后续能力调用返回 `ACTIVATION_FENCED`，引擎 turn 循环在捕获 finish 后立即退出（子进程在关闭 finally 里被关）。
 
 ### 5.6 取消
 
 - `CancelCommand{session_id, turn_id?, reason, requested_by?}` 是数据形状；当前由 legacy `is_chat_turn_cancelled` 驱动（`modules/kernel.py · CancellationModule`；`bridge/task_agent.py · HarnessV3TaskAgent.run` 的 `cancelled_threadsafe`）。
-- DSH 0.1.2 协议无 cancel 方法：Turn 取消 = 抛 `HarnessExecutionCancelled` 并关闭子进程（`HarnessV3TaskAgent.run` finally）。
+- 上游 deepseek-harness 0.1.2-alpha.2 协议无 cancel 方法：Turn 取消 = 抛 `HarnessExecutionCancelled` 并关闭子进程（`HarnessV3TaskAgent.run` finally）。引擎 turn 循环每 0.25 s 轮询 SDK 通知队列，使 `is_chat_turn_cancelled` 在生成中途也能被履行。
 - 取消不进入 `arguments`（附录 B Typert 约定）；远程模块通过 HTTP 请求中止 + `deadline_at` 感知。
 
 ---
@@ -740,12 +742,12 @@ started ──success───────────────────�
 | `hook_decision`（仅非 pass） / `hook_failed` | `InteractionPipelineHost.run` | 仅 trace | `{point, handler, kind, reason}` / `{point, handler, error}` |
 | `composition_snapshot_compiled` | `HarnessV3Engine._ensure_turn_context` | `events.record`（DB） | `{snapshot_id, staff_id, grants, sops, security_profile, execution_engine}` |
 | `harness_v3_process_started` / `harness_v3_turn_steered` / `harness_v3_turn_failed` | `HarnessV3TaskAgent.run` | trace | `{model, base_url, workspace, boot_ms}` / `{reason, message}` / `{error}` |
-| `harness_v3_turn_started`, `harness_v3_step_started`, `llm_call_started`, `stream_delta`, `harness_action_created`, `harness_tool_result`, `harness_v3_assistant_message`, `harness_v3_turn_ended`, `harness_v3_hook_event`, `harness_v3_compaction` | `events/relay.py · relay_event`（DSH `session.event` 翻译） | trace + fanout（`SessionEventRelay.__call__`） | 见 `relay_event` |
+| `harness_v3_turn_started`, `harness_v3_step_started`, `llm_call_started`, `stream_delta`, `harness_action_created`, `harness_tool_result`, `harness_v3_assistant_message`, `harness_v3_turn_ended`, `harness_v3_hook_event`, `harness_v3_compaction` | `events/relay.py · relay_event`（引擎 `session.event` 翻译） | trace + fanout（`SessionEventRelay.__call__`） | 见 `relay_event` |
 | `human_handoff_created` / `assigned` / `notify_failed` / `closed` / `cancelled` | `HandoffCore.create / assign / notify / close / cancel` | DB `agent_events` 直写（**不** fanout） | `{handoff_id, …}` |
 | `human_handoff_notified` | `handoff/core.py · WebInboxNotifier.notify` | DB 直写 | `{handoff_id, assignee_user_id, channel:"web"}` |
 | `runtime_restarted` / `runtime_restart_failed` / `module_placed` / `module_inspected` / `staff_engine_changed` / `invocation_reconciled` | `api/admin.py` 各端点 | DB 直写（`session_id="runtime"` 或 `agent:<id>`） | 含 `by` |
 
-所有 `CapabilityHost._emit` 事件自动附加 `snapshot_id` 与 `execution_engine:"dsh"`。在 MCP 工作线程发出的 trace 事件先缓冲，附加 `occurred_at`（ISO-8601 UTC），由引擎线程回放持久化（`HarnessV3TaskAgent._threadsafe_trace / _flush_trace`）；执行日志按 `occurred_at` 排序（`api/admin.py · _event_ts`）。
+所有 `CapabilityHost._emit` 事件自动附加 `snapshot_id` 与 `execution_engine:"harness_v3"`。在 MCP 工作线程发出的 trace 事件先缓冲，附加 `occurred_at`（ISO-8601 UTC），由引擎线程回放持久化（`HarnessV3TaskAgent._threadsafe_trace / _flush_trace`）；执行日志按 `occurred_at` 排序（`api/admin.py · _event_ts`）。
 
 ### 6.2 观察者扇出（`events/relay.py`）【已实现】
 
@@ -753,7 +755,7 @@ started ──success───────────────────�
 
 `peek_registry()` **只读不建**：注册表尚未构建或正在重建时返回 `None`，观察者只是漏掉这条事件。宿主、Hook、Relay 一律用 `peek_registry()`；`get_registry(settings)` 只允许拥有 settings 的装配代码调用——无 settings 的调用会抛 `REGISTRY_NOT_BUILT`，绝不会在重启窗口里悄悄构建一套默认装配。
 
-- 来源一：DSH `session.event` 经 `SessionEventRelay`（`session_id` = StaffDeck 会话 id）。
+- 来源一：引擎 `session.event` 经 `SessionEventRelay`（`session_id` = StaffDeck 会话 id）。
 - 来源二：`CapabilityHost._emit` 经 `fanout_event`，`session_id = slot.session_id or snapshot.staff_id`。
 - 停用的观察者模块不接收事件；注册表未构建（早期启动、单测）时只有显式登记者接收。
 - 观察者 MUST 幂等（重放可能发生），MUST 不阻塞（§3.A.5）。
@@ -793,7 +795,7 @@ started ──success───────────────────�
 }
 ```
 
-- `engine ∈ {"dsh","legacy"}`，`security_profile ∈ {"OSS_LOCAL","BUSINESS_BASE"}`；非法值在 `normalized()` 回落到 `legacy` / `OSS_LOCAL`。`disabled_modules` 去重排序；`extra_modules` 保序；`placements` 最多 500 条。
+- `engine ∈ {"harness_v3","harness_v2"}`，`security_profile ∈ {"OSS_LOCAL","BUSINESS_BASE"}`；非法值在 `normalized()` 回落到 `harness_v2` / `OSS_LOCAL`。`disabled_modules` 去重排序；`extra_modules` 保序；`placements` 最多 500 条。
 - Base 密钥（`decision_token`、`control_token`、`runtime_client_secret`）以 `app.security.encryption.encrypt_secret`（应用密钥）加密存为 `*_enc`；解密失败（密钥轮换）得到空串而不是崩溃。API 输出用 `BaseConnection.masked`：密钥显示 `••••••••`，附 `has_<field>` 与 `<field>_source ∈ {admin, env, none}`；空字段回落到环境 `Settings.base_*`（`BaseConnection.effective`）。
 - 文件缺失或损坏 → `defaults_from_settings(settings)`（环境默认）。
 - 投影：`settings_updates` 把装配映射到 `Settings.harness_v3_enabled / security_profile / harness_disabled_modules / harness_modules / base_*`；`apply_overrides` 直接改写缓存的 `Settings`（真实装配），`settings_view` 返回 `model_copy` 视图（预检 / dry-run，不触碰缓存）。
@@ -805,7 +807,7 @@ started ──success───────────────────�
 
 ### 7.3 Dry-run `POST /api/enterprise/harness/modules/inspect`（`modules/inspect.py · inspect_spec`）【已实现】
 
-请求 `{tenant_id, spec}`。流程：`validate_spec` → 基线 = 已保存装配（去掉本 spec）的 `settings_view` 上 `discover_and_install` 到**一次性** `ModuleRegistry` → 全部槽 `mark_guarded` → `_load_callable(spec)` 并以 `ctx={"settings": view, "disabled": set(saved.disabled_modules), "dry_run": True}` 调用 → 对新增模块计算 `movable / placement / already_installed` → 无错误则 `seal()`。不触碰活动注册表、缓存 `Settings`、DSH 进程；但**会在管理进程内 import 候选包**（与 `/restart` 同信任级别；`sys.modules` 保留）。
+请求 `{tenant_id, spec}`。流程：`validate_spec` → 基线 = 已保存装配（去掉本 spec）的 `settings_view` 上 `discover_and_install` 到**一次性** `ModuleRegistry` → 全部槽 `mark_guarded` → `_load_callable(spec)` 并以 `ctx={"settings": view, "disabled": set(saved.disabled_modules), "dry_run": True}` 调用 → 对新增模块计算 `movable / placement / already_installed` → 无错误则 `seal()`。不触碰活动注册表、缓存 `Settings`、引擎进程；但**会在管理进程内 import 候选包**（与 `/restart` 同信任级别；`sys.modules` 保留）。
 
 响应：
 
@@ -829,19 +831,19 @@ started ──success───────────────────�
 
 ### 7.5 预检与重启 `POST /api/enterprise/harness/restart`（`runtime/assembly.py · restart_harness_runtime`）【已实现】
 
-同一时刻只允许一次重启（`_restart_lock`，第二个请求 409 "已有一次重启正在进行"）。`_state_lock` 只保护簿记字段，**从不**跨网络 I/O 持有，所以 `GET /status` / `GET /config` 在重启期间照常返回并带 `restarting: true`。
+同一时刻只允许一次重启（`_restart_lock`，第二个请求 409 "已有一次重启正在进行"）。`_state_lock` 只保护簿记字段，**从不**跨网络 I/O 持有，所以 `GET /status` / `GET /config` 在重启期间照常返回并带 `restarting: true`。`restart_harness_runtime(..., drain_timeout_seconds=20)` 先做有界等待在途 Turn（`ActivationRegistry` 长度），把没等完的个数作为 `interrupted_turns` 返回。
 
 顺序：
 1. `wanted = load_overrides(settings)`；
 2. `preflight_assembly(settings, wanted, tenant_id, principal_id)`：若 `BUSINESS_BASE`，要求生效 `authz_url` + `decision_token` 且 `preflight_base` 通过；再用 `build_registry(view)` 在一次性注册表上 `discover_and_install` + `seal()`（**只带注册器自己声明的受护槽**，与真实构建完全一致，所以 `PEP_BINDING_MISSING` 等 seal 错误在预检就会出现），并 `build_profile(view, registry=reg)`。任何失败 → `AssemblyFailed`（"无法切换到企业版权限：…" / "装配无法启动：<Exc>: …"），记入 `_last_restart_error`，**运行时未被触碰**；
 3. `_build_components(settings, wanted)`：再次在局部构建新的注册表与安全配置（仍未触碰全局）；
-4. `reset_runtime()`（关 MCP 服务端与 DSH 进程）→ `_activate`：`apply_overrides(settings)` → `install_registry(reg)` → `install_profile(profile)`（原子替换，宿主看到的要么是旧装配要么是新装配）→ 若 `harness_v3_enabled`，`get_runtime`（`EngineUnavailable` 时若 `harness_v3_fallback_to_v2` 则只记 `runtime_error`，否则抛出）；
-5. 成功：`_applied = wanted`，`restart_count += 1`，`_last_restart_error = None`，返回 `{security_profile, modules, registry_generation, mcp_url?, harness_v3_root?, harness_v3_home?, runtime_error?, restarted_at, restart_count, state}`，记事件 `runtime_restarted`；
-6. 进行中的 Turn 会丢失 DSH 子进程（文档化代价）；它们在重启窗口内的能力调用得到 `ENGINE_UNAVAILABLE`（"运行时正在重启"），而不是落到默认装配上。
+4. `_drain_live_turns(drain_timeout_seconds)` 等待在途 Turn → `reset_runtime()`（关 MCP 服务端与引擎子进程）→ `_activate`：`apply_overrides(settings)` → `install_registry(reg)` → `install_profile(profile)`（原子替换，宿主看到的要么是旧装配要么是新装配）→ 若 `harness_v3_enabled`，`get_runtime`（`EngineUnavailable` 时若 `harness_v3_fallback_to_v2` 则只记 `runtime_error`，否则抛出）；
+5. 成功：`_applied = wanted`，`restart_count += 1`，`_last_restart_error = None`，返回 `{security_profile, modules, registry_generation, mcp_url?, harness_v3_root?, harness_v3_home?, runtime_error?, interrupted_turns, restarted_at, restart_count, state}`，记事件 `runtime_restarted`；
+6. 被中断的 Turn 会丢失引擎子进程（文档化代价）；它们在重启窗口内的能力调用得到 `ENGINE_UNAVAILABLE`（"运行时正在重启"），而不是落到默认装配上。
 
 ### 7.6 回滚与启动回退【已实现】
 
-- **激活失败回滚**：步骤 4 抛异常（只可能是 DSH 拉起失败且未开启回退）→ `reset_runtime()` → 用重启前 `peek_registry() / peek_profile()` 取到的旧组件 `_activate(previous)` → `_last_restart_error = "<Exc>: …"` → 抛 `AssemblyFailed`；API 返回 **409**，`detail` 为 "重启失败，已恢复原有配置：…"（预检类错误则原文），记事件 `runtime_restart_failed`。已保存文件不动，`pending` 保持 true。
+- **激活失败回滚**：步骤 4 抛异常（只可能是引擎拉起失败且未开启回退）→ `reset_runtime()` → 用重启前 `peek_registry() / peek_profile()` 取到的旧组件 `_activate(previous)` → `_last_restart_error = "<Exc>: …"` → 抛 `AssemblyFailed`；API 返回 **409**，`detail` 为 "重启失败，已恢复原有配置：…"（预检类错误则原文），记事件 `runtime_restart_failed`。已保存文件不动，`pending` 保持 true。
 - **启动回退**（`start_harness_runtime`，由 `app/main.py` 启动钩子调用）：先 `snapshot_env(settings)`，再 `_build(settings, saved)`；失败且 saved ≠ 部署默认 → `_last_restart_error = "启动时无法应用已保存的装配，已回退到部署默认值：…"` → 三个 reset → `_build(settings, defaults)`（默认值取自环境快照，不受失败装配已写入 `Settings` 的字段影响），`info["fallback"]` 携带同一消息，`_applied = defaults`；文件不动，`/config` 显示 `pending=true` + `last_restart_error`。saved == 默认仍失败 → 异常向上抛（进程启动失败）。
 - `PUT /config` 把已保存装配改回与运行中一致（`pending=false`）时会清掉 `_last_restart_error`（`clear_restart_error`），避免陈旧的拒绝信息一直挂着。
 
@@ -878,7 +880,7 @@ started ──success───────────────────�
 | `INVOCATION_REJECTED` | `InvocationRejected` | 宿主拒绝调用（保留） | 400 | 工具级 |
 | `OUTCOME_UNKNOWN` | `OutcomeUnknown` | 同键存在未完成记录（`InvocationLedger.replay_or_block`） | 409 | 工具级 |
 | `ACTIVATION_FENCED` | `ActivationFenced` | 围栏：closed / stale / cancelled / deadline / 未激活资源 / 无 activation token | 409 | 工具级（NOT_SENT） |
-| `ENGINE_UNAVAILABLE` | `EngineUnavailable` | DSH 未构建 / 未起（`HarnessV3WorkerConfig.validate`；`get_runtime`） | 503 | — |
+| `ENGINE_UNAVAILABLE` | `EngineUnavailable` | 引擎未构建 / 未起（`HarnessV3WorkerConfig.validate`；`get_runtime`） | 503 | — |
 
 ### 8.2 注册表码（`modules/registry.py`）
 
@@ -896,7 +898,7 @@ started ──success───────────────────�
 | `KNOWLEDGE_NOT_AVAILABLE` / `SKILL_NOT_AVAILABLE` / `SANDBOX_ERROR` / `TOOL_ERROR` / `COMMAND_TIMEOUT` / `COMMAND_EXIT_NONZERO` | `capabilities/facade.py` 各门面 | 否 |
 | `CAPABILITY_AUTHORIZATION_REVOKED` / `CAPABILITY_SNAPSHOT_CHANGED` | 门面活行复核 | 是 |
 | `CAPABILITY_NOT_ACTIVATED` / `CAPABILITY_NOT_AVAILABLE` / `NOT_FOUND` / `DISABLED` / `NOT_ALLOWED` / `UNSUPPORTED_TOOL_TYPE` | legacy 词表（`NOT_SENT_CODES`） | 是 |
-| `PRE_STEP_DENIED` / `DSH_ENGINE_ERROR` | `HarnessV3TaskAgent._failed`（TaskExecutionResult.error，非 ModuleResult） | — |
+| `PRE_STEP_DENIED` / `HARNESS_V3_ENGINE_ERROR` | `HarnessV3TaskAgent._failed`（TaskExecutionResult.error，非 ModuleResult） | — |
 
 ### 8.4 远程提供者新增码【待实现】
 
@@ -1077,7 +1079,7 @@ X-StaffDeck-Attempt: 1
   "structuredContent":{"success":false,"error":{"code":"INVALID_ARGUMENTS","message":"query required"}},"isError":true}}
 ```
 
-（对照：StaffDeck 作为服务端返回给 DSH 的形状完全相同，只是多一段 `receipt`，`CapabilityMcpServer._call_tool`。）
+（对照：StaffDeck 作为服务端返回给引擎的形状完全相同，只是多一段 `receipt`，`CapabilityMcpServer._call_tool`。）
 
 ### 9.3 Webhook 观察者报文【待实现】
 
@@ -1100,7 +1102,7 @@ X-StaffDeck-Signature: sha256=3c9a…e1
  "session_id":"sess_9",
  "module_id":"acme.audit_sink",
  "payload":{"operation":"tool.invoke/v1","resource":"tool_ab12","status":"completed","invocation_id":"hcall_4_0c1d2e3f",
-            "snapshot_id":"a1b2…","execution_engine":"dsh"}}
+            "snapshot_id":"a1b2…","execution_engine":"harness_v3"}}
 ```
 
 签名输入 = `"1756887165." + raw_body`。应答 `204 No Content`（或 `200 {}`）。重复投递同一 `delivery_id` 时接收方返回相同应答且不重复处理。
@@ -1127,17 +1129,17 @@ X-StaffDeck-Signature: sha256=3c9a…e1
 | 14 | `knowledge.import.source` 宿主 | 新 | 低 |
 | 15 | `/modules/inspect` 覆盖 `remote_modules` / Webhook 候选；前端保存前调用 | `modules/inspect.py`, 前端 | 低 |
 
-## 附录 B · 与 DSH（deepseek-harness 0.1.2-alpha.2）对齐的取舍
+## 附录 B · 与上游 deepseek-harness 0.1.2-alpha.2 对齐的取舍
 
-调研 `.codex-tmp/dsh-inspect/deepseek-harness-dsh-v0.1.2-alpha.2` 后，本规范采纳以下约定，其余不采纳：
+调研 `.codex-tmp/harness-v3-engine/deepseek-harness-0.1.2-alpha.2` 后，本规范采纳以下约定，其余不采纳（上游约定一行；左侧"约定"列均为上游的导出契约名）：
 
-| DSH 约定 | 出处 | 本规范采纳方式 |
+| 上游约定 | 出处 | 本规范采纳方式 |
 |---|---|---|
-| SDK 线协议 = JSON-RPC 2.0，每行一条（NDJSON）经 stdio；`initialize` → `session/prompt` → `shutdown`；服务端通知 `session.event` / `session.status` | `packages/sdk/protocol/README.md`（Framing and transport / The SDK methods）；`python/sdk/src/deepseek_harness/client.py · HarnessClient` | 引擎槽内部即用此协议驱动 DSH 子进程（`bridge/worker.py · HarnessV3Process`；`bridge/task_agent.py · HarnessV3TaskAgent._run_engine_turn`）。**不对外暴露**为模块接入协议。 |
-| MCP 客户端仅支持 `stdio` 与 `streamable-http`；HTTP 传输可带自定义 `headers`；`toolCallTimeoutMs`、`failOnStartupError` | `packages/mcp/mcp-client/README.md`；`src/transport.ts` | 进程外能力提供者（§3.B）**统一采用 MCP Streamable HTTP**；StaffDeck 自己挂进 DSH 的也是 `transport: streamable-http` + `headers.x-staffdeck-activation`（`bridge/worker.py · render_patch`）。 |
-| 工具公开名 `mcp__<serverName>__<rawName>`；工具集"整代替换或不替换" | 同上 | StaffDeck 暴露给 DSH 的工具即 `mcp__staffdeck__<proxy>`（`serverName: staffdeck`，`capabilities/host.py · PROXY_TOOLS`）。远程提供者的工具列表在装配预检时整体校验、整体接受。 |
+| SDK 线协议 = JSON-RPC 2.0，每行一条（NDJSON）经 stdio；`initialize` → `session/prompt` → `shutdown`；服务端通知 `session.event` / `session.status` | `packages/sdk/protocol/README.md`（Framing and transport / The SDK methods）；`python/sdk/src/deepseek_harness/client.py · HarnessClient` | 引擎槽内部即用此协议驱动引擎子进程（`bridge/worker.py · HarnessV3Process`；`bridge/task_agent.py · HarnessV3TaskAgent._run_engine_turn`）。**不对外暴露**为模块接入协议。 |
+| MCP 客户端仅支持 `stdio` 与 `streamable-http`；HTTP 传输可带自定义 `headers`；`toolCallTimeoutMs`、`failOnStartupError` | `packages/mcp/mcp-client/README.md`；`src/transport.ts` | 进程外能力提供者（§3.B）**统一采用 MCP Streamable HTTP**；StaffDeck 自己挂进引擎的也是 `transport: streamable-http` + `headers.x-staffdeck-activation`（`bridge/worker.py · render_patch`）。 |
+| 工具公开名 `mcp__<serverName>__<rawName>`；工具集"整代替换或不替换" | 同上 | StaffDeck 暴露给引擎的工具即 `mcp__staffdeck__<proxy>`（`serverName: staffdeck`，`capabilities/host.py · PROXY_TOOLS`）。远程提供者的工具列表在装配预检时整体校验、整体接受。 |
 | stdio 子进程环境变量脱敏 | `src/transport.ts` | 我们的 patch 文件用 `!!js process.env.*` 引用密钥、从不落盘（`render_patch`）。第三方模块 MUST NOT 把密钥写入 manifest 或 `staffdeck-runtime.json`（Base 密钥字段例外，且加密存储）。 |
 | Typert 远程调用：取消信号是带外载荷、不进入 `args` | `docs/subsystems/typert.md`（Invocation descriptors） | 采纳：取消不进入 `ModuleInvocation.arguments`（§5.6）。 |
-| DSH 协议**无版本协商**、无 cancel 方法 | `packages/sdk/protocol/README.md`（Known Limitations） | 不采纳其空缺：本规范强制 `contract_version` + 操作名 `/vN`；取消走进程级中断。 |
+| 上游协议**无版本协商**、无 cancel 方法 | `packages/sdk/protocol/README.md`（Known Limitations） | 不采纳其空缺：本规范强制 `contract_version` + 操作名 `/vN`；取消走进程级中断。 |
 | Cordis 配置 patch：`- id: <row>` + `config:` / `disabled: true` / `insert:` | `docs/cordis-primer.md`（Loader Configuration） | 对应我们的装配文件：`disabled_modules` ≈ `disabled: true`，`extra_modules` ≈ `insert:`。 |
 | Webhook 家族：签名验证的外部事件 → 规则 → 创建 Session；无重试 / 去重 | `packages/webhook/README.md` | 不采纳其"无重试"：本规范的 Webhook 接入（§3.C）要求签名 + 重试 + 去重。 |

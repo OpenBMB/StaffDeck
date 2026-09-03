@@ -12,7 +12,7 @@ What was missing versus the architecture is a *single* enforcement point:
   the target Staff. Unmapped identities are refused (never silently created).
 - **Send PEP** — before a reply is staged to the outbox, the platform principal
   must be allowed to ``send`` on the binding, and the text must have passed the
-  downstream supervisor (raw DSH text never goes out unreviewed).
+  downstream supervisor (raw engine text never goes out unreviewed).
 
 ``ChannelHost`` wraps those two decisions and delegates everything else to the
 legacy services; adapters are registered through the same

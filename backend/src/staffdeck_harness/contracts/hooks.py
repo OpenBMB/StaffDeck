@@ -1,6 +1,6 @@
 """Hook envelope contracts for the InteractionPipelineHost.
 
-Hooks run at four fixed points around one DSH step. Modules *contribute*
+Hooks run at four fixed points around one Harness v3 step. Modules *contribute*
 handlers; they never own the plan. Every handler receives a ``HookContext``
 snapshot and returns a ``HookDecision``. Decisions are merged
 most-restrictive-first (deny > steer > modify > pass) exactly like the engine's own
