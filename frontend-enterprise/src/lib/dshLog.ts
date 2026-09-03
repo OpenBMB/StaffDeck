@@ -94,8 +94,10 @@ export function formatLogEntry(e: DshLogEntry): FormattedLog {
       const parts = [num(d.grants) !== undefined ? `${d.grants} 项能力` : '', sops !== undefined ? `${sops} 个流程` : ''].filter(Boolean);
       return { title: `已加载员工配置${parts.length ? ` · ${parts.join(' · ')}` : ''}`, level: 'info', meta: engineLabel(typeof d.execution_engine === 'string' ? d.execution_engine : e.engine) };
     }
-    case 'engine/start':
-      return { title: `Harness v3 引擎已就绪${d.model ? ` · 模型 ${str(d.model, 60)}` : ''}`, level: 'success', meta: d.boot_ms !== undefined ? `启动 ${ms(d.boot_ms)}` : undefined };
+    case 'engine/start': {
+      const thinking = d.thinking === 'disabled' ? ' · 不思考' : d.thinking === 'enabled' ? ` · 思考${typeof d.reasoning_effort === 'string' && d.reasoning_effort !== 'provider_default' ? `(${d.reasoning_effort})` : ''}` : '';
+      return { title: `Harness v3 引擎已就绪${d.model ? ` · 模型 ${str(d.model, 60)}` : ''}${thinking}`, level: 'success', meta: d.boot_ms !== undefined ? `启动 ${ms(d.boot_ms)}` : undefined };
+    }
     case 'engine/turn':
       return { title: `引擎开始第 ${d.turn ?? '?'} 轮`, level: 'muted' };
     case 'engine/step':

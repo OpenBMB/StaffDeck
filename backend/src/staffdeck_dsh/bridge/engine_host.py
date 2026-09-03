@@ -128,6 +128,9 @@ class DshEngine(HarnessV2Engine):
         else:
             self.security_context = self.profile.identity.from_service(f"channel:{request.channel}", request.tenant_id)
         self.guard = Guard("staffdeck.runtime", self.profile)
+        # Every event of this turn (also the ones legacy code stamps "harness_v2") belongs to Harness v3.
+        if hasattr(self.events, "execution_engine"):
+            self.events.execution_engine = "dsh"
         # Staff-level PEP: may this principal use this staff at all?
         from staffdeck_dsh.contracts.security import ResourceRef
 

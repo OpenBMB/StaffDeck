@@ -1591,11 +1591,12 @@ export function harnessEventTraceLine(
   if (eventName === 'dsh_process_started') {
     const model = typeof data.model === 'string' ? data.model : '';
     const bootMs = typeof data.boot_ms === 'number' ? `${data.boot_ms}ms` : '';
+    const thinking = typeof data.thinking === 'string' && data.thinking !== 'provider_default' ? (data.thinking === 'disabled' ? '不思考' : '思考模式') : '';
     return {
       id: `dsh_process_${frameId}`,
       kind: 'decision',
       text: 'Harness v3 引擎已就绪',
-      detail: [model, bootMs ? `启动 ${bootMs}` : ''].filter(Boolean).join(' · '),
+      detail: [model, thinking, bootMs ? `启动 ${bootMs}` : ''].filter(Boolean).join(' · '),
       state: 'completed',
       icon: 'execute',
     };

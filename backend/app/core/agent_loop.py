@@ -164,6 +164,23 @@ class AgentLoop:
             data.setdefault("turn_id", user_message_id)
         return data
 
+    def _label_engine_for(self, request: ChatTurnRequest, chat_session: ChatSession | None) -> None:
+        """Decide up front which engine this turn will run on so the very first events are labelled right."""
+
+        settings = get_settings()
+        label = "harness_v2"
+        if getattr(settings, "dsh_enabled", False):
+            try:
+                from staffdeck_dsh.bridge.engine_host import EngineHost
+
+                agent_id = request.agent_id or (chat_session.agent_id if chat_session is not None else None)
+                if EngineHost(settings).selects_dsh(request, agent_id, db=self.db):
+                    label = "dsh"
+            except Exception:  # pragma: no cover - labelling must never break a turn
+                label = "harness_v2"
+        if hasattr(self.events, "execution_engine"):
+            self.events.execution_engine = None if label == "harness_v2" else label
+
     def _open_engine(self, request: ChatTurnRequest) -> HarnessV2Engine:
         # The DSH engine lives in the parallel ``staffdeck_dsh`` package and is
         # only imported when the deployment opts in, so a legacy deployment
@@ -328,6 +345,7 @@ class AgentLoop:
         created_session = existing_session is None
         scoped_request = request.model_copy(update={"session_id": chat_session.id})
         initial_turn_id = str(request.client_turn_id or "").strip() or None
+        self._label_engine_for(scoped_request, chat_session)
         if created_session:
             yield self._stream_event(
                 "session_created",

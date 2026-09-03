@@ -132,6 +132,34 @@ def _model_route(model_config: ModelConfig) -> tuple[str, str | None, str | None
     return model_config.model, base or None, key
 
 
+_EFFORT_ALIASES = {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "off": "off", "none": "off"}
+
+
+def _model_thinking(model_config: ModelConfig) -> tuple[str, str]:
+    """(thinking, reasoning_effort) for the DSH ``llm-deepseek`` row, read from the same ModelConfig
+    fields the legacy LLM client honours (``extra_body.thinking.type``, ``extra_body.reasoning_effort``).
+
+    A model configured with thinking disabled must not be sent any effort (DSH would default to
+    ``high`` and gateways reject it); an unset config leaves both at the provider default.
+    """
+
+    from app.llm.client import _merge_extra_body, _normalize_extra_body, _thinking_mode_from_extra_body
+
+    # Same precedence as app.llm.client.LLMClient: legacy extra_body (or the ORM column) merged with
+    # the protocol options of the resolved snapshot.
+    legacy = getattr(model_config, "legacy_extra_body", None) or getattr(model_config, "extra_body_json", None)
+    body = _merge_extra_body(_normalize_extra_body(legacy), getattr(model_config, "protocol_options", None))
+    mode = _thinking_mode_from_extra_body(body)  # "enabled" | "disabled" | ""
+    thinking_block = body.get("thinking") if isinstance(body.get("thinking"), dict) else {}
+    effort_raw = body.get("reasoning_effort") or thinking_block.get("effort")
+    effort = _EFFORT_ALIASES.get(str(effort_raw or "").lower(), "")
+    if mode == "disabled":
+        return "disabled", "off"
+    if mode == "enabled":
+        return "enabled", effort
+    return "", effort
+
+
 def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_contexts: list[dict[str, Any]], attachments_text: str) -> str:
     parts: list[str] = []
     for c in decision_contexts:
@@ -257,9 +285,11 @@ class DshTaskAgent:
 
             # 2. DSH process bound to this activation
             model, base_url, api_key = _model_route(model_config)
+            thinking, effort = _model_thinking(model_config)
             cfg = DshWorkerConfig(
                 dsh_root=self.runtime.worker_config.dsh_root, dsh_home=self.runtime.worker_config.dsh_home / t.tenant_id,
                 node_bin=self.runtime.worker_config.node_bin, model=model, model_base_url=base_url, model_api_key=api_key,
+                thinking=thinking, reasoning_effort=effort,
                 permission_mode=self.runtime.worker_config.permission_mode,
                 initialize_timeout_seconds=self.runtime.worker_config.initialize_timeout_seconds,
                 request_timeout_seconds=(step_timeout_seconds or self.runtime.worker_config.request_timeout_seconds),
@@ -268,7 +298,7 @@ class DshTaskAgent:
             proc = DshProcess(cfg, activation_token=activation.token, mcp_url=self.runtime.mcp_url, cwd=workspace)
             self._process = proc
             proc.start()
-            trace("dsh_process_started", {"model": model, "base_url": base_url, "workspace": str(workspace), "boot_ms": int((time.monotonic() - started) * 1000)})
+            trace("dsh_process_started", {"model": model, "base_url": base_url, "thinking": thinking or "provider_default", "reasoning_effort": effort or "provider_default", "workspace": str(workspace), "boot_ms": int((time.monotonic() - started) * 1000)})
 
             # 3. run turn (+ optional single steer)
             session_id = f"sd-{t.session_id}-{t.task_frame_id}"

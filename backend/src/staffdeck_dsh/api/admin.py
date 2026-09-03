@@ -734,7 +734,7 @@ _LOG_PICK: dict[str, tuple[str, ...]] = {
     "user/message": ("message", "channel", "turn_id"),
     "turn/plan": ("decision", "user_intent", "reason", "confidence"),
     "snapshot/compiled": ("snapshot_id", "grants", "sops", "security_profile", "execution_engine"),
-    "engine/start": ("model", "boot_ms", "workspace"),
+    "engine/start": ("model", "thinking", "reasoning_effort", "boot_ms", "workspace"),
     "engine/step": ("turn", "step"),
     "engine/finish": ("status", "next_step_id"),
     "turn/failed": ("reason", "error"),

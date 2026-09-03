@@ -22,6 +22,9 @@ class EventLog:
         self._event_sink = event_sink
         self._turn_id: str | None = None
         self._client_turn_id: str | None = None
+        # Set by the engine that actually runs the turn ("dsh" when the Harness v3 bridge is active).
+        # Legacy call sites stamp "harness_v2" literally; the override keeps every event of a turn consistent.
+        self.execution_engine: str | None = None
 
     def bind_turn(self, turn_id: str, client_turn_id: str | None = None) -> None:
         self._turn_id = str(turn_id or "").strip() or None
@@ -34,6 +37,8 @@ class EventLog:
             traced_payload.setdefault("user_message_id", self._turn_id)
         if self._client_turn_id:
             traced_payload.setdefault("client_turn_id", self._client_turn_id)
+        if self.execution_engine and traced_payload.get("execution_engine") in (None, "harness_v2"):
+            traced_payload["execution_engine"] = self.execution_engine
         event = AgentEvent(
             tenant_id=tenant_id,
             session_id=session_id,

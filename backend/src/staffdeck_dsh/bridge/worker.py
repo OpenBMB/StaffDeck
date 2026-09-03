@@ -65,6 +65,9 @@ class DshWorkerConfig:
     model: str = "deepseek-v4-flash"
     model_base_url: str | None = None
     model_api_key: str | None = None
+    # From the ModelConfig: "enabled" | "disabled" | "" (provider default) and "off" | "low" | "high" | "max" | "".
+    thinking: str = ""
+    reasoning_effort: str = ""
     permission_mode: str = "danger-full-access"   # StaffDeck enforces its own PEP; DSH sandbox is off
     initialize_timeout_seconds: float = 90.0
     request_timeout_seconds: float | None = 600.0
@@ -109,6 +112,10 @@ def render_patch(*, mcp_url: str, persona: str = RUNTIME_PERSONA, disabled: tupl
         "  config:",
         "    apiKeyEnv: STAFFDECK_MODEL_API_KEY",
         "    baseURL: !!js process.env.STAFFDECK_MODEL_BASE_URL",
+        # Thinking policy follows the StaffDeck ModelConfig (extra_body.thinking.type); the adapter's own
+        # default is reasoningEffort=high, which OpenAI-compatible gateways such as Qwen reject.
+        "    thinking: !!js process.env.STAFFDECK_MODEL_THINKING || undefined",
+        "    reasoningEffort: !!js process.env.STAFFDECK_MODEL_REASONING_EFFORT || undefined",
         "",
         "- id: agent-default-model",
         "  config:",
@@ -165,6 +172,8 @@ class DshProcess:
             "DSH_TELEMETRY_DISABLED": "1",
             "STAFFDECK_ACTIVATION_TOKEN": activation_token,
             "STAFFDECK_MODEL_NAME": config.model,
+            **({"STAFFDECK_MODEL_THINKING": config.thinking} if config.thinking else {}),
+            **({"STAFFDECK_MODEL_REASONING_EFFORT": config.reasoning_effort} if config.reasoning_effort else {}),
             **({"STAFFDECK_MODEL_BASE_URL": config.model_base_url} if config.model_base_url else {}),
             **({"STAFFDECK_MODEL_API_KEY": config.model_api_key} if config.model_api_key else {}),
             # llm-deepseek falls back to DEEPSEEK_* when the row leaves fields unset.

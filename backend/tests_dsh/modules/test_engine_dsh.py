@@ -315,3 +315,43 @@ def security_ctx_for(ns):
     from staffdeck_dsh.contracts.security import SecurityContext
 
     return SecurityContext(principal_id=ns.principal_id, tenant_id=ns.tenant_id, principal_type="user", tenant_role=ns.tenant_role)
+
+
+def test_dsh_process_follows_model_config_thinking_policy():
+    """A ModelConfig with thinking disabled must not let DSH default to reasoningEffort=high
+    (OpenAI-compatible gateways such as Qwen reject it), and the policy must reach the profile patch."""
+
+    from types import SimpleNamespace
+
+    from staffdeck_dsh.bridge.task_agent import _model_thinking
+    from staffdeck_dsh.bridge.worker import render_patch
+
+    disabled = SimpleNamespace(legacy_extra_body={"thinking": {"type": "disabled"}}, protocol_options={})
+    assert _model_thinking(disabled) == ("disabled", "off")
+    enabled = SimpleNamespace(legacy_extra_body={"thinking": {"type": "enabled"}, "reasoning_effort": "medium"}, protocol_options={})
+    assert _model_thinking(enabled) == ("enabled", "high")
+    via_protocol = SimpleNamespace(legacy_extra_body={}, protocol_options={"thinking": {"type": "disabled"}})
+    assert _model_thinking(via_protocol) == ("disabled", "off")
+    unset = SimpleNamespace(legacy_extra_body={}, protocol_options={})
+    assert _model_thinking(unset) == ("", "")
+    patch = render_patch(mcp_url="http://127.0.0.1:1/mcp")
+    assert "thinking: !!js process.env.STAFFDECK_MODEL_THINKING" in patch
+    assert "reasoningEffort: !!js process.env.STAFFDECK_MODEL_REASONING_EFFORT" in patch
+
+
+def test_event_log_labels_whole_turn_with_engine():
+    from sqlalchemy.pool import StaticPool
+    from sqlmodel import Session, SQLModel, create_engine
+
+    from app.observability.event_log import EventLog
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        log = EventLog(db)
+        assert log.record("t1", "s1", "user_message_received", {"execution_engine": "harness_v2"}).payload_json["execution_engine"] == "harness_v2"
+        log.execution_engine = "dsh"
+        assert log.record("t1", "s1", "user_message_received", {"execution_engine": "harness_v2"}).payload_json["execution_engine"] == "dsh"
+        assert log.record("t1", "s1", "stream_status", {}).payload_json["execution_engine"] == "dsh"
+        # an explicit non-legacy label is left alone
+        assert log.record("t1", "s1", "x", {"execution_engine": "custom"}).payload_json["execution_engine"] == "custom"
