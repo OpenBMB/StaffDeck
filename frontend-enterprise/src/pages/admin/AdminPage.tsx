@@ -7,17 +7,17 @@ import {
 import { cn } from '@/lib/utils';
 import AppHeader from '@/components/AppHeader';
 import { StatCard } from '@/components/StatCard';
-import ModuleTree from '@/components/dsh/ModuleTree';
-import SessionLog from '@/components/dsh/SessionLog';
-import BaseConnectionPanel from '@/components/dsh/BaseConnectionPanel';
-import ExternalModulesPanel from '@/components/dsh/ExternalModulesPanel';
+import ModuleTree from '@/components/harness/ModuleTree';
+import SessionLog from '@/components/harness/SessionLog';
+import BaseConnectionPanel from '@/components/harness/BaseConnectionPanel';
+import ExternalModulesPanel from '@/components/harness/ExternalModulesPanel';
 import { api, TENANT_ID } from '../../api/client';
-import { dshApi, type DshAssembly, type DshAssemblyState, type DshAssemblyUpdate, type DshBaseConnectionUpdate, type DshEngineChoice, type DshLedgerRow, type DshLogEntry, type DshSessionSummary, type DshSnapshot, type DshStaffEngine, type DshStatus, type DshTreeBig, type DshTreeOption } from '../../api/dsh';
+import { harnessApi, type HarnessAssembly, type HarnessAssemblyState, type HarnessAssemblyUpdate, type HarnessBaseConnectionUpdate, type HarnessEngineChoice, type HarnessLedgerRow, type HarnessLogEntry, type HarnessSessionSummary, type HarnessSnapshot, type HarnessStaffEngine, type HarnessStatus, type HarnessTreeBig, type HarnessTreeOption } from '../../api/harness';
 import type { AgentProfileRead, ChannelBindingRead, ModelConfigRead, TeamRead } from '../../types';
 import type { EnterpriseAuthUser } from '../../auth';
 import { EnterpriseRoute } from '../../enums/routes';
 import { formatClientDateTime } from '../../lib/timezone';
-import { engineLabel, hookHandlerLabel, hookPointLabel, modelRoleLabel, operationLabel, profileLabel, proxyToolLabel, readTechMode, resourceTypeLabel, toolLabel, writeTechMode } from '../../lib/dshLabels';
+import { engineLabel, hookHandlerLabel, hookPointLabel, modelRoleLabel, operationLabel, profileLabel, proxyToolLabel, readTechMode, resourceTypeLabel, toolLabel, writeTechMode } from '../../lib/harnessLabels';
 import IconRefresh from '../../assets/icons/refresh.svg?react';
 import IconSuccess from '../../assets/icons/success-fill.svg?react';
 import IconWarning from '../../assets/icons/warning-fill.svg?react';
@@ -60,7 +60,7 @@ function Panel({ children, className }: { children: ReactNode; className?: strin
 }
 
 /** 保存的装配和运行中的装配差在哪，用一句话说清楚。 */
-function describePending(state: DshAssemblyState | null): string[] {
+function describePending(state: HarnessAssemblyState | null): string[] {
   if (!state || !state.pending) return [];
   const a = state.applied;
   const s = state.saved;
@@ -81,8 +81,8 @@ function describePending(state: DshAssemblyState | null): string[] {
 }
 
 /** 本地先改，再排队保存：连续点击不会互相覆盖，也不会因为上一次还没返回而被吞掉。 */
-function applyLocally(saved: DshAssembly, patch: DshAssemblyUpdate): DshAssembly {
-  const next: DshAssembly = { ...saved };
+function applyLocally(saved: HarnessAssembly, patch: HarnessAssemblyUpdate): HarnessAssembly {
+  const next: HarnessAssembly = { ...saved };
   if (patch.engine) next.engine = patch.engine;
   if (patch.security_profile) next.security_profile = patch.security_profile;
   if (patch.disabled_modules) next.disabled_modules = [...patch.disabled_modules].sort();
@@ -102,13 +102,13 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const [status, setStatus] = useState<DshStatus | null>(null);
-  const [tree, setTree] = useState<DshTreeBig[]>([]);
-  const [assembly, setAssembly] = useState<DshAssemblyState | null>(null);
-  const [options, setOptions] = useState<DshTreeOption[]>([]);
+  const [status, setStatus] = useState<HarnessStatus | null>(null);
+  const [tree, setTree] = useState<HarnessTreeBig[]>([]);
+  const [assembly, setAssembly] = useState<HarnessAssemblyState | null>(null);
+  const [options, setOptions] = useState<HarnessTreeOption[]>([]);
   const [restartOpen, setRestartOpen] = useState(false);
   const [restarting, setRestarting] = useState(false);
-  const assemblyRef = useRef<DshAssemblyState | null>(null);
+  const assemblyRef = useRef<HarnessAssemblyState | null>(null);
   const saveChain = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => { assemblyRef.current = assembly; }, [assembly]);
 
@@ -117,14 +117,14 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
   const [teams, setTeams] = useState<TeamRead[]>([]);
   const [channels, setChannels] = useState<ChannelBindingRead[]>([]);
   const [agentId, setAgentId] = useState('');
-  const [snapshot, setSnapshot] = useState<DshSnapshot | null>(null);
-  const [staffEngine, setStaffEngine] = useState<DshStaffEngine | null>(null);
+  const [snapshot, setSnapshot] = useState<HarnessSnapshot | null>(null);
+  const [staffEngine, setStaffEngine] = useState<HarnessStaffEngine | null>(null);
 
-  const [ledgerUnknown, setLedgerUnknown] = useState<DshLedgerRow[]>([]);
+  const [ledgerUnknown, setLedgerUnknown] = useState<HarnessLedgerRow[]>([]);
   const [unknownOpen, setUnknownOpen] = useState(false);
-  const [sessions, setSessions] = useState<DshSessionSummary[]>([]);
+  const [sessions, setSessions] = useState<HarnessSessionSummary[]>([]);
   const [sessionId, setSessionId] = useState('');
-  const [logEntries, setLogEntries] = useState<DshLogEntry[]>([]);
+  const [logEntries, setLogEntries] = useState<HarnessLogEntry[]>([]);
   const [logLoading, setLogLoading] = useState(false);
 
   useEffect(() => { writeTechMode(tech); }, [tech]);
@@ -133,11 +133,11 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     setLoading(true);
     try {
       const [st, t, cfg, agts, opts] = await Promise.all([
-        dshApi.status(TENANT_ID),
-        dshApi.modulesTree(TENANT_ID),
-        dshApi.config(TENANT_ID),
+        harnessApi.status(TENANT_ID),
+        harnessApi.modulesTree(TENANT_ID),
+        harnessApi.config(TENANT_ID),
         api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
-        dshApi.treeOptions(TENANT_ID).catch(() => [] as DshTreeOption[]),
+        harnessApi.treeOptions(TENANT_ID).catch(() => [] as HarnessTreeOption[]),
       ]);
       setStatus(st);
       setTree(t);
@@ -167,7 +167,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     if (!id) return;
     setLoading(true);
     try {
-      const [snap, eng] = await Promise.all([dshApi.snapshot(TENANT_ID, id), dshApi.staffEngine(TENANT_ID, id)]);
+      const [snap, eng] = await Promise.all([harnessApi.snapshot(TENANT_ID, id), harnessApi.staffEngine(TENANT_ID, id)]);
       setSnapshot(snap);
       setStaffEngine(eng);
     } catch (error) {
@@ -178,10 +178,10 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     }
   }
 
-  async function setEngine(engine: DshEngineChoice) {
+  async function setEngine(engine: HarnessEngineChoice) {
     if (!agentId) return;
     try {
-      const row = await dshApi.setStaffEngine(TENANT_ID, agentId, engine);
+      const row = await harnessApi.setStaffEngine(TENANT_ID, agentId, engine);
       setStaffEngine(row);
       notify.success(`已切换为 ${engineLabel(row.effective_engine, true)}，下一轮对话生效`);
     } catch (error) {
@@ -193,7 +193,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     if (!id) return;
     setLogLoading(true);
     try {
-      const body = id === ADMIN_AUDIT_SESSION ? await dshApi.audit(TENANT_ID) : await dshApi.log(TENANT_ID, id);
+      const body = id === ADMIN_AUDIT_SESSION ? await harnessApi.audit(TENANT_ID) : await harnessApi.log(TENANT_ID, id);
       setLogEntries(body.entries);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '读取日志失败');
@@ -204,7 +204,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
 
   async function loadLogTab() {
     try {
-      const [unknown, ss] = await Promise.all([dshApi.ledgerUnknown(TENANT_ID), dshApi.sessionsRecent(TENANT_ID)]);
+      const [unknown, ss] = await Promise.all([harnessApi.ledgerUnknown(TENANT_ID), harnessApi.sessionsRecent(TENANT_ID)]);
       setLedgerUnknown(unknown);
       setSessions([{ session_id: ADMIN_AUDIT_SESSION, title: '管理操作记录', agent_id: null, agent_name: '管理后台', channel: 'admin', status: 'active', updated_at: new Date().toISOString() }, ...ss]);
       setSessionId((prev) => prev || ss[0]?.session_id || ADMIN_AUDIT_SESSION);
@@ -215,7 +215,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
 
   async function reconcile(id: string, outcome: 'completed' | 'failed') {
     try {
-      await dshApi.reconcile(TENANT_ID, id, outcome);
+      await harnessApi.reconcile(TENANT_ID, id, outcome);
       notify.success(outcome === 'completed' ? '已记为成功' : '已记为未执行，之后可以重试');
       await loadLogTab();
       await loadLog();
@@ -228,7 +228,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
    * Optimistic + serialised: the UI reflects the change at once; PUTs run one after another with the
    * latest full state. Resolves to true on success, false on failure (state is re-read from the server).
    */
-  function saveAssembly(patch: DshAssemblyUpdate): Promise<boolean> {
+  function saveAssembly(patch: HarnessAssemblyUpdate): Promise<boolean> {
     const current = assemblyRef.current;
     if (current && !patch.base) {
       const optimistic = { ...current, saved: applyLocally(current.saved, patch) };
@@ -238,7 +238,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     const run = async (): Promise<boolean> => {
       setBusy(true);
       try {
-        const next = await dshApi.setConfig(TENANT_ID, patch);
+        const next = await harnessApi.setConfig(TENANT_ID, patch);
         assemblyRef.current = next;
         setAssembly(next);
         setStatus((s) => (s ? { ...s, config_pending: next.pending } : s));
@@ -246,7 +246,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
       } catch (error) {
         notify.error(error instanceof Error ? error.message : '保存失败');
         try {
-          const fresh = await dshApi.config(TENANT_ID);
+          const fresh = await harnessApi.config(TENANT_ID);
           assemblyRef.current = fresh;
           setAssembly(fresh);
         } catch { /* keep optimistic state; next load() will reconcile */ }
@@ -270,7 +270,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
 
   async function placeModule(moduleId: string, subId: string | null) {
     try {
-      const r = await dshApi.setPlacement(TENANT_ID, moduleId, subId);
+      const r = await harnessApi.setPlacement(TENANT_ID, moduleId, subId);
       setTree(r.tree);
       const current = assemblyRef.current;
       if (current) {
@@ -288,7 +288,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
 
   async function inspectModule(spec: string) {
     try {
-      return await dshApi.inspectModule(TENANT_ID, spec);
+      return await harnessApi.inspectModule(TENANT_ID, spec);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '预检失败');
       return null;
@@ -307,17 +307,17 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     return saveAssembly({ extra_modules: saved.extra_modules.filter((x) => x !== spec) });
   }
 
-  async function saveBase(patch: DshBaseConnectionUpdate): Promise<boolean> {
+  async function saveBase(patch: HarnessBaseConnectionUpdate): Promise<boolean> {
     const ok = await saveAssembly({ base: patch });
     if (ok) notify.success('权限中心连接已保存，请测试连接');
     return ok;
   }
 
-  async function testBase(patch?: DshBaseConnectionUpdate) {
+  async function testBase(patch?: HarnessBaseConnectionUpdate) {
     try {
-      const r = await dshApi.baseTest(TENANT_ID, patch);
+      const r = await harnessApi.baseTest(TENANT_ID, patch);
       if (r.saved) {
-        const fresh = await dshApi.config(TENANT_ID);
+        const fresh = await harnessApi.config(TENANT_ID);
         assemblyRef.current = fresh;
         setAssembly(fresh);
       }
@@ -334,7 +334,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     setBusy(true);
     try {
       await saveChain.current;
-      const res = await dshApi.restart(TENANT_ID);
+      const res = await harnessApi.restart(TENANT_ID);
       if (res.runtime_error) notify.warning(`已重启，但 Harness v3 引擎未能启动：${res.runtime_error.message}`);
       else notify.success('运行时已重启，新的装配已生效');
       await load();
@@ -363,7 +363,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
 
   const pendingLines = useMemo(() => describePending(assembly), [assembly]);
   const applied = assembly?.applied ?? null;
-  const engineRunning: 'ok' | 'warn' | 'error' = status?.dsh_enabled ? (status.runtime_ok ? 'ok' : 'error') : 'ok';
+  const engineRunning: 'ok' | 'warn' | 'error' = status?.harness_v3_enabled ? (status.runtime_ok ? 'ok' : 'error') : 'ok';
   const businessSelected = assembly?.saved.security_profile === 'BUSINESS_BASE';
   const restartingAny = restarting || Boolean(status?.restarting) || Boolean(assembly?.restarting);
   const baseReady = !businessSelected || assembly?.saved.base?.last_test_ok === true;
@@ -445,7 +445,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
 
             <div className="flex flex-wrap items-stretch gap-[20px]" aria-label="运行概览">
               <StatCard label="执行引擎" value={applied ? engineLabel(applied.engine) : status ? engineLabel(status.default_engine) : '-'} valueClassName="text-[18px] leading-[26px]" />
-              <StatCard label="引擎状态" value={status ? (restartingAny ? '重启中' : status.dsh_enabled ? (status.runtime_ok ? '运行中' : '异常') : '运行中') : '-'} tone={status ? (restartingAny ? 'default' : status.runtime_ok ? 'green' : 'red') : 'default'} valueClassName="text-[18px] leading-[26px]" />
+              <StatCard label="引擎状态" value={status ? (restartingAny ? '重启中' : status.harness_v3_enabled ? (status.runtime_ok ? '运行中' : '异常') : '运行中') : '-'} tone={status ? (restartingAny ? 'default' : status.runtime_ok ? 'green' : 'red') : 'default'} valueClassName="text-[18px] leading-[26px]" />
               <StatCard label="权限模式" value={profileLabel(status?.security_profile).short} tone={status?.security_profile === 'BUSINESS_BASE' ? (status.base_last_test_ok === false ? 'red' : 'green') : 'default'} valueClassName="text-[18px] leading-[26px]" />
               <StatCard label="功能模块" value={`${modulesEnabled} / ${modulesTotal} 已启用`} tone={modulesEnabled > 0 ? 'green' : 'default'} valueClassName="text-[18px] leading-[26px]" />
             </div>
@@ -458,18 +458,18 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                       <span className="inline-flex flex-wrap items-center gap-[8px]">
                         <StatusDot state="ok" />
                         {engineLabel(applied?.engine ?? status.default_engine, true)}
-                        {status.engine_version && status.dsh_enabled && <Hint>版本 {status.engine_version}</Hint>}
+                        {status.engine_version && status.harness_v3_enabled && <Hint>版本 {status.engine_version}</Hint>}
                       </span>
                       <div className="text-[12px] text-[#9aa0ad]">员工回答问题时，由它规划步骤、调用能力并生成回复。</div>
                     </KV>
                     <KV label="引擎状态">
                       <span className="inline-flex items-center gap-[8px]">
                         <StatusDot state={engineRunning} />
-                        {status.dsh_enabled
+                        {status.harness_v3_enabled
                           ? (status.runtime_ok ? `运行正常，当前有 ${status.live_activations} 个对话正在使用` : `异常：${status.runtime_error?.message ?? '未知错误'}`)
                           : 'Harness v2 引擎在主进程内运行，不需要单独启动'}
                       </span>
-                      {status.dsh_enabled && (
+                      {status.harness_v3_enabled && (
                         <div className="text-[12px] text-[#9aa0ad]">{status.fallback_to_legacy ? 'Harness v3 引擎异常时会自动改用 Harness v2，对话不会中断。' : '未开启自动切换：Harness v3 引擎异常时对话会失败。'}</div>
                       )}
                     </KV>
@@ -481,7 +481,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                       <div className="text-[12px] text-[#9aa0ad]">{profileLabel(status.security_profile).hint}</div>
                     </KV>
                     <KV label="使用 Harness v3 的员工">
-                      {!status.dsh_enabled
+                      {!status.harness_v3_enabled
                         ? <span>当前默认引擎是 Harness v2，所有员工都使用它。<Hint>要启用 Harness v3，请在「功能模块」中选择它并重启运行时</Hint></span>
                         : status.staff_allowlist.length
                           ? <span>{status.staff_allowlist.map(agentName).join('、')}<Hint>其余员工使用 Harness v2</Hint></span>
@@ -498,8 +498,8 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                     {tech && (
                       <>
                         {status.mcp_url && <KV label="能力回调地址" mono>{status.mcp_url}</KV>}
-                        <KV label="引擎安装路径" mono>{status.dsh_root || '—'}</KV>
-                        <KV label="引擎数据目录" mono>{status.dsh_home || '—'}</KV>
+                        <KV label="引擎安装路径" mono>{status.harness_v3_root || '—'}</KV>
+                        <KV label="引擎数据目录" mono>{status.harness_v3_home || '—'}</KV>
                         <KV label="装配配置文件" mono>{assembly?.config_path ?? '—'}</KV>
                         <KV label="注册表代次" mono>{status.registry_generation}</KV>
                       </>
@@ -545,12 +545,12 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                     <SelectContent>{agents.map((a) => <SelectItem key={a.id} value={a.id}>{a.name}{a.is_overall ? '（整体）' : ''}</SelectItem>)}</SelectContent>
                   </Select>
                   {staffEngine && (
-                    <Select value={staffEngine.engine} onValueChange={(v) => void setEngine(v as DshEngineChoice)}>
+                    <Select value={staffEngine.engine} onValueChange={(v) => void setEngine(v as HarnessEngineChoice)}>
                       <SelectTrigger className="h-[34px] w-[280px] rounded-[10px] border-[0.5px] border-[#e3e7f1] text-[12px]"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="default">跟随系统默认（当前 {engineLabel(staffEngine.effective_engine)}）</SelectItem>
-                        <SelectItem value="dsh">这位员工使用 Harness v3 引擎</SelectItem>
-                        <SelectItem value="legacy">这位员工使用 Harness v2 引擎</SelectItem>
+                        <SelectItem value="harness_v3">这位员工使用 Harness v3 引擎</SelectItem>
+                        <SelectItem value="harness_v2">这位员工使用 Harness v2 引擎</SelectItem>
                       </SelectContent>
                     </Select>
                   )}
@@ -635,7 +635,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                         <div key={r.id} className="flex flex-wrap items-center gap-[10px] rounded-[10px] bg-white px-[12px] py-[8px] text-[12px]">
                           <span className="min-w-0 flex-1 truncate">
                             <span className="text-[#18181a]">{toolLabel(r.tool_name)}</span>
-                            <span className="ml-[8px] text-[11px] text-[#9aa0ad]">{formatClientDateTime(r.started_at)} · {engineLabel(r.engine ?? 'legacy')}</span>
+                            <span className="ml-[8px] text-[11px] text-[#9aa0ad]">{formatClientDateTime(r.started_at)} · {engineLabel(r.engine ?? 'harness_v2')}</span>
                             {tech && <span className="ml-[8px] font-mono text-[11px] text-[#c0c6d4]">{r.session_id}</span>}
                           </span>
                           <button type="button" onClick={() => setSessionId(r.session_id)} className="text-[12px] text-[#2f6fdb] hover:underline">看日志</button>

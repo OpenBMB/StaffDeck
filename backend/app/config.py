@@ -63,31 +63,31 @@ class Settings(BaseSettings):
     channel_feishu_trace_compact_sop: bool = True
     # DSH (DeepSeek Harness) engine switch. Off keeps the in-process Harness v2
     # loop untouched. On routes step execution to a DSH worker via the
-    # staffdeck_dsh parallel package; dsh_staff_allowlist limits the rollout to
+    # staffdeck_harness parallel package; harness_v3_staff_allowlist limits the rollout to
     # specific agent ids (comma separated) for canary testing.
-    dsh_enabled: bool = False
-    # Exposes /api/enterprise/dsh (module registry, snapshot preview, ledger
+    harness_v3_enabled: bool = False
+    # Exposes /api/enterprise/harness (module registry, snapshot preview, ledger
     # reconciliation, per-staff engine) even when turns still run on legacy, so
     # operators can inspect the pluggable tree before switching engines.
-    dsh_admin_api_enabled: bool = True
+    harness_admin_api_enabled: bool = True
     # Comma-separated module ids to disable, and extra "pkg.mod:register" specs.
-    dsh_disabled_modules: str = ""
-    dsh_modules: str = ""
+    harness_disabled_modules: str = ""
+    harness_modules: str = ""
     # Admin-editable overrides (engine / security profile / disabled / extra modules);
-    # defaults to <dsh_home or cwd>/staffdeck-runtime.json.
-    dsh_runtime_config_path: str = ""
+    # defaults to <harness_v3_home or cwd>/staffdeck-runtime.json.
+    harness_runtime_config_path: str = ""
     # Where the admin page may point the enterprise permission centre. Comma-separated host[:port]
     # patterns (fnmatch, e.g. "*.corp.example,10.0.*"); empty = loopback / private ranges only.
     # Set to "*" to allow any host. https is required for public hosts.
     base_url_allowlist: str = ""
-    dsh_root: str = ""
-    dsh_home: str = ""
-    dsh_node_bin: str = "node"
-    dsh_permission_mode: str = "danger-full-access"
-    dsh_staff_allowlist: str = ""
-    dsh_fallback_to_legacy: bool = True
-    dsh_initialize_timeout_seconds: float = 90.0
-    dsh_request_timeout_seconds: float = 600.0
+    harness_v3_root: str = ""
+    harness_v3_home: str = ""
+    harness_v3_node_bin: str = "node"
+    harness_v3_permission_mode: str = "danger-full-access"
+    harness_v3_staff_allowlist: str = ""
+    harness_v3_fallback_to_v2: bool = True
+    harness_v3_initialize_timeout_seconds: float = 90.0
+    harness_v3_request_timeout_seconds: float = 600.0
     # OSS_LOCAL or BUSINESS_BASE; one per deployment.
     security_profile: str = "OSS_LOCAL"
     base_authz_url: str = ""

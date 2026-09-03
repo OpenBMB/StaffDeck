@@ -169,26 +169,26 @@ class AgentLoop:
 
         settings = get_settings()
         label = "harness_v2"
-        if getattr(settings, "dsh_enabled", False):
+        if getattr(settings, "harness_v3_enabled", False):
             try:
-                from staffdeck_dsh.bridge.engine_host import EngineHost
+                from staffdeck_harness.bridge.engine_host import EngineHost
 
                 agent_id = request.agent_id or (chat_session.agent_id if chat_session is not None else None)
-                if EngineHost(settings).selects_dsh(request, agent_id, db=self.db):
-                    label = "dsh"
+                if EngineHost(settings).selects_harness_v3(request, agent_id, db=self.db):
+                    label = "harness_v3"
             except Exception:  # pragma: no cover - labelling must never break a turn
                 label = "harness_v2"
         if hasattr(self.events, "execution_engine"):
             self.events.execution_engine = None if label == "harness_v2" else label
 
     def _open_engine(self, request: ChatTurnRequest) -> HarnessV2Engine:
-        # The DSH engine lives in the parallel ``staffdeck_dsh`` package and is
+        # The Harness v3 engine lives in the parallel ``staffdeck_harness`` package and is
         # only imported when the deployment opts in, so a legacy deployment
         # never loads Node/MCP dependencies.
         settings = get_settings()
-        if not getattr(settings, "dsh_enabled", False):
+        if not getattr(settings, "harness_v3_enabled", False):
             return HarnessV2Engine(self)
-        from staffdeck_dsh.bridge.engine_host import EngineHost
+        from staffdeck_harness.bridge.engine_host import EngineHost
 
         agent_id = request.agent_id
         if not agent_id and request.session_id and hasattr(self.db, "get"):

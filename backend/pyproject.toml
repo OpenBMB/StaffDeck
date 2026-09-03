@@ -13,6 +13,8 @@ dependencies = [
   "greenlet>=3.0.3",
   "lark-channel-sdk==1.2.0",
   "httpx>=0.27.0",
+  # Harness v3 pluggable runtime: capability MCP server + model gateway (Streamable HTTP)
+  "mcp>=1.9.0",
   "openai>=1.40.0",
   "packaging>=24.0",
   "beautifulsoup4>=4.12.3",
@@ -52,12 +54,16 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = ["desktop_launcher", "feishu_connector_worker", "single_port_app"]
 
+# ``app``/``mock_servers`` live at the backend root; the Harness v3 pluggable
+# runtime is a separate top-level package under ``src/`` (kept out of ``app``
+# on purpose so the legacy tree stays untouched). Both are part of the wheel.
 [tool.setuptools.packages.find]
-include = ["app*", "mock_servers*"]
+where = [".", "src"]
+include = ["app*", "mock_servers*", "staffdeck_harness*"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "tests_harness"]

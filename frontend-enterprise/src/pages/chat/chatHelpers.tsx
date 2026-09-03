@@ -1,4 +1,4 @@
-import { moduleLabel, operationLabel } from '../../lib/dshLabels';
+import { moduleLabel, operationLabel } from '../../lib/harnessLabels';
 import { useState, type ReactNode } from 'react';
 
 import CodeBlock from '@/components/CodeBlock';
@@ -1588,12 +1588,12 @@ export function harnessEventTraceLine(
       icon: 'advance',
     };
   }
-  if (eventName === 'dsh_process_started') {
+  if (eventName === 'harness_v3_process_started') {
     const model = typeof data.model === 'string' ? data.model : '';
     const bootMs = typeof data.boot_ms === 'number' ? `${data.boot_ms}ms` : '';
     const thinking = typeof data.thinking === 'string' && data.thinking !== 'provider_default' ? (data.thinking === 'disabled' ? '不思考' : '思考模式') : '';
     return {
-      id: `dsh_process_${frameId}`,
+      id: `harness_v3_process_${frameId}`,
       kind: 'decision',
       text: 'Harness v3 引擎已就绪',
       detail: [model, thinking, bootMs ? `启动 ${bootMs}` : ''].filter(Boolean).join(' · '),
@@ -1601,10 +1601,10 @@ export function harnessEventTraceLine(
       icon: 'execute',
     };
   }
-  if (eventName === 'dsh_task_finished') {
+  if (eventName === 'harness_v3_task_finished') {
     const status = typeof data.status === 'string' ? data.status : '';
     return {
-      id: `dsh_finish_${frameId}`,
+      id: `harness_v3_finish_${frameId}`,
       kind: 'decision',
       text: `引擎提交结果 · ${status === 'completed' ? '完成' : status === 'handoff' ? '需要人工处理' : status === 'failed' ? '失败' : status}`,
       state: status === 'handoff' ? 'running' : status === 'failed' ? 'failed' : 'completed',

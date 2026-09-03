@@ -45,6 +45,10 @@ hiddenimports = (
     + collect_submodules("sqlmodel")
     + collect_submodules("lark_channel")
     + collect_submodules("app")
+    # Harness v3 pluggable runtime (admin API is mounted by default; the Node
+    # engine itself is an external checkout selected by HARNESS_V3_ROOT).
+    + collect_submodules("staffdeck_harness")
+    + collect_submodules("mcp")
     + [
         # 顶层单文件模块：uvicorn 用字符串 "single_port_app:app" 运行时动态 import
         "single_port_app",
@@ -67,7 +71,7 @@ if sys.platform == "darwin":
 
 a = Analysis(
     [str(BACKEND / "desktop_launcher.py")],
-    pathex=[str(BACKEND)],
+    pathex=[str(BACKEND), str(BACKEND / "src")],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,

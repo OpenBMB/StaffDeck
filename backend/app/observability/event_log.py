@@ -22,7 +22,7 @@ class EventLog:
         self._event_sink = event_sink
         self._turn_id: str | None = None
         self._client_turn_id: str | None = None
-        # Set by the engine that actually runs the turn ("dsh" when the Harness v3 bridge is active).
+        # Set by the engine that actually runs the turn ("harness_v3" when the Harness v3 bridge is active).
         # Legacy call sites stamp "harness_v2" literally; the override keeps every event of a turn consistent.
         self.execution_engine: str | None = None
 
