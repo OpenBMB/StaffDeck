@@ -9,6 +9,8 @@ deterministic "no_documents" route without touching any model or network.
 
 from __future__ import annotations
 
+import json
+
 import re
 
 import pytest
@@ -185,8 +187,10 @@ def test_provider_knowledge_local_bound_base_searches(module, host, invocation, 
     res = provider.invoke(host({"knowledge_base": {kb.id}}), invocation(OPERATION, arguments={"query": "退货期限", "max_chunks": 3}))
     assert res.success is True, res.error
     assert isinstance(res.data, dict)
-    # an empty base returns a deterministic route without touching any model
-    phases = [t.get("phase") for t in res.data.get("route_trace", [])]
+    # the model sees a compact view; the full response (with the route trace) rides in extensions.evidence
+    assert set(res.data) >= {"hit_count", "results", "citations"} and res.data["hit_count"] == 0
+    full = res.extensions["evidence"]
+    phases = [t.get("phase") for t in full.get("route_trace", [])]
     assert phases and phases[-1] in {"no_documents", "no_visible_knowledge"}
     assert res.citations == ()
 
@@ -213,3 +217,25 @@ def test_pep_knowledge_local_denies_cross_tenant(registry, guard, security_ctx):
     # same tenant + active private binding is allowed for a member
     own = ResourceRef(type="knowledge_base", id="kb_x", tenant_id="t1", attributes={"binding_status": "active", "private_to_agent": True})
     assert g.require(security_ctx(), OPERATION, own).allowed is True
+
+
+def test_provider_knowledge_local_model_view_carries_labels_and_keeps_evidence_off_the_transcript():
+    """The model gets a compact, citation-labelled view; the full response only rides in extensions."""
+
+    from staffdeck_dsh.capabilities.facade import _MODEL_EXCERPT_CHARS, _model_facing_knowledge
+
+    payload = {
+        "query": "年假",
+        "chunks": [
+            {"chunk_id": "c1", "content": "年假需提前 3 个工作日申请" * 200, "title": "年假规则", "source_path": "手册.md", "metadata": {}},
+            {"chunk_id": "c2", "content": "事假为无薪假", "title": "事假", "source_path": "手册.md", "metadata": {}},
+        ],
+        "selected_buckets": [{"id": "b1", "title": "请假", "summary": "…", "metadata": {"content": "x" * 5000}}],
+        "route_trace": [{"phase": "x"} for _ in range(50)],
+    }
+    citations = [{"id": "kref_1", "label": "[1]", "chunk_id": "c1", "title": "年假规则"}, {"id": "kref_2", "label": "[2]", "chunk_id": "c2", "title": "事假"}]
+    view = _model_facing_knowledge(payload, citations)
+    assert view["hit_count"] == 2 and [r["label"] for r in view["results"]] == ["[1]", "[2]"]
+    assert len(view["results"][0]["excerpt"]) == _MODEL_EXCERPT_CHARS
+    assert "route_trace" not in view and "selected_buckets" not in view
+    assert len(json.dumps(view, ensure_ascii=False)) < 4000  # well under DSH's 50 KB inline budget

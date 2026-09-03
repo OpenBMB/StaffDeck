@@ -45,7 +45,6 @@ from app.core.cancellation import is_chat_turn_cancelled
 from app.core.harness_agent import HarnessExecutionCancelled
 from app.core.task_request_compiler import TaskExecutionResult, TaskRequirement
 from app.db.models import ModelConfig
-from app.security.encryption import decrypt_secret
 from staffdeck_dsh.bridge.capability_mcp import ActivationRegistry, CapabilityMcpServer
 from staffdeck_dsh.bridge.worker import DshProcess, DshWorkerConfig
 from staffdeck_dsh.capabilities.host import ActivationSlot, CapabilityHost, LifecycleFence
@@ -118,18 +117,10 @@ class DshRuntime:
         assert self.mcp is not None, "DshRuntime not started"
         return self.mcp.url
 
-
-def _model_route(model_config: ModelConfig) -> tuple[str, str | None, str | None]:
-    """(model name, base_url, api_key) for the DSH deepseek-official adapter.
-
-    DSH's adapter speaks OpenAI-compatible chat completions with DeepSeek
-    extensions, which is exactly what the StaffDeck gateways serve, so any
-    ``openai_compatible`` ModelConfig routes through it unchanged.
-    """
-
-    base = (model_config.base_url or "").rstrip("/")
-    key = decrypt_secret(model_config.api_key_encrypted) if model_config.api_key_encrypted else None
-    return model_config.model, base or None, key
+    @property
+    def model_base_url(self) -> str:
+        assert self.mcp is not None, "DshRuntime not started"
+        return self.mcp.model_base_url
 
 
 _EFFORT_ALIASES = {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "off": "off", "none": "off"}
@@ -283,12 +274,14 @@ class DshTaskAgent:
                 return self._failed(requirement, "PRE_STEP_DENIED", pre.reason or "pre-step denied", actions=0)
             prompt = _step_prompt(requirement, state, list(pre.contexts), t.attachments_text)
 
-            # 2. DSH process bound to this activation
-            model, base_url, api_key = _model_route(model_config)
+            # 2. DSH process bound to this activation. Model traffic goes through the bridge's
+            #    gateway (StaffDeck's own model module runs the ModelConfig); the activation token
+            #    doubles as the subprocess's API key, so provider credentials never leave StaffDeck.
+            model = str(getattr(model_config, "model", "") or "")
             thinking, effort = _model_thinking(model_config)
             cfg = DshWorkerConfig(
                 dsh_root=self.runtime.worker_config.dsh_root, dsh_home=self.runtime.worker_config.dsh_home / t.tenant_id,
-                node_bin=self.runtime.worker_config.node_bin, model=model, model_base_url=base_url, model_api_key=api_key,
+                node_bin=self.runtime.worker_config.node_bin, model=model, model_base_url=self.runtime.model_base_url, model_api_key=activation.token,
                 thinking=thinking, reasoning_effort=effort,
                 permission_mode=self.runtime.worker_config.permission_mode,
                 initialize_timeout_seconds=self.runtime.worker_config.initialize_timeout_seconds,
@@ -298,7 +291,7 @@ class DshTaskAgent:
             proc = DshProcess(cfg, activation_token=activation.token, mcp_url=self.runtime.mcp_url, cwd=workspace)
             self._process = proc
             proc.start()
-            trace("dsh_process_started", {"model": model, "base_url": base_url, "thinking": thinking or "provider_default", "reasoning_effort": effort or "provider_default", "workspace": str(workspace), "boot_ms": int((time.monotonic() - started) * 1000)})
+            trace("dsh_process_started", {"model": model, "model_config_id": getattr(model_config, "id", None), "base_url": str(getattr(model_config, "base_url", "") or ""), "via": "staffdeck-model-gateway", "thinking": thinking or "provider_default", "reasoning_effort": effort or "provider_default", "workspace": str(workspace), "boot_ms": int((time.monotonic() - started) * 1000)})
 
             # 3. run turn (+ optional single steer)
             session_id = f"sd-{t.session_id}-{t.task_frame_id}"
@@ -471,6 +464,9 @@ class DshTaskAgent:
         return out
 
     def _citations(self, events: list[dict[str, Any]], state: PipelineState) -> list[dict[str, Any]]:
+        host = getattr(self, "_host", None)
+        if host is not None and host.citations:
+            return [dict(c) for c in host.citations]
         cites: list[dict[str, Any]] = []
         for r in self._tool_results(events):
             for c in r.get("citations") or []:
@@ -479,6 +475,9 @@ class DshTaskAgent:
         return cites or [c for c in state.citations if isinstance(c, dict)]
 
     def _evidence(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        host = getattr(self, "_host", None)
+        if host is not None and host.evidence:
+            return [dict(e) for e in host.evidence]
         return [dict(r["data"]) for r in self._tool_results(events) if r.get("success") and str(r.get("name") or "").endswith("knowledge_search") and isinstance(r.get("data"), dict)]
 
     @staticmethod

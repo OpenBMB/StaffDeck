@@ -149,10 +149,20 @@ class CapabilityMcpServer:
     def url(self) -> str:
         return f"http://{self.host}:{self.port}/mcp"
 
+    @property
+    def model_base_url(self) -> str:
+        """OpenAI-compatible base for the subprocess (``/chat/completions`` is appended by DSH)."""
+
+        return f"http://{self.host}:{self.port}/v1"
+
     def start(self) -> None:
         if self._thread is not None:
             return
         app = self.mcp.streamable_http_app(streamable_http_path="/mcp", json_response=True, stateless_http=True, host=self.host)
+        # Model calls from the DSH subprocess come back here too: same port, activation token as API key.
+        from staffdeck_dsh.bridge.model_gateway import ModelGateway
+
+        ModelGateway(self.registry).mount(app)
         config = uvicorn.Config(app, host=self.host, port=self.port, log_level="warning", access_log=False)
         self._server = uvicorn.Server(config)
 

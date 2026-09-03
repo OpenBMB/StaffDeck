@@ -110,7 +110,65 @@ class KnowledgeFacade:
             self.d.model_config,
         )
         payload = response.model_dump(mode="json")
-        return ModuleResult.ok(payload, citations=tuple(knowledge_citations_from_results([payload])))
+        citations = knowledge_citations_from_results([payload])
+        # The model sees a compact, citation-labelled view (like the legacy invoker's inline
+        # budget); the full response travels in ``extensions`` for evidence/UI, never to the model.
+        return ModuleResult.ok(_model_facing_knowledge(payload, citations), citations=tuple(citations), extensions={"evidence": payload})
+
+
+_MODEL_EXCERPT_CHARS = 1200
+_MODEL_MAX_ITEMS = 8
+
+
+def _model_facing_knowledge(payload: dict[str, Any], citations: list[dict[str, Any]]) -> dict[str, Any]:
+    """What the model gets back from knowledge_search: the evidence texts with their [N] labels.
+
+    Full bucket rows (metadata, traces, route trace, whole documents) stay out of the
+    transcript: they blow past DSH's inline result budget and get spilled to a file the
+    model cannot use, and they carry nothing the model needs beyond the excerpts.
+    """
+
+    by_identity: dict[str, str] = {}
+    for c in citations:
+        for key in ("chunk_id", "concept_id"):
+            if c.get(key):
+                by_identity[str(c[key])] = str(c.get("label") or "")
+    items: list[dict[str, Any]] = []
+    tiers = (payload.get("evidence_pack"), payload.get("chunks"), payload.get("selected_concepts"))
+    for raw in tiers:
+        if not isinstance(raw, list) or not raw:
+            continue
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            ident = str(item.get("chunk_id") or item.get("id") or item.get("concept_id") or "")
+            text = str(item.get("content") or item.get("text") or item.get("excerpt") or item.get("summary") or "")
+            if not text.strip():
+                continue
+            items.append({
+                "label": by_identity.get(ident) or (f"[{len(items) + 1}]"),
+                "title": item.get("title") or item.get("section_title") or item.get("document_title") or "",
+                "source": item.get("source_path") or item.get("document_id") or item.get("knowledge_base_id") or "",
+                "excerpt": text[:_MODEL_EXCERPT_CHARS],
+            })
+            if len(items) >= _MODEL_MAX_ITEMS:
+                break
+        if items:
+            break
+    if not items:
+        # fall back to bucket summaries so the model at least knows what exists
+        for b in payload.get("selected_buckets") or []:
+            if isinstance(b, dict) and (b.get("summary") or b.get("title")):
+                items.append({"label": f"[{len(items) + 1}]", "title": b.get("title") or "", "source": b.get("knowledge_base_id") or "", "excerpt": str(b.get("summary") or "")[:_MODEL_EXCERPT_CHARS]})
+                if len(items) >= _MODEL_MAX_ITEMS:
+                    break
+    return {
+        "query": payload.get("query"),
+        "hit_count": len(items),
+        "results": items,
+        "citations": [{"label": c.get("label"), "title": c.get("title"), "source": c.get("source_path") or c.get("document_id") or ""} for c in citations],
+        "instruction": "回答时用对应的 [N] 标注引用；没有命中的内容不要臆造。",
+    }
 
 
 class GeneralSkillFacade:

@@ -106,6 +106,12 @@ DSH_E2E=1 .venv/bin/python -m pytest tests_dsh/test_e2e_dsh_turn.py tests_dsh/te
 - **运行时健壮性**（评审发现）：`get_registry()` 无 settings 不再懒构建默认装配（`peek_registry()` 供宿主 / Relay / Hook 使用），重启改为"局部构建 → 原子切换"，重启窗口内能力调用得到 `ENGINE_UNAVAILABLE` 而不是落到默认引擎；`snapshot_env` 使"留空回落到环境"不再被已应用的管理员值污染；`_state_lock` 不再跨网络 I/O，`/status` 在重启中可用并带 `restarting`；`build_handoff_core` 按能力挑选槽实现；`ledger.invocation` 实现 `on_event`；钉钉 / 微信通知器如实标注"暂不支持主动私聊"并默认停用；SOP 绑定按 Skill 行 id 查询；审计事件（`assembly_saved` / `base_connection_tested` / `module_placed` / `module_inspected` / `runtime_restart_*`）+ `GET /audit`，执行日志页新增「管理操作记录」。
 - **每模块测试**：`backend/tests_dsh/modules/`，41 个模块各一个文件（manifest / 归类 / 停用语义 / 离线 provider 行为 / PEP），共享 fixtures 在 `conftest.py`；全套 `tests_dsh` 426 passed。
 
+### 6.4 模型调用走 StaffDeck 模型模块；知识库引用回流（2026-09-03）
+
+- **模型网关**（`bridge/model_gateway.py`）：DSH 子进程的 `baseURL` 指向桥接层自己的 `/v1/chat/completions`（与能力 MCP 同一个 127.0.0.1 端口），API key 就是本 Turn 的激活令牌。请求由 `app.llm.client.LLMClient` 按该 Turn 解析出的 ModelConfig 执行：协议驱动、提供方密钥、思考策略（`extra_body.thinking` / `reasoning_effort`）、温度、输出上限、`llm_call_*` 观测都与 Harness v2 完全一致；提供方凭证不再进入 Node 进程（`DshWorkerConfig.model_api_key` 现在只是激活令牌，`DEEPSEEK_*` 透传已删）。DSH 自带的 `reasoningEffort` 默认值因此不再起作用。目前只有 `openai_chat_completions` 协议的模型能承接工具调用，其他协议返回 400 并提示改用 Harness v2。
+- **引用回流**：知识检索的完整响应约 30 KB，超过 DSH 的 50 KB 内联预算时会被 spill 成文件（模型只拿到路径提示，我们从会话日志也解析不到）。现在 `KnowledgeFacade` 给模型的是**精简视图**（带 `[N]` 标签的证据摘录，≤8 条 × 1200 字），完整响应放在 `ModuleResult.extensions.evidence`；`CapabilityHost` 在工具返回时直接累积 `citations` / `evidence` 并发出 `knowledge_result`，`DshTaskAgent._result` 优先使用宿主收集的引用，不再依赖 DSH 转录。助手消息的 `metadata.knowledge_citations` 与 `execution_engine`（现取自本轮实际引擎）随之正确，前端引用卡片恢复。
+- 验证：人事「年假怎么申请」→ Harness v3 检索人事知识库，回答带 `[1]`，消息元数据 1 条引用；法务「违约金条款风险」→ 4 条引用；同一员工切到 Harness v2 → 4 条引用；两者事件 `execution_engine` 一致。
+
 ## 7. 已知差异与后续
 
 - **取消**：DSH 0.1.2 协议无 cancel；`DshTaskAgent` 在事件循环里轮询 `is_chat_turn_cancelled`，命中后抛 `HarnessExecutionCancelled` 并关闭子进程（进程级中断），legacy 的取消回执路径原样生效。

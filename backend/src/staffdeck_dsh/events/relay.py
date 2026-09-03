@@ -85,7 +85,9 @@ def relay_event(ev: Mapping[str, Any]) -> list[RuntimeEvent]:
     elif kind == "step/start":
         out.append(("dsh_step_started", {"turn": data.get("turn"), "step": data.get("step")}))
     elif kind == "request/header":
-        out.append(("llm_call_started", {"provider": data.get("provider"), "model": data.get("model"), "engine": "dsh"}))
+        # The model call itself is observed by the bridge's model gateway (llm_call_started/finished
+        # with tokens and duration); this only records what DSH asked for.
+        out.append(("dsh_model_request", {"provider": data.get("provider"), "model": data.get("model"), "execution_engine": "dsh"}))
     elif kind == "assistant/chunk":
         text = data.get("text") if isinstance(data.get("text"), str) else None
         if text:

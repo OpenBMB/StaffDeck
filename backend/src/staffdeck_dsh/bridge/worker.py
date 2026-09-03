@@ -176,9 +176,8 @@ class DshProcess:
             **({"STAFFDECK_MODEL_REASONING_EFFORT": config.reasoning_effort} if config.reasoning_effort else {}),
             **({"STAFFDECK_MODEL_BASE_URL": config.model_base_url} if config.model_base_url else {}),
             **({"STAFFDECK_MODEL_API_KEY": config.model_api_key} if config.model_api_key else {}),
-            # llm-deepseek falls back to DEEPSEEK_* when the row leaves fields unset.
-            **({"DEEPSEEK_BASE_URL": config.model_base_url} if config.model_base_url else {}),
-            **({"DEEPSEEK_API_KEY": config.model_api_key} if config.model_api_key else {}),
+            # No DEEPSEEK_* fallback: the only "provider" the subprocess knows is the bridge's model
+            # gateway, and its key is the per-turn activation token (see bridge/model_gateway.py).
             **dict(config.extra_env),
         }
         HarnessConfig = self._sdk.HarnessConfig

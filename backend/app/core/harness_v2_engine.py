@@ -676,7 +676,7 @@ class HarnessV2Engine:
         reply, citations = compact_knowledge_citation_labels(reply, citations)
         artifacts = _aggregate_artifacts(execution_results)
         assistant_metadata: dict[str, Any] = {
-            "execution_engine": "harness_v2",
+            "execution_engine": getattr(self.events, "execution_engine", None) or "harness_v2",
             "task_frame_ids": [row.task_id for row in records],
         }
         if team_publish_result is not None:

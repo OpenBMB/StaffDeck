@@ -355,3 +355,47 @@ def test_event_log_labels_whole_turn_with_engine():
         assert log.record("t1", "s1", "stream_status", {}).payload_json["execution_engine"] == "dsh"
         # an explicit non-legacy label is left alone
         assert log.record("t1", "s1", "x", {"execution_engine": "custom"}).payload_json["execution_engine"] == "custom"
+
+
+def test_dsh_process_uses_bridge_gateway_not_provider_credentials(module, fake_loop, db, monkeypatch, settings, profile):
+    """The subprocess is pointed at the bridge's model gateway with the activation token as its key;
+    the provider base_url / api key stay in StaffDeck."""
+
+    from types import SimpleNamespace
+
+    from staffdeck_dsh.bridge import task_agent as ta
+
+    captured = {}
+
+    class _Proc:
+        def __init__(self, cfg, *, activation_token, mcp_url, cwd):
+            captured["cfg"] = cfg
+            captured["token"] = activation_token
+            raise RuntimeError("stop here")  # we only need the config
+
+    monkeypatch.setattr(ta, "DshProcess", _Proc)
+    runtime = SimpleNamespace(
+        worker_config=SimpleNamespace(dsh_root="/x", dsh_home=__import__("pathlib").Path("/tmp/dsh-home-test"), node_bin="node", permission_mode="danger-full-access", initialize_timeout_seconds=1, request_timeout_seconds=1),
+        registry=__import__("staffdeck_dsh.bridge.capability_mcp", fromlist=["ActivationRegistry"]).ActivationRegistry(),
+        mcp_url="http://127.0.0.1:1/mcp", model_base_url="http://127.0.0.1:1/v1",
+    )
+    from staffdeck_dsh.composition.compiler import CompositionCompiler
+    from staffdeck_dsh.composition.staff import project_staff
+    from staffdeck_dsh.contracts.security import SecurityContext
+    from staffdeck_dsh.security.profile import Guard
+
+    staff = project_staff(db, "t1", "a1")
+    snap = CompositionCompiler().compile(staff, generation=1)
+    ctx = SecurityContext(principal_id="u1", tenant_id="t1", principal_type="user", tenant_role="member")
+    turn = ta.DshTurnContext(db=db, snapshot=snap, security_context=ctx, guard=Guard("t", profile), tenant_id="t1", agent_id="a1", user_id="u1", session_id="s1", turn_id="turn1", channel="web", run_id="run1", task_frame_id="tf1")
+    agent = ta.DshTaskAgent(runtime, turn)
+    model_config = SimpleNamespace(id="m1", model="qwen-x", base_url="https://real-provider/v1", api_key_encrypted="enc", legacy_extra_body={"thinking": {"type": "disabled"}}, protocol_options={}, max_output_tokens=512, temperature=0.1)
+    from app.core.task_request_compiler import TaskRequirement
+
+    requirement = TaskRequirement(task_frame_id="tf1", kind="conversation", goal="回答问题")
+    result = agent.run(requirement, model_config, lambda *a, **k: None, max_actions=3, trace_sink=lambda e, p: None, is_cancelled=lambda: False)
+    assert result.status == "failed"
+    cfg = captured["cfg"]
+    assert cfg.model_base_url == "http://127.0.0.1:1/v1" and cfg.model_api_key == captured["token"]
+    assert cfg.model_api_key != "enc" and "real-provider" not in str(cfg.model_base_url)
+    assert cfg.model == "qwen-x" and cfg.thinking == "disabled" and cfg.reasoning_effort == "off"

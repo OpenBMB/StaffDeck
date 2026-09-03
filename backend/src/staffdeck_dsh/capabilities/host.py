@@ -180,6 +180,10 @@ class CapabilityHost:
     _ledger: InvocationLedger = field(init=False)
     _sandbox: SandboxFacade | None = field(init=False, default=None)
     _workspace: Path | None = field(init=False, default=None)
+    # Collected on the host (worker threads) so the turn result never depends on
+    # re-parsing DSH's transcript, which may have spilled/previewed large results.
+    citations: list[dict[str, Any]] = field(init=False, default_factory=list)
+    evidence: list[dict[str, Any]] = field(init=False, default_factory=list)
 
     def __post_init__(self) -> None:
         self._ledger = InvocationLedger(self.db)
@@ -311,6 +315,22 @@ class CapabilityHost:
         # 4. ledger finish
         receipt = self._ledger.finish(entry, result)
         self._emit("capability_invoked", {"operation": inv.operation, "resource": inv.binding_id, "status": receipt.status, "invocation_id": inv.invocation_id})
+        if result.success:
+            for c in result.citations or ():
+                if isinstance(c, Mapping):
+                    self.citations.append(dict(c))
+            ev = (result.extensions or {}).get("evidence") if isinstance(result.extensions, Mapping) else None
+            if inv.operation == "knowledge.search/v1" and isinstance(ev, Mapping):
+                self.evidence.append(dict(ev))
+                # Same trace vocabulary as Harness v2 so the chat UI renders 读取业务资料 with counts.
+                self._emit("knowledge_result", {
+                    "query": {"query": str(inv.arguments.get("query") or "")},
+                    "chunks": list(ev.get("chunks") or [])[:12],
+                    "selected_buckets": [{k: b.get(k) for k in ("id", "title", "knowledge_base_id")} for b in (ev.get("selected_buckets") or []) if isinstance(b, Mapping)],
+                    "selected_concepts": list(ev.get("selected_concepts") or [])[:12],
+                    "evidence_pack": list(ev.get("evidence_pack") or [])[:12],
+                    "invocation_id": inv.invocation_id,
+                })
         return result, receipt
 
     # -- internals ----------------------------------------------------------------

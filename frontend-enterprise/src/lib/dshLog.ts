@@ -102,6 +102,8 @@ export function formatLogEntry(e: DshLogEntry): FormattedLog {
       return { title: `引擎开始第 ${d.turn ?? '?'} 轮`, level: 'muted' };
     case 'engine/step':
       return { title: `引擎第 ${d.turn ?? '?'} 轮 · 第 ${d.step ?? '?'} 步`, level: 'muted' };
+    case 'engine/request':
+      return { title: `引擎发起模型请求${d.model ? ` · ${str(d.model, 60)}` : ''}`, level: 'muted' };
     case 'engine/steer':
       return { title: '引擎收到新的指令，调整执行', level: 'info' };
     case 'engine/finish': {
