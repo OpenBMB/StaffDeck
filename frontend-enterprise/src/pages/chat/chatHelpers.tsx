@@ -1,3 +1,4 @@
+import { moduleLabel, operationLabel } from '../../lib/dshLabels';
 import { useState, type ReactNode } from 'react';
 
 import CodeBlock from '@/components/CodeBlock';
@@ -1558,7 +1559,7 @@ export function harnessEventTraceLine(
     return {
       id: `capability_provider_${frameId}_${(typeof data.operation === 'string' ? data.operation : 'op')}_${(typeof data.module_id === 'string' ? data.module_id : '')}`,
       kind: 'decision',
-      text: `能力提供者 ${typeof data.module_id === 'string' ? data.module_id : ''}`,
+      text: `${typeof data.operation === 'string' ? operationLabel(data.operation) : '能力'} · 由「${typeof data.module_id === 'string' ? moduleLabel(data.module_id) : ''}」处理`,
       detail: typeof data.operation === 'string' ? data.operation : undefined,
       state: 'completed',
       icon: 'advance',
@@ -1570,7 +1571,7 @@ export function harnessEventTraceLine(
     return {
       id: `capability_denied_${frameId}_${op}_${reason}`,
       kind: 'decision',
-      text: `权限拒绝 ${op}`,
+      text: `无权限：${op ? operationLabel(op) : '该操作'}`,
       detail: reason,
       state: 'failed',
       icon: 'loading',
@@ -1581,8 +1582,8 @@ export function harnessEventTraceLine(
     return {
       id: `composition_snapshot_${frameId}`,
       kind: 'decision',
-      text: `组成快照 ${(typeof data.security_profile === 'string' ? data.security_profile : '')}`,
-      detail: grants === undefined ? 'DSH' : `DSH · ${grants} 个能力 · ${(typeof data.sops === 'object' && Array.isArray(data.sops) ? data.sops.length : '')} 个 SOP`,
+      text: '已加载员工配置',
+      detail: grants === undefined ? 'Harness v3' : `Harness v3 · ${grants} 项能力 · ${(typeof data.sops === 'object' && Array.isArray(data.sops) ? data.sops.length : '')} 个流程`,
       state: 'completed',
       icon: 'advance',
     };
@@ -1593,8 +1594,8 @@ export function harnessEventTraceLine(
     return {
       id: `dsh_process_${frameId}`,
       kind: 'decision',
-      text: 'DSH 引擎就绪',
-      detail: [model, bootMs].filter(Boolean).join(' · '),
+      text: 'Harness v3 引擎已就绪',
+      detail: [model, bootMs ? `启动 ${bootMs}` : ''].filter(Boolean).join(' · '),
       state: 'completed',
       icon: 'execute',
     };
@@ -1604,7 +1605,7 @@ export function harnessEventTraceLine(
     return {
       id: `dsh_finish_${frameId}`,
       kind: 'decision',
-      text: `DSH 提交结果 · ${status}`,
+      text: `引擎提交结果 · ${status === 'completed' ? '完成' : status === 'handoff' ? '需要人工处理' : status === 'failed' ? '失败' : status}`,
       state: status === 'handoff' ? 'running' : status === 'failed' ? 'failed' : 'completed',
       icon: 'advance',
     };

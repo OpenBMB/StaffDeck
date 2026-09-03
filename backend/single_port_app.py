@@ -461,6 +461,11 @@ app.mount(
     FrontendStaticFiles(directory=ENTERPRISE_DIST / "assets", check_dir=False),
     name="workspace-assets",
 )
+app.mount(
+    "/admin/assets",
+    FrontendStaticFiles(directory=ENTERPRISE_DIST / "assets", check_dir=False),
+    name="admin-assets",
+)
 
 
 @app.get("/", include_in_schema=False)
@@ -499,5 +504,7 @@ def enterprise_app(path: str = "") -> FileResponse:
 @app.get("/chat/{path:path}", include_in_schema=False)
 @app.get("/workspace", include_in_schema=False)
 @app.get("/workspace/{path:path}", include_in_schema=False)
+@app.get("/admin", include_in_schema=False)
+@app.get("/admin/{path:path}", include_in_schema=False)
 def chat_app(path: str = "") -> FileResponse:
     return spa_index_response(ENTERPRISE_DIST / "index.html")

@@ -17,11 +17,16 @@ export type DshStatus = {
   modules_total: number;
   modules_enabled: number;
   registry_generation: number;
+  started_at?: string | null;
+  restart_count?: number;
+  config_pending?: boolean;
+  engine_version?: string | null;
 };
 
 export type DshModule = {
   module_id: string;
   name: string;
+  summary?: string;
   version: string;
   kind: 'A' | 'C' | 'T' | 'K';
   contract_version: string;
@@ -120,6 +125,59 @@ export type DshEvent = {
   created_at: string;
 };
 
+export type DshAssembly = {
+  engine: 'dsh' | 'legacy' | string;
+  security_profile: string;
+  disabled_modules: string[];
+  extra_modules: string[];
+  updated_at?: string | null;
+  updated_by?: string | null;
+};
+
+export type DshAssemblyState = {
+  saved: DshAssembly;
+  applied: DshAssembly | null;
+  pending: boolean;
+  started_at: string | null;
+  restart_count: number;
+  last_restart_error: string | null;
+  config_path: string;
+};
+
+export type DshAssemblyUpdate = {
+  engine?: 'dsh' | 'legacy';
+  security_profile?: string;
+  disabled_modules?: string[];
+  extra_modules?: string[];
+};
+
+export type DshSessionSummary = {
+  session_id: string;
+  title: string | null;
+  agent_id: string | null;
+  agent_name: string | null;
+  channel: string | null;
+  status: string;
+  updated_at: string;
+};
+
+export type DshLogEntry = {
+  id: string;
+  ts: string;
+  type: string;
+  source: 'event' | 'ledger';
+  event_type?: string;
+  invocation_id?: string;
+  data: Record<string, unknown>;
+  engine?: string | null;
+  turn_id?: string | null;
+};
+
+export type DshLog = {
+  session: DshSessionSummary;
+  entries: DshLogEntry[];
+};
+
 const q = (tenantId: string, extra?: Record<string, string | number | undefined>) => {
   const params = new URLSearchParams({ tenant_id: tenantId });
   Object.entries(extra || {}).forEach(([k, v]) => {
@@ -141,4 +199,9 @@ export const dshApi = {
   setStaffEngine: (tenantId: string, agentId: string, engine: DshEngineChoice) =>
     api.put<DshStaffEngine>(`/api/enterprise/dsh/staff/${encodeURIComponent(agentId)}/engine`, { tenant_id: tenantId, engine }),
   events: (tenantId: string, sessionId: string, limit = 200) => api.get<DshEvent[]>(`/api/enterprise/dsh/events/recent${q(tenantId, { session_id: sessionId, limit })}`),
+  config: (tenantId: string) => api.get<DshAssemblyState>(`/api/enterprise/dsh/config${q(tenantId)}`),
+  setConfig: (tenantId: string, patch: DshAssemblyUpdate) => api.put<DshAssemblyState>('/api/enterprise/dsh/config', { tenant_id: tenantId, ...patch }),
+  restart: (tenantId: string) => api.post<{ restart_count: number; restarted_at: string; state: DshAssemblyState; runtime_error?: { code: string; message: string } }>('/api/enterprise/dsh/restart', { tenant_id: tenantId }),
+  sessionsRecent: (tenantId: string, limit = 40) => api.get<DshSessionSummary[]>(`/api/enterprise/dsh/sessions/recent${q(tenantId, { limit })}`),
+  log: (tenantId: string, sessionId: string, limit = 400) => api.get<DshLog>(`/api/enterprise/dsh/log${q(tenantId, { session_id: sessionId, limit })}`),
 };

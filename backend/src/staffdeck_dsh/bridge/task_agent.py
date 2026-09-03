@@ -31,6 +31,8 @@ Turn shape on DSH:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import json
 import logging
 import time
@@ -325,8 +327,10 @@ class DshTaskAgent:
             if threading.get_ident() == main:
                 trace(event, payload)
                 return
+            # Persisted later by the engine thread; keep the real time so logs stay in order.
+            stamped = {**payload, "occurred_at": datetime.now(timezone.utc).isoformat()}
             with lock:
-                buf.append((event, payload))
+                buf.append((event, stamped))
 
         return sink
 

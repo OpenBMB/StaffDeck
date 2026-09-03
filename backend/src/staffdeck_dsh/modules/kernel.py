@@ -154,12 +154,15 @@ class DshCoreModule:
 
     module_id = "dsh.core"
 
+    def __init__(self, root: str = "") -> None:
+        self.root = root
+
     def version(self) -> str:
         import json
         import os
         from pathlib import Path
 
-        root = os.environ.get("DSH_ROOT", "")
+        root = self.root or os.environ.get("DSH_ROOT", "")
         try:
             return str(json.loads(Path(root, "apps", "cli", "package.json").read_text()).get("version") or "unknown")
         except Exception:
@@ -177,24 +180,24 @@ class InvocationLedgerModule:
 
 def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
     K, T = ModuleKind.KERNEL, ModuleKind.TRUSTED
-    registry.install(manifest("staff.persona", "Persona 投影", kind=K, slots=[SlotName.STAFF_MODEL_ROUTE]), PersonaModule(), slot=SlotName.STAFF_MODEL_ROUTE)
-    registry.install(manifest("staff.model_route", "模型路由", kind=K, slots=[SlotName.STAFF_MODEL_ROUTE], provides=["model.use/v1"], policy_actions=["model.use/v1"]), ModelRouteModule(), slot=SlotName.STAFF_MODEL_ROUTE)
+    registry.install(manifest("staff.persona", "员工人设", summary="把岗位、性格和说话方式整理成员工的自我设定。", kind=K, slots=[SlotName.STAFF_MODEL_ROUTE]), PersonaModule(), slot=SlotName.STAFF_MODEL_ROUTE)
+    registry.install(manifest("staff.model_route", "模型分配", summary="决定员工在默认、路由和分步场景下分别使用哪个模型。", kind=K, slots=[SlotName.STAFF_MODEL_ROUTE], provides=["model.use/v1"], policy_actions=["model.use/v1"]), ModelRouteModule(), slot=SlotName.STAFF_MODEL_ROUTE)
     registry.mark_guarded(SlotName.STAFF_MODEL_ROUTE)
-    registry.install(manifest("composition.projection", "StaffComposition 投影", kind=K, slots=[SlotName.STAFF_SOP]), CompositionProjectionModule(), slot=SlotName.STAFF_SOP)
-    registry.install(manifest("composition.compiler", "组成快照编译器", kind=K, slots=[SlotName.STAFF_SOP], requires=["hook.contribute/v1"]), CompositionCompilerModule(), slot=SlotName.STAFF_SOP)
-    registry.install(manifest("sop.definition", "SOP 定义与逻辑槽声明", kind=ModuleKind.CONTENT, slots=[SlotName.SOP_SLOT_CONTROL], provides=["sop.execute/v1"], policy_actions=["sop.execute/v1"]), SopDefinitionModule(), slot=SlotName.SOP_SLOT_CONTROL)
-    registry.install(manifest("sop.slots", "逻辑槽解析", kind=K, slots=[SlotName.SOP_SLOT_CONTROL]), SopSlotResolverModule(), slot=SlotName.SOP_SLOT_CONTROL)
+    registry.install(manifest("composition.projection", "员工配置汇总", summary="把员工的人设、模型、能力、流程、渠道和团队汇总成一份完整配置。", kind=K, slots=[SlotName.STAFF_SOP]), CompositionProjectionModule(), slot=SlotName.STAFF_SOP)
+    registry.install(manifest("composition.compiler", "配置校验与发布", summary="发布前检查配置是否完整、依赖是否成环，并生成对话时实际使用的版本。", kind=K, slots=[SlotName.STAFF_SOP], requires=["hook.contribute/v1"]), CompositionCompilerModule(), slot=SlotName.STAFF_SOP)
+    registry.install(manifest("sop.definition", "流程定义", summary="定义流程的步骤、走向，以及每一步需要的能力。", kind=ModuleKind.CONTENT, slots=[SlotName.SOP_SLOT_CONTROL], provides=["sop.execute/v1"], policy_actions=["sop.execute/v1"]), SopDefinitionModule(), slot=SlotName.SOP_SLOT_CONTROL)
+    registry.install(manifest("sop.slots", "流程能力关联", summary="把流程中声明的能力需求与员工实际绑定的资源对应起来。", kind=K, slots=[SlotName.SOP_SLOT_CONTROL]), SopSlotResolverModule(), slot=SlotName.SOP_SLOT_CONTROL)
     registry.mark_guarded(SlotName.SOP_SLOT_CONTROL)
-    registry.install(manifest("sop.runtime", "SOP 运行态（TaskFrame/CAS）", kind=T, slots=[SlotName.SOP_SLOT_CONTROL]), SopRuntimeModule(), slot=SlotName.SOP_SLOT_CONTROL)
-    registry.install(manifest("handoff.core", "Handoff Core 状态机", kind=T, slots=[SlotName.HANDOFF_ASSIGNMENT], provides=["handoff.request/v1", "handoff.assign/v1", "handoff.reply/v1"], policy_actions=["handoff.request/v1", "handoff.assign/v1", "handoff.reply/v1"]), HandoffCoreModule(), slot=SlotName.HANDOFF_ASSIGNMENT)
-    registry.install(manifest("runtime.cancellation", "取消与恢复", kind=T, slots=[SlotName.HANDOFF_ASSIGNMENT]), CancellationModule(), slot=SlotName.HANDOFF_ASSIGNMENT)
-    registry.install(manifest("team.provider", "团队/子智能体委派", kind=ModuleKind.CODE, slots=[SlotName.STAFF_TEAM], provides=["team.delegate/v1"], policy_actions=["team.delegate/v1"]), TeamProviderModule(), slot=SlotName.STAFF_TEAM)
+    registry.install(manifest("sop.runtime", "流程执行推进", summary="记录流程执行到哪一步，中断后可以恢复。", kind=T, slots=[SlotName.SOP_SLOT_CONTROL]), SopRuntimeModule(), slot=SlotName.SOP_SLOT_CONTROL)
+    registry.install(manifest("handoff.core", "转人工处理流程", summary="管理转人工任务从发起、指派、回复到关闭的全过程。", kind=T, slots=[SlotName.HANDOFF_ASSIGNMENT], provides=["handoff.request/v1", "handoff.assign/v1", "handoff.reply/v1"], policy_actions=["handoff.request/v1", "handoff.assign/v1", "handoff.reply/v1"]), HandoffCoreModule(), slot=SlotName.HANDOFF_ASSIGNMENT)
+    registry.install(manifest("runtime.cancellation", "中断与恢复", summary="支持随时停止对话，并在人工回复后继续。", kind=T, slots=[SlotName.HANDOFF_ASSIGNMENT]), CancellationModule(), slot=SlotName.HANDOFF_ASSIGNMENT)
+    registry.install(manifest("team.provider", "团队协作", summary="把任务派发给团队中的其他数字员工共同完成。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_TEAM], provides=["team.delegate/v1"], policy_actions=["team.delegate/v1"]), TeamProviderModule(), slot=SlotName.STAFF_TEAM)
     registry.mark_guarded(SlotName.STAFF_TEAM)
-    registry.install(manifest("ingress.web", "Web / API 入口", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INGRESS], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), WebIngressModule(), slot=SlotName.STAFF_INGRESS)
-    registry.install(manifest("ingress.public_api", "开放接口入口", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INGRESS], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), PublicApiIngressModule(), slot=SlotName.STAFF_INGRESS)
-    registry.install(manifest("ingress.scheduler", "定时任务触发", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INGRESS], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), SchedulerIngressModule(), slot=SlotName.STAFF_INGRESS)
+    registry.install(manifest("ingress.web", "网页与接口入口", summary="接收来自网页对话和接口的请求。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INGRESS], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), WebIngressModule(), slot=SlotName.STAFF_INGRESS)
+    registry.install(manifest("ingress.public_api", "开放接口入口", summary="接收第三方系统通过开放接口发来的请求。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INGRESS], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), PublicApiIngressModule(), slot=SlotName.STAFF_INGRESS)
+    registry.install(manifest("ingress.scheduler", "定时任务触发", summary="按设定的时间自动发起对话任务。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INGRESS], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), SchedulerIngressModule(), slot=SlotName.STAFF_INGRESS)
     registry.mark_guarded(SlotName.STAFF_INGRESS)
-    registry.install(manifest("channel.host", "Channel Host（Inbox/Outbox + 收发 PEP）", kind=T, slots=[SlotName.STAFF_CHANNEL], provides=["channel.receive/v1", "channel.send/v1"], policy_actions=["channel.receive/v1", "channel.send/v1"]), ChannelHostModule(), slot=SlotName.STAFF_CHANNEL)
-    registry.install(manifest("runtime.coordinator", "Runtime Coordinator（AgentLoop）", kind=K, slots=[SlotName.RUNTIME_KERNEL]), RuntimeCoordinatorModule(), slot=SlotName.RUNTIME_KERNEL)
-    registry.install(manifest("dsh.core", "DSH Core AgentLoop", kind=K, slots=[SlotName.RUNTIME_KERNEL]), DshCoreModule(), slot=SlotName.RUNTIME_KERNEL, enabled=bool(getattr(ctx.get("settings"), "dsh_enabled", False)))
-    registry.install(manifest("ledger.invocation", "Invocation Ledger", kind=T, slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"]), InvocationLedgerModule(), slot=SlotName.EVENT_OBSERVER)
+    registry.install(manifest("channel.host", "消息收发中心", summary="统一接收各渠道消息并投递回复，收发都会检查权限。", kind=T, slots=[SlotName.STAFF_CHANNEL], provides=["channel.receive/v1", "channel.send/v1"], policy_actions=["channel.receive/v1", "channel.send/v1"]), ChannelHostModule(), slot=SlotName.STAFF_CHANNEL)
+    registry.install(manifest("runtime.coordinator", "对话调度器", summary="协调每轮对话：接收请求、规划任务、推进流程并生成回复。", kind=K, slots=[SlotName.RUNTIME_KERNEL]), RuntimeCoordinatorModule(), slot=SlotName.RUNTIME_KERNEL)
+    registry.install(manifest("dsh.core", "Harness v3 引擎核心", summary="Harness v3 引擎本体，以独立进程运行，负责多步推理与工具调用。", kind=K, slots=[SlotName.RUNTIME_KERNEL]), DshCoreModule(str(getattr(ctx.get("settings"), "dsh_root", "") or "")), slot=SlotName.RUNTIME_KERNEL, enabled=bool(getattr(ctx.get("settings"), "dsh_enabled", False)))
+    registry.install(manifest("ledger.invocation", "调用记录", summary="记录每一次能力调用及其结果，避免重复执行有副作用的操作。", kind=T, slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"]), InvocationLedgerModule(), slot=SlotName.EVENT_OBSERVER)

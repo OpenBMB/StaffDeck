@@ -96,3 +96,78 @@ def test_ledger_unknown_and_reconcile(ctx) -> None:
     r = c.post(f"/api/enterprise/dsh/ledger/{row.id}/reconcile", json={"tenant_id": "tenant_demo", "status": "failed"}, headers=headers)
     assert r.status_code == 200 and r.json()["status"] == "failed"
     assert c.get("/api/enterprise/dsh/ledger/unknown", params={"tenant_id": "tenant_demo"}, headers=headers).json() == []
+
+
+def test_assembly_config_save_restart_and_rollback(ctx, tmp_path, monkeypatch) -> None:
+    from staffdeck_dsh.modules.config import load_overrides
+    from staffdeck_dsh.runtime import assembly
+
+    c, headers, db = ctx
+    settings = get_settings()
+    monkeypatch.setattr(settings, "dsh_runtime_config_path", str(tmp_path / "rt.json"), raising=False)
+    # bring the assembly up the way app.main does, so "applied" is populated
+    assembly.start_dsh_runtime(settings)
+    st = c.get("/api/enterprise/dsh/config", params={"tenant_id": "tenant_demo"}, headers=headers).json()
+    assert st["pending"] is False and st["applied"]["engine"] == "legacy"
+
+    # disabling a core module or an engine via the list is refused
+    r = c.put("/api/enterprise/dsh/config", json={"tenant_id": "tenant_demo", "disabled_modules": ["runtime.coordinator"]}, headers=headers)
+    assert r.status_code == 400
+    r = c.put("/api/enterprise/dsh/config", json={"tenant_id": "tenant_demo", "disabled_modules": ["engine.dsh"]}, headers=headers)
+    assert r.status_code == 400
+    r = c.put("/api/enterprise/dsh/config", json={"tenant_id": "tenant_demo", "engine": "turbo"}, headers=headers)
+    assert r.status_code == 400
+
+    # a valid change is saved but not applied until restart
+    r = c.put("/api/enterprise/dsh/config", json={"tenant_id": "tenant_demo", "disabled_modules": ["handoff.notifier.dingtalk"], "security_profile": "OSS_LOCAL"}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["pending"] is True and load_overrides(settings).disabled_modules == ["handoff.notifier.dingtalk"]
+    mods = {m["module_id"]: m for m in c.get("/api/enterprise/dsh/modules", params={"tenant_id": "tenant_demo"}, headers=headers).json()}
+    assert mods["handoff.notifier.dingtalk"]["enabled"] is True
+    status = c.get("/api/enterprise/dsh/status", params={"tenant_id": "tenant_demo"}, headers=headers).json()
+    assert status["config_pending"] is True
+
+    r = c.post("/api/enterprise/dsh/restart", json={"tenant_id": "tenant_demo"}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["restart_count"] == 1 and r.json()["state"]["pending"] is False
+    mods = {m["module_id"]: m for m in c.get("/api/enterprise/dsh/modules", params={"tenant_id": "tenant_demo"}, headers=headers).json()}
+    assert mods["handoff.notifier.dingtalk"]["enabled"] is False
+
+    # a broken extra module spec fails the restart and the previous assembly is restored
+    r = c.put("/api/enterprise/dsh/config", json={"tenant_id": "tenant_demo", "extra_modules": ["no_such_pkg.plugins:register"]}, headers=headers)
+    assert r.status_code == 200
+    r = c.post("/api/enterprise/dsh/restart", json={"tenant_id": "tenant_demo"}, headers=headers)
+    assert r.status_code == 409, r.text
+    st = c.get("/api/enterprise/dsh/config", params={"tenant_id": "tenant_demo"}, headers=headers).json()
+    assert st["pending"] is True and st["applied"]["extra_modules"] == [] and st["last_restart_error"]
+    mods = {m["module_id"]: m for m in c.get("/api/enterprise/dsh/modules", params={"tenant_id": "tenant_demo"}, headers=headers).json()}
+    assert mods["handoff.notifier.dingtalk"]["enabled"] is False, "rolled back to the last good assembly"
+    assembly.stop_dsh_runtime()
+
+
+def test_sessions_and_log(ctx) -> None:
+    from datetime import timedelta
+
+    from app.db.models import AgentEvent, ChatSession
+
+    c, headers, db = ctx
+    now = utc_now()
+    with db:
+        db.add(ChatSession(id="session_1", tenant_id="tenant_demo", agent_id="agent_1", title="报销问题", channel="web"))
+        db.add(AgentEvent(tenant_id="tenant_demo", session_id="session_1", event_type="user_message_received", payload_json={"message": "报销标准是多少", "channel": "web", "turn_id": "t1"}, created_at=now))
+        db.add(AgentEvent(tenant_id="tenant_demo", session_id="session_1", event_type="composition_snapshot_compiled", payload_json={"snapshot_id": "abc", "grants": 3, "sops": ["s1"], "security_profile": "OSS_LOCAL", "execution_engine": "dsh"}, created_at=now + timedelta(milliseconds=5)))
+        db.add(HarnessInvocationRecord(id="inv_1", tenant_id="tenant_demo", session_id="session_1", task_id="task_1", run_id="run_1", call_id="call_1", request_digest="d", tool_name="knowledge:knowledge.search/v1", status="completed", arguments_json={"query": "报销"}, started_at=now + timedelta(milliseconds=10), finished_at=now + timedelta(milliseconds=200), approval_json={"engine": "dsh"}))
+        db.add(AgentEvent(tenant_id="tenant_demo", session_id="session_1", event_type="stream_delta", payload_json={"text": "x"}, created_at=now + timedelta(milliseconds=15)))
+        db.add(AgentEvent(tenant_id="tenant_demo", session_id="session_1", event_type="assistant_message_created", payload_json={"reply": "每人每天 300 元", "message_id": "m2"}, created_at=now + timedelta(milliseconds=300)))
+        db.commit()
+    sessions = c.get("/api/enterprise/dsh/sessions/recent", params={"tenant_id": "tenant_demo"}, headers=headers).json()
+    assert sessions and sessions[0]["session_id"] == "session_1" and sessions[0]["agent_name"] == "A"
+    r = c.get("/api/enterprise/dsh/log", params={"tenant_id": "tenant_demo", "session_id": "session_1"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["session"]["agent_name"] == "A"
+    types = [e["type"] for e in body["entries"]]
+    assert types == ["user/message", "snapshot/compiled", "tool/call", "tool/result", "assistant/message"], types
+    call = next(e for e in body["entries"] if e["type"] == "tool/result")
+    assert call["data"]["status"] == "completed" and call["data"]["duration_ms"] == 190 and call["engine"] == "dsh"
+    assert c.get("/api/enterprise/dsh/log", params={"tenant_id": "tenant_demo", "session_id": "nope"}, headers=headers).status_code == 404

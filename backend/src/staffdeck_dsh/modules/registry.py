@@ -196,7 +196,7 @@ class ModuleRegistry:
         for item in self._by_id.values():
             m = item.manifest
             out.append({
-                "module_id": m.module_id, "name": m.name, "version": m.version, "kind": m.kind.value, "contract_version": m.contract_version,
+                "module_id": m.module_id, "name": m.name, "summary": str(m.metadata.get("summary", "")), "version": m.version, "kind": m.kind.value, "contract_version": m.contract_version,
                 "slot": item.slot.value, "enabled": item.enabled, "source": item.source,
                 "provides": list(m.provides_operations), "requires": list(m.requires_operations),
                 "hooks": [f"{h.point}:{h.handler}" for h in m.hooks], "policy_actions": list(m.policy_actions),
@@ -288,9 +288,12 @@ def reset_registry() -> None:
         _active = None
 
 
-def manifest(module_id: str, name: str, *, kind: ModuleKind, slots: Iterable[SlotName], provides: Iterable[str] = (), requires: Iterable[str] = (), hooks: Iterable[HookContribution] = (), policy_actions: Iterable[str] = (), version: str = "1.0.0", contract_version: str = "v1", metadata: Mapping[str, Any] | None = None) -> ModuleManifest:
+def manifest(module_id: str, name: str, *, kind: ModuleKind, slots: Iterable[SlotName], summary: str = "", provides: Iterable[str] = (), requires: Iterable[str] = (), hooks: Iterable[HookContribution] = (), policy_actions: Iterable[str] = (), version: str = "1.0.0", contract_version: str = "v1", metadata: Mapping[str, Any] | None = None) -> ModuleManifest:
+    meta = dict(metadata or {})
+    if summary:
+        meta["summary"] = summary
     return ModuleManifest(
         module_id=module_id, name=name, version=version, kind=kind, contract_version=contract_version,
         attaches_to=tuple(slots), provides_operations=tuple(provides), requires_operations=tuple(requires),
-        hooks=tuple(hooks), policy_actions=tuple(policy_actions), metadata=dict(metadata or {}),
+        hooks=tuple(hooks), policy_actions=tuple(policy_actions), metadata=meta,
     )

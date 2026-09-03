@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # Comma-separated module ids to disable, and extra "pkg.mod:register" specs.
     dsh_disabled_modules: str = ""
     dsh_modules: str = ""
+    # Admin-editable overrides (engine / security profile / disabled / extra modules);
+    # defaults to <dsh_home or cwd>/staffdeck-runtime.json.
+    dsh_runtime_config_path: str = ""
     dsh_root: str = ""
     dsh_home: str = ""
     dsh_node_bin: str = "node"

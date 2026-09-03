@@ -46,80 +46,80 @@ class BigModule:
 TAXONOMY: tuple[BigModule, ...] = (
     BigModule(
         id="staff", name="数字员工管理与装配", root="数字员工定义与装配", order=1,
-        description="一个数字员工的顶层装配根：岗位、模型路由、绑定与发布。",
+        description="定义每位数字员工：岗位与人设、使用的模型、绑定的能力、流程、渠道和团队，以及发布上线。",
         subs=(
-            SubModule("staff.profile", "岗位、角色与模型配置", "Persona、模型路由（default/router/step）、会话策略。", "C", slots=(SlotName.STAFF_MODEL_ROUTE,), module_ids=("staff.persona", "staff.model_route"), legacy=("app.agents", "app.api.agents", "app.api.model_configs")),
-            SubModule("staff.binding", "SOP、能力、渠道和团队绑定", "把 SOP 逻辑槽、能力、渠道与团队绑定到员工；下一 Turn 生效。", "C", slots=(SlotName.STAFF_SOP,), module_ids=("composition.projection",), legacy=("agent_resource_bindings", "agent_model_bindings", "channel_bindings")),
-            SubModule("staff.publish", "发布、版本与上下线", "组成快照编译与校验（Required Slot、契约、依赖环、Hook 环），上架/下架。", "K", module_ids=("composition.compiler",), legacy=("staffdeck_dsh.composition.compiler",)),
+            SubModule("staff.profile", "岗位、人设与模型", "员工是谁、怎么说话、用哪个模型。", "C", slots=(SlotName.STAFF_MODEL_ROUTE,), module_ids=("staff.persona", "staff.model_route"), legacy=("app.agents", "app.api.agents", "app.api.model_configs")),
+            SubModule("staff.binding", "能力、流程、渠道与团队绑定", "员工能用什么、按什么流程做事、在哪些渠道工作、属于哪个团队；修改后下一轮对话生效。", "C", slots=(SlotName.STAFF_SOP,), module_ids=("composition.projection",), legacy=("agent_resource_bindings", "agent_model_bindings", "channel_bindings")),
+            SubModule("staff.publish", "发布与版本", "发布前校验配置是否完整，生成对话时实际使用的版本，支持上下线。", "K", module_ids=("composition.compiler",), legacy=("staffdeck_dsh.composition.compiler",)),
         ),
         edges=(("sop", "装配流程"), ("interaction", "装配交互能力"), ("runtime", "提交执行")),
     ),
     BigModule(
         id="sop", name="流程与 SOP", root="SOP 管理与运行", order=2,
-        description="SOP 定义只声明逻辑槽；运行态状态机唯一，不可被租户替换。",
+        description="让员工按既定流程办事：定义步骤，逐步推进，执行中把关。",
         subs=(
-            SubModule("sop.definition", "流程定义、生成与版本", "节点、边、触发规则、能力槽、输出规则；草稿/发布/版本/分享。", "C", slots=(SlotName.SOP_SLOT_KNOWLEDGE, SlotName.SOP_SLOT_SKILL, SlotName.SOP_SLOT_ACTION, SlotName.SOP_SLOT_CONTROL), module_ids=("sop.definition", "sop.slots"), legacy=("app.skills", "app.api.skills")),
-            SubModule("sop.runtime", "流程状态、节点推进与恢复", "SopExecution / TaskFrame / 节点状态 / CAS / 恢复。", "T", module_ids=("sop.runtime",), legacy=("app.core.task_frame_store", "app.core.harness_turn_store")),
-            SubModule("sop.supervision", "AgentLoop 前置装配与后置监管", "把 SOP 投影成 ExecutionSlice；pre_step / turn_stopping 监管与输出校验。", "T", slots=(SlotName.STAFF_INTERACTION,), module_ids=("interaction.default",), legacy=("staffdeck_dsh.interactions",)),
+            SubModule("sop.definition", "流程定义与版本", "步骤、走向、触发条件和每一步所需的能力；支持草稿、发布与分享。", "C", slots=(SlotName.SOP_SLOT_KNOWLEDGE, SlotName.SOP_SLOT_SKILL, SlotName.SOP_SLOT_ACTION, SlotName.SOP_SLOT_CONTROL), module_ids=("sop.definition", "sop.slots"), legacy=("app.skills", "app.api.skills")),
+            SubModule("sop.runtime", "流程执行与恢复", "记录流程执行到哪一步，中断后可以恢复。", "T", module_ids=("sop.runtime",), legacy=("app.core.task_frame_store", "app.core.harness_turn_store")),
+            SubModule("sop.supervision", "执行前准备与执行后把关", "回答前载入当前流程步骤；回答后检查输出是否符合流程要求。", "T", slots=(SlotName.STAFF_INTERACTION,), module_ids=("interaction.default",), legacy=("staffdeck_dsh.interactions",)),
         ),
         edges=(("capability", "装配所需能力"), ("runtime", "流程上下文与监管")),
     ),
     BigModule(
         id="capability", name="业务能力中心", root="统一能力中心", order=3,
-        description="所有能力经 CapabilityHost：激活围栏 → Ledger → Guarded Facade（PEP）→ 现有服务。",
+        description="员工可以使用的所有能力：查知识库、用技能、调工具、执行命令与文件操作。每次调用都会检查权限并留下记录。",
         subs=(
-            SubModule("capability.knowledge", "知识库：导入、索引、检索与引用", "KnowledgeService 检索 + 引用回流；Provider 可替换。", "A", module_ids=("knowledge.local",), legacy=("app.knowledge",)),
-            SubModule("capability.skill", "通用技能：技能包、目录与执行", "SKILL.md 包读取到上下文；执行走沙箱工具。", "A", module_ids=("general_skill.local",), legacy=("app.general_skills",)),
-            SubModule("capability.tool", "工具调用：HTTP、MCP 与智能体协作", "HTTP / MCP / A2A 统一经 ToolExecutor；副作用键幂等。", "A", module_ids=("tool.local",), legacy=("app.tools",)),
-            SubModule("capability.execution", "执行支持：记忆、沙箱与工作产物", "记忆读写、受控命令与文件、产物发布。", "T", module_ids=("sandbox.local",), legacy=("app.harness", "app.memory")),
+            SubModule("capability.knowledge", "知识库", "导入资料、建立索引、检索并标注引用来源。", "A", module_ids=("knowledge.local",), legacy=("app.knowledge",)),
+            SubModule("capability.skill", "通用技能", "以技能包的形式扩展员工会做的事。", "A", module_ids=("general_skill.local",), legacy=("app.general_skills",)),
+            SubModule("capability.tool", "工具调用", "调用 HTTP 接口、MCP 服务或其他智能体。", "A", module_ids=("tool.local",), legacy=("app.tools",)),
+            SubModule("capability.execution", "记忆、执行环境与工作产物", "记忆读写、受控地执行命令和文件操作、输出工作产物。", "T", module_ids=("sandbox.local",), legacy=("app.harness", "app.memory")),
         ),
     ),
     BigModule(
         id="interaction", name="交互与协作", root="统一交互与协作", order=4,
-        description="Handoff Core 状态机不可插拔；指派策略、通知器、回复解析可插拔。",
+        description="需要人参与的环节：通知处理人、转人工、等待回复后继续，以及团队内协作。",
         subs=(
-            SubModule("interaction.notification", "通知、转发与回复", "Web 收件箱 / 飞书 / 钉钉 / 企微 / 微信通知与回复关联。", "A", slots=(SlotName.HANDOFF_NOTIFIER, SlotName.HANDOFF_REPLY_ENDPOINT)),
-            SubModule("interaction.human_task", "人工任务、指派与处理", "pending → assigned → answered → resumed → closed；指派策略候选，Core 校验。", "T", slots=(SlotName.HANDOFF_ASSIGNMENT,), legacy=("app.core.human_handoff_service",)),
-            SubModule("interaction.resume", "等待、中断与恢复", "人工回复形成新 Turn；取消与恢复走原回执路径。", "T", module_ids=("handoff.core", "runtime.cancellation"), legacy=("app.api.chat._apply_handoff_reply",)),
-            SubModule("interaction.team", "团队、任务与子智能体协作", "TL 派发、成员竞标、黑板与唤醒。", "A", slots=(SlotName.STAFF_TEAM,), module_ids=("team.provider",), legacy=("app.teams",)),
+            SubModule("interaction.notification", "通知与回复渠道", "通过站内、飞书、钉钉、企业微信、微信通知处理人并接收回复。", "A", slots=(SlotName.HANDOFF_NOTIFIER, SlotName.HANDOFF_REPLY_ENDPOINT)),
+            SubModule("interaction.human_task", "转人工任务与指派", "任务从发起、指派、处理到关闭的全过程。", "T", slots=(SlotName.HANDOFF_ASSIGNMENT,), legacy=("app.core.human_handoff_service",)),
+            SubModule("interaction.resume", "等待、中断与恢复", "等待人工回复期间可以中断，收到回复后自动继续。", "T", module_ids=("handoff.core", "runtime.cancellation"), legacy=("app.api.chat._apply_handoff_reply",)),
+            SubModule("interaction.team", "团队协作", "把任务派给团队中的其他数字员工共同完成。", "A", slots=(SlotName.STAFF_TEAM,), module_ids=("team.provider",), legacy=("app.teams",)),
         ),
     ),
     BigModule(
         id="channel", name="渠道接入与任务触发", root="统一接入与投递", order=5,
-        description="Durable Inbox/Outbox 包住 AgentLoop 输入输出；收/发各过一次 PEP。",
+        description="用户从哪里找到员工：飞书、钉钉、企业微信、微信、网页、开放接口，以及定时任务。",
         subs=(
-            SubModule("channel.im", "飞书、钉钉、企微与微信", "五个渠道适配器：验签、归一化、附件、卡片、发送。", "A", slots=(SlotName.STAFF_CHANNEL,), legacy=("app.channels.adapters",)),
-            SubModule("channel.external", "网页、开放接口与命令行", "Web / Public API / CLI 入口，统一成 TurnCommand。", "A", slots=(SlotName.STAFF_INGRESS,), module_ids=("ingress.web", "ingress.public_api"), legacy=("app.api.chat", "app.public_api")),
-            SubModule("channel.scheduler", "定时任务与事件触发", "定时生成 TurnCommand；冻结 SOP 快照。", "A", module_ids=("ingress.scheduler",), legacy=("app.scheduled_tasks",)),
-            SubModule("channel.message", "消息标准化、渲染与投递", "Inbox 幂等、Outbox 排空、富文本渲染。", "T", module_ids=("channel.host",), legacy=("app.channels.service_durable_inbox", "app.channels.service_outbox")),
+            SubModule("channel.im", "飞书、钉钉、企业微信与微信", "接入各个即时通讯平台，处理消息、附件与卡片。", "A", slots=(SlotName.STAFF_CHANNEL,), legacy=("app.channels.adapters",)),
+            SubModule("channel.external", "网页与开放接口", "网页对话、开放接口与命令行入口。", "A", slots=(SlotName.STAFF_INGRESS,), module_ids=("ingress.web", "ingress.public_api"), legacy=("app.api.chat", "app.public_api")),
+            SubModule("channel.scheduler", "定时任务", "按设定时间自动发起任务。", "A", module_ids=("ingress.scheduler",), legacy=("app.scheduled_tasks",)),
+            SubModule("channel.message", "消息收发", "统一接收消息、去重，并把回复投递到对应渠道。", "T", module_ids=("channel.host",), legacy=("app.channels.service_durable_inbox", "app.channels.service_outbox")),
         ),
         edges=(("staff", "选择数字员工"),),
     ),
     BigModule(
         id="runtime", name="对话与执行引擎", root="统一运行协调", order=6,
-        description="AgentLoop 在 DSH 之外协调会话/Turn/TaskFrame；Bridge 与 DSH 只按 Worker 代际升级。",
+        description="员工回答问题时背后的执行引擎：接收请求、规划步骤、调用能力、生成回复。",
         subs=(
-            SubModule("runtime.coordinator", "会话、Turn 与任务编排", "claim、planner、TaskFrame、租约、SOP CAS、response。", "K", slots=(SlotName.RUNTIME_KERNEL,), module_ids=("runtime.coordinator",), legacy=("app.core.agent_loop", "app.core.harness_v2_engine")),
-            SubModule("runtime.bridge", "StaffDeck 与 DSH 桥接层", "EngineHost、DSH worker、能力回调 MCP、事件中继。", "T", slots=(SlotName.RUNTIME_ENGINE,), legacy=("staffdeck_dsh.bridge",)),
-            SubModule("runtime.agentloop", "DSH 核心 AgentLoop", "DSH 原生 Session / Turn / Step / ToolCall（Node 子进程）。", "K", module_ids=("dsh.core",)),
+            SubModule("runtime.coordinator", "对话调度", "管理会话与每轮对话，协调流程推进与回复生成。", "K", slots=(SlotName.RUNTIME_KERNEL,), module_ids=("runtime.coordinator",), legacy=("app.core.agent_loop", "app.core.harness_v2_engine")),
+            SubModule("runtime.bridge", "执行引擎", "可选 Harness v3 或 Harness v2 引擎，同一时间只启用一个。", "T", slots=(SlotName.RUNTIME_ENGINE,), legacy=("staffdeck_dsh.bridge",)),
+            SubModule("runtime.agentloop", "引擎核心", "Harness v3 引擎本体，以独立进程运行。", "K", module_ids=("dsh.core",)),
         ),
         edges=(("capability", "调用能力"), ("interaction", "通知、转发或等待回复"), ("channel", "输出消息"), ("governance", "投影运行事件")),
     ),
     BigModule(
         id="governance", name="运行治理", root="运行治理", order=7,
-        description="只消费事件，不改活跃快照。",
+        description="记录运行过程，收集反馈，处理异常。",
         subs=(
-            SubModule("governance.trace", "事件、轨迹与运行记录", "DSH SessionEvent → RuntimeEvent → Trace/SSE/审计。", "T", module_ids=("observer.trace",), legacy=("app.observability", "app.api.traces")),
-            SubModule("governance.feedback", "反馈分析与能力进化", "反馈事件消费；进化提案不修改活跃快照。", "A", module_ids=("observer.feedback",), legacy=("app.feedback", "app.api.evolution")),
-            SubModule("governance.monitoring", "监控、审计与故障恢复", "Invocation Ledger、outcome_unknown 结算、恢复扫描。", "T", module_ids=("ledger.invocation",), legacy=("harness_invocations", "app.core.harness_recovery")),
+            SubModule("governance.trace", "执行轨迹", "把每轮对话的执行过程记录下来，随时可以回看。", "T", module_ids=("observer.trace",), legacy=("app.observability", "app.api.traces")),
+            SubModule("governance.feedback", "反馈与改进", "收集用户反馈，供分析与能力改进。", "A", module_ids=("observer.feedback",), legacy=("app.feedback", "app.api.evolution")),
+            SubModule("governance.monitoring", "调用记录与异常处理", "记录每次能力调用；结果不明时可以人工确认。", "T", module_ids=("ledger.invocation",), legacy=("harness_invocations", "app.core.harness_recovery")),
         ),
     ),
     BigModule(
         id="permission", name="统一权限", root="统一 PEP 接口", order=8, pep=False,
-        description="贯穿全部业务模块；部署级二选一，模块作者不可选择或卸载。",
+        description="决定谁能使用什么，贯穿所有模块。按部署版本二选一，任何模块都不能绕过。",
         subs=(
-            SubModule("permission.oss_local", "开源版本地权限", "tenant / role / owner / binding 规则，非 no-op。", "K", module_ids=("security.oss_local",), legacy=("app.security.permissions",)),
-            SubModule("permission.business_base", "企业版 Base 权限", "Base Authz 决策 fail-closed，不回退本地。", "K", module_ids=("security.business_base",)),
+            SubModule("permission.oss_local", "开源版 · 本地权限", "按租户、角色、员工归属和绑定关系判断。", "K", module_ids=("security.oss_local",), legacy=("app.security.permissions",)),
+            SubModule("permission.business_base", "企业版 · 统一权限中心", "由企业权限中心判定；权限中心不可用时拒绝访问，不会放行。", "K", module_ids=("security.business_base",)),
         ),
     ),
 )
@@ -177,5 +177,5 @@ def tree(registry_modules: Iterable[dict]) -> list[dict]:
             "enabled": sum(s["enabled"] for s in subs), "total": sum(s["total"] for s in subs),
         })
     if unplaced:
-        out.append({"id": "unplaced", "name": "未归类模块", "root": "未归类", "description": "已注册但未映射到任何子模块的插件。", "order": 99, "pep": False, "edges": [], "subs": [{"id": "unplaced.all", "name": "未归类", "description": "", "kind": "A", "slots": [], "legacy": [], "modules": unplaced, "enabled": sum(1 for x in unplaced if x.get("enabled")), "total": len(unplaced)}], "enabled": sum(1 for x in unplaced if x.get("enabled")), "total": len(unplaced)})
+        out.append({"id": "unplaced", "name": "未归类模块", "root": "未归类", "description": "已安装但尚未归入任何类目的模块。", "order": 99, "pep": False, "edges": [], "subs": [{"id": "unplaced.all", "name": "未归类", "description": "", "kind": "A", "slots": [], "legacy": [], "modules": unplaced, "enabled": sum(1 for x in unplaced if x.get("enabled")), "total": len(unplaced)}], "enabled": sum(1 for x in unplaced if x.get("enabled")), "total": len(unplaced)})
     return out

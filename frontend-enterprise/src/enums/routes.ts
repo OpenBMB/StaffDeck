@@ -17,5 +17,5 @@ export enum EnterpriseRoute {
   Accounts = '/enterprise/accounts',
   Models = '/enterprise/models',
   RuntimeSettings = '/enterprise/runtime-settings',
-  DshRuntime = '/enterprise/dsh-runtime',
+  Admin = '/admin',
 }

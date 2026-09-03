@@ -53,7 +53,7 @@ import KnowledgeManagePage, { KnowledgeAddPage } from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import ModelsPage from "./pages/ModelsPage";
 import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
-import DshRuntimePage from "./pages/DshRuntimePage";
+import AdminPage from "./pages/admin/AdminPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
 import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
@@ -775,16 +775,6 @@ function Shell({
                 }
               />
               <Route
-                path="/enterprise/dsh-runtime"
-                element={
-                  isAdmin ? (
-                    <DshRuntimePage currentUser={auth.user} onLogout={onLogout} />
-                  ) : (
-                    <Navigate to={EnterpriseRoute.Gallery} replace />
-                  )
-                }
-              />
-              <Route
                 path="/enterprise/tools"
                 element={
                   <ToolsPage currentUser={auth.user} onLogout={onLogout} />
@@ -1013,6 +1003,11 @@ function AuthedApp({
   if (location.pathname.startsWith("/enterprise/chat/session_")) {
     const nextPath = location.pathname.replace(/^\/enterprise\/chat/, EnterpriseRoute.Chat);
     return <Navigate to={`${nextPath}${location.search}`} replace />;
+  }
+  if (location.pathname === EnterpriseRoute.Admin || location.pathname.startsWith(`${EnterpriseRoute.Admin}/`)) {
+    return isEnterpriseAdmin(auth.user)
+      ? <AdminPage currentUser={auth.user} onLogout={onLogout} />
+      : <Navigate to={EnterpriseRoute.Gallery} replace />;
   }
   if (location.pathname.startsWith(EnterpriseRoute.Workspace)) {
     return (

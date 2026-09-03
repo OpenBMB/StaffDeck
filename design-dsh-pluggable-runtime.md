@@ -90,6 +90,13 @@ DSH_E2E=1 .venv/bin/python -m pytest tests_dsh/test_e2e_dsh_turn.py tests_dsh/te
 
 前端「运行时与插件」页重做为应用原生风格（AppHeader + StatCard + 白色圆角面板 + DataTable，Tab 用员工档案页的上浮样式），`ModuleTree` 组件渲染 大模块（编号/PEP/计数）→ 子模块（A/C/T/K 徽标/描述）→ 插件（状态点/id/版本/PEP/展开看插槽、契约、能力、策略动作、Hook），并展示模块间调用关系边。
 
+### 6.2 管理后台 `/admin`、动态装配与执行日志（2026-09-03）
+
+- **页面搬到独立链接** `http://127.0.0.1:5173/admin`（`frontend-enterprise/src/pages/admin/AdminPage.tsx`，无侧边栏，仅管理员）；原 `/enterprise/dsh-runtime` 删除，侧边栏「管理后台」指向新链接。`single_port_app.py` 增加 `/admin` 的 SPA 路由。
+- **面向使用者的文案**：不再出现 PEP/插槽/契约/Hook/A-C-T-K 等开发词。执行引擎统一称 **Harness v3 引擎**（DSH bridge）与 **Harness v2 引擎**（内置）；权限模式称「开源版 · 本地权限」/「企业版 · 统一权限中心」；模块类型标为 可替换 / 可配置 / 平台服务 / 核心；操作名、Hook、插槽、工具名都有中文映射（`src/lib/dshLabels.ts`）。技术标识只在「显示技术信息」开关打开时补充展示。后端 `manifest(..., summary=)` 为每个模块提供一句话说明，`taxonomy.py` 描述改为业务语言。
+- **动态装配**（`backend/src/staffdeck_dsh/modules/config.py` + `runtime/assembly.py`）：管理员在页面上开关模块、选择引擎/权限模式、接入外部模块（`pkg.mod:register`），保存到 `<dsh_home>/staffdeck-runtime.json`（`dsh_runtime_config_path` 可指定）；`GET/PUT /api/enterprise/dsh/config` 报告 saved / applied / pending；`POST /restart` 在进程内重建注册表、安全配置和 DSH 子进程（`restart_dsh_runtime`），失败自动回滚到上一套装配并返回 409。核心（K）模块与引擎/PEP 槽不能通过停用列表关闭，只能二选一。启动时 `start_dsh_runtime` 先把保存的装配投影到 `Settings`，所以 `AgentLoop._open_engine` 无需改动即可跟随切换。
+- **执行日志**（替代「调用台账」）：`GET /sessions/recent` + `GET /log?session_id=` 把 `agent_events` 与 `harness_invocations` 合并成 DSH 风格的时间线（`user/message`、`snapshot/compiled`、`engine/start`、`tool/call`、`tool/result`、`tool/denied`、`llm/call`、`assistant/message`…），前端 `SessionLog` 一行一事、可筛选（能力调用/引擎/对话/模型调用/仅问题）、可展开原始数据、可自动刷新；`outcome_unknown` 的人工确认收进折叠横幅。MCP 工作线程上缓冲的 trace 事件现在带 `occurred_at`，日志按真实发生时间排序。
+
 ## 7. 已知差异与后续
 
 - **取消**：DSH 0.1.2 协议无 cancel；`DshTaskAgent` 在事件循环里轮询 `is_chat_turn_cancelled`，命中后抛 `HarnessExecutionCancelled` 并关闭子进程（进程级中断），legacy 的取消回执路径原样生效。

@@ -24,6 +24,8 @@ from staffdeck_dsh.composition.compiler import DEFAULT_HOOKS
 from staffdeck_dsh.contracts.manifest import ModuleKind, SlotName
 from staffdeck_dsh.modules.registry import ModuleRegistry, manifest
 
+CHANNEL_LABEL = {"feishu": "飞书", "dingtalk": "钉钉", "wecom": "企业微信", "wechat": "微信", "wechat_kf": "微信客服"}
+
 
 # --------------------------------------------------------------------------- capability providers
 
@@ -158,24 +160,24 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
     dsh_enabled = bool(getattr(settings, "dsh_enabled", False))
 
     # L3 capability providers (attach to staff.capability; SOP slots reuse them through the compiler)
-    registry.install(manifest("knowledge.local", "Knowledge (local service)", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_KNOWLEDGE], provides=["knowledge.search/v1"], policy_actions=["knowledge.search/v1"]), KnowledgeProvider(), slot=SlotName.STAFF_CAPABILITY)
-    registry.install(manifest("general_skill.local", "GeneralSkill (package reader)", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_SKILL], provides=["general_skill.consume/v1"], policy_actions=["general_skill.consume/v1"]), GeneralSkillProvider(), slot=SlotName.STAFF_CAPABILITY)
-    registry.install(manifest("tool.local", "HTTP / MCP / A2A tools", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_ACTION], provides=["tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"], policy_actions=["tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"]), ToolProvider(), slot=SlotName.STAFF_CAPABILITY)
-    registry.install(manifest("sandbox.local", "Sandboxed file & command tools", kind=ModuleKind.TRUSTED, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_ACTION], provides=["sandbox.execute/v1", "artifact.publish/v1"], policy_actions=["sandbox.execute/v1"]), SandboxProvider(), slot=SlotName.STAFF_CAPABILITY)
+    registry.install(manifest("knowledge.local", "知识库检索", summary="在员工绑定的知识库中检索资料，并把引用来源带回回答。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_KNOWLEDGE], provides=["knowledge.search/v1"], policy_actions=["knowledge.search/v1"]), KnowledgeProvider(), slot=SlotName.STAFF_CAPABILITY)
+    registry.install(manifest("general_skill.local", "通用技能", summary="读取员工绑定的技能包，让员工按技能说明行事。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_SKILL], provides=["general_skill.consume/v1"], policy_actions=["general_skill.consume/v1"]), GeneralSkillProvider(), slot=SlotName.STAFF_CAPABILITY)
+    registry.install(manifest("tool.local", "业务工具调用", summary="调用 HTTP 接口、MCP 服务或其他智能体，完成查询与操作。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_ACTION], provides=["tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"], policy_actions=["tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"]), ToolProvider(), slot=SlotName.STAFF_CAPABILITY)
+    registry.install(manifest("sandbox.local", "受控执行环境", summary="在隔离环境中执行命令、读写文件并输出工作产物。", kind=ModuleKind.TRUSTED, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_ACTION], provides=["sandbox.execute/v1", "artifact.publish/v1"], policy_actions=["sandbox.execute/v1"]), SandboxProvider(), slot=SlotName.STAFF_CAPABILITY)
     registry.mark_guarded(SlotName.STAFF_CAPABILITY)
 
     # L4 interactions (hooks)
-    registry.install(manifest("interaction.default", "Default interaction hooks", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INTERACTION], provides=["hook.contribute/v1"], hooks=DEFAULT_HOOKS), DefaultInteractions(), slot=SlotName.STAFF_INTERACTION)
+    registry.install(manifest("interaction.default", "对话介入规则（默认）", summary="回答前载入人设、记忆和当前流程步骤；回答后检查输出，并判断是否需要转人工。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INTERACTION], provides=["hook.contribute/v1"], hooks=DEFAULT_HOOKS), DefaultInteractions(), slot=SlotName.STAFF_INTERACTION)
 
     # L4 handoff slots
     from staffdeck_dsh.handoff.core import ChannelCommandReplyResolver, ChannelNotifier, DefaultAssignment, WebInboxNotifier, WebReplyResolver
 
-    registry.install(manifest("handoff.assignment.default", "Default assignment strategy", kind=ModuleKind.CODE, slots=[SlotName.HANDOFF_ASSIGNMENT], provides=["handoff.assign/v1"]), DefaultAssignment(), slot=SlotName.HANDOFF_ASSIGNMENT)
-    registry.install(manifest("handoff.notifier.web", "Web inbox notifier", kind=ModuleKind.CODE, slots=[SlotName.HANDOFF_NOTIFIER], provides=["handoff.request/v1"]), WebInboxNotifier(), slot=SlotName.HANDOFF_NOTIFIER)
+    registry.install(manifest("handoff.assignment.default", "处理人指派（默认）", summary="需要人工介入时，按默认规则选择处理人。", kind=ModuleKind.CODE, slots=[SlotName.HANDOFF_ASSIGNMENT], provides=["handoff.assign/v1"]), DefaultAssignment(), slot=SlotName.HANDOFF_ASSIGNMENT)
+    registry.install(manifest("handoff.notifier.web", "站内通知", summary="通过网页收件箱通知处理人。", kind=ModuleKind.CODE, slots=[SlotName.HANDOFF_NOTIFIER], provides=["handoff.request/v1"]), WebInboxNotifier(), slot=SlotName.HANDOFF_NOTIFIER)
     for ch in ("feishu", "dingtalk", "wecom", "wechat"):
-        registry.install(manifest(f"handoff.notifier.{ch}", f"{ch} notifier", kind=ModuleKind.CODE, slots=[SlotName.HANDOFF_NOTIFIER], provides=["handoff.request/v1"]), ChannelNotifier(ch), slot=SlotName.HANDOFF_NOTIFIER)
-    registry.install(manifest("handoff.reply.web", "Web reply endpoint", kind=ModuleKind.CODE, slots=[SlotName.HANDOFF_REPLY_ENDPOINT], provides=["handoff.reply/v1"], policy_actions=["handoff.reply/v1"]), WebReplyResolver(), slot=SlotName.HANDOFF_REPLY_ENDPOINT)
-    registry.install(manifest("handoff.reply.channel_command", "Channel /回复反馈 & quoted reply", kind=ModuleKind.CODE, slots=[SlotName.HANDOFF_REPLY_ENDPOINT], provides=["handoff.reply/v1"], policy_actions=["handoff.reply/v1"]), ChannelCommandReplyResolver(), slot=SlotName.HANDOFF_REPLY_ENDPOINT)
+        registry.install(manifest(f"handoff.notifier.{ch}", f"{CHANNEL_LABEL[ch]}通知", summary=f"通过{CHANNEL_LABEL[ch]}通知处理人。", kind=ModuleKind.CODE, slots=[SlotName.HANDOFF_NOTIFIER], provides=["handoff.request/v1"]), ChannelNotifier(ch), slot=SlotName.HANDOFF_NOTIFIER)
+    registry.install(manifest("handoff.reply.web", "网页回复", summary="处理人在网页上回复后，员工继续对话。", kind=ModuleKind.CODE, slots=[SlotName.HANDOFF_REPLY_ENDPOINT], provides=["handoff.reply/v1"], policy_actions=["handoff.reply/v1"]), WebReplyResolver(), slot=SlotName.HANDOFF_REPLY_ENDPOINT)
+    registry.install(manifest("handoff.reply.channel_command", "渠道内回复", summary="处理人在飞书、钉钉等渠道里引用消息或使用「/回复」指令回复。", kind=ModuleKind.CODE, slots=[SlotName.HANDOFF_REPLY_ENDPOINT], provides=["handoff.reply/v1"], policy_actions=["handoff.reply/v1"]), ChannelCommandReplyResolver(), slot=SlotName.HANDOFF_REPLY_ENDPOINT)
     registry.mark_guarded(SlotName.HANDOFF_REPLY_ENDPOINT)
     registry.mark_guarded(SlotName.HANDOFF_ASSIGNMENT)
     registry.mark_guarded(SlotName.HANDOFF_NOTIFIER)
@@ -190,23 +192,23 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
                 adapter = get_channel_adapter(ch)
             except ValueError:
                 continue
-            registry.install(manifest(f"channel.{ch}", f"{ch} channel adapter", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CHANNEL], provides=["channel.receive/v1", "channel.send/v1"], policy_actions=["channel.receive/v1", "channel.send/v1"]), adapter, slot=SlotName.STAFF_CHANNEL)
+            registry.install(manifest(f"channel.{ch}", f"{CHANNEL_LABEL.get(ch, ch)}接入", summary=f"接收{CHANNEL_LABEL.get(ch, ch)}消息并回复，处理附件与卡片。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CHANNEL], provides=["channel.receive/v1", "channel.send/v1"], policy_actions=["channel.receive/v1", "channel.send/v1"]), adapter, slot=SlotName.STAFF_CHANNEL)
     except Exception:  # channel package optional in some deployments
         pass
     registry.mark_guarded(SlotName.STAFF_CHANNEL)
 
     # observers
-    registry.install(manifest("observer.trace", "Trace projector", kind=ModuleKind.TRUSTED, slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"]), TraceObserver(), slot=SlotName.EVENT_OBSERVER)
-    registry.install(manifest("observer.feedback", "Feedback consumer", kind=ModuleKind.CODE, slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"]), FeedbackObserver(), slot=SlotName.EVENT_OBSERVER)
+    registry.install(manifest("observer.trace", "执行轨迹记录", summary="把每轮对话的执行过程记录成可回看的轨迹。", kind=ModuleKind.TRUSTED, slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"]), TraceObserver(), slot=SlotName.EVENT_OBSERVER)
+    registry.install(manifest("observer.feedback", "反馈收集", summary="收集用户反馈，供后续分析与改进。", kind=ModuleKind.CODE, slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"]), FeedbackObserver(), slot=SlotName.EVENT_OBSERVER)
 
     # engines: exactly one active
-    registry.install(manifest("engine.legacy", "Harness v2 (in-process)", kind=ModuleKind.KERNEL, slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"]), LegacyEngine(), slot=SlotName.RUNTIME_ENGINE, enabled=not dsh_enabled)
-    registry.install(manifest("engine.dsh", "DSH bridge (Node subprocess)", kind=ModuleKind.TRUSTED, slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), DshBridgeEngine(), slot=SlotName.RUNTIME_ENGINE, enabled=dsh_enabled)
+    registry.install(manifest("engine.legacy", "Harness v2 引擎", summary="平台内置的上一代执行引擎，在主进程内运行。", kind=ModuleKind.KERNEL, slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"]), LegacyEngine(), slot=SlotName.RUNTIME_ENGINE, enabled=not dsh_enabled)
+    registry.install(manifest("engine.dsh", "Harness v3 引擎", summary="新一代执行引擎，以独立进程运行，负责规划步骤和调用能力。", kind=ModuleKind.TRUSTED, slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), DshBridgeEngine(), slot=SlotName.RUNTIME_ENGINE, enabled=dsh_enabled)
     registry.mark_guarded(SlotName.RUNTIME_ENGINE)
 
     # security: exactly one active
-    registry.install(manifest("security.oss_local", "OSS local PEP", kind=ModuleKind.KERNEL, slots=[SlotName.SECURITY_PEP]), OssLocalProfileModule(), slot=SlotName.SECURITY_PEP, enabled=profile_name == "OSS_LOCAL")
-    registry.install(manifest("security.business_base", "Business Base PEP", kind=ModuleKind.KERNEL, slots=[SlotName.SECURITY_PEP]), BusinessBaseProfileModule(), slot=SlotName.SECURITY_PEP, enabled=profile_name == "BUSINESS_BASE")
+    registry.install(manifest("security.oss_local", "开源版权限（本地）", summary="按租户、角色、员工归属和绑定关系判断谁能使用什么。", kind=ModuleKind.KERNEL, slots=[SlotName.SECURITY_PEP]), OssLocalProfileModule(), slot=SlotName.SECURITY_PEP, enabled=profile_name == "OSS_LOCAL")
+    registry.install(manifest("security.business_base", "企业版权限（统一权限中心）", summary="由企业权限中心统一判定；权限中心不可用时拒绝访问，不会放行。", kind=ModuleKind.KERNEL, slots=[SlotName.SECURITY_PEP]), BusinessBaseProfileModule(), slot=SlotName.SECURITY_PEP, enabled=profile_name == "BUSINESS_BASE")
 
     # Kernel / trusted leaves: registered so the module tree is complete and disable-able, never swappable.
     kernel.register(registry, ctx)
