@@ -101,7 +101,6 @@ export default function SessionLog({ sessions, sessionId, onSelectSession, entri
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
   const [auto, setAuto] = useState(false);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!auto) return undefined;
@@ -124,15 +123,25 @@ export default function SessionLog({ sessions, sessionId, onSelectSession, entri
     });
   }, [entries, q, filter]);
 
-  // Newest at the bottom, like a console: jump there when a session is opened (and keep following while auto-refresh is on).
-  const lastJumpedFor = useRef<string>('');
+  // Newest at the bottom, like a console. We stick to the bottom until the user scrolls up;
+  // opening another session re-sticks. Keyed on the entries themselves so the jump happens
+  // after the new session's lines are actually rendered, not when the picker changes.
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const stickRef = useRef(true);
+  useEffect(() => { stickRef.current = true; }, [sessionId]);
   useEffect(() => {
-    if (!visible.length) return;
-    if (auto || lastJumpedFor.current !== sessionId) {
-      lastJumpedFor.current = sessionId;
-      bottomRef.current?.scrollIntoView({ block: 'end' });
-    }
-  }, [visible.length, auto, sessionId]);
+    if (!visible.length || !stickRef.current) return undefined;
+    const raf = window.requestAnimationFrame(() => {
+      const el = boxRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [entries, visible, auto]);
+  const onScroll = () => {
+    const el = boxRef.current;
+    if (!el) return;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  };
 
   const problems = useMemo(() => entries.filter((e) => { const l = formatLogEntry(e).level; return l === 'warn' || l === 'error'; }).length, [entries]);
   const current = sessions.find((s) => s.session_id === sessionId);
@@ -177,7 +186,7 @@ export default function SessionLog({ sessions, sessionId, onSelectSession, entri
         </div>
       )}
 
-      <div className="max-h-[calc(100vh-380px)] min-h-[320px] overflow-auto rounded-[14px] border-[0.5px] border-[#e3e7f1] bg-[#f7f8fa] p-[8px]">
+      <div ref={boxRef} onScroll={onScroll} data-log-console className="max-h-[calc(100vh-380px)] min-h-[320px] overflow-auto rounded-[14px] border-[0.5px] border-[#e3e7f1] bg-[#f7f8fa] p-[8px]">
         {!sessionId ? (
           <div className="py-[60px] text-center text-[13px] text-[#858b9c]">选择一个会话，查看它的执行过程</div>
         ) : loading && entries.length === 0 ? (
@@ -187,7 +196,6 @@ export default function SessionLog({ sessions, sessionId, onSelectSession, entri
         ) : (
           <div className="flex flex-col gap-[1px]">
             {visible.map((e) => <LogLine key={e.id} e={e} tech={tech} />)}
-            <div ref={bottomRef} />
           </div>
         )}
       </div>
