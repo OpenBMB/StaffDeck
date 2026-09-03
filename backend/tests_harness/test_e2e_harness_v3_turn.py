@@ -153,9 +153,9 @@ def test_harness_v3_turn_knowledge_and_tool_with_pep_and_ledger(db: Session, too
     assert all((r.approval_json or {}).get("engine") == "harness_v3" for r in rows)
     tool_row = next(r for r in rows if r.tool_name.startswith("tool:"))
     assert tool_row.logical_action_key, "POST tool must carry a side-effect key"
-    # assistant message persisted with dsh engine marker + citations
+    # assistant message persisted with the Harness v3 engine marker + citations
     msgs = db.exec(select(Message).where(Message.session_id == resp.session_id, Message.role == "assistant")).all()
-    assert msgs and (msgs[-1].metadata_json or {}).get("execution_engine") == "harness_v2"
+    assert msgs and (msgs[-1].metadata_json or {}).get("execution_engine") == "harness_v3"
     # Citations flow back when the model cites a KB hit; a "no result" run is a legit model outcome,
     # not a pipeline failure, so the metadata may legitimately carry none. The capability settled
     # (ledger, above) is the engine-level guarantee.

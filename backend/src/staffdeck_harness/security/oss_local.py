@@ -78,7 +78,13 @@ class LocalPep(PepPort):
 
         handler = getattr(self, f"_authorize_{resource.type}", None)
         if handler is None:
-            return self._authorize_tenant_member(ctx, action, resource)
+            # ``general_skill`` is projected as a distinct ResourceRef type but is governed by the
+            # same rules as ``skill``; without this alias it falls through to *tenant member* and
+            # would allow any same-tenant member to consume an unbound/published skill.
+            if resource.type in ("skill", "general_skill", "mcp_server"):
+                handler = self._authorize_bound_resource
+            else:
+                return self._authorize_tenant_member(ctx, action, resource)
         return handler(ctx, action, resource)
 
     def filter(

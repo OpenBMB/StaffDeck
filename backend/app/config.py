@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     harness_v3_permission_mode: str = "danger-full-access"
     harness_v3_staff_allowlist: str = ""
     harness_v3_fallback_to_v2: bool = True
+    # Comma-separated tenant ids whose *admins* may mutate process-global runtime state
+    # (assembly config, restart, module placement/install, permission-centre test). Empty means
+    # the deployment is treated as single-operator: the tenant of the acting admin may change the
+    # runtime. Set this when multiple tenants share one process; without it, each tenant's admin
+    # would be able to change the engine/profile for everyone.
+    harness_operator_tenants: str = ""
     harness_v3_initialize_timeout_seconds: float = 90.0
     harness_v3_request_timeout_seconds: float = 600.0
     # OSS_LOCAL or BUSINESS_BASE; one per deployment.

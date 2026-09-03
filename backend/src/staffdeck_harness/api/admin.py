@@ -151,6 +151,39 @@ def _admin(tenant_id: str, user: User) -> User:
     return ensure_tenant_admin(tenant_id, user)
 
 
+def _operator(tenant_id: str, user: User, db: Session) -> User:
+    """A tenant admin who is allowed to mutate *process-global* runtime state.
+
+    The runtime (which engine, which security profile, which modules, the permission-centre
+    endpoint) is one per process — it is not a per-tenant resource. ``harness_operator_tenants``
+    names the tenants whose admins may change it. When it is unset, the deployment is treated as
+    single-tenant/single-operator: the acting admin's own tenant may change it.
+    """
+
+    ensure_tenant_admin(tenant_id, user)
+    from app.config import get_settings
+
+    allow = {x.strip() for x in str(getattr(get_settings(), "harness_operator_tenants", "") or "").split(",") if x.strip()}
+    if allow:
+        if tenant_id not in allow:
+            raise HTTPException(status_code=403, detail=f"该租户不是运行时操作员（harness_operator_tenants 未包含 {tenant_id}）")
+        return user
+    return user
+
+
+def _session_allowed(session: ChatSession | None, user: User) -> bool:
+    """May ``user`` read the execution/ledger records of this session?
+
+    Tenant admins may always; a session is otherwise visible only to the principal who owns it.
+    This is the boundary the diagnosis flagged: a same-tenant *member* must not read another
+    user's session logs or the raw capability arguments recorded for it.
+    """
+
+    if is_admin_user(user):
+        return True
+    return session is not None and str(session.user_id or "") == str(user.id)
+
+
 def _settings_engine(settings: Any) -> EngineChoice:
     return "harness_v3" if bool(getattr(settings, "harness_v3_enabled", False)) else "harness_v2"
 
@@ -288,11 +321,16 @@ def harness_snapshot(tenant_id: str = Query(...), agent_id: str | None = Query(N
     )
 
 
-def _ledger_read(r: HarnessInvocationRecord) -> LedgerRowRead:
+def _ledger_read(r: HarnessInvocationRecord, *, include_arguments: bool = True) -> LedgerRowRead:
     err = (r.result_json or {}).get("error") if isinstance(r.result_json, dict) else None
+    args = dict(r.arguments_json or {})
+    if not include_arguments:
+        # A non-admin sees the shape (keys) but never the values — a member who owns the session
+        # may review what happened, not the payloads a user typed or a tool sent.
+        args = {k: "<redacted>" for k in args}
     return LedgerRowRead(
         id=r.id, session_id=r.session_id, task_id=r.task_id, run_id=r.run_id, tool_name=r.tool_name, status=r.status,
-        side_effect_key=r.logical_action_key, arguments=dict(r.arguments_json or {}), error=err if isinstance(err, dict) else None,
+        side_effect_key=r.logical_action_key, arguments=args, error=err if isinstance(err, dict) else None,
         started_at=r.started_at.isoformat(), finished_at=r.finished_at.isoformat() if r.finished_at else None,
         engine=(r.approval_json or {}).get("engine") if isinstance(r.approval_json, dict) else None,
     )
@@ -307,11 +345,17 @@ def harness_ledger_unknown(tenant_id: str = Query(...), db: Session = Depends(ge
 @router.get("/ledger/recent", response_model=list[LedgerRowRead])
 def harness_ledger_recent(tenant_id: str = Query(...), session_id: str | None = Query(None), limit: int = Query(50, ge=1, le=500), db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> list[LedgerRowRead]:
     ensure_current_user_tenant(tenant_id, user)
+    if session_id:
+        session = db.get(ChatSession, session_id)
+        if session is None or session.tenant_id != tenant_id:
+            raise HTTPException(status_code=404, detail="session not found")
+        if not _session_allowed(session, user):
+            raise HTTPException(status_code=403, detail="Cannot view this session")
     stmt = select(HarnessInvocationRecord).where(HarnessInvocationRecord.tenant_id == tenant_id)
     if session_id:
         stmt = stmt.where(HarnessInvocationRecord.session_id == session_id)
     rows = db.exec(stmt.order_by(HarnessInvocationRecord.started_at.desc()).limit(limit)).all()
-    return [_ledger_read(r) for r in rows]
+    return [_ledger_read(r, include_arguments=is_admin_user(user)) for r in rows]
 
 
 @router.post("/ledger/{invocation_id}/reconcile", response_model=LedgerRowRead)
@@ -370,6 +414,11 @@ HARNESS_V3_EVENT_TYPES = (
 @router.get("/events/recent")
 def harness_events_recent(tenant_id: str = Query(...), session_id: str = Query(...), limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
     ensure_current_user_tenant(tenant_id, user)
+    session = db.get(ChatSession, session_id)
+    if session is None or session.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="session not found")
+    if not _session_allowed(session, user):
+        raise HTTPException(status_code=403, detail="Cannot view this session")
     rows = db.exec(
         select(AgentEvent).where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == session_id, AgentEvent.event_type.in_(HARNESS_V3_EVENT_TYPES)).order_by(AgentEvent.created_at.desc()).limit(limit)  # type: ignore[attr-defined]
     ).all()
@@ -428,6 +477,9 @@ class InspectRequest(BaseModel):
 
 class RestartRequest(BaseModel):
     tenant_id: str
+    # How long to wait for in-flight Harness v3 turns to finish before tearing the runtime down.
+    # 0 = restart immediately (turns lose their engine process). Bounded to keep the console responsive.
+    drain_timeout_seconds: float = 20.0
 
 
 def _assembly_read(d: dict[str, Any]) -> dict[str, Any]:
@@ -461,7 +513,7 @@ def harness_config(tenant_id: str = Query(...), user: User = Depends(get_current
 def harness_set_config(request: AssemblyUpdate, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> AssemblyStateRead:
     """Save a new assembly. Nothing changes until ``POST /restart`` (placements apply immediately)."""
 
-    _admin(request.tenant_id, user)
+    _operator(request.tenant_id, user, db)
     settings = get_settings()
     current = load_overrides(settings)
     reg = get_registry(settings)
@@ -563,7 +615,7 @@ def _supplied_secret(patch: dict[str, Any], field: str) -> bool:
 def harness_base_test(request: BaseTestRequest, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Connection test against the enterprise permission centre. Unsaved field values may be passed in ``base``."""
 
-    _admin(request.tenant_id, user)
+    _operator(request.tenant_id, user, db)
     from staffdeck_harness.security.base_preflight import preflight_base
 
     settings = get_settings()
@@ -598,7 +650,7 @@ def harness_base_test(request: BaseTestRequest, db: Session = Depends(get_sessio
 def harness_set_placement(module_id: str, request: PlacementUpdate, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Move a module under a taxonomy sub-module. Display only — takes effect immediately, no restart, never pending."""
 
-    _admin(request.tenant_id, user)
+    _operator(request.tenant_id, user, db)
     from staffdeck_harness.modules.registry import MODULE_ID_RE
 
     if not MODULE_ID_RE.match(module_id):
@@ -630,7 +682,7 @@ def harness_set_placement(module_id: str, request: PlacementUpdate, db: Session 
 def harness_inspect_module(request: InspectRequest, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Dry-run an external module spec: what it would install and whether the assembly would still seal."""
 
-    _admin(request.tenant_id, user)
+    _operator(request.tenant_id, user, db)
     from staffdeck_harness.modules.inspect import inspect_spec
 
     settings = get_settings()
@@ -645,13 +697,13 @@ def harness_inspect_module(request: InspectRequest, db: Session = Depends(get_se
 def harness_restart(request: RestartRequest, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Rebuild the module registry, security profile and Harness v3 runtime from the saved assembly."""
 
-    _admin(request.tenant_id, user)
+    _operator(request.tenant_id, user, db)
     from staffdeck_harness.runtime.assembly import AssemblyFailed, restart_harness_runtime
 
     settings = get_settings()
     _audit(db, request.tenant_id, "runtime_restart_requested", {"by": user.id})
     try:
-        info = restart_harness_runtime(settings, tenant_id=request.tenant_id, principal_id=user.id)
+        info = restart_harness_runtime(settings, tenant_id=request.tenant_id, principal_id=user.id, drain_timeout_seconds=max(0.0, min(float(request.drain_timeout_seconds), 120.0)))
     except AssemblyFailed as exc:
         db.add(AgentEvent(tenant_id=request.tenant_id, session_id="runtime", event_type="runtime_restart_failed", payload_json={"error": str(exc), "by": user.id}))
         db.commit()
@@ -676,7 +728,7 @@ class SessionSummary(BaseModel):
 
 @router.get("/sessions/recent", response_model=list[SessionSummary])
 def harness_sessions_recent(tenant_id: str = Query(...), limit: int = Query(40, ge=1, le=200), db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> list[SessionSummary]:
-    ensure_current_user_tenant(tenant_id, user)
+    _admin(tenant_id, user)
     rows = db.exec(select(ChatSession).where(ChatSession.tenant_id == tenant_id).order_by(ChatSession.updated_at.desc()).limit(limit)).all()  # type: ignore[attr-defined]
     agent_ids = {r.agent_id for r in rows if r.agent_id}
     names: dict[str, str] = {}
@@ -836,6 +888,24 @@ def _log_entries(db: Session, tenant_id: str, session_id: str, limit: int) -> li
     return entries[-limit:]
 
 
+def _redact_data(data: Any) -> Any:
+    """Replace payload values with placeholders (a non-admin sees keys, never values)."""
+
+    if isinstance(data, dict):
+        out: dict[str, Any] = {}
+        for k, v in data.items():
+            if k in ("arguments", "error", "structured_result", "result", "slot_updates"):
+                out[k] = "<redacted>"
+            elif isinstance(v, (dict, list)):
+                out[k] = _redact_data(v)
+            else:
+                out[k] = v
+        return out
+    if isinstance(data, list):
+        return [_redact_data(v) for v in data]
+    return data
+
+
 @router.get("/audit")
 def harness_audit(tenant_id: str = Query(...), limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Who changed the assembly, tested the permission centre, dry-ran or restarted — admin only."""
@@ -861,8 +931,14 @@ def harness_log(tenant_id: str = Query(...), session_id: str = Query(...), limit
     row = db.get(ChatSession, session_id)
     if row is None or row.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="session not found")
+    if not _session_allowed(row, user):
+        raise HTTPException(status_code=403, detail="Cannot view this session")
+    entries = _log_entries(db, tenant_id, session_id, limit)
+    if not is_admin_user(user):
+        # A non-admin owner sees what happened but never the payload values.
+        entries = [{**e, "data": _redact_data(e.get("data"))} for e in entries]
     agent = db.get(AgentProfile, row.agent_id) if row.agent_id else None
     return {
         "session": {"session_id": row.id, "title": row.title, "agent_id": row.agent_id, "agent_name": agent.name if agent else None, "channel": row.channel, "status": row.status, "updated_at": row.updated_at.isoformat()},
-        "entries": _log_entries(db, tenant_id, session_id, limit),
+        "entries": entries,
     }

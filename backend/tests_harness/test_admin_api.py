@@ -304,7 +304,10 @@ def test_placement_and_inspect(ctx, tmp_path, monkeypatch) -> None:
     body = r.json()
     assert body["ok"] is True and body["modules"][0]["module_id"] == "acme.sink" and body["modules"][0]["placement"] == {"big_id": "governance", "sub_id": "governance.trace", "source": "manifest"}
     assert body["modules"][0]["source"] == "acme_pkg:register" and body["modules"][0]["already_installed"] is False
-    assert any(w["code"] == "OPERATION_SHADOWED" for w in body["warnings"]) is False or True  # observers fan out; shadow warning is informational
+    # acme.sink provides event.observe/v1, but EVENT_OBSERVER is a fan-out slot: every observer
+    # receives events, so there is no "first wins" shadow — the dry-run must be warning-free here
+    # (and must not fail the assembly).
+    assert not any(w["code"] == "OPERATION_SHADOWED" for w in body["warnings"]), "observers fan out; adding one cannot shadow another"
     bad = c.post("/api/enterprise/harness/modules/inspect", json={"tenant_id": "tenant_demo", "spec": "no_such_pkg:register"}, headers=headers).json()
     assert bad["ok"] is False and bad["errors"][0]["phase"] == "import"
     assert c.post("/api/enterprise/harness/modules/inspect", json={"tenant_id": "tenant_demo", "spec": "not a spec!"}, headers=headers).json()["errors"][0]["code"] == "INVALID_SPEC"
@@ -341,3 +344,90 @@ def test_placement_and_inspect(ctx, tmp_path, monkeypatch) -> None:
     assert c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "disabled_modules": ["sandbox.local"]}, headers=headers).status_code == 200
     c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "disabled_modules": [], "extra_modules": []}, headers=headers)
     assembly.stop_harness_runtime()
+
+
+# --------------------------------------------------------------------------- authorization boundary
+
+def _member_headers(db) -> dict[str, str]:
+    """A same-tenant *member* (not admin) — the principal the review said could read too much."""
+
+    if db.get(User, "member") is None:
+        db.add(User(id="member", tenant_id="tenant_demo", username="bob", role="member", password_hash=hash_password("x")))
+        db.commit()
+    return {"Authorization": f"Bearer {create_access_token(db.get(User, 'member'))}"}
+
+
+def _session(db, session_id: str, user_id: str):
+    from app.db.models import ChatSession
+
+    if db.get(ChatSession, session_id) is None:
+        db.add(ChatSession(id=session_id, tenant_id="tenant_demo", user_id=user_id, agent_id="agent_1", title="t", status="active", channel="web"))
+        db.commit()
+
+
+def test_member_cannot_read_other_users_session_records(ctx) -> None:
+    c, admin_headers, db = ctx
+    member = _member_headers(db)
+    _session(db, "sess_admin", "admin")
+    db.add(HarnessInvocationRecord(id=new_id("hinvoke"), tenant_id="tenant_demo", session_id="sess_admin", task_id="t1", run_id="r1", call_id="c1", tool_name="tool:tool.invoke/v1", request_digest="d", status="completed", arguments_json={"secret": "value"}, started_at=utc_now()))
+    db.commit()
+    # admin sees everything, arguments included
+    r = c.get("/api/enterprise/harness/ledger/recent", params={"tenant_id": "tenant_demo", "session_id": "sess_admin"}, headers=admin_headers)
+    assert r.status_code == 200 and r.json()[0]["arguments"] == {"secret": "value"}
+    # a member is refused on a session they do not own
+    for path in ("/api/enterprise/harness/ledger/recent", "/api/enterprise/harness/events/recent", "/api/enterprise/harness/log"):
+        r = c.get(path, params={"tenant_id": "tenant_demo", "session_id": "sess_admin"}, headers=member)
+        assert r.status_code == 403, (path, r.text)
+    # and the tenant-wide session list is admin-only
+    assert c.get("/api/enterprise/harness/sessions/recent", params={"tenant_id": "tenant_demo"}, headers=member).status_code == 403
+    assert c.get("/api/enterprise/harness/sessions/recent", params={"tenant_id": "tenant_demo"}, headers=admin_headers).status_code == 200
+
+
+def test_member_sees_own_session_with_arguments_redacted(ctx) -> None:
+    c, _, db = ctx
+    member = _member_headers(db)
+    _session(db, "sess_member", "member")
+    db.add(HarnessInvocationRecord(id=new_id("hinvoke"), tenant_id="tenant_demo", session_id="sess_member", task_id="t1", run_id="r1", call_id="c1", tool_name="tool:tool.invoke/v1", request_digest="d", status="completed", arguments_json={"order_id": "B1"}, started_at=utc_now(), finished_at=utc_now()))
+    db.commit()
+    r = c.get("/api/enterprise/harness/ledger/recent", params={"tenant_id": "tenant_demo", "session_id": "sess_member"}, headers=member)
+    assert r.status_code == 200, r.text
+    assert r.json()[0]["arguments"] == {"order_id": "<redacted>"}, "owner sees keys, never values"
+    log = c.get("/api/enterprise/harness/log", params={"tenant_id": "tenant_demo", "session_id": "sess_member"}, headers=member)
+    assert log.status_code == 200
+    calls = [e for e in log.json()["entries"] if e["type"] == "tool/call"]
+    assert calls and calls[0]["data"]["arguments"] == "<redacted>"
+
+
+def test_global_mutators_require_operator_tenant(ctx, tmp_path, monkeypatch) -> None:
+    """With ``harness_operator_tenants`` set, a tenant admin outside the list cannot change process-global state."""
+
+    c, headers, db = ctx
+    monkeypatch.setenv("STAFFDECK_HARNESS_RUNTIME_CONFIG", str(tmp_path / "rt.json"))
+    monkeypatch.setenv("HARNESS_OPERATOR_TENANTS", "tenant_other")
+    get_settings.cache_clear()
+    try:
+        assert get_settings().harness_operator_tenants == "tenant_other"
+        r = c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v2"}, headers=headers)
+        assert r.status_code == 403, r.text
+        assert c.post("/api/enterprise/harness/restart", json={"tenant_id": "tenant_demo"}, headers=headers).status_code == 403
+        assert c.post("/api/enterprise/harness/modules/inspect", json={"tenant_id": "tenant_demo", "spec": "x.y:register"}, headers=headers).status_code == 403
+        # per-tenant/per-session administration is unaffected by the operator boundary
+        assert c.put("/api/enterprise/harness/staff/agent_1/engine", json={"tenant_id": "tenant_demo", "engine": "default"}, headers=headers).status_code == 200
+    finally:
+        monkeypatch.delenv("HARNESS_OPERATOR_TENANTS", raising=False)
+        get_settings.cache_clear()
+    # unset (single-operator deployment): the acting admin's tenant may change the runtime.
+    # (STAFFDECK_HARNESS_RUNTIME_CONFIG keeps the saved assembly in tmp_path, not the repo.)
+    assert c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v2"}, headers=headers).status_code == 200
+
+
+def test_restart_reports_interrupted_turns_and_accepts_drain_timeout(ctx, tmp_path, monkeypatch) -> None:
+    from staffdeck_harness.runtime import assembly
+
+    c, headers, db = ctx
+    settings = get_settings()
+    monkeypatch.setattr(settings, "harness_runtime_config_path", str(tmp_path / "rt.json"), raising=False)
+    assembly.start_harness_runtime(settings)
+    r = c.post("/api/enterprise/harness/restart", json={"tenant_id": "tenant_demo", "drain_timeout_seconds": 0}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json().get("interrupted_turns") == 0

@@ -210,6 +210,28 @@ class ModuleRegistry:
                 return item
         return None
 
+    def providers_for_operation(self, operation: str) -> tuple[Installed, ...]:
+        """Every enabled module that provides ``operation``, in module_id order (stable, not dict order)."""
+
+        return tuple(sorted(
+            (i for i in self._by_id.values() if i.enabled and operation in i.manifest.provides_operations),
+            key=lambda i: i.manifest.module_id,
+        ))
+
+    def resolve_operation_provider(self, operation: str, module_id: str | None) -> Installed | None:
+        """The provider for ``operation``; pinned ``module_id`` wins, else the first enabled one.
+
+        A pinned module_id that is disabled or does not provide the operation returns ``None`` so
+        the caller can fail closed rather than silently switch providers under a running turn.
+        """
+
+        if module_id:
+            item = self._by_id.get(module_id)
+            if item is not None and item.enabled and operation in item.manifest.provides_operations:
+                return item
+            return None
+        return self.for_operation(operation)
+
     def hooks(self) -> tuple[HookContribution, ...]:
         out: list[HookContribution] = []
         for item in self.providers(SlotName.STAFF_INTERACTION):

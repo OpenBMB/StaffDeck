@@ -31,6 +31,7 @@ Turn shape on DSH:
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 
 import json
@@ -49,8 +50,8 @@ from staffdeck_harness.bridge.capability_mcp import ActivationRegistry, Capabili
 from staffdeck_harness.bridge.worker import HarnessV3Process, HarnessV3WorkerConfig
 from staffdeck_harness.capabilities.host import ActivationSlot, CapabilityHost, LifecycleFence
 from staffdeck_harness.composition.compiler import CompositionSnapshot
-from staffdeck_harness.contracts.hooks import HookContext
-from staffdeck_harness.contracts.invocation import InvocationContext
+from staffdeck_harness.contracts.hooks import HookContext, HookDecision
+from staffdeck_harness.contracts.invocation import InvocationContext, ModuleInvocation, ModuleResult
 from staffdeck_harness.contracts.security import SecurityContext
 from staffdeck_harness.events.relay import SessionEventRelay
 from staffdeck_harness.interactions.pipeline_host import InteractionPipelineHost, PipelineState
@@ -81,6 +82,8 @@ class HarnessV3TurnContext:
     session_slots: dict[str, Any] = field(default_factory=dict)
     generation: int = 0
     attachments_text: str = ""
+    # Validated vision payloads (data URLs) for this turn, threaded from the legacy _run_frame path.
+    image_payloads: list[Any] = field(default_factory=list)
     client_turn_id: str | None = None
     # The engine assigns run_id after start_run(), i.e. after this context is built.
     run_id_provider: Callable[[], str] | None = None
@@ -171,6 +174,17 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
     parts.append("# 本步骤任务\n" + json.dumps(task, ensure_ascii=False, indent=1))
     if attachments_text:
         parts.append("# 附件\n" + attachments_text)
+    elif requirement.attachments:
+        # Fall back to the safe descriptors (never the data URLs) when the engine seam did not
+        # precompute a summary — filename/kind/size/sandbox path are enough for the model.
+        summary: dict[str, Any] = {}
+        for d in requirement.attachments:
+            if not isinstance(d, dict):
+                continue
+            key = str(d.get("attachment_id") or d.get("filename") or d.get("id") or "")
+            summary[key] = {k: d.get(k) for k in ("filename", "kind", "content_type", "size", "workspace_relative_path", "sandbox_path", "preview", "note") if d.get(k) not in (None, "")}
+        if summary:
+            parts.append("# 附件\n" + json.dumps(summary, ensure_ascii=False, indent=1))
     if requirement.source_user_message:
         parts.append("# 用户原话\n" + requirement.source_user_message)
     parts.append(
@@ -181,6 +195,41 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
         "- reply_fragment 是直接给用户看的回复，用用户的语言写。"
     )
     return "\n\n".join(parts)
+
+
+def _data_url_to_image_block(data_url: str) -> dict[str, Any] | None:
+    """Convert an ``data:image/<mime>;base64,<payload>`` data URL to the SDK's image content block.
+
+    The SDK prompt accepts ``SdkEncodedImageBlock {type: "image", data, mimeType}`` and the server
+    converts it to a durable reference before enqueue; text passes through unchanged.
+    """
+
+    if not isinstance(data_url, str) or not data_url.startswith("data:"):
+        return None
+    header, sep, payload = data_url.partition(",")
+    if not sep or not payload:
+        return None
+    mime = header[5:].split(";", 1)[0] or "image/png"
+    encoded = payload.split(";base64,")[-1] if ";base64," in header else payload
+    if not encoded:
+        return None
+    return {"type": "image", "data": encoded, "mimeType": mime}
+
+
+def _image_content_blocks(image_payloads: list[Any]) -> list[dict[str, Any]]:
+    """Extract SDK image content blocks from validated vision payloads (objects or dicts)."""
+
+    blocks: list[dict[str, Any]] = []
+    for p in image_payloads or []:
+        if p is None:
+            continue
+        data_url = getattr(p, "data_url", None) or (p.get("data_url") if isinstance(p, dict) else None)
+        if not data_url:
+            continue
+        blk = _data_url_to_image_block(str(data_url))
+        if blk is not None:
+            blocks.append(blk)
+    return blocks
 
 
 class HarnessV3TaskAgent:
@@ -248,10 +297,32 @@ class HarnessV3TaskAgent:
         run_id = t.current_run_id
         # Own session for the host: it is driven from MCP worker threads.
         host_db = Session(bind)
+
+        def hooks(point: str, inv: ModuleInvocation, result: ModuleResult | None) -> HookDecision:
+            """Bridge CapabilityHost's per-call hook point to the InteractionPipelineHost.
+
+            pre_tool receives the invocation before it touches the ledger; post_tool receives the
+            finished result so ``ledger.record`` / ``citations.collect`` can gather it. State is the
+            turn's PipelineState; a lock guards the few mutations a concurrent MCP call could make.
+            """
+            payload: dict[str, Any] = {
+                "name": str((inv.metadata or {}).get("proxy_name") or inv.operation),
+                "operation": inv.operation,
+                "arguments": dict(inv.arguments),
+                "binding_id": inv.binding_id,
+            }
+            if result is not None:
+                payload.update({"success": result.success, "error": result.error, "receipt": None, "citations": list(result.citations or ())})
+            ctx = HookContext(point=point, tenant_id=t.tenant_id, agent_id=t.agent_id, session_id=t.session_id, turn_id=t.turn_id, step=1, snapshot_id=t.snapshot.snapshot_id, payload=payload, generation=t.generation)
+            with hook_lock:
+                return self.pipeline.run(point, ctx, state)
+
         host = CapabilityHost(
             db=host_db, guard=t.guard, security_context=t.security_context, slot=slot, fence=fence,
             model_config=model_config, trace=self._threadsafe_trace(trace), run_id=run_id,
         )
+        hook_lock = threading.Lock()
+        host.hooks = hooks
         self._host = host
         state = PipelineState(snapshot=t.snapshot, memory_context=list(t.memory_context), session_slots=dict(t.session_slots), active_sop_id=sop_id, active_node_id=step_id)
 
@@ -273,6 +344,7 @@ class HarnessV3TaskAgent:
             if pre.kind == "deny":
                 return self._failed(requirement, "PRE_STEP_DENIED", pre.reason or "pre-step denied", actions=0)
             prompt = _step_prompt(requirement, state, list(pre.contexts), t.attachments_text)
+            content_blocks = self._content_blocks(prompt, image_payloads or [] or t.image_payloads)
 
             # 2. Harness v3 process bound to this activation. Model traffic goes through the bridge's
             #    gateway (StaffDeck's own model module runs the ModelConfig); the activation token
@@ -295,14 +367,14 @@ class HarnessV3TaskAgent:
 
             # 3. run turn (+ optional single steer)
             session_id = f"sd-{t.session_id}-{t.task_frame_id}"
-            events, final_text, finish_reason = self._run_engine_turn(proc, session_id, prompt, cancelled, trace)
+            events, final_text, finish_reason = self._run_engine_turn(proc, session_id, content_blocks, cancelled, trace, finished=lambda: slot.finish is not None)
             actions = sum(1 for e in events if e.get("type") == "tool/call")
             if slot.finish is None:
                 ctx_stop = HookContext(point="turn_stopping", tenant_id=t.tenant_id, agent_id=t.agent_id, session_id=t.session_id, turn_id=t.turn_id, step=1, snapshot_id=t.snapshot.snapshot_id, payload={"final_text": final_text, "finish_reason": finish_reason}, generation=t.generation)
                 stop = self.pipeline.run("turn_stopping", ctx_stop, state)
                 if stop.kind == "steer" and stop.steer_message and not cancelled():
                     trace("harness_v3_turn_steered", {"reason": stop.reason, "message": stop.steer_message[:200]})
-                    events2, final_text2, finish_reason = self._run_engine_turn(proc, session_id, stop.steer_message + "\n\n完成后调用 mcp__staffdeck__finish_task。", cancelled, trace)
+                    events2, final_text2, finish_reason = self._run_engine_turn(proc, session_id, [{"type": "text", "text": stop.steer_message + "\n\n完成后调用 mcp__staffdeck__finish_task。"}], cancelled, trace, finished=lambda: slot.finish is not None)
                     events.extend(events2)
                     actions += sum(1 for e in events2 if e.get("type") == "tool/call")
                     if final_text2.strip():
@@ -372,17 +444,32 @@ class HarnessV3TaskAgent:
             except Exception:  # pragma: no cover
                 logger.exception("trace flush failed for %s", event)
 
-    def _run_engine_turn(self, proc: HarnessV3Process, session_id: str, text: str, cancelled: Callable[[], bool], trace: TraceSink) -> tuple[list[dict[str, Any]], str, str | None]:
+    def _content_blocks(self, prompt: str, image_payloads: list[Any]) -> list[dict[str, Any]]:
+        """The prompt's content blocks: the text plus any validated image attachments."""
+
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        blocks.extend(_image_content_blocks(image_payloads))
+        return blocks
+
+    def _run_engine_turn(self, proc: HarnessV3Process, session_id: str, content_blocks: list[dict[str, Any]], cancelled: Callable[[], bool], trace: TraceSink, *, finished: Callable[[], bool] | None = None) -> tuple[list[dict[str, Any]], str, str | None]:
         client = proc.client
         events: list[dict[str, Any]] = []
         relay = SessionEventRelay(self.turn.tenant_id, self.turn.session_id, trace)
         with client.subscribe_session_notifications(session_id) as sub:
-            message_id = client.session_prompt(session_id, [{"type": "text", "text": text}], notification_subscription=sub)
+            message_id = client.session_prompt(session_id, content_blocks, notification_subscription=sub)
             received = False
             while True:
                 if cancelled():
                     raise HarnessExecutionCancelled("cancelled while Harness v3 turn running")
-                n = sub.next()
+                # The DSH 0.1.2 protocol has no cancel method and ``NotificationSubscription.next``
+                # blocks indefinitely, so we poll with a small timeout: it lets us honour an
+                # up-to-now-cancelled turn and break as soon as ``finish_task`` closed the slot
+                # (a finished step is a closed step; the engine must not keep generating).
+                n = self._next_poll(sub)
+                if n is None:
+                    if received and finished is not None and finished():
+                        break
+                    continue
                 payload = n.payload or {}
                 if n.method == "session.event" and payload.get("sessionId") == session_id:
                     ev = payload.get("event")
@@ -393,10 +480,29 @@ class HarnessV3TaskAgent:
                             continue
                         events.append(ev)
                         relay(ev)
+                        if received and finished is not None and finished():
+                            break
                 if n.method == "session.status" and payload.get("sessionId") == session_id and payload.get("status") == "idle" and received:
                     break
         from deepseek_harness.api import final_response, finish_reason as _finish_reason  # official SDK helpers
         return events, final_response(events), _finish_reason(events)
+
+    @staticmethod
+    def _next_poll(sub: Any, *, timeout: float = 0.25) -> Any:
+        """``NotificationSubscription.next()`` with a small timeout.
+
+        Falls back to the blocking ``next()`` if the queue attribute the SDK uses is not present
+        (e.g. a newer SDK changes its internals) — the feature degrades to no early-exit, never a
+        crash.
+        """
+
+        q = getattr(sub, "_notifications", None)
+        if q is None:
+            return sub.next()
+        try:
+            return q.get(timeout=timeout)
+        except Exception:
+            return None
 
     def _result(self, requirement: TaskRequirement, slot: ActivationSlot, state: PipelineState, final_text: str, finish_reason: str | None, actions: int, artifacts: list[dict[str, Any]], events: list[dict[str, Any]]) -> TaskExecutionResult:
         fin = slot.finish

@@ -169,7 +169,7 @@ class AgentLoop:
 
         settings = get_settings()
         label = "harness_v2"
-        if getattr(settings, "harness_v3_enabled", False):
+        if self._harness_v3_reachable(settings):
             try:
                 from staffdeck_harness.bridge.engine_host import EngineHost
 
@@ -181,14 +181,29 @@ class AgentLoop:
         if hasattr(self.events, "execution_engine"):
             self.events.execution_engine = None if label == "harness_v2" else label
 
+    @staticmethod
+    def _harness_v3_reachable(settings: Any) -> bool:
+        """Is the Harness v3 package worth consulting for this turn?
+
+        ``harness_v3_enabled`` is the deployment *default* engine; a per-staff choice may still
+        pick Harness v3 while the default is v2 (canary). So the package is consulted whenever the
+        engine is enabled globally *or* the admin console (per-staff choice) is on. A deployment
+        with both off never imports the package, so it never loads Node/MCP dependencies.
+        """
+
+        return bool(getattr(settings, "harness_v3_enabled", False)) or bool(getattr(settings, "harness_admin_api_enabled", False))
+
     def _open_engine(self, request: ChatTurnRequest) -> HarnessV2Engine:
         # The Harness v3 engine lives in the parallel ``staffdeck_harness`` package and is
         # only imported when the deployment opts in, so a legacy deployment
         # never loads Node/MCP dependencies.
         settings = get_settings()
-        if not getattr(settings, "harness_v3_enabled", False):
+        if not self._harness_v3_reachable(settings):
             return HarnessV2Engine(self)
-        from staffdeck_harness.bridge.engine_host import EngineHost
+        try:
+            from staffdeck_harness.bridge.engine_host import EngineHost
+        except ImportError:  # package not installed: legacy deployment
+            return HarnessV2Engine(self)
 
         agent_id = request.agent_id
         if not agent_id and request.session_id and hasattr(self.db, "get"):

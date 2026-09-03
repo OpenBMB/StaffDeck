@@ -174,18 +174,13 @@ def test_provider_general_skill_local_draft_is_unavailable(module, host, invocat
     assert res.success is False and res.error["code"] == "SKILL_NOT_AVAILABLE"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG: projection.bound_resource_ref emits ResourceRef(type='general_skill'), which is outside the "
-        "ResourceType vocabulary; LocalPep has no _authorize_general_skill handler so it falls through to "
-        "_authorize_tenant_member and ALLOWS any same-tenant member to consume an unbound published skill. "
-        "knowledge_base/tool refs are denied in the same situation. Only the activation fence (not a PEP) "
-        "keeps this closed in production."
-    ),
-)
 def test_provider_general_skill_local_unbound_is_denied_by_pep(module, host, invocation, skill):
-    """The skill exists in the tenant and is in the activation set, but is not bound to a1: PEP must refuse."""
+    """The skill exists in the tenant and is in the activation set, but is not bound to a1: PEP must refuse.
+
+    (Formerly xfail: LocalPep had no ``general_skill`` handler and fell through to
+    ``_authorize_tenant_member``, which ALLOWS any same-tenant member. Now ``general_skill`` refs
+    are governed by ``_authorize_bound_resource`` like ``skill``.)
+    """
 
     provider = module(MODULE_ID).provider
     with pytest.raises(PermissionDenied) as exc:
@@ -195,7 +190,7 @@ def test_provider_general_skill_local_unbound_is_denied_by_pep(module, host, inv
 
 
 def test_provider_general_skill_local_pep_sees_general_skill_ref_type(host, invocation, skill):
-    """Evidence for the xfail above: the live ref carries type 'general_skill', for which OSS_LOCAL has no rule."""
+    """The live ref carries type 'general_skill'; OSS_LOCAL now governs it as a bound resource."""
 
     from staffdeck_harness.composition import projection
 

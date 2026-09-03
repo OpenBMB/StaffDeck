@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-harness:
+    name: harness tests (backend/src + tests_harness)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend
+        run: pip install -e ".[dev]"
+      - name: Lint (ruff)
+        run: ruff check src tests_harness
+      - name: Test (tests_harness, .env isolated)
+        env:
+          ULTRARAG_DOTENV: /nonexistent
+          HARNESS_V3_ENABLED: "false"
+        run: python -m pytest tests_harness -q
+
+  backend-legacy:
+    name: legacy tests (tests), non-blocking
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend
+        run: pip install -e ".[dev]"
+      - name: Test (tests, .env isolated)
+        env:
+          ULTRARAG_DOTENV: /nonexistent
+          HARNESS_V3_ENABLED: "false"
+        run: python -m pytest tests -q
+
+  frontend:
+    name: frontend typecheck + i18n
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-enterprise
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci || npm install
+      - run: npx tsc -b --noEmit
+      - run: npm run i18n:check

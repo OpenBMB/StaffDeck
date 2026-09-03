@@ -175,14 +175,16 @@ def stop_harness_runtime() -> None:
         _applied = None
 
 
-def restart_harness_runtime(settings: Any, *, tenant_id: str | None = None, principal_id: str | None = None) -> dict[str, Any]:
+def restart_harness_runtime(settings: Any, *, tenant_id: str | None = None, principal_id: str | None = None, drain_timeout_seconds: float = 20.0) -> dict[str, Any]:
     """Rebuild the runtime from the saved assembly.
 
     Order: preflight (no global state touched) → build new registry/profile in
-    locals → stop the Harness v3 process → swap registry/profile/settings atomically →
-    boot DSH. Hosts see either the old or the new assembly, never a default one.
-    In-flight turns lose their Harness v3 process; that is the documented cost. If the
-    swap step still fails, the previous components are re-installed.
+    locals → drain in-flight Harness v3 turns (bounded) → stop the Harness v3 process →
+    swap registry/profile/settings atomically → boot Harness v3. Hosts see either the old or
+    the new assembly, never a default one. Turns still running when the drain window
+    expires lose their Harness v3 process (their capability calls get ENGINE_UNAVAILABLE);
+    the count is reported as ``interrupted_turns``. If the swap step still fails, the
+    previous components are re-installed.
     """
 
     global _applied, _started_at, _restart_count, _last_restart_error, _restarting
@@ -210,10 +212,11 @@ def restart_harness_runtime(settings: Any, *, tenant_id: str | None = None, prin
         from staffdeck_harness.security.profile import peek_profile
 
         old_reg, old_profile = peek_registry(), peek_profile()
+        interrupted = _drain_live_turns(drain_timeout_seconds)
         reset_runtime()
         try:
             info = _activate(settings, wanted, reg, profile)
-        except Exception as exc:  # noqa: BLE001 — DSH boot failed without fallback: restore
+        except Exception as exc:  # noqa: BLE001 — Harness v3 boot failed without fallback: restore
             msg = f"{type(exc).__name__}: {exc}"
             logger.exception("runtime activation failed; restoring previous assembly")
             reset_runtime()
@@ -227,12 +230,37 @@ def restart_harness_runtime(settings: Any, *, tenant_id: str | None = None, prin
             _started_at = datetime.now(timezone.utc).isoformat()
             _restart_count += 1
             _last_restart_error = None
-        info.update({"restarted_at": _started_at, "restart_count": _restart_count})
+        info.update({"restarted_at": _started_at, "restart_count": _restart_count, "interrupted_turns": interrupted})
         return info
     finally:
         with _state_lock:
             _restarting = False
         _restart_lock.release()
+
+
+def _drain_live_turns(timeout_seconds: float) -> int:
+    """Wait (bounded) for in-flight Harness v3 turns to finish before the runtime is torn down.
+
+    The bridge's ``ActivationRegistry`` holds one entry per live turn. While the drain runs, the
+    ``restarting`` flag is already set, so ``assembly_state`` shows the console what is happening.
+    Returns the number of turns still live when the window closed (0 = a clean drain).
+    """
+
+    import time
+
+    from staffdeck_harness.bridge import engine_host
+
+    runtime = getattr(engine_host, "_runtime", None)
+    if runtime is None:
+        return 0
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds or 0.0))
+    while True:
+        live = len(runtime.registry)
+        if live == 0 or time.monotonic() >= deadline:
+            if live:
+                logger.warning("restart drain window expired with %d live turn(s); they will lose their engine process", live)
+            return live
+        time.sleep(0.2)
 
 
 def clear_restart_error() -> None:

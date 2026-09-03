@@ -29,13 +29,14 @@ from typing import Any, Callable, Mapping
 from sqlmodel import Session
 
 from app.agents.branching import get_agent
-from app.db.models import GeneralSkill, ModelConfig, Tool
+from app.db.models import GeneralSkill, KnowledgeBase, MCPServer, ModelConfig, Tool
 from staffdeck_harness.capabilities.facade import FacadeDeps, SandboxFacade, workspace_for
 from staffdeck_harness.capabilities.ledger import InvocationLedger, _Replayed
 from staffdeck_harness.composition.compiler import CapabilityGrant, CompositionSnapshot
 from staffdeck_harness.contracts.errors import ActivationFenced, AuthorizationUnavailable, ModuleSdkError, OutcomeUnknown, PermissionDenied
+from staffdeck_harness.contracts.hooks import HookDecision
 from staffdeck_harness.contracts.invocation import InvocationContext, ModuleInvocation, ModuleResult, Receipt
-from staffdeck_harness.contracts.security import SecurityContext
+from staffdeck_harness.contracts.security import ResourceRef, SecurityContext
 from staffdeck_harness.security.profile import Guard
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,10 @@ class CapabilityHost:
     # re-parsing the engine's transcript, which may have spilled/previewed large results.
     citations: list[dict[str, Any]] = field(init=False, default_factory=list)
     evidence: list[dict[str, Any]] = field(init=False, default_factory=list)
+    # Optional hook point for ``pre_tool``/``post_tool`` decisions, wired by the task agent to
+    # its InteractionPipelineHost. When unset, the host runs without a hook plan (unit tests).
+    hooks: Callable[[str, ModuleInvocation, ModuleResult | None], HookDecision] | None = None
+    _hook_trace: Callable[[str, dict[str, Any]], None] | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self._ledger = InvocationLedger(self.db)
@@ -242,6 +247,7 @@ class CapabilityHost:
         args = dict(arguments)
         binding_id: str | None = None
         side_effecting = False
+        replayable = True
         key_fields: tuple[str, ...] = ()
         if op == "tool.invoke/v1":
             binding_id = str(args.get("tool_id") or "")
@@ -251,8 +257,10 @@ class CapabilityHost:
                 side_effecting = str(row.method or "").upper() in SIDE_EFFECTING_METHODS
                 cfg = row.config_json if isinstance(row.config_json, dict) else {}
                 idem = cfg.get("idempotency") if isinstance(cfg.get("idempotency"), dict) else {}
+                # Disabling idempotency turns off replay/dedupe, not side-effect tracking: a POST
+                # that fails with an ambiguous outcome must still be recorded ``outcome_unknown``.
                 if idem.get("enabled") is False:
-                    side_effecting = False
+                    replayable = False
                 key_fields = tuple(str(k) for k in (idem.get("key_fields") or ()))
                 # A2A is a durable task; the A2A client dedupes on invocation_id itself.
                 if row.tool_type == "a2a":
@@ -271,6 +279,8 @@ class CapabilityHost:
             binding_id=binding_id,
             side_effecting=side_effecting,
             idempotency_key_fields=key_fields,
+            replayable=replayable,
+            metadata={"proxy_name": proxy_name},
         )
         return self.invoke(inv)
 
@@ -281,6 +291,14 @@ class CapabilityHost:
             self._fence_resource(inv)
         except ActivationFenced as exc:
             return ModuleResult.fail(exc.code, exc.message), None
+
+        # 1b. pre_tool hooks. The default ``activation.allowlist`` narrows against the frozen
+        #     snapshot; a ``capability.pep`` handler marks intent. Hooks can deny a call before it
+        #     touches the ledger — nothing is recorded for a refused call, it is only traced.
+        pre = self._hooks("pre_tool", inv) if self._hooks else None
+        if pre is not None and pre.kind == "deny":
+            self._emit("capability_denied", {"operation": inv.operation, "resource": inv.binding_id, "reason": pre.reason, "point": "pre_tool"})
+            return ModuleResult.fail("PRE_TOOL_DENIED", pre.reason or "capability call refused by policy"), None
 
         # 2. ledger: replay or block
         try:
@@ -294,8 +312,11 @@ class CapabilityHost:
         except _Replayed as r:
             return r.replay
 
-        # 3. facade (PEP + live re-validation + legacy service)
+        # 3. facade (PEP + live re-validation + legacy service).
+        #    The host itself performs the policy check first, so a provider that only sees
+        #    ``host.guard`` (and skips the Guarded Facade) can never bypass the PEP.
         try:
+            self._pep(inv)
             result = self._dispatch(inv)
         except PermissionDenied as exc:
             receipt = self._ledger.deny(entry, exc.to_dict())
@@ -315,6 +336,13 @@ class CapabilityHost:
         # 4. ledger finish
         receipt = self._ledger.finish(entry, result)
         self._emit("capability_invoked", {"operation": inv.operation, "resource": inv.binding_id, "status": receipt.status, "invocation_id": inv.invocation_id})
+
+        # 5. post_tool hooks (ledger.record collects the receipt, citations.collect the citations).
+        if self.hooks is not None:
+            post = self._hooks("post_tool", inv, result)
+            if post.replacement is not None:
+                # A handler may rewrite the result the model sees (redact, annotate, mask secrets).
+                result = post.replacement
         if result.success:
             for c in result.citations or ():
                 if isinstance(c, Mapping):
@@ -351,6 +379,10 @@ class CapabilityHost:
             "structured_result": args.get("structured_result"),
         }
         self.slot.finish = envelope
+        # A finished step is a closed step: later tool calls must fail. Closing now (rather than in
+        # the agent's finally) means the *next* model action in the same turn is refused instead of
+        # being executed, and capability calls after this one return ACTIVATION_FENCED.
+        self.slot.closed = True
         self._emit("harness_v3_task_finished", {"status": status, "next_step_id": next_step})
         return ModuleResult.ok({"accepted": True, "status": status, "notice": "已记录本步骤结果，请立即停止，不要再调用其他工具。"})
 
@@ -372,6 +404,74 @@ class CapabilityHost:
             return
         if not inv.binding_id or inv.binding_id not in allowed.get(rtype, set()):
             raise ActivationFenced(f"{rtype} {inv.binding_id!r} is not in the activated set for this turn")
+
+    def _pep(self, inv: ModuleInvocation) -> None:
+        """Host-side policy check, run before ``_dispatch``.
+
+        The PEP is a *host* obligation, not a provider courtesy: without this a remote/external
+        provider that never calls ``self.d.guard.require`` would bypass it entirely. The Guarded
+        Facade still re-checks against the live row (defence in depth, and it owns the live-ref
+        attributes), so this only closes the bypass, it never grants anything.
+        """
+
+        from staffdeck_harness.composition.projection import live_resource_ref
+
+        def _ref(row: Any, rtype: str) -> ResourceRef:
+            # live_resource_ref resolves the acting agent's binding row, so ``binding_status`` /
+            # ``private_to_agent`` reflect the real binding — the same projection the facade uses.
+            return live_resource_ref(self.db, inv.context.tenant_id, rtype, row, agent=self._agent_row)
+
+        op = inv.operation
+        ctx = self.security_context
+
+        if op in {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"}:
+            row = self.db.get(Tool, inv.binding_id) if inv.binding_id else None
+            if row is not None and row.tenant_id == inv.context.tenant_id:
+                tool_op = {"http": "tool.invoke/v1", "mcp": "mcp.invoke/v1", "a2a": "a2a.invoke/v1"}.get(row.tool_type, "tool.invoke/v1")
+                self.guard.require(ctx, tool_op, _ref(row, "tool"))
+                if row.tool_type == "mcp" and row.mcp_server_id:
+                    server = self.db.get(MCPServer, row.mcp_server_id)
+                    if server is not None:
+                        self.guard.require(ctx, "mcp.invoke/v1", _ref(server, "mcp_server"))
+            return
+        if op == "general_skill.consume/v1":
+            row = self.db.get(GeneralSkill, inv.binding_id) if inv.binding_id else None
+            if row is not None and row.tenant_id == inv.context.tenant_id:
+                self.guard.require(ctx, op, _ref(row, "general_skill"))
+            return
+        if op == "knowledge.search/v1":
+            allowed = self.slot.allowed().get("knowledge_base", set())
+            requested = {str(i) for i in (inv.arguments.get("knowledge_base_ids") or []) if str(i).strip()}
+            # Knowledge selects resources inside the facade by intersecting requested & allowed;
+            # here we narrow with the PEP so the selection is already policy-filtered.
+            candidates = sorted(requested & allowed) if requested else sorted(allowed)
+            for kb_id in candidates:
+                row = self.db.get(KnowledgeBase, kb_id)
+                if row is not None and row.tenant_id == inv.context.tenant_id:
+                    self.guard.require(ctx, op, _ref(row, "knowledge_base"))
+            return
+        if op == "sandbox.execute/v1":
+            self.guard.require(ctx, op, ResourceRef(type="capability", id=f"sandbox:{inv.arguments.get('tool') or inv.operation}", tenant_id=inv.context.tenant_id, attributes={"binding_status": "active", "private_to_agent": True}))
+            return
+        # Anything else (e.g. an external ``staff.capability`` family) has no default policy
+        # action in DEFAULT_ACTION_MAP; fail closed rather than silently allowing a provider
+        # the host cannot classify.
+        raise PermissionDenied(f"no policy action mapped for operation {op!r}", details={"operation": op})
+
+    def _hooks(self, point: str, inv: ModuleInvocation, result: ModuleResult | None = None) -> HookDecision:
+        """Invoke the wired pipeline hook for ``pre_tool``/``post_tool``.
+
+        ``point`` is passed as the payload so handlers can distinguish the two phases. A broken
+        hook handler must never fail the capability call — it is logged and treated as pass.
+        """
+
+        if self.hooks is None:
+            return HookDecision.passthrough()
+        try:
+            return self.hooks(point, inv, result)
+        except Exception:  # a hook must never take the capability call down
+            logger.exception("hook %s failed on %s", point, inv.operation)
+            return HookDecision.passthrough()
 
     def _deps(self) -> FacadeDeps:
         return FacadeDeps(
@@ -410,6 +510,11 @@ class CapabilityHost:
         Providers are ``A``/``T`` modules installed under ``staff.capability``; the host
         stays ignorant of which implementation serves an operation. A deployment
         swaps a provider by installing a different module for the same operation.
+
+        The frozen ``CompositionSnapshot`` may pin a provider module id per grant (a Staff or SOP
+        binding chose a non-default provider). When it does, that pin is honoured: a pinned module
+        that is disabled or no longer provides the operation fails closed (``PROVIDER_UNAVAILABLE``)
+        instead of silently switching to the first enabled module under a running turn.
         """
 
         from staffdeck_harness.modules.registry import peek_registry
@@ -417,15 +522,35 @@ class CapabilityHost:
         reg = peek_registry()
         if reg is None:
             return ModuleResult.fail("ENGINE_UNAVAILABLE", "运行时正在重启，请稍后重试")
-        installed = reg.for_operation(inv.operation)
+        pin = self._provider_pin(inv)
+        installed = reg.resolve_operation_provider(inv.operation, pin)
         if installed is None:
+            if pin:
+                return ModuleResult.fail("PROVIDER_UNAVAILABLE", f"本步骤绑定的能力提供模块 {pin} 未启用或不提供 {inv.operation}", extensions={"pinned": pin, "operation": inv.operation})
             return ModuleResult.fail("UNSUPPORTED_CAPABILITY", f"没有模块提供能力操作 {inv.operation}")
         provider = installed.provider
         invoke = getattr(provider, "invoke", None)
         if not callable(invoke):
             return ModuleResult.fail("PROVIDER_INVALID", f"模块 {installed.manifest.module_id} 未实现 invoke()")
-        self._emit("capability_provider_selected", {"operation": inv.operation, "module_id": installed.manifest.module_id, "module_version": installed.manifest.version})
+        self._emit("capability_provider_selected", {"operation": inv.operation, "module_id": installed.manifest.module_id, "module_version": installed.manifest.version, "pinned": bool(pin)})
         return invoke(self, inv)
+
+    def _provider_pin(self, inv: ModuleInvocation) -> str | None:
+        """The ``provider_module_id`` frozen on the grant that covers this invocation, if any.
+
+        The grant is matched by operation and (when present) resource id / binding id, so a SOP slot
+        that resolved to a specific tool carries that tool's provider pin, not a general one.
+        """
+
+        for g in self.slot.grants():
+            if g.operation != inv.operation:
+                continue
+            if g.resource_id and inv.binding_id and g.resource_id != inv.binding_id:
+                if g.resource_type == "knowledge_base":
+                    continue  # knowledge may span several bases; no single pin applies
+                continue
+            return g.provider_module_id
+        return None
 
     def discover_artifacts(self, ctx: InvocationContext) -> list[dict[str, Any]]:
         if self._sandbox is None:

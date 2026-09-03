@@ -92,8 +92,8 @@ def _activation_allowlist(ctx: HookContext, st: PipelineState) -> HookDecision:
 
 
 def _capability_pep(ctx: HookContext, st: PipelineState) -> HookDecision:
-    # The PEP itself runs inside CapabilityHost.invoke (it needs the live row).
-    # This hook only records intent so a denied call is visible in the trace.
+    # The PEP itself runs inside CapabilityHost.invoke (it needs the live row). This hook
+    # only records intent so the denied call is visible in the trace; it never grants anything.
     st.tool_calls += 1
     return HookDecision.passthrough()
 

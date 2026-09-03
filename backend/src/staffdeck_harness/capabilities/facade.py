@@ -298,6 +298,8 @@ class SandboxFacade:
         ref = projection.ResourceRef(type="capability", id=f"sandbox:{inv.arguments.get('tool') or inv.operation}", tenant_id=inv.context.tenant_id, attributes={"binding_status": "active", "private_to_agent": True})
         self.d.guard.require(self.d.security_context, "sandbox.execute/v1", ref)
         name = str(inv.arguments.get("tool") or "")
+        if not name:
+            return ModuleResult.fail("INVALID_ARGUMENTS", "沙箱工具名（tool）不能为空。")
         args = dict(inv.arguments.get("arguments") or {})
         result = self._executor.execute(self._context, HarnessToolCall(call_id=inv.invocation_id, name=name, arguments=args))
         if not result.success:

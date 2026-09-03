@@ -54,6 +54,10 @@ class CapabilityGrant:
     node_id: str | None = None
     slot_name: str | None = None
     required: bool = False
+    # Provider pinning: which module serves this operation for this Staff/SOP. ``None`` means the
+    # default (first enabled provider). Pinned at compile time so the snapshot is a frozen contract.
+    provider_module_id: str | None = None
+    provider_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +202,33 @@ class CompositionCompiler:
         visible = staff.visible_resource_ids()
         grants: list[CapabilityGrant] = []
 
+        def provider_for(op: str, binding_metadata: Mapping[str, Any] | None = None) -> tuple[str | None, str | None]:
+            """Resolve the provider module id/version for ``op``.
+
+            Precedence: per-binding ``provider_module_id`` (Staff or SOP-level pin) > the registry's
+            default provider for the operation. Falls back to ``(None, None)`` when no pin and no
+            registry is reachable (unit tests), meaning ``for_operation`` decides at dispatch time.
+            """
+
+            pin = str((binding_metadata or {}).get("provider_module_id") or "").strip() or None
+            if pin:
+                # version is informational; it rides the grant so a mid-turn registry swap of the same
+                # pin is detectable (the snapshot is the frozen contract).
+                from staffdeck_harness.modules.registry import peek_registry
+
+                reg = peek_registry()
+                installed = reg.get(pin) if reg is not None else None
+                if installed is not None:
+                    return pin, installed.manifest.version
+                return pin, None
+            from staffdeck_harness.modules.registry import peek_registry
+
+            reg = peek_registry()
+            default = reg.for_operation(op) if reg is not None else None
+            if default is not None:
+                return default.manifest.module_id, default.manifest.version
+            return None, None
+
         # L1 direct capabilities: available in ordinary conversation.
         for cap in staff.capabilities:
             op = {
@@ -208,13 +239,15 @@ class CompositionCompiler:
             }[cap.resource_type]
             if cap.capability_scope == "sop_specific":
                 continue  # only reachable through a SOP slot
-            grants.append(CapabilityGrant(operation=op, resource_type=cap.resource_type, resource_id=cap.resource_id, name=cap.name, binding_id=cap.binding_id, scope="general"))
+            mid, ver = provider_for(op, cap.metadata)
+            grants.append(CapabilityGrant(operation=op, resource_type=cap.resource_type, resource_id=cap.resource_id, name=cap.name, binding_id=cap.binding_id, scope="general", provider_module_id=mid, provider_version=ver))
 
         # L2 SOPs: logical slots -> Staff bindings, plus sub-SOP graph validation.
         sop_edges: dict[str, list[str]] = {}
         plans: list[SopExecutionPlan] = []
         cap_names = {(c.resource_type, c.resource_id): c.name for c in staff.capabilities}
         cap_binding = {(c.resource_type, c.resource_id): c.binding_id for c in staff.capabilities}
+        cap_metadata = {(c.resource_type, c.resource_id): c.metadata for c in staff.capabilities}
         for sop in staff.sops:
             _check_contracts(d.operation for d in sop.declared_slots)
             resolved = resolve_slots(
@@ -229,6 +262,7 @@ class CompositionCompiler:
                 if slot.resource_type in {"handoff", "skill", "capability"}:
                     continue
                 key = (slot.resource_type, slot.resource_id)
+                mid, ver = provider_for(slot.declaration.operation, cap_metadata.get(key))
                 grants.append(
                     CapabilityGrant(
                         operation=slot.declaration.operation,
@@ -241,6 +275,8 @@ class CompositionCompiler:
                         node_id=slot.declaration.node_id,
                         slot_name=slot.declaration.name,
                         required=slot.declaration.required,
+                        provider_module_id=mid,
+                        provider_version=ver,
                     )
                 )
         _detect_cycle(sop_edges, error=DependencyCycle, what="sub-SOP")

@@ -192,15 +192,6 @@ def test_provider_sandbox_local_unknown_tool(module, host, invocation):
     assert h.guard.calls == [(OPERATION, "capability", "sandbox:format_disk")], "the PEP runs before the tool lookup"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValueError,
-    reason=(
-        "BUG (minor): SandboxFacade.execute builds HarnessToolCall(name='') when the 'tool' argument is missing, "
-        "so the provider raises ValueError instead of returning ModuleResult.fail('INVALID_ARGUMENTS'); "
-        "CapabilityHost.invoke only masks this as a generic HARNESS_TOOL_ERROR."
-    ),
-)
 def test_provider_sandbox_local_missing_tool_name_is_invalid_arguments(module, host, invocation):
     provider = module(MODULE_ID).provider
     h = host()

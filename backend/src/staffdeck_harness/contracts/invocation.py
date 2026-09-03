@@ -61,6 +61,10 @@ class ModuleInvocation:
     side_effecting: bool = False
     idempotency_key_fields: tuple[str, ...] = ()
     metadata: JsonObject = field(default_factory=dict)
+    # A side-effecting call may still be non-replayable (the tool disables idempotency). The
+    # distinction matters: ``side_effecting`` controls outcome tracking (an ambiguous failure is
+    # ``outcome_unknown``), while ``replayable`` controls replay/dedupe against a prior key.
+    replayable: bool = True
 
     def canonical_arguments(self) -> str:
         args = self.arguments
@@ -73,7 +77,7 @@ class ModuleInvocation:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def side_effect_key(self) -> str | None:
-        if not self.side_effecting:
+        if not self.side_effecting or not self.replayable:
             return None
         ctx = self.context
         payload = "|".join(

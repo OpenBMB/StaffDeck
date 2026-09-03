@@ -104,7 +104,12 @@ def test_golden_legacy_vs_harness_v3(tmp_path, monkeypatch) -> None:
     assert {"knowledge", "tool"} <= {k for k, _ in v3["ledger"]}
     # Citation metadata presence is model-dependent (only asserted when the model cited a hit);
     # the engine-level guarantee is that the knowledge capability settled to `completed`.
-    # Legacy: same request must produce a terminal, non-error turn. Whether it finishes in one turn is
-    # engine policy (action budget), so we report divergence instead of failing on it.
-    v2_done = ("15" in v2["reply"] or "十五" in v2["reply"]) and v2["tool_calls"] == ["B2002"]
-    print("DIVERGENCE: v2_finished_in_one_turn=", v2_done, "v3_finished_in_one_turn=", True)
+    # Legacy: the same request must reach the same terminal outcome. Whether it happens in one turn
+    # is the action-budget policy, so we assert the *result* (the B2002 shipment date surfaced) and
+    # only treat a genuinely broken legacy path as a failure — never paper over it with a print.
+    v2_done = ("15" in v2["reply"] or "十五" in v2["reply"] or "明天" in v2["reply"]) and v2["tool_calls"] == ["B2002"]
+    assert v2_done, (
+        "legacy engine diverged: expected the B2002 shipment date and exactly one tool call, got "
+        f"reply={v2['reply']!r} tool_calls={v2['tool_calls']!r} ledger={v2['ledger']!r}"
+    )
+    print("v2_finished_in_one_turn=False (multi-turn action budget), v3_finished_in_one_turn=True")

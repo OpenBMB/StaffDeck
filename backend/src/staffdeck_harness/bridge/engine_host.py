@@ -219,10 +219,12 @@ class EngineHost:
     def open(self, loop: Any, request: ChatTurnRequest, agent_id: str | None) -> HarnessV2Engine:
         if not self.selects_harness_v3(request, agent_id, db=getattr(loop, "db", None)):
             return HarnessV2Engine(loop)
-        from staffdeck_harness.contracts.manifest import SlotName
         from staffdeck_harness.modules.registry import get_registry
 
-        installed = get_registry(self.settings).provider(SlotName.RUNTIME_ENGINE)
+        # The staff (or the deployment default) chose Harness v3. Resolve the *v3* engine module by
+        # id rather than "the active RUNTIME_ENGINE provider": when the deployment default is v2 the
+        # registry's active provider is engine.harness_v2, yet a per-staff canary must still run v3.
+        installed = get_registry(self.settings).get("engine.harness_v3")
         try:
             if installed is not None and callable(getattr(installed.provider, "open", None)):
                 return installed.provider.open(loop, request, agent_id)
