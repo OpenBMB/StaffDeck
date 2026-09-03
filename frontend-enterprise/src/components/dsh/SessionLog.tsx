@@ -124,9 +124,15 @@ export default function SessionLog({ sessions, sessionId, onSelectSession, entri
     });
   }, [entries, q, filter]);
 
+  // Newest at the bottom, like a console: jump there when a session is opened (and keep following while auto-refresh is on).
+  const lastJumpedFor = useRef<string>('');
   useEffect(() => {
-    if (auto) bottomRef.current?.scrollIntoView({ block: 'end' });
-  }, [visible.length, auto]);
+    if (!visible.length) return;
+    if (auto || lastJumpedFor.current !== sessionId) {
+      lastJumpedFor.current = sessionId;
+      bottomRef.current?.scrollIntoView({ block: 'end' });
+    }
+  }, [visible.length, auto, sessionId]);
 
   const problems = useMemo(() => entries.filter((e) => { const l = formatLogEntry(e).level; return l === 'warn' || l === 'error'; }).length, [entries]);
   const current = sessions.find((s) => s.session_id === sessionId);

@@ -188,8 +188,11 @@ export function formatLogEntry(e: DshLogEntry): FormattedLog {
       return { title: '管理员请求重启运行时', level: 'info', meta: str(d.by, 24) };
     case 'admin/restarted':
       return { title: `运行时已重启 · ${String(d.security_profile ?? '')} · ${d.modules ?? '?'} 个模块`, level: 'success', meta: num(d.restart_count) !== undefined ? `第 ${d.restart_count} 次` : undefined };
-    case 'admin/restart_failed':
-      return { title: `重启未成功：${str(d.error, 200)}`, level: 'error', meta: str(d.by, 24) };
+    case 'admin/restart_failed': {
+      const err = str(d.error, 200);
+      const refused = err.startsWith('无法切换') || err.startsWith('装配无法') || err.startsWith('已有一次');
+      return { title: refused ? `重启前预检未通过（运行中的装配未受影响）：${err}` : `重启未成功，已恢复原有装配：${err}`, level: refused ? 'warn' : 'error', meta: str(d.by, 24) };
+    }
     default:
       return { title: e.event_type ?? e.type, detail: str(d, 200), level: 'muted' };
   }
