@@ -2152,6 +2152,17 @@ def _migrate_project_data_schema(conn, inspector, tables: set[str]) -> None:
         "project_data_field_definitions" in current_tables
         and conn.dialect.name in {"sqlite", "postgresql"}
     ):
+        field_definition_columns = {
+            column["name"]
+            for column in inspect(conn).get_columns("project_data_field_definitions")
+        }
+        if "source_optional" not in field_definition_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE project_data_field_definitions "
+                    "ADD COLUMN source_optional BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
         conn.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
@@ -2160,6 +2171,29 @@ def _migrate_project_data_schema(conn, inspector, tables: set[str]) -> None:
                 "WHERE tenant_id IS NULL"
             )
         )
+
+    if "project_data_conflicts" in current_tables:
+        conflict_columns = {
+            column["name"]
+            for column in inspect(conn).get_columns("project_data_conflicts")
+        }
+        if "trigger_candidate_id" not in conflict_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE project_data_conflicts "
+                    "ADD COLUMN trigger_candidate_id VARCHAR"
+                )
+            )
+        if conn.dialect.name in {"sqlite", "postgresql"}:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_project_data_open_conflict_retry "
+                    "ON project_data_conflicts("
+                    "tenant_id, audit_case_id, field_key, trigger_candidate_id, current_revision"
+                    ") WHERE status = 'open' AND trigger_candidate_id IS NOT NULL"
+                )
+            )
 
     required_tables = {"audit_cases", "audit_case_member_roles", "users"}
     if not required_tables.issubset(tables):

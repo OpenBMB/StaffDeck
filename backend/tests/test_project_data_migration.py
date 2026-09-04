@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, BrokenBarrierError
 
 import pytest
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, select
 
@@ -223,3 +223,75 @@ def test_project_data_migration_adds_missing_system_field_unique_index(tmp_path)
         )
         with pytest.raises(IntegrityError):
             db.commit()
+
+
+def test_project_data_migration_adds_source_optional_to_legacy_field_definitions(
+    tmp_path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-field-definition.db'}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE project_data_field_definitions ("
+                "id VARCHAR PRIMARY KEY, tenant_id VARCHAR, field_key VARCHAR NOT NULL, "
+                "label VARCHAR NOT NULL, value_type VARCHAR NOT NULL, "
+                "information_domain VARCHAR NOT NULL, scope VARCHAR NOT NULL, "
+                "required BOOLEAN NOT NULL DEFAULT 0, editable BOOLEAN NOT NULL DEFAULT 1, "
+                "sync_policy VARCHAR NOT NULL DEFAULT 'manual', validator_name VARCHAR, "
+                "status VARCHAR NOT NULL DEFAULT 'active', created_at DATETIME NOT NULL, "
+                "updated_at DATETIME NOT NULL)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO project_data_field_definitions ("
+                "id, tenant_id, field_key, label, value_type, information_domain, scope, "
+                "created_at, updated_at) VALUES ("
+                "'legacy-field', 'tenant_demo', 'tenant.legacy', '旧字段', 'text', "
+                "'tenant', 'project', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    run_project_data_backfill(engine)
+
+    columns = {
+        column["name"]: column
+        for column in inspect(engine).get_columns("project_data_field_definitions")
+    }
+    assert "source_optional" in columns
+    with engine.connect() as conn:
+        assert conn.execute(
+            text(
+                "SELECT source_optional FROM project_data_field_definitions "
+                "WHERE id = 'legacy-field'"
+            )
+        ).scalar_one() == 0
+
+
+def test_project_data_migration_adds_conflict_idempotency_key_and_index(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-conflict.db'}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE project_data_conflicts ("
+                "id VARCHAR PRIMARY KEY, tenant_id VARCHAR NOT NULL, "
+                "audit_case_id VARCHAR NOT NULL, field_key VARCHAR NOT NULL, "
+                "status VARCHAR NOT NULL DEFAULT 'open', current_revision INTEGER NOT NULL, "
+                "candidate_ids_json JSON NOT NULL, resolved_candidate_id VARCHAR, "
+                "resolved_by_user_id VARCHAR, resolution_reason VARCHAR, "
+                "resolved_at DATETIME, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+            )
+        )
+
+    run_project_data_backfill(engine)
+
+    columns = {
+        column["name"]
+        for column in inspect(engine).get_columns("project_data_conflicts")
+    }
+    indexes = {
+        index["name"]: index
+        for index in inspect(engine).get_indexes("project_data_conflicts")
+    }
+    assert "trigger_candidate_id" in columns
+    assert bool(indexes["uq_project_data_open_conflict_retry"]["unique"]) is True

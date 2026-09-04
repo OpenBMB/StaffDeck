@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.audit_cases.schema import AuditCaseAccessDenied
@@ -120,6 +121,7 @@ class ProjectDataService:
             editable=selected.editable,
             sync_policy=selected.sync_policy,
             validator_name=selected.validator_name,
+            source_optional=selected.source_optional,
         )
 
     def submit_candidate(
@@ -140,6 +142,12 @@ class ProjectDataService:
         validate_candidate_request(request, definition)
         validate_field_value(definition, request.value)
         source = request.source
+        current = self._current_value(case, request.field_key)
+        submission_revision = (
+            request.expected_revision
+            if request.expected_revision is not None
+            else (current.revision if current else 0)
+        )
         candidate = ProjectDataCandidate(
             tenant_id=case.tenant_id,
             audit_case_id=case.id,
@@ -147,7 +155,7 @@ class ProjectDataService:
             value_json=request.value,
             source_json=_source_json(source, request.note) if source is not None else {},
             status="pending",
-            expected_revision=request.expected_revision,
+            expected_revision=submission_revision,
             submitted_by_user_id=actor.id,
         )
         self.db.add(candidate)
@@ -164,7 +172,11 @@ class ProjectDataService:
         self.db.refresh(candidate)
         return candidate
 
-    def _load_candidate_for_actor(self, candidate_id: str, actor: User) -> tuple[ProjectDataCandidate, AuditCase]:
+    def _load_candidate_for_actor(
+        self,
+        candidate_id: str,
+        actor: User,
+    ) -> tuple[ProjectDataCandidate, AuditCase]:
         candidate = self.db.get(ProjectDataCandidate, candidate_id)
         if candidate is None or candidate.tenant_id != actor.tenant_id:
             raise ProjectDataNotFound(candidate_id)
@@ -188,6 +200,10 @@ class ProjectDataService:
         actor: User,
         reason: str,
     ) -> None:
+        existing = self._open_conflict(candidate, case, current_revision)
+        if existing is not None:
+            raise ProjectDataConflictError(reason)
+
         candidate_ids = [candidate.id]
         pending = self.db.exec(
             select(ProjectDataCandidate).where(
@@ -206,6 +222,7 @@ class ProjectDataService:
             field_key=candidate.field_key,
             status="open",
             current_revision=current_revision,
+            trigger_candidate_id=candidate.id,
             candidate_ids_json=candidate_ids,
         )
         self.db.add(conflict)
@@ -218,8 +235,60 @@ class ProjectDataService:
             resource_id=conflict.id,
             metadata={"status": conflict.status},
         )
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            if self._open_conflict(candidate, case, current_revision) is None:
+                raise
+            raise ProjectDataConflictError(reason) from exc
         raise ProjectDataConflictError(reason)
+
+    def _open_conflict(
+        self,
+        candidate: ProjectDataCandidate,
+        case: AuditCase,
+        current_revision: int,
+    ) -> ProjectDataConflict | None:
+        conflicts = self.db.exec(
+            select(ProjectDataConflict).where(
+                ProjectDataConflict.tenant_id == case.tenant_id,
+                ProjectDataConflict.audit_case_id == case.id,
+                ProjectDataConflict.field_key == candidate.field_key,
+                ProjectDataConflict.current_revision == current_revision,
+                ProjectDataConflict.status == "open",
+            )
+        ).all()
+        return next(
+            (
+                conflict
+                for conflict in conflicts
+                if conflict.trigger_candidate_id == candidate.id
+                or (
+                    conflict.trigger_candidate_id is None
+                    and candidate.id in conflict.candidate_ids_json
+                )
+            ),
+            None,
+        )
+
+    def _has_different_pending_candidate(
+        self,
+        candidate: ProjectDataCandidate,
+        case: AuditCase,
+    ) -> bool:
+        pending = self.db.exec(
+            select(ProjectDataCandidate).where(
+                ProjectDataCandidate.tenant_id == case.tenant_id,
+                ProjectDataCandidate.audit_case_id == case.id,
+                ProjectDataCandidate.field_key == candidate.field_key,
+                ProjectDataCandidate.status == "pending",
+            )
+        ).all()
+        return any(
+            other.id != candidate.id and other.value_json != candidate.value_json
+            for other in pending
+        )
 
     def _apply_candidate(
         self,
@@ -317,12 +386,15 @@ class ProjectDataService:
             raise ProjectDataConflictError("CANDIDATE_NOT_PENDING")
         current = self._current_value(case, candidate.field_key)
         current_revision = current.revision if current else 0
-        expected = (
-            expected_current_revision
-            if expected_current_revision is not None
-            else candidate.expected_revision
+        baseline_mismatch = (
+            candidate.expected_revision is None
+            or candidate.expected_revision != current_revision
+            or (
+                expected_current_revision is not None
+                and expected_current_revision != candidate.expected_revision
+            )
         )
-        if expected is not None and expected != current_revision:
+        if baseline_mismatch or self._has_different_pending_candidate(candidate, case):
             self._create_conflict(
                 candidate,
                 case,

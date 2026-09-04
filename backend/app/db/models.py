@@ -276,6 +276,7 @@ class ProjectDataFieldDefinition(SQLModel, table=True):
     editable: bool = True
     sync_policy: str = Field(default="manual", index=True)
     validator_name: Optional[str] = Field(default=None, index=True)
+    source_optional: bool = False
     status: str = Field(default="active", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -353,6 +354,19 @@ class ProjectDataCandidate(SQLModel, table=True):
 
 class ProjectDataConflict(SQLModel, table=True):
     __tablename__ = "project_data_conflicts"
+    __table_args__ = (
+        Index(
+            "uq_project_data_open_conflict_retry",
+            "tenant_id",
+            "audit_case_id",
+            "field_key",
+            "trigger_candidate_id",
+            "current_revision",
+            unique=True,
+            sqlite_where=text("status = 'open' AND trigger_candidate_id IS NOT NULL"),
+            postgresql_where=text("status = 'open' AND trigger_candidate_id IS NOT NULL"),
+        ).ddl_if(dialect=("sqlite", "postgresql")),
+    )
 
     id: str = Field(default_factory=lambda: new_id("fieldconflict"), primary_key=True)
     tenant_id: str = Field(index=True)
@@ -360,6 +374,7 @@ class ProjectDataConflict(SQLModel, table=True):
     field_key: str = Field(index=True)
     status: str = Field(default="open", index=True)
     current_revision: int = Field(default=0, index=True)
+    trigger_candidate_id: Optional[str] = Field(default=None, index=True)
     candidate_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     resolved_candidate_id: Optional[str] = Field(default=None, index=True)
     resolved_by_user_id: Optional[str] = Field(default=None, index=True)

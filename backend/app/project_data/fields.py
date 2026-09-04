@@ -7,6 +7,10 @@ from pydantic import BaseModel, ConfigDict
 
 from .schema import ProjectDataCandidateCreate, ProjectFieldValidationError
 
+_SUPPORTED_VALUE_TYPES = frozenset(
+    {"text", "date", "datetime", "integer", "number", "boolean", "list", "object"}
+)
+
 
 class FieldDefinition(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -141,6 +145,8 @@ def _is_empty(value: Any) -> bool:
 
 
 def validate_field_value(definition: FieldDefinition, value: Any) -> None:
+    if definition.value_type not in _SUPPORTED_VALUE_TYPES:
+        raise ProjectFieldValidationError("UNKNOWN_VALUE_TYPE")
     if _is_empty(value):
         raise ProjectFieldValidationError("EMPTY_VALUE")
 

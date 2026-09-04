@@ -11,6 +11,13 @@ from app.db.models import (
     RuleDefinition,
     RuleSetVersion,
 )
+from app.project_data.schema import (
+    ProjectDataCandidateCreate,
+    ProjectDataCandidateRead,
+    ProjectDataConflictRead,
+    ProjectDataValueRead,
+    SourceRef,
+)
 
 
 def test_phase1_json_payloads_round_trip(tmp_path) -> None:
@@ -119,6 +126,125 @@ def test_system_field_definition_key_is_unique_in_sqlite(tmp_path) -> None:
         )
         with pytest.raises(IntegrityError):
             db.commit()
+
+
+def test_project_field_definition_source_optional_round_trips(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'source-optional.db'}")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        db.add(
+            ProjectDataFieldDefinition(
+                id="field-definition-source-optional",
+                tenant_id="tenant_demo",
+                field_key="tenant.source_optional",
+                label="可无来源字段",
+                value_type="text",
+                information_domain="tenant",
+                scope="project",
+                source_optional=True,
+            )
+        )
+        db.commit()
+
+    with Session(engine) as db:
+        stored = db.get(ProjectDataFieldDefinition, "field-definition-source-optional")
+        assert stored is not None
+        assert stored.source_optional is True
+
+
+def test_open_conflict_is_unique_per_candidate_and_target_revision(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'conflict-idempotency.db'}")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        db.add(
+            ProjectDataConflict(
+                id="conflict-1",
+                tenant_id="tenant_demo",
+                audit_case_id="case-1",
+                field_key="organization.legal_name",
+                current_revision=1,
+                trigger_candidate_id="candidate-1",
+                candidate_ids_json=["candidate-1"],
+            )
+        )
+        db.commit()
+        db.add(
+            ProjectDataConflict(
+                id="conflict-2",
+                tenant_id="tenant_demo",
+                audit_case_id="case-1",
+                field_key="organization.legal_name",
+                current_revision=1,
+                trigger_candidate_id="candidate-1",
+                candidate_ids_json=["candidate-1"],
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.commit()
+
+
+def test_project_data_schemas_serialize_nested_sources_and_revision_fields() -> None:
+    source = SourceRef(
+        material_id="material-1",
+        material_version_id="material-version-1",
+        document_id="document-1",
+        location="page:2",
+        evidence_excerpt="甲公司",
+    )
+    request = ProjectDataCandidateCreate(
+        field_key="organization.legal_name",
+        value="甲公司",
+        source=source,
+        expected_revision=3,
+        note="已核对",
+    )
+    value = ProjectDataValueRead(
+        id="value-1",
+        field_key=request.field_key,
+        value=request.value,
+        status="approved",
+        revision=4,
+        source=source,
+        updated_by_user_id="reviewer-1",
+    )
+    candidate = ProjectDataCandidateRead(
+        id="candidate-1",
+        field_key=request.field_key,
+        value=request.value,
+        source=source,
+        status="pending",
+        expected_revision=request.expected_revision,
+        submitted_by_user_id="editor-1",
+    )
+    conflict = ProjectDataConflictRead(
+        id="conflict-1",
+        field_key=request.field_key,
+        status="open",
+        current_revision=4,
+        candidate_ids=[candidate.id, "candidate-2"],
+    )
+
+    assert request.model_dump(mode="json") == {
+        "field_key": "organization.legal_name",
+        "value": "甲公司",
+        "source": {
+            "material_id": "material-1",
+            "material_version_id": "material-version-1",
+            "document_id": "document-1",
+            "location": "page:2",
+            "evidence_excerpt": "甲公司",
+        },
+        "expected_revision": 3,
+        "note": "已核对",
+    }
+    assert value.model_dump(mode="json")["revision"] == 4
+    assert candidate.model_dump(mode="json")["expected_revision"] == 3
+    assert conflict.model_dump(mode="json")["candidate_ids"] == [
+        "candidate-1",
+        "candidate-2",
+    ]
 
 
 def test_published_rule_version_publication_fields_are_persisted(tmp_path) -> None:

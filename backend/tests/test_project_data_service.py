@@ -5,13 +5,17 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.db.models import (
     AuditCase,
+    AuditCaseEvent,
     AuditCaseMemberRole,
+    ProjectDataCandidate,
     ProjectDataConflict,
+    ProjectDataFieldDefinition,
     ProjectDataValue,
     User,
 )
 from app.project_data.fields import (
     SYSTEM_FIELD_DEFINITIONS,
+    FieldDefinition,
     get_field_definition,
     validate_candidate_request,
     validate_field_value,
@@ -111,14 +115,73 @@ def test_date_field_rejects_non_iso_date() -> None:
         validate_field_value(definition, "2026/09/04")
 
 
-def test_failed_or_empty_source_cannot_be_approved() -> None:
+def test_empty_candidate_value_is_rejected() -> None:
     request = ProjectDataCandidateCreate(
         field_key="organization.legal_name",
         value="",
-        source=SourceRef(material_id="material-1", location="page:1", evidence_excerpt=""),
+        source=SourceRef(
+            material_id="material-1",
+            location="page:1",
+            evidence_excerpt="甲公司",
+        ),
     )
     with pytest.raises(ProjectFieldValidationError, match="EMPTY_VALUE"):
         validate_candidate_request(request)
+
+
+def test_missing_candidate_source_is_rejected() -> None:
+    request = ProjectDataCandidateCreate(
+        field_key="organization.legal_name",
+        value="甲公司",
+        source=None,
+    )
+    with pytest.raises(ProjectFieldValidationError, match="SOURCE_REQUIRED"):
+        validate_candidate_request(request)
+
+
+def test_unknown_tenant_value_type_is_rejected_with_stable_error() -> None:
+    definition = FieldDefinition(
+        field_key="tenant.custom",
+        label="自定义字段",
+        value_type="unsupported",
+        information_domain="tenant",
+        scope="project",
+    )
+
+    with pytest.raises(ProjectFieldValidationError, match="UNKNOWN_VALUE_TYPE") as exc_info:
+        validate_field_value(definition, "值")
+
+    assert exc_info.value.code == "UNKNOWN_VALUE_TYPE"
+
+
+def test_tenant_source_optional_definition_allows_missing_source(service_context) -> None:
+    db, case, editor, _reviewer = service_context
+    db.add(
+        ProjectDataFieldDefinition(
+            id="tenant-source-optional",
+            tenant_id=case.tenant_id,
+            field_key="tenant.source_optional",
+            label="可无来源字段",
+            value_type="text",
+            information_domain="tenant",
+            scope="project",
+            source_optional=True,
+        )
+    )
+    db.commit()
+
+    candidate = ProjectDataService(db).submit_candidate(
+        case,
+        editor,
+        ProjectDataCandidateCreate(
+            field_key="tenant.source_optional",
+            value="人工确认值",
+            source=None,
+        ),
+    )
+
+    assert candidate.status == "pending"
+    assert candidate.source_json == {}
 
 
 def test_candidate_is_pending_and_approval_creates_revision(service_context) -> None:
@@ -134,12 +197,135 @@ def test_candidate_is_pending_and_approval_creates_revision(service_context) -> 
     assert approved.revision == 1
 
 
+def test_candidate_without_expected_revision_is_bound_to_submission_baseline(
+    service_context,
+) -> None:
+    db, case, editor, reviewer = service_context
+    candidate = _submit(db, case, editor, "乙公司", expected_revision=None)
+    assert candidate.expected_revision == 0
+
+    db.add(
+        ProjectDataValue(
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            field_key=candidate.field_key,
+            value_json="甲公司",
+            status="approved",
+            revision=1,
+        )
+    )
+    db.commit()
+
+    with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
+        ProjectDataService(db).approve_candidate(
+            candidate.id,
+            reviewer,
+            expected_current_revision=None,
+            reason="不得覆盖新值",
+        )
+
+    current = db.exec(select(ProjectDataValue)).one()
+    assert current.value_json == "甲公司"
+    assert current.revision == 1
+
+
+def test_approval_revision_cannot_override_candidate_baseline(service_context) -> None:
+    db, case, editor, reviewer = service_context
+    candidate = _submit(db, case, editor, "乙公司", expected_revision=0)
+    db.add(
+        ProjectDataValue(
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            field_key=candidate.field_key,
+            value_json="甲公司",
+            status="approved",
+            revision=1,
+        )
+    )
+    db.commit()
+
+    with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
+        ProjectDataService(db).approve_candidate(
+            candidate.id,
+            reviewer,
+            expected_current_revision=1,
+            reason="调用方版本不得替换候选基线",
+        )
+
+    current = db.exec(select(ProjectDataValue)).one()
+    assert current.value_json == "甲公司"
+    assert current.revision == 1
+
+
+def test_different_pending_candidate_creates_conflict_before_mutation(service_context) -> None:
+    db, case, editor, reviewer = service_context
+    current = _submit_and_approve(db, case, editor, reviewer, "甲公司")
+    first = _submit(db, case, editor, "乙公司", expected_revision=current.revision)
+    second = _submit(db, case, editor, "丙公司", expected_revision=current.revision)
+
+    with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
+        ProjectDataService(db).approve_candidate(
+            first.id,
+            reviewer,
+            expected_current_revision=current.revision,
+            reason="待审值不一致",
+        )
+
+    db.refresh(current)
+    assert current.value_json == "甲公司"
+    assert current.revision == 1
+    assert db.get(ProjectDataCandidate, first.id).status == "pending"
+    assert db.get(ProjectDataCandidate, second.id).status == "pending"
+    conflict = db.exec(select(ProjectDataConflict)).one()
+    assert set(conflict.candidate_ids_json) == {first.id, second.id}
+
+
+def test_retrying_stale_approval_reuses_conflict_and_audit_event(service_context) -> None:
+    db, case, editor, reviewer = service_context
+    candidate = _submit(db, case, editor, "乙公司", expected_revision=0)
+    db.add(
+        ProjectDataValue(
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            field_key=candidate.field_key,
+            value_json="甲公司",
+            status="approved",
+            revision=1,
+        )
+    )
+    db.commit()
+
+    service = ProjectDataService(db)
+    for _ in range(2):
+        with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
+            service.approve_candidate(
+                candidate.id,
+                reviewer,
+                expected_current_revision=0,
+                reason="重复冲突请求",
+            )
+
+    conflicts = db.exec(select(ProjectDataConflict)).all()
+    events = db.exec(
+        select(AuditCaseEvent).where(
+            AuditCaseEvent.audit_case_id == case.id,
+            AuditCaseEvent.event_type == "project_field_conflict_detected",
+        )
+    ).all()
+    assert len(conflicts) == 1
+    assert conflicts[0].trigger_candidate_id == candidate.id
+    assert len(events) == 1
+
+
 def test_stale_candidate_creates_conflict_instead_of_overwriting(service_context) -> None:
     db, case, editor, reviewer = service_context
     first = _submit_and_approve(db, case, editor, reviewer, "甲公司")
     first_revision = first.revision
     second = _submit(db, case, editor, "乙公司", expected_revision=first_revision)
-    _submit_and_approve(db, case, editor, reviewer, "丙公司")
+    first.value_json = "丙公司"
+    first.revision = 2
+    db.add(first)
+    db.commit()
 
     with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
         ProjectDataService(db).approve_candidate(
@@ -177,7 +363,10 @@ def test_conflict_resolution_applies_selected_candidate(service_context) -> None
     first = _submit_and_approve(db, case, editor, reviewer, "甲公司")
     first_revision = first.revision
     stale = _submit(db, case, editor, "乙公司", expected_revision=first_revision)
-    _submit_and_approve(db, case, editor, reviewer, "丙公司")
+    first.value_json = "丙公司"
+    first.revision = 2
+    db.add(first)
+    db.commit()
     with pytest.raises(ProjectDataConflictError):
         ProjectDataService(db).approve_candidate(
             stale.id, reviewer, expected_current_revision=first_revision, reason="冲突"
