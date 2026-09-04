@@ -117,7 +117,7 @@ Do not modify frontend files in Phase 1.
 - Produces role values project_admin, reviewer, editor, and viewer.
 - Does not alter existing AuditCase columns or delete/rename legacy JSON data.
 
-- [ ] Step 1: Write failing model tests
+- [x] Step 1: Write failing model tests
 
 Add tests proving the new models and constraints are not yet available:
 
@@ -167,7 +167,7 @@ Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_project_data_
 
 Expected: FAIL because the new model classes and constraints do not exist.
 
-- [ ] Step 2: Implement the SQLModel tables
+- [x] Step 2: Implement the SQLModel tables
 
 Add the models in backend/app/db/models.py using the existing new_id, utc_now, Column(JSON), Field(index=True), and UniqueConstraint patterns.
 
@@ -197,13 +197,13 @@ RuleException must have tenant_id, audit_case_id, rule_evaluation_id, reason, ev
 
 Persist status values as strings and validate them in Pydantic/service code to remain compatible with existing SQLModel patterns.
 
-- [ ] Step 3: Run model tests to verify constraints
+- [x] Step 3: Run model tests to verify constraints
 
 Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_project_data_models.py -q
 
 Expected: PASS for table creation, JSON persistence, and the one-current-value uniqueness constraint.
 
-- [ ] Step 4: Write the failing migration test
+- [x] Step 4: Write the failing migration test
 
 Create a legacy database test with an AuditCase that has owner_user_id and member_user_ids_json but no role rows. Invoke the startup migration seam and run it twice:
 
@@ -240,7 +240,7 @@ Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_project_data_
 
 Expected: FAIL because the backfill function does not exist.
 
-- [ ] Step 5: Implement the idempotent backfill
+- [x] Step 5: Implement the idempotent backfill
 
 Add _migrate_project_data_schema(conn, inspector, tables) -> None in backend/app/db/database.py and call it after create_all has created the new tables and after _migrate_audit_case_schema has completed.
 
@@ -254,7 +254,7 @@ For every current AuditCase:
 
 The helper must be safe when the marker is already present and when audit_cases is empty. It must not add columns to audit_cases.
 
-- [ ] Step 6: Run migration and audit-case regressions
+- [x] Step 6: Run migration and audit-case regressions
 
 Run:
 
@@ -264,7 +264,7 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests/test_project_data_migra
 
 Expected: PASS; existing owner/member access remains unchanged.
 
-- [ ] Step 7: Commit the persistence foundation
+- [x] Step 7: Commit the persistence foundation
 
 ~~~powershell
 git add backend/app/db/models.py backend/app/db/database.py backend/app/project_data/__init__.py backend/app/rules/__init__.py backend/tests/test_project_data_models.py backend/tests/test_project_data_migration.py backend/tests/test_audit_case_migration.py backend/tests/test_audit_case_management.py
@@ -289,7 +289,7 @@ git commit -m "feat: add project data and rule persistence foundation"
 - can_approve_project_candidate(db: Session, case: AuditCase, user: User) -> bool.
 - Tenant administrators remain globally authorized after tenant equality is confirmed.
 
-- [ ] Step 1: Write failing authorization tests
+- [x] Step 1: Write failing authorization tests
 
 ~~~python
 def test_owner_is_project_admin_without_role_row(permission_context) -> None:
@@ -316,7 +316,7 @@ Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_project_permi
 
 Expected: FAIL because role resolution and explicit reviewer support do not exist.
 
-- [ ] Step 2: Implement role resolution with legacy fallback
+- [x] Step 2: Implement role resolution with legacy fallback
 
 Implement resolve_project_role in this exact order:
 
@@ -329,13 +329,13 @@ Implement resolve_project_role in this exact order:
 
 ensure_project_role must raise AuditCaseAccessDenied("PROJECT_ROLE_REQUIRED") for a missing or disallowed role and must not reveal whether a case in another tenant exists.
 
-- [ ] Step 3: Run focused permission tests
+- [x] Step 3: Run focused permission tests
 
 Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_project_permissions.py backend/tests/test_audit_case_management.py -q
 
 Expected: PASS, including old projects without role rows.
 
-- [ ] Step 4: Commit the authorization seam
+- [x] Step 4: Commit the authorization seam
 
 ~~~powershell
 git add backend/app/project_data/permissions.py backend/app/audit_cases/service.py backend/tests/test_project_permissions.py backend/tests/test_audit_case_management.py
@@ -365,7 +365,7 @@ git commit -m "feat: add project role authorization"
 - validate_field_value(definition: FieldDefinition, value: Any) -> None raises ProjectFieldValidationError with a stable code.
 - validate_candidate_request(request: ProjectDataCandidateCreate) -> None rejects empty values and non-auditable sources.
 
-- [ ] Step 1: Define the field schema and write failing validation tests
+- [x] Step 1: Define the field schema and write failing validation tests
 
 Create FieldDefinition as a frozen Pydantic model with field_key, label, value_type, information_domain, scope, required, editable, sync_policy, and validator_name.
 
@@ -441,7 +441,7 @@ Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_project_data_
 
 Expected: FAIL because field definitions, schemas, and validators do not exist.
 
-- [ ] Step 2: Implement field definitions and validators
+- [x] Step 2: Implement field definitions and validators
 
 Use these value types in Phase 1: text, date, datetime, integer, number, boolean, list, and object. Implement validators for ISO date/datetime, positive numeric values, non-empty text, and list/object shape.
 
@@ -449,7 +449,7 @@ A source must contain a non-empty location and evidence excerpt for a candidate 
 
 Resolve tenant-specific definitions first, then system definitions. Reject unknown keys with UNKNOWN_FIELD_KEY. Keep labels separate from field keys.
 
-- [ ] Step 3: Write failing candidate lifecycle tests
+- [x] Step 3: Write failing candidate lifecycle tests
 
 ~~~python
 def test_candidate_is_pending_and_approval_creates_revision(service_context) -> None:
@@ -519,7 +519,7 @@ Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_project_data_
 
 Expected: FAIL because the candidate state machine and revision checks do not exist.
 
-- [ ] Step 4: Implement candidate, approval, history, and conflict services
+- [x] Step 4: Implement candidate, approval, history, and conflict services
 
 Implement these rules transactionally:
 
@@ -533,7 +533,7 @@ Implement these rules transactionally:
 
 Use ProjectDataValue.status values proposed, validated, approved, superseded, and rejected. Model-assisted extraction still enters the candidate path.
 
-- [ ] Step 5: Run service and regression tests
+- [x] Step 5: Run service and regression tests
 
 Run:
 
@@ -543,7 +543,7 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests/test_project_data_servi
 
 Expected: PASS; no old audit-case access or material behavior changes.
 
-- [ ] Step 6: Commit the project data domain
+- [x] Step 6: Commit the project data domain
 
 ~~~powershell
 git add backend/app/project_data/schema.py backend/app/project_data/fields.py backend/app/project_data/service.py backend/tests/test_project_data_service.py backend/tests/test_project_data_models.py
@@ -575,7 +575,7 @@ git commit -m "feat: add project data candidate workflow"
 - RuleLibraryService.publish_version(version_id: str, actor: User) -> RuleSetVersion.
 - RuleLibraryService.replace_rules(version_id: str, actor: User, rules: list[RuleDefinitionCreate]) -> RuleSetVersion.
 
-- [ ] Step 1: Write failing rule validation tests
+- [x] Step 1: Write failing rule validation tests
 
 ~~~python
 def test_mandatory_model_assisted_rule_is_rejected() -> None:
@@ -610,7 +610,7 @@ Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_rule_validati
 
 Expected: FAIL because the rule schemas and validation functions do not exist.
 
-- [ ] Step 2: Implement schemas and validation
+- [x] Step 2: Implement schemas and validation
 
 Validation must enforce:
 
@@ -627,7 +627,7 @@ Validation must enforce:
 
 Normalize rules by rule_key, then sequence, then canonical JSON with sorted keys before hashing SHA-256. The fingerprint must not include secrets, timestamps, or the drafting user.
 
-- [ ] Step 3: Write failing rule lifecycle tests
+- [x] Step 3: Write failing rule lifecycle tests
 
 ~~~python
 def test_only_tenant_admin_can_publish(rule_context) -> None:
@@ -658,7 +658,7 @@ Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_rule_service.
 
 Expected: FAIL because the rule-set lifecycle and immutability are not implemented.
 
-- [ ] Step 4: Implement rule-set draft and publish services
+- [x] Step 4: Implement rule-set draft and publish services
 
 Implement:
 
@@ -669,13 +669,13 @@ Implement:
 5. replace_rules is available only for drafts and raises RULE_VERSION_IMMUTABLE for published versions.
 6. A failed publish leaves the draft and previous published version unchanged.
 
-- [ ] Step 5: Run rule validation and lifecycle tests
+- [x] Step 5: Run rule validation and lifecycle tests
 
 Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_rule_validation.py backend/tests/test_rule_service.py -q
 
 Expected: PASS.
 
-- [ ] Step 6: Commit the rule lifecycle
+- [x] Step 6: Commit the rule lifecycle
 
 ~~~powershell
 git add backend/app/rules/schema.py backend/app/rules/validation.py backend/app/rules/service.py backend/tests/test_rule_validation.py backend/tests/test_rule_service.py
@@ -702,7 +702,7 @@ git commit -m "feat: add immutable rule set publishing"
 - evaluate_rule_without_model(rule: RuleDefinition, context: RuleEvaluationContext) -> DeterministicRuleResult.
 - RuleLibraryService.evaluate_project(case: AuditCase, actor: User, context: RuleEvaluationContext) -> list[RuleEvaluation].
 
-- [ ] Step 1: Write failing binding tests
+- [x] Step 1: Write failing binding tests
 
 ~~~python
 def test_project_can_bind_only_published_rule_versions(binding_context) -> None:
@@ -741,7 +741,7 @@ Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_rule_binding_
 
 Expected: FAIL because binding and migration behavior do not exist.
 
-- [ ] Step 2: Implement version-pinned binding
+- [x] Step 2: Implement version-pinned binding
 
 Implement:
 
@@ -753,7 +753,7 @@ Implement:
 6. If two current mandatory rules with the same scope have contradictory condition/output metadata, binding validation raises CONFLICTING_MANDATORY_RULES; priority cannot resolve the contradiction.
 7. A project with no binding remains compatible and is reported as RULE_BINDING_NOT_INITIALIZED; this phase does not auto-bind existing projects.
 
-- [ ] Step 3: Write failing deterministic evaluation tests
+- [x] Step 3: Write failing deterministic evaluation tests
 
 ~~~python
 def test_required_rule_fails_when_field_is_missing() -> None:
@@ -807,7 +807,7 @@ Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_rule_binding_
 
 Expected: FAIL because the deterministic evaluator does not exist.
 
-- [ ] Step 4: Implement the narrow deterministic evaluator
+- [x] Step 4: Implement the narrow deterministic evaluator
 
 Support only required, equals, not_equals, in, gte, lte, matches, and has_evidence in Phase 1. Return status (passed, failed, warning, indeterminate), blocking, message, and evidence_refs.
 
@@ -815,13 +815,13 @@ Rules with execution_method=model_assisted return indeterminate without calling 
 
 Do not block the existing report API in Phase 1; expose evaluation results and leave report-finalization integration to Phase 5.
 
-- [ ] Step 5: Run binding and evaluator tests
+- [x] Step 5: Run binding and evaluator tests
 
 Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_rule_binding_service.py backend/tests/test_rule_service.py -q
 
 Expected: PASS.
 
-- [ ] Step 6: Commit project rule binding and evaluation
+- [x] Step 6: Commit project rule binding and evaluation
 
 ~~~powershell
 git add backend/app/rules/service.py backend/app/project_data/schema.py backend/tests/test_rule_binding_service.py
@@ -877,7 +877,7 @@ POST /api/field-conflicts/{conflict_id}/resolve
 
 Every project endpoint uses the existing tenant_id query parameter and authorized-case validation. Request/response names must match the services from Tasks 2–5.
 
-- [ ] Step 1: Write failing API authorization and lifecycle tests
+- [x] Step 1: Write failing API authorization and lifecycle tests
 
 ~~~python
 def test_non_admin_cannot_create_rule_set(api_context) -> None:
@@ -944,7 +944,7 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests/test_rule_api.py backen
 
 Expected: FAIL because the routers are not registered.
 
-- [ ] Step 2: Implement schemas and router dependency boundaries
+- [x] Step 2: Implement schemas and router dependency boundaries
 
 Use require_tenant_admin for rule-set create/version/publish endpoints. Use get_current_user plus ensure_current_user_tenant and ensure_project_role for project binding/migration, field reads/submission/approval, conflict operations, and rule exceptions. Only project_admin, reviewer, or tenant admin can bind or migrate project rules.
 
@@ -967,7 +967,7 @@ Map domain errors to stable responses:
 
 Do not return rule source secrets, arbitrary exception traces, or cross-tenant existence information.
 
-- [ ] Step 3: Implement rule-set and project-binding routers
+- [x] Step 3: Implement rule-set and project-binding routers
 
 In backend/app/api/rules.py:
 
@@ -978,7 +978,7 @@ In backend/app/api/rules.py:
 5. Return migration preview diffs without mutation; require a non-empty migration reason.
 6. For rule exceptions, allow only evaluations whose rule explicitly permits exceptions and only authorized reviewers/project administrators/tenant administrators.
 
-- [ ] Step 4: Implement project-data routers
+- [x] Step 4: Implement project-data routers
 
 In backend/app/api/project_data.py:
 
@@ -991,7 +991,7 @@ In backend/app/api/project_data.py:
 
 Register both routers in backend/app/main.py after the existing API routers. Keep /api/audit-cases unchanged.
 
-- [ ] Step 5: Run API tests and existing API regressions
+- [x] Step 5: Run API tests and existing API regressions
 
 Run:
 
@@ -1001,7 +1001,7 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests/test_rule_api.py backen
 
 Expected: PASS. Verify that existing list/create/material/report endpoints retain their prior status codes and response shape.
 
-- [ ] Step 6: Commit the Phase 1 APIs
+- [x] Step 6: Commit the Phase 1 APIs
 
 ~~~powershell
 git add backend/app/api/rules.py backend/app/api/project_data.py backend/app/main.py backend/app/audit_cases/service.py backend/tests/test_rule_api.py backend/tests/test_project_data_api.py backend/tests/test_audit_case_api.py
@@ -1022,7 +1022,7 @@ git commit -m "feat: expose rule and project data APIs"
 - It does not import private implementation helpers except the existing fixture setup.
 - No frontend or external service dependency is introduced.
 
-- [ ] Step 1: Write the failing end-to-end test
+- [x] Step 1: Write the failing end-to-end test
 
 Create one complete scenario:
 
@@ -1068,7 +1068,7 @@ Run: backend/.venv/Scripts/python.exe -m pytest backend/tests/test_phase1_rule_p
 
 Expected: FAIL until all Phase 1 routers, event writes, and response contracts are connected.
 
-- [ ] Step 2: Implement event and transaction assertions
+- [x] Step 2: Implement event and transaction assertions
 
 Ensure these operations each commit one auditable event after their domain mutation succeeds:
 
@@ -1085,7 +1085,7 @@ Ensure these operations each commit one auditable event after their domain mutat
 
 Event metadata may contain only IDs, status, version, field key, counts, and stable error/status codes. Do not store full field values, evidence excerpts, rule text, prompts, or credentials in AuditCaseEvent.metadata_json.
 
-- [ ] Step 3: Run the full Phase 1 test set
+- [x] Step 3: Run the full Phase 1 test set
 
 Run:
 
@@ -1095,7 +1095,7 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests/test_project_data_model
 
 Expected: PASS.
 
-- [ ] Step 4: Run repository-level checks
+- [x] Step 4: Run repository-level checks
 
 Run:
 
@@ -1106,7 +1106,11 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -q
 
 Expected: Ruff exits 0 and the full backend suite passes. If an unrelated pre-existing test fails, record its exact name and diff scope; do not modify unrelated files to hide it.
 
-- [ ] Step 5: Verify runtime health without enabling later phases
+Observed on Windows 11: the repository-wide Ruff baseline exits with 2080 existing findings, while the Phase 1 files pass with `B008` excluded for the repository's established FastAPI dependency style. The initial full backend run reported 32 failures; after correcting the migration engine binding, all 18 migration-related checks pass. The remaining 14 failures are outside the Phase 1 diff: one standalone-reproducible WeCom fake-stream concurrency/timing check plus platform baseline checks involving missing packaged Node paths, POSIX-only assumptions, Windows process timing, and Bash/SRT fixtures; unrelated files were not altered here.
+
+The remaining exact failures are `test_concurrent_wecom_secret_rotations_serialize_and_match_running_config` (the fake stream manager does not reach the expected three created clients within its wait window; standalone rerun reproduces it); `test_supervisor_uses_explicit_node_path_when_configured`, `test_supervisor_passes_explicit_node_directory_to_services`, `test_dev_cli_uses_explicit_npm_path_when_configured`, and `test_dev_cli_passes_explicit_node_directory_to_npm` (the referenced packaging sandbox binaries do not exist in this checkout); `test_parent_watchdog_escalates_from_ignored_terminate_to_kill` and `test_repeated_start_stop_leaves_no_supervisor_threads_or_children` (Windows process/thread timing); `test_general_skill_runner_executes_bash_package_command` (Bash/SRT fixture does not return the expected structured field); `test_publisher_builds_relative_hashed_metadata` (fixture content/hash mismatch); `test_non_mount_sandbox_rewrites_model_visible_workspace_paths`, `test_exec_command_validates_every_line_of_multiline_script`, and `test_bounded_subprocess_caps_output_and_terminates_timeout` (POSIX-vs-Windows sandbox expectations); and `test_parse_multiple_inline_code_no_infinite_loop`, `test_bash_supported_on_dev_posix` (POSIX-only signal/Bash assumptions).
+
+- [x] Step 5: Verify runtime health without enabling later phases
 
 Start the current Windows development runtime using the repository’s documented script from PowerShell after applying the existing execution-policy workaround if needed. Then verify:
 
@@ -1117,7 +1121,9 @@ Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/workspace/gallery
 
 Expected: both endpoints return success; no frontend route or database startup error occurs. Do not claim ONLYOFFICE or Phase 2 UI support from this check.
 
-- [ ] Step 6: Commit Phase 1 verification
+Verified on 2026-09-05 using the documented Windows PowerShell wrapper with the existing process-scoped execution-policy workaround: `http://127.0.0.1:5173/api/health` returned HTTP 200 with `status=ok`, and `http://127.0.0.1:5173/workspace/gallery` returned HTTP 200 HTML. The configured structured-PDF engine reported `rapiddoc` but remained disabled because no local model manifest was prepared.
+
+- [x] Step 6: Commit Phase 1 verification
 
 ~~~powershell
 git add backend/tests/test_phase1_rule_project_data_integration.py docs/superpowers/plans/2026-09-04-phase1-rule-library-project-data-foundation.md
@@ -1142,23 +1148,23 @@ git commit -m "test: verify phase 1 rule and project data flow"
 
 ## Phase 1 Acceptance Checklist
 
-- [ ] A legacy project with only AuditCase.owner_user_id and member_user_ids_json remains accessible.
-- [ ] Startup backfill is idempotent and never downgrades an explicit role.
-- [ ] Tenant administrator can create a rule set, draft a version, validate it, and publish it.
-- [ ] Published rule versions cannot be edited in place.
-- [ ] Project can bind a published rule version and the binding stores the exact version ID.
-- [ ] Replacing an active binding requires migration preview and a reason.
-- [ ] Strong model-assisted rules are rejected at validation time.
-- [ ] Project member can submit a field candidate with source location and evidence excerpt.
-- [ ] Only authorized reviewer/project administrator can approve or reject the candidate.
-- [ ] Approval creates revision 1 and an append-only revision record.
-- [ ] Stale approval creates a conflict and does not overwrite the approved value.
-- [ ] Conflict resolution is explicit and auditable.
-- [ ] Deterministic mandatory failures are marked blocking; warning/guidance/model-assisted results are not direct blockers.
-- [ ] No rule text, prompt, credential, or full evidence excerpt is stored in audit event metadata.
-- [ ] Cross-tenant and cross-project access is rejected.
+- [x] A legacy project with only AuditCase.owner_user_id and member_user_ids_json remains accessible.
+- [x] Startup backfill is idempotent and never downgrades an explicit role.
+- [x] Tenant administrator can create a rule set, draft a version, validate it, and publish it.
+- [x] Published rule versions cannot be edited in place.
+- [x] Project can bind a published rule version and the binding stores the exact version ID.
+- [x] Replacing an active binding requires migration preview and a reason.
+- [x] Strong model-assisted rules are rejected at validation time.
+- [x] Project member can submit a field candidate with source location and evidence excerpt.
+- [x] Only authorized reviewer/project administrator can approve or reject the candidate.
+- [x] Approval creates revision 1 and an append-only revision record.
+- [x] Stale approval creates a conflict and does not overwrite the approved value.
+- [x] Conflict resolution is explicit and auditable.
+- [x] Deterministic mandatory failures are marked blocking; warning/guidance/model-assisted results are not direct blockers.
+- [x] No rule text, prompt, credential, or full evidence excerpt is stored in audit event metadata.
+- [x] Cross-tenant and cross-project access is rejected.
 - [ ] Existing audit-case API tests and full backend tests pass.
-- [ ] /api/health and /workspace/gallery remain healthy.
+- [x] /api/health and /workspace/gallery remain healthy.
 
 ## Known Phase 1 Risks and Controls
 
