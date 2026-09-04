@@ -87,6 +87,12 @@ _CASE_EVENT_METADATA_KEYS = {
     "knowledge_base_version_ids",
     "report_version_id",
     "count",
+    "field_key",
+    "candidate_id",
+    "conflict_id",
+    "rule_set_version_id",
+    "rule_evaluation_id",
+    "revision",
 }
 
 SUPPORTED_AUDIT_MATERIAL_EXTENSIONS = (
