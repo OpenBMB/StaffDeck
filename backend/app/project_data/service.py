@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -299,77 +300,137 @@ class ProjectDataService:
         reason: str | None,
         conflict: ProjectDataConflict | None = None,
     ) -> ProjectDataValue:
+        expected_revision = (
+            conflict.current_revision if conflict is not None else candidate.expected_revision
+        )
+        if expected_revision is None:
+            self.db.rollback()
+            raise ProjectDataConflictError("PROJECT_DATA_CONFLICT")
+
         current = self._current_value(case, candidate.field_key)
-        next_revision = (current.revision if current else 0) + 1
+        next_revision = expected_revision + 1
         timestamp = utc_now()
-        if current is None:
-            current = ProjectDataValue(
-                tenant_id=case.tenant_id,
-                audit_case_id=case.id,
-                field_key=candidate.field_key,
-                value_json=candidate.value_json,
-                status="approved",
-                revision=next_revision,
-                source_json=dict(candidate.source_json),
-                approved_by_user_id=actor.id,
-                approved_at=timestamp,
-                updated_by_user_id=actor.id,
-                created_at=timestamp,
-                updated_at=timestamp,
+        try:
+            candidate_result = self.db.exec(
+                update(ProjectDataCandidate)
+                .where(
+                    ProjectDataCandidate.id == candidate.id,
+                    ProjectDataCandidate.tenant_id == case.tenant_id,
+                    ProjectDataCandidate.audit_case_id == case.id,
+                    ProjectDataCandidate.field_key == candidate.field_key,
+                    ProjectDataCandidate.status == "pending",
+                )
+                .values(
+                    status="approved",
+                    decided_by_user_id=actor.id,
+                    decision_reason=reason,
+                    decided_at=timestamp,
+                    updated_at=timestamp,
+                )
+                .execution_options(synchronize_session=False)
             )
-            self.db.add(current)
-        else:
-            current.value_json = candidate.value_json
-            current.status = "approved"
-            current.revision = next_revision
-            current.source_json = dict(candidate.source_json)
-            current.approved_by_user_id = actor.id
-            current.approved_at = timestamp
-            current.updated_by_user_id = actor.id
-            current.updated_at = timestamp
-            self.db.add(current)
-        self.db.add(
-            ProjectDataValueRevision(
-                tenant_id=case.tenant_id,
-                audit_case_id=case.id,
-                field_key=candidate.field_key,
-                revision=next_revision,
-                value_json=candidate.value_json,
-                status="approved",
-                source_json=dict(candidate.source_json),
-                operation="approve" if conflict is None else "resolve_conflict",
+            if getattr(candidate_result, "rowcount", 0) != 1:
+                raise ProjectDataConflictError("PROJECT_DATA_CONFLICT")
+
+            if conflict is not None:
+                conflict_result = self.db.exec(
+                    update(ProjectDataConflict)
+                    .where(
+                        ProjectDataConflict.id == conflict.id,
+                        ProjectDataConflict.tenant_id == case.tenant_id,
+                        ProjectDataConflict.audit_case_id == case.id,
+                        ProjectDataConflict.field_key == candidate.field_key,
+                        ProjectDataConflict.status == "open",
+                        ProjectDataConflict.current_revision == expected_revision,
+                    )
+                    .values(
+                        status="resolved",
+                        resolved_candidate_id=candidate.id,
+                        resolved_by_user_id=actor.id,
+                        resolution_reason=reason,
+                        resolved_at=timestamp,
+                        updated_at=timestamp,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if getattr(conflict_result, "rowcount", 0) != 1:
+                    raise ProjectDataConflictError("PROJECT_DATA_CONFLICT")
+
+            if expected_revision == 0:
+                current = ProjectDataValue(
+                    tenant_id=case.tenant_id,
+                    audit_case_id=case.id,
+                    field_key=candidate.field_key,
+                    value_json=candidate.value_json,
+                    status="approved",
+                    revision=next_revision,
+                    source_json=dict(candidate.source_json),
+                    approved_by_user_id=actor.id,
+                    approved_at=timestamp,
+                    updated_by_user_id=actor.id,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+                self.db.add(current)
+                self.db.flush()
+            else:
+                current_result = self.db.exec(
+                    update(ProjectDataValue)
+                    .where(
+                        ProjectDataValue.tenant_id == case.tenant_id,
+                        ProjectDataValue.audit_case_id == case.id,
+                        ProjectDataValue.field_key == candidate.field_key,
+                        ProjectDataValue.revision == expected_revision,
+                    )
+                    .values(
+                        value_json=candidate.value_json,
+                        status="approved",
+                        revision=next_revision,
+                        source_json=dict(candidate.source_json),
+                        approved_by_user_id=actor.id,
+                        approved_at=timestamp,
+                        updated_by_user_id=actor.id,
+                        updated_at=timestamp,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if getattr(current_result, "rowcount", 0) != 1 or current is None:
+                    raise ProjectDataConflictError("PROJECT_DATA_CONFLICT")
+
+            self.db.add(
+                ProjectDataValueRevision(
+                    tenant_id=case.tenant_id,
+                    audit_case_id=case.id,
+                    field_key=candidate.field_key,
+                    revision=next_revision,
+                    value_json=candidate.value_json,
+                    status="approved",
+                    source_json=dict(candidate.source_json),
+                    operation="approve" if conflict is None else "resolve_conflict",
+                    actor_user_id=actor.id,
+                    created_at=timestamp,
+                )
+            )
+            record_case_event(
+                self.db,
+                case=case,
                 actor_user_id=actor.id,
-                created_at=timestamp,
+                event_type=(
+                    "project_field_conflict_resolved"
+                    if conflict is not None
+                    else "project_field_approved"
+                ),
+                resource_type="project_data_value",
+                resource_id=current.id,
+                metadata={"status": "approved", "version": next_revision},
             )
-        )
-        candidate.status = "approved"
-        candidate.decided_by_user_id = actor.id
-        candidate.decision_reason = reason
-        candidate.decided_at = timestamp
-        candidate.updated_at = timestamp
-        self.db.add(candidate)
-        if conflict is not None:
-            conflict.status = "resolved"
-            conflict.resolved_candidate_id = candidate.id
-            conflict.resolved_by_user_id = actor.id
-            conflict.resolution_reason = reason
-            conflict.resolved_at = timestamp
-            conflict.updated_at = timestamp
-            self.db.add(conflict)
-        record_case_event(
-            self.db,
-            case=case,
-            actor_user_id=actor.id,
-            event_type=(
-                "project_field_conflict_resolved"
-                if conflict is not None
-                else "project_field_approved"
-            ),
-            resource_type="project_data_value",
-            resource_id=current.id,
-            metadata={"status": current.status, "version": current.revision},
-        )
-        self.db.commit()
+            self.db.commit()
+        except ProjectDataConflictError:
+            self.db.rollback()
+            raise
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise ProjectDataConflictError("PROJECT_DATA_CONFLICT") from exc
         self.db.refresh(current)
         return current
 

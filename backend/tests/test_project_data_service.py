@@ -11,6 +11,7 @@ from app.db.models import (
     ProjectDataConflict,
     ProjectDataFieldDefinition,
     ProjectDataValue,
+    ProjectDataValueRevision,
     User,
 )
 from app.project_data.fields import (
@@ -379,3 +380,127 @@ def test_conflict_resolution_applies_selected_candidate(service_context) -> None
     )
     assert resolved.value_json == "乙公司"
     assert resolved.revision == 3
+
+
+def test_interleaved_approval_loser_is_a_conflict_without_a_second_revision(
+    service_context,
+    monkeypatch,
+) -> None:
+    db, case, editor, reviewer = service_context
+    losing_candidate = _submit(db, case, editor, "甲公司", expected_revision=0)
+    winning_candidate = _submit(db, case, editor, "甲公司", expected_revision=0)
+    service = ProjectDataService(db)
+    original_apply = service._apply_candidate
+
+    with Session(db.get_bind()) as winning_db:
+        winning_reviewer = winning_db.get(User, reviewer.id)
+
+        def apply_after_competing_approval(
+            candidate_to_apply,
+            case_to_update,
+            actor,
+            *,
+            reason,
+            conflict=None,
+        ):
+            ProjectDataService(winning_db).approve_candidate(
+                winning_candidate.id,
+                winning_reviewer,
+                expected_current_revision=0,
+                reason="先提交的审批",
+            )
+            return original_apply(
+                candidate_to_apply,
+                case_to_update,
+                actor,
+                reason=reason,
+                conflict=conflict,
+            )
+
+        monkeypatch.setattr(service, "_apply_candidate", apply_after_competing_approval)
+
+        with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
+            service.approve_candidate(
+                losing_candidate.id,
+                reviewer,
+                expected_current_revision=0,
+                reason="后提交的审批",
+            )
+
+    db.expire_all()
+    current = db.exec(select(ProjectDataValue)).one()
+    revisions = db.exec(select(ProjectDataValueRevision)).all()
+    assert current.value_json == "甲公司"
+    assert current.revision == 1
+    assert len(revisions) == 1
+    assert db.get(ProjectDataCandidate, winning_candidate.id).status == "approved"
+    assert db.get(ProjectDataCandidate, losing_candidate.id).status == "pending"
+
+
+def test_interleaved_approval_loses_to_conflict_resolution_with_domain_error(
+    service_context,
+    monkeypatch,
+) -> None:
+    db, case, editor, reviewer = service_context
+    current = _submit_and_approve(db, case, editor, reviewer, "甲公司")
+    selected = _submit(db, case, editor, "乙公司", expected_revision=current.revision)
+    competing = _submit(db, case, editor, "丙公司", expected_revision=current.revision)
+
+    with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
+        ProjectDataService(db).approve_candidate(
+            selected.id,
+            reviewer,
+            expected_current_revision=current.revision,
+            reason="形成待解决冲突",
+        )
+    open_conflict = db.exec(select(ProjectDataConflict)).one()
+    ProjectDataService(db).reject_candidate(competing.id, reviewer, "不采用竞争值")
+
+    service = ProjectDataService(db)
+    original_apply = service._apply_candidate
+    with Session(db.get_bind()) as winning_db:
+        winning_reviewer = winning_db.get(User, reviewer.id)
+
+        def apply_after_conflict_resolution(
+            candidate_to_apply,
+            case_to_update,
+            actor,
+            *,
+            reason,
+            conflict=None,
+        ):
+            ProjectDataService(winning_db).resolve_conflict(
+                open_conflict.id,
+                selected.id,
+                winning_reviewer,
+                "冲突解决先提交",
+            )
+            return original_apply(
+                candidate_to_apply,
+                case_to_update,
+                actor,
+                reason=reason,
+                conflict=conflict,
+            )
+
+        monkeypatch.setattr(service, "_apply_candidate", apply_after_conflict_resolution)
+
+        with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
+            service.approve_candidate(
+                selected.id,
+                reviewer,
+                expected_current_revision=current.revision,
+                reason="普通审批后提交",
+            )
+
+    db.expire_all()
+    final_value = db.exec(select(ProjectDataValue)).one()
+    revisions = db.exec(
+        select(ProjectDataValueRevision).order_by(ProjectDataValueRevision.revision)
+    ).all()
+    resolved_conflict = db.get(ProjectDataConflict, open_conflict.id)
+    assert final_value.value_json == "乙公司"
+    assert final_value.revision == 2
+    assert [revision.revision for revision in revisions] == [1, 2]
+    assert resolved_conflict.status == "resolved"
+    assert resolved_conflict.resolved_candidate_id == selected.id
