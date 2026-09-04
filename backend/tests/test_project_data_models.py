@@ -6,6 +6,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.db.models import (
     ProjectDataConflict,
+    ProjectDataFieldDefinition,
     ProjectDataValue,
     RuleDefinition,
     RuleSetVersion,
@@ -88,7 +89,41 @@ def test_project_field_has_one_current_row_per_case_and_key(tmp_path) -> None:
             db.commit()
 
 
-def test_published_rule_version_has_immutable_identity_fields() -> None:
+def test_system_field_definition_key_is_unique_in_sqlite(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'system-field-definitions.db'}")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        db.add(
+            ProjectDataFieldDefinition(
+                id="field-definition-1",
+                tenant_id=None,
+                field_key="organization.legal_name",
+                label="法定名称",
+                value_type="string",
+                information_domain="organization",
+                scope="organization",
+            )
+        )
+        db.commit()
+        db.add(
+            ProjectDataFieldDefinition(
+                id="field-definition-2",
+                tenant_id=None,
+                field_key="organization.legal_name",
+                label="企业名称",
+                value_type="string",
+                information_domain="organization",
+                scope="organization",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.commit()
+
+
+def test_published_rule_version_publication_fields_are_persisted(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'published-rule-version.db'}")
+    SQLModel.metadata.create_all(engine)
     version = RuleSetVersion(
         id="ruleset-version-1",
         tenant_id="tenant_demo",
@@ -97,5 +132,13 @@ def test_published_rule_version_has_immutable_identity_fields() -> None:
         status="published",
         content_sha256="a" * 64,
     )
-    assert version.status == "published"
-    assert version.content_sha256 == "a" * 64
+
+    with Session(engine) as db:
+        db.add(version)
+        db.commit()
+
+    with Session(engine) as db:
+        stored = db.get(RuleSetVersion, "ruleset-version-1")
+        assert stored is not None
+        assert stored.status == "published"
+        assert stored.content_sha256 == "a" * 64

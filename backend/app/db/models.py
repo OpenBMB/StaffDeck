@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import JSON, Column, Index, Integer, UniqueConstraint
+from sqlalchemy import JSON, Column, Index, Integer, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -256,6 +256,13 @@ class ProjectDataFieldDefinition(SQLModel, table=True):
             "field_key",
             name="uq_project_data_field_definition",
         ),
+        Index(
+            "uq_project_data_system_field_key",
+            "field_key",
+            unique=True,
+            sqlite_where=text("tenant_id IS NULL"),
+            postgresql_where=text("tenant_id IS NULL"),
+        ).ddl_if(dialect=("sqlite", "postgresql")),
     )
 
     id: str = Field(default_factory=lambda: new_id("fielddef"), primary_key=True)

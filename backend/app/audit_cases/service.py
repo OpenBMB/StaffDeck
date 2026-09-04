@@ -40,6 +40,7 @@ from app.db.models import (
     AuditCaseEvent,
     AuditCaseMaterial,
     AuditCaseMaterialChunk,
+    AuditCaseMemberRole,
     ChatSession,
     KnowledgeBaseVersion,
     KnowledgeChunk,
@@ -294,6 +295,48 @@ class AuditCaseService:
             raise AuditCaseNotFound(case_id)
         return row
 
+    def _sync_member_roles(
+        self,
+        case: AuditCase,
+        *,
+        member_user_ids: set[str],
+        actor_user_id: str,
+    ) -> None:
+        existing_roles = self.db.exec(
+            select(AuditCaseMemberRole).where(
+                AuditCaseMemberRole.tenant_id == case.tenant_id,
+                AuditCaseMemberRole.audit_case_id == case.id,
+            )
+        ).all()
+        roles_by_user_id = {role.user_id: role for role in existing_roles}
+
+        if case.owner_user_id not in roles_by_user_id:
+            self.db.add(
+                AuditCaseMemberRole(
+                    tenant_id=case.tenant_id,
+                    audit_case_id=case.id,
+                    user_id=case.owner_user_id,
+                    role="project_admin",
+                    created_by_user_id=actor_user_id,
+                )
+            )
+
+        for user_id in member_user_ids - {case.owner_user_id}:
+            if user_id not in roles_by_user_id:
+                self.db.add(
+                    AuditCaseMemberRole(
+                        tenant_id=case.tenant_id,
+                        audit_case_id=case.id,
+                        user_id=user_id,
+                        role="editor",
+                        created_by_user_id=actor_user_id,
+                    )
+                )
+
+        for user_id, role in roles_by_user_id.items():
+            if user_id != case.owner_user_id and user_id not in member_user_ids:
+                self.db.delete(role)
+
     def create_case(self, owner: User, request: AuditCaseCreate) -> AuditCase:
         if request.tenant_id != owner.tenant_id:
             raise AuditCaseAccessDenied("tenant mismatch")
@@ -319,6 +362,11 @@ class AuditCaseService:
             knowledge_base_version_ids_json=list(request.knowledge_base_version_ids),
         )
         self.db.add(case)
+        self._sync_member_roles(
+            case,
+            member_user_ids=requested_members,
+            actor_user_id=owner.id,
+        )
         record_case_event(
             self.db,
             case=case,
@@ -424,6 +472,11 @@ class AuditCaseService:
         case.member_user_ids_json = requested_ids
         case.updated_at = utc_now()
         self.db.add(case)
+        self._sync_member_roles(
+            case,
+            member_user_ids=set(requested_ids),
+            actor_user_id=actor.id,
+        )
         record_case_event(
             self.db,
             case=case,

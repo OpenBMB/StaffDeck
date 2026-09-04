@@ -6,11 +6,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import Engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
-
 
 logger = logging.getLogger(__name__)
 
@@ -539,8 +539,8 @@ def _migrate_sqlite_skill_schema() -> None:
 
 
 @contextmanager
-def _sqlite_immediate_connection():
-    conn = engine.connect()
+def _sqlite_immediate_connection(target_engine: Engine = engine):
+    conn = target_engine.connect()
     try:
         conn.exec_driver_sql("BEGIN IMMEDIATE")
         yield conn
@@ -2131,20 +2131,40 @@ def _migrate_audit_case_schema(conn, inspector, tables: set[str]) -> None:
 def run_project_data_backfill(target_engine: Engine) -> None:
     """Run the idempotent legacy project-role backfill against an engine."""
 
-    target_inspector = inspect(target_engine)
-    tables = set(target_inspector.get_table_names())
+    if target_engine.dialect.name == "sqlite":
+        with _sqlite_immediate_connection(target_engine) as conn:
+            target_inspector = inspect(conn)
+            tables = set(target_inspector.get_table_names())
+            _migrate_project_data_schema(conn, target_inspector, tables)
+        return
+
     with target_engine.begin() as conn:
-        _migrate_project_data_schema(conn, inspect(conn), tables)
+        target_inspector = inspect(conn)
+        tables = set(target_inspector.get_table_names())
+        _migrate_project_data_schema(conn, target_inspector, tables)
 
 
 def _migrate_project_data_schema(conn, inspector, tables: set[str]) -> None:
     """Backfill explicit project roles from legacy owner/member fields."""
 
+    current_tables = set(inspect(conn).get_table_names())
+    if (
+        "project_data_field_definitions" in current_tables
+        and conn.dialect.name in {"sqlite", "postgresql"}
+    ):
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_project_data_system_field_key "
+                "ON project_data_field_definitions(field_key) "
+                "WHERE tenant_id IS NULL"
+            )
+        )
+
     required_tables = {"audit_cases", "audit_case_member_roles", "users"}
     if not required_tables.issubset(tables):
         return
 
-    current_tables = set(inspect(conn).get_table_names())
     marker_available = "app_data_migrations" in current_tables
     marker_id = "project_data_member_roles_v1"
     if marker_available:
@@ -2186,22 +2206,6 @@ def _migrate_project_data_schema(conn, inspector, tables: set[str]) -> None:
                 continue
             seen_user_ids.add(user_id)
 
-            existing = conn.execute(
-                text(
-                    "SELECT id FROM audit_case_member_roles "
-                    "WHERE tenant_id = :tenant_id "
-                    "AND audit_case_id = :audit_case_id "
-                    "AND user_id = :user_id"
-                ),
-                {
-                    "tenant_id": tenant_id,
-                    "audit_case_id": case_id,
-                    "user_id": user_id,
-                },
-            ).first()
-            if existing:
-                continue
-
             user_tenant_id = conn.execute(
                 text("SELECT tenant_id FROM users WHERE id = :user_id"),
                 {"user_id": user_id},
@@ -2223,8 +2227,9 @@ def _migrate_project_data_schema(conn, inspector, tables: set[str]) -> None:
 
             role_id_seed = f"{tenant_id}\x1f{case_id}\x1f{user_id}".encode()
             role_id = f"auditrole_{hashlib.sha256(role_id_seed).hexdigest()[:16]}"
-            conn.execute(
-                text(
+            _execute_conflict_safe_insert(
+                conn,
+                insert_sql=(
                     "INSERT INTO audit_case_member_roles ("
                     "id, tenant_id, audit_case_id, user_id, role, created_by_user_id, "
                     "created_at, updated_at"
@@ -2233,19 +2238,50 @@ def _migrate_project_data_schema(conn, inspector, tables: set[str]) -> None:
                     "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP"
                     ")"
                 ),
-                {
+                params={
                     "id": role_id,
                     "tenant_id": tenant_id,
                     "audit_case_id": case_id,
                     "user_id": user_id,
                     "role": role,
                 },
+                conflict_columns="tenant_id, audit_case_id, user_id",
             )
 
     if marker_available:
+        _execute_conflict_safe_insert(
+            conn,
+            insert_sql="INSERT INTO app_data_migrations (id) VALUES (:id)",
+            params={"id": marker_id},
+            conflict_columns="id",
+        )
+
+
+def _execute_conflict_safe_insert(
+    conn,
+    *,
+    insert_sql: str,
+    params: dict[str, object],
+    conflict_columns: str,
+) -> None:
+    dialect_name = conn.dialect.name
+    if dialect_name == "sqlite":
+        conn.execute(text(insert_sql.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)), params)
+        return
+    if dialect_name == "postgresql":
         conn.execute(
-            text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
-            {"id": marker_id},
+            text(f"{insert_sql} ON CONFLICT ({conflict_columns}) DO NOTHING"),
+            params,
+        )
+        return
+
+    try:
+        with conn.begin_nested():
+            conn.execute(text(insert_sql), params)
+    except IntegrityError:
+        logger.info(
+            "Ignoring concurrent project data migration insert conflict on %s",
+            conflict_columns,
         )
 
 
