@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -9,6 +10,9 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_database_url(url: str) -> str:
@@ -66,6 +70,7 @@ def init_db() -> None:
     _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
     _migrate_sqlite_skill_schema()
+    run_project_data_backfill(engine)
 
 
 def _configure_sqlite_runtime() -> None:
@@ -2121,6 +2126,169 @@ def _migrate_audit_case_schema(conn, inspector, tables: set[str]) -> None:
             "ON sessions(audit_case_id)"
         )
     )
+
+
+def run_project_data_backfill(target_engine: Engine) -> None:
+    """Run the idempotent legacy project-role backfill against an engine."""
+
+    target_inspector = inspect(target_engine)
+    tables = set(target_inspector.get_table_names())
+    with target_engine.begin() as conn:
+        _migrate_project_data_schema(conn, inspect(conn), tables)
+
+
+def _migrate_project_data_schema(conn, inspector, tables: set[str]) -> None:
+    """Backfill explicit project roles from legacy owner/member fields."""
+
+    required_tables = {"audit_cases", "audit_case_member_roles", "users"}
+    if not required_tables.issubset(tables):
+        return
+
+    current_tables = set(inspect(conn).get_table_names())
+    marker_available = "app_data_migrations" in current_tables
+    marker_id = "project_data_member_roles_v1"
+    if marker_available:
+        applied = conn.execute(
+            text("SELECT id FROM app_data_migrations WHERE id = :id"),
+            {"id": marker_id},
+        ).first()
+        if applied:
+            return
+
+    cases = conn.execute(
+        text(
+            "SELECT id, tenant_id, owner_user_id, member_user_ids_json "
+            "FROM audit_cases"
+        )
+    ).mappings().all()
+    for case in cases:
+        case_id = str(case["id"])
+        tenant_id = str(case["tenant_id"])
+        owner_user_id = _legacy_project_user_id(
+            case["owner_user_id"],
+            case_id=case_id,
+            source="owner_user_id",
+        )
+        role_candidates: list[tuple[str, str]] = []
+        if owner_user_id is not None:
+            role_candidates.append((owner_user_id, "project_admin"))
+        role_candidates.extend(
+            (user_id, "editor")
+            for user_id in _legacy_project_member_ids(
+                case["member_user_ids_json"],
+                case_id=case_id,
+            )
+        )
+
+        seen_user_ids: set[str] = set()
+        for user_id, role in role_candidates:
+            if user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(user_id)
+
+            existing = conn.execute(
+                text(
+                    "SELECT id FROM audit_case_member_roles "
+                    "WHERE tenant_id = :tenant_id "
+                    "AND audit_case_id = :audit_case_id "
+                    "AND user_id = :user_id"
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "audit_case_id": case_id,
+                    "user_id": user_id,
+                },
+            ).first()
+            if existing:
+                continue
+
+            user_tenant_id = conn.execute(
+                text("SELECT tenant_id FROM users WHERE id = :user_id"),
+                {"user_id": user_id},
+            ).scalar_one_or_none()
+            if user_tenant_id is None:
+                logger.warning(
+                    "Skipping legacy project role for missing user %s in audit case %s",
+                    user_id,
+                    case_id,
+                )
+                continue
+            if str(user_tenant_id) != tenant_id:
+                logger.warning(
+                    "Skipping legacy project role for cross-tenant user %s in audit case %s",
+                    user_id,
+                    case_id,
+                )
+                continue
+
+            role_id_seed = f"{tenant_id}\x1f{case_id}\x1f{user_id}".encode()
+            role_id = f"auditrole_{hashlib.sha256(role_id_seed).hexdigest()[:16]}"
+            conn.execute(
+                text(
+                    "INSERT INTO audit_case_member_roles ("
+                    "id, tenant_id, audit_case_id, user_id, role, created_by_user_id, "
+                    "created_at, updated_at"
+                    ") VALUES ("
+                    ":id, :tenant_id, :audit_case_id, :user_id, :role, NULL, "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP"
+                    ")"
+                ),
+                {
+                    "id": role_id,
+                    "tenant_id": tenant_id,
+                    "audit_case_id": case_id,
+                    "user_id": user_id,
+                    "role": role,
+                },
+            )
+
+    if marker_available:
+        conn.execute(
+            text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+            {"id": marker_id},
+        )
+
+
+def _legacy_project_user_id(value: object, *, case_id: str, source: str) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    logger.warning(
+        "Skipping malformed legacy project role identifier from %s in audit case %s: %r",
+        source,
+        case_id,
+        value,
+    )
+    return None
+
+
+def _legacy_project_member_ids(value: object, *, case_id: str) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Skipping malformed legacy member_user_ids_json in audit case %s",
+                case_id,
+            )
+            return []
+    if not isinstance(value, list):
+        logger.warning(
+            "Skipping malformed legacy member_user_ids_json in audit case %s: %r",
+            case_id,
+            value,
+        )
+        return []
+
+    member_ids: list[str] = []
+    for item in value:
+        user_id = _legacy_project_user_id(
+            item,
+            case_id=case_id,
+            source="member_user_ids_json",
+        )
+        if user_id is not None:
+            member_ids.append(user_id)
+    return member_ids
 
 
 def _migrate_audit_case_material_schema(conn, inspector, tables: set[str]) -> None:
