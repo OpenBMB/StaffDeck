@@ -121,12 +121,51 @@ def test_non_streaming_and_provider_failure():
     assert [e for e, _ in traces2] == ["llm_call_started", "llm_call_failed"]
 
 
-def test_unsupported_protocol_is_refused_with_guidance():
+def test_anthropic_model_is_streamed_through_the_tool_aware_adapter():
+    """A non-chat-completions ModelConfig is no longer refused: the adapter layer serves it."""
+    events = [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(id="msg_a", usage=SimpleNamespace(input_tokens=7, output_tokens=0))),
+        SimpleNamespace(type="content_block_start", index=0, content_block=SimpleNamespace(type="tool_use", id="toolu_1", name="mcp__staffdeck__knowledge_search")),
+        SimpleNamespace(type="content_block_delta", index=0, delta=SimpleNamespace(type="input_json_delta", partial_json="{\"query\":\"年假\"}")),
+        SimpleNamespace(type="content_block_stop", index=0),
+        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="tool_use"), usage=SimpleNamespace(output_tokens=9)),
+    ]
+    seen = []
+
+    def create(*, stream, **payload):
+        seen.append(payload)
+        return iter(events)
+
+    sdk = SimpleNamespace(messages=SimpleNamespace(create=create))
+    client = _Client(_Driver([], []), protocol="anthropic_messages")
+    client.driver = SimpleNamespace(request_kind="anthropic.messages")
+    client.client = sdk
+    reg = ActivationRegistry()
+    act, traces = _activation(reg)
+    c = _app(reg, client)
+    body = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "hi"}], "stream": True,
+            "tools": [{"type": "function", "function": {"name": "mcp__staffdeck__knowledge_search", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}}]}
+    with c.stream("POST", CHAT_COMPLETIONS_PATH, json=body, headers={"authorization": f"Bearer {act.token}"}) as r:
+        assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+        lines = [ln for ln in r.iter_lines() if ln.startswith("data: ")]
+    assert lines[-1] == "data: [DONE]"
+    payloads = [json.loads(ln[6:]) for ln in lines[:-1]]
+    calls = [tc for p in payloads for tc in (p["choices"][0]["delta"].get("tool_calls") or [])]
+    assert calls[0]["id"] == "toolu_1" and calls[0]["function"]["name"] == "mcp__staffdeck__knowledge_search"
+    assert "".join(tc["function"]["arguments"] for tc in calls) == "{\"query\":\"年假\"}"
+    assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls" and payloads[-1]["model"] == "qwen-x"
+    assert seen[0]["system"] == "s" and seen[0]["max_tokens"] == 1024 and seen[0]["tools"][0]["name"] == "mcp__staffdeck__knowledge_search"
+    finished = traces[-1]
+    assert finished[0] == "llm_call_finished" and finished[1]["request_kind"] == "anthropic.messages"
+    assert finished[1]["input_tokens"] == 7 and finished[1]["output_tokens"] == 9 and finished[1]["finish_reason"] == "tool_calls"
+
+
+def test_unknown_protocol_is_refused_with_guidance():
     reg = ActivationRegistry()
     act, _ = _activation(reg)
-    c = _app(reg, _Client(_Driver([], []), protocol="anthropic_messages"))
+    c = _app(reg, _Client(_Driver([], []), protocol="soap_rpc"))
     r = c.post(CHAT_COMPLETIONS_PATH, json={"messages": [{"role": "user", "content": "hi"}]}, headers={"authorization": f"Bearer {act.token}"})
-    assert r.status_code == 400 and "Harness v2" in r.json()["error"]["message"]
+    assert r.status_code == 400 and r.json()["error"]["code"] == "UNSUPPORTED_PROTOCOL"
 
 
 def test_missing_model_config_is_operator_readable():

@@ -17,14 +17,17 @@ Request handling
 ----------------
 - ``Authorization: Bearer <activation token>`` → the activation (404 if the
   turn is over, 401 if missing).
-- Only ``openai_chat_completions`` model configs can serve tool calls today; the
-  other protocol drivers have no tool mapping, so they answer 400 with an
-  operator-readable message rather than silently dropping tools.
+- All four ModelConfig protocols are served. ``openai_chat_completions`` passes
+  through the legacy driver untouched; ``anthropic_messages``, ``openai_responses``
+  and ``gemini_generate_content`` go through the tool-aware adapters in
+  :mod:`staffdeck_harness.bridge.protocol_adapters`, which translate ``tools`` /
+  ``tool_calls`` / ``role: "tool"`` both ways and always yield OpenAI-shaped dicts.
 - ``thinking`` / ``reasoning_effort`` sent by the engine are ignored: the ModelConfig
   is the source of truth (``LLMClient.thinking_mode`` / ``extra_body``).
 - Streaming responses are passed through chunk by chunk as SSE; the provider's
   own chunk shape (including ``reasoning_content`` and ``tool_calls`` deltas)
-  is preserved, ending with ``data: [DONE]``.
+  is preserved for chat-completions models and synthesised for the others,
+  ending with ``data: [DONE]``.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
 from staffdeck_harness.bridge.capability_mcp import ActivationRegistry
+from staffdeck_harness.bridge.protocol_adapters import adapter_for
 
 logger = logging.getLogger(__name__)
 
@@ -57,14 +61,15 @@ def _bearer(request: Request) -> str | None:
     return None
 
 
-def _dump(obj: Any) -> Any:
+def _dump(obj: Any) -> dict[str, Any]:
+    """Adapters hand back plain dicts; keep tolerating SDK objects for safety."""
+    if isinstance(obj, dict):
+        return obj
     if hasattr(obj, "model_dump"):
         try:
             return obj.model_dump(mode="json", exclude_none=True)
         except TypeError:
             return obj.model_dump()
-    if isinstance(obj, dict):
-        return obj
     return {"raw": str(obj)}
 
 
@@ -107,18 +112,20 @@ class ModelGateway:
             client = self._client_factory(model_config)
         except Exception as exc:  # noqa: BLE001 — bad credentials / unsupported protocol
             return _error(400, "MODEL_CLIENT_ERROR", f"模型配置无法使用：{exc}")
-        protocol = str(getattr(client, "api_protocol", "openai_chat_completions"))
-        if protocol != "openai_chat_completions":
-            return _error(400, "UNSUPPORTED_PROTOCOL", f"Harness v3 目前只支持 OpenAI Chat Completions 协议的模型，当前模型使用 {protocol}；请为该员工选择兼容的模型或改用 Harness v2 引擎")
+        try:
+            adapter = adapter_for(client)
+        except Exception as exc:  # noqa: BLE001 — unknown protocol / client missing its SDK handle
+            return _error(400, "UNSUPPORTED_PROTOCOL", f"Harness v3 无法使用该模型协议：{exc}")
 
         wire = self._wire_request(client, model_config, body)
         stream = bool(body.get("stream", True))
-        driver = client.driver
+        driver = getattr(client, "driver", None)
         trace = getattr(act.host, "trace", None)
         started = time.perf_counter()
         span = {
-            "operation": "harness_v3.step", "model": client.model, "model_name": getattr(client, "model_config_name", "") or client.model,
-            "endpoint": getattr(client, "base_url", ""), "request_kind": getattr(driver, "request_kind", "chat.completions"),
+            "operation": f"harness_v3.{getattr(act.host, 'phase', None) or 'step'}", "model": client.model, "model_name": getattr(client, "model_config_name", "") or client.model,
+            "endpoint": getattr(client, "base_url", ""),
+            "request_kind": getattr(driver, "request_kind", None) or getattr(adapter, "request_kind", "chat.completions"),
             "stream": stream, "thinking_mode": getattr(client, "thinking_mode", "") or "provider_default",
             "request_message_count": len(body.get("messages") or []), "tool_count": len(body.get("tools") or []),
             "engine": "harness_v3",
@@ -129,7 +136,7 @@ class ModelGateway:
         loop_run = __import__("asyncio").get_running_loop().run_in_executor
         if not stream:
             try:
-                completion = await loop_run(None, driver.complete, wire)
+                completion = await loop_run(None, adapter.complete, wire)
             except Exception as exc:  # noqa: BLE001
                 if trace:
                     trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)[:500]})
@@ -141,7 +148,7 @@ class ModelGateway:
 
         # Streaming: pull the synchronous provider iterator on a worker thread and relay chunks as SSE.
         try:
-            chunks: Iterator[Any] = await loop_run(None, driver.stream, wire)
+            chunks: Iterator[Any] = await loop_run(None, adapter.stream, wire)
         except Exception as exc:  # noqa: BLE001
             if trace:
                 trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)[:500]})
