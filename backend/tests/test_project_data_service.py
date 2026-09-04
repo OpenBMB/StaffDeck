@@ -101,6 +101,24 @@ def _submit_and_approve(db, case, editor, reviewer, value):
     )
 
 
+def _add_reviewer(db, case, user_id):
+    reviewer = _user(user_id, case.tenant_id)
+    db.add_all(
+        [
+            reviewer,
+            AuditCaseMemberRole(
+                id=f"{user_id}-role",
+                tenant_id=case.tenant_id,
+                audit_case_id=case.id,
+                user_id=reviewer.id,
+                role="reviewer",
+            ),
+        ]
+    )
+    db.commit()
+    return reviewer
+
+
 def test_field_keys_are_stable_and_unique() -> None:
     keys = [item.field_key for item in SYSTEM_FIELD_DEFINITIONS]
     # The approved field list contains 37 entries; the prior plan's count of 36
@@ -441,25 +459,26 @@ def test_interleaved_approval_loses_to_conflict_resolution_with_domain_error(
     service_context,
     monkeypatch,
 ) -> None:
-    db, case, editor, reviewer = service_context
-    current = _submit_and_approve(db, case, editor, reviewer, "甲公司")
+    db, case, editor, approving_reviewer = service_context
+    resolving_reviewer = _add_reviewer(db, case, "reviewer-2")
+    current = _submit_and_approve(db, case, editor, approving_reviewer, "甲公司")
     selected = _submit(db, case, editor, "乙公司", expected_revision=current.revision)
     competing = _submit(db, case, editor, "丙公司", expected_revision=current.revision)
 
     with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
         ProjectDataService(db).approve_candidate(
             selected.id,
-            reviewer,
+            approving_reviewer,
             expected_current_revision=current.revision,
             reason="形成待解决冲突",
         )
     open_conflict = db.exec(select(ProjectDataConflict)).one()
-    ProjectDataService(db).reject_candidate(competing.id, reviewer, "不采用竞争值")
+    ProjectDataService(db).reject_candidate(competing.id, approving_reviewer, "不采用竞争值")
 
     service = ProjectDataService(db)
     original_apply = service._apply_candidate
     with Session(db.get_bind()) as winning_db:
-        winning_reviewer = winning_db.get(User, reviewer.id)
+        winning_reviewer = winning_db.get(User, resolving_reviewer.id)
 
         def apply_after_conflict_resolution(
             candidate_to_apply,
@@ -488,19 +507,189 @@ def test_interleaved_approval_loses_to_conflict_resolution_with_domain_error(
         with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
             service.approve_candidate(
                 selected.id,
-                reviewer,
+                approving_reviewer,
                 expected_current_revision=current.revision,
                 reason="普通审批后提交",
             )
 
     db.expire_all()
+    final_candidate = db.get(ProjectDataCandidate, selected.id)
     final_value = db.exec(select(ProjectDataValue)).one()
     revisions = db.exec(
         select(ProjectDataValueRevision).order_by(ProjectDataValueRevision.revision)
     ).all()
     resolved_conflict = db.get(ProjectDataConflict, open_conflict.id)
+    finalization_events = [
+        event
+        for event in db.exec(
+            select(AuditCaseEvent).where(AuditCaseEvent.audit_case_id == case.id)
+        ).all()
+        if event.metadata_json.get("version") == 2
+    ]
+    assert final_candidate.status == "approved"
+    assert final_candidate.decided_by_user_id == resolving_reviewer.id
+    assert final_candidate.decision_reason == "冲突解决先提交"
+    assert final_candidate.decided_at is not None
     assert final_value.value_json == "乙公司"
     assert final_value.revision == 2
+    assert final_value.approved_by_user_id == resolving_reviewer.id
     assert [revision.revision for revision in revisions] == [1, 2]
+    assert revisions[-1].operation == "resolve_conflict"
+    assert revisions[-1].actor_user_id == resolving_reviewer.id
     assert resolved_conflict.status == "resolved"
     assert resolved_conflict.resolved_candidate_id == selected.id
+    assert resolved_conflict.resolved_by_user_id == resolving_reviewer.id
+    assert resolved_conflict.resolution_reason == "冲突解决先提交"
+    assert resolved_conflict.resolved_at is not None
+    assert len(finalization_events) == 1
+    assert finalization_events[0].event_type == "project_field_conflict_resolved"
+    assert finalization_events[0].actor_user_id == resolving_reviewer.id
+
+
+def test_interleaved_conflict_resolution_loses_to_approval_with_coherent_audit_state(
+    service_context,
+    monkeypatch,
+) -> None:
+    db, case, editor, resolving_reviewer = service_context
+    approving_reviewer = _add_reviewer(db, case, "reviewer-2")
+    current = _submit_and_approve(db, case, editor, resolving_reviewer, "甲公司")
+    selected = _submit(db, case, editor, "乙公司", expected_revision=current.revision)
+    competing = _submit(db, case, editor, "丙公司", expected_revision=current.revision)
+
+    with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
+        ProjectDataService(db).approve_candidate(
+            selected.id,
+            resolving_reviewer,
+            expected_current_revision=current.revision,
+            reason="形成待解决冲突",
+        )
+    open_conflict = db.exec(select(ProjectDataConflict)).one()
+    ProjectDataService(db).reject_candidate(competing.id, resolving_reviewer, "不采用竞争值")
+
+    service = ProjectDataService(db)
+    original_apply = service._apply_candidate
+    with Session(db.get_bind()) as winning_db:
+        winning_reviewer = winning_db.get(User, approving_reviewer.id)
+
+        def apply_after_ordinary_approval(
+            candidate_to_apply,
+            case_to_update,
+            actor,
+            *,
+            reason,
+            conflict=None,
+        ):
+            ProjectDataService(winning_db).approve_candidate(
+                selected.id,
+                winning_reviewer,
+                expected_current_revision=current.revision,
+                reason="普通审批先提交",
+            )
+            return original_apply(
+                candidate_to_apply,
+                case_to_update,
+                actor,
+                reason=reason,
+                conflict=conflict,
+            )
+
+        monkeypatch.setattr(service, "_apply_candidate", apply_after_ordinary_approval)
+
+        with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
+            service.resolve_conflict(
+                open_conflict.id,
+                selected.id,
+                resolving_reviewer,
+                "冲突解决后提交",
+            )
+
+    db.expire_all()
+    final_candidate = db.get(ProjectDataCandidate, selected.id)
+    final_conflict = db.get(ProjectDataConflict, open_conflict.id)
+    final_value = db.exec(select(ProjectDataValue)).one()
+    revisions = db.exec(
+        select(ProjectDataValueRevision).order_by(ProjectDataValueRevision.revision)
+    ).all()
+    finalization_events = [
+        event
+        for event in db.exec(
+            select(AuditCaseEvent).where(AuditCaseEvent.audit_case_id == case.id)
+        ).all()
+        if event.metadata_json.get("version") == 2
+    ]
+
+    assert final_candidate.status == "approved"
+    assert final_candidate.decided_by_user_id == approving_reviewer.id
+    assert final_candidate.decision_reason == "普通审批先提交"
+    assert final_candidate.decided_at is not None
+    assert final_conflict.status == "resolved"
+    assert final_conflict.resolved_candidate_id == selected.id
+    assert final_conflict.resolved_by_user_id == approving_reviewer.id
+    assert final_conflict.resolution_reason == "普通审批先提交"
+    assert final_conflict.resolved_at is not None
+    assert final_value.value_json == "乙公司"
+    assert final_value.revision == 2
+    assert final_value.approved_by_user_id == approving_reviewer.id
+    assert [revision.revision for revision in revisions] == [1, 2]
+    assert revisions[-1].operation == "resolve_conflict"
+    assert revisions[-1].actor_user_id == approving_reviewer.id
+    assert len(finalization_events) == 1
+    assert finalization_events[0].event_type == "project_field_conflict_resolved"
+    assert finalization_events[0].actor_user_id == approving_reviewer.id
+
+
+def test_interleaved_rejection_loses_to_approval_without_overwriting_audit_state(
+    service_context,
+    monkeypatch,
+) -> None:
+    db, case, editor, rejecting_reviewer = service_context
+    approving_reviewer = _add_reviewer(db, case, "reviewer-2")
+    candidate = _submit(db, case, editor, "甲公司", expected_revision=0)
+    service = ProjectDataService(db)
+    original_load = service._load_candidate_for_actor
+
+    with Session(db.get_bind()) as winning_db:
+        winning_reviewer = winning_db.get(User, approving_reviewer.id)
+
+        def load_after_approval(candidate_id, actor):
+            stale_candidate, stale_case = original_load(candidate_id, actor)
+            ProjectDataService(winning_db).approve_candidate(
+                candidate.id,
+                winning_reviewer,
+                expected_current_revision=0,
+                reason="审批先提交",
+            )
+            return stale_candidate, stale_case
+
+        monkeypatch.setattr(service, "_load_candidate_for_actor", load_after_approval)
+
+        with pytest.raises(ProjectDataConflictError, match="PROJECT_DATA_CONFLICT"):
+            service.reject_candidate(candidate.id, rejecting_reviewer, "拒绝后提交")
+
+    db.expire_all()
+    final_candidate = db.get(ProjectDataCandidate, candidate.id)
+    final_value = db.exec(select(ProjectDataValue)).one()
+    revisions = db.exec(select(ProjectDataValueRevision)).all()
+    conflicts = db.exec(select(ProjectDataConflict)).all()
+    events = db.exec(
+        select(AuditCaseEvent).where(AuditCaseEvent.audit_case_id == case.id)
+    ).all()
+    finalization_events = [
+        event for event in events if event.metadata_json.get("version") == 1
+    ]
+
+    assert final_candidate.status == "approved"
+    assert final_candidate.decided_by_user_id == approving_reviewer.id
+    assert final_candidate.decision_reason == "审批先提交"
+    assert final_candidate.decided_at is not None
+    assert final_value.value_json == "甲公司"
+    assert final_value.revision == 1
+    assert final_value.approved_by_user_id == approving_reviewer.id
+    assert len(revisions) == 1
+    assert revisions[0].operation == "approve"
+    assert revisions[0].actor_user_id == approving_reviewer.id
+    assert conflicts == []
+    assert len(finalization_events) == 1
+    assert finalization_events[0].event_type == "project_field_approved"
+    assert finalization_events[0].actor_user_id == approving_reviewer.id
+    assert all(event.event_type != "project_field_candidate_rejected" for event in events)

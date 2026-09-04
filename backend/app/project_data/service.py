@@ -265,10 +265,7 @@ class ProjectDataService:
                 conflict
                 for conflict in conflicts
                 if conflict.trigger_candidate_id == candidate.id
-                or (
-                    conflict.trigger_candidate_id is None
-                    and candidate.id in conflict.candidate_ids_json
-                )
+                or candidate.id in conflict.candidate_ids_json
             ),
             None,
         )
@@ -463,7 +460,14 @@ class ProjectDataService:
                 actor,
                 "PROJECT_DATA_CONFLICT",
             )
-        return self._apply_candidate(candidate, case, actor, reason=reason)
+        open_conflict = self._open_conflict(candidate, case, current_revision)
+        return self._apply_candidate(
+            candidate,
+            case,
+            actor,
+            reason=reason,
+            conflict=open_conflict,
+        )
 
     def reject_candidate(
         self,
@@ -478,22 +482,41 @@ class ProjectDataService:
             raise ProjectFieldValidationError("REJECTION_REASON_REQUIRED")
         if candidate.status != "pending":
             raise ProjectDataConflictError("CANDIDATE_NOT_PENDING")
-        candidate.status = "rejected"
-        candidate.decided_by_user_id = actor.id
-        candidate.decision_reason = normalized_reason
-        candidate.decided_at = utc_now()
-        candidate.updated_at = utc_now()
-        self.db.add(candidate)
-        record_case_event(
-            self.db,
-            case=case,
-            actor_user_id=actor.id,
-            event_type="project_field_candidate_rejected",
-            resource_type="project_data_candidate",
-            resource_id=candidate.id,
-            metadata={"status": candidate.status},
-        )
-        self.db.commit()
+        timestamp = utc_now()
+        try:
+            candidate_result = self.db.exec(
+                update(ProjectDataCandidate)
+                .where(
+                    ProjectDataCandidate.id == candidate.id,
+                    ProjectDataCandidate.tenant_id == case.tenant_id,
+                    ProjectDataCandidate.audit_case_id == case.id,
+                    ProjectDataCandidate.field_key == candidate.field_key,
+                    ProjectDataCandidate.status == "pending",
+                )
+                .values(
+                    status="rejected",
+                    decided_by_user_id=actor.id,
+                    decision_reason=normalized_reason,
+                    decided_at=timestamp,
+                    updated_at=timestamp,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if getattr(candidate_result, "rowcount", 0) != 1:
+                raise ProjectDataConflictError("PROJECT_DATA_CONFLICT")
+            record_case_event(
+                self.db,
+                case=case,
+                actor_user_id=actor.id,
+                event_type="project_field_candidate_rejected",
+                resource_type="project_data_candidate",
+                resource_id=candidate.id,
+                metadata={"status": "rejected"},
+            )
+            self.db.commit()
+        except ProjectDataConflictError:
+            self.db.rollback()
+            raise
         self.db.refresh(candidate)
         return candidate
 
