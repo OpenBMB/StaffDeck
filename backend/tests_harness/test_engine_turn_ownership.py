@@ -225,3 +225,22 @@ def test_engine_unavailable_without_fallback_raises(monkeypatch):
     monkeypatch.setattr(engine_host, "get_runtime", lambda s: (_ for _ in ()).throw(EngineUnavailable("down")))
     with pytest.raises(EngineUnavailable):
         host.open(SimpleNamespace(db=None, events=None), req, None)
+
+
+def test_phase_runner_surfaces_engine_turn_error_instead_of_empty_output(monkeypatch):
+    from staffdeck_harness.bridge import phases
+    from staffdeck_harness.bridge.task_agent import HarnessV3TaskAgent
+
+    reg = ActivationRegistry()
+    reg.register(IdlePhaseHost(), None, token="tok")
+    rt = SimpleNamespace(registry=reg)
+    pooled = SimpleNamespace(token="tok", process=object())
+    events = [{"type": "turn/end", "data": {"reason": {"kind": "error", "error": {"message": "Connection error.", "code": "SERVER", "status": 502}}}}]
+    monkeypatch.setattr(HarnessV3TaskAgent, "_run_engine_turn", lambda self, proc, sid, blocks, cancelled, trace, finished=None: (events, "", "error"))
+    traces = []
+    runner = phases.EnginePhaseRunner(rt, pooled, tenant_id="t1", session_id="s1", trace=lambda e, p: traces.append(e), cancelled=lambda: False)
+    with pytest.raises(phases.EnginePhaseError) as exc:
+        runner.prompt(phase="plan", model_config="mc", system_text="sys", user_text="u", engine_session="es")
+    assert "Connection error. (SERVER)" in str(exc.value)
+    assert isinstance(reg.get("tok").host, IdlePhaseHost), "the token is parked again even on failure"
+    assert traces == ["harness_v3_plan_started", "harness_v3_plan_finished"]

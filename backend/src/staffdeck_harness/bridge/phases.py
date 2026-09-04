@@ -82,9 +82,34 @@ class EnginePhaseRunner:
             runner.turn = _TurnStub(self.tenant_id, self.session_id)
             events, final_text, finish_reason = runner._run_engine_turn(self.pooled.process, engine_session, [{"type": "text", "text": text}], self.cancelled, self.trace)
             self.trace(f"harness_v3_{phase}_finished", {"engine_session": engine_session, "finish_reason": finish_reason, "duration_ms": int((time.monotonic() - started) * 1000), "events": len(events)})
+            if finish_reason == "error" or (not final_text.strip() and finish_reason not in (None, "completed", "end_turn", "stop")):
+                # The engine ended the turn on an error (typically the model provider); say so
+                # instead of reporting "empty output" and letting a schema-repair retry mask it.
+                raise EnginePhaseError(phase, _turn_error(events))
             return final_text
         finally:
             self.runtime.registry.rebind(self.pooled.token, IdlePhaseHost(), None)
+
+
+class EnginePhaseError(RuntimeError):
+    """The engine reported a turn-level error during a tool-less phase (plan / reply)."""
+
+    def __init__(self, phase: str, detail: str):
+        super().__init__(f"{phase} 阶段引擎报错：{detail}")
+        self.phase = phase
+        self.detail = detail
+
+
+def _turn_error(events: list[dict[str, Any]]) -> str:
+    for ev in reversed(events):
+        if ev.get("type") == "turn/end":
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            reason = data.get("reason") if isinstance(data.get("reason"), dict) else {}
+            err = reason.get("error") if isinstance(reason.get("error"), dict) else {}
+            msg = str(err.get("message") or reason.get("kind") or "").strip()
+            code = str(err.get("code") or "").strip()
+            return f"{msg} ({code})" if code else (msg or "unknown")
+    return "unknown"
 
 
 @dataclass
@@ -163,7 +188,10 @@ class EngineTurnPlanner:
         plan = None
         for attempt in range(SCHEMA_REPAIR_ATTEMPTS + 1):
             user_text = stage_prompt_text(next_payload)
-            raw_text = self.runner.prompt(phase="plan", model_config=model_config, system_text=unified_system_prompt() + "\n\n只输出一个 JSON object，不要调用任何工具，不要输出解释。", user_text=user_text, engine_session=f"{self.engine_session}-plan{attempt}")
+            try:
+                raw_text = self.runner.prompt(phase="plan", model_config=model_config, system_text=unified_system_prompt() + "\n\n只输出一个 JSON object，不要调用任何工具，不要输出解释。", user_text=user_text, engine_session=f"{self.engine_session}-plan{attempt}")
+            except EnginePhaseError as exc:
+                raise LLMError(f"LLM provider request failed (MODEL_UPSTREAM_UNAVAILABLE); message={exc.detail}") from exc
             try:
                 raw = parse_json_object(raw_text)
             except (ValueError, json.JSONDecodeError) as exc:
