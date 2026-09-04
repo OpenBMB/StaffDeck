@@ -169,6 +169,13 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
     # L4 interactions (hooks)
     registry.install(manifest("interaction.default", "对话介入规则（默认）", summary="回答前载入人设、记忆和当前流程步骤；回答后检查输出，并判断是否需要转人工。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INTERACTION], provides=["hook.contribute/v1"], hooks=DEFAULT_HOOKS), DefaultInteractions(), slot=SlotName.STAFF_INTERACTION)
 
+    # L4 runtime memory (recall provider; capture stays async for the builtin). Not wrapped in
+    # try/except on purpose: a memory module that fails to register must fail the assembly loudly.
+    from staffdeck_harness.memory import install as install_memory
+
+    install_memory(registry, settings)
+    registry.mark_guarded(SlotName.RUNTIME_MEMORY)
+
     # L4 handoff slots
     from staffdeck_harness.handoff.core import ChannelCommandReplyResolver, ChannelNotifier, DefaultAssignment, WebInboxNotifier, WebReplyResolver
 

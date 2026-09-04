@@ -869,7 +869,7 @@ def _pick(tag: str, payload: dict[str, Any]) -> dict[str, Any]:
             if k == "memories" and isinstance(v, list):
                 out["count"] = len(v)
                 continue
-            if k in ("chunks", "results") and isinstance(v, list):
+            if k in ("chunks", "results", "memories") and isinstance(v, list):
                 out["hit_count"] = len(v)
                 continue
             if isinstance(v, str) and len(v) > 400:

@@ -75,7 +75,8 @@ TAXONOMY: tuple[BigModule, ...] = (
             SubModule("capability.knowledge", "知识库", "导入资料、建立索引、检索并标注引用来源。", "A", module_ids=("knowledge.local",), legacy=("app.knowledge",)),
             SubModule("capability.skill", "通用技能", "以技能包的形式扩展员工会做的事。", "A", module_ids=("general_skill.local",), legacy=("app.general_skills",)),
             SubModule("capability.tool", "工具调用", "调用 HTTP 接口、MCP 服务或其他智能体。", "A", module_ids=("tool.local",), legacy=("app.tools",)),
-            SubModule("capability.execution", "记忆、执行环境与工作产物", "记忆读写、受控地执行命令和文件操作、输出工作产物。", "T", module_ids=("sandbox.local",), legacy=("app.harness", "app.memory")),
+            SubModule("capability.memory", "记忆", "按用户与员工召回已有记忆，对话后写入新记忆；可替换或关闭。", "T", slots=(SlotName.RUNTIME_MEMORY,), module_ids=("memory.default",), legacy=("app.memory",)),
+            SubModule("capability.execution", "执行环境与工作产物", "受控地执行命令和文件操作、输出工作产物。", "T", module_ids=("sandbox.local",), legacy=("app.harness",)),
         ),
     ),
     BigModule(

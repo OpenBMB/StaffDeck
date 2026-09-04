@@ -49,6 +49,7 @@ class SlotName(str, Enum):
     KNOWLEDGE_IMPORT_SOURCE = "knowledge.import.source"
     EVENT_OBSERVER = "event.observer"
     SECURITY_PEP = "security.pep"
+    RUNTIME_MEMORY = "runtime.memory"            # 记忆召回/写入提供者（默认 = 内置 MemoryService）
 
 
 # Capability operations a SOP node may declare as a logical dependency. The

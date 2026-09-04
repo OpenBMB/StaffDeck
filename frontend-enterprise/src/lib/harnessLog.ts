@@ -169,7 +169,7 @@ export function formatLogEntry(e: HarnessLogEntry): FormattedLog {
       return { title: `知识检索「${str(q, 80)}」`, level: 'info', meta: num(d.hit_count) !== undefined ? `${d.hit_count} 条结果` : undefined };
     }
     case 'memory/recall':
-      return { title: '回忆相关记忆', level: 'muted', meta: num(d.count) !== undefined ? `${d.count} 条` : undefined };
+      return { title: '回忆相关记忆', level: 'muted', meta: num(d.hit_count ?? d.count) !== undefined ? `${d.hit_count ?? d.count} 条` : undefined };
     case 'assistant/message':
       return { title: `员工：${str(d.reply, 200) || '（空回复）'}`, level: 'success' };
     case 'turn/complete':

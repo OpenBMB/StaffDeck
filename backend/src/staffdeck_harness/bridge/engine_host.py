@@ -145,9 +145,25 @@ class HarnessV3Engine(HarnessV2Engine):
         self._request = request
         owner = self.owner
         self._v2_response_generator = getattr(owner, "response_generator", None)
+        # Memory is a registry provider on the v3 path: re-point owner.memory at the facade for
+        # this turn. The v2 engine reads ``owner.memory.context_memories(...)`` — that call now
+        # goes to the runtime.memory provider (or recalls nothing when memory is disabled).
+        v2_memory = getattr(owner, "memory", None)
+        # Label the turn v3 before any event fires (memory_recalled happens before the frame
+        # loop reaches _ensure_turn_context on the non-stream path).
+        if hasattr(self.events, "execution_engine"):
+            self.events.execution_engine = "harness_v3"
+        try:
+            from staffdeck_harness.memory import ProviderMemoryFacade, resolve_memory_provider
+
+            owner.memory = ProviderMemoryFacade(self.db, resolve_memory_provider())
+        except Exception:  # pragma: no cover - a broken memory module must not take the turn down
+            logger.exception("memory provider could not be resolved; running the turn without memory")
         try:
             return super().run(request)
         finally:
+            if v2_memory is not None:
+                owner.memory = v2_memory
             if self._v2_response_generator is not None:
                 owner.response_generator = self._v2_response_generator
             if self._pooled is not None:
