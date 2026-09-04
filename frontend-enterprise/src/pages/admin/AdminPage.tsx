@@ -472,6 +472,12 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                       {status.harness_v3_enabled && (
                         <div className="text-[12px] text-[#9aa0ad]">{status.fallback_to_legacy ? 'Harness v3 引擎异常时会自动改用 Harness v2，对话不会中断。' : '未开启自动切换：Harness v3 引擎异常时对话会失败。'}</div>
                       )}
+                      {(status.fallback_count ?? 0) > 0 && (
+                        <div className="mt-[4px] text-[12px] text-[#b26a00]">
+                          自启动以来有 {status.fallback_count} 轮对话改用了 Harness v2
+                          {status.last_fallback ? `，最近一次：${status.last_fallback.reason === 'image_attachments' ? '带图片附件' : status.last_fallback.reason === 'engine_unavailable' ? 'Harness v3 引擎不可用' : status.last_fallback.reason}${status.last_fallback.detail ? `（${status.last_fallback.detail}）` : ''}` : ''}
+                        </div>
+                      )}
                     </KV>
                     <KV label="权限模式">
                       {profileLabel(status.security_profile).long}

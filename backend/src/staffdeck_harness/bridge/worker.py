@@ -68,7 +68,9 @@ class HarnessV3WorkerConfig:
     # From the ModelConfig: "enabled" | "disabled" | "" (provider default) and "off" | "low" | "high" | "max" | "".
     thinking: str = ""
     reasoning_effort: str = ""
-    permission_mode: str = "danger-full-access"   # StaffDeck enforces its own PEP; the engine's own sandbox is off
+    # Kept for config compatibility only: StaffDeck enforces its own PEP and disables every engine-native
+    # tool, so the engine never consults a permission mode (it is not passed to the subprocess).
+    permission_mode: str = "danger-full-access"
     initialize_timeout_seconds: float = 90.0
     request_timeout_seconds: float | None = 600.0
     extra_env: Mapping[str, str] = field(default_factory=dict)
@@ -170,7 +172,6 @@ class HarnessV3Process:
             # The engine resolves its home from $DSH_HOME (its profiles live under it) — upstream
             # env contract, kept as-is. We call the concept Harness v3 home in our own config.
             "DSH_HOME": str(config.harness_v3_home),
-            "HARNESS_V3_PERMISSION_MODE": config.permission_mode,
             "DSH_TELEMETRY_DISABLED": "1",
             "STAFFDECK_ACTIVATION_TOKEN": activation_token,
             "STAFFDECK_MODEL_NAME": config.model,

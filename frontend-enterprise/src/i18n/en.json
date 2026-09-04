@@ -780,7 +780,7 @@
   "可用工具": "Available Tools",
   "可追溯": "Traceable",
   "控制一次用户输入内员工可连续决策和调用工具的最大次数，用于避免无限循环。": "Limit how many consecutive decisions and tool calls an employee can make for one user input to prevent infinite loops.",
-  "口径统一": "Consistent Standards",
+  "口径统一": "Consistent Definitions",
   "口径治理": "Standards Governance",
   "快速开始": "Quick Start",
   "来源": "Source",
@@ -1543,7 +1543,7 @@
   "用户名、用户 ID、记忆内容": "User, User ID, Memory Content",
   "用户明确拒绝后进入": "Enter after the user explicitly declines",
   "用户明确确认后进入": "Enter after the user explicitly confirms",
-  "用户消息": "User Message",
+  "用户消息": "User Messages",
   "用户选择了创建定时任务模式": "User Select Create Scheduled Task Mode",
   "用户已拒绝": "User Rejected",
   "用户已确认": "User Confirmed",
@@ -3027,61 +3027,55 @@
   "咨询链接已生成并复制": "Consultation link generated and copied",
   "生成咨询链接失败": "Failed to generate consultation link",
   "生成中": "Generating",
-  "生成咨询链接": "Generate Consultation Link"
-  ,"请先填写企业 ID": "Enter the enterprise ID first"
-  ,"回调配置已生成": "Callback configuration generated"
-  ,"生成回调配置失败": "Failed to generate callback configuration"
-  ,"先生成回调配置，将 URL、Token、EncodingAESKey 填入微信客服后台；后台创建 API 后再回来填写 Secret 和客服账号 ID。": "Generate the callback configuration first, enter its URL, Token, and EncodingAESKey in WeChat Customer Service, then return to enter the Secret and account ID after creating the API."
-  ,"生成回调配置": "Generate Callback Configuration"
-  ,"请先将以下 Token 和 EncodingAESKey 填入微信客服后台，完成 API 创建：": "Enter the following Token and EncodingAESKey in WeChat Customer Service to create the API:"
-   ,"回调已准备，请填写微信客服后台返回的 Secret；保存后选择已有客服账号或创建新账号。": "The callback is ready. Enter the Secret from WeChat Customer Service, then select an existing account or create a new one."
-   ,"Secret 已保存": "Secret saved"
-  ,"重新配置 Secret": "Reconfigure Secret"
-  ,"必须先选择已有客服账号或创建新账号，绑定完成后才会接收业务回调。": "Select an existing customer service account or create a new one before business callbacks are accepted."
-  ,"加载客服账号失败": "Failed to load customer service accounts"
-  ,"客服账号已绑定": "Customer service account bound"
-  ,"绑定客服账号失败": "Failed to bind customer service account"
-  ,"请输入客服账号名称": "Enter a customer service account name"
-  ,"客服账号已创建并绑定": "Customer service account created and bound"
-  ,"创建客服账号失败": "Failed to create customer service account"
-  ,"加载中": "Loading"
-  ,"选择已有客服账号": "Select Existing Account"
-  ,"新客服账号名称": "New customer service account name"
-  ,"创建并绑定": "Create and Bind"
-  ,"请先上传客服头像": "Upload a customer service avatar first"
-  ,"客服头像上传成功": "Customer service avatar uploaded"
-  ,"上传客服头像失败": "Failed to upload customer service avatar"
-  ,"客服头像仅支持 JPG 或 PNG": "Customer service avatars must be JPG or PNG"
-  ,"客服头像不能超过 2MB": "Customer service avatars cannot exceed 2 MB"
-  ,"上传中": "Uploading"
-  ,"上传客服头像": "Upload customer service avatar"
-  ,"配置详情": "Configuration Details"
-  ,"选择": "Select"
-  ,"关闭": "Close"
-  ,"扫码使用": "Scan to Use"
-  ,"分享链接": "Share Link"
-  ,"已绑定客服账号": "Bound customer service accounts"
-  ,"客服账号 ID：": "Customer service account ID:"
-  ,"绑定渠道：": "Bound channel:"
-  ,"未绑定": "Not bound"
-  ,"已绑定客服账号：": "Bound customer service accounts:"
-  ,"客服二维码": "Customer service QR code"
-  ,"客服二维码已生成": "Customer service QR code generated"
-  ,"绑定数字员工：": "Bound digital employee:"
-  ,"绑定团队：": "Bound team:"
-  ,"咨询链接已生成": "Consultation link generated"
-  ,"咨询链接已复制": "Consultation link copied"
-  ,"复制咨询链接失败": "Failed to copy consultation link"
-  ,"客服账号已更新": "Customer service account updated"
-  ,"修改客服账号失败": "Failed to update customer service account"
-  ,"确定删除这个微信客服账号吗？删除后微信客服后台账号也会被删除。": "Delete this WeChat Customer Service account? It will also be deleted from WeChat Customer Service."
-  ,"删除客服账号失败": "Failed to delete customer service account"
-  ,"客服账号已删除": "Customer service account deleted"
-  ,"编辑": "Edit"
-  ,"删除": "Delete"
-  ,"保存": "Save"
-  ,"取消": "Cancel"
-   ,"更换头像（可选）": "Change avatar (optional)",
+  "生成咨询链接": "Generate Consultation Link",
+  "请先填写企业 ID": "Enter the enterprise ID first",
+  "回调配置已生成": "Callback configuration generated",
+  "生成回调配置失败": "Failed to generate callback configuration",
+  "先生成回调配置，将 URL、Token、EncodingAESKey 填入微信客服后台；后台创建 API 后再回来填写 Secret 和客服账号 ID。": "Generate the callback configuration first, enter its URL, Token, and EncodingAESKey in WeChat Customer Service, then return to enter the Secret and account ID after creating the API.",
+  "生成回调配置": "Generate Callback Configuration",
+  "请先将以下 Token 和 EncodingAESKey 填入微信客服后台，完成 API 创建：": "Enter the following Token and EncodingAESKey in WeChat Customer Service to create the API:",
+  "回调已准备，请填写微信客服后台返回的 Secret；保存后选择已有客服账号或创建新账号。": "The callback is ready. Enter the Secret from WeChat Customer Service, then select an existing account or create a new one.",
+  "Secret 已保存": "Secret saved",
+  "重新配置 Secret": "Reconfigure Secret",
+  "必须先选择已有客服账号或创建新账号，绑定完成后才会接收业务回调。": "Select an existing customer service account or create a new one before business callbacks are accepted.",
+  "加载客服账号失败": "Failed to load customer service accounts",
+  "客服账号已绑定": "Customer service account bound",
+  "绑定客服账号失败": "Failed to bind customer service account",
+  "请输入客服账号名称": "Enter a customer service account name",
+  "客服账号已创建并绑定": "Customer service account created and bound",
+  "创建客服账号失败": "Failed to create customer service account",
+  "加载中": "Loading",
+  "选择已有客服账号": "Select Existing Account",
+  "新客服账号名称": "New customer service account name",
+  "创建并绑定": "Create and Bind",
+  "请先上传客服头像": "Upload a customer service avatar first",
+  "客服头像上传成功": "Customer service avatar uploaded",
+  "上传客服头像失败": "Failed to upload customer service avatar",
+  "客服头像仅支持 JPG 或 PNG": "Customer service avatars must be JPG or PNG",
+  "客服头像不能超过 2MB": "Customer service avatars cannot exceed 2 MB",
+  "上传中": "Uploading",
+  "上传客服头像": "Upload customer service avatar",
+  "配置详情": "Configuration Details",
+  "扫码使用": "Scan to Use",
+  "分享链接": "Share Link",
+  "已绑定客服账号": "Bound customer service accounts",
+  "客服账号 ID：": "Customer service account ID:",
+  "绑定渠道：": "Bound channel:",
+  "未绑定": "Not bound",
+  "已绑定客服账号：": "Bound customer service accounts:",
+  "客服二维码": "Customer service QR code",
+  "客服二维码已生成": "Customer service QR code generated",
+  "绑定数字员工：": "Bound digital employee:",
+  "绑定团队：": "Bound team:",
+  "咨询链接已生成": "Consultation link generated",
+  "咨询链接已复制": "Consultation link copied",
+  "复制咨询链接失败": "Failed to copy consultation link",
+  "客服账号已更新": "Customer service account updated",
+  "修改客服账号失败": "Failed to update customer service account",
+  "确定删除这个微信客服账号吗？删除后微信客服后台账号也会被删除。": "Delete this WeChat Customer Service account? It will also be deleted from WeChat Customer Service.",
+  "删除客服账号失败": "Failed to delete customer service account",
+  "客服账号已删除": "Customer service account deleted",
+  "更换头像（可选）": "Change avatar (optional)",
   "仅进入所选子 SOP；父子流程共享当前 TaskFrame 字段。": "Only enter the selected child SOP; the parent and child share the current TaskFrame fields.",
   "仅进入所选子 SOP；字段、动作和能力由子 SOP 自己定义。": "Only enter the selected child SOP; its fields, actions, and capabilities are defined by the child SOP.",
   "未找到子 SOP": "Child SOP not found",
@@ -3147,7 +3141,6 @@
   "协调阻塞": "Resolve Blockers",
   "负责指标口径梳理、数据诊断、趋势解读和经营建议沉淀。": "Defines metric standards, diagnoses data, interprets trends, and documents business recommendations.",
   "数据严谨": "Data Rigor",
-  "口径统一": "Consistent Definitions",
   "结论克制": "Measured Conclusions",
   "经营分析": "Business Analysis",
   "输出洞察": "Deliver Insights",
@@ -3343,7 +3336,6 @@
   "近期摘要预算": "Recent Summary Budget",
   "纳入历史上下文的角色": "Roles Included in Conversation History",
   "至少保留一种角色；图片只随用户消息进入上下文。": "Keep at least one role; images enter context only with user messages.",
-  "用户消息": "User Messages",
   "数字员工回复": "Digital Employee Replies",
   "长期摘要前缀": "Long-term Summary Prefix",
   "注入长期摘要消息时使用，最多 200 字。": "Used when injecting long-term summary messages, up to 200 characters.",
@@ -3359,8 +3351,7 @@
   "至少保留一种历史消息角色": "Keep at least one conversation-history role",
   "摘要前缀不能为空": "Summary prefixes cannot be empty",
   "历史的信息可以被总结为：": "Earlier conversation history can be summarized as:",
-  "近期的历史信息总结为：": "Recent conversation history can be summarized as:"
-,
+  "近期的历史信息总结为：": "Recent conversation history can be summarized as:",
   "管理后台": "Admin console",
   "判定超时": "Decision timeout",
   "等待同步超时": "Sync wait timeout",
@@ -3771,5 +3762,23 @@
   "不思考": "No thinking",
   "思考模式": "Thinking mode",
   "Harness v3 引擎已就绪": "Harness v3 engine ready",
-  "(?:参考来源|参考资料|引用来源|资料来源)": "(?:References|Reference materials|Citation sources|Sources)"
+  "(?:参考来源|参考资料|引用来源|资料来源)": "(?:References|Reference materials|Citation sources|Sources)",
+  "Harness v3 引擎不可用": "Harness v3 engine unavailable",
+  "Harness v3 引擎已就绪{1}{2}{3}": "Harness v3 engine ready{1}{2}{3}",
+  "引擎完成回复": "Engine finished the reply",
+  "引擎完成规划": "Engine finished planning",
+  "引擎开始生成回复": "Engine is generating the reply",
+  "引擎开始规划本轮": "Engine is planning this turn",
+  "无需启动": "no boot needed",
+  "本轮改用 Harness v2 引擎：{1}": "This turn switched to the Harness v2 engine: {1}",
+  "轮对话改用了 Harness v2": "turn(s) switched to Harness v2",
+  "（进程第 {1} 次复用）": " (process reuse #{1})",
+  "，最近一次：{1}{2}": ", most recent: {1}{2}",
+  "带图片附件，Harness v3 不读取图片": "image attachments; Harness v3 does not read images",
+  "带图片附件": "image attachments",
+  "自启动以来有 {1} 轮对话改用了 Harness v2": "Since startup, {1} turn(s) switched to Harness v2",
+  "引擎接管任务步骤{1}": "Engine took over the task step{1}",
+  " · 复用暖进程": " · warm process reused",
+  "· 复用暖进程": "· warm process reused",
+  "自启动以来有": "Since startup,"
 }

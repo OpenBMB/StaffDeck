@@ -373,11 +373,14 @@ def test_harness_v3_process_uses_bridge_gateway_not_provider_credentials(module,
             captured["token"] = activation_token
             raise RuntimeError("stop here")  # we only need the config
 
-    monkeypatch.setattr(ta, "HarnessV3Process", _Proc)
-    runtime = SimpleNamespace(
+    # A real runtime with the MCP server stubbed: the agent checks a process out of the pool, whose
+    # factory is our capturing stand-in for HarnessV3Process.
+    from staffdeck_harness.bridge.process_pool import ProcessPool
+
+    runtime = ta.HarnessV3Runtime(
         worker_config=SimpleNamespace(harness_v3_root="/x", harness_v3_home=__import__("pathlib").Path("/tmp/harness-home-test"), node_bin="node", permission_mode="danger-full-access", initialize_timeout_seconds=1, request_timeout_seconds=1),
-        registry=__import__("staffdeck_harness.bridge.capability_mcp", fromlist=["ActivationRegistry"]).ActivationRegistry(),
-        mcp_url="http://127.0.0.1:1/mcp", model_base_url="http://127.0.0.1:1/v1",
+        mcp=SimpleNamespace(url="http://127.0.0.1:1/mcp", model_base_url="http://127.0.0.1:1/v1", stop=lambda: None),
+        pool=ProcessPool(factory=lambda cfg, **kw: _Proc(cfg, **kw)),
     )
     from staffdeck_harness.composition.compiler import CompositionCompiler
     from staffdeck_harness.composition.staff import project_staff

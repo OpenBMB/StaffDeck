@@ -28,6 +28,37 @@ jobs:
           HARNESS_V3_ENABLED: "false"
         run: python -m pytest tests_harness -q
 
+  backend-sealed-e2e:
+    name: sealed E2E (real engine, scripted model)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Cache engine build
+        id: engine-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.engine/deepseek-harness
+          key: harness-v3-engine-v0.1.2-alpha.2-${{ hashFiles('backend/vendor/harness-v3/**') }}
+      - name: Fetch, patch and build the engine
+        run: bash vendor/harness-v3/fetch-and-build.sh "${{ github.workspace }}/.engine/deepseek-harness"
+      - name: Install backend
+        run: pip install -e ".[dev]"
+      - name: Sealed E2E
+        env:
+          ULTRARAG_DOTENV: /nonexistent
+          HARNESS_V3_ROOT: ${{ github.workspace }}/.engine/deepseek-harness
+        run: python -m pytest tests_harness/test_sealed_e2e_engine.py -q
+
   backend-legacy:
     name: legacy tests (tests), non-blocking
     runs-on: ubuntu-latest

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
@@ -431,3 +432,36 @@ def test_restart_reports_interrupted_turns_and_accepts_drain_timeout(ctx, tmp_pa
     r = c.post("/api/enterprise/harness/restart", json={"tenant_id": "tenant_demo", "drain_timeout_seconds": 0}, headers=headers)
     assert r.status_code == 200, r.text
     assert r.json().get("interrupted_turns") == 0
+
+
+def test_global_mutators_default_closed_when_process_hosts_several_tenants(ctx, tmp_path, monkeypatch) -> None:
+    """With HARNESS_OPERATOR_TENANTS unset, a second tenant in the process closes the runtime to every admin."""
+
+    c, headers, db = ctx
+    monkeypatch.setenv("STAFFDECK_HARNESS_RUNTIME_CONFIG", str(tmp_path / "rt.json"))
+    get_settings.cache_clear()
+    assert c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v2"}, headers=headers).status_code == 200, "single tenant: its admin is the operator"
+    db.add(Tenant(id="tenant_other", name="Other"))
+    db.commit()
+    r = c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v2"}, headers=headers)
+    assert r.status_code == 403 and "HARNESS_OPERATOR_TENANTS" in r.text
+    assert c.post("/api/enterprise/harness/restart", json={"tenant_id": "tenant_demo"}, headers=headers).status_code == 403
+    # naming the operator tenant reopens it — for that tenant only
+    monkeypatch.setenv("HARNESS_OPERATOR_TENANTS", "tenant_demo")
+    get_settings.cache_clear()
+    try:
+        assert c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v2"}, headers=headers).status_code == 200
+    finally:
+        monkeypatch.delenv("HARNESS_OPERATOR_TENANTS", raising=False)
+        get_settings.cache_clear()
+
+
+def test_status_exposes_fallbacks(ctx) -> None:
+    from staffdeck_harness.bridge import engine_host
+
+    c, headers, _ = ctx
+    engine_host.reset_fallback_state()
+    engine_host._note_fallback(SimpleNamespace(events=None), SimpleNamespace(tenant_id="tenant_demo", session_id="s1", agent_id="agent_1"), "image_attachments", detail="带图片")
+    body = c.get("/api/enterprise/harness/status", params={"tenant_id": "tenant_demo"}, headers=headers).json()
+    assert body["fallback_count"] == 1 and body["last_fallback"]["reason"] == "image_attachments"
+    engine_host.reset_fallback_state()

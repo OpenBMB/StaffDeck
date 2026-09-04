@@ -121,6 +121,19 @@ PROXY_TOOLS: dict[str, dict[str, Any]] = {
 }
 
 
+def proxy_tool_schemas() -> list[dict[str, Any]]:
+    """Every proxy tool, unfiltered.
+
+    The engine's MCP client fetches ``tools/list`` once when the process connects and only
+    re-syncs on a server notification (which a stateless Streamable HTTP server cannot send).
+    A pooled process therefore registers a *stable* tool set for its whole life; what a given
+    phase or frame may actually call is decided by the host it is bound to at invoke time
+    (activation fence, PEP), never by hiding schemas.
+    """
+
+    return [{"name": name, "description": spec["description"], "parameters": spec["parameters"]} for name, spec in PROXY_TOOLS.items()]
+
+
 @dataclass
 class ActivationSlot:
     """The immutable per-turn activation: snapshot + generation + active SOP position."""
@@ -536,18 +549,24 @@ class CapabilityHost:
         return invoke(self, inv)
 
     def _provider_pin(self, inv: ModuleInvocation) -> str | None:
-        """The ``provider_module_id`` frozen on the grant that covers this invocation, if any.
+        """The ``provider_module_id`` frozen on the grant(s) that cover this invocation, if any.
 
-        The grant is matched by operation and (when present) resource id / binding id, so a SOP slot
-        that resolved to a specific tool carries that tool's provider pin, not a general one.
+        Bound resources (tool/skill) match by binding id. Knowledge search spans every base in
+        the activated set (or the requested subset), so its pin is the one shared by *all* those
+        bases; bases pinned to different providers cannot be served by one call and fail closed
+        (``PROVIDER_CONFLICT``) rather than silently picking one.
         """
 
-        for g in self.slot.grants():
-            if g.operation != inv.operation:
-                continue
+        grants = [g for g in self.slot.grants() if g.operation == inv.operation]
+        if inv.operation == "knowledge.search/v1":
+            requested = {str(i) for i in (inv.arguments.get("knowledge_base_ids") or []) if str(i).strip()}
+            covered = [g for g in grants if not requested or g.resource_id in requested]
+            pins = {g.provider_module_id for g in covered}
+            if len(pins) > 1:
+                raise ModuleSdkError("本次检索涉及的知识库绑定了不同的检索模块，请分开检索或统一模块", code="PROVIDER_CONFLICT", details={"pins": sorted(str(p) for p in pins)})
+            return next(iter(pins), None)
+        for g in grants:
             if g.resource_id and inv.binding_id and g.resource_id != inv.binding_id:
-                if g.resource_type == "knowledge_base":
-                    continue  # knowledge may span several bases; no single pin applies
                 continue
             return g.provider_module_id
         return None

@@ -77,6 +77,9 @@ class StatusRead(BaseModel):
     last_restart_failed: bool = False
     restarting: bool = False
     base_configured: bool = False
+    # Turns that wanted Harness v3 but ran on v2 (engine down, image attachments): never silent.
+    fallback_count: int = 0
+    last_fallback: dict[str, Any] | None = None
     base_last_test_ok: bool | None = None
 
 
@@ -156,8 +159,12 @@ def _operator(tenant_id: str, user: User, db: Session) -> User:
 
     The runtime (which engine, which security profile, which modules, the permission-centre
     endpoint) is one per process — it is not a per-tenant resource. ``harness_operator_tenants``
-    names the tenants whose admins may change it. When it is unset, the deployment is treated as
-    single-tenant/single-operator: the acting admin's own tenant may change it.
+    names the tenants whose admins may change it.
+
+    Default is **closed** the moment a second tenant exists: with the setting unset, a process
+    that hosts exactly one tenant treats that tenant's admin as the operator (single-operator
+    deployment), but a multi-tenant process refuses every admin until the operator tenant is
+    named explicitly. Nobody gets to change the engine for everyone by accident.
     """
 
     ensure_tenant_admin(tenant_id, user)
@@ -166,9 +173,22 @@ def _operator(tenant_id: str, user: User, db: Session) -> User:
     allow = {x.strip() for x in str(getattr(get_settings(), "harness_operator_tenants", "") or "").split(",") if x.strip()}
     if allow:
         if tenant_id not in allow:
-            raise HTTPException(status_code=403, detail=f"该租户不是运行时操作员（harness_operator_tenants 未包含 {tenant_id}）")
+            raise HTTPException(status_code=403, detail=f"该租户不是运行时操作员（HARNESS_OPERATOR_TENANTS 未包含 {tenant_id}）")
         return user
+    if _tenant_count(db) > 1:
+        raise HTTPException(status_code=403, detail="本部署有多个租户：修改全局运行时需要先在 HARNESS_OPERATOR_TENANTS 中指定运行时操作员租户")
     return user
+
+
+def _tenant_count(db: Session) -> int:
+    from sqlalchemy import func
+
+    from app.db.models import Tenant
+
+    try:
+        return int(db.exec(select(func.count()).select_from(Tenant)).one() or 0)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001 — a broken count must fail closed, not open
+        return 2
 
 
 def _session_allowed(session: ChatSession | None, user: User) -> bool:
@@ -253,8 +273,19 @@ def harness_status(tenant_id: str = Query(...), user: User = Depends(get_current
         last_restart_failed=bool(state.get("last_restart_error")),
         restarting=bool(state.get("restarting")),
         base_configured=bool(state.get("saved", {}).get("base", {}).get("configured")),
+        fallback_count=int(_fallback_state().get("fallback_count") or 0),
+        last_fallback=_fallback_state().get("last_fallback"),
         base_last_test_ok=state.get("saved", {}).get("base", {}).get("last_test_ok"),
     )
+
+
+def _fallback_state() -> dict[str, Any]:
+    try:
+        from staffdeck_harness.bridge.engine_host import fallback_state
+
+        return fallback_state()
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def _engine_version(reg: Any) -> str | None:
@@ -405,7 +436,7 @@ def harness_set_staff_engine(agent_id: str, request: StaffEngineUpdate, db: Sess
 
 HARNESS_V3_EVENT_TYPES = (
     "composition_snapshot_compiled", "harness_v3_process_started", "harness_v3_turn_started", "harness_v3_step_started", "harness_v3_task_finished",
-    "harness_v3_turn_steered", "harness_v3_turn_failed", "harness_v3_turn_ended", "capability_provider_selected", "capability_invoked",
+    "harness_v3_turn_steered", "harness_v3_turn_failed", "harness_v3_turn_ended", "harness_v3_fallback", "harness_v3_plan_started", "harness_v3_plan_finished", "harness_v3_reply_started", "harness_v3_reply_finished", "harness_v3_frame_bound", "capability_provider_selected", "capability_invoked",
     "capability_denied", "hook_decision", "hook_failed", "invocation_reconciled", "staff_engine_changed",
     "human_handoff_created", "human_handoff_assigned", "human_handoff_notified",
 )
@@ -748,6 +779,12 @@ LOG_EVENT_TYPES: dict[str, str] = {
     "turn_plan_created": "turn/plan",
     "composition_snapshot_compiled": "snapshot/compiled",
     "harness_v3_process_started": "engine/start",
+    "harness_v3_fallback": "engine/fallback",
+    "harness_v3_plan_started": "engine/plan",
+    "harness_v3_plan_finished": "engine/plan_done",
+    "harness_v3_reply_started": "engine/reply",
+    "harness_v3_reply_finished": "engine/reply_done",
+    "harness_v3_frame_bound": "engine/frame",
     "harness_v3_turn_started": "engine/turn",
     "harness_v3_step_started": "engine/step",
     "harness_v3_turn_steered": "engine/steer",

@@ -344,3 +344,38 @@ def test_replayable_flag_default_true_on_module_invocation():
 def test_capability_grant_has_provider_fields():
     g = CapabilityGrant(operation="tool.invoke/v1", resource_type="tool", resource_id="t", name="t")
     assert g.provider_module_id is None and g.provider_version is None
+
+
+def test_knowledge_pin_covers_all_activated_bases_and_conflicts_fail_closed(db, monkeypatch):
+    from app.db.models import KnowledgeBase
+
+    for kid in ("kb_a", "kb_b"):
+        db.add(KnowledgeBase(id=kid, tenant_id="t1", name=kid, status="active", metadata_json={"scope": "agent_private"}))
+    db.commit()
+    for kid in ("kb_a", "kb_b"):
+        ensure_private_resource_binding(db, "t1", "a1", "knowledge_base", kid)
+    db.commit()
+    seen = []
+
+    class Prov:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def invoke(self, host, inv):
+            seen.append(self.tag)
+            return ModuleResult.ok({"chunks": []})
+
+    _install_registry(monkeypatch, Prov("local"), module_id="knowledge.local", ops=("knowledge.search/v1",), extra=[("knowledge.acme", Prov("acme"), ("knowledge.search/v1",))])
+    # both bases pinned to the same non-default provider → that provider serves the search
+    snap = CompositionCompiler(hooks=()).compile(_staff([_cap("knowledge_base", "kb_a", metadata={"provider_module_id": "knowledge.acme"}), _cap("knowledge_base", "kb_b", metadata={"provider_module_id": "knowledge.acme"})]))
+    host = _host(db, snap)
+    res, _ = host.invoke(ModuleInvocation(invocation_id="k1", module_id="knowledge", operation="knowledge.search/v1", arguments={"query": "q"}, context=_ctx()))
+    assert res.success and seen == ["acme"]
+    # bases pinned differently: a search spanning both must not silently pick one
+    snap2 = CompositionCompiler(hooks=()).compile(_staff([_cap("knowledge_base", "kb_a", metadata={"provider_module_id": "knowledge.acme"}), _cap("knowledge_base", "kb_b")]))
+    host2 = _host(db, snap2)
+    res2, _ = host2.invoke(ModuleInvocation(invocation_id="k2", module_id="knowledge", operation="knowledge.search/v1", arguments={"query": "q"}, context=_ctx()))
+    assert res2.success is False and res2.error["code"] == "PROVIDER_CONFLICT"
+    # …but narrowing to one base resolves to that base's pin
+    res3, _ = host2.invoke(ModuleInvocation(invocation_id="k3", module_id="knowledge", operation="knowledge.search/v1", arguments={"query": "q", "knowledge_base_ids": ["kb_b"]}, context=_ctx()))
+    assert res3.success and seen[-1] == "local"

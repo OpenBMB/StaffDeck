@@ -38,7 +38,6 @@ from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
 from starlette.requests import Request
 
-from staffdeck_harness.capabilities.host import CapabilityHost
 from staffdeck_harness.contracts.invocation import InvocationContext
 
 logger = logging.getLogger(__name__)
@@ -49,9 +48,17 @@ SERVER_NAME = "staffdeck"
 
 @dataclass
 class Activation:
+    """One live engine process's binding: the token is per *process*, what it points at is per phase.
+
+    A pooled process keeps its token for its whole life (the MCP header is read from the
+    environment at plugin load). Every phase of a turn — planning, each TaskFrame, the reply —
+    rebinds ``host`` / ``context_factory`` to the object that must answer capability and model
+    calls right now. Between phases the host is a fenced placeholder that refuses tools.
+    """
+
     token: str
-    host: CapabilityHost
-    context_factory: Callable[[str], InvocationContext]   # trace_id -> ctx
+    host: Any
+    context_factory: Callable[[str], InvocationContext] | None   # trace_id -> ctx
     created_at: float = field(default_factory=time.monotonic)
     calls: int = 0
 
@@ -61,12 +68,21 @@ class ActivationRegistry:
         self._lock = threading.Lock()
         self._items: dict[str, Activation] = {}
 
-    def register(self, host: CapabilityHost, context_factory: Callable[[str], InvocationContext]) -> Activation:
-        token = secrets.token_urlsafe(24)
+    def register(self, host: Any = None, context_factory: Callable[[str], InvocationContext] | None = None, *, token: str | None = None) -> Activation:
+        token = token or secrets.token_urlsafe(24)
         act = Activation(token=token, host=host, context_factory=context_factory)
         with self._lock:
             self._items[token] = act
         return act
+
+    def rebind(self, token: str, host: Any, context_factory: Callable[[str], InvocationContext] | None) -> Activation:
+        """Point a live token at a new phase host. Raises KeyError for an unknown token."""
+
+        with self._lock:
+            act = self._items[token]
+            act.host = host
+            act.context_factory = context_factory
+            return act
 
     def release(self, token: str) -> None:
         with self._lock:
@@ -77,6 +93,12 @@ class ActivationRegistry:
             return None
         with self._lock:
             return self._items.get(token)
+
+    def live_count(self) -> int:
+        """Activations currently bound to a real phase host (i.e. turns in flight)."""
+
+        with self._lock:
+            return sum(1 for a in self._items.values() if a.host is not None and not getattr(a.host, "idle", False))
 
     def __len__(self) -> int:
         with self._lock:
@@ -115,7 +137,7 @@ class CapabilityMcpServer:
 
     async def _list_tools(self, ctx: ServerRequestContext, params: Any) -> mt.ListToolsResult:
         act = self._activation(ctx)
-        if act is None:
+        if act is None or act.host is None or not callable(getattr(act.host, "tool_schemas", None)):
             return mt.ListToolsResult(tools=[])
         tools = [mt.Tool(name=s["name"], description=s["description"], inputSchema=s["parameters"]) for s in act.host.tool_schemas()]
         return mt.ListToolsResult(tools=tools)
@@ -124,9 +146,11 @@ class CapabilityMcpServer:
         act = self._activation(ctx)
         if act is None:
             return mt.CallToolResult(content=_text({"success": False, "error": {"code": "ACTIVATION_FENCED", "message": "no live activation for this connection"}}), isError=True)
+        if act.host is None or not callable(getattr(act.host, "invoke_proxy", None)):
+            return mt.CallToolResult(content=_text({"success": False, "error": {"code": "ACTIVATION_FENCED", "message": "此阶段不能调用能力（当前没有正在执行的任务步骤）"}}), isError=True)
         act.calls += 1
         trace_id = f"hcall_{act.calls}_{secrets.token_hex(4)}"
-        inv_ctx = act.context_factory(trace_id)
+        inv_ctx = act.context_factory(trace_id) if act.context_factory is not None else None
         loop = asyncio.get_running_loop()
         # The CapabilityHost is synchronous (SQLModel session); keep it off the event loop.
         result, receipt = await loop.run_in_executor(None, act.host.invoke_proxy, params.name, dict(params.arguments or {}), inv_ctx)

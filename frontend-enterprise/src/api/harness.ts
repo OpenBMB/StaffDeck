@@ -26,6 +26,8 @@ export type HarnessStatus = {
   restarting?: boolean;
   base_configured?: boolean;
   base_last_test_ok?: boolean | null;
+  fallback_count?: number;
+  last_fallback?: { reason: string; detail: string; at: string; session_id?: string | null; agent_id?: string | null } | null;
 };
 
 export type HarnessPlacementSource = 'override' | 'taxonomy' | 'manifest' | 'slot' | 'none';

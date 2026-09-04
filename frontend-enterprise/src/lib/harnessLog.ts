@@ -96,8 +96,20 @@ export function formatLogEntry(e: HarnessLogEntry): FormattedLog {
     }
     case 'engine/start': {
       const thinking = d.thinking === 'disabled' ? ' · 不思考' : d.thinking === 'enabled' ? ` · 思考${typeof d.reasoning_effort === 'string' && d.reasoning_effort !== 'provider_default' ? `(${d.reasoning_effort})` : ''}` : '';
-      return { title: `Harness v3 引擎已就绪${d.model ? ` · 模型 ${str(d.model, 60)}` : ''}${thinking}`, level: 'success', meta: d.boot_ms !== undefined ? `启动 ${ms(d.boot_ms)}` : undefined };
+      return { title: `Harness v3 引擎已就绪${d.model ? ` · 模型 ${str(d.model, 60)}` : ''}${thinking}${d.pooled ? ' · 复用暖进程' : ''}`, level: 'success', meta: d.boot_ms !== undefined ? (d.pooled ? '无需启动' : `启动 ${ms(d.boot_ms)}`) : undefined };
     }
+    case 'engine/plan':
+      return { title: '引擎开始规划本轮', level: 'muted' };
+    case 'engine/plan_done':
+      return { title: '引擎完成规划', level: 'muted', meta: d.duration_ms !== undefined ? ms(d.duration_ms) : undefined };
+    case 'engine/reply':
+      return { title: '引擎开始生成回复', level: 'muted' };
+    case 'engine/reply_done':
+      return { title: '引擎完成回复', level: 'muted', meta: d.duration_ms !== undefined ? ms(d.duration_ms) : undefined };
+    case 'engine/frame':
+      return { title: `引擎接管任务步骤${d.process_uses !== undefined ? `（进程第 ${d.process_uses} 次复用）` : ''}`, level: 'muted' };
+    case 'engine/fallback':
+      return { title: `本轮改用 Harness v2 引擎：${d.reason === 'image_attachments' ? '带图片附件，Harness v3 不读取图片' : d.reason === 'engine_unavailable' ? 'Harness v3 引擎不可用' : str(d.reason, 40)}`, detail: typeof d.detail === 'string' ? d.detail : undefined, level: 'warn' };
     case 'engine/turn':
       return { title: `引擎开始第 ${d.turn ?? '?'} 轮`, level: 'muted' };
     case 'engine/step':

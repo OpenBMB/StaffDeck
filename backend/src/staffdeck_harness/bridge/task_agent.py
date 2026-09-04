@@ -36,8 +36,8 @@ from datetime import datetime, timezone
 
 import json
 import logging
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Callable
 
 from sqlmodel import Session
@@ -99,18 +99,26 @@ class HarnessV3TurnContext:
 
 @dataclass
 class HarnessV3Runtime:
-    """Process-wide singletons: the capability MCP server and the Harness v3 worker config."""
+    """Process-wide singletons: the capability MCP server, the worker config and the warm process pool."""
 
     worker_config: HarnessV3WorkerConfig
     registry: ActivationRegistry = field(default_factory=ActivationRegistry)
     mcp: CapabilityMcpServer | None = None
+    pool: Any = None
 
     def start(self) -> None:
         if self.mcp is None:
             self.mcp = CapabilityMcpServer(self.registry)
             self.mcp.start()
+        if self.pool is None:
+            from staffdeck_harness.bridge.process_pool import ProcessPool
+
+            self.pool = ProcessPool()
 
     def stop(self) -> None:
+        if self.pool is not None:
+            self.pool.close_all(on_close=self.registry.release)
+            self.pool = None
         if self.mcp is not None:
             self.mcp.stop()
             self.mcp = None
@@ -124,6 +132,54 @@ class HarnessV3Runtime:
     def model_base_url(self) -> str:
         assert self.mcp is not None, "HarnessV3Runtime not started"
         return self.mcp.model_base_url
+
+    # -- per-turn process checkout ---------------------------------------------------------
+
+    def acquire_process(self, cfg: HarnessV3WorkerConfig, tenant_id: str, *, cwd: Path) -> Any:
+        """A warm (or fresh) engine process for one turn. Its activation token is already registered
+        (bound to an idle placeholder) so the engine can connect its MCP client at boot."""
+
+        assert self.pool is not None, "HarnessV3Runtime not started"
+        cfg = replace(cfg, model_api_key="")  # set below: the token is the API key
+        holder: dict[str, str] = {}
+
+        def register(token: str) -> None:
+            holder["token"] = token
+            self.registry.register(IdlePhaseHost(), None, token=token)
+
+        inner = self.pool._factory
+
+        def factory(c: HarnessV3WorkerConfig, **kw: Any) -> Any:
+            # The token is the process's model-gateway API key; stamp it into the config the
+            # (possibly test-injected) factory receives.
+            return inner(replace(c, model_api_key=kw["activation_token"]), **kw)
+
+        return self.pool.acquire(cfg, tenant_id, mcp_url=self.mcp_url, cwd=cwd, register=register, factory=factory)
+
+    def release_process(self, pooled: Any) -> None:
+        assert self.pool is not None
+        # Park the activation on the idle placeholder while the process waits in the pool.
+        try:
+            self.registry.rebind(pooled.token, IdlePhaseHost(), None)
+        except KeyError:
+            pass
+        self.pool.release(pooled, on_close=self.registry.release)
+
+
+class IdlePhaseHost:
+    """What a pooled process's token points at between phases: tools listed but refused, no model."""
+
+    idle = True
+    model_config = None
+    trace = None
+
+    def tool_schemas(self) -> list[dict[str, Any]]:
+        from staffdeck_harness.capabilities.host import proxy_tool_schemas
+
+        return proxy_tool_schemas()
+
+    def invoke_proxy(self, proxy_name: str, arguments: Any, ctx: Any) -> tuple[ModuleResult, None]:
+        return ModuleResult.fail("ACTIVATION_FENCED", "当前没有正在执行的任务步骤，不能调用能力"), None
 
 
 _EFFORT_ALIASES = {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "off": "off", "none": "off"}
@@ -197,47 +253,32 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
     return "\n\n".join(parts)
 
 
-def _data_url_to_image_block(data_url: str) -> dict[str, Any] | None:
-    """Convert an ``data:image/<mime>;base64,<payload>`` data URL to the SDK's image content block.
+def _attachment_notice(image_payloads: list[Any]) -> str:
+    """Images never enter the engine subprocess.
 
-    The SDK prompt accepts ``SdkEncodedImageBlock {type: "image", data, mimeType}`` and the server
-    converts it to a durable reference before enqueue; text passes through unchanged.
+    The engine's DeepSeek chat adapter rejects image content unless the model is declared
+    image-capable in *its* catalog and a Files API is reachable — neither is true behind the
+    bridge's gateway. Turns that carry images are routed to Harness v2 by ``EngineHost`` before
+    they get here; this notice only covers the defensive case where one still arrives.
     """
 
-    if not isinstance(data_url, str) or not data_url.startswith("data:"):
-        return None
-    header, sep, payload = data_url.partition(",")
-    if not sep or not payload:
-        return None
-    mime = header[5:].split(";", 1)[0] or "image/png"
-    encoded = payload.split(";base64,")[-1] if ";base64," in header else payload
-    if not encoded:
-        return None
-    return {"type": "image", "data": encoded, "mimeType": mime}
-
-
-def _image_content_blocks(image_payloads: list[Any]) -> list[dict[str, Any]]:
-    """Extract SDK image content blocks from validated vision payloads (objects or dicts)."""
-
-    blocks: list[dict[str, Any]] = []
-    for p in image_payloads or []:
-        if p is None:
-            continue
-        data_url = getattr(p, "data_url", None) or (p.get("data_url") if isinstance(p, dict) else None)
-        if not data_url:
-            continue
-        blk = _data_url_to_image_block(str(data_url))
-        if blk is not None:
-            blocks.append(blk)
-    return blocks
+    n = sum(1 for p in image_payloads or [] if p is not None)
+    if not n:
+        return ""
+    return f"（本轮有 {n} 张图片附件，Harness v3 引擎不读取图片内容；如需看图请使用 Harness v2 引擎。）"
 
 
 class HarnessV3TaskAgent:
     """Same call contract as ``app.core.harness_agent.HarnessTaskAgent.run``."""
 
-    def __init__(self, runtime: HarnessV3Runtime, turn: HarnessV3TurnContext, *, pipeline: InteractionPipelineHost | None = None, trace_sink: TraceSink | None = None):
+    def __init__(self, runtime: HarnessV3Runtime, turn: HarnessV3TurnContext, *, pipeline: InteractionPipelineHost | None = None, trace_sink: TraceSink | None = None, pooled: Any = None):
         self.runtime = runtime
         self.turn = turn
+        # A turn-scoped pooled process (see HarnessV3Engine): when given, frames reuse it and the
+        # agent only *rebinds* the activation; when absent (unit tests, legacy callers) the agent
+        # checks one out itself and returns it in ``finally``.
+        self._pooled = pooled
+        self._owns_process = pooled is None
         if pipeline is None:
             from staffdeck_harness.modules.registry import peek_registry
 
@@ -333,10 +374,19 @@ class HarnessV3TaskAgent:
                 snapshot_id=t.snapshot.snapshot_id, trace_id=trace_id,
             )
 
-        activation = self.runtime.registry.register(host, inv_ctx)
-        self._activation_token = activation.token
-        started = time.monotonic()
+        model = str(getattr(model_config, "model", "") or "")
+        thinking, effort = _model_thinking(model_config)
+        cfg = HarnessV3WorkerConfig(
+            harness_v3_root=self.runtime.worker_config.harness_v3_root, harness_v3_home=self.runtime.worker_config.harness_v3_home / t.tenant_id,
+            node_bin=self.runtime.worker_config.node_bin, model=model, model_base_url=self.runtime.model_base_url,
+            thinking=thinking, reasoning_effort=effort,
+            permission_mode=self.runtime.worker_config.permission_mode,
+            initialize_timeout_seconds=self.runtime.worker_config.initialize_timeout_seconds,
+            request_timeout_seconds=(step_timeout_seconds or self.runtime.worker_config.request_timeout_seconds),
+        )
+        workspace = host._workspace_root(inv_ctx("ws"))
         actions = 0
+        pooled = self._pooled
         try:
             # 1. pre_step
             ctx1 = HookContext(point="pre_step", tenant_id=t.tenant_id, agent_id=t.agent_id, session_id=t.session_id, turn_id=t.turn_id, step=1, snapshot_id=t.snapshot.snapshot_id, payload={"requirement": requirement.model_dump(mode="json")}, generation=t.generation)
@@ -344,26 +394,20 @@ class HarnessV3TaskAgent:
             if pre.kind == "deny":
                 return self._failed(requirement, "PRE_STEP_DENIED", pre.reason or "pre-step denied", actions=0)
             prompt = _step_prompt(requirement, state, list(pre.contexts), t.attachments_text)
-            content_blocks = self._content_blocks(prompt, image_payloads or [] or t.image_payloads)
+            notice = _attachment_notice(list(image_payloads or []) or list(t.image_payloads))
+            content_blocks = [{"type": "text", "text": prompt + ("\n\n" + notice if notice else "")}]
 
-            # 2. Harness v3 process bound to this activation. Model traffic goes through the bridge's
-            #    gateway (StaffDeck's own model module runs the ModelConfig); the activation token
-            #    doubles as the subprocess's API key, so provider credentials never leave StaffDeck.
-            model = str(getattr(model_config, "model", "") or "")
-            thinking, effort = _model_thinking(model_config)
-            cfg = HarnessV3WorkerConfig(
-                harness_v3_root=self.runtime.worker_config.harness_v3_root, harness_v3_home=self.runtime.worker_config.harness_v3_home / t.tenant_id,
-                node_bin=self.runtime.worker_config.node_bin, model=model, model_base_url=self.runtime.model_base_url, model_api_key=activation.token,
-                thinking=thinking, reasoning_effort=effort,
-                permission_mode=self.runtime.worker_config.permission_mode,
-                initialize_timeout_seconds=self.runtime.worker_config.initialize_timeout_seconds,
-                request_timeout_seconds=(step_timeout_seconds or self.runtime.worker_config.request_timeout_seconds),
-            )
-            workspace = host._workspace_root(inv_ctx("ws"))
-            proc = HarnessV3Process(cfg, activation_token=activation.token, mcp_url=self.runtime.mcp_url, cwd=workspace)
+            # 2. Engine process. Pooled per turn (boot ≈1s is paid once per warm slot, not per frame);
+            #    the activation token *is* the process's model-gateway API key, so provider credentials
+            #    never leave StaffDeck. This frame's CapabilityHost is bound to the token for the phase.
+            if pooled is None:
+                pooled = self.runtime.acquire_process(cfg, t.tenant_id, cwd=workspace)
+                self._pooled = pooled
+            self.runtime.registry.rebind(pooled.token, host, inv_ctx)
+            self._activation_token = pooled.token
+            proc = pooled.process
             self._process = proc
-            proc.start()
-            trace("harness_v3_process_started", {"model": model, "model_config_id": getattr(model_config, "id", None), "base_url": str(getattr(model_config, "base_url", "") or ""), "via": "staffdeck-model-gateway", "thinking": thinking or "provider_default", "reasoning_effort": effort or "provider_default", "workspace": str(workspace), "boot_ms": int((time.monotonic() - started) * 1000)})
+            trace("harness_v3_frame_bound", {"model": model, "model_config_id": getattr(model_config, "id", None), "via": "staffdeck-model-gateway", "thinking": thinking or "provider_default", "reasoning_effort": effort or "provider_default", "workspace": str(workspace), "process_uses": pooled.uses})
 
             # 3. run turn (+ optional single steer)
             session_id = f"sd-{t.session_id}-{t.task_frame_id}"
@@ -395,18 +439,20 @@ class HarnessV3TaskAgent:
             return self._failed(requirement, "HARNESS_V3_ENGINE_ERROR", str(exc), actions=actions)
         finally:
             slot.closed = True
-            self.runtime.registry.release(activation.token)
+            if pooled is not None:
+                try:
+                    self.runtime.registry.rebind(pooled.token, IdlePhaseHost(), None)
+                except KeyError:
+                    pass
             try:
                 host_db.close()
             except Exception:  # pragma: no cover
                 pass
             self._flush_trace(trace)
-            if self._process is not None:
-                try:
-                    self._process.close()
-                except Exception:  # pragma: no cover
-                    pass
-                self._process = None
+            if pooled is not None and self._owns_process:
+                self.runtime.release_process(pooled)
+                self._pooled = None
+            self._process = None
 
     # -- helpers ------------------------------------------------------------------
 
@@ -443,13 +489,6 @@ class HarnessV3TaskAgent:
                 trace(event, payload)
             except Exception:  # pragma: no cover
                 logger.exception("trace flush failed for %s", event)
-
-    def _content_blocks(self, prompt: str, image_payloads: list[Any]) -> list[dict[str, Any]]:
-        """The prompt's content blocks: the text plus any validated image attachments."""
-
-        blocks: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-        blocks.extend(_image_content_blocks(image_payloads))
-        return blocks
 
     def _run_engine_turn(self, proc: HarnessV3Process, session_id: str, content_blocks: list[dict[str, Any]], cancelled: Callable[[], bool], trace: TraceSink, *, finished: Callable[[], bool] | None = None) -> tuple[list[dict[str, Any]], str, str | None]:
         client = proc.client
