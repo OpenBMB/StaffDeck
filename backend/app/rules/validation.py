@@ -31,9 +31,16 @@ _FINGERPRINT_FIELDS = (
     "sequence",
     "enabled",
 )
-_SECRET_KEY_SUFFIXES = (
+_FINGERPRINT_SEMANTIC_METADATA_KEYS = frozenset(
+    {"tokencount", "timestamptolerance"}
+)
+_SECRET_KEY_WORDS = frozenset(
+    {"credential", "credentials", "passphrase", "password", "secret"}
+)
+_SECRET_KEY_MARKERS = (
     "secret",
     "password",
+    "passphrase",
     "accesstoken",
     "refreshtoken",
     "authtoken",
@@ -42,15 +49,61 @@ _SECRET_KEY_SUFFIXES = (
     "credential",
     "credentials",
     "apikey",
+    "privatekey",
 )
-_DRAFTER_KEY_MARKERS = ("draftedby", "draftinguser", "drafter", "createdby")
+_LIFECYCLE_KEY_WORDS = frozenset(
+    {
+        "created",
+        "creation",
+        "draft",
+        "drafted",
+        "drafting",
+        "modified",
+        "modification",
+        "published",
+        "publication",
+        "updated",
+        "update",
+    }
+)
+_TIME_KEY_WORDS = frozenset(
+    {"at", "date", "epoch", "millis", "milliseconds", "ms", "on", "time", "utc"}
+)
 _TIMESTAMP_KEY_MARKERS = (
     "createdat",
+    "createdtime",
+    "createdtimestamp",
+    "draftedat",
+    "draftedtime",
+    "draftedtimestamp",
     "updatedat",
+    "updatedtime",
+    "updatedtimestamp",
     "modifiedat",
+    "modifiedtime",
+    "modifiedtimestamp",
     "publishedat",
+    "publishedtime",
+    "publishedtimestamp",
     "timestamp",
     "timestamps",
+)
+_IDENTITY_KEY_WORDS = frozenset(
+    {"account", "actor", "by", "email", "id", "identity", "name", "principal", "subject", "uuid"}
+)
+_IDENTITY_KEY_MARKERS = (
+    "author",
+    "createdby",
+    "draftedby",
+    "drafter",
+    "draftinguser",
+    "draftuser",
+    "modifiedby",
+    "publishedby",
+    "updatedby",
+    "userid",
+    "useridentity",
+    "username",
 )
 _DIRECT_BLOCKING_KEYS = frozenset({"blocking", "directblocking", "isblocking"})
 
@@ -224,13 +277,54 @@ def _normalize_metadata_key(key: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", str(key).lower())
 
 
+def _metadata_key_words(key: Any) -> frozenset[str]:
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(key))
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", separated)
+    return frozenset(
+        part.lower() for part in re.findall(r"[A-Za-z0-9]+", separated)
+    )
+
+
+def _has_boundaryless_marker(normalized_key: str, markers: tuple[str, ...]) -> bool:
+    return any(normalized_key.endswith(marker) for marker in markers)
+
+
 def _is_nonsemantic_metadata_key(key: Any) -> bool:
     normalized_key = _normalize_metadata_key(key)
-    return (
-        normalized_key == "token"
-        or normalized_key.endswith(_SECRET_KEY_SUFFIXES)
-        or normalized_key.startswith(_DRAFTER_KEY_MARKERS)
-        or normalized_key.endswith(_TIMESTAMP_KEY_MARKERS)
+    if normalized_key in _FINGERPRINT_SEMANTIC_METADATA_KEYS:
+        return False
+
+    words = _metadata_key_words(key)
+    if (
+        words.intersection(_SECRET_KEY_WORDS)
+        or "token" in words
+        or {"api", "key"}.issubset(words)
+        or {"private", "key"}.issubset(words)
+        or _has_boundaryless_marker(normalized_key, _SECRET_KEY_MARKERS)
+    ):
+        return True
+
+    if (
+        words.intersection({"timestamp", "timestamps"})
+        or (
+            words.intersection(_LIFECYCLE_KEY_WORDS)
+            and words.intersection(_TIME_KEY_WORDS)
+        )
+        or _has_boundaryless_marker(normalized_key, _TIMESTAMP_KEY_MARKERS)
+    ):
+        return True
+
+    draft_words = words.intersection({"draft", "drafted", "drafting", "drafter"})
+    return bool(
+        "drafter" in words
+        or (
+            "author" in words
+            and (len(words) == 1 or words.intersection(_IDENTITY_KEY_WORDS))
+        )
+        or (draft_words and ("user" in words or words.intersection(_IDENTITY_KEY_WORDS)))
+        or ("user" in words and words.intersection(_IDENTITY_KEY_WORDS))
+        or ("by" in words and words.intersection(_LIFECYCLE_KEY_WORDS))
+        or _has_boundaryless_marker(normalized_key, _IDENTITY_KEY_MARKERS)
     )
 
 

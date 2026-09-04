@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+import app.rules.validation as rule_validation
 from app.rules.schema import RuleDefinitionCreate, RuleValidationError
 from app.rules.validation import (
     fingerprint_rule_set_version,
@@ -383,6 +384,127 @@ def test_fingerprint_ignores_nonsemantic_metadata_variants(
     assert first == second
 
 
+def _rule_with_nested_metadata(
+    container_name: str,
+    metadata_key: str,
+    metadata_value: str,
+) -> RuleDefinitionCreate:
+    nested_metadata = {"metadata": {"details": {metadata_key: metadata_value}}}
+    if container_name == "condition":
+        return _rule(
+            condition={
+                "operator": "required",
+                "field_key": "certification_project.scope",
+                **nested_metadata,
+            }
+        )
+    if container_name == "input_requirements":
+        return _rule(input_requirements=[{"kind": "api", **nested_metadata}])
+    if container_name == "evidence_requirements":
+        return _rule(
+            evidence_requirements=[{"kind": "project_field", **nested_metadata}]
+        )
+    return _rule(
+        source_refs=[
+            {
+                "knowledge_base_version_id": "kbv-1",
+                "document_id": "doc-1",
+                "section": "7.3",
+                **nested_metadata,
+            }
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "metadata_key",
+    [
+        "secret_value",
+        "Secret-Value",
+        "password_hash",
+        "credential_blob",
+        "access-token-value",
+        "apiKeyMaterial",
+        "private_key_pem",
+        "created_at_epoch",
+        "updatedAtEpoch",
+        "published-time-ms",
+        "drafted_timestamp_epoch",
+        "draft_user_id",
+        "Draft-User-ID",
+        "author_identity",
+        "user-name",
+    ],
+)
+@pytest.mark.parametrize(
+    "container_name",
+    ["condition", "input_requirements", "evidence_requirements", "source_refs"],
+)
+def test_fingerprint_ignores_nested_sensitive_lifecycle_and_author_metadata(
+    container_name: str,
+    metadata_key: str,
+) -> None:
+    first = fingerprint_rule_set_version(
+        [_rule_with_nested_metadata(container_name, metadata_key, "first-value")]
+    )
+    second = fingerprint_rule_set_version(
+        [_rule_with_nested_metadata(container_name, metadata_key, "second-value")]
+    )
+    assert first == second
+
+
+def test_fingerprint_never_hashes_sensitive_metadata_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hashed_payloads: list[bytes] = []
+    real_sha256 = rule_validation.hashlib.sha256
+
+    def capture_sha256(payload: bytes) -> Any:
+        hashed_payloads.append(payload)
+        return real_sha256(payload)
+
+    monkeypatch.setattr(rule_validation.hashlib, "sha256", capture_sha256)
+
+    fingerprint_rule_set_version(
+        [
+            _rule(
+                condition={
+                    "operator": "required",
+                    "field_key": "certification_project.scope",
+                    "metadata": {"secret_value": "condition-sensitive-value"},
+                },
+                input_requirements=[
+                    {
+                        "kind": "api",
+                        "metadata": {"password_hash": "input-sensitive-value"},
+                    }
+                ],
+                evidence_requirements=[
+                    {
+                        "kind": "project_field",
+                        "metadata": {"private-key-pem": "evidence-sensitive-value"},
+                    }
+                ],
+                source_refs=[
+                    {
+                        "knowledge_base_version_id": "kbv-1",
+                        "document_id": "doc-1",
+                        "section": "7.3",
+                        "metadata": {"api_token_value": "source-sensitive-value"},
+                    }
+                ],
+            )
+        ]
+    )
+
+    assert len(hashed_payloads) == 1
+    hashed_payload = hashed_payloads[0].decode("utf-8")
+    assert "condition-sensitive-value" not in hashed_payload
+    assert "input-sensitive-value" not in hashed_payload
+    assert "evidence-sensitive-value" not in hashed_payload
+    assert "source-sensitive-value" not in hashed_payload
+
+
 def test_fingerprint_retains_nested_semantic_values() -> None:
     first = fingerprint_rule_set_version(
         [_rule(input_requirements=[{"kind": "api", "metadata": {"threshold": 1}}])]
@@ -393,7 +515,15 @@ def test_fingerprint_retains_nested_semantic_values() -> None:
     assert first != second
 
 
-@pytest.mark.parametrize("semantic_key", ["token_count", "timestamp_tolerance"])
+@pytest.mark.parametrize(
+    "semantic_key",
+    [
+        "token_count",
+        "timestamp_tolerance",
+        "authorization_required",
+        "secretary_approval",
+    ],
+)
 def test_fingerprint_retains_metadata_that_is_semantic_despite_its_name(
     semantic_key: str,
 ) -> None:
