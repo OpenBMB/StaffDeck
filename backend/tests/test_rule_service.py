@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -276,6 +278,172 @@ def test_replace_rules_rewrites_only_the_draft(rule_context) -> None:
     assert replaced.id == draft.id
     assert [row.rule_key for row in rows] == ["scope.replaced"]
     assert len(replaced.content_sha256) == 64
+
+
+def test_replace_rules_can_preserve_the_same_stable_rule_key(rule_context) -> None:
+    db, admin, _member, rule_set = rule_context
+    draft = RuleLibraryService(db).create_draft_version(
+        rule_set, admin, [_rule_create(name="原名称")]
+    )
+
+    RuleLibraryService(db).replace_rules(
+        draft.id, admin, [_rule_create(name="新名称")]
+    )
+
+    rows = db.exec(
+        select(RuleDefinition).where(RuleDefinition.rule_set_version_id == draft.id)
+    ).all()
+    assert [(row.rule_key, row.name) for row in rows] == [
+        ("scope.required", "新名称")
+    ]
+
+
+def test_replace_rules_advances_lock_token_when_clock_does_not(
+    rule_context, monkeypatch
+) -> None:
+    db, admin, _member, rule_set = rule_context
+    draft = RuleLibraryService(db).create_draft_version(
+        rule_set, admin, [_rule_create()]
+    )
+    original_updated_at = draft.updated_at
+    monkeypatch.setattr("app.rules.service.utc_now", lambda: original_updated_at)
+
+    replaced = RuleLibraryService(db).replace_rules(
+        draft.id, admin, [_rule_create()]
+    )
+
+    assert replaced.updated_at > original_updated_at
+
+
+def test_concurrent_publish_attempts_have_one_winner(
+    rule_context, monkeypatch
+) -> None:
+    db, admin, _member, rule_set = rule_context
+    second_admin = _user("admin-2", admin.tenant_id, role="admin")
+    db.add(second_admin)
+    db.commit()
+    draft = RuleLibraryService(db).create_draft_version(
+        rule_set, admin, [_rule_create(name="并发发布原内容")]
+    )
+    engine = db.get_bind()
+    barrier = Barrier(2)
+    original_rules_for_version = RuleLibraryService._rules_for_version
+
+    def synchronized_rules_for_version(
+        service: RuleLibraryService, version_id: str
+    ) -> list[RuleDefinition]:
+        rows = original_rules_for_version(service, version_id)
+        barrier.wait(timeout=10)
+        return rows
+
+    monkeypatch.setattr(
+        RuleLibraryService, "_rules_for_version", synchronized_rules_for_version
+    )
+
+    def publish(actor_id: str) -> tuple[str, str | None]:
+        with Session(engine, expire_on_commit=False) as worker_db:
+            actor = worker_db.get(User, actor_id)
+            assert actor is not None
+            try:
+                version = RuleLibraryService(worker_db).publish_version(draft.id, actor)
+            except RuleVersionImmutableError as exc:
+                return str(exc), None
+            return "published", version.published_by_user_id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(publish, [admin.id, second_admin.id]))
+
+    assert sorted(result[0] for result in results) == [
+        "RULE_VERSION_IMMUTABLE",
+        "published",
+    ]
+    winning_actor_id = next(result[1] for result in results if result[0] == "published")
+    with Session(engine) as verification_db:
+        persisted_version = verification_db.get(RuleSetVersion, draft.id)
+        assert persisted_version is not None
+        persisted_rule = verification_db.exec(
+            select(RuleDefinition).where(
+                RuleDefinition.rule_set_version_id == draft.id
+            )
+        ).one()
+        assert persisted_version.status == "published"
+        assert persisted_version.published_by_user_id == winning_actor_id
+        assert persisted_rule.name == "并发发布原内容"
+
+
+def test_concurrent_publish_and_replace_have_one_winner(
+    rule_context, monkeypatch
+) -> None:
+    db, admin, _member, rule_set = rule_context
+    draft = RuleLibraryService(db).create_draft_version(
+        rule_set, admin, [_rule_create(name="替换前内容")]
+    )
+    engine = db.get_bind()
+    barrier = Barrier(2)
+    original_rules_for_version = RuleLibraryService._rules_for_version
+
+    def synchronized_rules_for_version(
+        service: RuleLibraryService, version_id: str
+    ) -> list[RuleDefinition]:
+        rows = original_rules_for_version(service, version_id)
+        barrier.wait(timeout=10)
+        return rows
+
+    monkeypatch.setattr(
+        RuleLibraryService, "_rules_for_version", synchronized_rules_for_version
+    )
+
+    def publish() -> str:
+        with Session(engine, expire_on_commit=False) as worker_db:
+            actor = worker_db.get(User, admin.id)
+            assert actor is not None
+            try:
+                RuleLibraryService(worker_db).publish_version(draft.id, actor)
+            except RuleVersionImmutableError as exc:
+                return str(exc)
+            return "published"
+
+    def replace() -> str:
+        with Session(engine, expire_on_commit=False) as worker_db:
+            actor = worker_db.get(User, admin.id)
+            assert actor is not None
+            try:
+                RuleLibraryService(worker_db).replace_rules(
+                    draft.id,
+                    actor,
+                    [_rule_create(rule_key="scope.replaced", name="替换后内容")],
+                )
+            except RuleVersionImmutableError as exc:
+                return str(exc)
+            return "replaced"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        publish_future = executor.submit(publish)
+        replace_future = executor.submit(replace)
+        results = [publish_future.result(), replace_future.result()]
+
+    assert sorted(results) in (
+        ["RULE_VERSION_IMMUTABLE", "published"],
+        ["RULE_VERSION_IMMUTABLE", "replaced"],
+    )
+    with Session(engine) as verification_db:
+        persisted_version = verification_db.get(RuleSetVersion, draft.id)
+        assert persisted_version is not None
+        persisted_rule = verification_db.exec(
+            select(RuleDefinition).where(
+                RuleDefinition.rule_set_version_id == draft.id
+            )
+        ).one()
+        if "published" in results:
+            assert persisted_version.status == "published"
+            assert persisted_version.published_by_user_id == admin.id
+            assert persisted_rule.rule_key == "scope.required"
+            assert persisted_rule.name == "替换前内容"
+        else:
+            assert persisted_version.status == "draft"
+            assert persisted_version.published_by_user_id is None
+            assert persisted_rule.rule_key == "scope.replaced"
+            assert persisted_rule.name == "替换后内容"
 
 
 def test_cross_tenant_version_is_not_accessible(rule_context) -> None:

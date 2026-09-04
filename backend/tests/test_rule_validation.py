@@ -124,6 +124,51 @@ def test_unsupported_condition_operator_is_rejected() -> None:
         validate_rule_definition(_rule(condition={"operator": "delete"}))
 
 
+def test_nested_condition_operator_is_validated() -> None:
+    with pytest.raises(RuleValidationError, match="UNSUPPORTED_RULE_OPERATOR"):
+        validate_rule_definition(
+            _rule(
+                condition={
+                    "operator": "equals",
+                    "conditions": [
+                        {
+                            "operator": "exec",
+                            "field_key": "certification_project.scope",
+                        }
+                    ],
+                }
+            )
+        )
+
+
+def test_nested_allowed_condition_operators_are_accepted() -> None:
+    validate_rule_definition(
+        _rule(
+            condition={
+                "operator": "equals",
+                "conditions": [
+                    {
+                        "operator": "has_evidence",
+                        "field_key": "certification_project.scope",
+                    }
+                ],
+            }
+        )
+    )
+
+
+def test_nested_nonstring_condition_operator_has_stable_validation_error() -> None:
+    with pytest.raises(RuleValidationError, match="UNSUPPORTED_RULE_OPERATOR"):
+        validate_rule_definition(
+            _rule(
+                condition={
+                    "operator": "equals",
+                    "conditions": [{"operator": ["required"]}],
+                }
+            )
+        )
+
+
 def test_source_reference_requires_complete_provenance() -> None:
     with pytest.raises(RuleValidationError, match="INVALID_RULE_SOURCE_REF"):
         validate_rule_definition(
@@ -149,7 +194,38 @@ def test_model_assisted_results_are_limited_to_human_review_outcomes() -> None:
         )
 
 
-def test_model_assisted_rule_cannot_declare_direct_blocking() -> None:
+@pytest.mark.parametrize(
+    "condition",
+    [
+        {
+            "operator": "required",
+            "field_key": "certification_project.scope",
+        },
+        {
+            "operator": "required",
+            "field_key": "certification_project.scope",
+            "allowed_results": [],
+        },
+        {
+            "operator": "required",
+            "field_key": "certification_project.scope",
+            "allowed_results": "pass",
+        },
+    ],
+)
+def test_model_assisted_rule_requires_explicit_nonempty_result_contract(
+    condition: dict[str, Any],
+) -> None:
+    with pytest.raises(RuleValidationError, match="MODEL_ASSISTED_RESULT_INVALID"):
+        validate_rule_definition(
+            _rule(execution_method="model_assisted", condition=condition)
+        )
+
+
+@pytest.mark.parametrize("blocking_value", [True, 1, "yes", ["block"]])
+def test_model_assisted_rule_cannot_declare_truthy_direct_blocking(
+    blocking_value: Any,
+) -> None:
     with pytest.raises(
         RuleValidationError, match="MODEL_ASSISTED_DIRECT_BLOCKING_FORBIDDEN"
     ):
@@ -159,10 +235,69 @@ def test_model_assisted_rule_cannot_declare_direct_blocking() -> None:
                 condition={
                     "operator": "required",
                     "field_key": "certification_project.scope",
-                    "blocking": True,
+                    "blocking": blocking_value,
+                    "allowed_results": ["pass", "fail", "indeterminate"],
                 },
             )
         )
+
+
+def test_model_assisted_rule_rejects_nested_direct_blocking_metadata() -> None:
+    with pytest.raises(
+        RuleValidationError, match="MODEL_ASSISTED_DIRECT_BLOCKING_FORBIDDEN"
+    ):
+        validate_rule_definition(
+            _rule(
+                execution_method="model_assisted",
+                condition={
+                    "operator": "required",
+                    "field_key": "certification_project.scope",
+                    "allowed_results": ["pass", "fail", "indeterminate"],
+                    "metadata": {"directBlocking": "enabled"},
+                },
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"input_requirements": [{"metadata": {"blocking": "yes"}}]},
+        {"evidence_requirements": [{"metadata": {"direct_blocking": 1}}]},
+        {"source_refs": [{"internal_policy_ref": "POL-001", "isBlocking": [1]}]},
+    ],
+)
+def test_model_assisted_rule_rejects_direct_blocking_in_any_metadata(
+    overrides: dict[str, Any],
+) -> None:
+    with pytest.raises(
+        RuleValidationError, match="MODEL_ASSISTED_DIRECT_BLOCKING_FORBIDDEN"
+    ):
+        validate_rule_definition(
+            _rule(
+                execution_method="model_assisted",
+                condition={
+                    "operator": "required",
+                    "field_key": "certification_project.scope",
+                    "allowed_results": ["pass", "fail", "indeterminate"],
+                },
+                **overrides,
+            )
+        )
+
+
+def test_model_assisted_rule_allows_nonblocking_explanatory_metadata() -> None:
+    validate_rule_definition(
+        _rule(
+            execution_method="model_assisted",
+            condition={
+                "operator": "required",
+                "field_key": "certification_project.scope",
+                "allowed_results": ["pass", "fail", "indeterminate"],
+                "metadata": {"nonBlockingReason": "human review only"},
+            },
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -179,6 +314,28 @@ def test_sequence_and_enabled_are_strictly_validated(
         validate_rule_definition(_rule(**overrides))
 
 
+@pytest.mark.parametrize(
+    ("overrides", "error_code"),
+    [
+        ({"workflow_nodes": ["collect", " "]}, "INVALID_RULE_WORKFLOW_NODE"),
+        (
+            {"information_domains": ["certification_project", "\t"]},
+            "INVALID_RULE_INFORMATION_DOMAIN",
+        ),
+        ({"evidence_requirements": [{}]}, "INVALID_RULE_EVIDENCE_REQUIREMENT"),
+        (
+            {"evidence_requirements": [{"kind": "  "}]},
+            "INVALID_RULE_EVIDENCE_REQUIREMENT",
+        ),
+    ],
+)
+def test_rule_collection_items_must_be_nonblank(
+    overrides: dict[str, Any], error_code: str
+) -> None:
+    with pytest.raises(RuleValidationError, match=error_code):
+        validate_rule_definition(_rule(**overrides))
+
+
 def test_fingerprint_ignores_secret_metadata() -> None:
     first = fingerprint_rule_set_version(
         [_rule(input_requirements=[{"kind": "api", "secret": "first"}])]
@@ -187,3 +344,75 @@ def test_fingerprint_ignores_secret_metadata() -> None:
         [_rule(input_requirements=[{"kind": "api", "secret": "second"}])]
     )
     assert first == second
+
+
+@pytest.mark.parametrize(
+    "metadata_key",
+    [
+        "created_at",
+        "updatedAt",
+        "timestamp",
+        "drafted_by_user_id",
+        "draftedByUserId",
+        "client_secret",
+        "clientSecret",
+        "API-TOKEN",
+    ],
+)
+def test_fingerprint_ignores_nonsemantic_metadata_variants(
+    metadata_key: str,
+) -> None:
+    first = fingerprint_rule_set_version(
+        [
+            _rule(
+                input_requirements=[
+                    {"kind": "api", "metadata": {metadata_key: "first-value"}}
+                ]
+            )
+        ]
+    )
+    second = fingerprint_rule_set_version(
+        [
+            _rule(
+                input_requirements=[
+                    {"kind": "api", "metadata": {metadata_key: "second-value"}}
+                ]
+            )
+        ]
+    )
+    assert first == second
+
+
+def test_fingerprint_retains_nested_semantic_values() -> None:
+    first = fingerprint_rule_set_version(
+        [_rule(input_requirements=[{"kind": "api", "metadata": {"threshold": 1}}])]
+    )
+    second = fingerprint_rule_set_version(
+        [_rule(input_requirements=[{"kind": "api", "metadata": {"threshold": 2}}])]
+    )
+    assert first != second
+
+
+@pytest.mark.parametrize("semantic_key", ["token_count", "timestamp_tolerance"])
+def test_fingerprint_retains_metadata_that_is_semantic_despite_its_name(
+    semantic_key: str,
+) -> None:
+    first = fingerprint_rule_set_version(
+        [
+            _rule(
+                input_requirements=[
+                    {"kind": "model", "metadata": {semantic_key: 100}}
+                ]
+            )
+        ]
+    )
+    second = fingerprint_rule_set_version(
+        [
+            _rule(
+                input_requirements=[
+                    {"kind": "model", "metadata": {semantic_key: 200}}
+                ]
+            )
+        ]
+    )
+    assert first != second

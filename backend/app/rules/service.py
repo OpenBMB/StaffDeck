@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 
+from sqlalchemy import update
 from sqlmodel import Session, func, select
 
 from app.db.models import (
@@ -118,6 +120,27 @@ class RuleLibraryService:
                 )
             )
 
+    def _compare_and_swap_draft(
+        self,
+        version: RuleSetVersion,
+        **values: object,
+    ) -> None:
+        result = self.db.exec(
+            update(RuleSetVersion)
+            .where(
+                RuleSetVersion.id == version.id,
+                RuleSetVersion.tenant_id == version.tenant_id,
+                RuleSetVersion.status == "draft",
+                RuleSetVersion.content_sha256 == version.content_sha256,
+                RuleSetVersion.updated_at == version.updated_at,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            self.db.rollback()
+            raise RuleVersionImmutableError()
+
     def create_rule_set(self, actor: User, request: RuleSetCreate) -> RuleSet:
         _ensure_tenant_admin(actor, request.tenant_id)
         if _STABLE_KEY.fullmatch(request.key) is None:
@@ -198,12 +221,15 @@ class RuleLibraryService:
         rules = [_rule_definition_create(row) for row in self._rules_for_version(version.id)]
         validate_rule_set_with_fields(rules, declared)
         now = utc_now()
-        version.content_sha256 = fingerprint_rule_set_version(rules)
-        version.status = "published"
-        version.published_by_user_id = actor.id
-        version.published_at = now
-        version.updated_at = now
-        self.db.add(version)
+        content_sha256 = fingerprint_rule_set_version(rules)
+        self._compare_and_swap_draft(
+            version,
+            content_sha256=content_sha256,
+            status="published",
+            published_by_user_id=actor.id,
+            published_at=now,
+            updated_at=now,
+        )
         self.db.commit()
         self.db.refresh(version)
         return version
@@ -219,12 +245,20 @@ class RuleLibraryService:
             raise RuleVersionImmutableError()
         declared = self._declared_field_keys(version.tenant_id)
         validate_rule_set_with_fields(rules, declared)
-        for existing in self._rules_for_version(version.id):
+        existing_rules = self._rules_for_version(version.id)
+        now = utc_now()
+        if now <= version.updated_at:
+            now = version.updated_at + timedelta(microseconds=1)
+        content_sha256 = fingerprint_rule_set_version(rules)
+        self._compare_and_swap_draft(
+            version,
+            content_sha256=content_sha256,
+            updated_at=now,
+        )
+        for existing in existing_rules:
             self.db.delete(existing)
+        self.db.flush()
         self._persist_rules(version, rules)
-        version.content_sha256 = fingerprint_rule_set_version(rules)
-        version.updated_at = utc_now()
-        self.db.add(version)
         self.db.commit()
         self.db.refresh(version)
         return version
