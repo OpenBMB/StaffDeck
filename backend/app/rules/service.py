@@ -9,9 +9,9 @@ from typing import Any, Literal
 from sqlalchemy import update
 from sqlmodel import Session, func, select
 
+from app.audit_cases.service import record_case_event
 from app.db.models import (
     AuditCase,
-    AuditCaseEvent,
     ProjectDataFieldDefinition,
     ProjectRuleBinding,
     RuleDefinition,
@@ -435,6 +435,18 @@ class RuleBindingService:
             bound_by_user_id=actor.id,
         )
         self.db.add(binding)
+        record_case_event(
+            self.db,
+            case=case,
+            actor_user_id=actor.id,
+            event_type="rule_binding_created",
+            resource_type="project_rule_binding",
+            resource_id=binding.id,
+            metadata={
+                "rule_set_version_id": binding.rule_set_version_id,
+                "status": "current",
+            },
+        )
         self.db.commit()
         self.db.refresh(binding)
         return binding
@@ -468,6 +480,20 @@ class RuleBindingService:
             for priority, version in enumerate(versions)
         ]
         self.db.add_all(bindings)
+        if bindings:
+            record_case_event(
+                self.db,
+                case=case,
+                actor_user_id=actor.id,
+                event_type="rule_binding_created",
+                resource_type="project_rule_binding",
+                resource_id=bindings[0].id,
+                metadata={
+                    "rule_set_version_id": bindings[0].rule_set_version_id,
+                    "status": "current",
+                    "count": len(bindings),
+                },
+            )
         self.db.commit()
         for binding in bindings:
             self.db.refresh(binding)
@@ -585,20 +611,25 @@ class RuleBindingService:
             for priority, version in enumerate(versions)
         ]
         self.db.add_all(bindings)
-        self.db.add(
-            AuditCaseEvent(
-                tenant_id=case.tenant_id,
-                audit_case_id=case.id,
-                actor_user_id=actor.id,
-                event_type="project_rule_bindings_migrated",
-                resource_type="project_rule_binding",
-                resource_id=bindings[0].id if bindings else case.id,
-                metadata_json={
-                    "reason": normalized_reason,
-                    "rule_set_version_ids": list(target_version_ids),
-                },
-                created_at=now,
-            )
+        migrated_version_id = (
+            bindings[0].rule_set_version_id
+            if bindings
+            else target_version_ids[0]
+            if target_version_ids
+            else ""
+        )
+        record_case_event(
+            self.db,
+            case=case,
+            actor_user_id=actor.id,
+            event_type="rule_binding_migrated",
+            resource_type="project_rule_binding",
+            resource_id=bindings[0].id if bindings else case.id,
+            metadata={
+                "rule_set_version_id": migrated_version_id,
+                "status": "migrated",
+                "count": len(bindings),
+            },
         )
         self.db.commit()
         for binding in bindings:
@@ -875,6 +906,20 @@ class RuleLibraryService:
                     )
                 )
         self.db.add_all(evaluations)
+        if evaluations:
+            record_case_event(
+                self.db,
+                case=case,
+                actor_user_id=actor.id,
+                event_type="rule_evaluation_completed",
+                resource_type="rule_evaluation",
+                resource_id=evaluations[0].id,
+                metadata={
+                    "rule_evaluation_id": evaluations[0].id,
+                    "status": "completed",
+                    "count": len(evaluations),
+                },
+            )
         self.db.commit()
         for evaluation in evaluations:
             self.db.refresh(evaluation)

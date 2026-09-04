@@ -7,6 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.db.models import (
     AuditCase,
+    AuditCaseEvent,
     RuleEvaluation,
     User,
 )
@@ -172,6 +173,15 @@ def test_migration_creates_new_binding_and_preserves_old_snapshot(binding_contex
     db.refresh(old)
     assert old.status == "superseded"
     assert old.rule_set_version_id == first.id
+    migration_events = db.exec(
+        select(AuditCaseEvent).where(
+            AuditCaseEvent.audit_case_id == case.id,
+            AuditCaseEvent.event_type == "rule_binding_migrated",
+        )
+    ).all()
+    assert len(migration_events) == 1
+    assert "reason" not in migration_events[0].metadata_json
+    assert "rule_set_version_ids" not in migration_events[0].metadata_json
 
 
 def test_migration_requires_reason_and_does_not_mutate_on_failure(binding_context) -> None:
@@ -369,6 +379,14 @@ def test_evaluate_project_persists_revision_and_evidence(binding_context) -> Non
         select(RuleEvaluation).where(RuleEvaluation.id == evaluations[0].id)
     ).one()
     assert persisted.rule_set_version_id == published.id
+    evaluation_events = db.exec(
+        select(AuditCaseEvent).where(
+            AuditCaseEvent.audit_case_id == case.id,
+            AuditCaseEvent.event_type == "rule_evaluation_completed",
+        )
+    ).all()
+    assert len(evaluation_events) == 1
+    assert evaluation_events[0].metadata_json["rule_evaluation_id"] == evaluations[0].id
 
 
 def test_current_bindings_are_visible_only_to_authorized_project_users(binding_context) -> None:

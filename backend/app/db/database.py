@@ -94,7 +94,7 @@ def _migrate_sqlite_skill_schema() -> None:
     legacy_table = f"{legacy_key}_skills"
     legacy_id_column = f"{legacy_key}_id"
     legacy_id_prefix = f"{legacy_key}_"
-    with _sqlite_immediate_connection() as conn:
+    with _sqlite_immediate_connection(engine) as conn:
         _migrate_model_api_protocols(conn, tables)
         _migrate_model_context_budget(conn, tables)
         _migrate_default_model_output_limit(conn, tables)
@@ -539,7 +539,8 @@ def _migrate_sqlite_skill_schema() -> None:
 
 
 @contextmanager
-def _sqlite_immediate_connection(target_engine: Engine = engine):
+def _sqlite_immediate_connection(target_engine: Engine | None = None):
+    target_engine = target_engine or engine
     conn = target_engine.connect()
     try:
         conn.exec_driver_sql("BEGIN IMMEDIATE")

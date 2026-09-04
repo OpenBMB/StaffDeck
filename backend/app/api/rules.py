@@ -67,7 +67,9 @@ class RuleVersionPayload(BaseModel):
 
 
 class RuleBindingReplaceRequest(BaseModel):
-    version_ids: list[str] = Field(min_length=1)
+    model_config = ConfigDict(populate_by_name=True)
+
+    version_ids: list[str] = Field(min_length=1, alias="rule_set_version_ids")
     selection_source: Literal["recommended", "manual"] = "manual"
 
 
