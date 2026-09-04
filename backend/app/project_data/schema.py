@@ -54,6 +54,19 @@ class ProjectDataConflictRead(BaseModel):
     resolution_reason: str | None = None
 
 
+class RuleEvaluationContext(BaseModel):
+    """Immutable inputs used by a single rule-evaluation pass."""
+
+    model_config = ConfigDict(frozen=True)
+
+    project_fields: dict[str, Any] = Field(default_factory=dict)
+    project_field_revisions: dict[str, int] = Field(default_factory=dict)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    workflow_node: str = ""
+    information_domain: str = ""
+    target_ref: str | None = None
+
+
 class ProjectFieldValidationError(ValueError):
     def __init__(self, code: str, message: str | None = None):
         self.code = code
