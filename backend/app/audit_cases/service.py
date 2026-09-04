@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 import re
 from contextlib import contextmanager
-from threading import Lock, RLock
 from pathlib import Path
+from threading import Lock, RLock
 from typing import Any
 
 from sqlalchemy import func
@@ -21,8 +21,8 @@ from app.audit_cases.schema import (
     AuditCaseManagementOptions,
     AuditCaseManagementPage,
     AuditCaseManagementRead,
-    AuditCaseMemberUpdate,
     AuditCaseMaterialTypeOption,
+    AuditCaseMemberUpdate,
     AuditCaseNotFound,
     AuditCaseReadOnly,
     AuditCaseUpdate,
@@ -41,15 +41,20 @@ from app.db.models import (
     AuditCaseMaterial,
     AuditCaseMaterialChunk,
     ChatSession,
+    KnowledgeBaseVersion,
     KnowledgeChunk,
     KnowledgeDocument,
-    KnowledgeBaseVersion,
     User,
     new_id,
     utc_now,
 )
-from app.documents.extraction import DocumentExtractionError, DocumentExtractionResult, ExtractedPage
+from app.documents.extraction import (
+    DocumentExtractionError,
+    DocumentExtractionResult,
+    ExtractedPage,
+)
 from app.knowledge.parser import KnowledgeParseError, extract_document, extract_text
+from app.project_data.permissions import resolve_project_role
 
 _DEFAULT_EXTRACT_TEXT = extract_text
 _MATERIAL_LOCKS: dict[str, RLock] = {}
@@ -281,14 +286,7 @@ class AuditCaseService:
         self.db = db
 
     def can_access(self, case: AuditCase, user: User) -> bool:
-        return (
-            case.tenant_id == user.tenant_id
-            and (
-                user.role == "admin"
-                or case.owner_user_id == user.id
-                or user.id in set(case.member_user_ids_json or [])
-            )
-        )
+        return resolve_project_role(self.db, case, user) is not None
 
     def get_case_for_user(self, tenant_id: str, case_id: str, user: User) -> AuditCase:
         row = self.db.get(AuditCase, case_id)

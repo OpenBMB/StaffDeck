@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -16,6 +16,7 @@ from app.db.models import (
     AuditCase,
     AuditCaseEvent,
     AuditCaseMaterial,
+    AuditCaseMemberRole,
     Tenant,
     User,
 )
@@ -121,9 +122,44 @@ def test_replace_members_rejects_foreign_or_channel_users_as_one_transaction(
     ).all() == []
 
 
+def test_case_access_supports_explicit_roles_and_legacy_members(management_context) -> None:
+    db, admin, member, _channel_user, other_tenant_user, case = management_context
+    reviewer = User(
+        id="user-reviewer",
+        tenant_id=case.tenant_id,
+        username="reviewer",
+        display_name="复核人",
+        role="member",
+        source="web",
+        password_hash="test",
+    )
+    case.member_user_ids_json = [member.id]
+    db.add_all(
+        [
+            case,
+            reviewer,
+            AuditCaseMemberRole(
+                id="role-reviewer",
+                tenant_id=case.tenant_id,
+                audit_case_id=case.id,
+                user_id=reviewer.id,
+                role="reviewer",
+                created_by_user_id=admin.id,
+            ),
+        ]
+    )
+    db.commit()
+    service = AuditCaseService(db)
+
+    assert service.can_access(case, admin) is True
+    assert service.can_access(case, member) is True
+    assert service.can_access(case, reviewer) is True
+    assert service.can_access(case, other_tenant_user) is False
+
+
 def test_management_list_aggregates_only_current_material_counts(management_context) -> None:
     db, admin, _member, _channel_user, _other_tenant_user, case = management_context
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     db.add_all(
         [
             AuditCaseMaterial(
