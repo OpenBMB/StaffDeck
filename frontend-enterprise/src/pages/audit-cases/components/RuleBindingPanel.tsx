@@ -17,7 +17,7 @@ import {
 const NOT_INITIALIZED_CODE = 'RULE_BINDING_NOT_INITIALIZED';
 
 function selectionKey(ids: string[]): string {
-  return [...ids].sort().join('|');
+  return ids.join('|');
 }
 
 function sameSelection(left: string[], right: string[]): boolean {

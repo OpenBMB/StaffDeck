@@ -174,6 +174,19 @@ describe('RuleBindingPanel', () => {
     expect(screen.getAllByText('能源管理体系规则 · 版本 2')).toHaveLength(2);
   });
 
+  it('treats a changed binding priority order as a migration candidate', async () => {
+    const user = userEvent.setup();
+    mockLoadedState([publishedV1, publishedV2], [binding('version-1', 1), binding('version-2', 2)]);
+
+    renderPanel();
+    const v1 = await screen.findByLabelText('能源管理体系规则 · 版本 1');
+    await user.click(v1);
+    await user.click(v1);
+    await user.click(screen.getByRole('button', { name: '预览迁移影响' }));
+
+    await waitFor(() => expect(previewRuleBindingMigration).toHaveBeenCalledWith('case-1', ['version-2', 'version-1']));
+  });
+
   it('keeps the exact pinned current version visible without silently selecting a newer version', async () => {
     mockLoadedState([publishedV1, publishedV2], [binding('version-1')]);
 
@@ -187,15 +200,62 @@ describe('RuleBindingPanel', () => {
   });
 
   it('disables selection, binding, preview, and migration controls for an archived project', async () => {
+    const user = userEvent.setup();
     mockLoadedState([publishedV1, publishedV2], [binding('version-1')]);
 
     renderPanel({ disabled: true });
 
-    expect((await screen.findByLabelText('能源管理体系规则 · 版本 1') as HTMLInputElement).disabled).toBe(true);
+    const v1 = await screen.findByLabelText('能源管理体系规则 · 版本 1') as HTMLInputElement;
+    expect(v1.disabled).toBe(true);
     expect((screen.getByLabelText('能源管理体系规则 · 版本 2') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: '预览迁移影响' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: '确认迁移' }) as HTMLButtonElement).disabled).toBe(true);
+    const previewButton = screen.getByRole('button', { name: '预览迁移影响' }) as HTMLButtonElement;
+    const migrateButton = screen.getByRole('button', { name: '确认迁移' }) as HTMLButtonElement;
+    expect(previewButton.disabled).toBe(true);
+    expect(migrateButton.disabled).toBe(true);
     expect(screen.getByText(/项目已归档/)).toBeTruthy();
+
+    await user.click(v1);
+    await user.click(previewButton);
+    await user.click(migrateButton);
+
+    expect(v1.checked).toBe(true);
+    expect(previewRuleBindingMigration).not.toHaveBeenCalled();
+    expect(migrateRuleBindings).not.toHaveBeenCalled();
+    expect(replaceCurrentRuleBindings).not.toHaveBeenCalled();
+  });
+
+  it('preserves the selected version and notifies when initial binding fails', async () => {
+    const user = userEvent.setup();
+    mockLoadedState([publishedV1, publishedV2], notInitializedError());
+    vi.mocked(replaceCurrentRuleBindings).mockRejectedValue(new Error('写入失败'));
+
+    renderPanel();
+    const v1 = await screen.findByLabelText('能源管理体系规则 · 版本 1') as HTMLInputElement;
+    await user.click(v1);
+    await user.click(screen.getByRole('button', { name: '绑定选中版本' }));
+
+    await waitFor(() => expect(notify.error).toHaveBeenCalled());
+    expect(v1.checked).toBe(true);
+    expect(screen.getByText('尚未绑定规则版本')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('规则版本绑定失败');
+  });
+
+  it('preserves the current binding and selected versions when preview fails', async () => {
+    const user = userEvent.setup();
+    mockLoadedState([publishedV1, publishedV2], [binding('version-1')]);
+    vi.mocked(previewRuleBindingMigration).mockRejectedValue(new Error('预览失败'));
+
+    renderPanel();
+    const v2 = await screen.findByLabelText('能源管理体系规则 · 版本 2') as HTMLInputElement;
+    await user.click(v2);
+    await user.click(screen.getByRole('button', { name: '预览迁移影响' }));
+
+    await waitFor(() => expect(notify.error).toHaveBeenCalled());
+    expect(screen.getAllByText('能源管理体系规则 · 版本 1')).toHaveLength(2);
+    expect((screen.getByLabelText('能源管理体系规则 · 版本 1') as HTMLInputElement).checked).toBe(true);
+    expect(v2.checked).toBe(true);
+    expect(screen.queryByText('迁移影响预览')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('迁移影响预览失败');
   });
 
   it('preserves visible migration state and notifies when migration fails', async () => {
