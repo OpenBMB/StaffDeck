@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,6 +12,8 @@ class AuditCaseCreate(BaseModel):
     tenant_id: str
     organization_name: str = Field(min_length=1, max_length=200)
     report_type: str = Field(min_length=1, max_length=100)
+    agent_id: str | None = None
+    knowledge_scope_mode: Literal["agent_default", "custom"] = "custom"
     management_systems: list[str] = Field(default_factory=list)
     knowledge_base_version_ids: list[str] = Field(default_factory=list)
     member_user_ids: list[str] = Field(default_factory=list)
@@ -23,11 +25,13 @@ class AuditCaseRead(BaseModel):
     id: str
     tenant_id: str
     owner_user_id: str
+    agent_id: str | None = None
     member_user_ids: list[str]
     organization_name: str
     report_type: str
     management_systems: list[str]
     status: str
+    knowledge_scope_mode: Literal["agent_default", "custom"] = "custom"
     knowledge_base_version_ids: list[str]
     active_report_version_id: str | None = None
     created_at: datetime
@@ -85,7 +89,15 @@ class AuditCaseKnowledgeVersionOption(BaseModel):
     duplicate_group: str | None = None
 
 
+class AuditCaseAgentOption(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    knowledge_base_version_ids: list[str] = Field(default_factory=list)
+
+
 class AuditCaseManagementOptions(BaseModel):
+    agent_options: list[AuditCaseAgentOption] = Field(default_factory=list)
     knowledge_versions: list[AuditCaseKnowledgeVersionOption] = Field(default_factory=list)
     audit_types: list[AuditCaseChoiceOption] = Field(default_factory=list)
     management_systems: list[AuditCaseChoiceOption] = Field(default_factory=list)
@@ -238,11 +250,13 @@ def audit_case_read(row: AuditCase) -> AuditCaseRead:
         id=row.id,
         tenant_id=row.tenant_id,
         owner_user_id=row.owner_user_id,
+        agent_id=row.agent_id,
         member_user_ids=list(row.member_user_ids_json or []),
         organization_name=row.organization_name,
         report_type=row.report_type,
         management_systems=list(row.management_systems_json or []),
         status=row.status,
+        knowledge_scope_mode=row.knowledge_scope_mode,
         knowledge_base_version_ids=list(row.knowledge_base_version_ids_json or []),
         active_report_version_id=row.active_report_version_id,
         created_at=row.created_at,

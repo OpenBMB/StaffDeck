@@ -16,6 +16,7 @@ from app.db.models import (
     AuditCaseEvent,
     AuditCaseMaterial,
     AuditCaseMaterialChunk,
+    KnowledgeBaseVersion,
     ModelConfig,
     Tenant,
     User,
@@ -63,6 +64,16 @@ def api_context(tmp_path, monkeypatch):
     with Session(engine, expire_on_commit=False) as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(Tenant(id="tenant_other", name="Other"))
+        db.add(
+            KnowledgeBaseVersion(
+                id="kbver-1",
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb-1",
+                name="测试知识库",
+                version="1.0.0",
+                status="active",
+            )
+        )
         db.add_all(users.values())
         db.commit()
 

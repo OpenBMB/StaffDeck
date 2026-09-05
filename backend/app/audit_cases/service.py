@@ -3,17 +3,19 @@ from __future__ import annotations
 import hashlib
 import re
 from contextlib import contextmanager
-from threading import Lock, RLock
 from pathlib import Path
+from threading import Lock, RLock
 from typing import Any
 
 from sqlalchemy import func
 from sqlmodel import Session, delete, select, update
 
+from app.agents.branching import visible_knowledge_base_versions
 from app.async_jobs import AsyncJob, enqueue_async_job, get_async_job_queue
 from app.audit_cases.chunking import chunk_text, page_refs_for_span
 from app.audit_cases.schema import (
     AuditCaseAccessDenied,
+    AuditCaseAgentOption,
     AuditCaseChoiceOption,
     AuditCaseCreate,
     AuditCaseEventRead,
@@ -21,8 +23,8 @@ from app.audit_cases.schema import (
     AuditCaseManagementOptions,
     AuditCaseManagementPage,
     AuditCaseManagementRead,
-    AuditCaseMemberUpdate,
     AuditCaseMaterialTypeOption,
+    AuditCaseMemberUpdate,
     AuditCaseNotFound,
     AuditCaseReadOnly,
     AuditCaseUpdate,
@@ -36,19 +38,24 @@ from app.audit_cases.schema import (
 from app.audit_cases.storage import delete_case_storage, read_case_blob, write_case_blob
 from app.db import engine
 from app.db.models import (
+    AgentProfile,
     AuditCase,
     AuditCaseEvent,
     AuditCaseMaterial,
     AuditCaseMaterialChunk,
     ChatSession,
+    KnowledgeBaseVersion,
     KnowledgeChunk,
     KnowledgeDocument,
-    KnowledgeBaseVersion,
     User,
     new_id,
     utc_now,
 )
-from app.documents.extraction import DocumentExtractionError, DocumentExtractionResult, ExtractedPage
+from app.documents.extraction import (
+    DocumentExtractionError,
+    DocumentExtractionResult,
+    ExtractedPage,
+)
 from app.knowledge.parser import KnowledgeParseError, extract_document, extract_text
 
 _DEFAULT_EXTRACT_TEXT = extract_text
@@ -296,6 +303,25 @@ class AuditCaseService:
             raise AuditCaseNotFound(case_id)
         return row
 
+    def _validated_knowledge_version_ids(
+        self,
+        tenant_id: str,
+        requested_ids: list[str],
+    ) -> list[str]:
+        version_ids = list(dict.fromkeys(requested_ids))
+        if not version_ids:
+            return []
+        versions = self.db.exec(
+            select(KnowledgeBaseVersion).where(
+                KnowledgeBaseVersion.tenant_id == tenant_id,
+                KnowledgeBaseVersion.id.in_(version_ids),
+                KnowledgeBaseVersion.status == "active",
+            )
+        ).all()
+        if {version.id for version in versions} != set(version_ids):
+            raise AuditCaseAccessDenied("invalid knowledge base version")
+        return version_ids
+
     def create_case(self, owner: User, request: AuditCaseCreate) -> AuditCase:
         if request.tenant_id != owner.tenant_id:
             raise AuditCaseAccessDenied("tenant mismatch")
@@ -311,14 +337,46 @@ class AuditCaseService:
             )
             if member_count != len(requested_members):
                 raise AuditCaseAccessDenied("audit case member is outside the tenant")
+        knowledge_scope_mode = request.knowledge_scope_mode
+        knowledge_version_ids = list(dict.fromkeys(request.knowledge_base_version_ids))
+        agent_id = request.agent_id
+        if agent_id:
+            agent = self.db.get(AgentProfile, agent_id)
+            if (
+                agent is None
+                or agent.tenant_id != owner.tenant_id
+                or agent.status != "active"
+                or agent.is_overall
+            ):
+                raise AuditCaseAccessDenied("invalid audit case agent")
+            if knowledge_scope_mode == "agent_default":
+                knowledge_version_ids = [
+                    version.id
+                    for version in visible_knowledge_base_versions(
+                        self.db,
+                        owner.tenant_id,
+                        agent_id,
+                    ).values()
+                ]
+        elif knowledge_scope_mode == "agent_default":
+            raise AuditCaseAccessDenied("audit case agent is required for default scope")
+
+        if knowledge_scope_mode == "custom":
+            knowledge_version_ids = self._validated_knowledge_version_ids(
+                owner.tenant_id,
+                knowledge_version_ids,
+            )
+
         case = AuditCase(
             tenant_id=owner.tenant_id,
             owner_user_id=owner.id,
+            agent_id=agent_id,
             member_user_ids_json=sorted(requested_members),
             organization_name=request.organization_name,
             report_type=request.report_type,
             management_systems_json=list(request.management_systems),
-            knowledge_base_version_ids_json=list(request.knowledge_base_version_ids),
+            knowledge_scope_mode=knowledge_scope_mode,
+            knowledge_base_version_ids_json=knowledge_version_ids,
         )
         self.db.add(case)
         record_case_event(
@@ -329,7 +387,7 @@ class AuditCaseService:
             resource_type="audit_case",
             resource_id=case.id,
             metadata={
-                "knowledge_base_version_ids": list(request.knowledge_base_version_ids),
+                "knowledge_base_version_ids": knowledge_version_ids,
             },
         )
         self.db.commit()
@@ -370,18 +428,12 @@ class AuditCaseService:
                 if value.strip()
             ))
         if request.knowledge_base_version_ids is not None:
-            version_ids = list(dict.fromkeys(request.knowledge_base_version_ids))
-            if version_ids:
-                versions = self.db.exec(
-                    select(KnowledgeBaseVersion).where(
-                        KnowledgeBaseVersion.tenant_id == case.tenant_id,
-                        KnowledgeBaseVersion.id.in_(version_ids),
-                        KnowledgeBaseVersion.status == "active",
-                    )
-                ).all()
-                if {version.id for version in versions} != set(version_ids):
-                    raise AuditCaseAccessDenied("invalid knowledge base version")
+            version_ids = self._validated_knowledge_version_ids(
+                case.tenant_id,
+                request.knowledge_base_version_ids,
+            )
             case.knowledge_base_version_ids_json = version_ids
+            case.knowledge_scope_mode = "custom"
 
         case.updated_at = utc_now()
         self.db.add(case)
@@ -553,6 +605,31 @@ class AuditCaseService:
         self._assert_admin(actor)
         if actor.tenant_id != tenant_id:
             raise AuditCaseAccessDenied("tenant mismatch")
+        agents = self.db.exec(
+            select(AgentProfile)
+            .where(
+                AgentProfile.tenant_id == tenant_id,
+                AgentProfile.status == "active",
+                AgentProfile.is_overall.is_(False),
+            )
+            .order_by(AgentProfile.name, AgentProfile.id)
+        ).all()
+        agent_options = [
+            AuditCaseAgentOption(
+                id=agent.id,
+                name=agent.name,
+                description=agent.description,
+                knowledge_base_version_ids=[
+                    version.id
+                    for version in visible_knowledge_base_versions(
+                        self.db,
+                        tenant_id,
+                        agent.id,
+                    ).values()
+                ],
+            )
+            for agent in agents
+        ]
         versions = self.db.exec(
             select(KnowledgeBaseVersion)
             .where(
@@ -623,6 +700,7 @@ class AuditCaseService:
             )
             recommended_ids.add(recommended.id)
         return AuditCaseManagementOptions(
+            agent_options=agent_options,
             knowledge_versions=[
                 AuditCaseKnowledgeVersionOption(
                     id=version.id,

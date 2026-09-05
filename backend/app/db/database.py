@@ -2106,21 +2106,38 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
 
 
 def _migrate_audit_case_schema(conn, inspector, tables: set[str]) -> None:
-    """Add the nullable project reference to databases created before Phase 2."""
+    """Add audit project references and employee knowledge-scope metadata."""
 
-    if "sessions" not in tables:
-        return
-    # The caller's Inspector may have cached the pre-migration column list.
-    # Re-inspect the active connection so repeated startup migrations are safe.
-    columns = {column["name"] for column in inspect(conn).get_columns("sessions")}
-    if "audit_case_id" not in columns:
-        conn.execute(text("ALTER TABLE sessions ADD COLUMN audit_case_id VARCHAR"))
-    conn.execute(
-        text(
-            "CREATE INDEX IF NOT EXISTS ix_sessions_audit_case_id "
-            "ON sessions(audit_case_id)"
+    if "sessions" in tables:
+        # The caller's Inspector may have cached the pre-migration column list.
+        # Re-inspect the active connection so repeated startup migrations are safe.
+        columns = {column["name"] for column in inspect(conn).get_columns("sessions")}
+        if "audit_case_id" not in columns:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN audit_case_id VARCHAR"))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_sessions_audit_case_id "
+                "ON sessions(audit_case_id)"
+            )
         )
-    )
+
+    if "audit_cases" in tables:
+        columns = {column["name"] for column in inspect(conn).get_columns("audit_cases")}
+        if "agent_id" not in columns:
+            conn.execute(text("ALTER TABLE audit_cases ADD COLUMN agent_id VARCHAR"))
+        if "knowledge_scope_mode" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE audit_cases ADD COLUMN knowledge_scope_mode "
+                    "VARCHAR NOT NULL DEFAULT 'custom'"
+                )
+            )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_audit_cases_agent_id "
+                "ON audit_cases(agent_id)"
+            )
+        )
 
 
 def _migrate_audit_case_material_schema(conn, inspector, tables: set[str]) -> None:

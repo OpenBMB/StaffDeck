@@ -16,6 +16,8 @@ export type AuditCaseListParams = {
 
 export type AuditCaseCreateRequest = {
   tenant_id: string;
+  agent_id: string;
+  knowledge_scope_mode: 'agent_default' | 'custom';
   organization_name: string;
   report_type: string;
   management_systems: string[];

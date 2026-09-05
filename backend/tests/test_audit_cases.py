@@ -240,6 +240,9 @@ def test_process_material_persists_full_text_and_contiguous_chunks(tmp_path, mon
     assert processed.extraction_status == "succeeded"
     assert processed.processing_status == "succeeded"
     assert processed.characters == len(text)
+    assert processed.page_count == 1
+    assert processed.extraction_method == "native"
+    assert processed.extraction_engine == "text"
     assert processed.extracted_text_storage_key
     assert read_case_blob(processed.extracted_text_storage_key).decode("utf-8") == text.encode("utf-8").decode("utf-8")
     chunks = service.db.exec(
@@ -250,6 +253,26 @@ def test_process_material_persists_full_text_and_contiguous_chunks(tmp_path, mon
     assert chunks[-1].end_char == len(text)
     assert all(left.end_char == right.start_char for left, right in zip(chunks, chunks[1:]))
     assert "".join(chunk.content for chunk in chunks) == text
+    assert all(chunk.processing_status == "pending" for chunk in chunks)
+
+
+def test_image_only_pdf_gets_actionable_text_layer_error(tmp_path, monkeypatch) -> None:
+    service, owner, case = _service_with_case(tmp_path, monkeypatch)
+    material = service.add_material(
+        case,
+        owner,
+        "audit_record_form",
+        "扫描审核记录.pdf",
+        "application/pdf",
+        b"image-only-pdf",
+    )
+    monkeypatch.setattr("app.audit_cases.service.extract_text", lambda _filename, _data: ("", "pdf"))
+
+    processed = service.process_material(case, material)
+
+    assert processed.extraction_status == "failed"
+    assert processed.processing_status == "failed"
+    assert processed.error_code == "PDF_TEXT_LAYER_MISSING"
 
 
 def test_legacy_doc_is_rejected_before_storage(tmp_path, monkeypatch) -> None:
@@ -278,4 +301,65 @@ def test_archived_case_rejects_new_material(tmp_path, monkeypatch) -> None:
             "补充记录.txt",
             "text/plain",
             b"new material",
+        )
+
+
+@pytest.mark.parametrize(
+    "material_type",
+    [
+        "audit_notice",
+        "permanent_site_list",
+        "temporary_site_list",
+        "document_review_report",
+        "audit_team_preparation_record",
+        "opening_closing_attendance",
+        "organization_information_confirmation",
+        "opening_meeting_record",
+        "closing_meeting_record",
+        "audit_record_form",
+        "nonconformity_report",
+        "improvement_suggestion_report",
+        "stage_one_audit_report",
+        "stage_one_findings_summary",
+        "audit_report",
+        "surveillance_audit_plan",
+        "audit_performance_tracking",
+        "other_material",
+    ],
+)
+def test_new_optional_material_types_are_accepted(
+    tmp_path,
+    monkeypatch,
+    material_type: str,
+) -> None:
+    service, owner, case = _service_with_case(tmp_path, monkeypatch)
+
+    material = service.add_material(
+        case,
+        owner,
+        material_type,
+        f"{material_type}.txt",
+        "text/plain",
+        material_type.encode("utf-8"),
+    )
+
+    assert material.material_type == material_type
+
+
+@pytest.mark.parametrize("legacy_type", ["performance_record", "report_template"])
+def test_legacy_material_types_are_not_available_for_new_uploads(
+    tmp_path,
+    monkeypatch,
+    legacy_type: str,
+) -> None:
+    service, owner, case = _service_with_case(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="UNSUPPORTED_MATERIAL_TYPE"):
+        service.add_material(
+            case,
+            owner,
+            legacy_type,
+            f"{legacy_type}.txt",
+            "text/plain",
+            legacy_type.encode("utf-8"),
         )

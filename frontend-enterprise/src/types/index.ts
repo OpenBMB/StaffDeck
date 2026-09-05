@@ -648,6 +648,8 @@ export type ChatSession = {
 export type AuditCaseRead = {
   id: string;
   tenant_id: string;
+  agent_id?: string | null;
+  knowledge_scope_mode?: 'agent_default' | 'custom';
   owner_user_id: string;
   member_user_ids: string[];
   organization_name: string;
@@ -1375,6 +1377,13 @@ export type AuditCaseKnowledgeVersionOption = {
   duplicate_group?: string | null;
 };
 
+export type AuditCaseAgentOption = {
+  id: string;
+  name: string;
+  description?: string | null;
+  knowledge_base_version_ids: string[];
+};
+
 export type AuditCaseChoiceOption = {
   value: string;
   label: string;
@@ -1389,6 +1398,7 @@ export type AuditCaseMaterialTypeOption = {
 };
 
 export type AuditCaseManagementOptions = {
+  agent_options?: AuditCaseAgentOption[];
   knowledge_versions: AuditCaseKnowledgeVersionOption[];
   audit_types?: AuditCaseChoiceOption[];
   management_systems?: AuditCaseChoiceOption[];

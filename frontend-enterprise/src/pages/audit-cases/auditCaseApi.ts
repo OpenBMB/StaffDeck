@@ -54,6 +54,7 @@ export function createAuditCase(request: AuditCaseCreateRequest): Promise<AuditC
   return api.post<AuditCaseRead>('/api/audit-cases', {
     ...request,
     tenant_id: request.tenant_id.trim(),
+    agent_id: request.agent_id?.trim() || null,
     organization_name: request.organization_name.trim(),
     report_type: request.report_type.trim(),
     management_systems: cleanList(request.management_systems),
@@ -122,10 +123,28 @@ export function loadAuditCaseEvents(caseId: string): Promise<AuditCaseEventRead[
 }
 
 export type AuditCaseMaterialType =
+  | 'audit_notice'
+  | 'permanent_site_list'
+  | 'temporary_site_list'
+  | 'document_review_report'
+  | 'audit_team_preparation_record'
+  | 'opening_closing_attendance'
+  | 'organization_information_confirmation'
+  | 'opening_meeting_record'
+  | 'closing_meeting_record'
+  | 'audit_record_form'
+  | 'nonconformity_report'
+  | 'improvement_suggestion_report'
+  | 'stage_one_audit_report'
+  | 'stage_one_findings_summary'
+  | 'audit_report'
+  | 'surveillance_audit_plan'
+  | 'audit_performance_tracking'
+  | 'other_material'
+  // Legacy API values remain valid for existing projects and integrations;
+  // they are intentionally absent from the new upload UI.
   | 'audit_plan'
-  | 'audit_record'
-  | 'performance_record'
-  | 'report_template';
+  | 'audit_record';
 
 export function uploadAuditCaseMaterials(
   caseId: string,

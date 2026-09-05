@@ -31,11 +31,13 @@ class AuditCase(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("auditcase"), primary_key=True)
     tenant_id: str = Field(index=True)
     owner_user_id: str = Field(index=True)
+    agent_id: str | None = Field(default=None, index=True)
     member_user_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     organization_name: str = Field(index=True)
     report_type: str
     management_systems_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     status: str = Field(default="collecting", index=True)
+    knowledge_scope_mode: str = Field(default="custom")
     knowledge_base_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     active_report_version_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)

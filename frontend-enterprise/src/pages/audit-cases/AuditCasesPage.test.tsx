@@ -113,6 +113,6 @@ describe('AuditCasesPage', () => {
 
     await user.click(await screen.findByRole('button', { name: '新建认证项目' }));
     await user.click(screen.getByRole('button', { name: '创建项目' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('请填写企业名称和报告类型');
+    expect((await screen.findByRole('alert')).textContent).toContain('请填写企业名称和审核类型');
   });
 });

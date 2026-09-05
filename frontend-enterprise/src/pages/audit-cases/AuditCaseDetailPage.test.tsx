@@ -21,13 +21,15 @@ function jsonResponse(body: unknown): Response {
 const baseCase = {
   id: 'case-1',
   tenant_id: 'tenant_demo',
+  agent_id: null as string | null,
+  knowledge_scope_mode: 'custom' as 'agent_default' | 'custom',
   owner_user_id: 'user-admin',
   member_user_ids: [],
   organization_name: '示例企业',
   report_type: '再认证',
   management_systems: ['能源管理体系'],
   status: 'collecting',
-  knowledge_base_version_ids: [],
+  knowledge_base_version_ids: [] as string[],
   active_report_version_id: null,
   created_at: '2026-08-01T00:00:00Z',
   updated_at: '2026-08-01T00:00:00Z',
@@ -109,5 +111,24 @@ describe('AuditCaseDetailPage', () => {
 
     expect(await screen.findByText('已归档')).toBeTruthy();
     expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('keeps the frozen knowledge snapshot collapsed and does not rewrite it on an ordinary save', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch({
+      ...baseCase,
+      agent_id: 'agent-energy',
+      knowledge_scope_mode: 'agent_default',
+      knowledge_base_version_ids: ['kbver-energy'],
+    });
+    renderAt('/enterprise/audit-cases/case-1');
+
+    expect(await screen.findByText('已冻结 1 个知识库版本')).toBeTruthy();
+    expect(screen.queryByRole('searchbox', { name: '搜索知识库' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '保存' }));
+
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(patchCall).toBeTruthy();
+    expect(String(patchCall?.[1]?.body)).not.toContain('knowledge_base_version_ids');
   });
 });

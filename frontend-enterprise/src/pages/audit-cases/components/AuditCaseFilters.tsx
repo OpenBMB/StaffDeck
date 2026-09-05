@@ -42,10 +42,10 @@ export function AuditCaseFilters({
         className="h-[34px] w-[140px] rounded-[10px] border-[0.5px] border-[#e3e7f1] text-[12px] shadow-none"
       />
       <Input
-        aria-label="报告类型筛选"
+        aria-label="审核类型筛选"
         value={filters.report_type || ''}
         onChange={(event) => onFilter('report_type', event.target.value)}
-        placeholder="报告类型"
+        placeholder="审核类型"
         className="h-[34px] w-[120px] rounded-[10px] border-[0.5px] border-[#e3e7f1] text-[12px] shadow-none"
       />
     </div>

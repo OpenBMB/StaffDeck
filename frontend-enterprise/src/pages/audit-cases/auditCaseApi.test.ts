@@ -60,6 +60,8 @@ describe('audit case management api', () => {
     await loadAuditCaseManagementOptions();
     await createAuditCase({
       tenant_id: 'tenant_demo',
+      agent_id: '',
+      knowledge_scope_mode: 'custom',
       organization_name: '  示例企业  ',
       report_type: '  再认证  ',
       management_systems: ['能源管理体系'],
