@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.config import get_settings
-from app.db.models import ChannelBinding, Skill
+from app.db.models import ChannelBinding, GeneralSkill, Skill, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,15 @@ logger = logging.getLogger(__name__)
 _MIN_UPDATE_INTERVAL = 1.0
 # 单张卡片最多展示的步骤行数，超出截断尾部历史。
 _MAX_LINES = 60
+
+# SOP 紧凑展示模式：匹配 SOP（进入流程）后隐藏中间步骤，仅展示一行
+# "翻书动画 + 正在推进SOP"。飞书卡片不支持动效，翻书动画通过节流 PATCH
+# 轮换下列 emoji 帧模拟（每 _MIN_UPDATE_INTERVAL 秒翻一帧）。
+# 等待用户补充信息（awaiting_user / SOP 挂起）时定格为"📖 流程已暂停"，
+# SOP 结束定格为"✅ 流程已结束"，异常定格为"❌ 流程未完成"。
+_SOP_FLIP_FRAMES = ("📖", "📗", "📘", "📙", "📕")
+# 紧凑模式合成行 id（不在事件行中存在，渲染时动态追加）。
+_SOP_PROGRESS_LINE_ID = "__sop_compact_progress__"
 
 
 class _SinkEvent:
@@ -35,11 +44,48 @@ class _SinkEvent:
         self.created_at = datetime.now(tz=UTC)
 
 
-def _load_skill_names(db, tenant_id: str) -> dict[str, str]:
+def _load_skill_trace_names(
+    db, tenant_id: str
+) -> tuple[dict[str, str], dict[str, dict[str, str]], dict[str, str]]:
     from sqlmodel import select
 
     rows = db.exec(select(Skill).where(Skill.tenant_id == tenant_id)).all()
-    return {row.skill_id: row.name for row in rows}
+    skill_names: dict[str, str] = {}
+    step_names: dict[str, dict[str, str]] = {}
+    for row in rows:
+        skill_names[row.skill_id] = row.name
+        content = row.content_json if isinstance(row.content_json, dict) else {}
+        steps: dict[str, str] = {}
+        for node in content.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("node_id") or "").strip()
+            node_name = str(node.get("name") or "").strip()
+            if node_id and node_name:
+                steps[node_id] = node_name
+        if steps:
+            step_names[row.skill_id] = steps
+    tool_names = _load_tool_display_names(db, tenant_id)
+    return skill_names, step_names, tool_names
+
+
+def _load_tool_display_names(db, tenant_id: str) -> dict[str, str]:
+    from sqlmodel import select
+
+    tool_names: dict[str, str] = {}
+    for row in db.exec(select(Tool).where(Tool.tenant_id == tenant_id)).all():
+        display = str(row.display_name or "").strip()
+        if not display:
+            display = str(row.description or "").strip()
+        name = str(row.name or "").strip()
+        if name and display:
+            tool_names[name] = display
+    for row in db.exec(select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id)).all():
+        slug = str(row.slug or "").strip()
+        name = str(row.name or "").strip()
+        if slug and name:
+            tool_names[f"general_skill.{slug}"] = name
+    return tool_names
 
 
 class FeishuTraceStreamer:
@@ -69,19 +115,25 @@ class FeishuTraceStreamer:
         *,
         adapter: Any | None = None,
         skill_names: dict[str, str] | None = None,
+        step_names: dict[str, dict[str, str]] | None = None,
+        tool_names: dict[str, str] | None = None,
         db=None,
         min_update_interval: float = _MIN_UPDATE_INTERVAL,
+        compact_sop: bool | None = None,
     ) -> None:
         self._binding = binding
         self._target = dict(target or {})
         self._turn_id = str(turn_id or "").strip()
         self._adapter = adapter
         self._skill_names = dict(skill_names or {})
+        self._step_names = dict(step_names or {})
+        self._tool_names = dict(tool_names or {})
         self._db = db
         self._min_update_interval = max(0.1, float(min_update_interval))
         self._message_id: str | None = None
         self._lines: list[dict] = []
         self._skill_hint: str | None = None
+        self._names_loaded = False
         self._lock = threading.Lock()
         self._last_update_at = 0.0
         self._dirty = False
@@ -90,11 +142,27 @@ class FeishuTraceStreamer:
         self._final_state: str | None = None
         self._draining = False
         self._card_created = False
+        # SOP 紧凑展示：None 时按全局设置 + binding 配置解析。
+        self._compact_sop = self._resolve_compact_sop(compact_sop)
+        # SOP 生命周期标记（主线程写、worker 线程读，锁内更新）。
+        self._sop_started = False
+        self._sop_finished = False
+        self._sop_paused = False
+        # 翻书动画帧号：仅 worker 线程读写。
+        self._animation_frame = 0
 
         # 后台 worker
         self._task_queue: queue.Queue[_Task | None] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._worker_started = False
+
+    def _resolve_compact_sop(self, compact_sop: bool | None) -> bool:
+        if compact_sop is not None:
+            return bool(compact_sop)
+        config = self._binding.config_json if isinstance(self._binding.config_json, dict) else {}
+        if config.get("compact_trace") is False:
+            return False
+        return bool(get_settings().channel_feishu_trace_compact_sop)
 
     # ---- 后台 worker ----
 
@@ -115,6 +183,9 @@ class FeishuTraceStreamer:
                 # finish/abort 已调用且队列排空：worker 可退出
                 if self._draining and self._task_queue.empty():
                     return
+                # SOP 紧凑展示：无事件到达期间也周期性 PATCH，推进翻书动画帧
+                if self._should_animate():
+                    self._enqueue_animation_tick()
                 continue
             if task is None:
                 return
@@ -157,13 +228,34 @@ class FeishuTraceStreamer:
         return self._adapter
 
     def _ensure_skill_names(self) -> dict[str, str]:
-        if self._skill_names or self._db is None:
-            return self._skill_names
+        self._ensure_trace_names()
+        return self._skill_names
+
+    def _ensure_step_names(self) -> dict[str, dict[str, str]]:
+        self._ensure_trace_names()
+        return self._step_names
+
+    def _ensure_tool_names(self) -> dict[str, str]:
+        self._ensure_trace_names()
+        return self._tool_names
+
+    def _ensure_trace_names(self) -> None:
+        if self._db is None or self._names_loaded:
+            return
         try:
-            self._skill_names = _load_skill_names(self._db, self._binding.tenant_id)
+            skill_names, step_names, tool_names = _load_skill_trace_names(
+                self._db, self._binding.tenant_id
+            )
         except Exception:
             logger.exception("飞书 trace 流式器加载技能名称失败 tenant=%s", self._binding.tenant_id)
-        return self._skill_names
+            return
+        self._names_loaded = True
+        if not self._skill_names:
+            self._skill_names = skill_names
+        if not self._step_names:
+            self._step_names = step_names
+        if not self._tool_names:
+            self._tool_names = tool_names
 
     # ---- 生命周期 ----
 
@@ -234,14 +326,36 @@ class FeishuTraceStreamer:
         from app.api.chat import _event_trace_lines
 
         sink_event = _SinkEvent(event_type, payload)
-        lines = _event_trace_lines(sink_event, self._ensure_skill_names(), self._skill_hint)
+        lines = _event_trace_lines(
+            sink_event,
+            self._ensure_skill_names(),
+            self._skill_hint,
+            self._ensure_step_names(),
+            self._ensure_tool_names(),
+        )
         if not lines:
             skill_context = _skill_context_from_payload(event_type, payload, self._skill_hint)
             if skill_context:
                 self._skill_hint = skill_context
             return
         with self._lock:
+            if not self._sop_started and _sop_activation_event(event_type, payload):
+                self._sop_started = True
+            # 暂停检测：frame 以 awaiting_user 结束（等待用户补充信息）或 SOP
+            # 挂起 → 暂停；frame 重启 / SOP 恢复推进 → 取消暂停。
+            pause_update = _sop_pause_update(event_type, payload)
+            if pause_update is not None:
+                self._sop_paused = pause_update
+            # 紧凑模式下 SOP 推进期（进入流程之后、skill_completed 之前）的
+            # 中间步骤行打 hidden 标记：数据仍全量累积，渲染时过滤，回滚开关
+            # 关闭后即可恢复逐行展示。
+            hide = self._compact_sop and self._sop_started and not self._sop_finished
+            if event_type == "skill_completed":
+                self._sop_finished = True
+                self._sop_paused = False
             for line in lines:
+                if hide and _sop_line_hidden(event_type, payload, line):
+                    line = {**line, "hidden": True}
                 _upsert_line(self._lines, line)
             if len(self._lines) > _MAX_LINES:
                 self._lines = self._lines[-_MAX_LINES:]
@@ -321,6 +435,61 @@ class FeishuTraceStreamer:
                 self._message_id,
             )
 
+    # ---- SOP 紧凑展示（翻书动画） ----
+
+    def _should_animate(self) -> bool:
+        """worker 空闲时是否需要周期性推进翻书动画。"""
+        return (
+            self._compact_sop
+            and self._sop_started
+            and not self._sop_finished
+            and not self._sop_paused
+            and not self._finished
+            and self._message_id is not None
+        )
+
+    def _enqueue_animation_tick(self) -> None:
+        """按节流间隔入队一次 PATCH 以翻动动画帧。"""
+        now = time.monotonic()
+        with self._lock:
+            if (now - self._last_update_at) < self._min_update_interval:
+                return
+            self._last_update_at = now
+        self._animation_frame += 1
+        self._task_queue.put(_PatchCardTask(state="running", force=False))
+
+    def _compact_lines(self, lines: list[dict]) -> list[dict]:
+        """紧凑模式渲染：保留可见行 + 追加合成进度/结束/暂停行。"""
+        visible = [line for line in lines if not line.get("hidden")]
+        if self._final_state == "failed":
+            visible.append(
+                {"id": _SOP_PROGRESS_LINE_ID, "text": "流程未完成", "state": "failed"}
+            )
+        elif self._sop_finished:
+            visible.append(
+                {"id": _SOP_PROGRESS_LINE_ID, "text": "流程已结束", "state": "completed"}
+            )
+        elif self._sop_paused:
+            # 暂停等待用户补充信息：跟书不跟对号，区别于已结束。
+            visible.append(
+                {
+                    "id": _SOP_PROGRESS_LINE_ID,
+                    "text": "📖 流程已暂停",
+                    "detail": "等待用户补充信息后继续",
+                    "state": "",
+                }
+            )
+        elif self._final_state == "completed":
+            visible.append(
+                {"id": _SOP_PROGRESS_LINE_ID, "text": "流程已结束", "state": "completed"}
+            )
+        else:
+            icon = _SOP_FLIP_FRAMES[self._animation_frame % len(_SOP_FLIP_FRAMES)]
+            visible.append(
+                {"id": _SOP_PROGRESS_LINE_ID, "text": f"{icon} 正在推进SOP", "state": ""}
+            )
+        return visible
+
     # ---- 卡片渲染 ----
 
     def _render_card(
@@ -340,6 +509,8 @@ class FeishuTraceStreamer:
 
         elements: list[dict[str, Any]] = []
         display_lines = lines if lines is not None else []
+        if self._compact_sop and self._sop_started:
+            display_lines = self._compact_lines(display_lines)
         for line in display_lines:
             elements.append(_line_to_card_element(line))
         if not display_lines:
@@ -424,6 +595,56 @@ def _skill_context_from_payload(
         from_skill_id = str(payload.get("from_skill_id") or "").strip()
         return to_skill_id or from_skill_id or skill_hint or None
     return None
+
+
+def _sop_activation_event(event_type: str, payload: dict[str, Any]) -> bool:
+    """判断事件是否意味着本轮已匹配 SOP（紧凑模式自此激活）。"""
+    if event_type in {"skill_started", "skill_resumed"}:
+        return True
+    if event_type == "task_frame_started":
+        return str(payload.get("kind") or "").strip() == "sop"
+    if event_type == "skill_state":
+        decision = str(payload.get("runtimeDecision") or "").strip()
+        return decision in {"start_skill", "start_new_task"}
+    if event_type == "router_decision_created":
+        return bool(str(payload.get("target_skill_id") or "").strip())
+    return False
+
+
+def _sop_pause_update(event_type: str, payload: dict[str, Any]) -> bool | None:
+    """紧凑模式暂停检测：返回 True（暂停）/ False（恢复）/ None（无变化）。
+
+    暂停：frame 以 awaiting_user 结束（等待用户补充信息）、SOP 挂起。
+    恢复：frame 重新开始、SOP 启动/恢复/推进、skill_state 回到 active。
+    """
+    if event_type == "task_frame_finished":
+        return str(payload.get("status") or "").strip() == "awaiting_user"
+    if event_type == "skill_state":
+        states = [
+            str(entry.get("state") or "").strip()
+            for entry in payload.get("currentSkills") or []
+            if isinstance(entry, dict)
+        ]
+        if "suspended" in states:
+            return True
+        if "active" in states:
+            return False
+        return None
+    if event_type in {"skill_started", "skill_resumed", "skill_step_changed", "task_frame_started"}:
+        return False
+    return None
+
+
+def _sop_line_hidden(event_type: str, payload: dict[str, Any], line: dict) -> bool:
+    """紧凑模式下 SOP 推进期内的行是否隐藏。
+
+    保留：判断意图（含"匹配 xx SOP"理由）与失败行（错误必须透出）。
+    隐藏：进入流程及其后的全部中间步骤（推进流程、当前步骤、工具调用、
+    任务整理等）；skill_completed 行本身也隐藏，由合成行"流程已结束"替代。
+    """
+    if str(line.get("state") or "") == "failed":
+        return False
+    return event_type not in {"router_decision_created", "general_skill_intent_checked"}
 
 
 def is_feishu_trace_enabled(binding: ChannelBinding | None) -> bool:

@@ -36,23 +36,30 @@ def compact_step_result(payload: dict[str, Any]) -> dict[str, Any]:
 def compact_conversation_context(
     context: dict[str, object] | None,
     *,
-    token_budget: int = CONTROL_CONTEXT_TOKEN_BUDGET,
+    token_budget: int | None = None,
 ) -> dict[str, object]:
+    metadata = context.get("metadata") if isinstance(context, dict) else None
+    configured_budget = (
+        int(metadata.get("token_budget") or 0)
+        if isinstance(metadata, dict)
+        else 0
+    )
+    effective_budget = token_budget or configured_budget or CONTROL_CONTEXT_TOKEN_BUDGET
     if not isinstance(context, dict):
-        return build_conversation_context([], token_budget)
+        return build_conversation_context([], effective_budget)
     turn_messages = context.setdefault(TURN_STAGE_MESSAGES_KEY, [])
     messages = context.get("messages")
     if not isinstance(messages, list):
         context["messages"] = []
         return context
-    metadata = context.get("metadata")
     if (
         isinstance(metadata, dict)
-        and int(metadata.get("estimated_tokens") or 0) <= token_budget
+        and int(metadata.get("estimated_tokens") or 0) <= effective_budget
     ):
         return context
     compacted = build_conversation_context(
-        [message for message in messages if isinstance(message, dict)], token_budget
+        [message for message in messages if isinstance(message, dict)],
+        effective_budget,
     )
     compacted[TURN_STAGE_MESSAGES_KEY] = turn_messages
     return compacted

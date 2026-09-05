@@ -80,6 +80,10 @@ prior_task_results 还可能包含由当前 Slot 中标识符精确引用的、�
   临时文件、技能运行器内部源码或构建中间产物。任务要求生成的源码本身可以作为交付物。
   GeneralSkill execute 返回的结构化 artifacts 清单
   已视为显式发布，无需重复调用 `publish_artifact`。
+- `task_requirement.published_deliverables` 是当前会话先前 TaskFrame 已发布交付物的限量清单。
+  当用户要求引用、修改或继续推进先前交付的文件时，先调用 `list_published_deliverables`
+  定位，再把返回的 `task_frame_id` 和 `path` 原样交给 `read_published_deliverable` 读取；
+  `read_file` 只读取当前 TaskFrame 工作区，不得用它猜测历史交付物路径。
 - 选择能力是动作决策，不得重新判断、切换或创建 SOP/TaskFrame。
 - SOP 节点引用的能力分为“可选执行”和“强制执行”。模型仍可自主选择任何可用的通用能力；
   `required_capability_names` 和 `required_knowledge_base_ids` 仅列出当前节点明确标为强制执行的

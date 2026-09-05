@@ -56,9 +56,9 @@ class BindingProcessLock:
         self._handle = None
 
     def acquire(self) -> bool:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.path.open("a+b")
         try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            handle = self.path.open("a+b")
             if os.name == "nt":
                 import msvcrt
 
@@ -73,7 +73,11 @@ class BindingProcessLock:
 
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (BlockingIOError, OSError):
-            handle.close()
+            # A stale/read-only lock file is indistinguishable from an active
+            # connector to callers. Treat it as busy so shutdown/reconcile can
+            # continue without taking down the application lifecycle.
+            if "handle" in locals():
+                handle.close()
             return False
         self._handle = handle
         return True

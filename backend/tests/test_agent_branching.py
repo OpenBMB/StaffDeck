@@ -1356,6 +1356,7 @@ def test_disabled_open_gallery_resources_cannot_be_learned() -> None:
             assert result["missing"] == [
                 {"resource_id": resource_id, "reason": "disabled_in_open_gallery"}
             ]
+
             assert (
                 db.exec(
                     select(AgentResourceBinding).where(
@@ -1559,6 +1560,81 @@ def test_private_agent_resources_are_not_visible_in_open_gallery() -> None:
         assert [row.id for row in open_tools] == []
         open_knowledge_versions = visible_knowledge_base_versions(db, "tenant_demo", overall.id)
         assert "kb_legacy_private" not in open_knowledge_versions
+
+
+def test_import_private_general_skill_creates_independent_package_copy() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        source = AgentProfile(
+            id="agent_private_skill_source",
+            tenant_id="tenant_demo",
+            name="私有技能源员工",
+            is_overall=False,
+        )
+        target = AgentProfile(
+            id="agent_private_skill_target",
+            tenant_id="tenant_demo",
+            name="私有技能目标员工",
+            is_overall=False,
+        )
+        skill = GeneralSkill(
+            id="general_private_package",
+            tenant_id="tenant_demo",
+            slug="private-package",
+            name="私有目录技能",
+            skill_markdown="# 私有目录技能\n",
+            skill_files_json=[
+                {"path": "SKILL.md", "content": "# 私有目录技能\n"},
+                {"path": "references/details.md", "content": "# 详细说明\n"},
+            ],
+            metadata_json={
+                "scope": "agent_private",
+                "visibility": "agent_private",
+                "owner_agent_id": source.id,
+            },
+            status="published",
+        )
+        db.add(source)
+        db.add(target)
+        db.add(skill)
+        db.flush()
+        ensure_private_resource_binding(
+            db,
+            "tenant_demo",
+            source.id,
+            "general_skill",
+            skill.id,
+            "active",
+        )
+        db.commit()
+
+        result = import_agent_resources(
+            target.id,
+            AgentResourceImportRequest(
+                tenant_id="tenant_demo",
+                source_agent_id=source.id,
+                resource_type="general_skill",
+                resource_ids=[skill.id],
+            ),
+            db,
+            current_user=_admin_user(),
+        )
+
+        copied_id = str(result["imported"][0]["resource_id"])
+        copied = db.get(GeneralSkill, copied_id)
+        assert copied is not None
+        assert copied.id != skill.id
+        assert copied.skill_files_json == skill.skill_files_json
+        assert copied.metadata_json["owner_agent_id"] == target.id
+        assert copied.metadata_json["copied_from_general_skill_id"] == skill.id
+        target_bindings = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.agent_id == target.id,
+                AgentResourceBinding.resource_type == "general_skill",
+                AgentResourceBinding.status == "active",
+            )
+        ).all()
+        assert [binding.resource_id for binding in target_bindings] == [copied.id]
 
 
 def test_knowledge_branch_write_clones_existing_wiki_before_appending_concept() -> None:

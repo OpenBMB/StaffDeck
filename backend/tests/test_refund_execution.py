@@ -69,6 +69,31 @@ def test_terminal_handoff_node_still_forces_handoff() -> None:
     assert result.status == "handoff"
 
 
+def test_terminal_handoff_node_normalizes_model_failure_to_handoff() -> None:
+    requirement = TaskRequirement(
+        task_frame_id="task-handoff-failed-model",
+        kind="sop",
+        goal="转人工",
+        sop_context={"step": {"node_id": "handoff", "type": "handoff"}},
+    )
+
+    result = _finish_result(
+        requirement,
+        HarnessAction(
+            action="finish",
+            status="failed",
+            reply_fragment="当前没有可用的人工转接能力。",
+        ),
+        [],
+        [],
+        [],
+        [],
+        action_count=1,
+    )
+
+    assert result.status == "handoff"
+
+
 def test_refund_skill_executes_real_refund_tool() -> None:
     node_ids = [node["node_id"] for node in REFUND_SKILL["nodes"]]
     nodes = {node["node_id"]: node for node in REFUND_SKILL["nodes"]}

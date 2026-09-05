@@ -20,9 +20,11 @@ from app.db.models import (
     HarnessSessionLeaseRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
+    Team,
     Tenant,
     User,
 )
+from app.teams.service import delete_team
 
 
 def _test_engine():
@@ -251,3 +253,51 @@ def test_delete_chat_session_cleans_harness_state_and_workspace(
         assert db.get(HarnessRunRecord, survivor_ids[1]) is not None
         assert db.get(HarnessTaskFrameRecord, survivor_ids[2]) is not None
         assert db.exec(select(HarnessTaskFrameRecord)).all()
+
+
+def test_delete_team_cleans_team_session_harness_state_and_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        team = Team(
+            tenant_id="tenant_demo",
+            name="增长团队",
+            owner_user_id="user_demo",
+            status="active",
+        )
+        db.add(team)
+        db.add(
+            ChatSession(
+                id="session_team",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                team_id=team.id,
+                title="团队 增长团队 · TL 对话",
+            )
+        )
+        target_ids = _add_harness_records(
+            db,
+            tenant_id="tenant_demo",
+            session_id="session_team",
+            suffix="team",
+        )
+        db.commit()
+
+        workspace = harness_session_workspace_path(
+            tenant_id="tenant_demo",
+            session_id="session_team",
+        )
+        workspace.mkdir(parents=True)
+        (workspace / "artifact.txt").write_text("artifact", encoding="utf-8")
+
+        delete_team(db, team)
+
+        assert db.get(ChatSession, "session_team") is None
+        assert not workspace.exists()
+        assert db.get(HarnessInvocationRecord, target_ids[0]) is None
+        assert db.get(HarnessRunRecord, target_ids[1]) is None
+        assert db.get(HarnessTaskFrameRecord, target_ids[2]) is None

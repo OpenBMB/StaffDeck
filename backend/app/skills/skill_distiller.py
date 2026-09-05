@@ -279,6 +279,16 @@ class SkillDistiller:
                 request.available_tools,
                 source_text=_request_text(request),
             ),
+            "available_general_skills": _compact_named_capabilities(
+                request.available_general_skills,
+                source_text=_request_text(request),
+                alias_fields=("slug", "name"),
+            ),
+            "available_knowledge_bases": _compact_named_capabilities(
+                request.available_knowledge_bases,
+                source_text=_request_text(request),
+                alias_fields=("name",),
+            ),
         }
 
     def _model_input(
@@ -293,6 +303,10 @@ class SkillDistiller:
             raw_content=request.raw_content,
             available_tools=projected.get("available_tools", []),
             total_tool_count=len(request.available_tools),
+            available_general_skills=projected.get("available_general_skills", []),
+            total_general_skill_count=len(request.available_general_skills),
+            available_knowledge_bases=projected.get("available_knowledge_bases", []),
+            total_knowledge_base_count=len(request.available_knowledge_bases),
         )
 
     def _normalize_response(
@@ -330,6 +344,8 @@ class SkillDistiller:
             request.available_tools,
             _tool_action_names_from_suggestions(tool_resolutions),
         )
+        nodes, capability_warnings = _normalize_node_capability_refs(nodes, request)
+        warnings.extend(capability_warnings)
         for tool_name in missing_tool_names:
             warnings.append(
                 f"技能草稿引用了未配置工具 {tool_name}，已移出 allowed_actions；"
@@ -465,6 +481,11 @@ class SkillDistiller:
                     ),
                     "allowed_actions": _normalize_actions(
                         _string_list(item.get("allowed_actions"), fallback.allowed_actions)
+                    ),
+                    "capability_refs": (
+                        item.get("capability_refs")
+                        if isinstance(item.get("capability_refs"), dict)
+                        else fallback.capability_refs.model_dump(mode="json")
                     ),
                     "knowledge_scope": item.get("knowledge_scope")
                     if isinstance(item.get("knowledge_scope"), dict)
@@ -736,6 +757,10 @@ def _distill_model_input(
     raw_content: str,
     available_tools: Any,
     total_tool_count: int,
+    available_general_skills: Any,
+    total_general_skill_count: int,
+    available_knowledge_bases: Any,
+    total_knowledge_base_count: int,
 ) -> str:
     sections = [f"技能标题：{title.strip() or '新SOP'}"]
     if business_domain and business_domain.strip():
@@ -750,30 +775,75 @@ def _distill_model_input(
     sections.append("可用工具（只选择与原始流程语义匹配的工具）：")
     if not tools:
         sections.append("无可用工具。流程需要外部接口时，请指出缺少的接口，不要臆造工具。")
-        return "\n".join(sections)
-
-    for tool in tools:
-        name = str(tool.get("name") or "").strip()
-        display_name = str(tool.get("display_name") or "").strip()
-        description = str(tool.get("description") or "").strip()
-        heading = name
-        if display_name and display_name != name:
-            heading = f"{name}（{display_name}）"
-        line = f"- {heading}"
-        if description:
-            line += f"：{description}"
-        sections.append(line)
-        parameter_text = _model_tool_parameter_text(tool.get("input_schema"))
-        if parameter_text:
-            sections.append(f"  输入参数：{parameter_text}")
-        if tool.get("requires_confirmation") is True:
-            sections.append("  调用前需要用户确认。")
+    else:
+        for tool in tools:
+            tool_id = str(tool.get("id") or tool.get("name") or "").strip()
+            name = str(tool.get("name") or "").strip()
+            display_name = str(tool.get("display_name") or "").strip()
+            description = str(tool.get("description") or "").strip()
+            heading = name
+            if display_name and display_name != name:
+                heading = f"{name}（{display_name}）"
+            line = f"- ID={tool_id}；调用名={heading}"
+            if description:
+                line += f"；说明={description}"
+            sections.append(line)
+            parameter_text = _model_tool_parameter_text(tool.get("input_schema"))
+            if parameter_text:
+                sections.append(f"  输入参数：{parameter_text}")
+            if tool.get("requires_confirmation") is True:
+                sections.append("  调用前需要用户确认。")
 
     omitted = max(0, total_tool_count - len(tools))
     if omitted:
         sections.append(
             f"另有 {omitted} 个与当前流程相关性较低的工具未展开；不得猜测或调用未列出的工具。"
         )
+
+    general_skills = (
+        [item for item in available_general_skills if isinstance(item, dict)]
+        if isinstance(available_general_skills, list)
+        else []
+    )
+    sections.append("可用通用技能（capability_refs.general_skill_ids 必须填写对应 ID）：")
+    if not general_skills:
+        sections.append("无可用通用技能。")
+    else:
+        for skill in general_skills:
+            skill_id = str(skill.get("id") or skill.get("slug") or "").strip()
+            slug = str(skill.get("slug") or "").strip()
+            name = str(skill.get("name") or slug).strip()
+            description = str(skill.get("description") or "").strip()
+            line = f"- ID={skill_id}；技能名={name}"
+            if slug:
+                line += f"；调用名=general_skill.{slug}"
+            if description:
+                line += f"；说明={description}"
+            sections.append(line)
+    omitted_general_skills = max(0, total_general_skill_count - len(general_skills))
+    if omitted_general_skills:
+        sections.append(f"另有 {omitted_general_skills} 个低相关通用技能未展开。")
+
+    knowledge_bases = (
+        [item for item in available_knowledge_bases if isinstance(item, dict)]
+        if isinstance(available_knowledge_bases, list)
+        else []
+    )
+    sections.append("可用知识库（capability_refs.knowledge_base_ids 必须填写对应 ID）：")
+    if not knowledge_bases:
+        sections.append("无可用知识库。")
+    else:
+        for knowledge in knowledge_bases:
+            knowledge_id = str(knowledge.get("id") or knowledge.get("name") or "").strip()
+            name = str(knowledge.get("name") or knowledge_id).strip()
+            description = str(knowledge.get("description") or "").strip()
+            line = f"- ID={knowledge_id}；名称={name}"
+            if description:
+                line += f"；说明={description}"
+            sections.append(line)
+    omitted_knowledge_bases = max(0, total_knowledge_base_count - len(knowledge_bases))
+    if omitted_knowledge_bases:
+        sections.append(f"另有 {omitted_knowledge_bases} 个低相关知识库未展开。")
     return "\n".join(sections)
 
 
@@ -794,6 +864,7 @@ def _compact_available_tools(
         seen_names.add(name)
         description = _limited_text(tool.get("description"), MODEL_TOOL_DESCRIPTION_CHAR_LIMIT)
         projected: dict[str, Any] = {
+            "id": str(tool.get("id") or name).strip(),
             "name": name,
             "display_name": _limited_text(tool.get("display_name"), 120),
             "description": description,
@@ -810,6 +881,64 @@ def _compact_available_tools(
         score = len(source_terms & _tool_relevance_terms(candidate_text))
         lowered_source = source_text.lower()
         for exact in (name, str(tool.get("display_name") or "").strip()):
+            if exact and exact.lower() in lowered_source:
+                score += 20
+        ranked.append((score, index, projected))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    compacted: list[dict[str, Any]] = []
+    catalog_chars = 0
+    for _score, _index, projected in ranked:
+        if len(compacted) >= MODEL_TOOL_LIMIT:
+            break
+        projected_chars = len(json.dumps(projected, ensure_ascii=False, separators=(",", ":")))
+        if compacted and catalog_chars + projected_chars > MODEL_TOOL_CATALOG_CHAR_LIMIT:
+            break
+        compacted.append(projected)
+        catalog_chars += projected_chars
+    return compacted
+
+
+def _compact_named_capabilities(
+    values: list[dict[str, Any]],
+    *,
+    source_text: str,
+    alias_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    source_terms = _tool_relevance_terms(source_text)
+    ranked: list[tuple[int, int, dict[str, Any]]] = []
+    seen_ids: set[str] = set()
+    for index, value in enumerate(values):
+        if not isinstance(value, dict):
+            continue
+        capability_id = str(value.get("id") or "").strip()
+        if not capability_id:
+            capability_id = next(
+                (str(value.get(field) or "").strip() for field in alias_fields if value.get(field)),
+                "",
+            )
+        if not capability_id or capability_id in seen_ids:
+            continue
+        seen_ids.add(capability_id)
+        projected = {
+            "id": capability_id,
+            **{
+                field: _limited_text(value.get(field), 120)
+                for field in alias_fields
+                if _limited_text(value.get(field), 120)
+            },
+            "description": _limited_text(
+                value.get("description"), MODEL_TOOL_DESCRIPTION_CHAR_LIMIT
+            ),
+        }
+        projected = {
+            key: item for key, item in projected.items() if item not in (None, "", [], {})
+        }
+        candidate_text = " ".join(str(projected.get(key) or "") for key in projected)
+        score = len(source_terms & _tool_relevance_terms(candidate_text))
+        lowered_source = source_text.lower()
+        for field in alias_fields:
+            exact = str(value.get(field) or "").strip()
             if exact and exact.lower() in lowered_source:
                 score += 20
         ranked.append((score, index, projected))
@@ -1021,6 +1150,284 @@ def _available_tool_names(available_tools: list[dict[str, Any]]) -> set[str]:
         if name:
             names.add(name)
     return names
+
+
+def _capability_alias_map(
+    values: list[dict[str, Any]],
+    *,
+    alias_fields: tuple[str, ...],
+) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        canonical = str(value.get("id") or "").strip()
+        if not canonical:
+            canonical = next(
+                (str(value.get(field) or "").strip() for field in alias_fields if value.get(field)),
+                "",
+            )
+        if not canonical:
+            continue
+        candidates = {canonical}
+        for field in alias_fields:
+            alias = str(value.get(field) or "").strip()
+            if alias:
+                candidates.add(alias)
+                if field == "slug":
+                    candidates.add(f"general_skill.{alias}")
+        for alias in candidates:
+            aliases.setdefault(alias, canonical)
+            aliases.setdefault(alias.lower(), canonical)
+    return aliases
+
+
+def _resolved_capability_refs(
+    value: Any,
+    aliases: dict[str, str],
+) -> tuple[list[str], list[str]]:
+    resolved: list[str] = []
+    unknown: list[str] = []
+    raw_values = value if isinstance(value, list) else []
+    for raw in raw_values:
+        reference = str(raw or "").strip()
+        if not reference:
+            continue
+        canonical = aliases.get(reference) or aliases.get(reference.lower())
+        if canonical:
+            if canonical not in resolved:
+                resolved.append(canonical)
+        elif reference not in unknown:
+            unknown.append(reference)
+    return resolved, unknown
+
+
+def _normalize_node_capability_refs(
+    nodes: list[dict[str, Any]],
+    request: SkillDistillRequest,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    catalogs = {
+        "general_skill": _capability_alias_map(
+            request.available_general_skills,
+            alias_fields=("slug", "name"),
+        ),
+        "tool": _capability_alias_map(
+            request.available_tools,
+            alias_fields=("name", "display_name"),
+        ),
+        "knowledge_base": _capability_alias_map(
+            request.available_knowledge_bases,
+            alias_fields=("name",),
+        ),
+    }
+    field_catalogs = {
+        "general_skill_ids": catalogs["general_skill"],
+        "tool_ids": catalogs["tool"],
+        "knowledge_base_ids": catalogs["knowledge_base"],
+    }
+    required_fields = {
+        "general_skill_ids": "required_general_skill_ids",
+        "tool_ids": "required_tool_ids",
+        "knowledge_base_ids": "required_knowledge_base_ids",
+    }
+    warnings: list[str] = []
+    normalized_nodes: list[dict[str, Any]] = []
+    for node in nodes:
+        normalized = dict(node)
+        raw_refs = node.get("capability_refs")
+        refs = raw_refs if isinstance(raw_refs, dict) else {}
+        next_refs: dict[str, list[str]] = {}
+        node_unknown: list[str] = []
+        for allowed_field, aliases in field_catalogs.items():
+            allowed, unknown_allowed = _resolved_capability_refs(refs.get(allowed_field), aliases)
+            required_field = required_fields[allowed_field]
+            required, unknown_required = _resolved_capability_refs(
+                refs.get(required_field), aliases
+            )
+            for reference in required:
+                if reference not in allowed:
+                    allowed.append(reference)
+            next_refs[allowed_field] = allowed
+            next_refs[required_field] = required
+            node_unknown.extend([*unknown_allowed, *unknown_required])
+
+        tool_aliases = catalogs["tool"]
+        for action in normalized.get("allowed_actions", []):
+            action_text = str(action or "")
+            if not action_text.startswith("call_tool:"):
+                continue
+            tool_name = action_text.partition(":")[2].strip()
+            tool_id = tool_aliases.get(tool_name) or tool_aliases.get(tool_name.lower())
+            if tool_id and tool_id not in next_refs["tool_ids"]:
+                next_refs["tool_ids"].append(tool_id)
+
+        knowledge_scope = normalized.get("knowledge_scope")
+        if isinstance(knowledge_scope, dict):
+            knowledge_ids, unknown_knowledge = _resolved_capability_refs(
+                knowledge_scope.get("knowledge_base_ids"),
+                catalogs["knowledge_base"],
+            )
+            for knowledge_id in knowledge_ids:
+                if knowledge_id not in next_refs["knowledge_base_ids"]:
+                    next_refs["knowledge_base_ids"].append(knowledge_id)
+            node_unknown.extend(unknown_knowledge)
+
+        normalized["capability_refs"] = next_refs
+        normalized_nodes.append(normalized)
+        unique_unknown = list(dict.fromkeys(node_unknown))
+        if unique_unknown:
+            node_label = str(node.get("name") or node.get("node_id") or "未命名节点")
+            warnings.append(
+                f"节点「{node_label}」引用了当前员工不可用的能力，已移除："
+                + "、".join(unique_unknown)
+            )
+    explicit_mentions = {
+        "general_skill_ids": _explicit_capability_mentions(
+            request.available_general_skills,
+            source_text=_request_text(request),
+            alias_fields=("slug", "name"),
+        ),
+        "tool_ids": _explicit_capability_mentions(
+            request.available_tools,
+            source_text=_request_text(request),
+            alias_fields=("name", "display_name"),
+        ),
+        "knowledge_base_ids": _explicit_capability_mentions(
+            request.available_knowledge_bases,
+            source_text=_request_text(request),
+            alias_fields=("name",),
+        ),
+    }
+    catalog_values = {
+        "general_skill_ids": request.available_general_skills,
+        "tool_ids": request.available_tools,
+        "knowledge_base_ids": request.available_knowledge_bases,
+    }
+    required_by_field = {
+        "general_skill_ids": "required_general_skill_ids",
+        "tool_ids": "required_tool_ids",
+        "knowledge_base_ids": "required_knowledge_base_ids",
+    }
+    for field_name, mentions in explicit_mentions.items():
+        for capability_id, is_required in mentions.items():
+            matching_indexes = [
+                index
+                for index, node in enumerate(normalized_nodes)
+                if capability_id in node["capability_refs"][field_name]
+            ]
+            if not matching_indexes:
+                matching_indexes = [
+                    _capability_target_node_index(
+                        normalized_nodes,
+                        capability_id,
+                        catalog_values[field_name],
+                        field_name,
+                    )
+                ]
+                target_refs = normalized_nodes[matching_indexes[0]]["capability_refs"]
+                target_refs[field_name].append(capability_id)
+            if is_required:
+                required_field = required_by_field[field_name]
+                for index in matching_indexes:
+                    target_refs = normalized_nodes[index]["capability_refs"]
+                    if capability_id not in target_refs[required_field]:
+                        target_refs[required_field].append(capability_id)
+    return normalized_nodes, warnings
+
+
+def _explicit_capability_mentions(
+    values: list[dict[str, Any]],
+    *,
+    source_text: str,
+    alias_fields: tuple[str, ...],
+) -> dict[str, bool]:
+    aliases = _capability_alias_map(values, alias_fields=alias_fields)
+    source_lower = source_text.lower()
+    mentions: dict[str, bool] = {}
+    candidates = sorted(
+        {
+            (alias.lower(), canonical)
+            for alias, canonical in aliases.items()
+            if len(alias.strip()) >= 2
+        },
+        key=lambda item: -len(item[0]),
+    )
+    for alias, canonical in candidates:
+        match = source_lower.find(alias)
+        if match < 0:
+            continue
+        required = _capability_mention_is_required(source_lower, match, len(alias))
+        mentions[canonical] = mentions.get(canonical, False) or required
+    return mentions
+
+
+def _capability_mention_is_required(source_text: str, start: int, length: int) -> bool:
+    window = source_text[max(0, start - 24) : min(len(source_text), start + length + 24)]
+    return any(
+        marker in window
+        for marker in ("必须", "务必", "应当", "需要使用", "需使用", "依次", "must", "required")
+    )
+
+
+def _capability_target_node_index(
+    nodes: list[dict[str, Any]],
+    capability_id: str,
+    catalog: list[dict[str, Any]],
+    field_name: str,
+) -> int:
+    capability = next(
+        (item for item in catalog if str(item.get("id") or "").strip() == capability_id),
+        {},
+    )
+    aliases = [
+        str(capability.get(field) or "").strip().lower()
+        for field in ("name", "display_name", "slug")
+        if str(capability.get(field) or "").strip()
+    ]
+    if capability.get("slug"):
+        aliases.append(f"general_skill.{str(capability['slug']).strip().lower()}")
+    candidate_indexes = [
+        index
+        for index, node in enumerate(nodes)
+        if str(node.get("type") or "").lower() not in {"response", "handoff", "handoff_human"}
+    ] or list(range(len(nodes)))
+    best_index = candidate_indexes[0]
+    best_score = 0
+    for index in candidate_indexes:
+        node_text = " ".join(
+            [
+                str(nodes[index].get("name") or ""),
+                str(nodes[index].get("instruction") or ""),
+                *[str(item) for item in nodes[index].get("allowed_actions", [])],
+            ]
+        ).lower()
+        score = max((len(alias) for alias in aliases if alias in node_text), default=0)
+        if score > best_score:
+            best_index = index
+            best_score = score
+    if best_score:
+        return best_index
+    if field_name in {"general_skill_ids", "tool_ids"}:
+        for index in candidate_indexes:
+            node = nodes[index]
+            node_type = str(node.get("type") or "").lower()
+            actions = [str(item) for item in node.get("allowed_actions", [])]
+            if any(token in node_type for token in ("action", "tool", "execute")) or any(
+                action.startswith("call_tool:") for action in actions
+            ):
+                return index
+    if field_name == "knowledge_base_ids":
+        for index in candidate_indexes:
+            node_text = " ".join(
+                [
+                    str(nodes[index].get("type") or ""),
+                    str(nodes[index].get("name") or ""),
+                    str(nodes[index].get("instruction") or ""),
+                ]
+            ).lower()
+            if any(token in node_text for token in ("knowledge", "search", "知识", "检索")):
+                return index
+    return best_index
 
 
 def _remove_unknown_tool_actions(

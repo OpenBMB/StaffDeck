@@ -143,6 +143,7 @@ def test_handoff_requires_structured_step_declaration():
 
 def test_handoff_assignee_uses_agent_owner_metadata_before_admin():
     engine = _test_engine()
+    session_id = "session_wecom_group_resume"
     with Session(engine) as db:
         _admin, user, other = _seed_handoff_users(db)
         db.add(
@@ -785,6 +786,128 @@ def test_handoff_resume_worker_continues_original_session_once(monkeypatch):
         events = db.exec(select(AgentEvent).where(AgentEvent.event_type == "human_handoff_resume_started")).all()
         assert len(events) == 1
         assert events[0].payload_json["handoff_id"] == "handoff_worker"
+
+
+def test_handoff_resume_worker_prefers_session_user_after_rebind(monkeypatch):
+    """渠道身份重绑后 session.user_id 已迁移,handoff.requester_user_id 是过期快照。
+
+    resume 请求必须以会话属主为准,否则触发 harness 的 session-user 围栏校验
+    (HARNESS_V2_ERROR: Harness session user does not match the request)。
+    """
+    engine = _test_engine()
+    handled_requests: list[ChatTurnRequest] = []
+
+    class FakeAgentLoop:
+        def __init__(self, db: Session) -> None:
+            self.db = db
+
+        def handle_turn(self, request: ChatTurnRequest) -> None:
+            handled_requests.append(request)
+
+    monkeypatch.setattr(chat_api, "engine", engine)
+    monkeypatch.setattr(chat_api, "AgentLoop", FakeAgentLoop)
+    with Session(engine) as db:
+        _admin, user, _other = _seed_handoff_users(db)
+        # 会话属主已被迁移到 admin(重绑后);handoff 快照仍是旧的懒建账号 user。
+        db.add(
+            ChatSession(
+                id="session_rebind",
+                tenant_id="tenant_demo",
+                user_id="admin_user",
+                agent_id="agent_demo",
+                status="active",
+            )
+        )
+        db.add(
+            HumanHandoffRequest(
+                id="handoff_rebind",
+                tenant_id="tenant_demo",
+                session_id="session_rebind",
+                agent_id="agent_demo",
+                requester_user_id=user.id,
+                assignee_user_id="admin_user",
+                trigger_skill_id="manual_skill",
+                trigger_step_id="manual_review",
+                pending_question="请人工确认",
+                status="answered",
+                human_reply="人工答复：继续执行后续流程",
+            )
+        )
+        db.commit()
+
+    chat_api._resume_human_handoff_worker("handoff_rebind")
+
+    assert len(handled_requests) == 1
+    assert handled_requests[0].user_id == "admin_user"
+
+
+def test_handoff_resume_worker_restores_original_wecom_group_target(monkeypatch):
+    engine = _test_engine()
+    session_id = "session_wecom_group_resume"
+    handled_requests: list[ChatTurnRequest] = []
+
+    class FakeAgentLoop:
+        def __init__(self, db: Session) -> None:
+            self.db = db
+
+        def handle_turn(self, request: ChatTurnRequest) -> None:
+            handled_requests.append(request)
+
+    monkeypatch.setattr(chat_api, "engine", engine)
+    monkeypatch.setattr(chat_api, "AgentLoop", FakeAgentLoop)
+    with Session(engine) as db:
+        _admin, user, _other = _seed_handoff_users(db)
+        session = ChatSession(
+            id=session_id,
+            tenant_id="tenant_demo",
+            user_id=user.id,
+            agent_id="agent_demo",
+            channel="wecom",
+            channel_binding_id="binding_wecom",
+            channel_account_key="wecom:corp:4:corp:bot:3:bot",
+            external_conv_id="wecom_corp_group_chat_123",
+            channel_target_json={
+                "to_user_id": "group_chat_123",
+                "context_token": "group_chat_123",
+            },
+            status="active",
+        )
+        db.add(session)
+        db.add(
+            HumanHandoffRequest(
+                id="handoff_wecom_group_resume",
+                tenant_id="tenant_demo",
+                session_id=session.id,
+                agent_id="agent_demo",
+                requester_user_id=user.id,
+                assignee_user_id="admin_user",
+                status="answered",
+                human_reply="人工回复",
+                resume_payload_json={
+                    "channel": "wecom",
+                    "channel_binding_id": "binding_wecom",
+                    "channel_account_key": session.channel_account_key,
+                    "channel_target": {
+                        "to_user_id": "group_chat_123",
+                        "context_token": "group_chat_123",
+                    },
+                },
+            )
+        )
+        db.commit()
+
+    chat_api._resume_human_handoff_worker("handoff_wecom_group_resume")
+
+    assert len(handled_requests) == 1
+    with Session(engine) as db:
+        restored = db.get(ChatSession, session_id)
+        assert restored is not None
+        assert restored.channel == "wecom"
+        assert restored.channel_binding_id == "binding_wecom"
+        assert restored.channel_target_json == {
+            "to_user_id": "group_chat_123",
+            "context_token": "group_chat_123",
+        }
 
 
 def test_handoff_resume_worker_persists_failed_resume(monkeypatch):

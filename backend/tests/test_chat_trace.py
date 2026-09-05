@@ -5,6 +5,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.chat import (
     _build_turn_traces,
+    _event_trace_lines,
     _events_after_cursor,
     _format_scheduled_task_schedule,
     _harness_event_trace_line,
@@ -12,9 +13,11 @@ from app.api.chat import (
     _persist_chat_turn_cancelled,
     _persist_chat_turn_interrupted,
     _relay_event_payload,
+    _resolve_step_label,
     list_chat_session_spans,
     message_read,
 )
+from app.channels.feishu_trace import _SinkEvent
 import app.core.cancellation as cancellation_module
 from app.core.cancellation import is_chat_turn_cancelled
 from app.db.models import (
@@ -2039,6 +2042,203 @@ def test_turn_trace_restores_harness_task_and_general_skill_execution() -> None:
     assert any(line["text"] == "Bash runner 执行完成" for line in lines)
     assert any(line["text"] == "通用技能运行完成" for line in lines)
     assert any(line["text"] == "整理任务结果" for line in lines)
+
+
+def test_event_trace_lines_humanizes_steps_and_status_for_channel_card() -> None:
+    step_names = {
+        "skill_refund": {
+            "collect_order_info": "收集订单信息",
+            "reply_final_result": "反馈最终结果",
+        }
+    }
+    skill_names = {
+        "skill_refund": "售后退款流程",
+        "skill_exchange": "售后换货流程",
+    }
+
+    started = _event_trace_lines(
+        _SinkEvent(
+            "task_frame_started",
+            {"task_frame_id": "f1", "kind": "sop", "step_id": "reply_final_result"},
+        ),
+        skill_names,
+        "skill_refund",
+        step_names,
+    )
+    assert started[0]["detail"] == "当前环节 反馈最终结果"
+
+    finished = _event_trace_lines(
+        _SinkEvent(
+            "task_frame_finished",
+            {"task_frame_id": "f1", "status": "handoff", "action_count": 3},
+        ),
+        skill_names,
+        "skill_refund",
+        step_names,
+    )
+    assert finished[0]["text"] == "已转人工处理"
+    assert finished[0]["detail"] == "共执行 3 个操作"
+    assert finished[0]["state"] == "completed"
+
+    state = _event_trace_lines(
+        _SinkEvent(
+            "skill_state",
+            {
+                "runtimeDecision": "continue_active",
+                "currentSkills": [
+                    {
+                        "skillId": "skill_refund",
+                        "name": "售后退款流程",
+                        "stepId": "collect_order_info",
+                        "state": "active",
+                    }
+                ],
+            },
+        ),
+        skill_names,
+        "skill_refund",
+        step_names,
+    )
+    assert state[0]["text"] == "推进流程 售后退款流程"
+    assert state[0]["detail"] == "当前步骤 收集订单信息"
+
+    result = _event_trace_lines(
+        _SinkEvent("step_result", {"next_step_id": "reply_final_result"}),
+        skill_names,
+        "skill_refund",
+        step_names,
+    )
+    assert result[0]["detail"] == "下一步 反馈最终结果"
+
+    skill_started = _event_trace_lines(
+        _SinkEvent(
+            "skill_started",
+            {
+                "from_skill_id": "skill_exchange",
+                "to_skill_id": "skill_refund",
+                "to_step_id": "collect_order_info",
+            },
+        ),
+        skill_names,
+        None,
+        step_names,
+    )
+    assert skill_started[0]["text"] == "进入流程 售后退款流程"
+    assert skill_started[0]["detail"] == "原流程 售后换货流程 · 当前步骤 收集订单信息"
+
+    reflection = _event_trace_lines(
+        _SinkEvent(
+            "reflection_decision",
+            {"needs_retry": False, "target_step_id": "reply_final_result"},
+        ),
+        skill_names,
+        "skill_refund",
+        step_names,
+    )
+    assert reflection[0]["detail"] == "步骤 反馈最终结果"
+
+    tool_action = _event_trace_lines(
+        _SinkEvent(
+            "harness_action_created",
+            {"task_frame_id": "f1", "iteration": 1, "action": "tool", "tool_name": "hr.balance_query"},
+        ),
+        skill_names,
+        "skill_refund",
+        step_names,
+        {"hr.balance_query": "假期考勤查询"},
+    )
+    assert tool_action[0]["text"] == "调用能力 假期考勤查询"
+
+    tool_completed = _event_trace_lines(
+        _SinkEvent(
+            "harness_tool_completed",
+            {"task_frame_id": "f1", "iteration": 1, "tool_name": "hr.balance_query", "success": True},
+        ),
+        skill_names,
+        "skill_refund",
+        step_names,
+        {"hr.balance_query": "假期考勤查询"},
+    )
+    assert tool_completed[0]["text"] == "能力调用完成 假期考勤查询"
+
+    reserved_tool = _event_trace_lines(
+        _SinkEvent(
+            "harness_tool_completed",
+            {"task_frame_id": "f1", "iteration": 2, "tool_name": "capability_describe", "success": True},
+        ),
+        skill_names,
+        "skill_refund",
+        step_names,
+        {"hr.balance_query": "假期考勤查询"},
+    )
+    assert reserved_tool[0]["text"] == "能力调用完成 查看能力详情"
+
+    skill_completed = _event_trace_lines(
+        _SinkEvent(
+            "skill_completed",
+            {"skill_id": "skill_refund", "reason": "step_completed"},
+        ),
+        skill_names,
+        "skill_refund",
+        step_names,
+        {"hr.balance_query": "假期考勤查询"},
+    )
+    assert skill_completed[0]["text"] == "完成流程 售后退款流程"
+    assert skill_completed[0]["detail"] == "全部步骤已完成"
+
+
+def test_event_trace_lines_keeps_raw_tool_names_without_tool_names() -> None:
+    tool_completed = _event_trace_lines(
+        _SinkEvent(
+            "harness_tool_completed",
+            {"task_frame_id": "f1", "iteration": 1, "tool_name": "hr.balance_query", "success": True},
+        ),
+        {},
+    )
+    assert tool_completed[0]["text"] == "能力调用完成 hr.balance_query"
+
+    skill_completed = _event_trace_lines(
+        _SinkEvent(
+            "skill_completed",
+            {"skill_id": "skill_refund", "reason": "step_completed"},
+        ),
+        {},
+    )
+    assert skill_completed[0]["detail"] == "step_completed"
+
+
+def test_event_trace_lines_keeps_technical_detail_without_step_names() -> None:
+    started = _event_trace_lines(
+        _SinkEvent(
+            "task_frame_started",
+            {"task_frame_id": "f1", "kind": "sop", "step_id": "collect_order_info"},
+        ),
+        {},
+    )
+    assert started[0]["detail"] == "SOP TaskFrame · 步骤 collect_order_info"
+
+    finished = _event_trace_lines(
+        _SinkEvent("task_frame_finished", {"task_frame_id": "f1", "status": "handoff"}),
+        {},
+    )
+    assert finished[0]["text"] == "任务执行完成"
+    assert finished[0]["detail"] == "状态 handoff"
+
+
+def test_resolve_step_label_uses_names_then_fallbacks() -> None:
+    step_names = {
+        "skill_refund": {"collect_order_info": "收集订单信息"},
+        "skill_exchange": {"collect_order_info": "收集换货订单信息"},
+    }
+    assert _resolve_step_label("collect_order_info", step_names, "skill_refund") == "收集订单信息"
+    assert _resolve_step_label("collect_order_info", step_names, "skill_exchange") == "收集换货订单信息"
+    assert _resolve_step_label("collect_order_info", step_names) == "收集订单信息"
+    assert _resolve_step_label("collect_order_info", {}) == "收集需要的信息"
+    assert _resolve_step_label("handoff_to_repair_specialist", {}) == "转人工处理"
+    assert _resolve_step_label("reply_final_result", {}) == "反馈最终结果"
+    assert _resolve_step_label("end", {}) == "流程结束"
+    assert _resolve_step_label("some_random_id", {}) == "some_random_id"
+    assert _resolve_step_label("collect_order_info", None) == "collect_order_info"
 
 
 def _test_db() -> Session:

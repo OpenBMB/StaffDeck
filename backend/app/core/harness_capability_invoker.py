@@ -29,6 +29,11 @@ from app.core.capability_manifest import (
     tool_snapshot_digest,
 )
 from app.core.harness_agent import HarnessExecutionCancelled
+from app.core.published_deliverables import (
+    MAX_PUBLISHED_DELIVERABLES,
+    find_published_deliverable,
+    list_published_deliverables,
+)
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
 from app.core.tool_replay_policy import ToolReplayPolicy
@@ -502,6 +507,10 @@ class HarnessCapabilityInvoker:
             return self._audit_report_status()
         if name == "audit_report_generate":
             return self._audit_report_generate()
+        if name == "list_published_deliverables":
+            return self._list_published_deliverables(arguments)
+        if name == "read_published_deliverable":
+            return self._read_published_deliverable(arguments)
         return _failure(
             "UNSUPPORTED_INTERNAL_CAPABILITY",
             "不支持的 Harness 内部能力。",
@@ -618,6 +627,30 @@ class HarnessCapabilityInvoker:
             },
         }
 
+    def _list_published_deliverables(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        raw_limit = arguments.get("limit", MAX_PUBLISHED_DELIVERABLES)
+        if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
+            return _failure("INVALID_ARGUMENTS", "limit 必须是整数。")
+        rows = list_published_deliverables(
+            self.db,
+            tenant_id=self.tenant_id,
+            session_id=self.session.id,
+            query=str(arguments.get("query") or ""),
+            limit=raw_limit,
+            exclude_task_frame_id=self.task_frame_id,
+        )
+        return {
+            "success": True,
+            "data": {
+                "deliverables": rows,
+                "count": len(rows),
+                "notice": (
+                    "使用 read_published_deliverable 读取所需文件，"
+                    "不要用 read_file 猜测旧工作区路径。"
+                ),
+            },
+        }
+
     def _audit_report_generate(self) -> dict[str, Any]:
         case = self._bound_audit_case()
         if case is None:
@@ -666,6 +699,100 @@ class HarnessCapabilityInvoker:
         if case is None or case.tenant_id != self.tenant_id:
             return None
         return case
+    def _read_published_deliverable(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        task_frame_id = str(arguments.get("task_frame_id") or "").strip()
+        path = str(arguments.get("path") or "").strip()
+        if not task_frame_id or not path:
+            return _failure("INVALID_ARGUMENTS", "task_frame_id 和 path 不能为空。")
+        artifact = find_published_deliverable(
+            self.db,
+            tenant_id=self.tenant_id,
+            session_id=self.session.id,
+            task_frame_id=task_frame_id,
+            path=path,
+        )
+        if artifact is None:
+            return _failure(
+                "PUBLISHED_DELIVERABLE_NOT_FOUND",
+                "当前会话中没有该历史交付物。",
+            )
+        workspace_root = _workspace_root(
+            self.tenant_id,
+            self.session.id,
+            task_frame_id,
+            db=self.db,
+        )
+        opened = None
+        try:
+            opened = open_harness_artifact(workspace_root, path)
+            actual_sha256 = opened.sha256()
+            expected_sha256 = str(artifact.get("sha256") or "").strip().lower()
+            expected_size = artifact.get("size")
+            if (
+                (expected_sha256 and expected_sha256 != actual_sha256.lower())
+                or (isinstance(expected_size, int) and expected_size != opened.size)
+            ):
+                return _failure(
+                    "PUBLISHED_DELIVERABLE_CHANGED",
+                    "历史交付物在发布后已发生变化，拒绝读取。",
+                )
+        except (HarnessArtifactAccessError, OSError):
+            return _failure(
+                "PUBLISHED_DELIVERABLE_NOT_FOUND",
+                "历史交付物不存在或无法安全读取。",
+            )
+        finally:
+            if opened is not None:
+                opened.close()
+
+        read_arguments = {
+            key: arguments[key]
+            for key in ("path", "offset", "max_bytes", "continuation_token")
+            if key in arguments
+        }
+        read_context = HarnessToolContext(
+            run_id=self.run_id,
+            task_frame_id=task_frame_id,
+            tenant_id=self.tenant_id,
+            workspace_root=workspace_root,
+            limits=self._file_context.limits,
+            sandbox_enabled=self._file_context.sandbox_enabled,
+            sandbox_network_mode=self._file_context.sandbox_network_mode,
+            sandbox_allowed_domains=self._file_context.sandbox_allowed_domains,
+        )
+        result = self._file_executor.execute(
+            read_context,
+            HarnessToolCall(
+                call_id=new_id("hcall"),
+                name="read_file",
+                arguments=read_arguments,
+            ),
+        )
+        if not result.success:
+            return {
+                "success": False,
+                "error": {
+                    "code": (
+                        result.error.code
+                        if result.error
+                        else "PUBLISHED_DELIVERABLE_READ_FAILED"
+                    ),
+                    "message": (
+                        result.error.message if result.error else "历史交付物读取失败。"
+                    ),
+                    "retryable": bool(result.error.retryable) if result.error else False,
+                    "details": dict(result.error.details) if result.error else {},
+                },
+            }
+        data = dict(result.data or {})
+        data.update(
+            {
+                "task_frame_id": task_frame_id,
+                "display_name": artifact.get("display_name"),
+                "published_at": artifact.get("published_at"),
+            }
+        )
+        return {"success": True, "data": data}
 
     def _search_capabilities(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = str(arguments.get("query") or "").strip()

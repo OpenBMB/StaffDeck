@@ -89,6 +89,7 @@ CLAWHUB_HOSTS = {"clawhub.ai", "www.clawhub.ai"}
 SKILLHUB_HOSTS = {"skillhub.ai", "www.skillhub.ai"}
 REMOTE_SKILLHUB_HOSTS = CLAWHUB_HOSTS | SKILLHUB_HOSTS
 CLAWHUB_DOWNLOAD_ENDPOINT = "https://wry-manatee-359.convex.site/api/v1/download"
+LOCAL_REFERENCE_PATTERN = re.compile(r"(?<![\w./-])(?:\./)?references/[^\s`'\"<>|]+")
 
 
 def _agent_id_or_none(agent_id: object | None) -> str | None:
@@ -126,11 +127,6 @@ def import_general_skill(
 ) -> GeneralSkillRead:
     ensure_tenant(db, request.tenant_id)
     files = _normalize_skill_files(request.files, request.markdown)
-    requested_directories = (
-        _skill_directories_from_values(request.directories, files)
-        if request.directories is not None
-        else None
-    )
     markdown = _skill_markdown_from_files(files)
     parsed_metadata = _parse_skill_metadata(markdown)
     metadata = user_creator_metadata(current_user, parsed_metadata)
@@ -154,6 +150,7 @@ def import_general_skill(
     if not is_private_agent_scope:
         ensure_open_gallery_admin(request.tenant_id, current_user)
     row = None
+    package_source_row = None
     inherited_capability_scope = "general"
     if lookup_slug:
         row = db.exec(
@@ -169,12 +166,19 @@ def import_general_skill(
             raise HTTPException(status_code=400, detail="General skill slug cannot be modified")
         if is_private_agent_scope:
             if is_open_gallery_resource(db, request.tenant_id, "general_skill", row):
+                package_source_row = row
                 row = None
                 slug = _unique_slug(db, request.tenant_id, slug)
             elif not _general_skill_editable_by_agent(db, request.tenant_id, agent.id, row):
                 raise HTTPException(
                     status_code=404, detail="General skill not visible to this agent"
                 )
+            elif not _private_skill_owned_by_agent(
+                db, request.tenant_id, row, agent.id
+            ):
+                package_source_row = row
+                row = None
+                slug = _unique_slug(db, request.tenant_id, slug)
     else:
         conflict = db.exec(
             select(GeneralSkill).where(
@@ -198,6 +202,16 @@ def import_general_skill(
                 row = conflict
             else:
                 raise HTTPException(status_code=409, detail="General skill slug already exists")
+    package_source = row or package_source_row
+    if package_source is not None and not request.files and request.markdown is not None:
+        files = _replace_skill_markdown_in_package(package_source, request.markdown)
+        markdown = _skill_markdown_from_files(files)
+    requested_directories = (
+        _skill_directories_from_values(request.directories, files)
+        if request.directories is not None
+        else None
+    )
+    _validate_skill_package_references(files)
     now = utc_now()
     if row:
         metadata = metadata_preserving_creator(row.metadata_json, parsed_metadata)
@@ -276,6 +290,20 @@ def import_general_skill(
             metadata_json=metadata,
             revive=True,
         )
+        if package_source_row is not None and package_source_row.id != row.id:
+            replaced_binding = db.exec(
+                select(AgentResourceBinding).where(
+                    AgentResourceBinding.tenant_id == request.tenant_id,
+                    AgentResourceBinding.agent_id == agent.id,
+                    AgentResourceBinding.resource_type == "general_skill",
+                    AgentResourceBinding.resource_id == package_source_row.id,
+                    AgentResourceBinding.status != "deleted",
+                )
+            ).first()
+            if replaced_binding is not None:
+                replaced_binding.status = "deleted"
+                replaced_binding.updated_at = now
+                db.add(replaced_binding)
     else:
         ensure_open_gallery_binding(
             db,
@@ -381,6 +409,7 @@ def _create_imported_general_skill(
     capability_scope: str = "general",
     current_user: object | None = None,
 ) -> GeneralSkillRead:
+    _validate_skill_package_references(files)
     markdown = _skill_markdown_from_files(files)
     metadata = _parse_skill_metadata(markdown)
     resolved_name = (
@@ -963,7 +992,12 @@ def _private_skill_owned_by_agent(
             AgentResourceBinding.resource_id == row.id,
         )
     ).first()
-    return bool(binding and (binding.metadata_json or {}).get("scope") == "agent_private")
+    binding_metadata = binding.metadata_json if binding else {}
+    return bool(
+        binding
+        and binding_metadata.get("scope") == "agent_private"
+        and binding_metadata.get("owner_agent_id") == agent_id
+    )
 
 
 def _ensure_general_skill_visible(
@@ -1136,6 +1170,58 @@ def _normalize_skill_files(
             continue
         normalized.append(file.model_copy(update={"path": file.path[len(prefix) :]}))
     return normalized
+
+
+def _replace_skill_markdown_in_package(
+    row: GeneralSkill,
+    markdown: str,
+) -> list[GeneralSkillFile]:
+    existing = [
+        GeneralSkillFile.model_validate(item) for item in _skill_files_or_markdown(row)
+    ]
+    files = _normalize_skill_files(existing, None)
+    updated: list[GeneralSkillFile] = []
+    for file in files:
+        if file.path.rsplit("/", 1)[-1].lower() == "skill.md":
+            encoded = markdown.encode("utf-8")
+            updated.append(
+                file.model_copy(
+                    update={
+                        "content": markdown,
+                        "size": len(encoded),
+                        "mime_type": file.mime_type or "text/markdown",
+                    }
+                )
+            )
+        else:
+            updated.append(file)
+    return updated
+
+
+def _validate_skill_package_references(files: list[GeneralSkillFile]) -> None:
+    skill_file = _find_skill_file(files)
+    if skill_file is None:
+        return
+    package_paths = {file.path.replace("\\", "/").lstrip("./") for file in files}
+    referenced_paths: set[str] = set()
+    for match in LOCAL_REFERENCE_PATTERN.finditer(skill_file.content):
+        raw_path = unquote(match.group(0)).replace("\\", "/")
+        raw_path = raw_path.split("#", 1)[0].split("?", 1)[0]
+        raw_path = raw_path.rstrip(")]}.,;:!?，。；：！？")
+        if any(marker in raw_path for marker in ("*", "{", "}")):
+            continue
+        normalized = raw_path.removeprefix("./").strip("/")
+        if normalized and not normalized.endswith("/"):
+            referenced_paths.add(normalized)
+    missing = sorted(referenced_paths - package_paths)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "General skill package is missing files referenced by SKILL.md: "
+                + ", ".join(missing)
+            ),
+        )
 
 
 def _skill_directories_from_values(

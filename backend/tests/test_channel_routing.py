@@ -195,6 +195,38 @@ def test_mounted_agents_ordering() -> None:
         assert [m.agent_id for m in mounts] == ["agent_cw", "agent_xz"]
 
 
+def test_mounted_agents_ignores_deleted_agents() -> None:
+    """孤儿挂载行(员工已删除)不应出现在挂载集里。"""
+    engine = _test_engine()
+    binding_id = _seed_binding(
+        engine,
+        mounts=[("agent_xz", "行政", True), ("agent_gone", "已删除", False), ("agent_cw", "财务", False)],
+    )
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        mounts = mounted_agents(db, binding)
+        assert [m.agent_id for m in mounts] == ["agent_xz", "agent_cw"]
+
+        reply = run_command(db, binding, "wechat_p2p_u1", parse_command("/员工"))
+        assert "agent_gone" not in reply
+        assert "已删除" not in reply
+        assert "1. 行政（默认/当前）" in reply
+        assert "2. 财务" in reply
+
+
+def test_mounted_agents_all_deleted_falls_back_to_binding_default() -> None:
+    """挂载行全部指向已删除员工时,按存量绑定回退到 binding.agent_id。"""
+    engine = _test_engine()
+    binding_id = _seed_binding(
+        engine, mounts=[("agent_gone", "已删除", True), ("agent_gone2", "也删了", False)]
+    )
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        mounts = mounted_agents(db, binding)
+        assert [m.agent_id for m in mounts] == ["agent_xz"]
+        assert mounts[0].is_default is True
+
+
 def test_resolve_current_agent_creates_pointer_at_default() -> None:
     engine = _test_engine()
     binding_id = _seed_binding(engine, mounts=[("agent_xz", "行政", True), ("agent_cw", "财务", False)])
@@ -536,6 +568,121 @@ def test_staging_skips_when_binding_id_points_to_disabled() -> None:
         delivery = db.exec(select(ChannelDelivery)).one()
         assert delivery.status == "failed"
         assert delivery.last_error == "binding_missing_or_inactive"
+
+
+# ---------- API: 删除员工清理渠道挂载 ----------
+
+
+def _make_agents_client(engine):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import app.api.agents as agents_api
+    from app.db import get_session
+
+    app = FastAPI()
+    app.include_router(agents_api.enterprise_router)
+
+    def override_get_session():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    return TestClient(app)
+
+
+def test_delete_agent_cleans_channel_mounts_and_repoints_default() -> None:
+    """删除员工要移除其渠道挂载;默认挂载被删时 binding.agent_id 重指剩余首个挂载。"""
+    engine = _test_engine()
+    users = _seed_api_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_cw",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.flush()
+        for index, (agent_id, is_default) in enumerate(
+            (("agent_cw", True), ("agent_xz", False))
+        ):
+            db.add(
+                ChannelBindingAgent(
+                    tenant_id="tenant_demo",
+                    binding_id=binding.id,
+                    agent_id=agent_id,
+                    is_default=is_default,
+                    sort_order=index,
+                )
+            )
+        db.commit()
+        binding_id = binding.id
+
+    client = _make_agents_client(engine)
+    deleted = client.delete(
+        f"/api/enterprise/agents/agent_cw?tenant_id=tenant_demo",
+        headers=_auth(users["owner"]),
+    )
+    assert deleted.status_code == 200
+
+    with Session(engine) as db:
+        mounts = db.exec(
+            select(ChannelBindingAgent).where(ChannelBindingAgent.binding_id == binding_id)
+        ).all()
+        assert [m.agent_id for m in mounts] == ["agent_xz"]
+        assert mounts[0].is_default is True  # 首个剩余挂载提升为默认
+        binding = db.get(ChannelBinding, binding_id)
+        assert binding.agent_id == "agent_xz"
+        assert db.get(AgentProfile, "agent_cw") is None
+
+        # /员工 列表不再出现已删除员工
+        reply = run_command(db, binding, "wechat_p2p_u1", parse_command("/员工"))
+        assert "财务" not in reply
+        assert "1. 行政（默认/当前）" in reply
+
+
+def test_delete_agent_last_mount_keeps_binding_agent() -> None:
+    """删除绑定唯一挂载员工:挂载行清空,按存量绑定回退仍指向原默认(边界,不造员工)。"""
+    engine = _test_engine()
+    users = _seed_api_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_cw",
+            channel="wechat",
+            status="active",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.flush()
+        db.add(
+            ChannelBindingAgent(
+                tenant_id="tenant_demo",
+                binding_id=binding.id,
+                agent_id="agent_cw",
+                is_default=True,
+                sort_order=0,
+            )
+        )
+        db.commit()
+        binding_id = binding.id
+
+    client = _make_agents_client(engine)
+    deleted = client.delete(
+        f"/api/enterprise/agents/agent_cw?tenant_id=tenant_demo",
+        headers=_auth(users["owner"]),
+    )
+    assert deleted.status_code == 200
+
+    with Session(engine) as db:
+        mounts = db.exec(
+            select(ChannelBindingAgent).where(ChannelBindingAgent.binding_id == binding_id)
+        ).all()
+        assert mounts == []
+        binding = db.get(ChannelBinding, binding_id)
+        assert binding.agent_id == "agent_cw"  # 无剩余挂载可指,保持原值
 
 
 # ---------- 迁移回填 ----------

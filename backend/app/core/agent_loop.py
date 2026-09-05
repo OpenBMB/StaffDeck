@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator
 from time import sleep
 from typing import Any, Literal
@@ -14,7 +15,10 @@ from app.agents.branching import (
 from app.channels.service_outbox import stage_channel_delivery
 from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled
-from app.core.conversation_context import build_conversation_context
+from app.core.conversation_context import (
+    ConversationContextSettings,
+    build_conversation_context,
+)
 from app.core.conversation_projection import ConversationProjection
 from app.core.graph_rules import GraphRules
 from app.core.harness_agent import HarnessExecutionCancelled
@@ -71,6 +75,8 @@ from app.session.session_schema import (
     StepAgentResult,
 )
 from app.tools.tool_schema import ToolResult
+
+logger = logging.getLogger(__name__)
 
 STREAM_CHUNK_INTERVAL_SECONDS = 0.045
 MAX_TOOL_ACTIONS_PER_TURN = 32
@@ -140,9 +146,12 @@ class AgentLoop:
         db: Session,
         *,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+        stream_sink: Any | None = None,
     ) -> None:
         self.db = db
         self.events = EventLog(db, event_sink=event_sink)
+        self.stream_sink = stream_sink
+        self.stream_delivery_succeeded = False
         self.runtime = SkillRuntime()
         self.response_generator = ResponseGenerator()
         self.memory = MemoryService(db)
@@ -730,7 +739,9 @@ class AgentLoop:
     ) -> HumanHandoffRequest:
         # SOP 节点指定的处理人:从当前 step 的 assignee_user_id 字段读取
         # (handoff 类型节点或 allowed_actions 含 handoff_human 的节点可配置)。
+        # assignee_notify_channel 指定投递渠道:None=默认;"web"=仅网页端;绑定渠道=按渠道转接。
         step_assignee_user_id: str | None = None
+        step_notify_channel: str | None = None
         current_step = (
             self._current_skill_step(active_skill, chat_session.active_step_id)
             if active_skill
@@ -740,9 +751,12 @@ class AgentLoop:
             step_assignee_user_id = (
                 str(current_step.get("assignee_user_id") or "").strip() or None
             )
+            step_notify_channel = (
+                str(current_step.get("assignee_notify_channel") or "").strip() or None
+            )
         # 当前渠道默认处理人:从会话所属 binding 的 config_json 读取。
-        binding_default_assignee_user_id = self._binding_default_handoff_assignee(
-            tenant_id, chat_session
+        binding_default_assignee_user_id, binding_default_notify_channel = (
+            self._binding_default_handoff_assignee(tenant_id, chat_session)
         )
         handoff = HumanHandoffService(self.db, self.events).create(
             tenant_id,
@@ -754,51 +768,96 @@ class AgentLoop:
             pending_question=self._human_handoff_pending_question,
             step_assignee_user_id=step_assignee_user_id,
             binding_default_assignee_user_id=binding_default_assignee_user_id,
+            step_notify_channel=step_notify_channel,
+            binding_default_notify_channel=binding_default_notify_channel,
         )
-        # 给 assignee 发飞书私聊通知(经会话所属 binding 投递)。失败仅记日志,
-        # 不影响 handoff 主流程(网页收件箱仍可兜底)。
-        self._maybe_notify_handoff_assignee_on_feishu(tenant_id, chat_session, handoff)
+        # 给 assignee 发渠道私聊通知。失败仅记日志,不影响 handoff 主流程
+        # (网页收件箱仍可兜底)。
+        self._maybe_notify_handoff_assignee(tenant_id, chat_session, handoff)
         return handoff
 
     def _binding_default_handoff_assignee(
         self,
         tenant_id: str,
         chat_session: ChatSession,
-    ) -> str | None:
-        """会话所属渠道绑定配置的默认人工处理人。
+    ) -> tuple[str | None, str | None]:
+        """会话所属渠道绑定配置的默认人工处理人及其通知渠道。
 
         从 ChatSession.channel_binding_id 反查 binding(而非 agent 挂载列表取首个),
-        读取 config_json.default_handoff_assignee_user_id。无 binding 或未配置返回 None。
+        读取 config_json.default_handoff_assignee_user_id 与
+        default_handoff_assignee_channel。无 binding 或未配置返回 (None, None)。
         """
         if not chat_session.channel_binding_id:
-            return None
+            return None, None
         binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
         if not binding or binding.tenant_id != tenant_id:
-            return None
+            return None, None
         config = binding.config_json if isinstance(binding.config_json, dict) else {}
         value = str(config.get("default_handoff_assignee_user_id") or "").strip()
-        return value or None
+        if not value:
+            return None, None
+        channel = str(config.get("default_handoff_assignee_channel") or "").strip()
+        return value, (channel or None)
 
-    def _maybe_notify_handoff_assignee_on_feishu(
+    def _maybe_notify_handoff_assignee(
         self,
         tenant_id: str,
         chat_session: ChatSession,
         handoff: HumanHandoffRequest,
     ) -> None:
-        from app.channels.service_outbox import notify_handoff_assignee
+        """按通知渠道偏好解析投递 binding,给 assignee 登记渠道私聊通知。
 
-        # 通知用 binding 必须是会话所属 binding(用户消息进来的那个),
-        # 而非从 agent 挂载列表取首个 active 飞书绑定。
-        if not chat_session.channel_binding_id:
+        绑定解析规则:
+        - 偏好为具体渠道(如 feishu)时:优先会话所属 binding(渠道匹配且 active);
+          会话无 binding 或渠道不匹配时,在租户内找该渠道的任一 active 员工绑定。
+        - 偏好为 None(默认)时:用会话所属 binding(渠道支持私聊通知即可达)。
+        - 偏好为 "web" 时:仅网页收件箱,直接返回。
+
+        无可用 binding(含日志说明)或 assignee 在该 binding scope 无非群聊身份时,
+        由 notify_handoff_assignee 内部跳过,网页收件箱兜底。
+        """
+        from app.channels.service_outbox import (
+            HANDOFF_NOTIFY_CHANNELS,
+            notify_handoff_assignee,
+            resolve_handoff_notify_binding,
+        )
+
+        metadata = handoff.metadata_json if isinstance(handoff.metadata_json, dict) else {}
+        notify_channel = str(metadata.get("assignee_notify_channel") or "").strip()
+        if notify_channel == "web":
             return
-        binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
-        if (
-            not binding
-            or binding.tenant_id != tenant_id
-            or binding.channel != "feishu"
-            or binding.status != "active"
-        ):
-            return
+        binding: ChannelBinding | None = None
+        if notify_channel:
+            # 指定渠道:优先会话所属 binding,渠道不匹配时回退租户内该渠道任一 binding。
+            if chat_session.channel_binding_id:
+                session_binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
+                if (
+                    session_binding
+                    and session_binding.tenant_id == tenant_id
+                    and session_binding.channel == notify_channel
+                    and session_binding.status == "active"
+                ):
+                    binding = session_binding
+            binding = binding or resolve_handoff_notify_binding(self.db, tenant_id, notify_channel)
+            if binding is None:
+                logger.warning(
+                    "handoff 通知跳过:租户无可用的 %s 绑定 handoff=%s", notify_channel, handoff.id
+                )
+                return
+        else:
+            # 默认投递:用会话所属 binding,渠道支持私聊通知即可达。
+            if not chat_session.channel_binding_id:
+                return
+            session_binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
+            if (
+                not session_binding
+                or session_binding.tenant_id != tenant_id
+                or session_binding.status != "active"
+            ):
+                return
+            if session_binding.channel not in HANDOFF_NOTIFY_CHANNELS:
+                return
+            binding = session_binding
         notify_handoff_assignee(
             self.db,
             binding,
@@ -1173,6 +1232,49 @@ class AgentLoop:
         value = row.agent_loop_max_actions if row else MAX_TOOL_ACTIONS_PER_TURN
         return max(1, min(int(value), MAX_TOOL_ACTIONS_PER_TURN_LIMIT))
 
+    def _get_conversation_context_settings(
+        self,
+        tenant_id: str,
+    ) -> ConversationContextSettings:
+        if not hasattr(self.db, "get"):
+            return ConversationContextSettings()
+        row = self.db.get(UIConfig, tenant_id)
+        if row is None:
+            return ConversationContextSettings()
+        return ConversationContextSettings(
+            token_budget=getattr(row, "context_token_budget", 32_000),
+            compaction_trigger_ratio=getattr(
+                row,
+                "context_compaction_trigger_ratio",
+                0.70,
+            ),
+            recent_round_limit=getattr(row, "context_recent_round_limit", 6),
+            long_summary_token_budget=getattr(
+                row,
+                "context_long_summary_token_budget",
+                4_000,
+            ),
+            medium_summary_token_budget=getattr(
+                row,
+                "context_medium_summary_token_budget",
+                4_000,
+            ),
+            allowed_roles=frozenset(
+                getattr(row, "context_allowed_roles", None)
+                or {"user", "assistant"}
+            ),
+            long_summary_prefix=getattr(
+                row,
+                "context_long_summary_prefix",
+                "历史的信息可以被总结为：",
+            ),
+            medium_summary_prefix=getattr(
+                row,
+                "context_medium_summary_prefix",
+                "近期的历史信息总结为：",
+            ),
+        ).normalized()
+
     def _list_published_skills(self, tenant_id: str, agent_id: str | None = None) -> list[Skill]:
         return visible_published_skills(self.db, tenant_id, agent_id)
 
@@ -1315,6 +1417,7 @@ class AgentLoop:
                 )
                 for row in visible_rows
             ],
+            settings=self._get_conversation_context_settings(chat_session.tenant_id),
             context_state=chat_session.context_state_json,
             summary_builder=self._context_summary_builder(model_config) if model_config else None,
         )
@@ -1569,7 +1672,8 @@ class AgentLoop:
             reply,
             metadata=assistant_metadata,
         )
-        stage_channel_delivery(self.db, chat_session, assistant_message)
+        if not self.stream_delivery_succeeded:
+            stage_channel_delivery(self.db, chat_session, assistant_message)
         event_payload: dict[str, Any] = {
             "message_id": assistant_message.id,
             "assistant_message_id": assistant_message.id,

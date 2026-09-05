@@ -11,6 +11,7 @@ from app.api.chat import _active_skill_context_for_assistant_message, _active_sk
 from app.api.skills import (
     _extract_uploaded_skill_file,
     _skill_stats,
+    _validate_handoff_assignees,
     create_skill,
     draft_skill,
     distill_skill,
@@ -22,7 +23,7 @@ from app.api.skills import (
     update_skill,
 )
 from app.agents.branching import ensure_open_gallery_binding, visible_published_skills
-from app.db.models import AgentEvent, AgentProfile, Message, Skill, SkillFeedback, SkillVersion, Tenant, Tool, User
+from app.db.models import AgentEvent, AgentProfile, ChannelBinding, ChannelIdentity, Message, Skill, SkillFeedback, SkillVersion, Tenant, Tool, User
 from app.db.models import ModelConfig
 from app.skills.skill_distiller import SkillDistiller
 from app.skills.skill_editor import SkillEditor
@@ -1846,3 +1847,205 @@ def _test_session():
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+def _handoff_skill_card(
+    assignee_user_id: str | None,
+    assignee_notify_channel: str | None = None,
+) -> SkillCard:
+    card = _skill_card().model_copy(deep=True)
+    card.nodes[1].type = "handoff"
+    card.nodes[1].assignee_user_id = assignee_user_id
+    card.nodes[1].assignee_notify_channel = assignee_notify_channel
+    return card
+
+
+def _scope_binding(
+    *,
+    binding_id: str = "binding_feishu",
+    channel: str = "feishu",
+    scope: str = "",
+) -> ChannelBinding:
+    return ChannelBinding(
+        id=binding_id,
+        tenant_id="tenant_demo",
+        agent_id="agent_1",
+        channel=channel,
+        status="active",
+        identity_scope_key=scope,
+    )
+
+
+def test_validate_handoff_assignees_accepts_internal_and_bound_channel_variants() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        # 渠道可达性要求:active 员工绑定 + 该 binding scope 下的非群聊身份
+        db.add(_scope_binding(scope="app:cli_a:tenant:t_a"))
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="app:cli_a:tenant:t_a",
+                external_user_id="ou_owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner"), "tenant_demo")
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "web"), "tenant_demo")
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo")
+
+
+def test_validate_handoff_assignees_rejects_unbound_channel_variant() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        db.add(_scope_binding(scope="app:cli_a:tenant:t_a"))
+        # 仅群聊虚拟身份不算有效渠道绑定
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="app:cli_a:tenant:t_a",
+                external_user_id="group:chat_1",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_handoff_assignees(
+                db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo"
+            )
+        assert exc_info.value.status_code == 400
+
+
+def test_validate_handoff_assignees_scope_level_reachability() -> None:
+    """scope 级可达性:身份挂在其他企业 binding 的 scope 下时不可达,应拒绝。
+
+    用户可能绑定过另一个飞书企业(不同 binding scope),但租户内当前
+    active 绑定的作用域无法触达该身份,渠道转接会静默失败,校验必须拦下。
+    """
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        # 租户内唯一 active 飞书绑定,scope 是本企业 A
+        db.add(_scope_binding(scope="app:cli_a:tenant:t_a"))
+        # 但用户身份绑定在另一个企业 B 的 scope 下(该企业无 active 绑定)
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="app:cli_b:tenant:t_b",
+                external_user_id="ou_other_org",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_handoff_assignees(
+                db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo"
+            )
+        assert exc_info.value.status_code == 400
+        assert "未绑定渠道身份" in exc_info.value.detail
+
+        # 多绑定任一可达即可:再挂一个企业 B 的 active 绑定后通过
+        db.add(_scope_binding(binding_id="binding_feishu_b", scope="app:cli_b:tenant:t_b"))
+        db.commit()
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo")
+
+
+def test_validate_handoff_assignees_ignores_team_and_inactive_bindings() -> None:
+    """团队绑定与停用绑定的 scope 不参与可达性计算。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        team_binding = _scope_binding(binding_id="binding_team", scope="app:cli_team:tenant:t")
+        team_binding.team_id = "team_1"
+        disabled = _scope_binding(binding_id="binding_disabled", scope="app:cli_a:tenant:t_a")
+        disabled.status = "disabled"
+        db.add(team_binding)
+        db.add(disabled)
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="app:cli_team:tenant:t",
+                external_user_id="ou_team",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_handoff_assignees(
+                db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo"
+            )
+        assert exc_info.value.status_code == 400
+
+
+def test_validate_handoff_assignees_accepts_wecom_scope_reachability() -> None:
+    """渠道已通用化:企微渠道按同样 scope 规则校验可达。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        db.add(_scope_binding(binding_id="binding_wecom", channel="wecom", scope="corp_1"))
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corp_1",
+                external_user_id="staff_owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "wecom"), "tenant_demo")
+
+
+def test_validate_handoff_assignees_rejects_channel_customer() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            User(
+                id="user_channel",
+                tenant_id="tenant_demo",
+                username="feishu_customer",
+                source="feishu",
+                password_hash="x",
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_handoff_assignees(db, _handoff_skill_card("user_channel"), "tenant_demo")
+        assert exc_info.value.status_code == 400
+
+
+def test_validate_handoff_assignees_rejects_unsupported_private_message_channel() -> None:
+    """钉钉/微信不支持主动私聊通知:即使身份已绑定也拒绝。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        db.add(_scope_binding(binding_id="binding_ding", channel="dingtalk", scope="ding_scope"))
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="dingtalk",
+                external_account_scope="ding_scope",
+                external_user_id="staff_owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_handoff_assignees(
+                db, _handoff_skill_card("user_owner", "dingtalk"), "tenant_demo"
+            )
+        assert exc_info.value.status_code == 400
+        assert "暂不支持私聊通知" in exc_info.value.detail

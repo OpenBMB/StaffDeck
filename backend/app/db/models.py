@@ -1256,6 +1256,17 @@ class UIConfig(SQLModel, table=True):
     show_tool_trace: bool = True
     reflection_max_rounds: int = 1
     agent_loop_max_actions: int = 32
+    context_token_budget: int = 32_000
+    context_compaction_trigger_ratio: float = 0.70
+    context_recent_round_limit: int = 6
+    context_long_summary_token_budget: int = 4_000
+    context_medium_summary_token_budget: int = 4_000
+    context_allowed_roles: list[str] = Field(
+        default_factory=lambda: ["user", "assistant"],
+        sa_column=Column(JSON),
+    )
+    context_long_summary_prefix: str = "历史的信息可以被总结为："
+    context_medium_summary_prefix: str = "近期的历史信息总结为："
     sandbox_enabled: bool = False
     sandbox_network_mode: str = Field(default="all")
     sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(JSON))
@@ -1452,6 +1463,8 @@ class ChannelBinding(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     agent_id: str = Field(index=True)
     channel: str = Field(default="wechat", index=True)
+    # 用户可编辑的接入显示名;为空时前端回退展示渠道类型名
+    name: Optional[str] = Field(default=None)
     # 团队绑定:非空表示该渠道接入某团队(与员工挂载互斥),入站消息直路由团队 TL;
     # 存 team_id 不存 leader,换帅自动跟随
     team_id: Optional[str] = Field(default=None, index=True)
@@ -1476,6 +1489,30 @@ class ChannelBinding(SQLModel, table=True):
     # 最近一次成功连上渠道的时间(企微断开超时告警的时间基准)
     last_connected_at: Optional[datetime] = None
     created_by_user_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class WeChatKfAccount(SQLModel, table=True):
+    """客服账号到 StaffDeck 路由的映射；一个 API binding 可管理多个账号。"""
+
+    __tablename__ = "wechat_kf_accounts"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "open_kfid", name="uq_wechat_kf_account_binding_kfid"),
+        UniqueConstraint("tenant_id", "open_kfid", name="uq_wechat_kf_account_tenant_kfid"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("wka"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    binding_id: str = Field(index=True)
+    open_kfid: str = Field(index=True)
+    name: str = ""
+    agent_id: Optional[str] = Field(default=None, index=True)
+    team_id: Optional[str] = Field(default=None, index=True)
+    status: str = Field(default="active", index=True)
+    sync_cursor: str = ""
+    last_error: Optional[str] = None
+    last_sync_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

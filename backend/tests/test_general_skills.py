@@ -542,6 +542,78 @@ def test_import_general_skill_folder_reads_skill_md_metadata() -> None:
         assert row.skill_markdown.startswith("---\nname: 中国城市天气")
 
 
+def test_import_general_skill_rejects_missing_reference_files() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+
+        with pytest.raises(HTTPException) as exc_info:
+            import_general_skill(
+                GeneralSkillImportRequest(
+                    tenant_id="tenant_demo",
+                    name="企业微信日程",
+                    slug="wecom-calendar",
+                    markdown=(
+                        "# 企业微信日程\n\n"
+                        "执行前读取 references/wecomcli-calendar-meeting-room.md。\n"
+                    ),
+                ),
+                db,
+                _admin_user(),
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "references/wecomcli-calendar-meeting-room.md" in str(exc_info.value.detail)
+
+
+def test_markdown_only_update_preserves_existing_skill_package_files() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        created = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="企业微信日程",
+                slug="wecom-calendar",
+                files=[
+                    {
+                        "path": "SKILL.md",
+                        "content": (
+                            "# 企业微信日程\n\n"
+                            "读取 references/wecomcli-calendar-meeting-room.md。\n"
+                        ),
+                    },
+                    {
+                        "path": "references/wecomcli-calendar-meeting-room.md",
+                        "content": "# 会议室日程查询\n",
+                    },
+                ],
+            ),
+            db,
+            _admin_user(),
+        )
+
+        updated = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="企业微信日程",
+                slug=created.slug,
+                original_slug=created.slug,
+                markdown=(
+                    "# 企业微信日程（更新）\n\n"
+                    "读取 references/wecomcli-calendar-meeting-room.md。\n"
+                ),
+            ),
+            db,
+            _admin_user(),
+        )
+
+        assert updated.id == created.id
+        assert [file.path for file in updated.skill_files] == [
+            "SKILL.md",
+            "references/wecomcli-calendar-meeting-room.md",
+        ]
+        assert updated.skill_files[1].content == "# 会议室日程查询\n"
+
+
 def test_import_general_skill_persists_empty_directories_across_updates() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)

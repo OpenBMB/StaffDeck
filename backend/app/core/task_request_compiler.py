@@ -84,6 +84,7 @@ class TaskRequirement(BaseModel):
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     audit_case_id: str | None = None
     material_manifest: list[MaterialManifestItem] = Field(default_factory=list)
+    published_deliverables: list[dict[str, Any]] = Field(default_factory=list)
     capability_manifest: CapabilityManifest = Field(default_factory=CapabilityManifest)
 
 
@@ -123,6 +124,7 @@ class TaskRequestCompiler:
         memory_context: list[dict[str, object]] | None = None,
         prior_task_results: list[dict[str, Any]] | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        published_deliverables: list[dict[str, Any]] | None = None,
         source_user_message: str | None = None,
         out_of_scope_task_intents: list[str] | None = None,
         audit_case_id: str | None = None,
@@ -236,6 +238,7 @@ class TaskRequestCompiler:
             attachments=combined_materials,
             audit_case_id=str(audit_case_id or "") or None,
             material_manifest=material_manifest,
+            published_deliverables=list(published_deliverables or []),
             capability_manifest=manifest,
         )
 
@@ -264,6 +267,33 @@ def current_step_capability_refs(skill: Skill | None, step_id: str | None) -> di
             if kb_id not in result["knowledge_base_ids"]:
                 result["knowledge_base_ids"].append(kb_id)
     return result
+
+
+def current_step_authorization_skill_ids(
+    skill: Skill | None,
+    step_id: str | None,
+) -> set[str]:
+    """Return every SOP identity that authorizes the current expanded node.
+
+    Nested SOP nodes execute inside the parent's persisted task frame, so the
+    runtime ``Skill`` keeps the parent ``skill_id``.  The expansion metadata is
+    the authoritative source for the child call path.  Keeping both identities
+    preserves parent-level tool grants while allowing a child-only grant to
+    remain valid after expansion.
+    """
+    if skill is None:
+        return set()
+    authorized = {str(skill.skill_id or "").strip()}
+    node = _current_node(skill, step_id)
+    metadata = (node or {}).get("metadata")
+    if isinstance(metadata, dict):
+        nested_path = metadata.get("nested_sop_path")
+        if isinstance(nested_path, list):
+            authorized.update(_text_list(nested_path))
+        source_sop_id = str(metadata.get("source_sop_id") or "").strip()
+        if source_sop_id:
+            authorized.add(source_sop_id)
+    return {value for value in authorized if value}
 
 
 def _current_node(skill: Skill | None, step_id: str | None) -> dict[str, Any] | None:

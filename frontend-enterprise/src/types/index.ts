@@ -14,6 +14,8 @@ export type SkillGraphNode = Record<string, unknown> & {
   sub_sop_id?: string | null;
   /** 人工节点指定处理人（handoff / handoff_human 节点）。 */
   assignee_user_id?: string | null;
+  /** 处理人投递渠道:null=默认;'web'=仅网页端;'feishu' 等绑定渠道=按该渠道转接。 */
+  assignee_notify_channel?: string | null;
 };
 
 export type SkillCard = {
@@ -409,6 +411,14 @@ export type UIConfigRead = {
   show_tool_trace: boolean;
   reflection_max_rounds: number;
   agent_loop_max_actions: number;
+  context_token_budget: number;
+  context_compaction_trigger_ratio: number;
+  context_recent_round_limit: number;
+  context_long_summary_token_budget: number;
+  context_medium_summary_token_budget: number;
+  context_allowed_roles: Array<'user' | 'assistant'>;
+  context_long_summary_prefix: string;
+  context_medium_summary_prefix: string;
   sandbox_enabled: boolean;
   harness_storage_path: string;
   effective_harness_storage_path: string;
@@ -1107,12 +1117,16 @@ export type ChannelBindingRead = {
   tenant_id: string;
   agent_id: string;
   channel: string;
+  /** 用户可编辑的接入显示名；为空时回退展示渠道类型名。 */
+  name?: string | null;
   status: string;
   connected: boolean;
   ilink_bot_id?: string | null;
   baseurl?: string | null;
   bot_id?: string | null;
   corp_id?: string | null;
+  open_kfid?: string | null;
+  callback_ready?: boolean;
   app_id?: string | null;
   client_id?: string | null;
   bot_open_id?: string | null;
@@ -1125,6 +1139,7 @@ export type ChannelBindingRead = {
   created_by_name?: string | null;
   config_json?: Record<string, unknown>;
   agents: ChannelBindingAgentRead[];
+  wechat_kf_accounts?: WeChatKfAccountRead[];
   /** 团队绑定（与 agent 挂载互斥，后端逐步放开，可能缺省）。 */
   team_id?: string | null;
   team_name?: string | null;
@@ -1132,11 +1147,23 @@ export type ChannelBindingRead = {
   /** 渠道默认人工处理人（SOP 节点未指定 assignee 时回退到此值）。 */
   default_handoff_assignee_user_id?: string | null;
   default_handoff_assignee_name?: string | null;
+  /** 处理人投递渠道:null=默认;'web'=仅网页端;'feishu' 等绑定渠道=按该渠道转接。 */
+  default_handoff_assignee_channel?: string | null;
   identity_scope_key?: string | null;
   /** 当前请求者对该绑定的管理角色:admin/owner/collaborator;无关系时为 null */
   my_role?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type WeChatKfAccountRead = {
+  open_kfid: string;
+  name: string;
+  agent_id?: string | null;
+  team_id?: string | null;
+  status: string;
+  sync_cursor: string;
+  last_error?: string | null;
 };
 
 export type ChannelBindingManagerRead = {

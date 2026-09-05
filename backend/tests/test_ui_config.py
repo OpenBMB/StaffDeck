@@ -15,11 +15,59 @@ from app.harness.sandbox import SandboxDiagnostics
 
 def test_runtime_settings_action_limit_matches_backend_contract() -> None:
     request = UIConfigUpdateRequest(tenant_id="tenant_demo")
+    row = UIConfig(tenant_id="tenant_demo")
 
     assert request.agent_loop_max_actions == 32
-    assert UIConfig(tenant_id="tenant_demo").agent_loop_max_actions == 32
+    assert row.agent_loop_max_actions == 32
+    assert request.context_token_budget == row.context_token_budget == 32_000
+    assert request.context_compaction_trigger_ratio == 0.70
+    assert request.context_recent_round_limit == 6
+    assert request.context_allowed_roles == ["user", "assistant"]
     with pytest.raises(ValidationError):
         UIConfigUpdateRequest(tenant_id="tenant_demo", agent_loop_max_actions=101)
+
+
+def test_context_runtime_settings_validate_related_limits() -> None:
+    with pytest.raises(ValidationError, match="不能超过上下文预算"):
+        UIConfigUpdateRequest(
+            tenant_id="tenant_demo",
+            context_token_budget=1_000,
+            context_long_summary_token_budget=600,
+            context_medium_summary_token_budget=600,
+        )
+    with pytest.raises(ValidationError):
+        UIConfigUpdateRequest(
+            tenant_id="tenant_demo",
+            context_allowed_roles=[],
+        )
+
+
+def test_agent_loop_reads_tenant_context_runtime_settings() -> None:
+    class FakeDatabase:
+        def get(self, _model: object, _tenant_id: str) -> UIConfig:
+            return UIConfig(
+                tenant_id="tenant_demo",
+                context_token_budget=48_000,
+                context_compaction_trigger_ratio=0.55,
+                context_recent_round_limit=9,
+                context_long_summary_token_budget=3_000,
+                context_medium_summary_token_budget=2_000,
+                context_allowed_roles=["assistant"],
+                context_long_summary_prefix="长期：",
+                context_medium_summary_prefix="近期：",
+            )
+
+    loop = object.__new__(AgentLoop)
+    loop.db = FakeDatabase()
+
+    settings = loop._get_conversation_context_settings("tenant_demo")
+
+    assert settings.token_budget == 48_000
+    assert settings.compaction_trigger_ratio == 0.55
+    assert settings.recent_round_limit == 9
+    assert settings.allowed_roles == frozenset({"assistant"})
+    assert settings.long_summary_prefix == "长期："
+    assert settings.medium_summary_prefix == "近期："
 
 
 def test_agent_loop_honors_runtime_settings_action_limit() -> None:
@@ -139,3 +187,54 @@ def test_sandbox_toggle_schedules_application_restart(
 
     assert result.restart_scheduled is True
     assert scheduled == [True]
+
+
+def test_context_runtime_settings_persist_without_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    scheduled: list[bool] = []
+    monkeypatch.setattr(
+        ui_config_module,
+        "_schedule_application_restart",
+        lambda: scheduled.append(True),
+    )
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+        admin = User(
+            id="user_admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            password_hash="unused",
+            role="admin",
+        )
+        result = update_enterprise_ui_config(
+            UIConfigUpdateRequest(
+                tenant_id="tenant_demo",
+                context_token_budget=48_000,
+                context_compaction_trigger_ratio=0.65,
+                context_recent_round_limit=8,
+                context_long_summary_token_budget=5_000,
+                context_medium_summary_token_budget=3_000,
+                context_allowed_roles=["user"],
+                context_long_summary_prefix="长期记忆：",
+                context_medium_summary_prefix="近期记忆：",
+            ),
+            db,
+            admin,
+        )
+
+    assert result.context_token_budget == 48_000
+    assert result.context_compaction_trigger_ratio == 0.65
+    assert result.context_recent_round_limit == 8
+    assert result.context_allowed_roles == ["user"]
+    assert result.context_long_summary_prefix == "长期记忆："
+    assert result.context_medium_summary_prefix == "近期记忆："
+    assert result.restart_scheduled is False
+    assert scheduled == []

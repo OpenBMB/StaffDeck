@@ -32,11 +32,22 @@ def migrate_binding_session_account_key(
 
 def adopt_orphan_channel_sessions(db: Session, binding: ChannelBinding) -> int:
     """仅按稳定外部账号键认领孤儿会话;无法确定归属的 legacy 会话保持孤立。"""
-    from app.channels.service_routing import mounted_agents
+    from app.db.models import ChannelBindingAgent
 
     if not binding.external_account_key:
         return 0
-    agent_ids = [mount.agent_id for mount in mounted_agents(db, binding)]
+    # 认领按挂载表原始行取 agent 集,不过滤已删除员工的孤儿挂载:
+    # 历史会话的 agent 可能已删除,但会话归属仍应迁移到新绑定,
+    # 后续路由由 mounted_agents 的过滤 + 指针重置兜底。
+    # 无挂载行(存量 v1 绑定)回退为 [binding.agent_id],与挂载集语义一致。
+    agent_ids = [
+        row.agent_id
+        for row in db.exec(
+            select(ChannelBindingAgent).where(
+                ChannelBindingAgent.binding_id == binding.id
+            )
+        ).all()
+    ] or [binding.agent_id]
     alive_binding_ids = set(
         db.exec(
             select(ChannelBinding.id).where(ChannelBinding.tenant_id == binding.tenant_id)
