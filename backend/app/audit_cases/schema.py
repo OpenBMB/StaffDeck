@@ -296,6 +296,14 @@ class AuditReportPublishRequest(BaseModel):
     pass
 
 
+class AuditReportNotFound(LookupError):
+    pass
+
+
+class AuditReportDownloadNotReady(RuntimeError):
+    pass
+
+
 class AuditCaseNotFound(LookupError):
     pass
 

@@ -8,7 +8,8 @@ from app.audit_cases.coverage import calculate_coverage
 from app.audit_cases.documents import AuditCaseDocumentService
 from app.audit_cases.evidence import AuditEvidenceProcessor
 from app.audit_cases.knowledge import AuditKnowledgeOrchestrator
-from app.audit_cases.reporting import AuditReportService
+from app.audit_cases.reporting import AuditReportBlocked, AuditReportService
+from app.audit_cases.storage import read_case_blob
 from app.audit_cases.schema import (
     AuditCaseAccessDenied,
     AuditCaseCreate,
@@ -37,6 +38,9 @@ from app.audit_cases.schema import (
     AuditMaterialFormatError,
     AuditMaterialTooLarge,
     AuditReportCreateRequest,
+    AuditReportDownloadNotReady,
+    AuditReportNotFound,
+    AuditReportPublishRequest,
     AuditReportRead,
     AuditReportSectionRead,
     audit_case_document_read,
@@ -56,6 +60,7 @@ from app.db.models import (
 )
 from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.permissions import ensure_tenant_admin, require_tenant_admin
+from app.project_data.permissions import ensure_project_role
 
 router = APIRouter(
     prefix="/api/audit-cases",
@@ -85,6 +90,12 @@ def _case_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=422, detail=str(exc))
     if isinstance(exc, AuditMaterialTooLarge):
         return HTTPException(status_code=413, detail="AUDIT_MATERIAL_TOO_LARGE")
+    if isinstance(exc, AuditReportNotFound):
+        return HTTPException(status_code=404, detail="AUDIT_REPORT_NOT_FOUND")
+    if isinstance(exc, AuditReportDownloadNotReady):
+        return HTTPException(status_code=409, detail="AUDIT_REPORT_DOWNLOAD_NOT_READY")
+    if isinstance(exc, AuditReportBlocked):
+        return HTTPException(status_code=409, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
 
 
@@ -492,6 +503,7 @@ def process_audit_case_materials(
                     status_code=202,
                     content={
                         "status": "pending",
+                        "code": "MATERIAL_PROCESSING_PENDING",
                         "materials": [
                             audit_case_material_read(item).model_dump(mode="json")
                             for item in materials
@@ -502,10 +514,16 @@ def process_audit_case_materials(
             model_config = _model_config_for_case(db, case, request.model_config_id)
             evidence = AuditEvidenceProcessor(db).process_pending_chunks(case, model_config)
             knowledge = AuditKnowledgeOrchestrator(db).retrieve(case, model_config)
+            snapshot = calculate_coverage(db, case)
             return JSONResponse(
                 status_code=202,
                 content={
                     "status": "succeeded" if evidence.failed == 0 else "partial_failure",
+                    "materials": [
+                        audit_case_material_read(item).model_dump(mode="json")
+                        for item in materials
+                    ],
+                    "coverage": snapshot.model_dump(mode="json"),
                     "evidence": evidence.model_dump(mode="json"),
                     "knowledge": knowledge.model_dump(mode="json"),
                 },
@@ -651,6 +669,95 @@ def create_audit_case_report(
         raise _case_error(exc) from exc
 
 
+@router.post(
+    "/{case_id}/reports/{version_id}/publish",
+    response_model=AuditReportRead,
+    status_code=202,
+)
+def publish_audit_case_report(
+    case_id: str,
+    version_id: str,
+    request: AuditReportPublishRequest,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AuditReportRead:
+    del request
+    case = _authorized_case(
+        AuditCaseService(db),
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        ensure_project_role(db, case, current_user, {"project_admin", "reviewer"})
+        if case.status == "archived":
+            raise AuditCaseReadOnly("AUDIT_CASE_READ_ONLY")
+        report = db.exec(
+            select(AuditReportVersion).where(
+                AuditReportVersion.id == version_id,
+                AuditReportVersion.tenant_id == case.tenant_id,
+                AuditReportVersion.audit_case_id == case.id,
+            )
+        ).first()
+        if report is None:
+            raise AuditReportNotFound()
+        published = AuditReportService(db).publish(case, report, current_user.id)
+        return _audit_report_read(db, published)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _case_error(exc) from exc
+
+
+@router.get(
+    "/{case_id}/reports/{version_id}/download",
+    response_class=Response,
+)
+def download_audit_case_report(
+    case_id: str,
+    version_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> Response:
+    case = _authorized_case(
+        AuditCaseService(db),
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        report = db.exec(
+            select(AuditReportVersion).where(
+                AuditReportVersion.id == version_id,
+                AuditReportVersion.tenant_id == case.tenant_id,
+                AuditReportVersion.audit_case_id == case.id,
+            )
+        ).first()
+        if report is None:
+            raise AuditReportNotFound()
+        if not report.final_storage_key:
+            raise AuditReportDownloadNotReady()
+        try:
+            content = read_case_blob(report.final_storage_key)
+        except FileNotFoundError as exc:
+            raise AuditReportDownloadNotReady() from exc
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="audit-report-v{report.version}.docx"'
+                )
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _case_error(exc) from exc
+
+
 @router.get("/{case_id}", response_model=AuditCaseRead)
 def get_audit_case(
     case_id: str,
@@ -734,6 +841,8 @@ def _audit_report_read(db: Session, row: AuditReportVersion) -> AuditReportRead:
         status=row.status,
         material_version_ids=list(row.material_version_ids_json or []),
         knowledge_base_version_ids=list(row.knowledge_base_version_ids_json or []),
+        rule_set_version_ids=list(row.rule_set_version_ids_json or []),
+        rule_traceability_status=row.rule_traceability_status,
         coverage_snapshot=dict(row.coverage_snapshot_json or {}),
         final_storage_key=row.final_storage_key,
         sections=[
@@ -747,6 +856,7 @@ def _audit_report_read(db: Session, row: AuditReportVersion) -> AuditReportRead:
                 error_code=section.error_code,
                 draft_markdown=section.draft_markdown,
                 citation_ids=list(section.citation_ids_json or []),
+                rule_definition_ids=list(section.rule_definition_ids_json or []),
             )
             for section in sections
         ],

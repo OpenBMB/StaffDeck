@@ -16,6 +16,7 @@ from app.db.models import (
     AuditCaseEvent,
     AuditCaseMaterial,
     AuditCaseMaterialChunk,
+    AuditReportVersion,
     KnowledgeBaseVersion,
     ModelConfig,
     Tenant,
@@ -464,6 +465,117 @@ def test_process_coverage_and_report_api_flow(api_context, monkeypatch) -> None:
         "element_coverage",
         "publish_allowed",
     }
+
+
+def test_process_endpoint_exposes_evidence_and_coverage_status(api_context, monkeypatch) -> None:
+    client, _engine, users, _tmp_path = api_context
+    headers = _headers(users["admin"])
+    created = client.post(
+        "/api/audit-cases",
+        headers=headers,
+        json={
+            "tenant_id": "tenant_demo",
+            "organization_name": "结构化处理企业",
+            "report_type": "再认证",
+        },
+    )
+    assert created.status_code == 200
+    case_id = created.json()["id"]
+
+    class _NoopEvidenceProcessor:
+        def __init__(self, _db):
+            pass
+
+        def process_pending_chunks(self, _case, _model_config):
+            return ProcessingSummary(total=0, succeeded=0, failed=0, skipped=0)
+
+    class _NoopKnowledgeOrchestrator:
+        def __init__(self, _db):
+            pass
+
+        def retrieve(self, _case, _model_config):
+            return KnowledgeRetrievalSummary()
+
+    monkeypatch.setattr(audit_cases_module, "AuditEvidenceProcessor", _NoopEvidenceProcessor)
+    monkeypatch.setattr(audit_cases_module, "AuditKnowledgeOrchestrator", _NoopKnowledgeOrchestrator)
+    monkeypatch.setattr(audit_cases_module, "_model_config_for_case", lambda *_args: object())
+
+    response = client.post(
+        f"/api/audit-cases/{case_id}/process?tenant_id=tenant_demo",
+        headers=headers,
+        json={},
+    )
+    assert response.status_code == 202
+    assert set(response.json()) >= {"status", "materials", "coverage", "evidence", "knowledge"}
+
+
+def test_report_publish_requires_binding(api_context) -> None:
+    client, engine, users, _tmp_path = api_context
+    headers = _headers(users["admin"])
+    created = client.post(
+        "/api/audit-cases",
+        headers=headers,
+        json={
+            "tenant_id": "tenant_demo",
+            "organization_name": "报告发布企业",
+            "report_type": "再认证",
+        },
+    )
+    case_id = created.json()["id"]
+    with Session(engine) as db:
+        db.add(
+            AuditReportVersion(
+                id="report-no-binding",
+                tenant_id="tenant_demo",
+                audit_case_id=case_id,
+                version=1,
+            )
+        )
+        db.commit()
+
+    response = client.post(
+        f"/api/audit-cases/{case_id}/reports/report-no-binding/publish?tenant_id=tenant_demo",
+        headers=headers,
+        json={},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "RULE_BINDING_REQUIRED_FOR_PUBLISH"
+
+
+def test_report_download_returns_scoped_blob(api_context, monkeypatch) -> None:
+    client, engine, users, _tmp_path = api_context
+    headers = _headers(users["admin"])
+    created = client.post(
+        "/api/audit-cases",
+        headers=headers,
+        json={
+            "tenant_id": "tenant_demo",
+            "organization_name": "报告下载企业",
+            "report_type": "再认证",
+        },
+    )
+    case_id = created.json()["id"]
+    with Session(engine) as db:
+        db.add(
+            AuditReportVersion(
+                id="report-download",
+                tenant_id="tenant_demo",
+                audit_case_id=case_id,
+                version=1,
+                status="published",
+                final_storage_key="audit_cases/tenant/report/download.docx",
+            )
+        )
+        db.commit()
+    monkeypatch.setattr(audit_cases_module, "read_case_blob", lambda _key: b"docx-bytes")
+
+    response = client.get(
+        f"/api/audit-cases/{case_id}/reports/report-download/download?tenant_id=tenant_demo",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.content == b"docx-bytes"
+    assert "attachment" in response.headers["content-disposition"]
 
 
 def test_audit_case_api_enforces_project_scope_and_archive_read_only(api_context) -> None:
