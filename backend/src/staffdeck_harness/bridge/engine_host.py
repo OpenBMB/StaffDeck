@@ -91,16 +91,16 @@ def _has_image_attachments(request: Any) -> bool:
 
 
 class HarnessV3Engine(TurnCoordinator):
-    """The v2 turn skeleton with every model stage — planning, each step, the reply — on Harness v3.
+    """Shared turn scheduling with every model stage on DSH and SOP control in its module.
 
-    ``HarnessV2Engine`` keeps what is not a model decision: turn claim, leases, TaskFrame
-    scheduling, SOP state machine, handoff, memory capture. What *is* a model decision now runs
-    on one pooled engine process per turn:
+    ``TurnCoordinator`` owns claims, leases and TaskFrame scheduling. ``SopHost`` resolves
+    the registered SOP runtime for lifecycle decisions; neither the Bridge nor the old
+    AgentLoop owns that state machine. Model decisions run on a pooled engine process:
 
     - ``self.planner``                 → ``EngineTurnPlanner`` (same prompt/contract/normalize as v2)
     - ``self.task_agent`` (per frame)  → ``HarnessV3TaskAgent`` sharing the turn's process
-    - ``owner.response_generator``     → ``EngineResponseGenerator`` (only when >1 frame needs
-                                         synthesis; a lone frame's finish_task reply is final)
+    - ``self.response_generator``     → ``EngineResponseGenerator`` (when multiple frames need
+                                         synthesis; a lone frame's result is final)
 
     The process is checked out on the first model stage and returned in ``run()``'s ``finally``;
     the activation token behind it is rebound per phase (see ``bridge/phases``).

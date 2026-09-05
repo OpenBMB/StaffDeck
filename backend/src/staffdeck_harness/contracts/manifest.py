@@ -30,6 +30,7 @@ class ModuleKind(str, Enum):
 
 class SlotName(str, Enum):
     RUNTIME_ENGINE = "runtime.engine"
+    RUNTIME_SOP = "runtime.sop"  # one deployment-level SOP lifecycle implementation
     RUNTIME_KERNEL = "runtime.kernel"          # informational: coordinator / Harness v3 core (not swappable)
     TENANT_STAFF = "tenant.staff"
     STAFF_SOP = "staff.sop"

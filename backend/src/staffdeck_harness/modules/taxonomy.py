@@ -63,7 +63,7 @@ TAXONOMY: tuple[BigModule, ...] = (
         description="让员工按既定流程办事：定义步骤，逐步推进，执行中把关。",
         subs=(
             SubModule("sop.definition", "流程定义与版本", "步骤、走向、触发条件和每一步所需的能力；支持草稿、发布与分享。", "C", slots=(SlotName.SOP_SLOT_KNOWLEDGE, SlotName.SOP_SLOT_SKILL, SlotName.SOP_SLOT_ACTION, SlotName.SOP_SLOT_CONTROL), module_ids=("sop.definition", "sop.slots"), legacy=("app.skills", "app.api.skills")),
-            SubModule("sop.runtime", "流程执行与恢复", "记录流程执行到哪一步，中断后可以恢复。", "T", module_ids=("sop.runtime",), legacy=("app.core.task_frame_store", "app.core.harness_turn_store")),
+            SubModule("sop.runtime", "流程执行与恢复", "独立管理流程实例、节点推进和挂起恢复；启动时可替换。", "T", slots=(SlotName.RUNTIME_SOP,), module_ids=("sop.runtime",), legacy=("staffdeck_harness.sop",)),
             SubModule("sop.supervision", "执行前准备与执行后把关", "回答前载入当前流程步骤；回答后检查输出是否符合流程要求。", "T", slots=(SlotName.STAFF_INTERACTION,), module_ids=("interaction.default",), legacy=("staffdeck_harness.interactions",)),
         ),
         edges=(("capability", "装配所需能力"), ("runtime", "流程上下文与监管")),

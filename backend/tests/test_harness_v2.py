@@ -5037,6 +5037,9 @@ def test_activate_frame_records_skill_call_events_for_stats() -> None:
         harness_engine.events = EventLog(db)
         harness_engine.owner = SimpleNamespace(runtime=stub_runtime)
         harness_engine.services = SimpleNamespace(runtime=stub_runtime)
+        from staffdeck_harness.sop.lifecycle import SopRuntime
+        harness_engine.sop = SopRuntime(db, harness_engine.events, create_handoff=lambda *a: None)
+        harness_engine.sop.runtime = stub_runtime
 
         skill = _refund_skill()
         db.add(skill)

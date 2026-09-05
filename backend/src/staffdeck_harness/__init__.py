@@ -1,10 +1,8 @@
 """StaffDeck × Harness v3 pluggable runtime.
 
-This package is a parallel implementation that sits beside ``backend/app``. It
-never mutates the legacy tree; ``backend/app`` is imported read-only for the
-ORM, existing services, and the Harness v2 engine. The only legacy touch points are
-two switches (``Settings.harness_v3_enabled`` and the ``AgentLoop.handle_turn`` entry
-branch), both of which default to the legacy path.
+This package owns modular runtime implementations while reusing ``backend/app``
+ORM and persistence services. The v2 entry is a compatibility consumer of these
+modules; SOP lifecycle no longer depends on AgentLoop's private state methods.
 
 Layering (see ``design-harness-v3-pluggable-runtime.md``):
 
@@ -13,6 +11,7 @@ Layering (see ``design-harness-v3-pluggable-runtime.md``):
 - ``composition``   ``StaffComposition`` projection, logical SOP slots, immutable snapshots.
 - ``capabilities``  ``CapabilityHost`` + Guarded Facades + Invocation Ledger.
 - ``interactions``  ``InteractionPipelineHost`` and the fixed hook plan.
+- ``sop``          SOP lifecycle, graph rules and resumable state behind ``SopRuntimePort``.
 - ``bridge``        ``EngineHost`` and the StaffDeck–Harness v3 Bridge over the official SDK.
 - ``handoff``/``channels``/``events``  trusted hosts wrapping existing services.
 """

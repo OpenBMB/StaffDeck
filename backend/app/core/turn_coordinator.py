@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from staffdeck_harness.sop.results import (
+    step_result as _step_result,
+    enforce_required_slots as _enforce_required_slots,  # noqa: F401 compatibility export
+    append_session_handoff_artifact as _append_session_handoff_artifact,  # noqa: F401
+)
+
 import hashlib
 import json
 import time
@@ -197,6 +203,12 @@ class TurnCoordinator:
         from staffdeck_harness.modules.registry import peek_registry
 
         self.registry = peek_registry()
+        from staffdeck_harness.sop.contracts import SopDependencies
+        from staffdeck_harness.sop.host import SopHost
+
+        self.sop = SopHost(SopDependencies(
+            self.db, self.events, self.services.create_human_handoff_request,
+        ), self.registry)
         self.planner = TurnPlanner()
         self.compiler = TaskRequestCompiler()
         self.manifests = CapabilityManifestBuilder(self.db)
@@ -258,6 +270,7 @@ class TurnCoordinator:
         Guard("staff", profile).require(
             context, "staff.use/v1", runtime_staff_ref(self.db, ref, session)
         )
+        self.sop.bind_security(Guard("sop.runtime", profile), context)
         provider = resolve_memory_provider(
             registry=self.registry, snapshot=snapshot, sop_id=session.active_skill_id
         )
@@ -411,7 +424,7 @@ class TurnCoordinator:
         model_config = self.services.get_request_model(request, session.agent_id)
         if model_config is None:
             raise RuntimeError("没有默认模型配置。")
-        source_skills = self.services.list_published_skills(request.tenant_id, session.agent_id)
+        source_skills = self.sop.list_published_skills(request.tenant_id, session.agent_id)
         source_skills = _apply_forced_sop_snapshot(
             source_skills,
             request.forced_sop_id,
@@ -426,7 +439,7 @@ class TurnCoordinator:
             source_skills,
             interaction_mode=request.interaction_mode,
         )
-        self.services.drop_unavailable_skill_state(request.tenant_id, session, skills)
+        self.sop.drop_unavailable_skill_state(request.tenant_id, session, skills)
         memory_context = [
             memory_read(row)
             for row in self.memory.context_memories(
@@ -566,7 +579,7 @@ class TurnCoordinator:
             if session.active_skill_id and (
                 not plan.selected_task_id or plan.selected_task_id == active_task_frame_id
             ):
-                self.services.runtime.complete_current_skill(session)
+                self.sop.complete_current_skill(session)
             self.events.record(
                 request.tenant_id,
                 session.id,
@@ -746,7 +759,7 @@ class TurnCoordinator:
         # nested SOP's response rules remain available after the child graph
         # reaches a terminal node. Falling back to the stored row is only
         # needed for turns that did not execute a TaskFrame.
-        response_skill = last_skill or self.services.get_active_skill(
+        response_skill = last_skill or self.sop.get_active_skill(
             request.tenant_id, session.active_skill_id, session.agent_id
         )
         self._renew_session_lease()
@@ -1158,73 +1171,20 @@ class TurnCoordinator:
                     last_step_result = _step_result(result)
                 break
 
-            result = _enforce_required_slots(result, requirement, session)
+            transition = self.sop.after_execution(
+                request.tenant_id, session, active_skill, requirement, result,
+                turn_plan_router_decision(TurnPlan(
+                    decision=frame.decision, task_frames=[frame], user_intent=frame.user_intent,
+                )),
+                remaining_actions=remaining_actions,
+            )
             results[-1] = result
-            if (
-                result.status == "completed"
-                and not result.next_step_id
-                and active_skill is not None
-            ):
-                default_next = self.services.default_next_step(active_skill, session.active_step_id)
-                if default_next:
-                    result.next_step_id = (
-                        str(
-                            default_next.get("step_id") or default_next.get("node_id") or ""
-                        ).strip()
-                        or None
-                    )
-            last_step_result = _step_result(result)
-            previous_step_id = session.active_step_id
-            self.services.apply_step_result(
-                request.tenant_id,
-                session,
-                last_step_result,
-                active_skill,
-            )
-            finalize_state = self.services.finalize_execution_after_reply(
-                request.tenant_id,
-                session,
-                active_skill,
-                turn_plan_router_decision(
-                    TurnPlan(
-                        decision=frame.decision,
-                        task_frames=[frame],
-                        user_intent=frame.user_intent,
-                    )
-                ),
-                last_step_result,
-                None,
-            )
+            last_step_result = transition.step_result
             row.step_id = session.active_step_id
             row.slots_json = dict(session.slots_json or {})
-            continue_frame = True
-            if finalize_state == "handoff":
-                result.status = "handoff"
-                _append_session_handoff_artifact(result, session)
-                continue_frame = False
-            elif result.status == "handoff":
-                result.status = "failed"
-                result.error = {
-                    "code": "HANDOFF_NOT_ALLOWED",
-                    "message": "当前 SOP 步骤未声明转人工能力。",
-                }
-                continue_frame = False
-            elif finalize_state == "completed":
-                result.status = "completed"
-                continue_frame = False
-            elif result.status != "completed":
-                continue_frame = False
-            elif (
-                remaining_actions <= 0
-                or not session.active_skill_id
-                or session.active_step_id == previous_step_id
-            ):
-                result.status = "action_budget"
-                continue_frame = False
-            else:
-                frame.target_step_id = session.active_step_id
-            if not continue_frame:
+            if not transition.continue_execution:
                 break
+            frame.target_step_id = session.active_step_id
 
         combined = _combine_results(row.task_id, results)
         if run is not None:
@@ -1443,71 +1403,9 @@ class TurnCoordinator:
         if self._is_cancelled(request, session):
             raise HarnessExecutionCancelled("Harness execution was cancelled by the user.")
 
-    def _activate_frame(
-        self,
-        session: ChatSession,
-        row: HarnessTaskFrameRecord,
-        skills: list[Skill],
-    ) -> Skill | None:
-        if row.kind != "sop":
-            return None
-        active_skill = next(
-            (skill for skill in skills if skill.skill_id == row.skill_id),
-            None,
-        )
-        if active_skill is None:
-            return None
-        self._record_skill_activation_event(session, row, active_skill)
-        self.services.runtime.restore_task_frame(
-            session,
-            {
-                "task_id": row.task_id,
-                "skill_id": row.skill_id,
-                "step_id": row.step_id,
-                "slots": dict(row.slots_json or {}),
-                "awaiting_input": {},
-            },
-        )
-        return active_skill
+    def _activate_frame(self, session, row, skills):
+        return self.sop.activate_frame(session, row, skills)
 
-    def _record_skill_activation_event(
-        self,
-        session: ChatSession,
-        row: HarnessTaskFrameRecord,
-        skill: Skill,
-    ) -> None:
-        """新发起/恢复 SOP 的 TaskFrame 落一条运行时事件。
-
-        SOP 调用次数统计(api/skills._skill_stats)只认 skill_started /
-        skill_resumed 事件;legacy 运行时移除后这两个事件不再产生,导致
-        管理端调用次数永远是 0。这里在新任务(start_new_task)与恢复
-        挂起任务(switch_to_pending)被调度时补记,payload 保持旧结构
-        (to_skill_id/to_skill_version/from_skill_id/from_step_id),
-        继续执行的 continue_active 不计新调用。
-        """
-        if row.decision == "start_new_task":
-            event_type = "skill_started"
-        elif row.decision == "switch_to_pending":
-            event_type = "skill_resumed"
-        else:
-            return
-        payload = {
-            "decision": row.decision,
-            "from_skill_id": session.active_skill_id,
-            "to_skill_id": skill.skill_id,
-            "from_skill_version": None,
-            "to_skill_version": skill.version,
-            "from_step_id": session.active_step_id,
-            "to_step_id": row.step_id,
-            "execution_engine": "harness_v2",
-            "task_frame_id": row.task_id,
-        }
-        self.events.record(
-            session.tenant_id,
-            session.id,
-            event_type,
-            payload,
-        )
 
     def _restore_visible_active_frame(
         self,
@@ -1591,7 +1489,7 @@ class TurnCoordinator:
         row = candidates[0]
         result = row.result_json or {}
         reply = str(result.get("reply_fragment") or "").strip()
-        self.services.runtime.restore_task_frame(
+        self.sop.restore_task_frame(
             session,
             {
                 "task_id": row.task_id,
@@ -1614,25 +1512,6 @@ class TurnCoordinator:
         self.store.set_active_task_frame(session, row)
 
 
-def _step_result(result: TaskExecutionResult) -> StepAgentResult:
-    action = {
-        "completed": "advance",
-        "awaiting_user": "ask_user",
-        "handoff": "handoff",
-        "failed": "reply",
-        "blocked": "reply",
-        "action_budget": "reply",
-    }.get(result.status, "reply")
-    return StepAgentResult(
-        action=action,  # type: ignore[arg-type]
-        reply=result.reply_fragment,
-        slot_updates=dict(result.slot_updates),
-        knowledge_results=list(result.evidence_results),
-        next_step_id=result.next_step_id,
-        is_step_completed=result.status == "completed",
-        handoff=result.status == "handoff",
-        structured_result=result.structured_result,
-    )
 
 
 def _is_recoverable_action_protocol_failure(result: TaskExecutionResult) -> bool:
@@ -1682,27 +1561,6 @@ def _defer_failed_step_after_completed_checkpoint(
     )
 
 
-def _enforce_required_slots(
-    result: TaskExecutionResult,
-    requirement: Any,
-    session: ChatSession,
-) -> TaskExecutionResult:
-    if result.status != "completed" or not requirement.required_slots:
-        return result
-    merged = {
-        **dict(session.slots_json or {}),
-        **dict(result.slot_updates or {}),
-    }
-    missing = [
-        field for field in requirement.required_slots if merged.get(field) in (None, "", [], {})
-    ]
-    if not missing:
-        return result
-    result.status = "awaiting_user"
-    if not result.reply_fragment:
-        result.reply_fragment = "还需要您补充：" + "、".join(missing) + "。"
-    result.next_step_id = None
-    return result
 
 
 def _combine_results(
@@ -1935,20 +1793,6 @@ def _merge_discovered_artifacts(
             break
 
 
-def _append_session_handoff_artifact(
-    result: TaskExecutionResult,
-    session: ChatSession,
-) -> None:
-    awaiting = session.awaiting_input_json if isinstance(session.awaiting_input_json, dict) else {}
-    handoff_id = str(awaiting.get("handoff_id") or "").strip()
-    if not handoff_id:
-        return
-    result.artifacts.append(
-        {
-            "type": "human_handoff",
-            "handoff_id": handoff_id,
-        }
-    )
 
 
 def _with_recoverable_first_session(

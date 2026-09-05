@@ -1,7 +1,6 @@
-"""Module tests for ``sop.runtime`` (流程执行推进, kind T, slot sop.slot.control).
+"""Module tests for ``sop.runtime`` (流程执行推进, kind T, slot runtime.sop).
 
-Provider: ``staffdeck_harness.modules.kernel.SopRuntimeModule`` — hands out the
-legacy ``TaskFrameStore`` (TaskFrame / agent-loop CAS state machine).
+The provider builds the independent SOP lifecycle and preserves a storage accessor.
 """
 
 from __future__ import annotations
@@ -55,11 +54,11 @@ def test_manifest_sop_runtime(registry, module):
     m = item.manifest
     assert m.module_id == MODULE_ID
     assert m.kind.value == "T"
-    assert item.slot is SlotName.SOP_SLOT_CONTROL
-    assert m.attaches_to == (SlotName.SOP_SLOT_CONTROL,)
-    assert m.provides_operations == ()
+    assert item.slot is SlotName.RUNTIME_SOP
+    assert m.attaches_to == (SlotName.RUNTIME_SOP,)
+    assert m.provides_operations == ("sop.lifecycle/v1",)
     assert m.requires_operations == ()
-    assert m.policy_actions == ()
+    assert m.policy_actions == ("sop.execute/v1",)
     assert m.hooks == ()
     assert isinstance(item.provider, SopRuntimeModule)
     assert item.provider.module_id == MODULE_ID
@@ -70,22 +69,22 @@ def test_manifest_sop_runtime(registry, module):
     assert SEMVER.match(d["version"])
     assert d["contract_version"] == "v1"
     assert d["enabled"] is True
-    assert d["policy_actions"] == []
+    assert d["policy_actions"] == ["sop.execute/v1"]
     assert d["guarded"] is True  # shares the PEP-bound sop.slot.control host
-    assert "switchable" not in d["metadata"]
+    assert m.metadata["switchable"] is True
 
 
 def test_manifest_guarded_by_builtin_registration(settings):
     reg = discover_and_install(ModuleRegistry(), settings)
     d = _described(reg)
-    assert d["guarded"] is True and d["policy_actions"] == []
+    assert d["guarded"] is True and d["policy_actions"] == ["sop.execute/v1"]
 
 
 # --------------------------------------------------------------------------- 2. placement
 
 def test_placement_sop_runtime(registry):
     d = _described(registry)
-    assert d["switchable"] is False  # trusted service without a ``switchable`` marker
+    assert d["switchable"] is True  # replacement requires a new worker generation
     placed = _placed(registry)
     assert placed["placement"] == {"big_id": "sop", "sub_id": "sop.runtime", "source": "taxonomy"}
     assert placed["movable"] is True
@@ -96,7 +95,7 @@ def test_placement_sop_runtime(registry):
 def test_disable_sop_runtime_not_switchable(registry):
     d = _described(registry)
     assert d["kind"] == "T"
-    assert d["switchable"] is False
+    assert d["switchable"] is True
 
 
 # --------------------------------------------------------------------------- 4. provider
@@ -146,7 +145,7 @@ def test_provider_sop_runtime_mark_running_is_cas(module, db, frame):
 def test_pep_sop_runtime_host_guard_denies_cross_tenant(guard, security_ctx, module):
     """Kernel/trusted entry without own policy actions; the sop.* actions of its host map through DEFAULT_ACTION_MAP."""
 
-    assert module(MODULE_ID).manifest.policy_actions == ()
+    assert module(MODULE_ID).manifest.policy_actions == ("sop.execute/v1",)
     mapper = PolicyActionMapper(DEFAULT_ACTION_MAP)
     assert mapper.map("sop.advance/v1") == ("advance", "sop")
     assert mapper.map("sop.resume/v1") == ("resume", "sop")

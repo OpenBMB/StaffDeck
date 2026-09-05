@@ -18,6 +18,7 @@ from typing import Any, Mapping
 
 from staffdeck_harness.contracts.manifest import ModuleKind, SlotName
 from staffdeck_harness.modules.registry import ModuleRegistry, manifest
+from staffdeck_harness.sop.module import SopRuntimeModule  # noqa: F401 compatibility export
 
 
 class PersonaModule:
@@ -72,17 +73,6 @@ class SopSlotResolverModule:
         from staffdeck_harness.composition.slots import resolve_slots
 
         return resolve_slots(declarations, staff_bindings, **kw)
-
-
-class SopRuntimeModule:
-    """TaskFrame/CAS state machine is legacy-owned; this entry makes it visible and disable-able."""
-
-    module_id = "sop.runtime"
-
-    def store(self, db: Any):
-        from app.core.task_frame_store import TaskFrameStore
-
-        return TaskFrameStore(db)
 
 
 class HandoffCoreModule:
@@ -201,7 +191,8 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
     registry.install(manifest("sop.definition", "流程定义", summary="定义流程的步骤、走向，以及每一步需要的能力。", kind=ModuleKind.CONTENT, slots=[SlotName.SOP_SLOT_CONTROL], provides=["sop.execute/v1"], policy_actions=["sop.execute/v1"]), SopDefinitionModule(), slot=SlotName.SOP_SLOT_CONTROL)
     registry.install(manifest("sop.slots", "流程能力关联", summary="把流程中声明的能力需求与员工实际绑定的资源对应起来。", kind=K, slots=[SlotName.SOP_SLOT_CONTROL]), SopSlotResolverModule(), slot=SlotName.SOP_SLOT_CONTROL)
     registry.mark_guarded(SlotName.SOP_SLOT_CONTROL)
-    registry.install(manifest("sop.runtime", "流程执行推进", summary="记录流程执行到哪一步，中断后可以恢复。", kind=T, slots=[SlotName.SOP_SLOT_CONTROL]), SopRuntimeModule(), slot=SlotName.SOP_SLOT_CONTROL)
+    registry.install(manifest("sop.runtime", "流程执行推进", summary="独立管理流程实例、节点推进、挂起恢复与完成判定。", kind=T, slots=[SlotName.RUNTIME_SOP], provides=["sop.lifecycle/v1"], policy_actions=["sop.execute/v1"], metadata={"switchable": True}), SopRuntimeModule(), slot=SlotName.RUNTIME_SOP)
+    registry.mark_guarded(SlotName.RUNTIME_SOP)
     registry.install(manifest("handoff.core", "转人工处理流程", summary="管理转人工任务从发起、指派、回复到关闭的全过程。", kind=T, slots=[SlotName.HANDOFF_ASSIGNMENT], provides=["handoff.request/v1", "handoff.assign/v1", "handoff.reply/v1"], policy_actions=["handoff.request/v1", "handoff.assign/v1", "handoff.reply/v1"]), HandoffCoreModule(), slot=SlotName.HANDOFF_ASSIGNMENT)
     registry.install(manifest("runtime.cancellation", "中断与恢复", summary="支持随时停止对话，并在人工回复后继续。", kind=T, slots=[SlotName.HANDOFF_ASSIGNMENT]), CancellationModule(), slot=SlotName.HANDOFF_ASSIGNMENT)
     registry.install(manifest("team.provider", "团队协作", summary="把任务派发给团队中的其他数字员工共同完成。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_TEAM], provides=["team.delegate/v1"], policy_actions=["team.delegate/v1"]), TeamProviderModule(), slot=SlotName.STAFF_TEAM)

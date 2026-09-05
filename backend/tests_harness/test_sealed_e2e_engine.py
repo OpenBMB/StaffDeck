@@ -344,16 +344,56 @@ def test_real_dsh_general_loop_keeps_context_across_new_task_frames(db, fake_mod
     assert all(not any("submit_step_result" in t["function"]["name"] for t in r.get("tools", [])) for r in script.requests)
 
 
-def test_full_coordinator_keeps_sop_instance_suspended_then_advances_and_completes(db, fake_model, monkeypatch):
+@pytest.mark.parametrize("replace_sop_runtime", [False, True])
+def test_full_coordinator_keeps_sop_instance_suspended_then_advances_and_completes(db, fake_model, monkeypatch, replace_sop_runtime):
     from app.db.models import Skill, HarnessAgentLoopRecord, HarnessTaskFrameRecord
     from app.session.session_schema import TurnPlan, PlannedTaskFrame
     from staffdeck_harness.runtime.model_phases import EngineTurnPlanner
     from staffdeck_harness.bridge.engine_host import reset_runtime
 
+    def legacy_sop_forbidden(*args, **kwargs):
+        raise AssertionError("DSH orchestration must not call legacy AgentLoop SOP methods")
+
+    for name in ("_apply_step_result", "_finalize_execution_after_reply", "_default_next_step",
+                 "_drop_unavailable_skill_state", "_list_published_skills", "_get_active_skill"):
+        monkeypatch.setattr(AgentLoop, name, legacy_sop_forbidden)
+
     _, base = fake_model
     agent, user = _seed(db, base)
     script = ContinuityModel()
     _ModelHandler.model = script
+    replacement_calls = []
+    if replace_sop_runtime:
+        import sys
+        from types import ModuleType
+        from staffdeck_harness.sop.lifecycle import SopRuntime
+        from staffdeck_harness.contracts.manifest import SlotName, ModuleKind
+        from staffdeck_harness.modules.registry import ModuleRegistry, discover_and_install, install_registry, manifest
+
+        class AlternateRuntime(SopRuntime):
+            def after_execution(self, *args, **kwargs):
+                replacement_calls.append(args[3].task_frame_id)
+                return super().after_execution(*args, **kwargs)
+
+        class AlternateProvider:
+            def build(self, ports):
+                return AlternateRuntime(ports.db, ports.events, create_handoff=ports.create_handoff)
+
+        plugin = ModuleType("sealed_sop_plugin")
+        def register(registry, ctx):
+            registry.install(manifest("sealed.sop", "Alternative SOP runtime", kind=ModuleKind.TRUSTED,
+                                      slots=[SlotName.RUNTIME_SOP], provides=["sop.lifecycle/v1"],
+                                      policy_actions=["sop.execute/v1"]),
+                             AlternateProvider(), slot=SlotName.RUNTIME_SOP)
+        plugin.register = register
+        monkeypatch.setitem(sys.modules, "sealed_sop_plugin", plugin)
+        monkeypatch.setenv("HARNESS_MODULES", "sealed_sop_plugin:register")
+        monkeypatch.setenv("HARNESS_DISABLED_MODULES", "sop.runtime")
+        get_settings.cache_clear()
+        reg = discover_and_install(ModuleRegistry(), get_settings())
+        reg.seal()
+        assert not reg.get("sop.runtime").enabled
+        install_registry(reg)
     skill = Skill(id="workflow-row", tenant_id=user.tenant_id, skill_id="continuity", name="Continuity",
                   status="published", content_json={"start_node_id": "collect", "goal": ["Confirm and finish"],
                   "nodes": [{"node_id": "collect", "name": "Collect confirmation", "expected_user_info": ["confirmed"]},
@@ -386,6 +426,8 @@ def test_full_coordinator_keeps_sop_instance_suspended_then_advances_and_complet
     assert frame.agent_loop_id == loop_id and frame.status == "completed", second
     assert logical.status == "completed"
     assert "NONCE-731" in json.dumps(logical.checkpoint_json)
+    if replace_sop_runtime:
+        assert replacement_calls == ["same-sop"] * 3
 
 
 def test_real_dsh_budget_exit_preserves_completed_tool_results(db, fake_model):

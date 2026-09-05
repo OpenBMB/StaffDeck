@@ -9,8 +9,6 @@ from sqlmodel import Session, select
 
 from app.agents.branching import (
     model_for_agent,
-    visible_published_skills,
-    visible_skill,
 )
 from app.channels.service_outbox import stage_channel_delivery
 from app.core.agent_identity_prompt import AgentIdentityPrompt
@@ -38,7 +36,6 @@ from app.core.response_generator import (
 )
 from app.core.skill_runtime import SkillRuntime
 from app.core.slash_commands import SlashCommandError
-from app.core.turn_finalizer import TurnFinalizer
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
@@ -156,6 +153,15 @@ class AgentLoop:
         self.runtime = SkillRuntime()
         self.response_generator = ResponseGenerator()
         self.memory = MemoryService(db)
+
+    def _sop_service(self):
+        """Compatibility callers delegate into the module, never the reverse."""
+        from staffdeck_harness.sop.lifecycle import SopRuntime
+
+        return SopRuntime(
+            getattr(self, "db", None), getattr(self, "events", None),
+            create_handoff=self._create_human_handoff_request
+        )
 
     def _turn_payload(self, payload: dict[str, Any], user_message_id: str | None) -> dict[str, Any]:
         data = dict(payload)
@@ -553,43 +559,15 @@ class AgentLoop:
     def _current_step_allows_human_handoff(
         self, skill: Skill | None, active_step_id: str | None
     ) -> bool:
-        if not skill:
-            return False
-        current_step = self._current_skill_step(skill, active_step_id)
-        return bool(current_step and self._step_declares_human_handoff(current_step))
+        return self._sop_service().current_step_allows_human_handoff(skill, active_step_id)
 
     def _maybe_route_to_handoff_node(
         self, chat_session: ChatSession, active_skill: Skill | None
     ) -> bool:
-        """当 step_result.handoff=True 但当前 step 不声明 handoff 时,
-        查找 SOP 中的 handoff 节点并路由到它。这使得后续的
-        _create_human_handoff_request 能从 handoff 节点读取 assignee_user_id。
-
-        返回 True 表示已路由到 handoff 节点。
-        """
-        if not active_skill or not chat_session.active_skill_id:
-            return False
-        current_step = self._current_skill_step(
-            active_skill, chat_session.active_step_id
-        )
-        if current_step and self._step_declares_human_handoff(current_step):
-            return False
-        handoff_step_id = _find_handoff_node_id_in_skill(
-            active_skill, chat_session.active_step_id
-        )
-        if not handoff_step_id:
-            return False
-        self._change_active_step(
-            chat_session.tenant_id,
-            chat_session,
-            handoff_step_id,
-            reason="handoff_node_routed_by_step_result",
-        )
-        return True
+        return self._sop_service().maybe_route_to_handoff_node(chat_session, active_skill)
 
     def _step_declares_human_handoff(self, step: dict[str, Any]) -> bool:
-        node_type = str(step.get("type") or "").strip()
-        return node_type == "handoff" or "handoff_human" in self._step_actions(step)
+        return self._sop_service().step_declares_human_handoff(step)
 
     def _human_handoff_assignee_user_id(
         self, tenant_id: str, agent_id: str | None, fallback_user_id: str | None
@@ -617,22 +595,12 @@ class AgentLoop:
         return HumanHandoffService.pending_question(current_step, step_result)
 
     def _step_actions(self, step: dict[str, Any]) -> list[str]:
-        return GraphRules.step_actions(step)
+        return self._sop_service().step_actions(step)
 
     def _finish_stale_completed_skill(
         self, tenant_id: str, chat_session: ChatSession, skills: list[Skill]
     ) -> None:
-        if chat_session.skill_stack_json or chat_session.resume_after_answer_json:
-            chat_session.skill_stack_json = []
-            chat_session.resume_after_answer_json = None
-            chat_session.updated_at = utc_now()
-        active_skill = next(
-            (skill for skill in skills if skill.skill_id == chat_session.active_skill_id), None
-        )
-        if active_skill and self._is_terminal_skill_state(active_skill, chat_session):
-            self._complete_active_skill(
-                tenant_id, chat_session, active_skill, "stale_terminal_state"
-            )
+        return self._sop_service().finish_stale_completed_skill(tenant_id, chat_session, skills)
 
     def _should_complete_skill(
         self,
@@ -641,49 +609,13 @@ class AgentLoop:
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
     ) -> bool:
-        if not skill or not step_result.is_step_completed:
-            return False
-        if tool_result and not tool_result.success:
-            return False
-        # Graph topology is authoritative for SOP completion. A non-terminal
-        # node may allow an interim reply and all global slots may already be
-        # filled, but an outgoing edge still means the workflow has work left.
-        # Check this before the reply/tool completion shortcuts so transitioning
-        # into an intermediate node cannot finish the entire SOP.
-        if self._graph_flow_has_unfinished_work(skill, chat_session, step_result):
-            return False
-        if (
-            tool_result
-            and tool_result.success
-            and self._current_step_can_finish_after_tool(skill, chat_session)
-        ):
-            return True
-        if self._graph_pending_steps(chat_session):
-            return False
-        if self._is_answer_ready_skill_state(skill, chat_session):
-            return True
-        if self._is_terminal_skill_state(skill, chat_session):
-            return True
-        if not step_result.next_step_id and not step_result.tool_call:
-            return True
-        return self._is_terminal_skill_state(skill, chat_session)
+        return self._sop_service().should_complete_skill(skill, chat_session, step_result, tool_result)
 
     def _is_terminal_skill_state(self, skill: Skill, chat_session: ChatSession) -> bool:
-        return self._is_terminal_skill_position(
-            skill, chat_session.active_step_id, chat_session.slots_json or {}
-        )
+        return self._sop_service().is_terminal_skill_state(skill, chat_session)
 
     def _is_answer_ready_skill_state(self, skill: Skill, chat_session: ChatSession) -> bool:
-        step = self._current_skill_step(skill, chat_session.active_step_id)
-        if not step:
-            return False
-        actions = self._step_actions(step)
-        if not self._actions_allow_final_reply(actions):
-            return False
-        required = [str(field) for field in (skill.content_json or {}).get("required_info", [])]
-        return all(
-            self._skill_slot_satisfied(chat_session.slots_json or {}, field) for field in required
-        )
+        return self._sop_service().is_answer_ready_skill_state(skill, chat_session)
 
     def _graph_flow_has_unfinished_work(
         self,
@@ -691,71 +623,23 @@ class AgentLoop:
         chat_session: ChatSession,
         step_result: StepAgentResult | None = None,
     ) -> bool:
-        if not skill or chat_session.active_skill_id != skill.skill_id:
-            return False
-        if self._graph_pending_steps(chat_session):
-            return True
-        if (
-            step_result
-            and step_result.next_step_id
-            and str(step_result.next_step_id) == str(chat_session.active_step_id)
-        ):
-            return True
-        if not chat_session.active_step_id:
-            return False
-        return bool(self._graph_outgoing_edges(skill).get(chat_session.active_step_id))
+        return self._sop_service().graph_flow_has_unfinished_work(skill, chat_session, step_result)
 
     def _is_terminal_skill_position(
         self, skill: Skill, active_step_id: str | None, slots: dict[str, Any]
     ) -> bool:
-        if not active_step_id:
-            return False
-        content = skill.content_json or {}
-        terminal_node_ids = {str(node_id) for node_id in content.get("terminal_node_ids", [])}
-        if active_step_id not in terminal_node_ids:
-            return False
-        return GraphRules.terminal_position_from_step(
-            content,
-            active_step_id,
-            slots,
-            self._current_skill_step(skill, active_step_id),
-            self._skill_slot_satisfied,
-            self._step_actions,
-        )
+        return self._sop_service().is_terminal_skill_position(skill, active_step_id, slots)
 
     def _current_step_can_finish_after_tool(self, skill: Skill, chat_session: ChatSession) -> bool:
-        step = self._current_skill_step(skill, chat_session.active_step_id)
-        if not step:
-            return False
-        actions = self._step_actions(step)
-        if not self._actions_allow_final_reply(actions):
-            return False
-        expected = [str(field) for field in step.get("expected_user_info", [])]
-        return all(
-            self._skill_slot_satisfied(chat_session.slots_json or {}, field) for field in expected
-        )
+        return self._sop_service().current_step_can_finish_after_tool(skill, chat_session)
 
     def _actions_allow_final_reply(self, actions: list[str]) -> bool:
-        return GraphRules.actions_allow_final_reply(actions)
+        return self._sop_service().actions_allow_final_reply(actions)
 
     def _complete_active_skill(
         self, tenant_id: str, chat_session: ChatSession, skill: Skill, reason: str
     ) -> None:
-        before_skill = chat_session.active_skill_id
-        before_step = chat_session.active_step_id
-        self.runtime.complete_current_skill(chat_session)
-        self.events.record(
-            tenant_id,
-            chat_session.id,
-            "skill_completed",
-            {
-                "skill_id": before_skill or skill.skill_id,
-                "step_id": before_step,
-                "reason": reason,
-                "resumed_skill_id": chat_session.active_skill_id,
-                "resumed_step_id": chat_session.active_step_id,
-            },
-        )
+        return self._sop_service().complete_active_skill(tenant_id, chat_session, skill, reason)
 
     def _finalize_execution_after_reply(
         self,
@@ -766,20 +650,7 @@ class AgentLoop:
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
     ) -> ExecutionFinalizeState:
-        return TurnFinalizer.finalize(
-            tenant_id,
-            chat_session,
-            active_skill,
-            router_decision,
-            step_result,
-            tool_result,
-            current_step_allows_handoff=self._current_step_allows_human_handoff,
-            route_to_handoff_node=self._maybe_route_to_handoff_node,
-            create_handoff=self._create_human_handoff_request,
-            record_event=self.events.record,
-            should_complete=self._should_complete_skill,
-            complete_skill=self._complete_active_skill,
-        )
+        return self._sop_service().finalize_execution_after_reply(tenant_id, chat_session, active_skill, router_decision, step_result, tool_result)
 
     def _create_human_handoff_request(
         self,
@@ -932,102 +803,7 @@ class AgentLoop:
         step_result: StepAgentResult,
         active_skill: Skill | None = None,
     ) -> None:
-        source_skill_id = chat_session.active_skill_id
-        source_step_id = chat_session.active_step_id
-        if step_result.slot_updates:
-            chat_session.slots_json = {
-                **(chat_session.slots_json or {}),
-                **step_result.slot_updates,
-            }
-            self.events.record(
-                tenant_id,
-                chat_session.id,
-                "slot_updated",
-                {"slot_updates": step_result.slot_updates, "slots": chat_session.slots_json},
-            )
-
-        active_skill_matches = bool(
-            active_skill and active_skill.skill_id == chat_session.active_skill_id
-        )
-        invalid_next_step = False
-        if active_skill_matches and step_result.next_step_id:
-            next_step_id = str(step_result.next_step_id).strip()
-            if not self._skill_has_step(active_skill, next_step_id):
-                self.events.record(
-                    tenant_id,
-                    chat_session.id,
-                    "step_agent_result_repaired",
-                    {
-                        "mode": "invalid_next_step_ignored",
-                        "active_skill_id": chat_session.active_skill_id,
-                        "active_step_id": chat_session.active_step_id,
-                        "invalid_next_step_id": step_result.next_step_id,
-                    },
-                )
-                step_result.next_step_id = None
-                step_result.is_step_completed = False
-                invalid_next_step = True
-
-        self._sync_awaiting_input_from_step_result(
-            chat_session,
-            step_result,
-            active_skill,
-            source_skill_id=source_skill_id,
-            source_step_id=source_step_id,
-        )
-
-        if not chat_session.active_skill_id:
-            return
-        if invalid_next_step:
-            return
-        if active_skill_matches and step_result.next_step_id:
-            next_step_id = str(step_result.next_step_id).strip()
-            source_step_id = chat_session.active_step_id
-            pending_steps = self._graph_pending_steps(chat_session)
-            if pending_steps:
-                if next_step_id in pending_steps:
-                    pending_steps = [item for item in pending_steps if item != next_step_id]
-                    self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
-                    self._change_active_step(
-                        tenant_id,
-                        chat_session,
-                        next_step_id,
-                        reason="graph_merge_step",
-                    )
-                    return
-
-                if next_step_id not in pending_steps:
-                    pending_steps.append(next_step_id)
-                    self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
-                if self._activate_next_pending_graph_step(
-                    tenant_id,
-                    chat_session,
-                    active_skill,
-                    reason="graph_sibling_step",
-                ):
-                    step_result.next_step_id = chat_session.active_step_id
-                return
-
-            self._queue_graph_sibling_steps(
-                tenant_id,
-                chat_session,
-                active_skill,
-                source_step_id,
-                next_step_id,
-            )
-
-        if step_result.next_step_id:
-            self._change_active_step(tenant_id, chat_session, str(step_result.next_step_id).strip())
-            return
-
-        if active_skill_matches and step_result.is_step_completed:
-            if self._activate_next_pending_graph_step(
-                tenant_id,
-                chat_session,
-                active_skill,
-                reason="graph_pending_step",
-            ):
-                step_result.next_step_id = chat_session.active_step_id
+        return self._sop_service().apply_step_result(tenant_id, chat_session, step_result, active_skill)
 
     def _sync_awaiting_input_from_step_result(
         self,
@@ -1038,52 +814,7 @@ class AgentLoop:
         source_skill_id: str | None,
         source_step_id: str | None,
     ) -> None:
-        if not active_skill or active_skill.skill_id != source_skill_id or not source_step_id:
-            return
-
-        step = self._current_skill_step(active_skill, source_step_id)
-        if not step:
-            return
-        missing_fields = [
-            str(field)
-            for field in step.get("expected_user_info", [])
-            if not self._skill_slot_satisfied(chat_session.slots_json or {}, str(field))
-        ]
-        is_waiting_reply = step_result.action in {"ask_user", "clarify"}
-        if is_waiting_reply and missing_fields:
-            previous = (
-                chat_session.awaiting_input_json
-                if isinstance(chat_session.awaiting_input_json, dict)
-                else {}
-            )
-            awaiting_input = {
-                "skill_id": source_skill_id,
-                "step_id": source_step_id,
-                "expected_fields": missing_fields,
-                "question_summary": str(step_result.reply or "").strip() or None,
-            }
-            if previous.get("task_id"):
-                awaiting_input["task_id"] = previous["task_id"]
-            chat_session.awaiting_input_json = awaiting_input
-            chat_session.last_agent_question = awaiting_input["question_summary"]
-            return
-
-        should_clear = bool(
-            step_result.next_step_id
-            or step_result.tool_call
-            or step_result.is_step_completed
-            or not missing_fields
-        )
-        awaiting = chat_session.awaiting_input_json
-        if not should_clear or not isinstance(awaiting, dict):
-            return
-        if awaiting.get("skill_id") not in {None, source_skill_id}:
-            return
-        if awaiting.get("step_id") not in {None, source_step_id}:
-            return
-        task_id = awaiting.get("task_id")
-        chat_session.awaiting_input_json = {"task_id": task_id} if task_id else None
-        chat_session.last_agent_question = None
+        return self._sop_service().sync_awaiting_input_from_step_result(chat_session, step_result, active_skill, source_skill_id=source_skill_id, source_step_id=source_step_id)
 
     def _change_active_step(
         self,
@@ -1093,23 +824,10 @@ class AgentLoop:
         *,
         reason: str | None = None,
     ) -> None:
-        previous_step = chat_session.active_step_id
-        chat_session.active_step_id = next_step_id
-        if previous_step == next_step_id:
-            return
-        payload: dict[str, Any] = {
-            "from_skill_id": chat_session.active_skill_id,
-            "to_skill_id": chat_session.active_skill_id,
-            "from_step_id": previous_step,
-            "to_step_id": next_step_id,
-        }
-        if reason:
-            payload["reason"] = reason
-        self.events.record(tenant_id, chat_session.id, "skill_step_changed", payload)
+        return self._sop_service().change_active_step(tenant_id, chat_session, next_step_id, reason=reason)
 
     def _graph_pending_steps(self, chat_session: ChatSession) -> list[str]:
-        value = (chat_session.slots_json or {}).get(GRAPH_PENDING_STEPS_SLOT)
-        return GraphRules.normalize_pending_steps(value)
+        return self._sop_service().graph_pending_steps(chat_session)
 
     def _store_graph_pending_steps(
         self,
@@ -1117,19 +835,7 @@ class AgentLoop:
         chat_session: ChatSession,
         pending_steps: list[str],
     ) -> None:
-        slots = dict(chat_session.slots_json or {})
-        normalized = GraphRules.normalize_pending_steps(pending_steps)
-        if normalized:
-            slots[GRAPH_PENDING_STEPS_SLOT] = normalized
-        else:
-            slots.pop(GRAPH_PENDING_STEPS_SLOT, None)
-        chat_session.slots_json = slots
-        self.events.record(
-            tenant_id,
-            chat_session.id,
-            "graph_pending_steps_updated",
-            {"pending_step_ids": normalized},
-        )
+        return self._sop_service().store_graph_pending_steps(tenant_id, chat_session, pending_steps)
 
     def _queue_graph_sibling_steps(
         self,
@@ -1139,24 +845,10 @@ class AgentLoop:
         source_step_id: str | None,
         selected_step_id: str,
     ) -> None:
-        if not source_step_id:
-            return
-        outgoing = self._graph_outgoing_edges(active_skill).get(source_step_id) or []
-        sibling_steps = GraphRules.sibling_steps_from_edges(
-            outgoing,
-            selected_step_id,
-            self._edge_condition,
-        )
-        if not sibling_steps:
-            return
-        pending_steps = self._graph_pending_steps(chat_session)
-        for step_id in sibling_steps:
-            if step_id not in pending_steps:
-                pending_steps.append(step_id)
-        self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
+        return self._sop_service().queue_graph_sibling_steps(tenant_id, chat_session, active_skill, source_step_id, selected_step_id)
 
     def _edge_condition(self, edge: dict[str, Any]) -> str:
-        return GraphRules.edge_condition(edge)
+        return self._sop_service().edge_condition(edge)
 
     def _activate_next_pending_graph_step(
         self,
@@ -1166,53 +858,28 @@ class AgentLoop:
         *,
         reason: str,
     ) -> bool:
-        pending_steps = self._graph_pending_steps(chat_session)
-        while pending_steps:
-            next_step_id = pending_steps.pop(0)
-            if not self._skill_has_step(active_skill, next_step_id):
-                continue
-            self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
-            self._change_active_step(tenant_id, chat_session, next_step_id, reason=reason)
-            return True
-        self._store_graph_pending_steps(tenant_id, chat_session, [])
-        return False
+        return self._sop_service().activate_next_pending_graph_step(tenant_id, chat_session, active_skill, reason=reason)
 
     def _skill_has_step(self, skill: Skill, step_id: str | None) -> bool:
-        return GraphRules.has_step(skill.content_json or {}, step_id)
+        return self._sop_service().skill_has_step(skill, step_id)
 
     def _first_step_id(self, skill: Skill) -> str | None:
-        content = skill.content_json or {}
-        start_node_id = str(content.get("start_node_id") or "").strip()
-        if start_node_id and self._skill_has_step(skill, start_node_id):
-            return start_node_id
-        steps = self._skill_steps(skill)
-        first_step = steps[0] if steps and isinstance(steps[0], dict) else None
-        return first_step.get("step_id") if first_step else None
+        return self._sop_service().first_step_id(skill)
 
     def _skill_steps(self, skill: Skill) -> list[dict[str, Any]]:
-        return GraphRules.steps_from_nodes(self._ordered_skill_nodes(skill))
+        return self._sop_service().skill_steps(skill)
 
     def _skill_nodes(self, skill: Skill) -> list[dict[str, Any]]:
-        return GraphRules.nodes(skill.content_json or {})
+        return self._sop_service().skill_nodes(skill)
 
     def _ordered_skill_nodes(self, skill: Skill) -> list[dict[str, Any]]:
-        content = skill.content_json or {}
-        return GraphRules.ordered_nodes(
-            content,
-            nodes=self._skill_nodes(skill),
-            outgoing=self._graph_outgoing_edges(skill),
-        )
+        return self._sop_service().ordered_skill_nodes(skill)
 
     def _graph_outgoing_edges(self, skill: Skill) -> dict[str, list[dict[str, Any]]]:
-        return GraphRules.outgoing_edges(skill.content_json or {})
+        return self._sop_service().graph_outgoing_edges(skill)
 
     def _default_next_step(self, skill: Skill, active_step_id: str | None) -> dict[str, Any] | None:
-        if not active_step_id:
-            return None
-        return GraphRules.default_next_step_from_parts(
-            self._skill_nodes(skill),
-            self._graph_outgoing_edges(skill).get(active_step_id, []),
-        )
+        return self._sop_service().default_next_step(skill, active_step_id)
 
     def _get_or_create_session(self, request: ChatTurnRequest) -> ChatSession:
         session_id = request.session_id or new_id("session")
@@ -1238,12 +905,10 @@ class AgentLoop:
     def _current_skill_step(
         self, skill: Skill, active_step_id: str | None
     ) -> dict[str, Any] | None:
-        if not active_step_id:
-            return None
-        return GraphRules.current_step_from_steps(self._skill_steps(skill), active_step_id)
+        return self._sop_service().current_skill_step(skill, active_step_id)
 
     def _skill_slot_satisfied(self, slots: dict[str, Any], field: str) -> bool:
-        return GraphRules.slot_satisfied(slots, field)
+        return self._sop_service().skill_slot_satisfied(slots, field)
 
     def _get_request_model(
         self,
@@ -1335,7 +1000,7 @@ class AgentLoop:
         ).normalized()
 
     def _list_published_skills(self, tenant_id: str, agent_id: str | None = None) -> list[Skill]:
-        return visible_published_skills(self.db, tenant_id, agent_id)
+        return self._sop_service().list_published_skills(tenant_id, agent_id)
 
     def _get_agent_profile(self, tenant_id: str, agent_id: str | None) -> AgentProfile | None:
         if not agent_id:
@@ -1348,9 +1013,7 @@ class AgentLoop:
     def _get_active_skill(
         self, tenant_id: str, skill_id: str | None, agent_id: str | None = None
     ) -> Skill | None:
-        if not skill_id:
-            return None
-        return visible_skill(self.db, tenant_id, skill_id, agent_id)
+        return self._sop_service().get_active_skill(tenant_id, skill_id, agent_id)
 
     def _drop_unavailable_skill_state(
         self,
@@ -1358,97 +1021,7 @@ class AgentLoop:
         chat_session: ChatSession,
         skills: list[Skill],
     ) -> bool:
-        skills_by_id = {skill.skill_id: skill for skill in skills}
-        available_skill_ids = set(skills_by_id)
-        changed = False
-        removed_skill_ids: set[str] = set()
-        repaired_steps: list[dict[str, str | None]] = []
-
-        if chat_session.skill_stack_json or chat_session.resume_after_answer_json:
-            chat_session.skill_stack_json = []
-            chat_session.resume_after_answer_json = None
-            changed = True
-
-        def frame_skill_id(frame: object) -> str:
-            if not isinstance(frame, dict):
-                return ""
-            return str(frame.get("target_skill_id") or frame.get("skill_id") or "").strip()
-
-        def keep_frame(frame: object) -> bool:
-            skill_id = frame_skill_id(frame)
-            if not skill_id:
-                return True
-            if skill_id in available_skill_ids:
-                return True
-            removed_skill_ids.add(skill_id)
-            return False
-
-        active_skill_id = str(chat_session.active_skill_id or "").strip()
-        if active_skill_id and active_skill_id not in available_skill_ids:
-            removed_skill_ids.add(active_skill_id)
-            chat_session.active_skill_id = None
-            chat_session.active_step_id = None
-            chat_session.slots_json = {}
-            chat_session.awaiting_input_json = None
-            chat_session.resume_after_answer_json = None
-            changed = True
-        elif active_skill_id:
-            active_skill = skills_by_id[active_skill_id]
-            active_step_id = str(chat_session.active_step_id or "").strip()
-            restored_step_id = self._first_step_id(active_skill)
-            if (
-                restored_step_id
-                and active_step_id != restored_step_id
-                and not self._skill_has_step(active_skill, active_step_id)
-            ):
-                chat_session.active_step_id = restored_step_id
-                awaiting = (
-                    chat_session.awaiting_input_json
-                    if isinstance(chat_session.awaiting_input_json, dict)
-                    else {}
-                )
-                task_id = awaiting.get("task_id")
-                chat_session.awaiting_input_json = {"task_id": task_id} if task_id else None
-                chat_session.last_agent_question = None
-                repaired_steps.append(
-                    {
-                        "skill_id": active_skill_id,
-                        "from_step_id": active_step_id,
-                        "to_step_id": restored_step_id,
-                    }
-                )
-                changed = True
-
-        for attr in ("pending_tasks_json",):
-            value = getattr(chat_session, attr) or []
-            if not isinstance(value, list):
-                continue
-            kept = [frame for frame in value if keep_frame(frame)]
-            if len(kept) != len(value):
-                setattr(chat_session, attr, kept)
-                changed = True
-
-        awaiting = chat_session.awaiting_input_json
-        if isinstance(awaiting, dict):
-            awaiting_skill_id = str(awaiting.get("skill_id") or "").strip()
-            if awaiting_skill_id and awaiting_skill_id not in available_skill_ids:
-                removed_skill_ids.add(awaiting_skill_id)
-                chat_session.awaiting_input_json = None
-                changed = True
-
-        if changed:
-            chat_session.updated_at = utc_now()
-            if hasattr(self, "events"):
-                self.events.record(
-                    tenant_id,
-                    chat_session.id,
-                    "skill_state_pruned",
-                    {
-                        "removed_skill_ids": sorted(removed_skill_ids),
-                        "repaired_steps": repaired_steps,
-                    },
-                )
-        return changed
+        return self._sop_service().drop_unavailable_skill_state(tenant_id, chat_session, skills)
 
     def _conversation_context(
         self,

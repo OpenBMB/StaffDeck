@@ -6,10 +6,9 @@ capability slots resolved for this Staff. It is derived from the immutable
 ``CompositionSnapshot`` (never from the live Skill row), so pre-loop, in-loop
 and post-loop all observe the same SOP content.
 
-Post-loop, ``advance`` applies the model's step result to the session using
-the legacy ``AgentLoop`` state machine helpers (``_apply_step_result`` /
-``_finalize_execution_after_reply``) so SOP CAS semantics stay identical
-between engines.
+Post-loop, the registered ``SopRuntimePort.after_execution`` applies the result.
+This input adapter does not advance state. Both execution engines consume the same
+SOP module; existing transaction/CAS storage remains owned by the scheduling kernel.
 """
 
 from __future__ import annotations

@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 ENTRY_POINT_GROUP = "staffdeck_harness.modules"
 ENV_MODULES = "STAFFDECK_HARNESS_MODULES"
 
-SINGLE_PROVIDER_SLOTS = {SlotName.RUNTIME_ENGINE, SlotName.SECURITY_PEP}
+SINGLE_PROVIDER_SLOTS = {SlotName.RUNTIME_ENGINE, SlotName.SECURITY_PEP, SlotName.RUNTIME_SOP}
 
 # "pkg.mod:register" (attr optional, defaults to ``register``)
 SPEC_RE = re.compile(r"^[A-Za-z_][\w]*(\.[A-Za-z_]\w*)*(:[A-Za-z_]\w*)?$")
@@ -179,6 +179,7 @@ class ModuleRegistry:
                     SlotName.STAFF_CAPABILITY: ("invoke",),
                     SlotName.RUNTIME_MEMORY: ("invoke",),
                     SlotName.RUNTIME_ENGINE: ("open",),
+                    SlotName.RUNTIME_SOP: ("build",),
                     SlotName.SECURITY_PEP: ("build",),
                     SlotName.STAFF_INGRESS: ("accept",),
                 }.get(item.slot, ())
@@ -457,7 +458,7 @@ def discover_and_install(registry: ModuleRegistry, settings: Any, *, include_bui
         if item is None:
             continue
         # Engines / PEP providers are chosen, never disabled; kernel pieces cannot be switched off.
-        if item.slot in SINGLE_PROVIDER_SLOTS or (item.manifest.kind is not ModuleKind.CODE and not item.manifest.metadata.get("switchable")):
+        if item.slot in {SlotName.RUNTIME_ENGINE, SlotName.SECURITY_PEP} or (item.manifest.kind is not ModuleKind.CODE and not item.manifest.metadata.get("switchable")):
             logger.warning("ignoring disabled_modules entry %s: module is not switchable", mid)
             continue
         registry.set_enabled(mid, False)

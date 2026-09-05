@@ -3,6 +3,9 @@
 本修订补充 `design-harness-v3-modularity-repair.md`。模块仍可解耦，但共享的
 TurnCoordinator、TaskFrameStore、SOP 状态推进与结果规范化继续使用 v2 的处理逻辑。
 
+后续实现归属修订见 `design-harness-v3-sop-runtime.md`：SOP 状态实现已迁入独立模块，
+v2 与 DSH 共用该模块。这里的“使用 v2 的处理逻辑”指行为兼容，不再指调用旧 AgentLoop 方法。
+
 ## 周期与上下文归属
 
 - 通用循环：沿用 `general:<chat session id>` 的逻辑循环，一次用户消息只是一次推进。

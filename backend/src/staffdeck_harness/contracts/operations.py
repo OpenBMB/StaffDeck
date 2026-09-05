@@ -33,6 +33,7 @@ SUPPORTED_CONTRACTS = {
         "handoff.assign",
         "handoff.reply",
         "sop.execute",
+        "sop.lifecycle",
         "channel.receive",
         "channel.send",
         "memory.read",

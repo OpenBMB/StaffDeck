@@ -570,6 +570,10 @@ def test_final_reply_supervision_is_not_bypassed_by_response_synthesis(db, monke
     from staffdeck_harness.contracts.errors import ModuleSdkError
 
     reg = ModuleRegistry()
+    from staffdeck_harness.sop.module import SopRuntimeModule
+    reg.install(manifest("sop.runtime", "SOP runtime", kind=ModuleKind.TRUSTED,
+                         slots=[SlotName.RUNTIME_SOP], provides=["sop.lifecycle/v1"]),
+                SopRuntimeModule(), slot=SlotName.RUNTIME_SOP)
     hook = HookContribution("turn_stopping", "review")
     reg.install(
         manifest(
