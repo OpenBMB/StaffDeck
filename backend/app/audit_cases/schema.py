@@ -157,6 +157,10 @@ class AuditCaseDocumentVersionCreate(BaseModel):
     change_note: str | None = Field(default=None, max_length=500)
 
 
+class AuditCaseDocumentArchiveRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class AuditCaseDocumentVersionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -189,6 +193,12 @@ class AuditCaseDocumentRead(BaseModel):
     updated_by_user_id: str
     created_at: datetime
     updated_at: datetime
+    active_version: AuditCaseDocumentVersionRead | None = None
+
+
+class AuditCaseDocumentDetailRead(BaseModel):
+    document: AuditCaseDocumentRead
+    versions: list[AuditCaseDocumentVersionRead] = Field(default_factory=list)
 
 
 class AuditCaseCoverageRead(BaseModel):

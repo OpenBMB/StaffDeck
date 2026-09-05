@@ -11,6 +11,15 @@ from app.audit_cases.reporting import AuditReportService
 from app.audit_cases.schema import (
     AuditCaseAccessDenied,
     AuditCaseCreate,
+    AuditCaseDocumentArchiveRequest,
+    AuditCaseDocumentConflict,
+    AuditCaseDocumentCreate,
+    AuditCaseDocumentDetailRead,
+    AuditCaseDocumentFormatError,
+    AuditCaseDocumentNotFound,
+    AuditCaseDocumentRead,
+    AuditCaseDocumentVersionCreate,
+    AuditCaseDocumentVersionRead,
     AuditCaseEventRead,
     AuditCaseManagementOptions,
     AuditCaseManagementPage,
@@ -30,12 +39,16 @@ from app.audit_cases.schema import (
     AuditReportRead,
     AuditReportSectionRead,
     audit_case_material_read,
+    audit_case_document_read,
+    audit_case_document_version_read,
     audit_case_read,
 )
+from app.audit_cases.documents import AuditCaseDocumentService
 from app.audit_cases.service import AuditCaseService
 from app.db import get_session
 from app.db.models import (
     AuditCase,
+    AuditCaseDocumentVersion,
     AuditReportSection,
     AuditReportVersion,
     ModelConfig,
@@ -55,9 +68,15 @@ def _case_error(exc: Exception) -> HTTPException:
     if isinstance(exc, AuditCaseNotFound):
         return HTTPException(status_code=404, detail="AUDIT_CASE_NOT_FOUND")
     if isinstance(exc, AuditCaseReadOnly):
-        return HTTPException(status_code=409, detail="AUDIT_CASE_READ_ONLY")
+        return HTTPException(status_code=409, detail=str(exc) or "AUDIT_CASE_READ_ONLY")
+    if isinstance(exc, AuditCaseDocumentConflict):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, AuditCaseDocumentNotFound):
+        return HTTPException(status_code=404, detail="AUDIT_CASE_DOCUMENT_NOT_FOUND")
+    if isinstance(exc, AuditCaseDocumentFormatError):
+        return HTTPException(status_code=422, detail=str(exc))
     if isinstance(exc, AuditCaseAccessDenied):
-        return HTTPException(status_code=403, detail="AUDIT_CASE_ACCESS_DENIED")
+        return HTTPException(status_code=403, detail=str(exc) or "AUDIT_CASE_ACCESS_DENIED")
     if isinstance(exc, AuditMaterialAlreadyExists):
         return HTTPException(status_code=409, detail="MATERIAL_ALREADY_EXISTS")
     if isinstance(exc, AuditMaterialCategoryConflict):
@@ -133,6 +152,151 @@ def list_audit_case_management_options(
     db: Session = Depends(get_session),
 ) -> AuditCaseManagementOptions:
     return AuditCaseService(db).list_management_options(current_user, tenant_id=tenant_id)
+
+
+def _audit_case_document_read(
+    db: Session,
+    row,
+) -> AuditCaseDocumentRead:
+    response = audit_case_document_read(row)
+    if row.active_version_id:
+        version = db.get(AuditCaseDocumentVersion, row.active_version_id)
+        if version is not None:
+            response.active_version = audit_case_document_version_read(version)
+    return response
+
+
+@router.get("/{case_id}/documents", response_model=list[AuditCaseDocumentRead])
+def list_audit_case_documents(
+    case_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[AuditCaseDocumentRead]:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        documents = AuditCaseDocumentService(db).list_documents(case, current_user)
+        return [_audit_case_document_read(db, row) for row in documents]
+    except Exception as exc:
+        raise _case_error(exc) from exc
+
+
+@router.post(
+    "/{case_id}/documents",
+    response_model=AuditCaseDocumentRead,
+    status_code=201,
+)
+def create_audit_case_document(
+    case_id: str,
+    request: AuditCaseDocumentCreate,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AuditCaseDocumentRead:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        row = AuditCaseDocumentService(db).create_document(case, current_user, request)
+        return _audit_case_document_read(db, row)
+    except Exception as exc:
+        raise _case_error(exc) from exc
+
+
+@router.get(
+    "/{case_id}/documents/{document_id}",
+    response_model=AuditCaseDocumentDetailRead,
+)
+def get_audit_case_document(
+    case_id: str,
+    document_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AuditCaseDocumentDetailRead:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        document, versions = AuditCaseDocumentService(db).get_document(
+            case, current_user, document_id
+        )
+        return AuditCaseDocumentDetailRead(
+            document=_audit_case_document_read(db, document),
+            versions=[audit_case_document_version_read(version) for version in versions],
+        )
+    except Exception as exc:
+        raise _case_error(exc) from exc
+
+
+@router.post(
+    "/{case_id}/documents/{document_id}/versions",
+    response_model=AuditCaseDocumentVersionRead,
+)
+def create_audit_case_document_version(
+    case_id: str,
+    document_id: str,
+    request: AuditCaseDocumentVersionCreate,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AuditCaseDocumentVersionRead:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        version = AuditCaseDocumentService(db).create_version(
+            case, current_user, document_id, request
+        )
+        return audit_case_document_version_read(version)
+    except Exception as exc:
+        raise _case_error(exc) from exc
+
+
+@router.post(
+    "/{case_id}/documents/{document_id}/archive",
+    response_model=AuditCaseDocumentRead,
+)
+def archive_audit_case_document(
+    case_id: str,
+    document_id: str,
+    request: AuditCaseDocumentArchiveRequest,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AuditCaseDocumentRead:
+    service = AuditCaseService(db)
+    case = _authorized_case(
+        service,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        current_user=current_user,
+    )
+    try:
+        row = AuditCaseDocumentService(db).archive_document(
+            case, current_user, document_id, request.reason
+        )
+        return _audit_case_document_read(db, row)
+    except Exception as exc:
+        raise _case_error(exc) from exc
 
 
 @router.get("", response_model=list[AuditCaseRead])
