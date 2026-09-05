@@ -240,6 +240,52 @@ describe('RuleBindingPanel', () => {
     expect(screen.getByRole('alert').textContent).toContain('规则版本绑定失败');
   });
 
+  it('locks the previous state when candidate loading fails', async () => {
+    const user = userEvent.setup();
+    mockLoadedState([publishedV1, publishedV2], [binding('version-1')]);
+    const view = renderPanel();
+    await screen.findByLabelText('能源管理体系规则 · 版本 2');
+
+    vi.mocked(loadPublishedRuleVersionOptions).mockRejectedValue(new Error('候选读取失败'));
+    vi.mocked(loadCurrentRuleBindings).mockResolvedValue([binding('version-1')]);
+    view.rerender(
+      <I18nProvider>
+        <RuleBindingPanel caseId="case-2" />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('规则版本候选加载失败'));
+    const v2 = screen.getByLabelText('能源管理体系规则 · 版本 2') as HTMLInputElement;
+    const previewButton = screen.getByRole('button', { name: '预览迁移影响' }) as HTMLButtonElement;
+    expect(v2.disabled).toBe(true);
+    expect(previewButton.disabled).toBe(true);
+    await user.click(v2);
+    expect(previewRuleBindingMigration).not.toHaveBeenCalled();
+  });
+
+  it('locks the previous state when current binding loading fails', async () => {
+    const user = userEvent.setup();
+    mockLoadedState([publishedV1, publishedV2], [binding('version-1')]);
+    const view = renderPanel();
+    await screen.findByLabelText('能源管理体系规则 · 版本 2');
+
+    vi.mocked(loadPublishedRuleVersionOptions).mockResolvedValue([publishedV1, publishedV2]);
+    vi.mocked(loadCurrentRuleBindings).mockRejectedValue(new Error('绑定读取失败'));
+    view.rerender(
+      <I18nProvider>
+        <RuleBindingPanel caseId="case-2" />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('当前规则绑定加载失败'));
+    const v2 = screen.getByLabelText('能源管理体系规则 · 版本 2') as HTMLInputElement;
+    const previewButton = screen.getByRole('button', { name: '预览迁移影响' }) as HTMLButtonElement;
+    expect(v2.disabled).toBe(true);
+    expect(previewButton.disabled).toBe(true);
+    await user.click(v2);
+    expect(previewRuleBindingMigration).not.toHaveBeenCalled();
+  });
+
   it('preserves the current binding and selected versions when preview fails', async () => {
     const user = userEvent.setup();
     mockLoadedState([publishedV1, publishedV2], [binding('version-1')]);

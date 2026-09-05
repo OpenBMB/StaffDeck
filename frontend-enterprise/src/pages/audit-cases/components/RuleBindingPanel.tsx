@@ -51,6 +51,7 @@ export function RuleBindingPanel({
   const [previewSelection, setPreviewSelection] = useState('');
   const [reason, setReason] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState<'bind' | 'preview' | 'migrate' | ''>('');
   const [error, setError] = useState('');
 
@@ -71,16 +72,19 @@ export function RuleBindingPanel({
   useEffect(() => {
     let active = true;
     setLoading(true);
+    setLoadFailed(false);
 
     void Promise.allSettled([
       loadPublishedRuleVersionOptions(),
       loadCurrentRuleBindings(caseId),
     ]).then(([candidateResult, bindingResult]) => {
       if (!active) return;
+      let failed = false;
 
       if (candidateResult.status === 'fulfilled') {
         setCandidates(candidateResult.value.filter((candidate) => candidate.version.status === 'published'));
       } else {
+        failed = true;
         const message = errorMessage(candidateResult.reason, '规则版本候选加载失败，请稍后重试');
         setError(message);
         notify.error(message);
@@ -93,11 +97,13 @@ export function RuleBindingPanel({
         setCurrentBindings([]);
         setSelectedVersionIds([]);
       } else {
+        failed = true;
         const message = errorMessage(bindingResult.reason, '当前规则绑定加载失败，请稍后重试');
         setError(message);
         notify.error(message);
       }
 
+      setLoadFailed(failed);
       setLoading(false);
     });
 
@@ -107,7 +113,7 @@ export function RuleBindingPanel({
   }, [caseId]);
 
   function toggleVersion(versionId: string) {
-    if (disabled || busy) return;
+    if (disabled || loadFailed || busy) return;
     setSelectedVersionIds((current) => (
       current.includes(versionId)
         ? current.filter((id) => id !== versionId)
@@ -116,7 +122,7 @@ export function RuleBindingPanel({
   }
 
   async function handleBind() {
-    if (disabled || busy || !selectedVersionIds.length) return;
+    if (disabled || loadFailed || busy || !selectedVersionIds.length) return;
     setBusy('bind');
     setError('');
     try {
@@ -134,7 +140,7 @@ export function RuleBindingPanel({
   }
 
   async function handlePreview() {
-    if (disabled || busy || !hasSelectionChanged) return;
+    if (disabled || loadFailed || busy || !hasSelectionChanged) return;
     setBusy('preview');
     setError('');
     try {
@@ -151,7 +157,7 @@ export function RuleBindingPanel({
   }
 
   async function handleMigrate() {
-    if (disabled || busy || !canConfirmPreview) return;
+    if (disabled || loadFailed || busy || !canConfirmPreview) return;
     setBusy('migrate');
     setError('');
     try {
@@ -203,7 +209,7 @@ export function RuleBindingPanel({
                   type="checkbox"
                   aria-label={label}
                   checked={selectedVersionIds.includes(candidate.version.id)}
-                  disabled={disabled || loading || Boolean(busy)}
+                  disabled={disabled || loading || loadFailed || Boolean(busy)}
                   onChange={() => toggleVersion(candidate.version.id)}
                   className="mt-[2px]"
                 />
@@ -215,15 +221,15 @@ export function RuleBindingPanel({
             );
           })}
           {!isBound ? (
-            <Button type="button" disabled={disabled || loading || Boolean(busy) || !selectedVersionIds.length} onClick={() => void handleBind()}>
+            <Button type="button" disabled={disabled || loading || loadFailed || Boolean(busy) || !selectedVersionIds.length} onClick={() => void handleBind()}>
               {busy === 'bind' ? '绑定中…' : '绑定选中版本'}
             </Button>
           ) : (
             <div className="flex flex-wrap gap-[8px]">
-              <Button type="button" disabled={disabled || loading || Boolean(busy) || !hasSelectionChanged} onClick={() => void handlePreview()}>
+              <Button type="button" disabled={disabled || loading || loadFailed || Boolean(busy) || !hasSelectionChanged} onClick={() => void handlePreview()}>
                 {busy === 'preview' ? '预览中…' : '预览迁移影响'}
               </Button>
-              <Button type="button" disabled={disabled || loading || Boolean(busy) || !canConfirmPreview} onClick={() => void handleMigrate()}>
+              <Button type="button" disabled={disabled || loading || loadFailed || Boolean(busy) || !canConfirmPreview} onClick={() => void handleMigrate()}>
                 {busy === 'migrate' ? '迁移中…' : '确认迁移'}
               </Button>
             </div>
@@ -238,7 +244,9 @@ export function RuleBindingPanel({
             <p className="mt-[3px] text-[11px] text-[#a0a6b5]">当前绑定是项目实际使用的固定版本，不会自动切换。</p>
           </div>
           {!isBound ? (
-            <p className="rounded-[9px] bg-[#f7f8fb] px-[12px] py-[10px] text-[12px] text-[#858b9c]">尚未绑定规则版本</p>
+            <p className="rounded-[9px] bg-[#f7f8fb] px-[12px] py-[10px] text-[12px] text-[#858b9c]">
+              {loadFailed ? '当前绑定状态不可用，请重新加载后再编辑' : '尚未绑定规则版本'}
+            </p>
           ) : currentBindings.map((binding) => (
             <div key={binding.id} className="rounded-[9px] bg-[#f7f8fb] px-[12px] py-[10px]">
               <p className="text-[12px] font-medium text-[#464c5e]">{versionLabel(candidateByVersionId.get(binding.rule_set_version_id), binding.rule_set_version_id)}</p>
