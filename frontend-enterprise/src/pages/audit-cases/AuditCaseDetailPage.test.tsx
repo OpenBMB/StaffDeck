@@ -97,6 +97,7 @@ function stubFetch(caseData = baseCase) {
     if (url.includes('/rule-bindings')) {
       return jsonResponse(caseData.status === 'archived' ? [currentRuleBinding] : []);
     }
+    if (url.includes('/reports')) return jsonResponse([]);
     if (url.includes('/documents')) return jsonResponse([]);
     if (url.includes('/materials')) return jsonResponse([]);
     if (url.includes('/coverage')) return jsonResponse({
@@ -170,6 +171,26 @@ describe('AuditCaseDetailPage', () => {
     expect(await screen.findByText('文档分区')).toBeTruthy();
     expect(screen.getByRole('button', { name: '创建文档' })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/documents'))).toBe(true);
+  });
+
+  it('renders the evidence and report panel from the project detail tab', async () => {
+    const user = userEvent.setup();
+    stubFetch();
+    renderAt('/enterprise/audit-cases/case-1');
+
+    expect(await screen.findByText('示例企业')).toBeTruthy();
+    await user.click(screen.getByRole('tab', { name: '证据与报告' }));
+    expect(await screen.findByText('证据处理')).toBeTruthy();
+  });
+
+  it('keeps evidence/report actions disabled for archived projects', async () => {
+    const user = userEvent.setup();
+    stubFetch({ ...baseCase, id: 'case-archived', status: 'archived' });
+    renderAt('/enterprise/audit-cases/case-archived');
+
+    expect(await screen.findByText('已归档')).toBeTruthy();
+    await user.click(screen.getByRole('tab', { name: '证据与报告' }));
+    expect((await screen.findByRole('button', { name: '处理证据' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('does not allow an archived project to submit edits', async () => {
