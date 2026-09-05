@@ -17,6 +17,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   OCR_DEPENDENCY_MISSING: '离线 OCR 依赖尚未安装或未启用，请先准备 RapidDoc 运行环境后再重试',
   OCR_TIMEOUT: '离线 OCR 处理超时，请检查机器资源后重试；原始文件仍已保留',
   DOCUMENT_EXTRACTION_FAILED: '文档提取失败，请检查文件是否损坏或重试；原始文件仍已保留',
+  AUDIT_REPORT_NOT_FOUND: '报告版本不存在或你无权访问',
+  AUDIT_REPORT_DOWNLOAD_NOT_READY: '报告文件尚未生成，请先完成报告发布',
+  RULE_BINDING_REQUIRED_FOR_PUBLISH: '确认发布前必须先绑定已发布规则版本',
 };
 
 export function auditCaseErrorCodeMessage(code: string, fallback: string): string {
