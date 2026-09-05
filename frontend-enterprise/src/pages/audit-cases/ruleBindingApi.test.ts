@@ -33,7 +33,7 @@ afterEach(() => {
 
 describe('rule binding api', () => {
   it('loads current bindings with an encoded case id and tenant query', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse([]));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse([]));
     vi.stubGlobal('fetch', fetchMock);
 
     await loadCurrentRuleBindings('case/one');
@@ -134,7 +134,7 @@ describe('rule binding api', () => {
   });
 
   it('replaces current bindings with version ids and selection source', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse([]));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse([]));
     vi.stubGlobal('fetch', fetchMock);
 
     await replaceCurrentRuleBindings('case/one', ['version-1', 'version-2'], 'recommended');
@@ -150,7 +150,7 @@ describe('rule binding api', () => {
   });
 
   it('previews a binding migration with version ids', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({
       added_rule_keys: [],
       removed_rule_keys: [],
       changed_rule_keys: [],
@@ -172,7 +172,7 @@ describe('rule binding api', () => {
   });
 
   it('migrates bindings with version ids and a reason', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse([]));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse([]));
     vi.stubGlobal('fetch', fetchMock);
 
     await migrateRuleBindings('case/one', ['version-2'], '更新认证范围');
