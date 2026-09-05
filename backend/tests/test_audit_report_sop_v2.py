@@ -45,6 +45,7 @@ def test_audit_report_sop_requires_structured_pipeline_capabilities() -> None:
 
     assert "audit_case_manifest" in by_id["collect_materials"].allowed_actions
     assert "audit_evidence_process" in by_id["build_material_evidence_ledger"].allowed_actions
+    assert "audit_report_generate" in by_id["generate_report_sections"].allowed_actions
     assert "audit_report_status" in by_id["consistency_and_coverage_check"].allowed_actions
     assert by_id["retrieve_reference_knowledge"].capability_refs.required_knowledge_base_ids
 

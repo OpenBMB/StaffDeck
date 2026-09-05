@@ -501,6 +501,8 @@ class HarnessCapabilityInvoker:
             return self._audit_evidence_process()
         if name == "audit_report_status":
             return self._audit_report_status()
+        if name == "audit_report_generate":
+            return self._audit_report_generate()
         return _failure(
             "UNSUPPORTED_INTERNAL_CAPABILITY",
             "不支持的 Harness 内部能力。",
@@ -614,6 +616,44 @@ class HarnessCapabilityInvoker:
                     if report is not None
                     else None
                 ),
+            },
+        }
+
+    def _audit_report_generate(self) -> dict[str, Any]:
+        case = self._bound_audit_case()
+        if case is None:
+            return _failure("AUDIT_CASE_NOT_AVAILABLE", "当前会话没有可用的审核项目。")
+        from app.audit_cases.reporting import AuditReportService
+        from app.db.models import AuditReportSection
+
+        service = AuditReportService(self.db)
+        report = service.create_version(case)
+        generation = service.generate_pending_sections(case, report, self.model_config)
+        sections = self.db.exec(
+            select(AuditReportSection)
+            .where(AuditReportSection.report_version_id == report.id)
+            .order_by(AuditReportSection.sequence)
+        ).all()
+        return {
+            "success": True,
+            "data": {
+                "audit_case_id": case.id,
+                "report": {
+                    "id": report.id,
+                    "version": report.version,
+                    "status": report.status,
+                    "generation": generation.model_dump(mode="json"),
+                    "section_statuses": [
+                        {
+                            "section_id": section.section_id,
+                            "status": section.status,
+                            "retry_count": section.retry_count,
+                            "error_code": section.error_code,
+                        }
+                        for section in sections
+                    ],
+                },
+                "rule_traceability_status": report.rule_traceability_status,
             },
         }
 

@@ -160,7 +160,7 @@
       "name": "生成审核报告章节",
       "instruction": "依据完整项目材料、证据台账、模板和知识库引用逐章生成报告；每个关键判断都要保留可追溯的材料或知识库依据。",
       "expected_user_info": ["evidence_coverage_status", "knowledge_coverage_status"],
-      "allowed_actions": [],
+      "allowed_actions": ["audit_report_generate"],
       "knowledge_scope": {},
       "capability_refs": {
         "general_skill_ids": [],

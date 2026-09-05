@@ -53,4 +53,17 @@ def audit_capability_descriptors(
             },
             metadata={**scope_metadata, "side_effect": "read"},
         ),
+        CapabilityDescriptor(
+            capability_id="audit.report.generate",
+            name="audit_report_generate",
+            kind="internal",
+            capability_scope="sop_specific",
+            description="为当前审核项目生成带材料、知识和规则快照的待确认报告草稿。",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            metadata={**scope_metadata, "side_effect": "write"},
+        ),
     ]

@@ -1521,6 +1521,70 @@ def test_audit_capabilities_exist_only_for_bound_audit_case() -> None:
 
     assert "audit_case_manifest" not in ordinary.allowed_names()
     assert "audit_case_manifest" in bound.allowed_names()
+    assert "audit_report_generate" not in ordinary.allowed_names()
+    assert "audit_report_generate" in bound.allowed_names()
+
+
+def test_report_generate_capability_returns_scoped_draft_status(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from app.audit_cases.reporting import ReportGenerationSummary
+
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        case = AuditCase(
+            id="case-harness-report",
+            tenant_id="tenant-demo",
+            owner_user_id="user-1",
+            organization_name="Harness 报告企业",
+            report_type="再认证",
+        )
+        db.add(case)
+        db.commit()
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant-demo", None, None, None, audit_case_id=case.id
+        )
+
+        class _FakeReportService:
+            def __init__(self, _db):
+                pass
+
+            def create_version(self, _case):
+                return SimpleNamespace(
+                    id="report-harness-1",
+                    version=1,
+                    status="draft",
+                    rule_traceability_status="not_configured",
+                )
+
+            def generate_pending_sections(self, _case, _report, _model_config):
+                return ReportGenerationSummary(
+                    status="succeeded",
+                    generated_section_ids=["summary"],
+                    regenerated_section_ids=[],
+                )
+
+        monkeypatch.setattr(
+            "app.audit_cases.reporting.AuditReportService", _FakeReportService
+        )
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(audit_case_id=case.id),
+            task_frame_id="task-report-generate",
+            model_config=_model_config(),
+            manifest=manifest,
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        result = invoker._invoke_internal("audit_report_generate", {})
+
+    assert result["success"] is True
+    assert set(result["data"]) >= {"audit_case_id", "report", "rule_traceability_status"}
+    assert result["data"]["report"]["status"] == "draft"
+    assert "evidence_text" not in json.dumps(result, ensure_ascii=False)
 
 
 def test_general_tools_remain_discoverable_across_sop_steps() -> None:
