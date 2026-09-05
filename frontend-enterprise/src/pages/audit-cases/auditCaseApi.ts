@@ -1,6 +1,7 @@
 import { api, TENANT_ID } from '@/api/client';
 import type {
   AuditCaseCoverageRead,
+  AuditCaseProcessRead,
   AuditCaseDocumentDetailRead,
   AuditCaseDocumentRead,
   AuditCaseDocumentVersionRead,
@@ -118,6 +119,16 @@ export function loadAuditCaseMaterials(
 export function loadAuditCaseCoverage(caseId: string): Promise<AuditCaseCoverageRead> {
   return api.get<AuditCaseCoverageRead>(
     `/api/audit-cases/${encodeURIComponent(caseId)}/coverage?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function processAuditCaseEvidence(
+  caseId: string,
+  modelConfigId?: string,
+): Promise<AuditCaseProcessRead> {
+  return api.post<AuditCaseProcessRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/process?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    { model_config_id: modelConfigId },
   );
 }
 

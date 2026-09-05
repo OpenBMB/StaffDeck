@@ -747,6 +747,43 @@ export type AuditCaseCoverageRead = {
   pending_chunk_ids?: string[];
 };
 
+export type AuditCaseProcessRead = {
+  status: string;
+  code?: string | null;
+  materials: AuditCaseMaterialRead[];
+  coverage: AuditCaseCoverageRead;
+  evidence?: Record<string, unknown> | null;
+  knowledge?: Record<string, unknown> | null;
+};
+
+export type AuditReportSectionRead = {
+  id: string;
+  section_id: string;
+  title: string;
+  sequence: number;
+  status: string;
+  retry_count: number;
+  error_code?: string | null;
+  draft_markdown?: string;
+  citation_ids?: string[];
+  rule_definition_ids?: string[];
+};
+
+export type AuditReportRead = {
+  id: string;
+  tenant_id: string;
+  audit_case_id: string;
+  version: number;
+  status: string;
+  material_version_ids: string[];
+  knowledge_base_version_ids: string[];
+  rule_set_version_ids?: string[];
+  rule_traceability_status?: 'complete' | 'incomplete' | 'not_configured' | string;
+  coverage_snapshot: Record<string, unknown>;
+  final_storage_key?: string | null;
+  sections: AuditReportSectionRead[];
+};
+
 export type ChatAttachmentKind = 'text' | 'pdf' | 'image' | 'binary';
 
 export type ChatAttachmentRead = {
