@@ -17,9 +17,11 @@ import { AuditCaseEventTimeline } from './components/AuditCaseEventTimeline';
 import { KnowledgeVersionSelector } from './components/KnowledgeVersionSelector';
 import { MemberSelector } from './components/MemberSelector';
 import { MaterialManager } from './components/MaterialManager';
+import { ProjectDocumentWorkspace } from './components/ProjectDocumentWorkspace';
+import { RuleBindingPanel } from './components/RuleBindingPanel';
 import { useAuditCaseDetail } from './hooks/useAuditCaseDetail';
 
-type DetailTab = 'overview' | 'members' | 'materials' | 'events';
+type DetailTab = 'overview' | 'members' | 'materials' | 'documents' | 'rules' | 'events';
 
 export default function AuditCaseDetailPage({
   currentUser,
@@ -116,7 +118,7 @@ export default function AuditCaseDetailPage({
           <span className={cn('rounded-full px-[12px] py-[5px] text-[11px]', auditCaseStatusClass(detail.project.status))}>{auditCaseStatusLabel(detail.project.status)}</span>
         </div>
         <div className="flex gap-[4px] border-b border-[#edf0f5]" role="tablist" aria-label="认证项目详情标签">
-          {([['overview', '项目设置'], ['members', '项目成员'], ['materials', '审核材料'], ['events', '操作记录']] as const).map(([value, label]) => (
+          {([['overview', '项目设置'], ['members', '项目成员'], ['materials', '审核材料'], ['documents', '项目文件库'], ['rules', '规则绑定'], ['events', '操作记录']] as const).map(([value, label]) => (
             <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={cn('border-b-2 px-[14px] py-[9px] text-[12px]', tab === value ? 'border-[#18181a] font-medium text-[#18181a]' : 'border-transparent text-[#858b9c]')}>{label}</button>
           ))}
         </div>
@@ -169,6 +171,8 @@ export default function AuditCaseDetailPage({
         {tab === 'materials' && (
           <section className="grid gap-[12px] rounded-[14px] border border-[#edf0f5] bg-white p-[18px]"><h2 className="text-[14px] font-medium text-[#464c5e]">审核材料</h2><MaterialManager caseId={detail.project.id} materials={detail.materials} coverage={detail.coverage} options={detail.options} disabled={Boolean(archived)} onChanged={detail.reloadMaterials} /></section>
         )}
+        {tab === 'documents' && <ProjectDocumentWorkspace caseId={detail.project.id} documents={detail.documents} disabled={Boolean(archived)} onChanged={detail.reloadDocuments} />}
+        {tab === 'rules' && <RuleBindingPanel caseId={detail.project.id} disabled={Boolean(archived)} />}
         {tab === 'events' && <AuditCaseEventTimeline events={detail.events} />}
       </main>
     </div>

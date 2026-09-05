@@ -4,6 +4,7 @@ import asyncio
 import json
 import multiprocessing
 import sqlite3
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -905,16 +906,28 @@ def test_parent_watchdog_escalates_from_ignored_terminate_to_kill(
         terminate_grace_seconds=0.1,
     )
     record = supervisor.start_binding("binding-parent-watchdog", 1)
-    started_event = supervisor.wait_for_event(
-        "binding-parent-watchdog", "DISPATCH_STARTED"
-    )
-    exit_code = _wait_for_process_exit(supervisor, "binding-parent-watchdog")
-    elapsed = time.monotonic() - float(started_event["deadline_monotonic"])
+    try:
+        started_event = supervisor.wait_for_event(
+            "binding-parent-watchdog", "DISPATCH_STARTED"
+        )
+        exit_code = _wait_for_process_exit(supervisor, "binding-parent-watchdog")
+        elapsed = time.monotonic() - float(started_event["deadline_monotonic"])
 
-    assert exit_code != 0
-    assert record.termination_phase == "kill"
-    assert elapsed < 0.6
-    assert supervisor.stop(timeout=2.0)
+        assert exit_code != 0
+        if sys.platform == "win32":
+            # Windows maps terminate() to TerminateProcess(), so the child
+            # cannot ignore the first termination phase.
+            assert record.termination_phase == "terminate"
+        else:
+            # POSIX preserves the contract runtime's ignored SIGTERM and
+            # exercises the real terminate -> kill escalation path.
+            assert record.termination_phase == "kill"
+        assert elapsed < 0.6
+    finally:
+        stopped = supervisor.stop(timeout=2.0)
+
+    assert stopped
+    assert not supervisor.monitor_alive()
 
 
 def test_repeated_watchdog_crashes_enter_and_can_reset_circuit_breaker(

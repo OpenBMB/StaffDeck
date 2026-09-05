@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -25,6 +25,7 @@ from app.db.models import (
     KnowledgeBucket,
     KnowledgeChunk,
     KnowledgeDocument,
+    AuditCaseMemberRole,
     Tenant,
     User,
 )
@@ -134,9 +135,168 @@ def test_replace_members_rejects_foreign_or_channel_users_as_one_transaction(
     ).all() == []
 
 
+def test_create_case_writes_owner_and_member_roles_with_legacy_members(
+    management_context,
+) -> None:
+    db, admin, member, _channel_user, _other_tenant_user, _case = management_context
+
+    created = AuditCaseService(db).create_case(
+        admin,
+        AuditCaseCreate(
+            tenant_id=admin.tenant_id,
+            organization_name="新建企业",
+            report_type="初次认证",
+            member_user_ids=[member.id],
+        ),
+    )
+
+    assert created.member_user_ids_json == [member.id]
+    roles = db.exec(
+        select(AuditCaseMemberRole).where(
+            AuditCaseMemberRole.tenant_id == created.tenant_id,
+            AuditCaseMemberRole.audit_case_id == created.id,
+        )
+    ).all()
+    assert {(role.user_id, role.role) for role in roles} == {
+        (admin.id, "project_admin"),
+        (member.id, "editor"),
+    }
+
+
+def test_replace_members_preserves_explicit_roles_and_revokes_removed_members(
+    management_context,
+) -> None:
+    db, admin, member, _channel_user, _other_tenant_user, case = management_context
+    reviewer = User(
+        id="user-reviewer",
+        tenant_id=case.tenant_id,
+        username="reviewer",
+        role="member",
+        source="web",
+        password_hash="test",
+    )
+    delegated_admin = User(
+        id="user-project-admin",
+        tenant_id=case.tenant_id,
+        username="project-admin",
+        role="member",
+        source="web",
+        password_hash="test",
+    )
+    removed = User(
+        id="user-removed",
+        tenant_id=case.tenant_id,
+        username="removed",
+        role="member",
+        source="web",
+        password_hash="test",
+    )
+    case.member_user_ids_json = [reviewer.id, delegated_admin.id, removed.id]
+    db.add_all(
+        [
+            reviewer,
+            delegated_admin,
+            removed,
+            case,
+            AuditCaseMemberRole(
+                id="role-owner",
+                tenant_id=case.tenant_id,
+                audit_case_id=case.id,
+                user_id=admin.id,
+                role="project_admin",
+                created_by_user_id=admin.id,
+            ),
+            AuditCaseMemberRole(
+                id="role-reviewer",
+                tenant_id=case.tenant_id,
+                audit_case_id=case.id,
+                user_id=reviewer.id,
+                role="reviewer",
+                created_by_user_id=admin.id,
+            ),
+            AuditCaseMemberRole(
+                id="role-project-admin",
+                tenant_id=case.tenant_id,
+                audit_case_id=case.id,
+                user_id=delegated_admin.id,
+                role="project_admin",
+                created_by_user_id=admin.id,
+            ),
+            AuditCaseMemberRole(
+                id="role-removed",
+                tenant_id=case.tenant_id,
+                audit_case_id=case.id,
+                user_id=removed.id,
+                role="viewer",
+                created_by_user_id=admin.id,
+            ),
+        ]
+    )
+    db.commit()
+
+    updated = AuditCaseService(db).replace_members(
+        case,
+        admin,
+        AuditCaseMemberUpdate(
+            member_user_ids=[member.id, reviewer.id, delegated_admin.id]
+        ),
+    )
+
+    assert updated.member_user_ids_json == sorted(
+        [member.id, reviewer.id, delegated_admin.id]
+    )
+    roles = db.exec(
+        select(AuditCaseMemberRole).where(
+            AuditCaseMemberRole.tenant_id == case.tenant_id,
+            AuditCaseMemberRole.audit_case_id == case.id,
+        )
+    ).all()
+    assert {(role.user_id, role.role) for role in roles} == {
+        (admin.id, "project_admin"),
+        (member.id, "editor"),
+        (reviewer.id, "reviewer"),
+        (delegated_admin.id, "project_admin"),
+    }
+
+
+def test_case_access_supports_explicit_roles_and_legacy_members(management_context) -> None:
+    db, admin, member, _channel_user, other_tenant_user, case = management_context
+    reviewer = User(
+        id="user-reviewer",
+        tenant_id=case.tenant_id,
+        username="reviewer",
+        display_name="复核人",
+        role="member",
+        source="web",
+        password_hash="test",
+    )
+    case.member_user_ids_json = [member.id]
+    db.add_all(
+        [
+            case,
+            reviewer,
+            AuditCaseMemberRole(
+                id="role-reviewer",
+                tenant_id=case.tenant_id,
+                audit_case_id=case.id,
+                user_id=reviewer.id,
+                role="reviewer",
+                created_by_user_id=admin.id,
+            ),
+        ]
+    )
+    db.commit()
+    service = AuditCaseService(db)
+
+    assert service.can_access(case, admin) is True
+    assert service.can_access(case, member) is True
+    assert service.can_access(case, reviewer) is True
+    assert service.can_access(case, other_tenant_user) is False
+
+
 def test_management_list_aggregates_only_current_material_counts(management_context) -> None:
     db, admin, _member, _channel_user, _other_tenant_user, case = management_context
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     db.add_all(
         [
             AuditCaseMaterial(

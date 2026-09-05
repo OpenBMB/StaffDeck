@@ -29,6 +29,24 @@ export type AuditCaseUpdateRequest = Partial<
   Pick<AuditCaseCreateRequest, 'organization_name' | 'report_type' | 'management_systems' | 'knowledge_base_version_ids'>
 >;
 
+export type AuditCaseDocumentCreateRequest = {
+  document_key: string;
+  title: string;
+  document_type: string;
+  zone: string;
+  content_format: 'markdown' | 'text';
+  content: string;
+  change_note?: string;
+  source_material_id?: string | null;
+};
+
+export type AuditCaseDocumentVersionCreateRequest = {
+  expected_version: number;
+  content_format: 'markdown' | 'text';
+  content: string;
+  change_note?: string;
+};
+
 export type AuditCaseMemberOption = {
   id: string;
   username: string;

@@ -35,6 +35,42 @@ const baseCase = {
   updated_at: '2026-08-01T00:00:00Z',
 };
 
+const publishedRuleSet = {
+  id: 'rule-set-1',
+  tenant_id: 'tenant_demo',
+  key: 'iso-50001',
+  name: '能源管理体系规则',
+  description: '',
+  management_systems: ['能源管理体系'],
+  audit_types: ['再认证'],
+  business_domain: '能源管理',
+  status: 'active',
+};
+
+const publishedRuleVersion = {
+  id: 'rule-version-1',
+  tenant_id: 'tenant_demo',
+  rule_set_id: publishedRuleSet.id,
+  version: 1,
+  status: 'published',
+  content_sha256: 'sha-rule-version-1',
+  published_by_user_id: 'user-admin',
+  published_at: '2026-09-01T00:00:00Z',
+};
+
+const currentRuleBinding = {
+  id: 'binding-1',
+  tenant_id: 'tenant_demo',
+  audit_case_id: 'case-archived',
+  rule_set_id: publishedRuleSet.id,
+  rule_set_version_id: publishedRuleVersion.id,
+  selection_source: 'manual',
+  status: 'active',
+  priority: 1,
+  bound_by_user_id: 'user-admin',
+  supersedes_binding_id: null,
+};
+
 function renderAt(path: string) {
   return render(
     <I18nProvider>
@@ -56,6 +92,12 @@ function stubFetch(caseData = baseCase) {
     if (url.includes('/api/auth/users')) {
       return jsonResponse([{ id: 'user-member', username: 'member', display_name: '成员账号', role: 'member', source: 'web' }]);
     }
+    if (url.includes('/api/rule-sets?')) return jsonResponse([publishedRuleSet]);
+    if (url.includes(`/api/rule-sets/${publishedRuleSet.id}/versions`)) return jsonResponse([publishedRuleVersion]);
+    if (url.includes('/rule-bindings')) {
+      return jsonResponse(caseData.status === 'archived' ? [currentRuleBinding] : []);
+    }
+    if (url.includes('/documents')) return jsonResponse([]);
     if (url.includes('/materials')) return jsonResponse([]);
     if (url.includes('/coverage')) return jsonResponse({
       current_material_count: 0,
@@ -105,12 +147,44 @@ describe('AuditCaseDetailPage', () => {
     ))).toBe(true);
   });
 
+  it('renders the rule binding panel when the rules tab is selected', async () => {
+    const user = userEvent.setup();
+    stubFetch();
+    renderAt('/enterprise/audit-cases/case-1');
+
+    expect(await screen.findByText('示例企业')).toBeTruthy();
+    await user.click(screen.getByRole('tab', { name: '规则绑定' }));
+
+    expect(await screen.findByText('规则版本候选')).toBeTruthy();
+    expect(screen.getByLabelText('能源管理体系规则 · 版本 1')).toBeTruthy();
+  });
+
+  it('renders the project document workspace and loads project documents', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+    renderAt('/enterprise/audit-cases/case-1');
+
+    expect(await screen.findByText('示例企业')).toBeTruthy();
+    await user.click(screen.getByRole('tab', { name: '项目文件库' }));
+
+    expect(await screen.findByText('文档分区')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '创建文档' })).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/documents'))).toBe(true);
+  });
+
   it('does not allow an archived project to submit edits', async () => {
+    const user = userEvent.setup();
     stubFetch({ ...baseCase, id: 'case-archived', status: 'archived' });
     renderAt('/enterprise/audit-cases/case-archived');
 
     expect(await screen.findByText('已归档')).toBeTruthy();
     expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole('tab', { name: '规则绑定' }));
+
+    expect(await screen.findByText('项目已归档，规则绑定不可修改')).toBeTruthy();
+    expect((screen.getByLabelText('能源管理体系规则 · 版本 1') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '预览迁移影响' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '确认迁移' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('keeps the frozen knowledge snapshot collapsed and does not rewrite it on an ordinary save', async () => {

@@ -305,7 +305,6 @@ def _node_executable() -> str:
         if executable.is_file():
             return str(executable)
         raise RuntimeError(f"STAFFDECK_NODE does not point to a file: {configured}")
-
     executable = shutil.which("node")
     if executable:
         return executable

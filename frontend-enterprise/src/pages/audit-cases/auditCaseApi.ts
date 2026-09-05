@@ -1,6 +1,9 @@
 import { api, TENANT_ID } from '@/api/client';
 import type {
   AuditCaseCoverageRead,
+  AuditCaseDocumentDetailRead,
+  AuditCaseDocumentRead,
+  AuditCaseDocumentVersionRead,
   AuditCaseEventRead,
   AuditCaseManagementOptions,
   AuditCaseManagementPage,
@@ -13,6 +16,8 @@ import type {
   AuditCaseListParams,
   AuditCaseMemberOption,
   AuditCaseUpdateRequest,
+  AuditCaseDocumentCreateRequest,
+  AuditCaseDocumentVersionCreateRequest,
 } from './auditCaseTypes';
 
 function managementSearchParams(params: AuditCaseListParams = {}): string {
@@ -119,6 +124,53 @@ export function loadAuditCaseCoverage(caseId: string): Promise<AuditCaseCoverage
 export function loadAuditCaseEvents(caseId: string): Promise<AuditCaseEventRead[]> {
   return api.get<AuditCaseEventRead[]>(
     `/api/audit-cases/${encodeURIComponent(caseId)}/events?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function loadAuditCaseDocuments(caseId: string): Promise<AuditCaseDocumentRead[]> {
+  return api.get<AuditCaseDocumentRead[]>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/documents?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function createAuditCaseDocument(
+  caseId: string,
+  request: AuditCaseDocumentCreateRequest,
+): Promise<AuditCaseDocumentRead> {
+  return api.post<AuditCaseDocumentRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/documents?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    request,
+  );
+}
+
+export function loadAuditCaseDocument(
+  caseId: string,
+  documentId: string,
+): Promise<AuditCaseDocumentDetailRead> {
+  return api.get<AuditCaseDocumentDetailRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(documentId)}?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function createAuditCaseDocumentVersion(
+  caseId: string,
+  documentId: string,
+  request: AuditCaseDocumentVersionCreateRequest,
+): Promise<AuditCaseDocumentVersionRead> {
+  return api.post<AuditCaseDocumentVersionRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(documentId)}/versions?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    request,
+  );
+}
+
+export function archiveAuditCaseDocument(
+  caseId: string,
+  documentId: string,
+  reason: string,
+): Promise<AuditCaseDocumentRead> {
+  return api.post<AuditCaseDocumentRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(documentId)}/archive?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    { reason },
   );
 }
 

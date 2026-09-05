@@ -1680,19 +1680,54 @@ def test_concurrent_wecom_secret_rotations_serialize_and_match_running_config(
 
     assert all(not thread.is_alive() for thread in threads)
     assert sorted(status for status, _body in responses) == [200, 200], responses
-    assert _wait_for(lambda: len(created) == 3 and manager.get_stream(binding_id) is not None)
+
+    def running_configuration_matches_database() -> bool:
+        with Session(engine) as db:
+            binding = db.get(ChannelBinding, binding_id)
+            if binding is None or not binding.credentials_enc:
+                return False
+            final_revision = binding.config_revision
+            final_secret = decrypt_channel_secret(binding.credentials_enc)
+        stream = manager.get_stream(binding_id)
+        if stream is None:
+            return False
+        running_client, _loop = stream
+        with manager._lock:
+            state = manager._streams.get(binding_id)
+            return bool(
+                state
+                and state.config_revision == final_revision
+                and state.client is running_client
+                and state.thread
+                and state.thread.is_alive()
+                and state.worker
+                and state.worker.is_alive()
+                and any(
+                    secret == final_secret and client is running_client
+                    for _bot_id, secret, client in created
+                )
+            )
+
+    assert _wait_for(running_configuration_matches_database)
     with Session(engine) as db:
         binding = db.get(ChannelBinding, binding_id)
         assert binding.config_revision == 2
         final_secret = decrypt_channel_secret(binding.credentials_enc)
-    assert created[-1][1] == final_secret
-    assert created[0][2].disconnect_calls == 1
-    assert created[1][2].disconnect_calls in {0, 1}
+    stream = manager.get_stream(binding_id)
+    assert stream is not None
+    running_client, _loop = stream
     with manager._lock:
         state = manager._streams[binding_id]
-        assert state.config_revision == 2
-        assert state.thread and state.thread.is_alive()
-        assert state.worker and state.worker.is_alive()
+        assert state.config_revision == binding.config_revision
+        assert state.client is running_client
+    assert any(
+        secret == final_secret and client is running_client
+        for _bot_id, secret, client in created
+    )
+    assert created[0][2].disconnect_calls == 1
+    assert created[1][2].disconnect_calls in {0, 1}
+    assert state.thread and state.thread.is_alive()
+    assert state.worker and state.worker.is_alive()
     manager.pause_binding(binding_id)
     assert manager.wait_binding_stopped(binding_id, timeout_seconds=5.0)
 

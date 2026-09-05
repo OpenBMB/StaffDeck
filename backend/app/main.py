@@ -23,6 +23,8 @@ from app.api import (
     mock,
     model_configs,
     persona,
+    project_data,
+    rules,
     scheduled_tasks,
     sessions,
     skills,
@@ -155,6 +157,8 @@ app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)
 app.include_router(auth.router)
 app.include_router(audit_cases.router)
+app.include_router(rules.router)
+app.include_router(project_data.router)
 app.include_router(agents.scope_router)
 app.include_router(agents.enterprise_router)
 app.include_router(general_skills.router)

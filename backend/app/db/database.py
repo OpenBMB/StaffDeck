@@ -1,14 +1,18 @@
 import hashlib
 import json
+import logging
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import Engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_database_url(url: str) -> str:
@@ -66,6 +70,7 @@ def init_db() -> None:
     _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
     _migrate_sqlite_skill_schema()
+    run_project_data_backfill(engine)
 
 
 def _configure_sqlite_runtime() -> None:
@@ -89,7 +94,7 @@ def _migrate_sqlite_skill_schema() -> None:
     legacy_table = f"{legacy_key}_skills"
     legacy_id_column = f"{legacy_key}_id"
     legacy_id_prefix = f"{legacy_key}_"
-    with _sqlite_immediate_connection() as conn:
+    with _sqlite_immediate_connection(engine) as conn:
         _migrate_model_api_protocols(conn, tables)
         _migrate_model_context_budget(conn, tables)
         _migrate_default_model_output_limit(conn, tables)
@@ -534,8 +539,9 @@ def _migrate_sqlite_skill_schema() -> None:
 
 
 @contextmanager
-def _sqlite_immediate_connection():
-    conn = engine.connect()
+def _sqlite_immediate_connection(target_engine: Engine | None = None):
+    target_engine = target_engine or engine
+    conn = target_engine.connect()
     try:
         conn.exec_driver_sql("BEGIN IMMEDIATE")
         yield conn
@@ -2138,6 +2144,239 @@ def _migrate_audit_case_schema(conn, inspector, tables: set[str]) -> None:
                 "ON audit_cases(agent_id)"
             )
         )
+
+
+def run_project_data_backfill(target_engine: Engine) -> None:
+    """Run the idempotent legacy project-role backfill against an engine."""
+
+    if target_engine.dialect.name == "sqlite":
+        with _sqlite_immediate_connection(target_engine) as conn:
+            target_inspector = inspect(conn)
+            tables = set(target_inspector.get_table_names())
+            _migrate_project_data_schema(conn, target_inspector, tables)
+        return
+
+    with target_engine.begin() as conn:
+        target_inspector = inspect(conn)
+        tables = set(target_inspector.get_table_names())
+        _migrate_project_data_schema(conn, target_inspector, tables)
+
+
+def _migrate_project_data_schema(conn, inspector, tables: set[str]) -> None:
+    """Backfill explicit project roles from legacy owner/member fields."""
+
+    current_tables = set(inspect(conn).get_table_names())
+    if (
+        "project_data_field_definitions" in current_tables
+        and conn.dialect.name in {"sqlite", "postgresql"}
+    ):
+        field_definition_columns = {
+            column["name"]
+            for column in inspect(conn).get_columns("project_data_field_definitions")
+        }
+        if "source_optional" not in field_definition_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE project_data_field_definitions "
+                    "ADD COLUMN source_optional BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_project_data_system_field_key "
+                "ON project_data_field_definitions(field_key) "
+                "WHERE tenant_id IS NULL"
+            )
+        )
+
+    if "project_data_conflicts" in current_tables:
+        conflict_columns = {
+            column["name"]
+            for column in inspect(conn).get_columns("project_data_conflicts")
+        }
+        if "trigger_candidate_id" not in conflict_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE project_data_conflicts "
+                    "ADD COLUMN trigger_candidate_id VARCHAR"
+                )
+            )
+        if conn.dialect.name in {"sqlite", "postgresql"}:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_project_data_open_conflict_retry "
+                    "ON project_data_conflicts("
+                    "tenant_id, audit_case_id, field_key, trigger_candidate_id, current_revision"
+                    ") WHERE status = 'open' AND trigger_candidate_id IS NOT NULL"
+                )
+            )
+
+    required_tables = {"audit_cases", "audit_case_member_roles", "users"}
+    if not required_tables.issubset(tables):
+        return
+
+    marker_available = "app_data_migrations" in current_tables
+    marker_id = "project_data_member_roles_v1"
+    if marker_available:
+        applied = conn.execute(
+            text("SELECT id FROM app_data_migrations WHERE id = :id"),
+            {"id": marker_id},
+        ).first()
+        if applied:
+            return
+
+    cases = conn.execute(
+        text(
+            "SELECT id, tenant_id, owner_user_id, member_user_ids_json "
+            "FROM audit_cases"
+        )
+    ).mappings().all()
+    for case in cases:
+        case_id = str(case["id"])
+        tenant_id = str(case["tenant_id"])
+        owner_user_id = _legacy_project_user_id(
+            case["owner_user_id"],
+            case_id=case_id,
+            source="owner_user_id",
+        )
+        role_candidates: list[tuple[str, str]] = []
+        if owner_user_id is not None:
+            role_candidates.append((owner_user_id, "project_admin"))
+        role_candidates.extend(
+            (user_id, "editor")
+            for user_id in _legacy_project_member_ids(
+                case["member_user_ids_json"],
+                case_id=case_id,
+            )
+        )
+
+        seen_user_ids: set[str] = set()
+        for user_id, role in role_candidates:
+            if user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(user_id)
+
+            user_tenant_id = conn.execute(
+                text("SELECT tenant_id FROM users WHERE id = :user_id"),
+                {"user_id": user_id},
+            ).scalar_one_or_none()
+            if user_tenant_id is None:
+                logger.warning(
+                    "Skipping legacy project role for missing user %s in audit case %s",
+                    user_id,
+                    case_id,
+                )
+                continue
+            if str(user_tenant_id) != tenant_id:
+                logger.warning(
+                    "Skipping legacy project role for cross-tenant user %s in audit case %s",
+                    user_id,
+                    case_id,
+                )
+                continue
+
+            role_id_seed = f"{tenant_id}\x1f{case_id}\x1f{user_id}".encode()
+            role_id = f"auditrole_{hashlib.sha256(role_id_seed).hexdigest()[:16]}"
+            _execute_conflict_safe_insert(
+                conn,
+                insert_sql=(
+                    "INSERT INTO audit_case_member_roles ("
+                    "id, tenant_id, audit_case_id, user_id, role, created_by_user_id, "
+                    "created_at, updated_at"
+                    ") VALUES ("
+                    ":id, :tenant_id, :audit_case_id, :user_id, :role, NULL, "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP"
+                    ")"
+                ),
+                params={
+                    "id": role_id,
+                    "tenant_id": tenant_id,
+                    "audit_case_id": case_id,
+                    "user_id": user_id,
+                    "role": role,
+                },
+                conflict_columns="tenant_id, audit_case_id, user_id",
+            )
+
+    if marker_available:
+        _execute_conflict_safe_insert(
+            conn,
+            insert_sql="INSERT INTO app_data_migrations (id) VALUES (:id)",
+            params={"id": marker_id},
+            conflict_columns="id",
+        )
+
+
+def _execute_conflict_safe_insert(
+    conn,
+    *,
+    insert_sql: str,
+    params: dict[str, object],
+    conflict_columns: str,
+) -> None:
+    dialect_name = conn.dialect.name
+    if dialect_name == "sqlite":
+        conn.execute(text(insert_sql.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)), params)
+        return
+    if dialect_name == "postgresql":
+        conn.execute(
+            text(f"{insert_sql} ON CONFLICT ({conflict_columns}) DO NOTHING"),
+            params,
+        )
+        return
+
+    try:
+        with conn.begin_nested():
+            conn.execute(text(insert_sql), params)
+    except IntegrityError:
+        logger.info(
+            "Ignoring concurrent project data migration insert conflict on %s",
+            conflict_columns,
+        )
+
+
+def _legacy_project_user_id(value: object, *, case_id: str, source: str) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    logger.warning(
+        "Skipping malformed legacy project role identifier from %s in audit case %s: %r",
+        source,
+        case_id,
+        value,
+    )
+    return None
+
+
+def _legacy_project_member_ids(value: object, *, case_id: str) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Skipping malformed legacy member_user_ids_json in audit case %s",
+                case_id,
+            )
+            return []
+    if not isinstance(value, list):
+        logger.warning(
+            "Skipping malformed legacy member_user_ids_json in audit case %s: %r",
+            case_id,
+            value,
+        )
+        return []
+
+    member_ids: list[str] = []
+    for item in value:
+        user_id = _legacy_project_user_id(
+            item,
+            case_id=case_id,
+            source="member_user_ids_json",
+        )
+        if user_id is not None:
+            member_ids.append(user_id)
+    return member_ids
 
 
 def _migrate_audit_case_material_schema(conn, inspector, tables: set[str]) -> None:

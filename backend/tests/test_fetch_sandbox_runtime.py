@@ -18,9 +18,10 @@ def test_reviewed_node_archives_have_built_in_hashes() -> None:
         "darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64",
         "win-arm64", "win-x64",
     }
+    assert fetch.NODE_VERSION == "v20.19.5"
 
     assert expected == {
-        filename.removeprefix("node-v22.14.0-").removesuffix(".tar.gz").removesuffix(".zip")
+        filename.removeprefix(f"node-{fetch.NODE_VERSION}-").removesuffix(".tar.gz").removesuffix(".zip")
         for filename in fetch.NODE_SHA256
     }
 
