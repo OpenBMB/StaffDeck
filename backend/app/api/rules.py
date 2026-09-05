@@ -62,6 +62,29 @@ class RuleSetVersionRead(BaseModel):
     published_at: Any | None = None
 
 
+class RuleDefinitionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    tenant_id: str
+    rule_set_version_id: str
+    rule_key: str
+    name: str
+    description: str
+    workflow_nodes: list[str]
+    information_domains: list[str]
+    document_types: list[str]
+    field_keys: list[str]
+    execution_level: str
+    execution_method: str
+    condition: dict[str, Any]
+    input_requirements: list[dict[str, Any]]
+    evidence_requirements: list[dict[str, Any]]
+    source_refs: list[dict[str, Any]]
+    sequence: int
+    enabled: bool
+
+
 class RuleVersionPayload(BaseModel):
     rules: list[RuleDefinitionCreate] = Field(default_factory=list)
 
@@ -162,6 +185,29 @@ def _version_read(row: RuleSetVersion) -> RuleSetVersionRead:
     return RuleSetVersionRead.model_validate(row)
 
 
+def _rule_read(row: RuleDefinition) -> RuleDefinitionRead:
+    return RuleDefinitionRead(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        rule_set_version_id=row.rule_set_version_id,
+        rule_key=row.rule_key,
+        name=row.name,
+        description=row.description,
+        workflow_nodes=list(row.workflow_nodes_json or []),
+        information_domains=list(row.information_domains_json or []),
+        document_types=list(row.document_types_json or []),
+        field_keys=list(row.field_keys_json or []),
+        execution_level=row.execution_level,
+        execution_method=row.execution_method,
+        condition=dict(row.condition_json or {}),
+        input_requirements=list(row.input_requirements_json or []),
+        evidence_requirements=list(row.evidence_requirements_json or []),
+        source_refs=list(row.source_refs_json or []),
+        sequence=row.sequence,
+        enabled=row.enabled,
+    )
+
+
 def _evaluation_read(row: RuleEvaluation) -> RuleEvaluationRead:
     return RuleEvaluationRead(
         id=row.id,
@@ -241,6 +287,19 @@ def _parse_rules(payload: Any) -> list[RuleDefinitionCreate]:
         raise HTTPException(status_code=422, detail="INVALID_RULE_DEFINITION") from exc
 
 
+@router.get("/rule-sets", response_model=list[RuleSetRead])
+def list_rule_sets(
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[RuleSetRead]:
+    _require_rule_admin(tenant_id, current_user)
+    rows = db.exec(
+        select(RuleSet).where(RuleSet.tenant_id == tenant_id).order_by(RuleSet.key)
+    ).all()
+    return [_rule_set_read(row) for row in rows]
+
+
 @router.post("/rule-sets", response_model=RuleSetRead, status_code=status.HTTP_201_CREATED)
 def create_rule_set(
     request: RuleSetCreate,
@@ -305,6 +364,89 @@ def _get_version_for_set(
     return version
 
 
+@router.get("/rule-sets/{rule_set_id}/versions", response_model=list[RuleSetVersionRead])
+def list_rule_set_versions(
+    rule_set_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[RuleSetVersionRead]:
+    _require_rule_admin(tenant_id, current_user)
+    rule_set = db.exec(
+        select(RuleSet).where(
+            RuleSet.id == rule_set_id,
+            RuleSet.tenant_id == tenant_id,
+        )
+    ).first()
+    if rule_set is None:
+        raise HTTPException(status_code=404, detail="RULE_SET_NOT_FOUND")
+    rows = db.exec(
+        select(RuleSetVersion)
+        .where(
+            RuleSetVersion.rule_set_id == rule_set_id,
+            RuleSetVersion.tenant_id == tenant_id,
+        )
+        .order_by(RuleSetVersion.version.desc())
+    ).all()
+    return [_version_read(row) for row in rows]
+
+
+@router.get(
+    "/rule-sets/{rule_set_id}/versions/{version_id}/rules",
+    response_model=list[RuleDefinitionRead],
+)
+def list_rule_definitions(
+    rule_set_id: str,
+    version_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[RuleDefinitionRead]:
+    _require_rule_admin(tenant_id, current_user)
+    _get_version_for_set(
+        db,
+        rule_set_id=rule_set_id,
+        version_id=version_id,
+        tenant_id=tenant_id,
+    )
+    rows = db.exec(
+        select(RuleDefinition)
+        .where(
+            RuleDefinition.rule_set_version_id == version_id,
+            RuleDefinition.tenant_id == tenant_id,
+        )
+        .order_by(RuleDefinition.sequence, RuleDefinition.rule_key)
+    ).all()
+    return [_rule_read(row) for row in rows]
+
+
+@router.put(
+    "/rule-sets/{rule_set_id}/versions/{version_id}/rules",
+    response_model=RuleSetVersionRead,
+)
+def replace_rule_definitions(
+    rule_set_id: str,
+    version_id: str,
+    request: RuleVersionPayload,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> RuleSetVersionRead:
+    _require_rule_admin(tenant_id, current_user)
+    _get_version_for_set(
+        db,
+        rule_set_id=rule_set_id,
+        version_id=version_id,
+        tenant_id=tenant_id,
+    )
+    try:
+        return _version_read(
+            RuleLibraryService(db).replace_rules(version_id, current_user, request.rules)
+        )
+    except Exception as exc:
+        raise _rule_error(exc) from exc
+
+
 @router.post(
     "/rule-sets/{rule_set_id}/versions/{version_id}/validate",
     response_model=dict[str, list[str]],
@@ -351,25 +493,6 @@ def publish_rule_set_version(
         return _version_read(RuleLibraryService(db).publish_version(version_id, current_user))
     except Exception as exc:
         raise _rule_error(exc) from exc
-
-
-@router.get("/rule-sets/{rule_set_id}/versions", response_model=list[RuleSetVersionRead])
-def list_rule_set_versions(
-    rule_set_id: str,
-    tenant_id: str = Query(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session),
-) -> list[RuleSetVersionRead]:
-    _require_rule_admin(tenant_id, current_user)
-    rows = db.exec(
-        select(RuleSetVersion)
-        .where(
-            RuleSetVersion.rule_set_id == rule_set_id,
-            RuleSetVersion.tenant_id == tenant_id,
-        )
-        .order_by(RuleSetVersion.version.desc())
-    ).all()
-    return [_version_read(row) for row in rows]
 
 
 @router.get(

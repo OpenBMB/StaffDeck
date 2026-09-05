@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -122,6 +125,26 @@ def _create_and_publish(
     return rule_set, publish_response.json()
 
 
+def _create_draft(
+    client: TestClient,
+    headers: dict[str, str],
+    *,
+    rule_set_id: str | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    if rule_set_id is None:
+        rule_set = _create_rule_set(client, headers)
+        rule_set_id = str(rule_set["id"])
+    else:
+        rule_set = {"id": rule_set_id}
+    version_response = client.post(
+        f"/api/rule-sets/{rule_set_id}/versions?tenant_id=tenant_demo",
+        json={"rules": [_rule_payload()]},
+        headers=headers,
+    )
+    assert version_response.status_code == 201, version_response.text
+    return rule_set, version_response.json()
+
+
 def test_non_admin_cannot_create_rule_set(api_context) -> None:
     client, _admin_headers, member_headers, _case, _engine = api_context
     response = client.post(
@@ -170,6 +193,113 @@ def test_admin_can_create_validate_publish_and_list_rule_versions(api_context) -
     )
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == version["id"]
+
+
+def test_admin_can_list_rule_sets(api_context) -> None:
+    client, admin_headers, _member_headers, _case, _engine = api_context
+    rule_set = _create_rule_set(client, admin_headers)
+    response = client.get(
+        "/api/rule-sets?tenant_id=tenant_demo",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()[0]["id"] == rule_set["id"]
+
+
+def test_admin_can_read_and_replace_draft_rules(api_context) -> None:
+    client, admin_headers, _member_headers, _case, _engine = api_context
+    rule_set, draft = _create_draft(client, admin_headers)
+
+    listed = client.get(
+        f"/api/rule-sets/{rule_set['id']}/versions/{draft['id']}/rules"
+        "?tenant_id=tenant_demo",
+        headers=admin_headers,
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()[0]["rule_key"] == "scope.required"
+
+    replacement = _rule_payload()
+    replacement["name"] = "认证范围必填（更新）"
+    response = client.put(
+        f"/api/rule-sets/{rule_set['id']}/versions/{draft['id']}/rules"
+        "?tenant_id=tenant_demo",
+        json={"rules": [replacement]},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == draft["id"]
+
+
+def test_published_rule_version_rejects_replacement(api_context) -> None:
+    client, admin_headers, _member_headers, _case, _engine = api_context
+    rule_set, published = _create_and_publish(client, admin_headers)
+    replacement = _rule_payload()
+    replacement["name"] = "发布后修改"
+    response = client.put(
+        f"/api/rule-sets/{rule_set['id']}/versions/{published['id']}/rules"
+        "?tenant_id=tenant_demo",
+        json={"rules": [replacement]},
+        headers=admin_headers,
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "RULE_VERSION_IMMUTABLE"
+
+
+def test_admin_cannot_read_cross_tenant_rule_sets(api_context) -> None:
+    client, admin_headers, _member_headers, _case, _engine = api_context
+    response = client.get(
+        "/api/rule-sets?tenant_id=tenant_other",
+        headers=admin_headers,
+    )
+    assert response.status_code == 403
+
+
+def test_versions_endpoint_returns_not_found_for_missing_rule_set(api_context) -> None:
+    client, admin_headers, _member_headers, _case, _engine = api_context
+    response = client.get(
+        "/api/rule-sets/ruleset_missing/versions?tenant_id=tenant_demo",
+        headers=admin_headers,
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "RULE_SET_NOT_FOUND"
+
+
+def test_versions_endpoint_returns_not_found_for_cross_tenant_rule_set(api_context) -> None:
+    client, admin_headers, _member_headers, _case, engine = api_context
+    with Session(engine, expire_on_commit=False) as db:
+        db.exec(
+            text(
+                """
+                INSERT INTO rule_sets (
+                    id, tenant_id, key, name, description,
+                    management_systems_json, audit_types_json,
+                    business_domain, status, created_at, updated_at
+                ) VALUES (
+                    :id, :tenant_id, :key, :name, :description,
+                    :management_systems_json, :audit_types_json,
+                    :business_domain, :status, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            params={
+                "id": "ruleset_foreign",
+                "tenant_id": "tenant_other",
+                "key": "other.audit",
+                "name": "其他租户规则",
+                "description": "",
+                "management_systems_json": json.dumps([]),
+                "audit_types_json": json.dumps([]),
+                "business_domain": "",
+                "status": "active",
+            },
+        )
+        db.commit()
+    response = client.get(
+        "/api/rule-sets/ruleset_foreign/versions?tenant_id=tenant_demo",
+        headers=admin_headers,
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "RULE_SET_NOT_FOUND"
 
 
 def test_project_binding_requires_published_version_and_pins_it(api_context) -> None:
@@ -300,10 +430,10 @@ def test_rule_exception_requires_explicit_rule_opt_in(api_context) -> None:
         )
         db.add(evaluation)
         db.commit()
-        evaluation_id = evaluation.id
+        rule_id = evaluation.id
 
     response = client.post(
-        f"/api/rule-evaluations/{evaluation_id}/exception?tenant_id=tenant_demo",
+        f"/api/rule-evaluations/{rule_id}/exception?tenant_id=tenant_demo",
         json={"reason": "人工确认"},
         headers=member_headers,
     )
