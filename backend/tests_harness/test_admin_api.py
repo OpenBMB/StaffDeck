@@ -269,10 +269,9 @@ def test_business_base_switch_requires_connection_and_preflight(ctx, tmp_path, m
     assert r.status_code == 200 and r.json()["saved"]["base"]["configured"] is False
     (tmp_path / "rt.json").write_text((tmp_path / "rt.json").read_text().replace('"security_profile": "OSS_LOCAL"', '"security_profile": "BUSINESS_BASE"'))
     assembly.stop_harness_runtime()
-    info = assembly.start_harness_runtime(settings)
-    assert info["security_profile"] == "OSS_LOCAL" and "回退" in info["fallback"]
-    st = c.get("/api/enterprise/harness/config", params={"tenant_id": "tenant_demo"}, headers=headers).json()
-    assert st["applied"]["security_profile"] == "OSS_LOCAL" and st["pending"] is True and "回退" in st["last_restart_error"]
+    with pytest.raises(assembly.AssemblyFailed, match="禁止自动降级"):
+        assembly.start_harness_runtime(settings)
+    assert assembly.assembly_state(settings)["applied"] is None
     assembly.stop_harness_runtime()
 
 

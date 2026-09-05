@@ -25,19 +25,9 @@ from typing import Any, Iterable, Mapping, Sequence
 from staffdeck_harness.composition.slots import ResolvedSlot, resolve_slots
 from staffdeck_harness.composition.staff import StaffComposition
 from staffdeck_harness.contracts.errors import ContractIncompatible, DependencyCycle, HookCycle
-from staffdeck_harness.contracts.manifest import HOOK_POINTS, HookContribution, HookPoint
+from staffdeck_harness.contracts.manifest import HOOK_POINTS, HookContribution, HookPoint, SlotBinding, SlotName
 
-SUPPORTED_CONTRACTS: dict[str, set[str]] = {
-    "knowledge.search": {"v1"},
-    "general_skill.consume": {"v1"},
-    "tool.invoke": {"v1"},
-    "mcp.invoke": {"v1"},
-    "a2a.invoke": {"v1"},
-    "sandbox.execute": {"v1"},
-    "artifact.publish": {"v1"},
-    "handoff.request": {"v1"},
-    "sop.execute": {"v1"},
-}
+from staffdeck_harness.contracts.operations import SUPPORTED_CONTRACTS
 
 
 @dataclass(frozen=True)
@@ -58,6 +48,8 @@ class CapabilityGrant:
     # default (first enabled provider). Pinned at compile time so the snapshot is a frozen contract.
     provider_module_id: str | None = None
     provider_version: str | None = None
+    resource_digest: str | None = None
+    provider_config: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -94,14 +86,24 @@ class CompositionSnapshot:
     interactions: tuple[str, ...]
     generation: int = 0
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    bindings: tuple[SlotBinding, ...] = ()
+
+    def module_binding(self, slot: SlotName, *, sop_id: str | None = None) -> SlotBinding | None:
+        parents = (sop_id, self.staff_id) if sop_id else (self.staff_id,)
+        for parent in parents:
+            found = next((b for b in self.bindings if b.parent_id == parent and b.slot == slot), None)
+            if found is not None:
+                return found
+        return None
 
     def grants_for(self, *, sop_id: str | None = None, node_id: str | None = None) -> tuple[CapabilityGrant, ...]:
         """General grants plus the grants of the active SOP node (if any)."""
 
-        out = [g for g in self.grants if g.scope == "general"]
+        scoped = []
         if sop_id:
-            out.extend(g for g in self.grants if g.sop_id == sop_id and (node_id is None or g.node_id in (None, node_id)))
-        return tuple(out)
+            scoped = [g for g in self.grants if g.sop_id == sop_id and (node_id is None or g.node_id in (None, node_id))]
+        overrides = {(g.operation, g.resource_id) for g in scoped}
+        return tuple(scoped + [g for g in self.grants if g.scope == "general" and (g.operation, g.resource_id) not in overrides])
 
     def allowed_resource_ids(self, *, sop_id: str | None = None, node_id: str | None = None) -> dict[str, set[str]]:
         allowed: dict[str, set[str]] = {}
@@ -115,10 +117,13 @@ class CompositionSnapshot:
 
 # --------------------------------------------------------------------------- helpers
 
-def _check_contracts(operations: Iterable[str]) -> None:
+def _check_contracts(operations: Iterable[str], supported: Mapping[str, set[str]] = SUPPORTED_CONTRACTS) -> None:
+    from staffdeck_harness.modules.registry import peek_registry
+
+    reg = peek_registry()
     for op in operations:
         name, _, version = op.partition("/")
-        if name not in SUPPORTED_CONTRACTS or version not in SUPPORTED_CONTRACTS[name]:
+        if not (reg and op in reg.operations) and (name not in supported or version not in supported[name]):
             raise ContractIncompatible(f"unsupported capability contract {op!r}", details={"operation": op})
 
 
@@ -165,9 +170,17 @@ def compile_hooks(contributions: Sequence[HookContribution]) -> HookPlan:
             for dep in c.depends_on:
                 if dep in by_handler:
                     edges.setdefault(dep, []).append(c.handler)
-        topo = _detect_cycle(edges, error=HookCycle, what=f"hook[{point}]")
-        rank = {h: i for i, h in enumerate(topo)}
-        order[point] = tuple(sorted(items, key=lambda c: (c.order, rank.get(c.handler, 0), c.handler)))
+        if len(by_handler) != len(items):
+            raise ContractIncompatible(f"duplicate hook handler at {point}")
+        _detect_cycle(edges, error=HookCycle, what=f"hook[{point}]")
+        pending = dict(by_handler)
+        ordered = []
+        while pending:
+            ready = [c for c in pending.values() if not any(d in pending for d in c.depends_on)]
+            selected = min(ready, key=lambda c: (c.order, c.handler))
+            ordered.append(selected)
+            del pending[selected.handler]
+        order[point] = tuple(ordered)
     return HookPlan(order=order)
 
 
@@ -187,16 +200,12 @@ DEFAULT_HOOKS: tuple[HookContribution, ...] = (
 class CompositionCompiler:
     def __init__(self, *, hooks: Sequence[HookContribution] | None = None, supported_contracts: Mapping[str, set[str]] | None = None):
         if hooks is None:
-            try:
-                from staffdeck_harness.modules.registry import peek_registry
+            from staffdeck_harness.modules.registry import peek_registry
 
-                reg = peek_registry()
-                hooks = (reg.hooks() if reg is not None else ()) or DEFAULT_HOOKS
-            except Exception:  # registry unavailable (unit tests without settings) -> shipped defaults
-                hooks = DEFAULT_HOOKS
+            reg = peek_registry()
+            hooks = reg.hooks() if reg is not None else DEFAULT_HOOKS
         self.hooks = tuple(hooks)
-        if supported_contracts is not None:
-            SUPPORTED_CONTRACTS.update(supported_contracts)
+        self.supported_contracts = {**SUPPORTED_CONTRACTS, **(supported_contracts or {})}
 
     def compile(self, staff: StaffComposition, *, generation: int = 0, metadata: Mapping[str, Any] | None = None) -> CompositionSnapshot:
         visible = staff.visible_resource_ids()
@@ -236,11 +245,13 @@ class CompositionCompiler:
                 "general_skill": "general_skill.consume/v1",
                 "tool": "tool.invoke/v1",
                 "mcp_server": "mcp.invoke/v1",
-            }[cap.resource_type]
+            }.get(cap.resource_type)
+            op = str(cap.metadata.get("operation") or op or "")
+            _check_contracts([op], self.supported_contracts)
             if cap.capability_scope == "sop_specific":
                 continue  # only reachable through a SOP slot
             mid, ver = provider_for(op, cap.metadata)
-            grants.append(CapabilityGrant(operation=op, resource_type=cap.resource_type, resource_id=cap.resource_id, name=cap.name, binding_id=cap.binding_id, scope="general", provider_module_id=mid, provider_version=ver))
+            grants.append(CapabilityGrant(operation=op, resource_type=cap.resource_type, resource_id=cap.resource_id, name=cap.name, binding_id=cap.binding_id, scope="general", provider_module_id=mid, provider_version=ver, resource_digest=cap.metadata.get("resource_digest"), provider_config=dict(cap.metadata.get("provider_config") or {})))
 
         # L2 SOPs: logical slots -> Staff bindings, plus sub-SOP graph validation.
         sop_edges: dict[str, list[str]] = {}
@@ -249,7 +260,7 @@ class CompositionCompiler:
         cap_binding = {(c.resource_type, c.resource_id): c.binding_id for c in staff.capabilities}
         cap_metadata = {(c.resource_type, c.resource_id): c.metadata for c in staff.capabilities}
         for sop in staff.sops:
-            _check_contracts(d.operation for d in sop.declared_slots)
+            _check_contracts((d.operation for d in sop.declared_slots), self.supported_contracts)
             resolved = resolve_slots(
                 sop.declared_slots,
                 sop.slot_bindings,
@@ -262,7 +273,10 @@ class CompositionCompiler:
                 if slot.resource_type in {"handoff", "skill", "capability"}:
                     continue
                 key = (slot.resource_type, slot.resource_id)
-                mid, ver = provider_for(slot.declaration.operation, cap_metadata.get(key))
+                mid, ver = provider_for(slot.declaration.operation, {**(cap_metadata.get(key) or {}), **slot.metadata})
+                requested_version = slot.metadata.get("module_version")
+                if requested_version and requested_version != ver:
+                    raise ContractIncompatible(f"slot {slot.declaration.name}: provider version unavailable")
                 grants.append(
                     CapabilityGrant(
                         operation=slot.declaration.operation,
@@ -277,10 +291,40 @@ class CompositionCompiler:
                         required=slot.declaration.required,
                         provider_module_id=mid,
                         provider_version=ver,
+                        resource_digest=(cap_metadata.get(key) or {}).get("resource_digest"),
+                        provider_config=dict(slot.metadata.get("provider_config") or (cap_metadata.get(key) or {}).get("provider_config") or {}),
                     )
                 )
         _detect_cycle(sop_edges, error=DependencyCycle, what="sub-SOP")
 
+        from staffdeck_harness.modules.registry import peek_registry
+
+        reg = peek_registry()
+        bindings: list[SlotBinding] = []
+        selections = [(staff.staff_id, staff.metadata.get("module_bindings") or {})]
+        selections.extend((s.skill_id, s.module_bindings) for s in staff.sops)
+        for parent, selection in selections:
+            for slot_value, raw in selection.items():
+                slot_name = SlotName(slot_value)
+                if slot_name not in {SlotName.RUNTIME_MEMORY, SlotName.STAFF_INTERACTION, SlotName.STAFF_TEAM, SlotName.HANDOFF_NOTIFIER, SlotName.HANDOFF_ASSIGNMENT, SlotName.HANDOFF_REPLY_ENDPOINT}:
+                    raise ContractIncompatible(f"slot {slot_value} is deployment-owned")
+                specs = (raw or [None]) if isinstance(raw, list) else [raw]
+                for index, spec in enumerate(specs):
+                    cfg = dict(spec) if isinstance(spec, Mapping) else {"module_id": spec}
+                    mid = str(cfg.get("module_id") or "")
+                    item = reg.get(mid) if reg else None
+                    if mid and (item is None or not item.enabled or item.slot != slot_name):
+                        raise ContractIncompatible(f"binding {parent}/{slot_value}: module {mid!r} unavailable")
+                    ver = item.manifest.version if item else "disabled"
+                    if cfg.get("module_version") and cfg["module_version"] != ver:
+                        raise ContractIncompatible(f"binding {parent}/{slot_value}: version unavailable")
+                    bindings.append(SlotBinding(binding_id=f"{parent}/{slot_value}/{index}", slot=slot_name, parent_id=parent, module_id=mid, module_version=ver, config_revision=str(cfg.get("config_revision") or "1"), metadata=dict(cfg.get("config") or {})))
+        for g in grants:
+            if g.provider_module_id:
+                from staffdeck_harness.contracts.manifest import SLOT_FOR_OPERATION
+
+                bid = f"{g.sop_id}/{g.node_id}/{g.slot_name}" if g.sop_id else g.binding_id or f"{staff.staff_id}/{g.resource_id}"
+                bindings.append(SlotBinding(binding_id=bid, slot=SLOT_FOR_OPERATION.get(g.operation, SlotName.SOP_SLOT_ACTION) if g.sop_id else SlotName.STAFF_CAPABILITY, parent_id=g.sop_id or staff.staff_id, module_id=g.provider_module_id, module_version=g.provider_version or "", config_revision=g.resource_digest or "1", logical_name=g.slot_name, resource_ref=g.resource_id))
         hooks = compile_hooks(self.hooks)
         payload = {
             "tenant_id": staff.tenant_id,
@@ -289,8 +333,10 @@ class CompositionCompiler:
             "model_route": dict(sorted(staff.model_route.items())),
             "session_policy": asdict(staff.session_policy),
             "grants": sorted((asdict(g) for g in grants), key=lambda g: (g["scope"], g["operation"], g["resource_id"], g["sop_id"] or "", g["node_id"] or "")),
-            "sops": sorted(({"skill_id": p.skill_id, "version": p.version, "slots": sorted((s.declaration.name, s.resource_id) for s in p.resolved_slots)} for p in plans), key=lambda p: p["skill_id"]),
-            "hooks": {k: [c.handler for c in v] for k, v in hooks.order.items()},
+            "sops": sorted(({"skill_id": p.skill_id, "version": p.version, "content": p.content, "slots": sorted((s.declaration.name, s.resource_id) for s in p.resolved_slots)} for p in plans), key=lambda p: p["skill_id"]),
+            "hooks": {k: [asdict(c) for c in v] for k, v in hooks.order.items()},
+            "bindings": [asdict(b) for b in bindings],
+            "module_versions": sorted((i.manifest.module_id, i.manifest.version, dict(i.config)) for s in SlotName for i in (reg.providers(s) if reg else [])),
             "channels": sorted(c.binding_id for c in staff.channels),
             "team_id": staff.team.team_id if staff.team else None,
             "interactions": list(staff.interactions),
@@ -312,4 +358,5 @@ class CompositionCompiler:
             interactions=tuple(staff.interactions),
             generation=generation,
             metadata=dict(metadata or {}),
+            bindings=tuple(bindings),
         )

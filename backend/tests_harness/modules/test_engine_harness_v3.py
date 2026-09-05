@@ -221,7 +221,10 @@ def test_provider_engine_harness_v3_open_returns_harness_v3_engine_with_stub_run
 
     engine = module(MODULE_ID).provider.open(fake_loop, None, "a1")
     assert isinstance(engine, HarnessV3Engine)
-    assert isinstance(engine, HarnessV2Engine)
+    from app.core.harness_v2_engine import TurnCoordinator
+
+    assert isinstance(engine, TurnCoordinator)
+    assert not isinstance(engine, HarnessV2Engine)
     assert engine.runtime is stub_runtime
     assert seen == [settings], "runtime is resolved from app settings, not from the loop"
     assert engine.owner is fake_loop and engine.db is db

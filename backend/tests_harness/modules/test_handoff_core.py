@@ -114,7 +114,7 @@ def test_disable_handoff_core(registry):
     d = _describe(registry)
     assert d["kind"] == "T" and d["switchable"] is False
     assert d["slot"] not in {"runtime.engine", "security.pep"}
-    # a deployment-level disable still leaves it installed (config, not code) — the admin UI just never offers it
+    # Direct configuration cannot silently disable the shared platform state machine.
     class Disabled(FakeSettings):
         harness_disabled_modules = MODULE_ID
 
@@ -122,7 +122,7 @@ def test_disable_handoff_core(registry):
     for slot in SlotName:
         reg.mark_guarded(slot)
     reg.seal()
-    assert reg.get(MODULE_ID) is not None and reg.get(MODULE_ID).enabled is False
+    assert reg.get(MODULE_ID) is not None and reg.get(MODULE_ID).enabled is True
     assert _describe(reg)["switchable"] is False
 
 

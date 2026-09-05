@@ -8,6 +8,8 @@ workspace with the OS sandbox disabled, so everything is local and deterministic
 
 from __future__ import annotations
 
+from tests_harness.modules.conftest import invoke_provider
+
 import re
 import sys
 from pathlib import Path
@@ -186,7 +188,7 @@ def test_disable_sandbox_local():
 def test_provider_sandbox_local_unknown_tool(module, host, invocation):
     provider = module(MODULE_ID).provider
     h = host()
-    res = provider.invoke(h, _call(invocation, "format_disk"))
+    res = invoke_provider(provider, h, _call(invocation, "format_disk"))
     assert isinstance(res, ModuleResult)
     assert res.success is False and res.error["code"] == "TOOL_NOT_FOUND"
     assert h.guard.calls == [(OPERATION, "capability", "sandbox:format_disk")], "the PEP runs before the tool lookup"
@@ -195,7 +197,7 @@ def test_provider_sandbox_local_unknown_tool(module, host, invocation):
 def test_provider_sandbox_local_missing_tool_name_is_invalid_arguments(module, host, invocation):
     provider = module(MODULE_ID).provider
     h = host()
-    res = provider.invoke(h, invocation(OPERATION, module_id="sandbox", arguments={}))
+    res = invoke_provider(provider, h, invocation(OPERATION, module_id="sandbox", arguments={}))
     assert isinstance(res, ModuleResult)
     assert res.success is False and res.error["code"] in {"INVALID_ARGUMENTS", "TOOL_NOT_FOUND"}
     assert h.guard.calls[-1] == (OPERATION, "capability", f"sandbox:{OPERATION}")
@@ -204,13 +206,13 @@ def test_provider_sandbox_local_missing_tool_name_is_invalid_arguments(module, h
 def test_provider_sandbox_local_write_then_read_in_workspace(module, host, invocation, tmp_path):
     provider = module(MODULE_ID).provider
     h = host()
-    res = provider.invoke(h, _call(invocation, "write_file", path="notes/out.txt", content="你好，沙箱", create_parents=True))
+    res = invoke_provider(provider, h, _call(invocation, "write_file", path="notes/out.txt", content="你好，沙箱", create_parents=True))
     assert res.success is True, res.error
     assert (tmp_path / "ws" / "notes" / "out.txt").read_text(encoding="utf-8") == "你好，沙箱"
-    res = provider.invoke(h, _call(invocation, "read_file", path="notes/out.txt"))
+    res = invoke_provider(provider, h, _call(invocation, "read_file", path="notes/out.txt"))
     assert res.success is True, res.error
     assert res.data["content"] == "你好，沙箱"
-    res = provider.invoke(h, _call(invocation, "list_directory", path="notes"))
+    res = invoke_provider(provider, h, _call(invocation, "list_directory", path="notes"))
     assert res.success is True, res.error
     names = {Path(str(e.get("path") or e.get("name"))).name for e in res.data.get("entries", [])}
     assert "out.txt" in names
@@ -223,7 +225,7 @@ def test_provider_sandbox_local_write_then_read_in_workspace(module, host, invoc
 
 def test_provider_sandbox_local_invalid_arguments(module, host, invocation):
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host(), _call(invocation, "read_file"))
+    res = invoke_provider(provider, host(), _call(invocation, "read_file"))
     assert res.success is False
     assert res.error["code"]
     assert isinstance(res.extensions.get("details"), dict)
@@ -231,14 +233,14 @@ def test_provider_sandbox_local_invalid_arguments(module, host, invocation):
 
 def test_provider_sandbox_local_missing_file(module, host, invocation):
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host(), _call(invocation, "read_file", path="does/not/exist.txt"))
+    res = invoke_provider(provider, host(), _call(invocation, "read_file", path="does/not/exist.txt"))
     assert res.success is False and res.error["code"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell semantics")
 def test_provider_sandbox_local_nonzero_exit_is_a_failure(module, host, invocation):
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host(), _call(invocation, "exec_command", command="exit 3", timeout_seconds=5))
+    res = invoke_provider(provider, host(), _call(invocation, "exec_command", command="exit 3", timeout_seconds=5))
     assert res.success is False and res.error["code"] == "COMMAND_EXIT_NONZERO"
     assert res.extensions["data"]["ok"] is not True
 
@@ -248,7 +250,7 @@ def test_provider_sandbox_local_cross_tenant_context_is_denied(module, host, inv
 
     provider = module(MODULE_ID).provider
     with pytest.raises(PermissionDenied) as exc:
-        provider.invoke(host(), invocation(OPERATION, module_id="sandbox", arguments={"tool": "write_file", "arguments": {"path": "x", "content": "y"}}, tenant_id="t2"))
+        invoke_provider(provider, host(), invocation(OPERATION, module_id="sandbox", arguments={"tool": "write_file", "arguments": {"path": "x", "content": "y"}}, tenant_id="t2"))
     assert exc.value.details == {"operation": OPERATION, "resource_type": "capability", "resource": "sandbox:write_file", "profile": "OSS_LOCAL"}
 
 
@@ -256,7 +258,7 @@ def test_provider_sandbox_local_discover_artifacts(module, host, invocation, tmp
     provider = module(MODULE_ID).provider
     h = host()
     ctx = _call(invocation, "write_file", path="report.md", content="# 报告\n").context
-    assert provider.invoke(h, _call(invocation, "write_file", path="report.md", content="# 报告\n")).success is True
+    assert invoke_provider(provider, h, _call(invocation, "write_file", path="report.md", content="# 报告\n")).success is True
     found = h._sandbox.discover_artifacts(ctx.task_frame_id or ctx.turn_id)
     assert isinstance(found, list)
     if found:  # artifact discovery is a legacy heuristic; when it reports, the shape is stable

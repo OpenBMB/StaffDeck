@@ -55,7 +55,10 @@ def build_profile(settings: Any = None, *, registry: Any = None) -> SecurityProf
         installed = registry.provider(SlotName.SECURITY_PEP)
         build = getattr(installed.provider, "build", None) if installed is not None else None
         if callable(build):
-            return build(settings)
+            profile = build(settings)
+            if profile.name not in {"OSS_LOCAL", "BUSINESS_BASE"}:
+                raise ValueError("only OSS_LOCAL and BUSINESS_BASE security profiles are supported")
+            return profile
     name = str(_read(settings, "security_profile", "OSS_LOCAL") or "OSS_LOCAL").upper()
     if name == "OSS_LOCAL":
         return build_oss_local_profile()
@@ -91,6 +94,12 @@ def get_profile(settings: Any = None) -> SecurityProfile:
     """The active profile. Only built lazily for a caller that owns settings; hosts get the installed one."""
 
     global _active
+    from staffdeck_harness.modules.registry import peek_registry
+
+    registry = peek_registry()
+    paired = getattr(registry, "security_profile", None)
+    if paired is not None:
+        return paired
     if _active is None:
         with _lock:
             if _active is None:
@@ -145,7 +154,10 @@ class Guard:
         return self.profile.name
 
     def decide(self, ctx: SecurityContext, operation: str, resource: ResourceRef) -> Decision:
-        action, _ = self.mapper.map(operation)
+        try:
+            action, _ = self.mapper.map(operation)
+        except KeyError:
+            return Decision.deny(f"no policy action mapped for {operation}", source=self.name)
         return self.profile.pep.authorize(ctx, self.module_id, action, resource)
 
     def require(self, ctx: SecurityContext, operation: str, resource: ResourceRef) -> Decision:

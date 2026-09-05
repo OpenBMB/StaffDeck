@@ -31,26 +31,34 @@ def list_memories(
         return []
     if not can_view_all and username and username != current_user.username:
         return []
-    statement = select(MemoryRecord).where(
-        MemoryRecord.tenant_id == tenant_id,
-        MemoryRecord.kind != "conversation",
-    )
-    if can_view_all and user_id:
-        statement = statement.where(MemoryRecord.user_id == user_id)
-    elif not can_view_all:
-        statement = statement.where(MemoryRecord.user_id == current_user.id)
-    if can_view_all and username:
-        statement = statement.where(MemoryRecord.username == username)
-    fetch_limit = limit * 5 if agent_id else limit
-    rows = list(db.exec(statement.order_by(MemoryRecord.updated_at.desc()).limit(fetch_limit)).all())
-    session_agents = _session_agent_map(db, rows) if agent_id else {}
-    if agent_id:
-        rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
-    rows = memory_rows_for_read(rows[:limit])
-    if q:
-        needle = q.strip().lower()
-        rows = [row for row in rows if needle in row.content.lower() or needle in (row.username or "").lower()]
-    return [_memory_read_with_inferred_agent(row, session_agents) for row in rows]
+    def local():
+        statement = select(MemoryRecord).where(
+            MemoryRecord.tenant_id == tenant_id,
+            MemoryRecord.kind != "conversation",
+        )
+        if can_view_all and user_id:
+            statement = statement.where(MemoryRecord.user_id == user_id)
+        elif not can_view_all:
+            statement = statement.where(MemoryRecord.user_id == current_user.id)
+        if can_view_all and username:
+            statement = statement.where(MemoryRecord.username == username)
+        fetch_limit = limit * 5 if agent_id else limit
+        rows = list(db.exec(statement.order_by(MemoryRecord.updated_at.desc()).limit(fetch_limit)).all())
+        session_agents = _session_agent_map(db, rows) if agent_id else {}
+        if agent_id:
+            rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
+        rows = memory_rows_for_read(rows[:limit])
+        if q:
+            needle = q.strip().lower()
+            rows = [row for row in rows if needle in row.content.lower() or needle in (row.username or "").lower()]
+        return [_memory_read_with_inferred_agent(row, session_agents) for row in rows]
+
+    from staffdeck_harness.contracts.memory import MemoryCall
+    from staffdeck_harness.memory import for_staff
+
+    call = MemoryCall("list", tenant_id, user_id if can_view_all else current_user.id,
+                      agent_id, query=q or "", limit=limit, username=username)
+    return for_staff(db, tenant_id, agent_id).call(call, actor_id=current_user.id, local=local)
 
 
 @router.delete("/me")
@@ -63,25 +71,32 @@ def clear_my_memories(
     if tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
     ensure_tenant(db, tenant_id)
-    rows = list(
-        db.exec(
-            select(MemoryRecord)
-            .where(
-                MemoryRecord.tenant_id == tenant_id,
-                MemoryRecord.user_id == current_user.id,
-                MemoryRecord.kind != "conversation",
-            )
-            .order_by(MemoryRecord.updated_at.desc())
-        ).all()
-    )
-    session_agents = _session_agent_map(db, rows) if agent_id else {}
-    if agent_id:
-        rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
-    deleted = len(rows)
-    for row in rows:
-        db.delete(row)
-    db.commit()
-    return {"deleted": deleted}
+    def local():
+        rows = list(
+            db.exec(
+                select(MemoryRecord)
+                .where(
+                    MemoryRecord.tenant_id == tenant_id,
+                    MemoryRecord.user_id == current_user.id,
+                    MemoryRecord.kind != "conversation",
+                )
+                .order_by(MemoryRecord.updated_at.desc())
+            ).all()
+        )
+        session_agents = _session_agent_map(db, rows) if agent_id else {}
+        if agent_id:
+            rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
+        deleted = len(rows)
+        for row in rows:
+            db.delete(row)
+        db.commit()
+        return {"deleted": deleted}
+
+    from staffdeck_harness.contracts.memory import MemoryCall
+    from staffdeck_harness.memory import for_staff
+
+    call = MemoryCall("clear", tenant_id, current_user.id, agent_id)
+    return for_staff(db, tenant_id, agent_id).call(call, actor_id=current_user.id, local=local)
 
 
 def _session_agent_map(db: Session, rows: list[MemoryRecord]) -> dict[str, str | None]:

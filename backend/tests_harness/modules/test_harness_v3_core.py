@@ -201,5 +201,5 @@ def test_events_or_pep_harness_v3_core_has_no_policy_actions_and_cannot_bypass_g
     with pytest.raises(PermissionDenied) as exc:
         g.require(security_ctx(tenant_id="t1"), "staff.use/v1", ResourceRef(type="agent", id="a1", tenant_id="t2"))
     assert exc.value.details["profile"] == "OSS_LOCAL"
-    with pytest.raises(KeyError):
+    with pytest.raises(PermissionDenied):
         g.require(security_ctx(tenant_id="t1"), "harness_v3.core/v1", ResourceRef(type="runtime", id="x", tenant_id="t1"))

@@ -1,25 +1,10 @@
-"""EngineHost: selects the execution engine for a turn without touching legacy code.
+"""DSH engine adapter and deployment/Staff engine selection.
 
-``HarnessV3Engine`` *is* a ``HarnessV2Engine`` — it inherits the whole outer turn
-machinery (claim, planner, TaskFrame store, leases, SOP CAS, handoff, memory,
-response generation) and swaps exactly one collaborator: ``self.task_agent``.
-``_run_frame`` calls ``self.task_agent.run(requirement, model_config,
-invoker.invoke, ...)`` and that call now lands on ``HarnessV3TaskAgent``.
-
-The per-frame turn context the Harness v3 agent needs (snapshot, security context,
-ids) is captured by wrapping ``_run_frame``: we compile the
-``CompositionSnapshot`` once per turn (bindings take effect next turn), build
-the ``SecurityContext`` from the acting user, and stash them on the engine
-before delegating to the inherited implementation.
-
-``EngineHost.open(loop, request)`` returns the engine for this turn:
-
-    settings.harness_v3_enabled is False        → HarnessV2Engine (legacy, default)
-    settings.harness_v3_enabled is True         → HarnessV3Engine, unless the Staff is
-                                            excluded by ``harness_v3_staff_allowlist``
-    settings.harness_v3_staff_allowlist set     → only listed agent ids run on Harness v3
-
-That gives the "single Staff canary" rollout from the plan.
+HarnessV3Engine and the v2 compatibility engine share TurnCoordinator. Business
+planning/reply contracts live in runtime.model_phases; the Bridge supplies DSH
+phase transport, activation tokens and worker leasing. Capabilities, memory,
+SOP supervision and handoff are host-side modules outside the DSH core loop.
+Images retain the explicitly reported v2 fallback until the upstream path supports them.
 """
 
 from __future__ import annotations
@@ -33,7 +18,7 @@ from typing import Any
 from sqlmodel import Session
 
 
-from app.core.harness_v2_engine import HarnessV2Engine
+from app.core.turn_coordinator import HarnessV2Engine, TurnCoordinator
 from app.db.models import ChatSession, HarnessTaskFrameRecord, Skill, User
 from app.session.session_schema import ChatTurnRequest
 from staffdeck_harness.bridge.task_agent import HarnessV3Runtime, HarnessV3TaskAgent, HarnessV3TurnContext
@@ -105,7 +90,7 @@ def _has_image_attachments(request: Any) -> bool:
     return False
 
 
-class HarnessV3Engine(HarnessV2Engine):
+class HarnessV3Engine(TurnCoordinator):
     """The v2 turn skeleton with every model stage — planning, each step, the reply — on Harness v3.
 
     ``HarnessV2Engine`` keeps what is not a model decision: turn claim, leases, TaskFrame
@@ -141,51 +126,22 @@ class HarnessV3Engine(HarnessV2Engine):
 
     # -- turn-level capture ------------------------------------------------------------
 
-    def run(self, request: ChatTurnRequest):  # type: ignore[override]
+    def run(self, request: ChatTurnRequest):
         self._request = request
-        owner = self.owner
-        self._v2_response_generator = getattr(owner, "response_generator", None)
-        # Memory is a registry provider on the v3 path: re-point owner.memory at the facade for
-        # this turn. The v2 engine reads ``owner.memory.context_memories(...)`` — that call now
-        # goes to the runtime.memory provider (or recalls nothing when memory is disabled).
-        v2_memory = getattr(owner, "memory", None)
-        # Label the turn v3 before any event fires (memory_recalled happens before the frame
-        # loop reaches _ensure_turn_context on the non-stream path).
+        self._v2_response_generator = self.response_generator
         if hasattr(self.events, "execution_engine"):
             self.events.execution_engine = "harness_v3"
-        # The write half: the v2 skeleton ends a visible turn with
-        # ``owner._enqueue_memory_capture(...)``. Point that at the provider too (built-in →
-        # the legacy async job via ctx.legacy_enqueue; swapped → the provider's own store;
-        # disabled → no write). Restored after the turn.
-        had_own_enqueue = "_enqueue_memory_capture" in vars(owner)
-        v2_enqueue = getattr(owner, "_enqueue_memory_capture", None)
-        try:
-            from staffdeck_harness.memory import ProviderMemoryFacade, resolve_memory_provider
-
-            facade = ProviderMemoryFacade(self.db, resolve_memory_provider())
-            owner.memory = facade
-            if callable(v2_enqueue):
-                owner._enqueue_memory_capture = facade.bind_capture(self.events, v2_enqueue)
-        except Exception:  # pragma: no cover - a broken memory module must not take the turn down
-            logger.exception("memory provider could not be resolved; running the turn without memory")
         try:
             return super().run(request)
         finally:
-            if v2_memory is not None:
-                owner.memory = v2_memory
-            if callable(v2_enqueue):
-                if had_own_enqueue:
-                    owner._enqueue_memory_capture = v2_enqueue
-                else:
-                    vars(owner).pop("_enqueue_memory_capture", None)  # class method resumes
-            if self._v2_response_generator is not None:
-                owner.response_generator = self._v2_response_generator
+            self.response_generator = self._v2_response_generator
             if self._pooled is not None:
-                try:
-                    self.runtime.release_process(self._pooled)
-                except Exception:  # pragma: no cover
-                    logger.exception("releasing the turn's engine process failed")
+                self.runtime.release_process(self._pooled)
                 self._pooled = None
+
+    def _prepare_modules(self, request: ChatTurnRequest, session: ChatSession) -> None:
+        self._ensure_turn_context(request, session)
+        super()._prepare_modules(request, session)
 
     # -- the engine process for this turn -----------------------------------------------
 
@@ -245,12 +201,12 @@ class HarnessV3Engine(HarnessV2Engine):
                 raise
             _note_fallback(self.owner, request, "engine_unavailable", detail=str(exc))
             return self._v2_planner.plan(message, session, available_skills, model_config, *args, **kwargs)
-        from staffdeck_harness.bridge.phases import EngineResponseGenerator, EngineTurnPlanner
+        from staffdeck_harness.runtime.model_phases import EngineResponseGenerator, EngineTurnPlanner
 
         engine_session = f"sd-{session.id}-{self.user_message_id or 'turn'}"
         # Reply synthesis (if the turn needs it) runs on the same process.
         if self._v2_response_generator is not None:
-            self.owner.response_generator = EngineResponseGenerator(self._v2_response_generator, runner, engine_session=engine_session)
+            self.response_generator = EngineResponseGenerator(self._v2_response_generator, runner, engine_session=engine_session)
         return EngineTurnPlanner(runner, engine_session=engine_session).plan(message, session, available_skills, model_config, *args, **kwargs)
 
     def runtime_settings(self) -> Any:
@@ -260,7 +216,7 @@ class HarnessV3Engine(HarnessV2Engine):
         if self.snapshot is not None:
             return
         staff = project_staff(self.db, request.tenant_id, session.agent_id)
-        self.snapshot = self.composition_compiler.compile(staff, generation=0, metadata={"turn_id": self.user_message_id, "engine": "harness_v3"})
+        self.snapshot = self.composition_compiler.compile(staff, generation=self.registry.generation if self.registry else 0, metadata={"turn_id": self.user_message_id, "engine": "harness_v3"})
         user = self.db.get(User, request.user_id) if request.user_id else None
         if user is not None:
             self.security_context = self.profile.identity.from_user(user, channel=request.channel)
@@ -273,7 +229,9 @@ class HarnessV3Engine(HarnessV2Engine):
         # Staff-level PEP: may this principal use this staff at all?
         from staffdeck_harness.contracts.security import ResourceRef
 
-        self.guard.require(self.security_context, "staff.use/v1", ResourceRef(type="agent", id=staff.staff_id, tenant_id=staff.tenant_id, attributes=dict(staff.ref.attributes)))
+        from staffdeck_harness.composition.projection import runtime_staff_ref
+
+        self.guard.require(self.security_context, "staff.use/v1", runtime_staff_ref(self.db, ResourceRef(type="agent", id=staff.staff_id, tenant_id=staff.tenant_id, attributes=dict(staff.ref.attributes)), session))
         self.events.record(
             request.tenant_id,
             session.id,
@@ -285,6 +243,7 @@ class HarnessV3Engine(HarnessV2Engine):
                 "sops": [s.skill_id for s in self.snapshot.sops],
                 "security_profile": self.profile.name,
                 "execution_engine": "harness_v3",
+                "bindings": [vars(binding.durable_ref()) for binding in self.snapshot.bindings],
             },
         )
 
@@ -304,6 +263,15 @@ class HarnessV3Engine(HarnessV2Engine):
     ):
         self._ensure_turn_context(request, session)
         assert self.snapshot is not None and self.security_context is not None and self.guard is not None
+        if self.registry is not None:
+            from staffdeck_harness.memory import ProviderMemoryFacade, resolve_memory_provider, memory_config
+            from app.memory.service import memory_read
+
+            provider = resolve_memory_provider(registry=self.registry, snapshot=self.snapshot, sop_id=active_skill.skill_id if active_skill else None)
+            self.memory = ProviderMemoryFacade(self.db, provider, profile=self.profile, config=memory_config(self.registry, self.snapshot, active_skill.skill_id if active_skill else None), registry=self.registry)
+            memory_context = [memory_read(m) for m in self.memory.context_memories(request.tenant_id, request.user_id, agent_id=session.agent_id)] if request.user_id else []
+            if callable(self._legacy_capture):
+                self.capture_memory = self.memory.bind_capture(self.events, self._legacy_capture)
         turn = HarnessV3TurnContext(
             db=self.db,
             snapshot=self.snapshot,
@@ -319,7 +287,8 @@ class HarnessV3Engine(HarnessV2Engine):
             task_frame_id=row.task_id,
             memory_context=[dict(m) for m in memory_context],
             session_slots=dict(session.slots_json or {}),
-            generation=0,
+            generation=self.snapshot.generation,
+            module_registry=self.registry,
             attachments_text="",
             client_turn_id=request.client_turn_id,
             run_id_provider=lambda: self.active_run_id or "",
@@ -385,6 +354,30 @@ class EngineHost:
         return None
 
     def open(self, loop: Any, request: ChatTurnRequest, agent_id: str | None) -> HarnessV2Engine:
+        from staffdeck_harness.modules.registry import peek_registry
+        from staffdeck_harness.contracts.manifest import SlotName
+
+        registry = peek_registry()
+        db = getattr(loop, "db", None)
+        if registry is not None and db is not None and agent_id:
+            from app.db.models import AgentProfile
+            from staffdeck_harness.composition.projection import agent_ref, runtime_staff_ref
+            from staffdeck_harness.contracts.errors import PermissionDenied
+
+            agent = db.get(AgentProfile, agent_id)
+            if agent is None or agent.tenant_id != request.tenant_id or agent.status != "active":
+                raise PermissionDenied("target Staff unavailable")
+            profile = get_profile(self.settings)
+            user = db.get(User, request.user_id) if getattr(request, "user_id", None) else None
+            ctx = profile.identity.from_user(user, channel=request.channel) if user else profile.identity.from_service("staffdeck.runtime", request.tenant_id)
+            ref = agent_ref(agent)
+            session = db.get(ChatSession, request.session_id) if request.session_id else None
+            if session is not None:
+                ref = runtime_staff_ref(db, ref, session)
+            Guard("runtime.engine", profile).require(ctx, "staff.use/v1", ref)
+        selected = registry.provider(SlotName.RUNTIME_ENGINE) if registry else None
+        if selected and selected.manifest.module_id not in {"engine.harness_v2", "engine.harness_v3"}:
+            return selected.provider.open(loop, request, agent_id)
         db = getattr(loop, "db", None)
         if not self.selects_harness_v3(request, agent_id, db=db):
             reason = self.engine_fallback_reason(request, agent_id, db=db)

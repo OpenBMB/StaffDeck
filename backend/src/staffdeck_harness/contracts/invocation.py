@@ -74,6 +74,8 @@ class ModuleInvocation:
 
     def request_digest(self) -> str:
         payload = f"{self.module_id}|{self.operation}|{self.canonical_arguments()}"
+        if self._external_binding_key():
+            payload += "|" + self._external_binding_key()
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def side_effect_key(self) -> str | None:
@@ -90,7 +92,16 @@ class ModuleInvocation:
                 self.canonical_arguments(),
             ]
         )
+        if self._external_binding_key():
+            payload += "|" + self._external_binding_key()
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _external_binding_key(self) -> str:
+        # Preserve existing ledger keys for shipped proxies, whose resource is already an
+        # argument. New generic operations carry it separately and must include it in identity.
+        legacy = {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1", "knowledge.search/v1",
+                  "general_skill.consume/v1", "sandbox.execute/v1", "artifact.publish/v1"}
+        return self.binding_id or "" if self.operation not in legacy else ""
 
 
 @dataclass(frozen=True)

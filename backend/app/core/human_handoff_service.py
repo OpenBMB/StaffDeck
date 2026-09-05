@@ -38,6 +38,17 @@ class HumanHandoffService:
         binding_default_notify_channel: str | None = None,
     ) -> HumanHandoffRequest:
         current_step = current_step_resolver()
+        from staffdeck_harness.modules.registry import peek_registry
+
+        core = None
+        if peek_registry() is not None:
+            from staffdeck_harness.handoff.core import for_session
+            from staffdeck_harness.contracts.security import ResourceRef
+
+            core = for_session(self.db, chat_session)
+            user = self.db.get(User, chat_session.user_id) if chat_session.user_id else None
+            ctx = core.guard.profile.identity.from_user(user) if user else core.guard.profile.identity.from_service("staffdeck.runtime", tenant_id)
+            core.guard.require(ctx, "handoff.request/v1", ResourceRef(type="handoff", id="new", tenant_id=tenant_id, attributes={"requester_user_id": chat_session.user_id}))
         pending_question_text = pending_question(current_step, step_result)
         existing = self.db.exec(
             select(HumanHandoffRequest)
@@ -115,6 +126,17 @@ class HumanHandoffService:
                 "assignee_notify_channel": assignee_notify_channel,
             },
         )
+        if core is not None:
+            handoff.metadata_json = {**handoff.metadata_json,
+                                    "module_binding_refs": list(core.binding_refs),
+                                    "step_assignee_user_id": step_assignee_user_id,
+                                    "binding_default_assignee_user_id": binding_default_assignee_user_id,
+                                    "legacy_assignee_user_id": assignee_user_id}
+            agent = self.db.get(AgentProfile, chat_session.agent_id) if chat_session.agent_id else None
+            selected = core.propose(handoff, agent)
+            if selected and not self._is_internal_assignee(tenant_id, selected):
+                raise ValueError("assignment module proposed an invalid tenant user")
+            handoff.assignee_user_id = selected
         self.db.add(handoff)
         chat_session.status = "handoff"
         chat_session.awaiting_input_json = {

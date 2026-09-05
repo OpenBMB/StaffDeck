@@ -140,3 +140,14 @@ def invocation():
 def pytest_configure(config):
     # keep the live dev server's Harness v3 runtime out of these tests even if a developer exports HARNESS_V3_ENABLED
     os.environ.setdefault("HARNESS_V3_ENABLED", "false")
+
+
+def invoke_provider(provider, host, invocation):
+    """Exercise the public SPI while the test host supplies isolated local services."""
+    from staffdeck_harness.capabilities.local_services import invoke_local
+    from staffdeck_harness.contracts.provider import ProviderContext
+
+    context = ProviderContext(provider.module_id, "1.0.0", {}, (), {}, lambda: None,
+                              lambda *a: None, lambda: invoke_local(host, invocation))
+    assert not hasattr(context, "db") and not hasattr(context, "slot")
+    return provider.invoke(context, invocation)

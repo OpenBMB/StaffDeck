@@ -89,7 +89,8 @@ class HookContribution:
     point: HookPoint
     handler: str                     # dotted name resolved by the host, not by the module
     order: int = 100                 # lower runs first within a point
-    depends_on: tuple[str, ...] = () # other module_ids that must run before this one
+    depends_on: tuple[str, ...] = () # handler names that must run before this one
+    critical: bool = True  # policy/supervision fail closed; observers may opt out
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,10 @@ class SlotBinding:
     logical_name: str | None = None      # SOP-declared slot name, e.g. ``policy_docs``
     resource_ref: str | None = None      # concrete resource this binding resolves to
     metadata: JsonObject = field(default_factory=dict)
+
+    def durable_ref(self) -> "DurableBindingRef":
+        return DurableBindingRef(self.binding_id, self.slot.value, self.module_id,
+                                 self.module_version, self.config_revision, self.resource_ref)
 
 
 @dataclass(frozen=True)

@@ -25,7 +25,7 @@ from staffdeck_harness.contracts.manifest import SlotName
 from staffdeck_harness.contracts.security import DEFAULT_ACTION_MAP, PolicyActionMapper, ResourceRef
 from staffdeck_harness.interactions.pipeline_host import DEFAULT_HANDLERS, InteractionPipelineHost, PipelineState
 from staffdeck_harness.modules.builtin import DefaultInteractions
-from staffdeck_harness.modules.registry import ModuleRegistry, UnsatisfiedRequirement, discover_and_install
+from staffdeck_harness.modules.registry import ModuleRegistry, discover_and_install
 from staffdeck_harness.modules.taxonomy import tree
 
 MODULE_ID = "interaction.default"
@@ -114,7 +114,7 @@ def test_manifest_interaction_default(registry, module):
     assert item.provider.module_id == MODULE_ID
 
     d = _described(registry)
-    assert d["name"] == "对话介入规则（默认）"
+    assert d["name"] == "对话介入规则（默认组合）"
     assert d["summary"] and CJK.search(d["summary"])
     assert SEMVER.match(d["version"])
     assert d["contract_version"] == "v1"
@@ -151,16 +151,13 @@ def test_disable_interaction_default(settings):
     reg = discover_and_install(ModuleRegistry(), Disabled())
     item = reg.get(MODULE_ID)
     assert item is not None and item.enabled is False
-    assert reg.providers(SlotName.STAFF_INTERACTION) == []
+    assert reg.selected(SlotName.STAFF_INTERACTION) == []
     assert reg.hooks() == () and reg.hook_handlers() == {}
     for slot in SlotName:
         reg.mark_guarded(slot)
-    # The only hook contributor is off, so the compiler's ``hook.contribute/v1`` requirement is
-    # unmet and the assembly refuses to seal (preflight surfaces this before a restart).
-    with pytest.raises(UnsatisfiedRequirement) as exc:
-        reg.seal()
-    assert exc.value.details == {"missing": ["hook.contribute/v1"]}
-    assert reg.sealed is False
+    reg.seal()
+    assert reg.sealed is True
+    assert reg.hooks() == (), "an intentionally empty interaction plan is valid"
 
 
 # --------------------------------------------------------------------------- 4. provider

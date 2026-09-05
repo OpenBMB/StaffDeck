@@ -91,7 +91,7 @@ def test_disable_runtime_cancellation(registry):
     for slot in SlotName:
         reg.mark_guarded(slot)
     reg.seal()
-    assert reg.get(MODULE_ID) is not None and reg.get(MODULE_ID).enabled is False
+    assert reg.get(MODULE_ID) is not None and reg.get(MODULE_ID).enabled is True
     assert _describe(reg)["switchable"] is False
 
 

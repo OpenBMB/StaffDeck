@@ -94,11 +94,11 @@ def test_disable_channel_host_is_refused_by_admin_validation(registry, settings)
     d = _described(registry)
     assert d["kind"] == "T" and d["switchable"] is False
     assert d["slot"] not in {"runtime.engine", "security.pep"}  # refused on the switchable rule, not the engine/pep rule
-    # the registry itself still honours the setting (defence in depth lives in the admin validation)
+    # Deployment discovery also refuses to disable protected platform infrastructure.
     settings.harness_disabled_modules = MODULE_ID
     reg = discover_and_install(ModuleRegistry(), settings)
     reg.seal()
-    assert reg.get(MODULE_ID).enabled is False and _described(reg)["switchable"] is False
+    assert reg.get(MODULE_ID).enabled is True and _described(reg)["switchable"] is False
 
 
 # --------------------------------------------------------------------------- 4. provider

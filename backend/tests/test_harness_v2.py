@@ -14,7 +14,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import ensure_open_gallery_binding
 from app.core import harness_agent as harness_agent_module
-from app.core import harness_v2_engine as harness_v2_engine_module
+from app.core import turn_coordinator as harness_v2_engine_module
 from app.core import turn_planner as turn_planner_module
 from app.core.agent_loop import AgentLoop
 from app.core.capability_manifest import (
@@ -5036,6 +5036,7 @@ def test_activate_frame_records_skill_call_events_for_stats() -> None:
         harness_engine = HarnessV2Engine.__new__(HarnessV2Engine)
         harness_engine.events = EventLog(db)
         harness_engine.owner = SimpleNamespace(runtime=stub_runtime)
+        harness_engine.services = SimpleNamespace(runtime=stub_runtime)
 
         skill = _refund_skill()
         db.add(skill)

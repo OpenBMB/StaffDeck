@@ -144,6 +144,7 @@ DEFAULT_ACTION_MAP: dict[str, tuple[Action, ResourceType]] = {
     "channel.send/v1": ("send", "channel"),
     "handoff.assign/v1": ("manage", "handoff"),
     "handoff.reply/v1": ("edit", "handoff"),
+    "handoff.notify/v1": ("send", "handoff"),
     "memory.read/v1": ("read", "session"),
     "memory.write/v1": ("write", "session"),
     "team.delegate/v1": ("delegate", "team"),

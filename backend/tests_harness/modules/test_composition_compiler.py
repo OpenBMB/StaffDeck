@@ -60,7 +60,7 @@ def test_manifest_composition_compiler(registry, module):
     assert d["kind"] == "K"
     assert d["slot"] == "staff.sop"
     assert d["provides"] == []
-    assert d["requires"] == ["hook.contribute/v1"]
+    assert d["requires"] == []
     assert d["policy_actions"] == []
     assert d["hooks"] == []
     assert d["name"] == "配置校验与发布"
@@ -76,10 +76,8 @@ def test_manifest_composition_compiler(registry, module):
     assert supplier.slot is SlotName.STAFF_INTERACTION
 
 
-def test_manifest_composition_compiler_seal_refuses_without_hook_supplier(settings):
-    """requires=[hook.contribute/v1] is a hard boot dependency: disabling every supplier breaks seal()."""
-
-    from staffdeck_harness.modules.registry import UnsatisfiedRequirement
+def test_manifest_composition_compiler_accepts_an_explicit_empty_hook_plan(settings):
+    """PEP and ledger are host invariants; they do not require an optional interaction plugin."""
 
     reg = discover_and_install(ModuleRegistry(), settings)
     for slot in SlotName:
@@ -88,9 +86,8 @@ def test_manifest_composition_compiler_seal_refuses_without_hook_supplier(settin
     assert suppliers
     for mid in suppliers:
         reg.set_enabled(mid, False)
-    with pytest.raises(UnsatisfiedRequirement) as exc:
-        reg.seal()
-    assert "hook.contribute/v1" in str(exc.value)
+    reg.seal()
+    assert reg.hooks() == ()
 
 
 def test_placement_composition_compiler(registry):

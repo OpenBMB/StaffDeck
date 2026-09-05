@@ -188,6 +188,9 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
             binding = _find_active_binding_for_agent(db, chat_session)
         if not binding:
             raise RuntimeError("渠道会话无法定位有效绑定")
+        from staffdeck_harness.channels.host import authorize_send
+
+        authorize_send(binding)
         if not binding_id:
             # 精确恢复成功后持久化归属，后续 staging/delivery 不再走 legacy 分支。
             conflicting_session = db.exec(
@@ -536,6 +539,9 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
             return
     try:
         adapter = get_channel_adapter(binding.channel)
+        from staffdeck_harness.channels.host import authorize_send
+
+        authorize_send(binding, cleanup=allow_inactive_reaction)
         target = dict(delivery.target_json or {})
         sent_message_id: str | None = None
         if delivery.kind == "reaction_add":
@@ -1098,7 +1104,11 @@ def notify_handoff_assignee(
     任何异常仅记日志,不影响 handoff 主流程。
     """
     try:
-        if binding.channel not in HANDOFF_NOTIFY_CHANNELS:
+        from app.channels.adapters import get_channel_adapter
+
+        adapter = get_channel_adapter(binding.channel)
+        build_target = getattr(adapter, "handoff_target", None)
+        if not callable(build_target):
             logger.info(
                 "handoff 通知跳过:渠道暂不支持私聊通知 handoff=%s binding=%s channel=%s",
                 handoff.id,
@@ -1149,17 +1159,8 @@ def notify_handoff_assignee(
             text_parts.append("上下文:")
             text_parts.append(context_summary[:800])
         text_parts.append("")
-        if binding.channel == "feishu":
-            text_parts.append(
-                "如需答复，请直接回复本条消息（引用后输入答复内容）；"
-                "也可发送 /回复反馈 <答复内容>。"
-            )
-        else:
-            text_parts.append(
-                f"请发送 /回复反馈 {handoff.id} <答复内容> 精确回复此请求。"
-            )
+        text_parts.append(getattr(adapter, "handoff_reply_hint", None) or f"请发送 /回复反馈 {handoff.id} <答复内容> 精确回复此请求。")
         text = "\n".join(text_parts)
-        build_target = _HANDOFF_NOTIFY_TARGET_BUILDERS[binding.channel]
         target = build_target(external_user_id, handoff.id)
         target["handoff_id"] = handoff.id
         db.add(

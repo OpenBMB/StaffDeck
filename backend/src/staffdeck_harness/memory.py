@@ -1,85 +1,19 @@
-"""Memory provider (``memory.read/v1`` / ``memory.write/v1``), pluggable via ``runtime.memory``.
+"""Engine-independent memory Host and built-in adapter.
 
-The turn skeleton used to read memory straight from ``AgentLoop.memory`` (a ``MemoryService``)
-and write it via a fixed background job. This module turns that into a registry contract so a
-deployment can swap recall/capture, or disable memory entirely:
-
-- ``MemoryDefaultModule`` (module id ``memory.default``) is the built-in provider. Its
-  ``recall`` and ``capture`` wrap the existing ``MemoryService`` (for recall) and the legacy
-  capture job (for the async write fallback), so behaviour is unchanged unless someone installs
-  a different provider into ``runtime.memory``.
-- ``AgentLoop`` stays untouched. ``HarnessV3Engine`` resolves the ``runtime.memory`` provider at
-  turn start and re-points ``owner.memory`` at a ``ProviderMemoryFacade`` that delegates to it;
-  the v2 engine keeps reading ``owner.memory``, so both engines pick up the provider the moment
-  the v3 engine is the one running the turn. The facade is per-turn and only installed for a
-  turn that runs on the v3 path.
-
-Both halves are provider seams:
-- ``recall`` returns ``list[dict]`` in ``memory_read`` shape; the v3 pre_step ``memory.recall``
-  hook renders those into the step prompt exactly as before.
-- ``capture(ctx)`` is called where the v2 skeleton used to call
-  ``owner._enqueue_memory_capture(...)`` (end of a visible turn). ``ctx.legacy_enqueue()`` is
-  that original method, captured for the turn, so the built-in provider keeps the legacy async
-  background job — events, commit and all — without replicating it. A swapping provider writes
-  to its own store synchronously (and may still call ``legacy_enqueue`` if it wants both). With
-  the module disabled nothing is written and nothing fails.
+Recall, capture, listing and clearing share the selected runtime.memory provider.
+Staff/SOP bindings choose the provider; the public MemoryCall contains only data.
+Database access and the legacy async capture job stay behind a scoped call_local
+service. TurnCoordinator owns the facade; AgentLoop collaborators are never patched.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from app.memory.service import MemoryService
+from staffdeck_harness.contracts.memory import MemoryCall, MemoryContext, MemoryProvider
 from staffdeck_harness.contracts.manifest import SlotName
 from staffdeck_harness.modules.registry import ModuleRegistry
-
-
-@dataclass
-class CaptureContext:
-    """Everything the end-of-turn write sees. ``legacy_enqueue`` is the original
-    ``AgentLoop._enqueue_memory_capture`` bound for this call: invoking it schedules the legacy
-    background capture job (and records its events / commits) exactly as before."""
-
-    db: Any
-    events: Any
-    request: Any
-    session: Any
-    step_result: Any
-    tool_result: Any
-    model_config: Any
-    legacy_enqueue: Callable[[], list[dict[str, Any]]]
-
-    @property
-    def tenant_id(self) -> str:
-        return str(getattr(self.request, "tenant_id", "") or "")
-
-    @property
-    def user_id(self) -> str:
-        return str(getattr(self.request, "user_id", "") or "")
-
-    @property
-    def agent_id(self) -> str | None:
-        return getattr(self.session, "agent_id", None)
-
-    @property
-    def session_id(self) -> str:
-        return str(getattr(self.session, "id", "") or "")
-
-
-class MemoryProvider:
-    """The SPI a ``runtime.memory`` module implements."""
-
-    def recall(self, db: Any, tenant_id: str, user_id: str, agent_id: str | None = None, *, session_id: str | None = None, query: str = "") -> list[dict[str, Any]]:
-        raise NotImplementedError
-
-    def capture(self, ctx: CaptureContext) -> list[dict[str, Any]]:
-        """Persist what this turn taught us about the user. Return receipts (dicts) for the trace.
-
-        Default: nothing. The built-in provider returns ``ctx.legacy_enqueue()``; a provider with
-        its own store writes synchronously here.
-        """
-        return []
 
 
 class MemoryDefaultModule:
@@ -92,63 +26,78 @@ class MemoryDefaultModule:
     def service(self, db: Any) -> MemoryService:
         return self._service or MemoryService(db)
 
-    def recall(self, db: Any, tenant_id: str, user_id: str, agent_id: str | None = None, *, session_id: str | None = None, query: str = "") -> list[dict[str, Any]]:
-        from app.memory.service import memory_read
-
-        rows = self.service(db).context_memories(tenant_id, user_id, agent_id=agent_id)
-        return [memory_read(r) for r in rows]
-
-    def capture(self, ctx: CaptureContext) -> list[dict[str, Any]]:
-        # The legacy path: schedule the background capture job. Same events, same commit.
-        return ctx.legacy_enqueue()
+    def invoke(self, context: MemoryContext, call: MemoryCall) -> Any:
+        return context.call_local()
 
 
 class ProviderMemoryFacade:
-    """What ``owner.memory`` becomes for a Harness v3 turn: the same ``context_memories`` surface
-    the v2 engine reads, answered by the registry's ``runtime.memory`` provider. With no provider
-    (memory disabled) it recalls nothing, so the turn simply runs without memory context."""
+    """Engine-independent memory Host. Only this adapter holds database/domain objects."""
 
-    def __init__(self, db: Any, provider: MemoryProvider | None):
+    def __init__(self, db: Any, provider: MemoryProvider | None, *, profile: Any = None, config: Mapping[str, Any] | None = None, registry: Any = None):
         self.db = db
         self.provider = provider
+        self.profile = profile
+        self.config = dict(config or {})
+        from staffdeck_harness.modules.registry import peek_registry
+
+        self.registry = registry or peek_registry()
+
+    def authorize(self, tenant_id: str, user_id: str, operation: str) -> None:
+        from app.db.models import User
+        from staffdeck_harness.contracts.security import ResourceRef
+        from staffdeck_harness.security.profile import Guard, peek_profile
+        from staffdeck_harness.security.oss_local import build_oss_local_profile
+        from staffdeck_harness.contracts.errors import PermissionDenied
+
+        profile = self.profile or peek_profile() or build_oss_local_profile()
+        user = self.db.get(User, user_id)
+        if user is None or user.tenant_id != tenant_id:
+            raise PermissionDenied("memory principal unavailable")
+        ctx = profile.identity.from_user(user)
+        Guard("memory", profile).require(ctx, operation, ResourceRef(type="session", id=f"memory:{user_id}", tenant_id=tenant_id, attributes={"user_id": user_id}))
+
+    def call(self, request: MemoryCall, *, actor_id: str, local: Callable[[], Any]) -> Any:
+        self.authorize(request.tenant_id, actor_id, "memory.write/v1" if request.operation in {"capture", "clear"} else "memory.read/v1")
+        if self.provider is None:
+            return {"deleted": 0} if request.operation == "clear" else []
+        from types import MappingProxyType
+
+        from contextlib import nullcontext
+
+        with self.registry.work_lease() if self.registry else nullcontext():
+            return self.provider.invoke(MemoryContext(MappingProxyType(self.config), local), request)
 
     def context_memories(self, tenant_id: str, user_id: str, *, agent_id: str | None = None) -> list[Any]:
         if self.provider is None or not user_id:
             return []
-        return [_RowLike(d) for d in self.provider.recall(self.db, tenant_id, user_id, agent_id)]
+        from app.memory.service import memory_read
+
+        def local():
+            service = self.provider.service(self.db) if isinstance(self.provider, MemoryDefaultModule) else MemoryService(self.db)
+            return [memory_read(row) for row in service.context_memories(tenant_id, user_id, agent_id=agent_id)]
+        result = self.call(MemoryCall("recall", tenant_id, user_id, agent_id), actor_id=user_id, local=local)
+        return [_RowLike(d) for d in result]
 
     def recall(self, tenant_id: str, user_id: str, query: str = "", limit: int | None = None, agent_id: str | None = None) -> list[Any]:
         return self.context_memories(tenant_id, user_id, agent_id=agent_id)
 
-    # -- write seam ------------------------------------------------------------------------
-
     def bind_capture(self, events: Any, legacy_enqueue: Callable[..., list[dict[str, Any]]]) -> Callable[..., list[dict[str, Any]]]:
-        """Return the callable that replaces ``owner._enqueue_memory_capture`` for this turn.
-
-        Same signature as the original: ``(request, session, step_result, tool_result,
-        model_config)``. Routes to ``provider.capture``; the built-in provider forwards to
-        ``legacy_enqueue``. A provider that raises records ``memory_error`` and the turn goes on,
-        which is what the legacy method did for a failed enqueue.
-        """
-
         def enqueue(request: Any, session: Any, step_result: Any, tool_result: Any, model_config: Any) -> list[dict[str, Any]]:
             if self.provider is None or not getattr(request, "user_id", None):
                 return []
-            ctx = CaptureContext(
-                db=self.db, events=events, request=request, session=session, step_result=step_result, tool_result=tool_result, model_config=model_config,
-                legacy_enqueue=lambda: legacy_enqueue(request, session, step_result, tool_result, model_config),
-            )
+            # Deliberately exclude DB handles, model credentials and callbacks from the request.
+            call = MemoryCall("capture", request.tenant_id, request.user_id, session.agent_id, session.id,
+                              payload={"message": str(getattr(request, "message", "") or ""),
+                                       "reply": str(getattr(step_result, "reply", "") or "")})
             try:
-                out = self.provider.capture(ctx)
-            except Exception as exc:  # noqa: BLE001 - a memory write must never take the turn down
+                out = self.call(call, actor_id=request.user_id, local=lambda: legacy_enqueue(request, session, step_result, tool_result, model_config))
+            except Exception as exc:
                 record = getattr(events, "record", None)
                 if callable(record):
-                    record(ctx.tenant_id, ctx.session_id, "memory_error", {"message": str(exc), "provider": getattr(self.provider, "module_id", type(self.provider).__name__)})
+                    record(call.tenant_id, call.session_id, "memory_error", {"message": str(exc), "provider": getattr(self.provider, "module_id", type(self.provider).__name__)})
                 return []
             return list(out or [])
-
         return enqueue
-
 
 class _RowLike:
     """``memory_read`` accepts a MemoryRecord; provide the same attributes from a dict so the v2
@@ -184,7 +133,7 @@ def _dt(value: Any, default: Any) -> Any:
     return default
 
 
-def resolve_memory_provider(*, registry: ModuleRegistry | None = None) -> MemoryProvider | None:
+def resolve_memory_provider(*, registry: ModuleRegistry | None = None, snapshot: Any = None, sop_id: str | None = None) -> MemoryProvider | None:
     """The enabled ``runtime.memory`` provider, if any. ``None`` means memory is disabled."""
 
     from staffdeck_harness.modules.registry import peek_registry
@@ -192,8 +141,36 @@ def resolve_memory_provider(*, registry: ModuleRegistry | None = None) -> Memory
     reg = registry or peek_registry()
     if reg is None:
         return None
-    installed = reg.provider(SlotName.RUNTIME_MEMORY)
+    candidates = reg.selected(SlotName.RUNTIME_MEMORY, snapshot, sop_id=sop_id)
+    if len(candidates) > 1:
+        from staffdeck_harness.contracts.errors import ContractIncompatible
+
+        raise ContractIncompatible("multiple memory providers require an explicit Staff/SOP binding")
+    installed = candidates[0] if candidates else None
     return installed.provider if installed is not None else None
+
+
+def for_staff(db: Any, tenant_id: str, agent_id: str | None, *, sop_id: str | None = None) -> ProviderMemoryFacade:
+    from staffdeck_harness.modules.registry import peek_registry
+    from staffdeck_harness.composition.compiler import CompositionCompiler
+    from staffdeck_harness.composition.staff import project_staff
+
+    registry = peek_registry()
+    if registry is None:
+        return ProviderMemoryFacade(db, MemoryDefaultModule())
+    from app.db.models import AgentProfile
+
+    # Own historical memory must remain deletable after a Staff was removed. In that case
+    # there is no Staff-specific binding; the deployment provider still receives agent_id.
+    agent = db.get(AgentProfile, agent_id) if agent_id else None
+    snapshot = CompositionCompiler().compile(project_staff(db, tenant_id, agent_id)) if agent and agent.tenant_id == tenant_id else None
+    return ProviderMemoryFacade(db, resolve_memory_provider(registry=registry, snapshot=snapshot, sop_id=sop_id), config=memory_config(registry, snapshot, sop_id), registry=registry)
+
+
+def memory_config(registry: ModuleRegistry, snapshot: Any = None, sop_id: str | None = None) -> dict[str, Any]:
+    selected = registry.selected(SlotName.RUNTIME_MEMORY, snapshot, sop_id=sop_id)
+    binding = snapshot.module_binding(SlotName.RUNTIME_MEMORY, sop_id=sop_id) if snapshot else None
+    return {**(dict(selected[0].config) if selected else {}), **(dict(binding.metadata) if binding else {})}
 
 
 def install(registry: ModuleRegistry, settings: Any = None, *, enabled: bool = True) -> None:

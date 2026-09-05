@@ -84,12 +84,16 @@ def preflight_assembly(settings: Any, wanted: RuntimeOverrides, *, tenant_id: st
         report["base"] = pre.to_dict()
         if not pre.ok:
             raise AssemblyFailed(f"无法切换到企业版权限：{pre.first_failure() or '权限中心连接测试未通过'}")
+    reg = None
     try:
         reg = build_registry(view)
         build_profile(view, registry=reg)
     except Exception as exc:  # noqa: BLE001 — any seal/profile failure is a preflight failure
+        if reg is not None:
+            reg.dispose()
         raise AssemblyFailed(f"装配无法启动：{type(exc).__name__}: {exc}") from exc
     report["modules"] = {"total": len(reg.describe()), "enabled": sum(1 for m in reg.describe() if m["enabled"])}
+    reg.dispose()
     return report
 
 
@@ -101,13 +105,19 @@ def _build_components(settings: Any, overrides: RuntimeOverrides) -> tuple[Modul
 
     view = settings_view(settings, overrides)
     reg = build_registry(view)
-    profile = build_profile(view, registry=reg)
+    try:
+        profile = build_profile(view, registry=reg)
+    except BaseException:
+        reg.dispose()
+        raise
     return reg, profile
 
 
 def _activate(settings: Any, overrides: RuntimeOverrides, reg: ModuleRegistry, profile: Any) -> dict[str, Any]:
     """Make the prepared components live and (if enabled) boot the Harness v3 runtime."""
 
+    reg.start()
+    reg.security_profile = profile
     apply_overrides(settings, overrides)
     install_registry(reg)
     install_profile(profile)
@@ -148,6 +158,8 @@ def start_harness_runtime(settings: Any) -> dict[str, Any]:
         applied = overrides
         fallback = None
     except Exception as exc:  # noqa: BLE001
+        if overrides.security_profile == "BUSINESS_BASE":
+            raise AssemblyFailed("企业版权限装配失败，禁止自动降级到开源版权限") from exc
         if defaults.same_assembly(overrides):
             raise
         fallback = f"启动时无法应用已保存的装配，已回退到部署默认值：{type(exc).__name__}: {exc}"
@@ -213,10 +225,21 @@ def restart_harness_runtime(settings: Any, *, tenant_id: str | None = None, prin
 
         old_reg, old_profile = peek_registry(), peek_profile()
         interrupted = _drain_live_turns(drain_timeout_seconds)
+        if interrupted:
+            from staffdeck_harness.bridge import engine_host
+
+            if old_reg is not None:
+                old_reg.end_drain()
+            runtime = getattr(engine_host, "_runtime", None)
+            if runtime is not None and runtime.pool is not None:
+                runtime.pool.end_drain()
+            reg.dispose()
+            raise AssemblyFailed(f"仍有 {interrupted} 个回合执行中，本次未切换装配，请稍后重试")
         reset_runtime()
         try:
             info = _activate(settings, wanted, reg, profile)
         except Exception as exc:  # noqa: BLE001 — Harness v3 boot failed without fallback: restore
+            reg.dispose()
             msg = f"{type(exc).__name__}: {exc}"
             logger.exception("runtime activation failed; restoring previous assembly")
             reset_runtime()
@@ -231,6 +254,8 @@ def restart_harness_runtime(settings: Any, *, tenant_id: str | None = None, prin
             _restart_count += 1
             _last_restart_error = None
         info.update({"restarted_at": _started_at, "restart_count": _restart_count, "interrupted_turns": interrupted})
+        if old_reg is not None:
+            old_reg.dispose()
         return info
     finally:
         with _state_lock:
@@ -249,13 +274,17 @@ def _drain_live_turns(timeout_seconds: float) -> int:
     import time
 
     from staffdeck_harness.bridge import engine_host
+    from staffdeck_harness.modules.registry import peek_registry
 
     runtime = getattr(engine_host, "_runtime", None)
-    if runtime is None:
-        return 0
+    modules = peek_registry()
+    if modules is not None:
+        modules.begin_drain()
+    if runtime is not None and runtime.pool is not None:
+        runtime.pool.begin_drain()
     deadline = time.monotonic() + max(0.0, float(timeout_seconds or 0.0))
     while True:
-        live = len(runtime.registry)
+        live = modules.live_turns if modules is not None else (runtime.registry.live_count() if runtime is not None else 0)
         if live == 0 or time.monotonic() >= deadline:
             if live:
                 logger.warning("restart drain window expired with %d live turn(s); they will lose their engine process", live)

@@ -1,5 +1,7 @@
 # StaffDeck · 可插拔运行时（实现说明）
 
+> 历史版本记录：当前九项修复与接口契约见 [模块化修订](design-harness-v3-modularity-repair.md)。下文旧继承关系与“已实现/待实现”标记仅描述当时的实现。
+
 对应设计：《可插拔运行时 模块目录、装配关系与调用架构》。本文件描述**已落地**的部分、与设计的映射、怎么运行、以及尚未完成的项。
 
 ## 1. 结论先行
@@ -122,3 +124,6 @@ HARNESS_V3_E2E=1 .venv/bin/python -m pytest tests_harness/test_e2e_harness_v3_tu
 - **Business 端**：`BUSINESS_BASE` 的 Identity/Workload 与企业版 `app/trust/` 线协议对齐但未在企业库上跑；接入时把 `BaseTrustClient` 适配到 `BaseAuthzClient` 接口即可。
 - **黄金链路**：目前已覆盖普通对话 + Knowledge + Tool；SOP/子SOP/Team/Scheduler/Handoff/Channel/Memory/Artifact/Sandbox/取消/恢复的对比仍待补。观察到 legacy 同请求因 action budget 未一轮完成而 Harness v3 一轮完成（已记为 divergence）。
 - **生产化**：`staffdeck_harness` 正式纳入 `pyproject`；`HarnessV3Runtime` 挂到 app lifespan（`runtime/assembly.py` 已提供 `start_harness_runtime/stop_harness_runtime/harness_health`）；`sandbox_execute` 目前跟随 `UIConfig.sandbox_*`，Business 远程 sandbox 需接 `sandbox_manager_url`。
+# 当前版本说明
+
+本文件为原始实现记录；当前九项审查修复及模块接入方式见 [模块化修订](design-harness-v3-modularity-repair.md)。下文的继承、内存替换与待实现描述不代表修复后的状态。

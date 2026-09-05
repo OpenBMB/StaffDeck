@@ -198,7 +198,9 @@ class AgentLoop:
         # only imported when the deployment opts in, so a legacy deployment
         # never loads Node/MCP dependencies.
         settings = get_settings()
-        if not self._harness_v3_reachable(settings):
+        from staffdeck_harness.modules.registry import peek_registry
+
+        if not self._harness_v3_reachable(settings) and peek_registry() is None:
             return HarnessV2Engine(self)
         try:
             from staffdeck_harness.bridge.engine_host import EngineHost
@@ -865,6 +867,14 @@ class AgentLoop:
         无可用 binding(含日志说明)或 assignee 在该 binding scope 无非群聊身份时,
         由 notify_handoff_assignee 内部跳过,网页收件箱兜底。
         """
+        from staffdeck_harness.modules.registry import peek_registry
+
+        if peek_registry() is not None:
+            from staffdeck_harness.handoff.core import for_session
+
+            core = for_session(self.db, chat_session)
+            core.notify(handoff, pending_question=handoff.pending_question or "", context_summary=handoff.context_summary or "")
+            return
         from app.channels.service_outbox import (
             HANDOFF_NOTIFY_CHANNELS,
             notify_handoff_assignee,

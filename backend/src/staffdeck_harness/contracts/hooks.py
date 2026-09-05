@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
 from staffdeck_harness.contracts.manifest import HookPoint
+from staffdeck_harness.contracts.invocation import ModuleResult
 
 JsonObject = Mapping[str, Any]
 
@@ -40,7 +41,7 @@ class HookDecision:
     reason: str | None = None
     # pre_step: extra context blocks to prepend; post_tool: replacement content
     contexts: tuple[JsonObject, ...] = ()
-    replacement: JsonObject | None = None
+    replacement: ModuleResult | None = None
     # turn_stopping: steer content for one more step
     steer_message: str | None = None
     handoff: JsonObject | None = None    # request a human handoff after the loop
@@ -64,7 +65,7 @@ def merge_decisions(decisions: list[HookDecision]) -> HookDecision:
     if not decisions:
         return HookDecision.passthrough()
     contexts: list[JsonObject] = []
-    replacement: JsonObject | None = None
+    replacement: ModuleResult | None = None
     steer: str | None = None
     handoff: JsonObject | None = None
     winner = decisions[0]

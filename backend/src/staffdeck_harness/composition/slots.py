@@ -74,10 +74,20 @@ class SlotDeclaration:
 
     @property
     def slot(self) -> SlotName:
+        from staffdeck_harness.modules.registry import peek_registry
+
+        reg = peek_registry()
+        if reg and self.operation in reg.operations:
+            return reg.operations[self.operation].slot
         return SLOT_FOR_OPERATION[self.operation]
 
     @property
     def resource_type(self) -> str:
+        from staffdeck_harness.modules.registry import peek_registry
+
+        reg = peek_registry()
+        if reg and self.operation in reg.operations:
+            return reg.operations[self.operation].resource_type
         return RESOURCE_TYPE_FOR_OPERATION[self.operation]
 
 
@@ -101,7 +111,10 @@ def declared_slots(node: Mapping[str, Any]) -> list[SlotDeclaration]:
             continue
         name = str(raw.get("name") or "").strip()
         operation = str(raw.get("operation") or "").strip()
-        if not name or operation not in SLOT_FOR_OPERATION:
+        from staffdeck_harness.modules.registry import peek_registry
+
+        reg = peek_registry()
+        if not name or (operation not in SLOT_FOR_OPERATION and not (reg and operation in reg.operations)):
             raise SlotKindMismatch(f"node {node_id}: slot {name!r} has unknown operation {operation!r}")
         out.append(SlotDeclaration(name=name, operation=operation, required=bool(raw.get("required", False)), node_id=node_id, hint=raw.get("hint")))
     refs = node.get("capability_refs") or {}
@@ -136,7 +149,7 @@ def sop_slots(content: Mapping[str, Any]) -> list[SlotDeclaration]:
 
 def resolve_slots(
     declarations: Iterable[SlotDeclaration],
-    staff_bindings: Mapping[str, str],
+    staff_bindings: Mapping[str, str | Mapping[str, Any]],
     *,
     visible_resources: Mapping[str, set[str]] | None = None,
     binding_ids: Mapping[str, str] | None = None,
@@ -150,10 +163,12 @@ def resolve_slots(
 
     resolved: list[ResolvedSlot] = []
     for decl in declarations:
+        raw = staff_bindings.get(f"{decl.node_id}/{decl.name}", staff_bindings.get(decl.name))
+        binding = dict(raw) if isinstance(raw, Mapping) else {}
         if decl.implicit:
-            resource_id = decl.name.split(":", 1)[1] if ":" in decl.name else decl.name
+            resource_id = str(binding.get("resource_id") or raw or decl.name.split(":", 1)[-1])
         else:
-            resource_id = str(staff_bindings.get(decl.name) or "").strip()
+            resource_id = str(binding.get("resource_id") or (raw if isinstance(raw, str) else "") or "").strip()
         if not resource_id:
             if decl.required:
                 raise RequiredSlotMissing(f"required slot {decl.name!r} ({decl.operation}) is not bound", details={"slot": decl.name, "node_id": decl.node_id})
@@ -169,6 +184,7 @@ def resolve_slots(
                 resource_id=resource_id,
                 resource_type=rtype,
                 binding_id=(binding_ids or {}).get(resource_id),
+                metadata=binding,
             )
         )
     return resolved

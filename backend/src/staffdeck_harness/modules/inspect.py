@@ -46,6 +46,7 @@ def inspect_spec(settings: Any, spec: str, *, live_ids: set[str] | None = None) 
         discover_and_install(reg, view)
     except Exception as exc:  # noqa: BLE001
         result["errors"].append({"code": "BASELINE_FAILED", "message": f"{type(exc).__name__}: {exc}", "phase": "baseline"})
+        reg.dispose()
         return _done(result, started)
     before_ids = {m["module_id"] for m in reg.describe()}
     ops_before = {op: m["module_id"] for m in reg.describe() if m["enabled"] for op in m["provides"]}
@@ -103,6 +104,7 @@ def inspect_spec(settings: Any, spec: str, *, live_ids: set[str] | None = None) 
             result["errors"].append({**exc.to_dict(), "phase": "seal"})
         except Exception as exc:  # noqa: BLE001
             result["errors"].append({"code": type(exc).__name__.upper(), "message": str(exc), "phase": "seal"})
+    reg.dispose()
     return _done(result, started)
 
 

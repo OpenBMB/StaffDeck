@@ -946,7 +946,9 @@ class WeChatPollManager:
                     ChannelBinding.status == "active",
                 )
             ).all()
-        active_ids = {row.id for row in rows}
+        from app.channels.adapters.base import builtin_channel_enabled
+
+        active_ids = {row.id for row in rows} if builtin_channel_enabled("wechat") else set()
         with self._lock:
             active_ids -= self._paused
         for binding_id in active_ids - self.running_binding_ids():

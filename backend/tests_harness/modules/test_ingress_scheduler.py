@@ -8,7 +8,6 @@ import pytest
 
 from staffdeck_harness.contracts.errors import PermissionDenied
 from staffdeck_harness.contracts.security import DEFAULT_ACTION_MAP, ResourceRef
-from staffdeck_harness.modules.kernel import SchedulerIngressModule
 from staffdeck_harness.modules.registry import SEMVER_RE, ModuleRegistry, discover_and_install
 from staffdeck_harness.modules.taxonomy import tree
 
@@ -83,26 +82,18 @@ def test_disable_ingress_scheduler(settings):
 
 # --------------------------------------------------------------------------- 4. provider
 
-def test_provider_ingress_scheduler_dispatch_resolves_legacy_service(module):
+def test_provider_ingress_scheduler_dispatch_executes_service(module, monkeypatch):
     provider = module(MODULE_ID).provider
-    assert isinstance(provider, SchedulerIngressModule)
-    assert provider.module_id == MODULE_ID
-    from app.scheduled_tasks import service as legacy_service
-
-    service = provider.dispatch()
-    assert service is legacy_service
-    for name in ("due_scheduled_tasks", "execute_scheduled_task", "start_scheduled_task_async", "compute_next_run_at"):
-        assert callable(getattr(service, name)), name
-    # dispatch() is a pure accessor: extra args are ignored and the same module object comes back
-    assert provider.dispatch("ignored", key="value") is legacy_service
+    from app.scheduled_tasks import service
+    calls = []
+    monkeypatch.setattr(service, "execute_scheduled_task", lambda *a, **kw: calls.append((a, kw)) or "executed")
+    assert provider.dispatch("db", "task", manual=True) == "executed"
+    assert calls == [(("db", "task"), {"manual": True})]
 
 
-def test_provider_ingress_scheduler_due_tasks_empty_offline(module, db):
-    service = module(MODULE_ID).provider.dispatch()
-    assert service.due_scheduled_tasks(db) == []
-
-
-# --------------------------------------------------------------------------- 5. PEP
+def test_provider_ingress_scheduler_accepts_request(module):
+    request = object()
+    assert module(MODULE_ID).provider.accept(request) is request
 
 def test_pep_ingress_scheduler_denies_cross_tenant_staff_use(guard, security_ctx):
     g = guard(MODULE_ID)

@@ -801,7 +801,9 @@ class WeComStreamManager:
                     ChannelBinding.status == "active",
                 )
             ).all()
-        active_ids = {row.id for row in rows}
+        from app.channels.adapters.base import builtin_channel_enabled
+
+        active_ids = {row.id for row in rows} if builtin_channel_enabled("wecom") else set()
         with self._lock:
             active_ids -= self._paused
         for binding_id in active_ids - self.running_binding_ids():
@@ -1084,6 +1086,10 @@ class WeComStreamManager:
 
 
 class WeComAdapter:
+    @staticmethod
+    def handoff_target(external_user_id: str, handoff_id: str) -> dict[str, Any]:
+        return {"to_user_id": external_user_id, "handoff_id": handoff_id}
+
     """企微适配器:归一化 + 出站 send_message(run_coroutine_threadsafe)+ ingress。
 
     官方 SDK 无 typing 能力,故不实现 send_typing。

@@ -164,6 +164,12 @@ def validate_feishu_credentials(
 
 
 class FeishuAdapter:
+    handoff_reply_hint = "如需答复，请直接回复本条消息（引用后输入答复内容）；也可发送 /回复反馈 <答复内容>。"
+
+    @staticmethod
+    def handoff_target(external_user_id: str, handoff_id: str) -> dict[str, Any]:
+        return {"receive_id_type": "open_id", "receive_id": external_user_id, "handoff_id": handoff_id}
+
     # 飞书 reaction 会返回远端 reaction_id，重复挂会产生第二个表情，因此重试前必须
     # 先用 find_own_reaction() 回查，不能直接重发。
     reaction_attach_idempotent = False

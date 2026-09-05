@@ -41,19 +41,9 @@ SCHEMA_REPAIR_ATTEMPTS = 1
 class TurnPlanner:
     """Single scene/SOP intent planner for the Harness v2 execution path."""
 
-    def plan(
-        self,
-        message: str,
-        session: ChatSession,
-        available_skills: list[Skill],
-        model_config: ModelConfig,
-        conversation_context: dict[str, object] | None = None,
-        memory_context: list[dict[str, object]] | None = None,
-        task_frame_state: list[dict[str, Any]] | None = None,
-        interaction_mode: str = "normal",
-        team_context: TeamPlannerContext | None = None,
-    ) -> TurnPlan:
-        payload = stage_payload(
+    def prepare_payload(self, message, session, available_skills, conversation_context=None,
+                        memory_context=None, task_frame_state=None, interaction_mode="normal", team_context=None):
+        return stage_payload(
             phase="TurnPlanner",
             user_message=message,
             conversation_context=compact_conversation_context(conversation_context),
@@ -76,6 +66,25 @@ class TurnPlanner:
             },
             output_contract=TURN_PLANNER_OUTPUT_SCHEMA,
         )
+
+    def normalize_plan(self, *args, **kwargs):
+        return self._normalize(*args, **kwargs)
+
+
+    def plan(
+        self,
+        message: str,
+        session: ChatSession,
+        available_skills: list[Skill],
+        model_config: ModelConfig,
+        conversation_context: dict[str, object] | None = None,
+        memory_context: list[dict[str, object]] | None = None,
+        task_frame_state: list[dict[str, Any]] | None = None,
+        interaction_mode: str = "normal",
+        team_context: TeamPlannerContext | None = None,
+    ) -> TurnPlan:
+        payload = self.prepare_payload(message, session, available_skills, conversation_context,
+                                       memory_context, task_frame_state, interaction_mode, team_context)
         try:
             client = LLMClient(model_config)
             with llm_operation("turn_planner.plan"):
@@ -372,7 +381,7 @@ class TurnPlanner:
         return plan
 
 
-def _compact_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
+def compact_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
     compact: list[dict[str, str]] = []
     for error in exc.errors(include_url=False, include_input=False):
         location = error.get("loc") or ()
@@ -384,6 +393,9 @@ def _compact_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
             }
         )
     return compact
+
+
+_compact_validation_errors = compact_validation_errors  # legacy compatibility
 
 
 def _normalize_execution_targets(

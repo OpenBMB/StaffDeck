@@ -945,7 +945,7 @@ def _try_handle_feishu_handoff_reply(
         )
     ).first()
     answered_by = identity.staffdeck_user_id if identity else handoff.assignee_user_id
-    from app.api.chat import _apply_handoff_reply
+    from app.core.handoff_reply_service import apply_handoff_reply as _apply_handoff_reply
 
     _apply_handoff_reply(
         db,
@@ -1131,7 +1131,7 @@ def _run_handoff_reply_command(
             )
         handoff = pending[0]
 
-    from app.api.chat import _apply_handoff_reply
+    from app.core.handoff_reply_service import apply_handoff_reply as _apply_handoff_reply
 
     answered_by = assignee_user_id or handoff.assignee_user_id
     _apply_handoff_reply(
@@ -1384,6 +1384,20 @@ def process_inbound(
             scope,
             name_resolver=_build_name_resolver(binding),
         )
+        from staffdeck_harness.channels.host import ChannelHost
+        from staffdeck_harness.security.profile import get_profile
+        from app.config import get_settings
+
+        # The actual Staff may still be resolved by routing/team leadership below. Here enforce
+        # transport/identity; EngineHost and TurnCoordinator guard the final resolved Staff.
+        receive = ChannelHost(db, get_profile(get_settings())).authorize_receive(binding, inbound, user, check_staff=False)
+        if not receive.allowed:
+            event.status = "failed"
+            event.error = "channel_receive_denied: " + receive.reason
+            event.processed_at = utc_now()
+            db.add(event)
+            db.commit()
+            return False
         # 先在仍保持原 external_conv_id 的历史会话中去重。身份不一致会在后续
         # session 创建时隔离旧会话，若等隔离后再查会漏掉已落库的 turn。
         if _client_turn_seen_in_conv(

@@ -97,11 +97,11 @@ def test_disable_observer_trace_is_not_switchable(registry, settings) -> None:
     d = _described(registry)
     assert d["kind"] == "T" and d["switchable"] is False
     # The admin API refuses to add non-switchable modules to disabled_modules ("是平台核心组成部分，不能停用").
-    # The registry itself still honours the setting, so the admin validation is the only gate.
+    # Deployment discovery also refuses to disable protected platform infrastructure.
     settings.harness_disabled_modules = MODULE_ID
     reg = discover_and_install(ModuleRegistry(), settings)
     reg.seal()
-    assert reg.get(MODULE_ID) is not None and reg.get(MODULE_ID).enabled is False
+    assert reg.get(MODULE_ID) is not None and reg.get(MODULE_ID).enabled is True
 
 
 # --------------------------------------------------------------------------- 4. provider
@@ -155,15 +155,15 @@ def test_events_observer_trace_failure_never_breaks_the_turn(registry, monkeypat
     fanout_event("t1", "s1", "harness_tool_result", {"call_id": "c1"})  # must not raise
 
 
-def test_events_observer_trace_disabled_module_is_not_fanned_out(settings, monkeypatch) -> None:
+def test_events_observer_trace_protected_module_remains_fanned_out(settings, monkeypatch) -> None:
     settings.harness_disabled_modules = MODULE_ID
     reg = discover_and_install(ModuleRegistry(), settings)
     reg.seal()
     monkeypatch.setattr(registry_mod, "_active", reg)
     monkeypatch.setattr(relay_mod, "_observers", {})
     provider = reg.get(MODULE_ID).provider
-    assert provider not in relay_mod._registry_observers()
-    assert MODULE_ID not in [i.manifest.module_id for i in reg.providers(SlotName.EVENT_OBSERVER)]
+    assert provider in relay_mod._registry_observers()
+    assert MODULE_ID in [i.manifest.module_id for i in reg.providers(SlotName.EVENT_OBSERVER)]
 
 
 def test_pep_observer_trace_declares_no_policy_actions(module) -> None:

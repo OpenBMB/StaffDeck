@@ -41,7 +41,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
 from staffdeck_harness.bridge.capability_mcp import ActivationRegistry
-from staffdeck_harness.bridge.protocol_adapters import adapter_for
+from app.llm.tool_protocols import adapter_for
 
 logger = logging.getLogger(__name__)
 

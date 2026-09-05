@@ -155,7 +155,7 @@ DEFAULT_HANDLERS: dict[str, Handler] = {
 class InteractionPipelineHost:
     def __init__(self, plan: HookPlan, handlers: Mapping[str, Handler] | None = None, *, trace: Callable[[str, dict[str, Any]], None] | None = None):
         self.plan = plan
-        self.handlers = {**DEFAULT_HANDLERS, **(handlers or {})}
+        self.handlers = dict(DEFAULT_HANDLERS if handlers is None else handlers)
         self.trace = trace
         missing = [c.handler for hs in plan.order.values() for c in hs if c.handler not in self.handlers]
         if missing:
@@ -167,9 +167,11 @@ class InteractionPipelineHost:
             handler = self.handlers[contribution.handler]
             try:
                 d = handler(ctx, state)
-            except Exception as exc:  # a broken hook must not kill the turn; log and pass
+            except Exception as exc:
                 if self.trace:
                     self.trace("hook_failed", {"point": point, "handler": contribution.handler, "error": str(exc)})
+                if contribution.critical:
+                    return HookDecision.deny(f"required hook {contribution.handler} failed")
                 continue
             if d.kind != "pass" and self.trace:
                 self.trace("hook_decision", {"point": point, "handler": contribution.handler, "kind": d.kind, "reason": d.reason})

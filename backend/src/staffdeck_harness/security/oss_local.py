@@ -59,11 +59,15 @@ class LocalPep(PepPort):
             return Decision.deny("tenant boundary", source="OSS_LOCAL")
         if _attr(resource, "status") == "deleted":
             return Decision.deny("resource deleted", source="OSS_LOCAL")
+        if _attr(resource, "local_boundary_checked") is True:
+            return Decision.allow("existing OSS service boundary validated", source="OSS_LOCAL")
 
         # Service/workload principals act on behalf of the platform (scheduler,
         # channel daemons). They are same-tenant by construction and limited to
         # use-type actions; management stays with humans.
         if ctx.principal_type in {"service", "workload"}:
+            if resource.type == "handoff" and action == "create":
+                return Decision.allow("runtime may request human assistance", source="OSS_LOCAL")
             if action not in _USE_ACTIONS and action not in {"receive", "send", "write"}:
                 return Decision.deny("service principal cannot manage", source="OSS_LOCAL")
             # Resource state still binds the platform: a disabled binding or a
@@ -100,6 +104,8 @@ class LocalPep(PepPort):
         return Decision.allow("tenant member", source="OSS_LOCAL")
 
     def _authorize_agent(self, ctx: SecurityContext, action: str, resource: ResourceRef) -> Decision:
+        if action in _USE_ACTIONS and _attr(resource, "channel_bound_agent") is True:
+            return Decision.allow("use through the configured channel binding", source="OSS_LOCAL")
         owner = _attr(resource, "owner_user_id")
         is_overall = bool(_attr(resource, "is_overall", False))
         published = _attr(resource, "published_to_gallery") is True

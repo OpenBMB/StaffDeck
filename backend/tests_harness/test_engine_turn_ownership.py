@@ -105,7 +105,7 @@ def test_pool_close_all_releases_tokens():
 def test_activation_rebind_swaps_host_and_idle_placeholder_refuses_tools():
     reg = ActivationRegistry()
     act = reg.register(IdlePhaseHost(), None, token="tok")
-    assert reg.get("tok") is act and [t["name"] for t in act.host.tool_schemas()] == ["knowledge_search", "general_skill_read", "tool_invoke", "sandbox_execute", "capability_describe", "finish_task"]
+    assert reg.get("tok") is act and [t["name"] for t in act.host.tool_schemas()] == ["capability_invoke", "knowledge_search", "general_skill_read", "tool_invoke", "sandbox_execute", "capability_describe", "finish_task"]
     assert act.host.invoke_proxy("finish_task", {}, None)[0].error["code"] == "ACTIVATION_FENCED"
     assert reg.live_count() == 0, "an idle placeholder is not a live turn"
 
@@ -145,7 +145,7 @@ def test_runtime_acquire_registers_idle_token_and_release_parks_it():
 
 def test_phase_host_refuses_tools_but_serves_the_gateway():
     h = PhaseHost(model_config="mc", phase="plan")
-    assert len(h.tool_schemas()) == 6, "the tool set is stable for the process; enforcement is at invoke"
+    assert len(h.tool_schemas()) == 7, "the tool set is stable for the process; enforcement is at invoke"
     res, receipt = h.invoke_proxy("knowledge_search", {"query": "x"}, None)
     assert res.success is False and res.error["code"] == "ACTIVATION_FENCED" and receipt is None
     assert h.model_config == "mc" and h.idle is False
@@ -229,14 +229,15 @@ def test_engine_unavailable_without_fallback_raises(monkeypatch):
 
 def test_phase_runner_surfaces_engine_turn_error_instead_of_empty_output(monkeypatch):
     from staffdeck_harness.bridge import phases
-    from staffdeck_harness.bridge.task_agent import HarnessV3TaskAgent
 
     reg = ActivationRegistry()
     reg.register(IdlePhaseHost(), None, token="tok")
     rt = SimpleNamespace(registry=reg)
     pooled = SimpleNamespace(token="tok", process=object())
     events = [{"type": "turn/end", "data": {"reason": {"kind": "error", "error": {"message": "Connection error.", "code": "SERVER", "status": 502}}}}]
-    monkeypatch.setattr(HarnessV3TaskAgent, "_run_engine_turn", lambda self, proc, sid, blocks, cancelled, trace, finished=None: (events, "", "error"))
+    from staffdeck_harness.bridge import session_runner
+
+    monkeypatch.setattr(session_runner, "run_session", lambda *a, **kw: (events, "", "error"))
     traces = []
     runner = phases.EnginePhaseRunner(rt, pooled, tenant_id="t1", session_id="s1", trace=lambda e, p: traces.append(e), cancelled=lambda: False)
     with pytest.raises(phases.EnginePhaseError) as exc:

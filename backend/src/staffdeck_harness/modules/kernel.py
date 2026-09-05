@@ -111,24 +111,32 @@ class TeamProviderModule:
 
         return build_team_planner_context(db, team)
 
+    def publish(self, db: Any, **kwargs: Any):
+        from app.teams.wakeup import publish_team_planner_frames
+
+        return publish_team_planner_frames(db, **kwargs)
+
 
 class WebIngressModule:
     module_id = "ingress.web"
     routes = ("/api/chat/turn", "/api/chat/stream")
 
+    def accept(self, request: Any):
+        return request
 
-class PublicApiIngressModule:
+
+class PublicApiIngressModule(WebIngressModule):
     module_id = "ingress.public_api"
     routes = ("/api/v1/*",)
 
 
-class SchedulerIngressModule:
+class SchedulerIngressModule(WebIngressModule):
     module_id = "ingress.scheduler"
 
     def dispatch(self, *a: Any, **kw: Any):
-        from app.scheduled_tasks import service
+        from app.scheduled_tasks.service import execute_scheduled_task
 
-        return service
+        return execute_scheduled_task(*a, **kw)
 
 
 class ChannelHostModule:
@@ -189,7 +197,7 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
     registry.install(manifest("staff.model_route", "模型分配", summary="决定员工在默认、路由和分步场景下分别使用哪个模型。", kind=K, slots=[SlotName.STAFF_MODEL_ROUTE], provides=["model.use/v1"], policy_actions=["model.use/v1"]), ModelRouteModule(), slot=SlotName.STAFF_MODEL_ROUTE)
     registry.mark_guarded(SlotName.STAFF_MODEL_ROUTE)
     registry.install(manifest("composition.projection", "员工配置汇总", summary="把员工的人设、模型、能力、流程、渠道和团队汇总成一份完整配置。", kind=K, slots=[SlotName.STAFF_SOP]), CompositionProjectionModule(), slot=SlotName.STAFF_SOP)
-    registry.install(manifest("composition.compiler", "配置校验与发布", summary="发布前检查配置是否完整、依赖是否成环，并生成对话时实际使用的版本。", kind=K, slots=[SlotName.STAFF_SOP], requires=["hook.contribute/v1"]), CompositionCompilerModule(), slot=SlotName.STAFF_SOP)
+    registry.install(manifest("composition.compiler", "配置校验与发布", summary="发布前检查配置是否完整、依赖是否成环，并生成对话时实际使用的版本。", kind=K, slots=[SlotName.STAFF_SOP]), CompositionCompilerModule(), slot=SlotName.STAFF_SOP)
     registry.install(manifest("sop.definition", "流程定义", summary="定义流程的步骤、走向，以及每一步需要的能力。", kind=ModuleKind.CONTENT, slots=[SlotName.SOP_SLOT_CONTROL], provides=["sop.execute/v1"], policy_actions=["sop.execute/v1"]), SopDefinitionModule(), slot=SlotName.SOP_SLOT_CONTROL)
     registry.install(manifest("sop.slots", "流程能力关联", summary="把流程中声明的能力需求与员工实际绑定的资源对应起来。", kind=K, slots=[SlotName.SOP_SLOT_CONTROL]), SopSlotResolverModule(), slot=SlotName.SOP_SLOT_CONTROL)
     registry.mark_guarded(SlotName.SOP_SLOT_CONTROL)

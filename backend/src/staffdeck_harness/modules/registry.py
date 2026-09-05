@@ -33,9 +33,11 @@ import logging
 import os
 import re
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib import metadata as importlib_metadata
 from typing import Any, Callable, Iterable, Mapping
+from staffdeck_harness.contracts.operations import SUPPORTED_CONTRACTS
 
 from staffdeck_harness.contracts.errors import ContractIncompatible, ModuleSdkError, PepBindingMissing
 from staffdeck_harness.contracts.manifest import HookContribution, ModuleKind, ModuleManifest, SlotName
@@ -53,32 +55,6 @@ MODULE_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
 SEMVER_RE = re.compile(r"^\d+(\.\d+){0,2}(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$")
 SUPPORTED_CONTRACT_VERSIONS = {"v1"}
 
-# operation name -> supported versions (shared with the composition compiler)
-SUPPORTED_CONTRACTS: dict[str, set[str]] = {
-    "knowledge.search": {"v1"},
-    "general_skill.consume": {"v1"},
-    "tool.invoke": {"v1"},
-    "mcp.invoke": {"v1"},
-    "a2a.invoke": {"v1"},
-    "sandbox.execute": {"v1"},
-    "artifact.publish": {"v1"},
-    "handoff.request": {"v1"},
-    "handoff.assign": {"v1"},
-    "handoff.reply": {"v1"},
-    "sop.execute": {"v1"},
-    "channel.receive": {"v1"},
-    "channel.send": {"v1"},
-    "memory.read": {"v1"},
-    "memory.write": {"v1"},
-    "team.delegate": {"v1"},
-    "model.use": {"v1"},
-    "runtime.turn": {"v1"},
-    "capability.describe": {"v1"},
-    "task.finish": {"v1"},
-    "event.observe": {"v1"},
-    "hook.contribute": {"v1"},
-    "knowledge.import": {"v1"},
-}
 
 
 class RegistrySealed(ModuleSdkError):
@@ -117,6 +93,24 @@ class ModuleRegistry:
         self._sealed = False
         self.generation = 0
         self._install_source = "builtin"
+        self._started: list[Installed] = []
+        self._disposed = False
+        self._accepting = True
+        self._turns = 0
+        self._calls = 0
+        self.operations: dict[str, Any] = {}
+
+    def register_operation(self, contract: Any) -> None:
+        from staffdeck_harness.contracts.operations import OperationContract
+        from staffdeck_harness.contracts.security import DEFAULT_ACTION_MAP
+
+        if self._sealed:
+            raise RegistrySealed("operation catalog is sealed")
+        if not isinstance(contract, OperationContract) or "/" not in contract.operation or not contract.action:
+            raise ContractIncompatible("operation requires a versioned contract and policy action")
+        if contract.operation in self.operations or contract.operation in DEFAULT_ACTION_MAP:
+            raise ContractIncompatible(f"operation already defined: {contract.operation}")
+        self.operations[contract.operation] = contract
 
     # -- install -------------------------------------------------------------------
 
@@ -136,7 +130,7 @@ class ModuleRegistry:
                 raise SlotConflict(f"module {manifest.module_id} does not declare slot {slot.value}", details={"declared": [s.value for s in manifest.attaches_to]})
             for op in (*manifest.provides_operations, *manifest.requires_operations):
                 name, _, version = op.partition("/")
-                if name not in SUPPORTED_CONTRACTS or version not in SUPPORTED_CONTRACTS[name]:
+                if op not in self.operations and (name not in SUPPORTED_CONTRACTS or version not in SUPPORTED_CONTRACTS[name]):
                     raise ContractIncompatible(f"module {manifest.module_id}: unsupported contract {op}", details={"operation": op})
             # The registrar currently running decides the source unless the caller is explicit.
             item = Installed(manifest=manifest, provider=provider, slot=slot, enabled=enabled, config=dict(config or {}), source=source or self._install_source, spec=self._install_source)
@@ -181,12 +175,101 @@ class ModuleRegistry:
                 missing = [op for op in m.requires_operations if op not in provided]
                 if missing:
                     raise UnsatisfiedRequirement(f"module {m.module_id} requires unprovided operations: {missing}", details={"missing": missing})
+                methods = {
+                    SlotName.STAFF_CAPABILITY: ("invoke",),
+                    SlotName.RUNTIME_MEMORY: ("invoke",),
+                    SlotName.RUNTIME_ENGINE: ("open",),
+                    SlotName.SECURITY_PEP: ("build",),
+                    SlotName.STAFF_INGRESS: ("accept",),
+                }.get(item.slot, ())
+                # Metadata-only manifests are valid documentation, not executable providers.
+                if m.provides_operations or item.slot == SlotName.SECURITY_PEP:
+                    missing_methods = [name for name in methods if not callable(getattr(item.provider, name, None))]
+                    if missing_methods:
+                        raise ContractIncompatible(f"module {m.module_id} does not implement {missing_methods}")
             for slot in SINGLE_PROVIDER_SLOTS:
                 active = [i for i in self._by_slot.get(slot, ()) if i.enabled]
-                if len(active) > 1:
+                if slot in self._by_slot and len(active) != 1:
                     raise SlotConflict(f"slot {slot.value} accepts exactly one active module; got {[i.manifest.module_id for i in active]}")
             self._sealed = True
             self.generation += 1
+
+    def start(self) -> None:
+        """Only activation starts resources; registration/preflight must be declarative."""
+        if self._disposed:
+            raise RegistrySealed("cannot activate a disposed registry")
+        if self._started:
+            self._accepting = True
+            return
+        try:
+            for item in self._by_id.values():
+                if not item.enabled:
+                    continue
+                self._started.append(item)
+                start = getattr(item.provider, "start_module", None)
+                if callable(start):
+                    start(item.config)
+        except BaseException:
+            self.dispose()
+            raise
+
+    def dispose(self) -> None:
+        if self._disposed:
+            return
+        self._disposed = True
+        for item in reversed(list(self._by_id.values())):
+            stop = getattr(item.provider, "stop_module", None)
+            if item in self._started and callable(stop):
+                try:
+                    stop()
+                except Exception:
+                    logger.exception("module stop failed: %s", item.manifest.module_id)
+            dispose = getattr(item.provider, "dispose_module", None)
+            if callable(dispose):
+                try:
+                    dispose()
+                except Exception:
+                    logger.exception("module dispose failed: %s", item.manifest.module_id)
+        self._started.clear()
+
+    @contextmanager
+    def turn_lease(self):
+        with self._lock:
+            if not self._accepting or self._disposed:
+                raise ModuleSdkError("runtime is restarting", code="ENGINE_UNAVAILABLE")
+            self._turns += 1
+        try:
+            yield self
+        finally:
+            with self._lock:
+                self._turns -= 1
+
+    def begin_drain(self) -> None:
+        with self._lock:
+            self._accepting = False
+
+    def end_drain(self) -> None:
+        with self._lock:
+            if not self._disposed:
+                self._accepting = True
+
+    @property
+    def live_turns(self) -> int:
+        with self._lock:
+            return self._turns + self._calls
+
+    @contextmanager
+    def work_lease(self):
+        """Already admitted turns may finish calls during drain; disposal may not race them."""
+        with self._lock:
+            if self._disposed:
+                raise ModuleSdkError("module generation was disposed", code="ENGINE_UNAVAILABLE")
+            self._calls += 1
+        try:
+            yield self
+        finally:
+            with self._lock:
+                self._calls -= 1
 
     @property
     def sealed(self) -> bool:
@@ -232,15 +315,55 @@ class ModuleRegistry:
             return None
         return self.for_operation(operation)
 
-    def hooks(self) -> tuple[HookContribution, ...]:
+    def selected(self, slot: SlotName, snapshot: Any = None, *, sop_id: str | None = None) -> list[Installed]:
+        def expand(items, path=()):
+            out = []
+            for item in items:
+                mid = item.manifest.module_id
+                if mid in path:
+                    raise ContractIncompatible(f"composite module cycle: {path + (mid,)}")
+                members = item.manifest.metadata.get("members")
+                if members is not None:
+                    children = []
+                    for child_id in members:
+                        child = self.get(child_id)
+                        if child is None or child.slot != slot:
+                            raise ContractIncompatible(f"composite {mid} has invalid member {child_id}")
+                        if child.enabled:
+                            children.append(child)
+                    out.extend(expand(children, path + (mid,)))
+                else:
+                    out.append(item)
+            return out
+
+        child_ids = {mid for item in self._by_slot.get(slot, ()) for mid in item.manifest.metadata.get("members", ())}
+        roots = [item for item in self.providers(slot) if item.manifest.module_id not in child_ids]
+        if snapshot is None:
+            return expand(roots)
+        parents = (sop_id, snapshot.staff_id) if sop_id else (snapshot.staff_id,)
+        for parent in parents:
+            bindings = [b for b in snapshot.bindings if b.parent_id == parent and b.slot == slot]
+            if bindings:
+                out = []
+                for b in bindings:
+                    if not b.module_id:  # explicit disabled slot, no default resurrection
+                        continue
+                    item = self.get(b.module_id)
+                    if item is None or not item.enabled or item.slot != slot or item.manifest.version != b.module_version:
+                        raise ContractIncompatible(f"binding {b.binding_id} is no longer available")
+                    out.append(item)
+                return expand(out)
+        return expand(roots)
+
+    def hooks(self, snapshot: Any = None, *, sop_id: str | None = None) -> tuple[HookContribution, ...]:
         out: list[HookContribution] = []
-        for item in self.providers(SlotName.STAFF_INTERACTION):
+        for item in self.selected(SlotName.STAFF_INTERACTION, snapshot, sop_id=sop_id):
             out.extend(item.manifest.hooks)
         return tuple(out)
 
-    def hook_handlers(self) -> dict[str, Callable[..., Any]]:
+    def hook_handlers(self, snapshot: Any = None, *, sop_id: str | None = None) -> dict[str, Callable[..., Any]]:
         handlers: dict[str, Callable[..., Any]] = {}
-        for item in self.providers(SlotName.STAFF_INTERACTION):
+        for item in self.selected(SlotName.STAFF_INTERACTION, snapshot, sop_id=sop_id):
             provided = getattr(item.provider, "handlers", None)
             if isinstance(provided, Mapping):
                 handlers.update(provided)
@@ -334,7 +457,7 @@ def discover_and_install(registry: ModuleRegistry, settings: Any, *, include_bui
         if item is None:
             continue
         # Engines / PEP providers are chosen, never disabled; kernel pieces cannot be switched off.
-        if item.slot in SINGLE_PROVIDER_SLOTS or (item.manifest.kind is ModuleKind.KERNEL and not item.manifest.metadata.get("switchable")):
+        if item.slot in SINGLE_PROVIDER_SLOTS or (item.manifest.kind is not ModuleKind.CODE and not item.manifest.metadata.get("switchable")):
             logger.warning("ignoring disabled_modules entry %s: module is not switchable", mid)
             continue
         registry.set_enabled(mid, False)
@@ -381,8 +504,12 @@ def build_registry(settings: Any) -> ModuleRegistry:
     """Build and seal a registry from ``settings`` without touching the active one."""
 
     reg = ModuleRegistry()
-    discover_and_install(reg, settings)
-    reg.seal()
+    try:
+        discover_and_install(reg, settings)
+        reg.seal()
+    except BaseException:
+        reg.dispose()
+        raise
     return reg
 
 
@@ -403,7 +530,10 @@ def install_registry(reg: ModuleRegistry) -> ModuleRegistry:
 def reset_registry() -> None:
     global _active
     with _active_lock:
+        old = _active
         _active = None
+    if old is not None:
+        old.dispose()
 
 
 def manifest(module_id: str, name: str, *, kind: ModuleKind, slots: Iterable[SlotName], summary: str = "", provides: Iterable[str] = (), requires: Iterable[str] = (), hooks: Iterable[HookContribution] = (), policy_actions: Iterable[str] = (), version: str = "1.0.0", contract_version: str = "v1", metadata: Mapping[str, Any] | None = None) -> ModuleManifest:

@@ -29,7 +29,17 @@ def run_worker(*, once: bool = False, poll_seconds: float = WORKER_SLEEP_SECONDS
         with Session(engine) as db:
             due = due_scheduled_tasks(db)
             for task in due:
-                execute_scheduled_task(db, task)
+                from staffdeck_harness.modules.registry import peek_registry
+                from staffdeck_harness.contracts.manifest import SlotName
+
+                registry = peek_registry()
+                if registry is None:
+                    execute_scheduled_task(db, task)
+                    continue
+                providers = [i for i in registry.providers(SlotName.STAFF_INGRESS)
+                             if i.manifest.metadata.get("ingress", i.manifest.module_id.removeprefix("ingress.")) == "scheduler"]
+                if len(providers) == 1:
+                    providers[0].provider.dispatch(db, task)
         if once:
             return
         sleep(max(1.0, poll_seconds))

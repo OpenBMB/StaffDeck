@@ -6,6 +6,8 @@ workspace (a tmp dir here) after the PEP check; no model or network is involved.
 
 from __future__ import annotations
 
+from tests_harness.modules.conftest import invoke_provider
+
 import re
 from pathlib import Path
 
@@ -155,11 +157,11 @@ def test_disable_general_skill_local():
 
 def test_provider_general_skill_local_nothing_bound(module, host, invocation):
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host(), invocation(OPERATION, arguments={"query": "写周报"}))
+    res = invoke_provider(provider, host(), invocation(OPERATION, arguments={"query": "写周报"}))
     assert isinstance(res, ModuleResult)
     assert res.success is False and res.error["code"] == "SKILL_NOT_AVAILABLE"
     # an unknown binding id is the same failure, not an exception
-    res = provider.invoke(host(), invocation(OPERATION, arguments={"skill_id": "nope", "query": "写周报"}, binding_id="nope"))
+    res = invoke_provider(provider, host(), invocation(OPERATION, arguments={"skill_id": "nope", "query": "写周报"}, binding_id="nope"))
     assert res.success is False and res.error["code"] == "SKILL_NOT_AVAILABLE"
 
 
@@ -170,7 +172,7 @@ def test_provider_general_skill_local_draft_is_unavailable(module, host, invocat
     ensure_private_resource_binding(db, "t1", "a1", "general_skill", skill.id)
     db.commit()
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host({"general_skill": {skill.id}}), invocation(OPERATION, arguments={"skill_id": skill.id, "query": "写周报"}, binding_id=skill.id))
+    res = invoke_provider(provider, host({"general_skill": {skill.id}}), invocation(OPERATION, arguments={"skill_id": skill.id, "query": "写周报"}, binding_id=skill.id))
     assert res.success is False and res.error["code"] == "SKILL_NOT_AVAILABLE"
 
 
@@ -184,7 +186,7 @@ def test_provider_general_skill_local_unbound_is_denied_by_pep(module, host, inv
 
     provider = module(MODULE_ID).provider
     with pytest.raises(PermissionDenied) as exc:
-        provider.invoke(host({"general_skill": {skill.id}}), invocation(OPERATION, arguments={"skill_id": skill.id, "query": "写周报"}, binding_id=skill.id))
+        invoke_provider(provider, host({"general_skill": {skill.id}}), invocation(OPERATION, arguments={"skill_id": skill.id, "query": "写周报"}, binding_id=skill.id))
     assert exc.value.details["operation"] == OPERATION
     assert exc.value.details["resource"] == skill.id
 
@@ -209,7 +211,7 @@ def test_provider_general_skill_local_bound_skill_is_materialized(module, host, 
     db.commit()
     provider = module(MODULE_ID).provider
     h = host({"general_skill": {skill.id}})
-    res = provider.invoke(h, invocation(OPERATION, arguments={"skill_id": skill.id, "query": "写周报"}, binding_id=skill.id))
+    res = invoke_provider(provider, h, invocation(OPERATION, arguments={"skill_id": skill.id, "query": "写周报"}, binding_id=skill.id))
     assert res.success is True, res.error
     data = res.data
     assert data["kind"] == "general_skill"
@@ -231,12 +233,12 @@ def test_provider_general_skill_local_execute_downgrades_to_read(module, host, i
     ensure_private_resource_binding(db, "t1", "a1", "general_skill", skill.id)
     db.commit()
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host({"general_skill": {skill.id}}), invocation(OPERATION, arguments={"skill_id": skill.id, "query": "q", "operation": "execute"}, binding_id=skill.id))
+    res = invoke_provider(provider, host({"general_skill": {skill.id}}), invocation(OPERATION, arguments={"skill_id": skill.id, "query": "q", "operation": "execute"}, binding_id=skill.id))
     assert res.success is True
     assert res.data["operation"] == "read"
     assert res.data["requested_operation"] == "execute"
     assert "compatibility_notice" in res.data
-    res = provider.invoke(host({"general_skill": {skill.id}}), invocation(OPERATION, arguments={"skill_id": skill.id, "query": "q", "operation": "delete"}, binding_id=skill.id))
+    res = invoke_provider(provider, host({"general_skill": {skill.id}}), invocation(OPERATION, arguments={"skill_id": skill.id, "query": "q", "operation": "delete"}, binding_id=skill.id))
     assert res.success is False and res.error["code"] == "INVALID_ARGUMENTS"
 
 

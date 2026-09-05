@@ -42,6 +42,7 @@ NOT_SENT_CODES = frozenset(
         "REQUIRED_SLOT_MISSING", "SLOT_NOT_BOUND", "AUTHORIZATION_UNAVAILABLE",
         # host-side refusals: the provider never ran, so nothing can have been sent
         "UNSUPPORTED_CAPABILITY", "PROVIDER_INVALID", "PROVIDER_UNAUTHORIZED", "ENGINE_UNAVAILABLE",
+        "PROVIDER_UNAVAILABLE", "PROVIDER_VERSION_CHANGED", "PROVIDER_CONFLICT",
     }
 )
 
@@ -100,14 +101,15 @@ class InvocationLedger:
         prior = self.find_prior(key)
         if prior is None:
             return None
-        if prior.status == "completed" and (prior.response_cache_json or {}).get("success") is True:
+        if prior.status == "completed" and "success" in (prior.response_cache_json or {}):
             cached = dict(prior.response_cache_json or {})
             data = cached.get("data")
             replay_meta = {"idempotent_replay": True, "replayed_from_invocation_id": prior.id}
             if isinstance(data, dict):
                 data = {**data, **replay_meta}
             result = ModuleResult(
-                success=True,
+                success=bool(cached["success"]),
+                error=cached.get("error"),
                 data=data,
                 citations=tuple(cached.get("citations") or ()),
                 artifacts=tuple(cached.get("artifacts") or ()),
@@ -131,6 +133,17 @@ class InvocationLedger:
 
     # -- lifecycle ------------------------------------------------------------
 
+    def cache_projection(self, receipt: Receipt, result: ModuleResult) -> None:
+        row = self.db.get(HarnessInvocationRecord, receipt.ledger_id)
+        if row is None or row.status != "completed":
+            return
+        row.response_cache_json = {
+            "success": result.success, "data": result.data, "error": result.error,
+            "citations": list(result.citations), "artifacts": list(result.artifacts),
+        }
+        self.db.add(row)
+        self.db.commit()
+
     def start(self, invocation: ModuleInvocation) -> LedgerEntry:
         ctx = invocation.context
         row = HarnessInvocationRecord(
@@ -144,7 +157,7 @@ class InvocationLedger:
             logical_action_key=invocation.side_effect_key(),
             status="started",
             arguments_json=_audit(dict(invocation.arguments)),
-            approval_json={"engine": "harness_v3", "snapshot_id": ctx.snapshot_id, "binding_id": invocation.binding_id},
+            approval_json={"engine": invocation.metadata.get("execution_engine", "harness_v3"), "snapshot_id": ctx.snapshot_id, "binding_id": invocation.binding_id},
         )
         self.db.add(row)
         try:
@@ -159,7 +172,7 @@ class InvocationLedger:
         self.db.refresh(row)
         return LedgerEntry(row=row, invocation=invocation)
 
-    def finish(self, entry: LedgerEntry, result: ModuleResult) -> Receipt:
+    def finish(self, entry: LedgerEntry, result: ModuleResult, *, cache_result: bool = True) -> Receipt:
         row = entry.row
         payload: dict[str, Any] = {
             "success": result.success,
@@ -178,7 +191,7 @@ class InvocationLedger:
             else:
                 row.status = "outcome_unknown"
         row.result_json = _audit(payload)
-        row.response_cache_json = payload if row.status == "completed" else {}
+        row.response_cache_json = payload if row.status == "completed" and cache_result else {}
         row.finished_at = utc_now()
         row.updated_at = utc_now()
         self.db.add(row)

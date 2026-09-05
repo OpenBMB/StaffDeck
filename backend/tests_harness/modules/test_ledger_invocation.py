@@ -108,11 +108,11 @@ def test_disable_ledger_invocation_is_not_switchable(registry, settings) -> None
     d = _described(registry)
     assert d["kind"] == "T" and d["switchable"] is False
     # The admin API refuses non-switchable ids in disabled_modules ("是平台核心组成部分，不能停用");
-    # the registry itself would honour the setting, so that validation is the only gate.
+    # Deployment discovery also refuses to disable protected platform infrastructure.
     settings.harness_disabled_modules = MODULE_ID
     reg = discover_and_install(ModuleRegistry(), settings)
     reg.seal()
-    assert reg.get(MODULE_ID) is not None and reg.get(MODULE_ID).enabled is False
+    assert reg.get(MODULE_ID) is not None and reg.get(MODULE_ID).enabled is True
 
 
 # --------------------------------------------------------------------------- 4. provider

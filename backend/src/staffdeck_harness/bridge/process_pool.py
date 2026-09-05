@@ -71,7 +71,9 @@ class ProcessPool:
     def __init__(self, *, warm_per_key: int = DEFAULT_WARM_PER_KEY, max_reuses: int = DEFAULT_MAX_REUSES, idle_ttl_seconds: float = DEFAULT_IDLE_TTL_SECONDS, factory: Callable[..., HarnessV3Process] | None = None):
         self._lock = threading.Lock()
         self._warm: dict[str, list[PooledProcess]] = {}
-        self._checked_out: set[str] = set()
+        self._checked_out: dict[str, PooledProcess] = {}
+        self._accepting = True
+        self._closed = False
         self.warm_per_key = max(0, int(warm_per_key))
         self.max_reuses = max(1, int(max_reuses))
         self.idle_ttl_seconds = float(idle_ttl_seconds)
@@ -80,12 +82,14 @@ class ProcessPool:
 
     # -- checkout ------------------------------------------------------------------------
 
-    def acquire(self, cfg: HarnessV3WorkerConfig, tenant_id: str, *, mcp_url: str, cwd: Path, register: Callable[[str], None], factory: Callable[..., Any] | None = None) -> PooledProcess:
+    def acquire(self, cfg: HarnessV3WorkerConfig, tenant_id: str, *, mcp_url: str, cwd: Path, register: Callable[[str], None], factory: Callable[..., Any] | None = None, on_close: Callable[[str], None] | None = None) -> PooledProcess:
         """Return a process for this turn. ``register(token)`` is called for a *new* process before
         it boots so the MCP server knows the token the moment the engine connects."""
 
         key = pool_key(cfg, tenant_id)
         with self._lock:
+            if not self._accepting:
+                raise RuntimeError("runtime is draining; new turns are not admitted")
             bucket = self._warm.get(key) or []
             now = time.monotonic()
             while bucket:
@@ -93,27 +97,43 @@ class ProcessPool:
                 if cand.alive and (now - cand.last_used_at) <= self.idle_ttl_seconds and cand.uses < self.max_reuses:
                     cand.uses += 1
                     cand.last_used_at = now
-                    self._checked_out.add(cand.token)
+                    self._checked_out[cand.token] = cand
                     self.stats["hits"] += 1
                     return cand
                 self._close_quietly(cand)
+                if on_close:
+                    on_close(cand.token)
             self.stats["misses"] += 1
         token = secrets.token_urlsafe(24)
         register(token)
-        proc = (factory or self._factory)(cfg, activation_token=token, mcp_url=mcp_url, cwd=cwd)
-        proc.start()
+        proc = None
+        try:
+            proc = (factory or self._factory)(cfg, activation_token=token, mcp_url=mcp_url, cwd=cwd)
+            proc.start()
+        except BaseException:
+            if proc is not None:
+                proc.close()
+            if on_close:
+                on_close(token)
+            raise
         pooled = PooledProcess(key=key, token=token, process=proc, cwd=cwd, uses=1)
         with self._lock:
-            self._checked_out.add(token)
+            if not self._accepting:
+                self._close_quietly(pooled)
+                if on_close:
+                    on_close(token)
+                raise RuntimeError("runtime stopped while worker was starting")
+            self._checked_out[token] = pooled
         return pooled
 
     def release(self, pooled: PooledProcess, *, on_close: Callable[[str], None]) -> None:
         """Return to the warm set, or close it (``on_close(token)`` lets the caller drop the activation)."""
 
         with self._lock:
-            self._checked_out.discard(pooled.token)
+            if self._checked_out.pop(pooled.token, None) is None:
+                return  # idempotent release, also after a forced stop
             bucket = self._warm.setdefault(pooled.key, [])
-            keep = pooled.alive and pooled.uses < self.max_reuses and len(bucket) < self.warm_per_key
+            keep = not self._closed and pooled.alive and pooled.uses < self.max_reuses and len(bucket) < self.warm_per_key
             if keep:
                 pooled.last_used_at = time.monotonic()
                 bucket.append(pooled)
@@ -123,10 +143,22 @@ class ProcessPool:
 
     # -- housekeeping --------------------------------------------------------------------
 
+    def begin_drain(self) -> None:
+        with self._lock:
+            self._accepting = False
+
+    def end_drain(self) -> None:
+        with self._lock:
+            if not self._closed:
+                self._accepting = True
+
     def close_all(self, *, on_close: Callable[[str], None] | None = None) -> None:
         with self._lock:
-            items = [p for bucket in self._warm.values() for p in bucket]
+            self._accepting = False
+            self._closed = True
+            items = [p for bucket in self._warm.values() for p in bucket] + list(self._checked_out.values())
             self._warm.clear()
+            self._checked_out.clear()
         for p in items:
             self._close_quietly(p)
             if on_close:

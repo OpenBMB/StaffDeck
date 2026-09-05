@@ -83,6 +83,39 @@ def _owner_of(resource: Any) -> str | None:
     return meta.get("owner_user_id") or meta.get("created_by_user_id")
 
 
+def runtime_staff_ref(db: Session, ref: ResourceRef, session: ChatSession) -> ResourceRef:
+    """Only a verified live channel binding can supply the OSS channel-use path."""
+    from dataclasses import replace
+
+    binding_id = getattr(session, "channel_binding_id", None)
+    binding = db.get(ChannelBinding, binding_id) if binding_id else None
+    if binding is None or binding.tenant_id != ref.tenant_id or binding.status != "active":
+        return ref
+    from app.db.models import User
+
+    user = db.get(User, session.user_id) if session.user_id else None
+    if user is None or user.tenant_id != ref.tenant_id or not channel_identity_bound(db, binding, user.id):
+        return ref
+    bound = binding.agent_id == ref.id
+    if binding.team_id and binding.team_id == session.team_id:
+        from app.teams.service import get_team_leader
+
+        leader = get_team_leader(db, binding.team_id)
+        bound = bool(leader and leader.agent_id == ref.id)
+    return replace(ref, attributes={**ref.attributes, "channel_bound_agent": bound})
+
+
+def channel_identity_bound(db: Session, binding: ChannelBinding, user_id: str, *, scope: str | None = None) -> bool:
+    from app.db.models import ChannelIdentity
+    from app.channels.service_identity import external_account_scope
+
+    scope = external_account_scope(db, binding) if scope is None else scope
+    return db.exec(select(ChannelIdentity).where(
+        ChannelIdentity.tenant_id == binding.tenant_id, ChannelIdentity.channel == binding.channel,
+        ChannelIdentity.external_account_scope == scope, ChannelIdentity.staffdeck_user_id == user_id,
+    )).first() is not None
+
+
 def bound_resource_ref(
     db: Session,
     tenant_id: str,

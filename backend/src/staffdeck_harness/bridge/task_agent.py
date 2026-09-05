@@ -53,7 +53,6 @@ from staffdeck_harness.composition.compiler import CompositionSnapshot
 from staffdeck_harness.contracts.hooks import HookContext, HookDecision
 from staffdeck_harness.contracts.invocation import InvocationContext, ModuleInvocation, ModuleResult
 from staffdeck_harness.contracts.security import SecurityContext
-from staffdeck_harness.events.relay import SessionEventRelay
 from staffdeck_harness.interactions.pipeline_host import InteractionPipelineHost, PipelineState
 from staffdeck_harness.security.profile import Guard
 
@@ -87,6 +86,7 @@ class HarnessV3TurnContext:
     client_turn_id: str | None = None
     # The engine assigns run_id after start_run(), i.e. after this context is built.
     run_id_provider: Callable[[], str] | None = None
+    module_registry: Any = None
 
     @property
     def current_run_id(self) -> str:
@@ -154,10 +154,13 @@ class HarnessV3Runtime:
             # (possibly test-injected) factory receives.
             return inner(replace(c, model_api_key=kw["activation_token"]), **kw)
 
-        return self.pool.acquire(cfg, tenant_id, mcp_url=self.mcp_url, cwd=cwd, register=register, factory=factory)
+        return self.pool.acquire(cfg, tenant_id, mcp_url=self.mcp_url, cwd=cwd, register=register, factory=factory, on_close=self.registry.release)
 
     def release_process(self, pooled: Any) -> None:
-        assert self.pool is not None
+        if self.pool is None:
+            pooled.process.close()
+            self.registry.release(pooled.token)
+            return
         # Park the activation on the idle placeholder while the process waits in the pool.
         try:
             self.registry.rebind(pooled.token, IdlePhaseHost(), None)
@@ -289,6 +292,7 @@ class HarnessV3TaskAgent:
         self._process: HarnessV3Process | None = None
         self._activation_token: str | None = None
         self._host: CapabilityHost | None = None
+        self._custom_pipeline = pipeline is not None and turn.module_registry is None
 
     # -- engine seam ---------------------------------------------------------------
 
@@ -353,7 +357,9 @@ class HarnessV3TaskAgent:
                 "binding_id": inv.binding_id,
             }
             if result is not None:
-                payload.update({"success": result.success, "error": result.error, "receipt": None, "citations": list(result.citations or ())})
+                from dataclasses import asdict
+
+                payload.update({"success": result.success, "data": result.data, "error": result.error, "receipt": asdict(host.current_receipt) if host.current_receipt else None, "citations": list(result.citations or ())})
             ctx = HookContext(point=point, tenant_id=t.tenant_id, agent_id=t.agent_id, session_id=t.session_id, turn_id=t.turn_id, step=1, snapshot_id=t.snapshot.snapshot_id, payload=payload, generation=t.generation)
             with hook_lock:
                 return self.pipeline.run(point, ctx, state)
@@ -366,6 +372,15 @@ class HarnessV3TaskAgent:
         host.hooks = hooks
         self._host = host
         state = PipelineState(snapshot=t.snapshot, memory_context=list(t.memory_context), session_slots=dict(t.session_slots), active_sop_id=sop_id, active_node_id=step_id)
+        if t.module_registry is not None:
+            from staffdeck_harness.composition.compiler import compile_hooks
+
+            reg = t.module_registry
+            host.registry = reg
+            self.pipeline = InteractionPipelineHost(
+                compile_hooks(reg.hooks(t.snapshot, sop_id=sop_id)),
+                handlers=reg.hook_handlers(t.snapshot, sop_id=sop_id), trace=self.trace_sink,
+            )
 
         def inv_ctx(trace_id: str) -> InvocationContext:
             return InvocationContext(
@@ -410,21 +425,30 @@ class HarnessV3TaskAgent:
             trace("harness_v3_frame_bound", {"model": model, "model_config_id": getattr(model_config, "id", None), "via": "staffdeck-model-gateway", "thinking": thinking or "provider_default", "reasoning_effort": effort or "provider_default", "workspace": str(workspace), "process_uses": pooled.uses})
 
             # 3. run turn (+ optional single steer)
-            session_id = f"sd-{t.session_id}-{t.task_frame_id}"
+            session_id = f"sd-{t.session_id}-{t.turn_id}-{t.task_frame_id}"
             events, final_text, finish_reason = self._run_engine_turn(proc, session_id, content_blocks, cancelled, trace, finished=lambda: slot.finish is not None)
             actions = sum(1 for e in events if e.get("type") == "tool/call")
-            if slot.finish is None:
+            for supervision_attempt in range(2):
+                final_text = str((slot.finish or {}).get("reply_fragment") or final_text)
                 ctx_stop = HookContext(point="turn_stopping", tenant_id=t.tenant_id, agent_id=t.agent_id, session_id=t.session_id, turn_id=t.turn_id, step=1, snapshot_id=t.snapshot.snapshot_id, payload={"final_text": final_text, "finish_reason": finish_reason}, generation=t.generation)
                 stop = self.pipeline.run("turn_stopping", ctx_stop, state)
+                if stop.kind == "deny":
+                    return self._failed(requirement, "OUTPUT_DENIED", stop.reason or "output denied", actions=actions)
+                if stop.kind == "steer" and supervision_attempt == 1:
+                    return self._failed(requirement, "OUTPUT_DENIED", "output still requires revision after supervision", actions=actions)
                 if stop.kind == "steer" and stop.steer_message and not cancelled():
+                    slot.finish = None
+                    slot.closed = False
                     trace("harness_v3_turn_steered", {"reason": stop.reason, "message": stop.steer_message[:200]})
                     events2, final_text2, finish_reason = self._run_engine_turn(proc, session_id, [{"type": "text", "text": stop.steer_message + "\n\n完成后调用 mcp__staffdeck__finish_task。"}], cancelled, trace, finished=lambda: slot.finish is not None)
                     events.extend(events2)
                     actions += sum(1 for e in events2 if e.get("type") == "tool/call")
                     if final_text2.strip():
                         final_text = final_text2
-                if stop.handoff and slot.finish is None:
+                    continue
+                if stop.handoff:
                     slot.finish = {"status": "handoff", "reply_fragment": final_text, "slot_updates": {}, "next_step_id": None, "task_summary": "SOP 步骤请求转人工", "structured_result": None}
+                break
 
             # 4. assemble result
             artifacts = host.discover_artifacts(inv_ctx("artifacts"))
@@ -490,58 +514,12 @@ class HarnessV3TaskAgent:
             except Exception:  # pragma: no cover
                 logger.exception("trace flush failed for %s", event)
 
-    def _run_engine_turn(self, proc: HarnessV3Process, session_id: str, content_blocks: list[dict[str, Any]], cancelled: Callable[[], bool], trace: TraceSink, *, finished: Callable[[], bool] | None = None) -> tuple[list[dict[str, Any]], str, str | None]:
-        client = proc.client
-        events: list[dict[str, Any]] = []
-        relay = SessionEventRelay(self.turn.tenant_id, self.turn.session_id, trace)
-        with client.subscribe_session_notifications(session_id) as sub:
-            message_id = client.session_prompt(session_id, content_blocks, notification_subscription=sub)
-            received = False
-            while True:
-                if cancelled():
-                    raise HarnessExecutionCancelled("cancelled while Harness v3 turn running")
-                # The Harness v3 (0.1.2) protocol has no cancel method and ``NotificationSubscription.next``
-                # blocks indefinitely, so we poll with a small timeout: it lets us honour an
-                # up-to-now-cancelled turn and break as soon as ``finish_task`` closed the slot
-                # (a finished step is a closed step; the engine must not keep generating).
-                n = self._next_poll(sub)
-                if n is None:
-                    if received and finished is not None and finished():
-                        break
-                    continue
-                payload = n.payload or {}
-                if n.method == "session.event" and payload.get("sessionId") == session_id:
-                    ev = payload.get("event")
-                    if isinstance(ev, dict):
-                        if not received:
-                            if ev.get("type") == "agent/inbox/spliced" and any(isinstance(m, dict) and m.get("id") == message_id for m in ((ev.get("data") or {}).get("inserted") or [])):
-                                received = True
-                            continue
-                        events.append(ev)
-                        relay(ev)
-                        if received and finished is not None and finished():
-                            break
-                if n.method == "session.status" and payload.get("sessionId") == session_id and payload.get("status") == "idle" and received:
-                    break
-        from deepseek_harness.api import final_response, finish_reason as _finish_reason  # official SDK helpers
-        return events, final_response(events), _finish_reason(events)
+    def _run_engine_turn(self, proc, session_id, content_blocks, cancelled, trace, *, finished=None):
+        from staffdeck_harness.bridge.session_runner import run_session
 
-    @staticmethod
-    def _next_poll(sub: Any, *, timeout: float = 0.25) -> Any:
-        """``NotificationSubscription.next()`` with a small timeout.
-
-        Falls back to the blocking ``next()`` if the queue attribute the SDK uses is not present
-        (e.g. a newer SDK changes its internals) — the feature degrades to no early-exit, never a
-        crash.
-        """
-
-        q = getattr(sub, "_notifications", None)
-        if q is None:
-            return sub.next()
-        try:
-            return q.get(timeout=timeout)
-        except Exception:
-            return None
+        return run_session(proc, session_id, content_blocks, cancelled, trace,
+                           tenant_id=self.turn.tenant_id, host_session_id=self.turn.session_id,
+                           timeout_seconds=self.runtime.worker_config.request_timeout_seconds or 600)
 
     def _result(self, requirement: TaskRequirement, slot: ActivationSlot, state: PipelineState, final_text: str, finish_reason: str | None, actions: int, artifacts: list[dict[str, Any]], events: list[dict[str, Any]]) -> TaskExecutionResult:
         fin = slot.finish
@@ -555,15 +533,28 @@ class HarnessV3TaskAgent:
         step = (requirement.sop_context or {}).get("step") or {}
         if str(step.get("type") or "") == "handoff" and not fin.get("next_step_id"):
             fin["status"] = "handoff"
+        host = self._host
+        results = list(host.results) if host is not None else []
+        if fin["status"] == "completed":
+            succeeded = {r.get("tool_name") for r in results if r.get("success")}
+            missing = [name for name in requirement.required_capability_names if name not in succeeded]
+            kb_ids = {str(c.get("knowledge_base_id")) for c in (host.citations if host else []) if c.get("knowledge_base_id")}
+            for evidence in host.evidence if host else []:
+                for item in [*(evidence.get("chunks") or []), *(evidence.get("evidence_pack") or [])]:
+                    if isinstance(item, dict) and item.get("knowledge_base_id"):
+                        kb_ids.add(str(item["knowledge_base_id"]))
+            missing.extend(f"knowledge_search:{rid}" for rid in requirement.required_knowledge_base_ids if rid not in kb_ids)
+            if missing:
+                return self._failed(requirement, "REQUIRED_CAPABILITY_MISSING", "未成功完成必需能力：" + "、".join(missing), actions=actions)
         return TaskExecutionResult(
             task_frame_id=requirement.task_frame_id,
             status=fin["status"],
             reply_fragment=reply,
             slot_updates=dict(fin.get("slot_updates") or {}),
             next_step_id=fin.get("next_step_id"),
-            citations=self._citations(events, state),
-            evidence_results=self._evidence(events),
-            capability_results=[{"receipt": r} for r in state.receipts],
+            citations=list(host.citations) if host is not None else self._citations(events, state),
+            evidence_results=list(host.evidence) if host is not None else self._evidence(events),
+            capability_results=results,
             artifacts=list(artifacts),
             task_summary=str(fin.get("task_summary") or ""),
             action_count=max(1, actions),

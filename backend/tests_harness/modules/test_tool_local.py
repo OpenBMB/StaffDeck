@@ -9,6 +9,8 @@ for the deterministic pre-network failure (unsupported tool type).
 
 from __future__ import annotations
 
+from tests_harness.modules.conftest import invoke_provider
+
 import re
 
 import pytest
@@ -204,10 +206,10 @@ def test_disable_tool_local():
 
 def test_provider_tool_local_nothing_bound(module, host, invocation):
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host(), invocation("tool.invoke/v1", arguments={"order_id": "A1"}))
+    res = invoke_provider(provider, host(), invocation("tool.invoke/v1", arguments={"order_id": "A1"}))
     assert isinstance(res, ModuleResult)
     assert res.success is False and res.error["code"] == "TOOL_NOT_AVAILABLE"
-    res = provider.invoke(host(), invocation("tool.invoke/v1", arguments={"tool_id": "nope", "order_id": "A1"}, binding_id="nope"))
+    res = invoke_provider(provider, host(), invocation("tool.invoke/v1", arguments={"tool_id": "nope", "order_id": "A1"}, binding_id="nope"))
     assert res.success is False and res.error["code"] == "TOOL_NOT_AVAILABLE"
 
 
@@ -215,7 +217,7 @@ def test_provider_tool_local_disabled_tool_is_unavailable(module, host, invocati
     row = _tool(db, "tool_off", enabled=False)
     _bind(db, row.id)
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host({"tool": {row.id}}), invocation("tool.invoke/v1", arguments={"tool_id": row.id, "order_id": "A1"}, binding_id=row.id))
+    res = invoke_provider(provider, host({"tool": {row.id}}), invocation("tool.invoke/v1", arguments={"tool_id": row.id, "order_id": "A1"}, binding_id=row.id))
     assert res.success is False and res.error["code"] == "TOOL_NOT_AVAILABLE"
 
 
@@ -223,7 +225,7 @@ def test_provider_tool_local_unbound_tool_is_denied_by_pep(module, host, invocat
     row = _tool(db, "tool_unbound")
     provider = module(MODULE_ID).provider
     with pytest.raises(PermissionDenied) as exc:
-        provider.invoke(host({"tool": {row.id}}), invocation("tool.invoke/v1", arguments={"tool_id": row.id, "order_id": "A1"}, binding_id=row.id))
+        invoke_provider(provider, host({"tool": {row.id}}), invocation("tool.invoke/v1", arguments={"tool_id": row.id, "order_id": "A1"}, binding_id=row.id))
     assert exc.value.details == {"operation": "tool.invoke/v1", "resource_type": "tool", "resource": row.id, "profile": "OSS_LOCAL"}
     assert fake_executor.calls == [], "denied calls never reach the executor"
 
@@ -233,7 +235,7 @@ def test_provider_tool_local_bound_http_tool_executes(module, host, invocation, 
     _bind(db, row.id)
     provider = module(MODULE_ID).provider
     h = host({"tool": {row.id}}, active_sop_id="sop_9")
-    res = provider.invoke(h, invocation("tool.invoke/v1", arguments={"tool_id": row.id, "order_id": "A1"}, binding_id=row.id))
+    res = invoke_provider(provider, h, invocation("tool.invoke/v1", arguments={"tool_id": row.id, "order_id": "A1"}, binding_id=row.id))
     assert res.success is True, res.error
     assert res.data == {"echo": {"order_id": "A1"}}
     assert res.artifacts == ()
@@ -253,7 +255,7 @@ def test_provider_tool_local_executor_error_becomes_module_failure(module, host,
     _bind(db, row.id)
     fake_executor.outcome = ToolResult(tool_name=row.name, success=False, error=ToolError(code="HTTP_ERROR", message="工具返回异常状态码：502"))
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host({"tool": {row.id}}), invocation("tool.invoke/v1", arguments={"tool_id": row.id}, binding_id=row.id))
+    res = invoke_provider(provider, host({"tool": {row.id}}), invocation("tool.invoke/v1", arguments={"tool_id": row.id}, binding_id=row.id))
     assert res.success is False
     assert res.error == {"code": "HTTP_ERROR", "message": "工具返回异常状态码：502"}
     assert res.extensions["raw"]["success"] is False
@@ -266,7 +268,7 @@ def test_provider_tool_local_real_executor_rejects_unknown_tool_type_offline(mod
     _bind(db, row.id)
     provider = module(MODULE_ID).provider
     h = host({"tool": {row.id}})
-    res = provider.invoke(h, invocation("tool.invoke/v1", arguments={"tool_id": row.id}, binding_id=row.id))
+    res = invoke_provider(provider, h, invocation("tool.invoke/v1", arguments={"tool_id": row.id}, binding_id=row.id))
     assert res.success is False and res.error["code"] == "UNSUPPORTED_TOOL_TYPE"
     # unknown tool types are guarded with the generic tool.invoke action
     assert h.guard.calls == [("tool.invoke/v1", "tool", row.id)]
@@ -279,7 +281,7 @@ def test_provider_tool_local_mcp_tool_checks_tool_and_server(module, host, invoc
     _bind(db, row.id)
     provider = module(MODULE_ID).provider
     h = host({"tool": {row.id}}, principal_id="admin", tenant_role="admin")
-    res = provider.invoke(h, invocation("mcp.invoke/v1", arguments={"tool_id": row.id, "q": 1}, binding_id=row.id, user_id="admin"))
+    res = invoke_provider(provider, h, invocation("mcp.invoke/v1", arguments={"tool_id": row.id, "q": 1}, binding_id=row.id, user_id="admin"))
     assert res.success is True, res.error
     assert h.guard.calls == [("mcp.invoke/v1", "tool", row.id), ("mcp.invoke/v1", "mcp_server", "srv1")]
 
@@ -289,7 +291,7 @@ def test_provider_tool_local_a2a_tool_uses_a2a_action(module, host, invocation, 
     _bind(db, row.id)
     provider = module(MODULE_ID).provider
     h = host({"tool": {row.id}})
-    res = provider.invoke(h, invocation("a2a.invoke/v1", arguments={"tool_id": row.id, "task": "x"}, binding_id=row.id))
+    res = invoke_provider(provider, h, invocation("a2a.invoke/v1", arguments={"tool_id": row.id, "task": "x"}, binding_id=row.id))
     assert res.success is True, res.error
     assert h.guard.calls == [("a2a.invoke/v1", "tool", row.id)]
 

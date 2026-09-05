@@ -59,7 +59,7 @@ class ChannelHost:
 
     # -- receive --------------------------------------------------------------------
 
-    def authorize_receive(self, binding: ChannelBinding, inbound: ChannelInbound, user: User | None) -> ReceiveDecision:
+    def authorize_receive(self, binding: ChannelBinding, inbound: ChannelInbound, user: User | None, *, check_staff: bool = True) -> ReceiveDecision:
         """Channel Receive PEP + Staff PEP. ``user`` is the mapped StaffDeck identity (None = unmapped)."""
 
         if user is None:
@@ -70,12 +70,16 @@ class ChannelHost:
         except PermissionDenied as exc:
             return ReceiveDecision(False, exc.message)
         agent_id = binding.agent_id
-        if agent_id:
+        if agent_id and check_staff:
             agent = self.db.get(AgentProfile, agent_id)
             if agent is None or agent.tenant_id != binding.tenant_id or agent.status != "active":
                 return ReceiveDecision(False, "target staff unavailable")
             try:
-                Guard("staffdeck.runtime", self.profile).require(ctx, "staff.use/v1", projection.agent_ref(agent))
+                from dataclasses import replace
+
+                mapped = projection.channel_identity_bound(self.db, binding, user.id, scope=inbound.account_scope or None)
+                ref = replace(projection.agent_ref(agent), attributes={**projection.agent_ref(agent).attributes, "channel_bound_agent": mapped})
+                Guard("staffdeck.runtime", self.profile).require(ctx, "staff.use/v1", ref)
             except PermissionDenied as exc:
                 return ReceiveDecision(False, exc.message)
         return ReceiveDecision(True, "allowed", ctx)
@@ -99,3 +103,15 @@ class ChannelHost:
 
 def bound_channels(db: Session, tenant_id: str, agent_id: str) -> list[ChannelBinding]:
     return projection.agent_channels(db, tenant_id, agent_id)
+
+
+def authorize_send(binding: ChannelBinding, *, cleanup: bool = False) -> None:
+    from dataclasses import replace
+    from app.config import get_settings
+    from staffdeck_harness.security.profile import get_profile
+
+    profile = get_profile(get_settings())
+    ref = projection.channel_ref(binding)
+    if cleanup:
+        ref = replace(ref, attributes={**ref.attributes, "binding_status": "active"})
+    Guard("channel", profile).require(profile.identity.from_service("channel.outbox", binding.tenant_id), "channel.send/v1", ref)

@@ -143,7 +143,6 @@ def test_handoff_requires_structured_step_declaration():
 
 def test_handoff_assignee_uses_agent_owner_metadata_before_admin():
     engine = _test_engine()
-    session_id = "session_wecom_group_resume"
     with Session(engine) as db:
         _admin, user, other = _seed_handoff_users(db)
         db.add(
@@ -733,8 +732,8 @@ def test_handoff_resume_worker_continues_original_session_once(monkeypatch):
         def handle_turn(self, request: ChatTurnRequest) -> None:
             handled_requests.append(request)
 
-    monkeypatch.setattr(chat_api, "engine", engine)
-    monkeypatch.setattr(chat_api, "AgentLoop", FakeAgentLoop)
+    monkeypatch.setattr("app.core.handoff_reply_service.engine", engine)
+    monkeypatch.setattr("app.core.agent_loop.AgentLoop", FakeAgentLoop)
     with Session(engine) as db:
         _admin, user, _other = _seed_handoff_users(db)
         db.add(
@@ -804,8 +803,8 @@ def test_handoff_resume_worker_prefers_session_user_after_rebind(monkeypatch):
         def handle_turn(self, request: ChatTurnRequest) -> None:
             handled_requests.append(request)
 
-    monkeypatch.setattr(chat_api, "engine", engine)
-    monkeypatch.setattr(chat_api, "AgentLoop", FakeAgentLoop)
+    monkeypatch.setattr("app.core.handoff_reply_service.engine", engine)
+    monkeypatch.setattr("app.core.agent_loop.AgentLoop", FakeAgentLoop)
     with Session(engine) as db:
         _admin, user, _other = _seed_handoff_users(db)
         # 会话属主已被迁移到 admin(重绑后);handoff 快照仍是旧的懒建账号 user。
@@ -853,8 +852,8 @@ def test_handoff_resume_worker_restores_original_wecom_group_target(monkeypatch)
         def handle_turn(self, request: ChatTurnRequest) -> None:
             handled_requests.append(request)
 
-    monkeypatch.setattr(chat_api, "engine", engine)
-    monkeypatch.setattr(chat_api, "AgentLoop", FakeAgentLoop)
+    monkeypatch.setattr("app.core.handoff_reply_service.engine", engine)
+    monkeypatch.setattr("app.core.agent_loop.AgentLoop", FakeAgentLoop)
     with Session(engine) as db:
         _admin, user, _other = _seed_handoff_users(db)
         session = ChatSession(
@@ -920,8 +919,8 @@ def test_handoff_resume_worker_persists_failed_resume(monkeypatch):
         def handle_turn(self, request: ChatTurnRequest) -> None:
             raise RuntimeError(f"resume failed for {request.session_id}")
 
-    monkeypatch.setattr(chat_api, "engine", engine)
-    monkeypatch.setattr(chat_api, "AgentLoop", FailingAgentLoop)
+    monkeypatch.setattr("app.core.handoff_reply_service.engine", engine)
+    monkeypatch.setattr("app.core.agent_loop.AgentLoop", FailingAgentLoop)
     with Session(engine) as db:
         _admin, user, _other = _seed_handoff_users(db)
         db.add(

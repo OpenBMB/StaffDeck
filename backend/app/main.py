@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from app.security.api_policy import install_response_filters, module_policy
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
@@ -81,6 +82,10 @@ def on_startup() -> None:
         with Session(engine) as db:
             seed_demo_data(db)
             recover_orphan_harness_runs(db, startup=True)
+        from staffdeck_harness.runtime import start_harness_runtime
+
+        # Assemble the deployment PEP before background workers admit work.
+        start_harness_runtime(settings)
         recover_codex_a2a_tasks()
         recover_a2a_client_tasks()
         start_background_worker()
@@ -94,16 +99,6 @@ def on_startup() -> None:
             cleanup_public_api_records()
             enqueue_due_webhook_deliveries()
             start_public_api_maintenance()
-        if settings.harness_v3_enabled or settings.harness_admin_api_enabled:
-            # Parallel package; a deployment without it installed must still boot on Harness v2.
-            try:
-                from staffdeck_harness.runtime import start_harness_runtime
-            except ImportError as exc:
-                if settings.harness_v3_enabled:
-                    raise
-                logger.warning("staffdeck_harness is not installed; admin API disabled (%s)", exc)
-            else:
-                start_harness_runtime(settings)
     except Exception:
         release_runtime_instance_lock()
         raise
@@ -138,12 +133,12 @@ app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)
 app.include_router(auth.router)
 app.include_router(agents.scope_router)
-app.include_router(agents.enterprise_router)
-app.include_router(general_skills.router)
-app.include_router(knowledge_bases.router)
-app.include_router(knowledge.router)
-app.include_router(skills.router)
-app.include_router(model_configs.router)
+app.include_router(agents.enterprise_router, dependencies=[Depends(module_policy("agent"))])
+app.include_router(general_skills.router, dependencies=[Depends(module_policy("general_skill"))])
+app.include_router(knowledge_bases.router, dependencies=[Depends(module_policy("knowledge_base"))])
+app.include_router(knowledge.router, dependencies=[Depends(module_policy("knowledge_base", use_endpoints=("search_knowledge",)))])
+app.include_router(skills.router, dependencies=[Depends(module_policy("sop"))])
+app.include_router(model_configs.router, dependencies=[Depends(module_policy("model_config"))])
 app.include_router(memories.router)
 app.include_router(evolution.router)
 app.include_router(feedback.router)
@@ -154,10 +149,10 @@ app.include_router(scheduled_tasks.chat_draft_router)
 app.include_router(ui_config.enterprise_router)
 app.include_router(channels.router)
 app.include_router(wechat_kf.router)
-app.include_router(teams.router)
+app.include_router(teams.router, dependencies=[Depends(module_policy("team", use_endpoints=("tl_chat_endpoint", "create_team_task_endpoint")))])
 app.include_router(teams.threads_router)
-app.include_router(tools.router)
-app.include_router(tools.mcp_router)
+app.include_router(tools.router, dependencies=[Depends(module_policy("tool", use_endpoints=("test_tool", "probe_tool")))])
+app.include_router(tools.mcp_router, dependencies=[Depends(module_policy("mcp_server"))])
 app.include_router(sessions.router)
 app.include_router(traces.router)
 app.include_router(mock.router)
@@ -173,3 +168,5 @@ if settings.harness_v3_enabled or settings.harness_admin_api_enabled:
 
 if settings.public_api_enabled:
     app.mount("/api/v1", create_public_api_app())
+
+install_response_filters(app)

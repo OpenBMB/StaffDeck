@@ -760,6 +760,10 @@ class DingTalkStreamManager:
                             )
                         ).all()
                     }
+                from app.channels.adapters.base import builtin_channel_enabled
+
+                if not builtin_channel_enabled("dingtalk"):
+                    active = set()
                 for binding_id in active:
                     self.ensure_binding(binding_id)
                 with self._lock:

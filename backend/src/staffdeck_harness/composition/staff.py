@@ -64,10 +64,11 @@ class SopView:
     name: str
     content: Mapping[str, Any]
     binding_id: str | None
-    slot_bindings: Mapping[str, str]        # logical slot name -> resource id
+    slot_bindings: Mapping[str, str | Mapping[str, Any]]
     declared_slots: tuple[SlotDeclaration, ...]
     ref: ResourceRef
     capability_scope: str = "general"
+    module_bindings: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -210,12 +211,15 @@ def _sops(db: Session, tenant_id: str, agent: AgentProfile | None) -> tuple[SopV
                 declared_slots=tuple(sop_slots(content)),
                 ref=ref,
                 capability_scope=str(content.get("capability_scope") or "general"),
+                module_bindings=dict((binding.metadata_json or {}).get("module_bindings") or {}) if binding else {},
             )
         )
     return tuple(out)
 
 
 def _capabilities(db: Session, tenant_id: str, agent: AgentProfile | None) -> tuple[CapabilityBindingView, ...]:
+    from app.core.capability_manifest import general_skill_snapshot_digest, tool_snapshot_digest
+
     agent_id = agent.id if agent is not None else None
     out: list[CapabilityBindingView] = []
     for rtype in ("knowledge_base", "general_skill", "tool", "mcp_server"):
@@ -228,7 +232,10 @@ def _capabilities(db: Session, tenant_id: str, agent: AgentProfile | None) -> tu
                     ref=ref,
                     name=str(getattr(row, "name", None) or getattr(row, "slug", None) or row.id),
                     capability_scope=str(getattr(row, "capability_scope", "general") or "general"),
-                    metadata=dict(binding.metadata_json or {}) if binding else {},
+                    metadata={
+                        **(dict(binding.metadata_json or {}) if binding else {}),
+                        "resource_digest": tool_snapshot_digest(db, row) if rtype == "tool" else general_skill_snapshot_digest(row) if rtype == "general_skill" else None,
+                    },
                 )
             )
     return tuple(out)

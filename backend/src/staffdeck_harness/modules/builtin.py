@@ -29,52 +29,27 @@ CHANNEL_LABEL = {"feishu": "飞书", "dingtalk": "钉钉", "wecom": "企业微�
 
 # --------------------------------------------------------------------------- capability providers
 
-class KnowledgeProvider:
+class LocalCapabilityProvider:
+    """Public SPI adapter: storage and implementation remain behind the host service port."""
+
+    def invoke(self, context: Any, inv: Any) -> Any:
+        return context.call_local()
+
+
+class KnowledgeProvider(LocalCapabilityProvider):
     module_id = "knowledge.local"
 
-    def invoke(self, host: Any, inv: Any) -> Any:
-        from app.agents.branching import visible_knowledge_base_versions
-        from staffdeck_harness.capabilities.facade import KnowledgeFacade
 
-        ctx = inv.context
-        agent_id = None if not ctx.agent_id or ctx.agent_id.endswith(":overall") else ctx.agent_id
-        versions = visible_knowledge_base_versions(host.db, ctx.tenant_id, agent_id)
-        return KnowledgeFacade(host._deps()).search(inv, allowed_ids=set(host.slot.allowed().get("knowledge_base", set())), version_by_base={k: v.id for k, v in versions.items()})
-
-
-class GeneralSkillProvider:
+class GeneralSkillProvider(LocalCapabilityProvider):
     module_id = "general_skill.local"
 
-    def invoke(self, host: Any, inv: Any) -> Any:
-        from app.core.capability_manifest import general_skill_snapshot_digest
-        from app.db.models import GeneralSkill
-        from staffdeck_harness.capabilities.facade import GeneralSkillFacade
 
-        row = host.db.get(GeneralSkill, inv.binding_id) if inv.binding_id else None
-        digest = general_skill_snapshot_digest(row) if row is not None else None
-        return GeneralSkillFacade(host._deps(), host._workspace_root(inv.context)).consume(inv, expected_digest=digest)
-
-
-class ToolProvider:
-    """HTTP + MCP + A2A: ``ToolExecutor`` dispatches on ``tool_type``."""
-
+class ToolProvider(LocalCapabilityProvider):
     module_id = "tool.local"
 
-    def invoke(self, host: Any, inv: Any) -> Any:
-        from app.core.capability_manifest import tool_snapshot_digest
-        from app.db.models import Tool
-        from staffdeck_harness.capabilities.facade import ToolFacade
 
-        row = host.db.get(Tool, inv.binding_id) if inv.binding_id else None
-        digest = tool_snapshot_digest(host.db, row) if row is not None else None
-        return ToolFacade(host._deps()).invoke(inv, expected_digest=digest, active_skill_id=host.slot.active_sop_id)
-
-
-class SandboxProvider:
+class SandboxProvider(LocalCapabilityProvider):
     module_id = "sandbox.local"
-
-    def invoke(self, host: Any, inv: Any) -> Any:
-        return host.sandbox(inv.context).execute(inv)
 
 
 # --------------------------------------------------------------------------- interactions
@@ -89,6 +64,13 @@ class DefaultInteractions:
         from staffdeck_harness.interactions.pipeline_host import DEFAULT_HANDLERS
 
         return DEFAULT_HANDLERS
+
+
+class InteractionComponent:
+    def __init__(self, handler: str):
+        from staffdeck_harness.interactions.pipeline_host import DEFAULT_HANDLERS
+
+        self.handlers = {handler: DEFAULT_HANDLERS[handler]}
 
 
 # --------------------------------------------------------------------------- observers
@@ -167,7 +149,13 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
     registry.mark_guarded(SlotName.STAFF_CAPABILITY)
 
     # L4 interactions (hooks)
-    registry.install(manifest("interaction.default", "对话介入规则（默认）", summary="回答前载入人设、记忆和当前流程步骤；回答后检查输出，并判断是否需要转人工。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INTERACTION], provides=["hook.contribute/v1"], hooks=DEFAULT_HOOKS), DefaultInteractions(), slot=SlotName.STAFF_INTERACTION)
+    components = {h.handler: f"interaction.{h.handler.replace('.', '_')}" for h in DEFAULT_HOOKS}
+    labels = {"persona": "员工人设注入", "memory.recall": "记忆上下文注入", "sop.execution_slice": "SOP 输入片段",
+              "activation.allowlist": "激活范围校验", "capability.pep": "调用观测", "ledger.record": "能力回执收集",
+              "citations.collect": "知识引用收集", "sop.output_supervisor": "SOP 输出监管", "handoff.detect": "人工介入检测"}
+    registry.install(manifest("interaction.default", "对话介入规则（默认组合）", summary="由独立的人设、记忆、SOP、调用审计、监管和人工介入模块组合。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_INTERACTION], provides=["hook.contribute/v1"], hooks=DEFAULT_HOOKS, metadata={"members": list(components.values())}), DefaultInteractions(), slot=SlotName.STAFF_INTERACTION)
+    for hook in DEFAULT_HOOKS:
+        registry.install(manifest(components[hook.handler], labels[hook.handler], kind=ModuleKind.CODE, slots=[SlotName.STAFF_INTERACTION], provides=["hook.contribute/v1"], hooks=[hook]), InteractionComponent(hook.handler), slot=SlotName.STAFF_INTERACTION)
 
     # L4 runtime memory (recall provider; capture stays async for the builtin). Not wrapped in
     # try/except on purpose: a memory module that fails to register must fail the assembly loudly.
@@ -197,12 +185,12 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
 
     # L5 channel adapters (legacy registry objects, surfaced as modules)
     try:
-        from app.channels.adapters import get_channel_adapter
+        from app.channels.adapters.base import get_builtin_channel_adapter
         import app.channels.adapters.dingtalk, app.channels.adapters.feishu, app.channels.adapters.wechat, app.channels.adapters.wechat_kf, app.channels.adapters.wecom  # noqa: E401,F401  registration side effects
 
         for ch in ("feishu", "dingtalk", "wecom", "wechat", "wechat_kf"):
             try:
-                adapter = get_channel_adapter(ch)
+                adapter = get_builtin_channel_adapter(ch)
             except ValueError:
                 continue
             registry.install(manifest(f"channel.{ch}", f"{CHANNEL_LABEL.get(ch, ch)}接入", summary=f"接收{CHANNEL_LABEL.get(ch, ch)}消息并回复，处理附件与卡片。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CHANNEL], provides=["channel.receive/v1", "channel.send/v1"], policy_actions=["channel.receive/v1", "channel.send/v1"]), adapter, slot=SlotName.STAFF_CHANNEL)

@@ -71,6 +71,9 @@ class FeishuProcessManager:
             self._wake.clear()
 
     def reconcile_once(self) -> None:
+        from app.channels.adapters.base import builtin_channel_enabled
+
+        module_enabled = builtin_channel_enabled("feishu")
         with Session(self._engine) as db:
             rows = db.exec(
                 select(ChannelBinding).where(ChannelBinding.channel == "feishu")
@@ -83,7 +86,7 @@ class FeishuProcessManager:
             known = dict(self._known)
         supervisor = self._get_supervisor() if snapshots or known else None
         for binding_id, (status, revision, connected) in snapshots.items():
-            should_run = status == "active" and binding_id not in paused
+            should_run = module_enabled and status == "active" and binding_id not in paused
             if should_run:
                 try:
                     if binding_id in known and known[binding_id] != revision:

@@ -9,6 +9,8 @@ deterministic "no_documents" route without touching any model or network.
 
 from __future__ import annotations
 
+from tests_harness.modules.conftest import invoke_provider
+
 import json
 
 import re
@@ -153,20 +155,20 @@ def test_disable_knowledge_local():
 
 def test_provider_knowledge_local_rejects_empty_query(module, host, invocation, kb):
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host({"knowledge_base": {kb.id}}), invocation(OPERATION, arguments={"query": "   "}))
+    res = invoke_provider(provider, host({"knowledge_base": {kb.id}}), invocation(OPERATION, arguments={"query": "   "}))
     assert isinstance(res, ModuleResult)
     assert res.success is False and res.error["code"] == "INVALID_ARGUMENTS"
 
 
 def test_provider_knowledge_local_requested_base_outside_activation(module, host, invocation, kb):
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host({"knowledge_base": {kb.id}}), invocation(OPERATION, arguments={"query": "退货", "knowledge_base_ids": ["kb_other"]}))
+    res = invoke_provider(provider, host({"knowledge_base": {kb.id}}), invocation(OPERATION, arguments={"query": "退货", "knowledge_base_ids": ["kb_other"]}))
     assert res.success is False and res.error["code"] == "KNOWLEDGE_NOT_AVAILABLE"
 
 
 def test_provider_knowledge_local_missing_row_is_revoked(module, host, invocation):
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host({"knowledge_base": {"kb_missing"}}), invocation(OPERATION, arguments={"query": "退货"}))
+    res = invoke_provider(provider, host({"knowledge_base": {"kb_missing"}}), invocation(OPERATION, arguments={"query": "退货"}))
     assert res.success is False and res.error["code"] == "CAPABILITY_AUTHORIZATION_REVOKED"
 
 
@@ -175,7 +177,7 @@ def test_provider_knowledge_local_unbound_base_is_denied_by_pep(module, host, in
 
     provider = module(MODULE_ID).provider
     with pytest.raises(PermissionDenied) as exc:
-        provider.invoke(host({"knowledge_base": {kb.id}}), invocation(OPERATION, arguments={"query": "退货"}))
+        invoke_provider(provider, host({"knowledge_base": {kb.id}}), invocation(OPERATION, arguments={"query": "退货"}))
     assert exc.value.details["operation"] == OPERATION
     assert exc.value.details["resource"] == kb.id
 
@@ -184,7 +186,7 @@ def test_provider_knowledge_local_bound_base_searches(module, host, invocation, 
     ensure_private_resource_binding(db, "t1", "a1", "knowledge_base", kb.id)
     db.commit()
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host({"knowledge_base": {kb.id}}), invocation(OPERATION, arguments={"query": "退货期限", "max_chunks": 3}))
+    res = invoke_provider(provider, host({"knowledge_base": {kb.id}}), invocation(OPERATION, arguments={"query": "退货期限", "max_chunks": 3}))
     assert res.success is True, res.error
     assert isinstance(res.data, dict)
     # the model sees a compact view; the full response (with the route trace) rides in extensions.evidence
@@ -197,7 +199,7 @@ def test_provider_knowledge_local_bound_base_searches(module, host, invocation, 
 
 def test_provider_knowledge_local_admin_can_search_unbound_base(module, host, invocation, kb):
     provider = module(MODULE_ID).provider
-    res = provider.invoke(host({"knowledge_base": {kb.id}}, principal_id="admin", tenant_role="admin"), invocation(OPERATION, arguments={"query": "退货"}, user_id="admin"))
+    res = invoke_provider(provider, host({"knowledge_base": {kb.id}}, principal_id="admin", tenant_role="admin"), invocation(OPERATION, arguments={"query": "退货"}, user_id="admin"))
     assert res.success is True, res.error
 
 

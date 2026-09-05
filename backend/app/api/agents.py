@@ -407,6 +407,8 @@ def update_agent(
         )
     row.updated_at = utc_now()
     db.add(row)
+    if request.metadata is not None and "module_bindings" in request.metadata:
+        _validate_module_composition(db, request.tenant_id, row.id)
     db.commit()
     db.refresh(row)
     return agent_read(row, _bindings_by_agent(db, request.tenant_id).get(row.id, []))
@@ -589,6 +591,8 @@ def update_agent_resources(
     for key, row in by_key.items():
         if key not in desired_keys:
             db.delete(row)
+    if any(any(key in item.metadata for key in ("slot_bindings", "module_bindings", "provider_module_id", "provider_config")) for item in request.resources):
+        _validate_module_composition(db, request.tenant_id, agent_id)
     db.commit()
     return get_agent_resources(agent_id, request.tenant_id, db, current_user)
 
@@ -1205,6 +1209,19 @@ def _chat_agent_selectable_to_user(row: AgentProfile, user: User, used_agent_ids
     if _agent_published_to_gallery(row):
         return row.id in used_agent_ids
     return _is_admin_user(user)
+
+
+def _validate_module_composition(db: Session, tenant_id: str, agent_id: str) -> None:
+    from staffdeck_harness.composition.staff import project_staff
+    from staffdeck_harness.composition.compiler import CompositionCompiler
+    from staffdeck_harness.contracts.errors import ModuleSdkError
+
+    db.flush()
+    try:
+        CompositionCompiler().compile(project_staff(db, tenant_id, agent_id))
+    except (ModuleSdkError, ValueError, LookupError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"模块装配无效：{exc}") from exc
 
 
 def _ensure_can_access_agent(row: AgentProfile, user: User) -> None:

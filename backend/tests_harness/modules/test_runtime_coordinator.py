@@ -167,7 +167,7 @@ def test_events_or_pep_runtime_coordinator_no_policy_actions(registry, guard, se
 
 
 def test_events_or_pep_runtime_coordinator_unknown_operation_rejected(guard, security_ctx):
-    with pytest.raises(KeyError):
+    with pytest.raises(PermissionDenied):
         guard(MODULE_ID).require(security_ctx(), "runtime.coordinate/v1", ResourceRef(type="runtime", id="s1", tenant_id="t1"))
 
 

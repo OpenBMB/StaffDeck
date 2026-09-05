@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import ensure_private_resource_binding
@@ -73,6 +72,8 @@ class ScriptedModel:
             return [_chunk(cid, {"role": "assistant", "content": json.dumps(plan, ensure_ascii=False)}), _chunk(cid, {}, "stop", {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})]
         has_tool_result = any(m.get("role") == "tool" for m in body.get("messages") or [])
         tools = {t["function"]["name"] for t in body.get("tools") or [] if isinstance(t, dict) and t.get("function")}
+        if any(m.get("role") == "tool" and m.get("tool_call_id") == "call_fin" for m in body.get("messages") or []):
+            return [_chunk(cid, {"role": "assistant", "content": "已完成。"}), _chunk(cid, {}, "stop")]
         if not has_tool_result and "mcp__staffdeck__knowledge_search" in tools:
             args = json.dumps({"query": "退货期限"}, ensure_ascii=False)
             return [
@@ -147,7 +148,9 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_V3_HOME", str(tmp_path / "harness-home"))
     monkeypatch.setenv("HARNESS_V3_FALLBACK_TO_V2", "false")  # a broken engine must FAIL this test, not hide behind v2
     get_settings.cache_clear()
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    # Real MCP/model callbacks run on different threads: use production-like independent
+    # connections, not a StaticPool sharing one SQLite connection across all callbacks.
+    engine = create_engine(f"sqlite:///{tmp_path / 'sealed.db'}", connect_args={"check_same_thread": False})
     SQLModel.metadata.create_all(engine)
     with Session(engine) as s:
         yield s

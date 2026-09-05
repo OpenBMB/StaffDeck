@@ -163,6 +163,7 @@ class HarnessCapabilityInvoker:
                 if name in self._descriptors
             }
         )
+        self.module_invoke = None
 
     def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self._raise_if_cancelled()
@@ -190,6 +191,10 @@ class HarnessCapabilityInvoker:
             descriptor,
             arguments,
         )
+        if self.module_invoke is not None:
+            result = self.module_invoke(name, arguments, descriptor)
+            if result is not None:
+                return result
         if logical_action_key:
             replayed = self._replay_or_block(logical_action_key)
             if replayed is not None:

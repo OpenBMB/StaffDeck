@@ -29,6 +29,14 @@ from staffdeck_harness.modules.taxonomy import tree
 MODULE_ID = "memory.default"
 
 
+def _patch_run(monkeypatch, engine_host, run):
+    def prepared(engine, request):
+        engine._prepare_modules(request, SimpleNamespace(id="s1", agent_id="a1", active_skill_id=None))
+        assert engine.owner.memory is not engine.memory, "owner collaborators must never be patched"
+        return run(engine, request)
+    monkeypatch.setattr(engine_host.TurnCoordinator, "run", prepared)
+
+
 def _placed(registry, module_id: str = MODULE_ID) -> dict:
     for big in tree(registry.describe()):
         for sub in big["subs"]:
@@ -65,7 +73,7 @@ def _mem(db, **kw):
 def test_builtin_recall_matches_memory_service(db):
     a = _mem(db, content="喜欢简短回答")
     _mem(db, content="别的员工的记忆", agent_id="a9")
-    out = MemoryDefaultModule().recall(db, "t1", "u1", "a1")
+    out = [memory_read(r) for r in ProviderMemoryFacade(db, MemoryDefaultModule()).context_memories("t1", "u1", agent_id="a1")]
     from app.memory.service import MemoryService
 
     expected = [memory_read(r) for r in MemoryService(db).context_memories("t1", "u1", agent_id="a1")]
@@ -92,7 +100,11 @@ class _VectorMemory:
 
     module_id = "memory.vector"
 
-    def recall(self, db, tenant_id, user_id, agent_id=None, *, session_id=None, query=""):
+    def invoke(self, context, call):
+        assert not hasattr(context, "db") and not hasattr(call, "model_config")
+        if call.operation == "capture":
+            return self.capture(call) if hasattr(self, "capture") else []
+        tenant_id, user_id, agent_id = call.tenant_id, call.user_id, call.agent_id
         return [{"id": "v1", "tenant_id": tenant_id, "user_id": user_id, "kind": "fact", "content": f"vector:{user_id}:{agent_id}", "importance": 0.9, "metadata": {"source": "vector"}}]
 
 
@@ -160,13 +172,13 @@ def test_harness_v3_engine_swaps_owner_memory_for_the_turn(db, monkeypatch, prof
             self.response_generator = object()
 
     def fake_run(self, request):
-        seen["memory_during_turn"] = self.owner.memory
-        seen["rows"] = [memory_read(r) for r in self.owner.memory.context_memories("t1", "u1", agent_id="a1")]
+        seen["memory_during_turn"] = self.memory
+        seen["rows"] = [memory_read(r) for r in self.memory.context_memories("t1", "u1", agent_id="a1")]
         return "done"
 
-    monkeypatch.setattr(engine_host.HarnessV2Engine, "run", fake_run)
+    _patch_run(monkeypatch, engine_host, fake_run)
     engine = engine_host.HarnessV3Engine(_Owner(), runtime=SimpleNamespace(worker_config=None, settings=None, release_process=lambda p: None), profile=profile)
-    assert engine.run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[])) == "done"
+    assert engine.run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[], channel="web")) == "done"
     assert isinstance(seen["memory_during_turn"], ProviderMemoryFacade)
     assert [m["content"] for m in seen["rows"]] == ["vector:u1:a1"], "the v2 skeleton read memory through the provider"
     assert engine.owner.memory is original_memory, "restored after the turn"
@@ -182,8 +194,8 @@ def test_engine_tolerates_disabled_memory(db, monkeypatch, profile, enabled):
 
     owner = SimpleNamespace(db=db, events=SimpleNamespace(execution_engine=None, record=lambda *a, **k: None), memory=object(), response_generator=object())
 
-    monkeypatch.setattr(engine_host.HarnessV2Engine, "run", lambda self, r: seen.setdefault("n", len(self.owner.memory.context_memories("t1", "u1", agent_id="a1"))))
-    engine_host.HarnessV3Engine(owner, runtime=SimpleNamespace(worker_config=None, settings=None, release_process=lambda p: None), profile=profile).run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[]))
+    _patch_run(monkeypatch, engine_host, lambda self, r: seen.setdefault("n", len(self.memory.context_memories("t1", "u1", agent_id="a1"))))
+    engine_host.HarnessV3Engine(owner, runtime=SimpleNamespace(worker_config=None, settings=None, release_process=lambda p: None), profile=profile).run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[], channel="web"))
     assert seen["n"] == (1 if enabled else 0)
 
 
@@ -212,7 +224,7 @@ class _StoreMemory(_VectorMemory):
         self.written = []
 
     def capture(self, ctx):
-        self.written.append({"tenant": ctx.tenant_id, "user": ctx.user_id, "agent": ctx.agent_id, "session": ctx.session_id, "reply": ctx.step_result.reply})
+        self.written.append({"tenant": ctx.tenant_id, "user": ctx.user_id, "agent": ctx.agent_id, "session": ctx.session_id, "reply": ctx.payload["reply"]})
         return [{"receipt": "store-1"}]
 
 
@@ -249,7 +261,7 @@ def test_failing_provider_capture_records_memory_error_and_turn_continues(db):
 
 
 def test_harness_v3_engine_routes_the_v2_write_call_to_the_provider(db, monkeypatch, profile):
-    """The v2 skeleton calls ``self.owner._enqueue_memory_capture(...)``; on the v3 path that lands on
+    """The v2 skeleton calls ``self.capture_memory(...)``; on the v3 path that lands on
     the runtime.memory provider, and the owner's own method is back after the turn."""
 
     from staffdeck_harness.bridge import engine_host
@@ -274,12 +286,12 @@ def test_harness_v3_engine_routes_the_v2_write_call_to_the_provider(db, monkeypa
     seen = {}
 
     def fake_run(self, request):
-        seen["during"] = self.owner._enqueue_memory_capture(*_turn_args())
+        seen["during"] = self.capture_memory(*_turn_args())
         return "done"
 
-    monkeypatch.setattr(engine_host.HarnessV2Engine, "run", fake_run)
+    _patch_run(monkeypatch, engine_host, fake_run)
     engine = engine_host.HarnessV3Engine(owner, runtime=SimpleNamespace(worker_config=None, settings=None, release_process=lambda p: None), profile=profile)
-    assert engine.run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[])) == "done"
+    assert engine.run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[], channel="web")) == "done"
     assert seen["during"] == [{"receipt": "store-1"}] and provider.written and legacy_calls == []
     assert "_enqueue_memory_capture" not in vars(owner), "instance override removed; the class method is back"
     assert owner._enqueue_memory_capture(*_turn_args()) == [{"job_id": "legacy"}] and len(legacy_calls) == 1
@@ -297,7 +309,7 @@ def test_harness_v3_engine_builtin_provider_still_schedules_the_legacy_job(db, m
     legacy_calls = []
     owner = SimpleNamespace(db=db, events=SimpleNamespace(execution_engine=None, record=lambda *a, **k: None), memory=object(), response_generator=object(), _enqueue_memory_capture=lambda *a: legacy_calls.append(a) or [{"job_id": "legacy"}])
     seen = {}
-    monkeypatch.setattr(engine_host.HarnessV2Engine, "run", lambda self, r: seen.setdefault("out", self.owner._enqueue_memory_capture(*_turn_args())))
-    engine_host.HarnessV3Engine(owner, runtime=SimpleNamespace(worker_config=None, settings=None, release_process=lambda p: None), profile=profile).run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[]))
+    _patch_run(monkeypatch, engine_host, lambda self, r: seen.setdefault("out", self.capture_memory(*_turn_args())))
+    engine_host.HarnessV3Engine(owner, runtime=SimpleNamespace(worker_config=None, settings=None, release_process=lambda p: None), profile=profile).run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[], channel="web"))
     assert seen["out"] == [{"job_id": "legacy"}] and len(legacy_calls) == 1, "built-in provider = the legacy async job, unchanged"
     assert legacy_calls[0][0].user_id == "u1"
