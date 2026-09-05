@@ -9,7 +9,6 @@ from app.audit_cases.documents import AuditCaseDocumentService
 from app.audit_cases.evidence import AuditEvidenceProcessor
 from app.audit_cases.knowledge import AuditKnowledgeOrchestrator
 from app.audit_cases.reporting import AuditReportBlocked, AuditReportService
-from app.audit_cases.storage import read_case_blob
 from app.audit_cases.schema import (
     AuditCaseAccessDenied,
     AuditCaseCreate,
@@ -49,6 +48,7 @@ from app.audit_cases.schema import (
     audit_case_read,
 )
 from app.audit_cases.service import AuditCaseService
+from app.audit_cases.storage import read_case_blob
 from app.db import get_session
 from app.db.models import (
     AuditCase,
@@ -58,9 +58,9 @@ from app.db.models import (
     ModelConfig,
     User,
 )
+from app.project_data.permissions import ensure_project_role
 from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.permissions import ensure_tenant_admin, require_tenant_admin
-from app.project_data.permissions import ensure_project_role
 
 router = APIRouter(
     prefix="/api/audit-cases",

@@ -4,7 +4,8 @@ import json
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
-from sqlmodel import Session, SQLModel, create_engine as create_sqlmodel_engine, select
+from sqlmodel import Session, SQLModel, select
+from sqlmodel import create_engine as create_sqlmodel_engine
 
 from app.audit_cases.elements import load_required_elements
 from app.audit_cases.reporting import AuditReportBlocked, AuditReportService
@@ -230,6 +231,26 @@ def test_report_version_freezes_current_published_bindings_and_section_rule_ids(
         ).all()
         assert sections
         assert all(section.rule_definition_ids_json == ["rule-report-1"] for section in sections)
+    finally:
+        db.close()
+
+
+def test_later_binding_migration_does_not_mutate_existing_report_snapshot() -> None:
+    db, case, version = _bound_report_context()
+    try:
+        report = AuditReportService(db).create_version(case)
+        binding = db.exec(
+            select(ProjectRuleBinding).where(
+                ProjectRuleBinding.audit_case_id == case.id,
+                ProjectRuleBinding.status == "current",
+            )
+        ).one()
+        binding.rule_set_version_id = "version-energy-2"
+        db.add(binding)
+        db.commit()
+        db.refresh(report)
+        assert report.rule_set_version_ids_json == [version.id]
+        assert report.rule_traceability_status == "complete"
     finally:
         db.close()
 

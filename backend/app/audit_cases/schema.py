@@ -219,17 +219,17 @@ class AuditCaseCoverageRead(BaseModel):
     failed_material_count: int
     total_chunk_count: int
     successful_chunk_count: int
+    file_coverage: float
+    chunk_coverage: float
 
 
 class AuditCaseProcessRead(BaseModel):
     status: str
     code: str | None = None
     materials: list[AuditCaseMaterialRead] = Field(default_factory=list)
-    coverage: "AuditCoverageSnapshot"
+    coverage: AuditCoverageSnapshot
     evidence: dict[str, Any] | None = None
     knowledge: dict[str, Any] | None = None
-    file_coverage: float
-    chunk_coverage: float
 
 
 class AuditCaseProcessRequest(BaseModel):
