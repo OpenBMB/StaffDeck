@@ -538,6 +538,8 @@ class AuditReportVersion(SQLModel, table=True):
     status: str = Field(default="draft", index=True)
     material_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     knowledge_base_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    rule_set_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    rule_traceability_status: str = Field(default="not_configured", index=True)
     coverage_snapshot_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     final_storage_key: Optional[str] = None
     lead_auditor_confirmed_by: Optional[str] = None
@@ -563,6 +565,7 @@ class AuditReportSection(SQLModel, table=True):
     title: str
     sequence: int
     audit_element_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    rule_definition_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     status: str = Field(default="pending", index=True)
     draft_markdown: str = ""
     citation_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))

@@ -219,6 +219,15 @@ class AuditCaseCoverageRead(BaseModel):
     failed_material_count: int
     total_chunk_count: int
     successful_chunk_count: int
+
+
+class AuditCaseProcessRead(BaseModel):
+    status: str
+    code: str | None = None
+    materials: list[AuditCaseMaterialRead] = Field(default_factory=list)
+    coverage: "AuditCoverageSnapshot"
+    evidence: dict[str, Any] | None = None
+    knowledge: dict[str, Any] | None = None
     file_coverage: float
     chunk_coverage: float
 
@@ -259,6 +268,7 @@ class AuditReportSectionRead(BaseModel):
     error_code: str | None = None
     draft_markdown: str = ""
     citation_ids: list[str] = Field(default_factory=list)
+    rule_definition_ids: list[str] = Field(default_factory=list)
 
 
 class AuditReportRead(BaseModel):
@@ -269,6 +279,8 @@ class AuditReportRead(BaseModel):
     status: str
     material_version_ids: list[str] = Field(default_factory=list)
     knowledge_base_version_ids: list[str] = Field(default_factory=list)
+    rule_set_version_ids: list[str] = Field(default_factory=list)
+    rule_traceability_status: str = "not_configured"
     coverage_snapshot: dict[str, Any] = Field(default_factory=dict)
     final_storage_key: str | None = None
     sections: list[AuditReportSectionRead] = Field(default_factory=list)
@@ -278,6 +290,10 @@ class AuditReportCreateRequest(BaseModel):
     model_config_id: str | None = None
     publish: bool = False
     confirmed_by: str | None = None
+
+
+class AuditReportPublishRequest(BaseModel):
+    pass
 
 
 class AuditCaseNotFound(LookupError):

@@ -55,6 +55,7 @@ _CHANNEL_BINDINGS_MULTI_MIGRATION_ID = "20260721_channel_bindings_multi"
 _CHANNEL_ACCOUNT_KEY_MIGRATION_ID = "20260723_channel_account_key_v1"
 _FEISHU_CHANNEL_SCHEMA_MIGRATION_ID = "20260724_feishu_channel_schema_v1"
 _AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID = "audit_case_material_unique_type_v1"
+_AUDIT_REPORT_RUNTIME_TRACEABILITY_MIGRATION_ID = "audit_report_runtime_traceability_v1"
 _CAPABILITY_SCOPE_TABLES = (
     "general_skills",
     "tools",
@@ -109,6 +110,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_harness_v2_schema(conn, inspector, tables)
         _migrate_audit_case_schema(conn, inspector, tables)
         _migrate_audit_case_material_schema(conn, inspector, tables)
+        _migrate_audit_report_traceability_schema(conn, inspector, tables)
         _migrate_knowledge_retrieval_schema(conn, inspector, tables)
 
         if "api_jobs" in tables:
@@ -2563,6 +2565,83 @@ def _migrate_audit_case_material_schema(conn, inspector, tables: set[str]) -> No
     conn.execute(
         text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
         {"id": _AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID},
+    )
+
+
+def _migrate_audit_report_traceability_schema(conn, inspector, tables: set[str]) -> None:
+    """Add immutable rule traceability columns to existing report tables."""
+
+    report_tables = {"audit_report_versions", "audit_report_sections"}
+    if not report_tables.intersection(tables):
+        return
+
+    if "audit_report_versions" in tables:
+        columns = {
+            str(row[1])
+            for row in conn.execute(text("PRAGMA table_info(audit_report_versions)"))
+        }
+        if "rule_set_version_ids_json" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE audit_report_versions ADD COLUMN "
+                    "rule_set_version_ids_json JSON NOT NULL DEFAULT '[]'"
+                )
+            )
+        if "rule_traceability_status" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE audit_report_versions ADD COLUMN "
+                    "rule_traceability_status VARCHAR NOT NULL DEFAULT 'not_configured'"
+                )
+            )
+        conn.execute(
+            text(
+                "UPDATE audit_report_versions SET rule_set_version_ids_json = '[]' "
+                "WHERE rule_set_version_ids_json IS NULL"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE audit_report_versions SET rule_traceability_status = 'not_configured' "
+                "WHERE rule_traceability_status IS NULL OR rule_traceability_status = ''"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_audit_report_versions_rule_traceability_status "
+                "ON audit_report_versions(rule_traceability_status)"
+            )
+        )
+
+    if "audit_report_sections" in tables:
+        columns = {
+            str(row[1])
+            for row in conn.execute(text("PRAGMA table_info(audit_report_sections)"))
+        }
+        if "rule_definition_ids_json" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE audit_report_sections ADD COLUMN "
+                    "rule_definition_ids_json JSON NOT NULL DEFAULT '[]'"
+                )
+            )
+        conn.execute(
+            text(
+                "UPDATE audit_report_sections SET rule_definition_ids_json = '[]' "
+                "WHERE rule_definition_ids_json IS NULL"
+            )
+        )
+
+    conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS app_data_migrations ("
+            "id VARCHAR PRIMARY KEY, "
+            "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+    )
+    conn.execute(
+        text("INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _AUDIT_REPORT_RUNTIME_TRACEABILITY_MIGRATION_ID},
     )
 
 
