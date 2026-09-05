@@ -95,6 +95,7 @@ function stubFetch(caseData = baseCase) {
     if (url.includes('/rule-bindings')) {
       return jsonResponse(caseData.status === 'archived' ? [currentRuleBinding] : []);
     }
+    if (url.includes('/documents')) return jsonResponse([]);
     if (url.includes('/materials')) return jsonResponse([]);
     if (url.includes('/coverage')) return jsonResponse({
       current_material_count: 0,
@@ -154,6 +155,19 @@ describe('AuditCaseDetailPage', () => {
 
     expect(await screen.findByText('规则版本候选')).toBeTruthy();
     expect(screen.getByLabelText('能源管理体系规则 · 版本 1')).toBeTruthy();
+  });
+
+  it('renders the project document workspace and loads project documents', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+    renderAt('/enterprise/audit-cases/case-1');
+
+    expect(await screen.findByText('示例企业')).toBeTruthy();
+    await user.click(screen.getByRole('tab', { name: '项目文件库' }));
+
+    expect(await screen.findByText('文档分区')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '创建文档' })).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/documents'))).toBe(true);
   });
 
   it('does not allow an archived project to submit edits', async () => {

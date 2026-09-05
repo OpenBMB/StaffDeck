@@ -687,6 +687,42 @@ export type AuditCaseMaterialRead = {
   updated_at: string;
 };
 
+export type AuditCaseDocumentVersionRead = {
+  id: string;
+  document_id: string;
+  version: number;
+  content_format: 'markdown' | 'text';
+  content: string;
+  content_sha256: string;
+  characters: number;
+  change_note?: string | null;
+  created_by_user_id: string;
+  created_at: string;
+};
+
+export type AuditCaseDocumentRead = {
+  id: string;
+  audit_case_id: string;
+  document_key: string;
+  title: string;
+  document_type: string;
+  zone: string;
+  status: string;
+  active_version_id?: string | null;
+  source_material_id?: string | null;
+  archive_reason?: string | null;
+  created_by_user_id: string;
+  updated_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  active_version?: AuditCaseDocumentVersionRead | null;
+};
+
+export type AuditCaseDocumentDetailRead = {
+  document: AuditCaseDocumentRead;
+  versions: AuditCaseDocumentVersionRead[];
+};
+
 export type AuditCaseCoverageRead = {
   current_material_count: number;
   successful_material_count: number;
