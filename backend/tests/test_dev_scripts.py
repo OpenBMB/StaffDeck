@@ -31,20 +31,24 @@ def test_supervisor_uses_platform_specific_executables() -> None:
     assert supervisor._vite_executable("darwin") == ROOT_DIR / "frontend-enterprise/node_modules/.bin/vite"
 
 
-def test_supervisor_uses_explicit_node_path_when_configured(monkeypatch) -> None:
+def test_supervisor_uses_explicit_node_path_when_configured(
+    monkeypatch, tmp_path: Path
+) -> None:
     supervisor = _load_script("dev_supervisor")
-    node = ROOT_DIR / "packaging" / "sandbox_runtime" / "bin" / "node.exe"
-    assert node.is_file()
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
     monkeypatch.setenv("STAFFDECK_NODE", str(node))
     monkeypatch.setattr(supervisor.shutil, "which", lambda _name: None)
 
     assert supervisor._node_executable() == str(node)
 
 
-def test_supervisor_passes_explicit_node_directory_to_services(monkeypatch) -> None:
+def test_supervisor_passes_explicit_node_directory_to_services(
+    monkeypatch, tmp_path: Path
+) -> None:
     supervisor = _load_script("dev_supervisor")
-    node = ROOT_DIR / "packaging" / "sandbox_runtime" / "bin" / "node.exe"
-    assert node.is_file()
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
     monkeypatch.setenv("STAFFDECK_NODE", str(node))
 
     environment = supervisor._service_environment({"PATH": r"C:\Windows\System32"})
@@ -76,20 +80,24 @@ def test_dev_cli_honors_packaged_app_port_range(monkeypatch) -> None:
     assert dev._select_available_port("127.0.0.1", 6200) == 6202
 
 
-def test_dev_cli_uses_explicit_npm_path_when_configured(monkeypatch) -> None:
+def test_dev_cli_uses_explicit_npm_path_when_configured(
+    monkeypatch, tmp_path: Path
+) -> None:
     dev = _load_script("dev")
-    npm = ROOT_DIR.parent / "tools" / "npm.cmd"
-    assert npm.is_file()
+    npm = tmp_path / "npm.cmd"
+    npm.write_bytes(b"")
     monkeypatch.setenv("STAFFDECK_NPM", str(npm))
     monkeypatch.setattr(dev.shutil, "which", lambda _name: None)
 
     assert dev._npm_executable() == str(npm)
 
 
-def test_dev_cli_passes_explicit_node_directory_to_npm(monkeypatch) -> None:
+def test_dev_cli_passes_explicit_node_directory_to_npm(
+    monkeypatch, tmp_path: Path
+) -> None:
     dev = _load_script("dev")
-    node = ROOT_DIR / "packaging" / "sandbox_runtime" / "bin" / "node.exe"
-    assert node.is_file()
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
     monkeypatch.setenv("STAFFDECK_NODE", str(node))
 
     environment = dev._npm_environment()

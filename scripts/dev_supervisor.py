@@ -118,8 +118,7 @@ class Service:
     def start(self) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         RUN_DIR.mkdir(parents=True, exist_ok=True)
-        merged_env = os.environ.copy()
-        merged_env.update(self.env)
+        merged_env = _service_environment(self.env)
         stdout = self.log_file.open("ab", buffering=0)
         stderr = self.err_file.open("ab", buffering=0)
         process_options: dict[str, object] = {"start_new_session": True}
@@ -299,13 +298,36 @@ def _vite_executable(platform: str | None = None) -> Path:
     return ROOT_DIR / "frontend-enterprise" / "node_modules" / ".bin" / name
 
 
+def _node_executable() -> str:
+    configured = os.environ.get("STAFFDECK_NODE", "").strip()
+    if configured:
+        executable = Path(configured).expanduser()
+        if executable.is_file():
+            return str(executable)
+        raise RuntimeError(f"STAFFDECK_NODE does not point to a file: {configured}")
+    executable = shutil.which("node")
+    if executable:
+        return executable
+    raise RuntimeError("Node.js is not available on PATH")
+
+
+def _service_environment(overrides: dict[str, str] | None = None) -> dict[str, str]:
+    environment = os.environ.copy()
+    if overrides:
+        environment.update(overrides)
+    node_directory = str(Path(_node_executable()).resolve().parent)
+    path_entries = environment.get("PATH", "").split(os.pathsep)
+    if node_directory not in path_entries:
+        environment["PATH"] = os.pathsep.join([node_directory, *path_entries])
+    return environment
+
+
 def validate_prerequisites() -> None:
     missing = [path for path in (_backend_python(), _vite_executable()) if not path.exists()]
     if missing:
         formatted = "\n".join(f"  - {path}" for path in missing)
         raise RuntimeError(f"Development dependencies are missing:\n{formatted}")
-    if shutil.which("node") is None:
-        raise RuntimeError("Node.js is not available on PATH")
+    _node_executable()
 
 
 def main() -> int:
