@@ -691,7 +691,7 @@ export type AuditCaseDocumentVersionRead = {
   id: string;
   document_id: string;
   version: number;
-  content_format: 'markdown' | 'text' | string;
+  content_format: 'markdown' | 'text';
   content: string;
   content_sha256: string;
   characters: number;

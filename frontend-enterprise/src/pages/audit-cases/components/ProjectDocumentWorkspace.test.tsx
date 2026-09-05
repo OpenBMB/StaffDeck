@@ -5,10 +5,11 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
+import type { AuditCaseDocumentRead } from '@/types';
 
 import { ProjectDocumentWorkspace } from './ProjectDocumentWorkspace';
 
-const baseDocument = {
+const baseDocument: AuditCaseDocumentRead = {
   id: 'document-1',
   audit_case_id: 'case-1',
   document_key: 'audit-plan',
