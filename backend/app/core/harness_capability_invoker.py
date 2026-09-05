@@ -60,15 +60,14 @@ from app.harness import (
     register_skill_script_tools,
     snapshot_harness_workspace,
 )
-from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
+from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import KnowledgeService
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
-
 
 _INLINE_JSON_TOOL_RESULT_MAX_CHARS = 2_000
 _INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
@@ -390,6 +389,7 @@ class HarnessCapabilityInvoker:
                 self.agent_id,
                 self.active_skill,
                 self.active_step_id,
+                audit_case_id=getattr(self.session, "audit_case_id", None),
             )
         except CapabilityAuthorizationError:
             return None
@@ -499,6 +499,14 @@ class HarnessCapabilityInvoker:
             return self._search_capabilities(arguments)
         if name == "capability_describe":
             return self._describe_capabilities(arguments)
+        if name == "audit_case_manifest":
+            return self._audit_case_manifest()
+        if name == "audit_evidence_process":
+            return self._audit_evidence_process()
+        if name == "audit_report_status":
+            return self._audit_report_status()
+        if name == "audit_report_generate":
+            return self._audit_report_generate()
         if name == "list_published_deliverables":
             return self._list_published_deliverables(arguments)
         if name == "read_published_deliverable":
@@ -507,6 +515,117 @@ class HarnessCapabilityInvoker:
             "UNSUPPORTED_INTERNAL_CAPABILITY",
             "不支持的 Harness 内部能力。",
         )
+
+    def _audit_case_manifest(self) -> dict[str, Any]:
+        case = self._bound_audit_case()
+        if case is None:
+            return _failure("AUDIT_CASE_NOT_AVAILABLE", "当前会话没有可用的审核项目。")
+        from app.audit_cases.elements import load_required_elements
+        from app.db.models import AuditCaseMaterial
+
+        materials = self.db.exec(
+            select(AuditCaseMaterial).where(
+                AuditCaseMaterial.tenant_id == case.tenant_id,
+                AuditCaseMaterial.audit_case_id == case.id,
+                AuditCaseMaterial.is_current,
+            )
+        ).all()
+        return {
+            "success": True,
+            "data": {
+                "audit_case_id": case.id,
+                "organization_name": case.organization_name,
+                "report_type": case.report_type,
+                "management_systems": list(case.management_systems_json or []),
+                "knowledge_base_version_ids": list(case.knowledge_base_version_ids_json or []),
+                "required_element_ids": [
+                    item.id for item in load_required_elements(case.management_systems_json)
+                ],
+                "materials": [
+                    {
+                        "material_id": material.id,
+                        "filename": material.filename,
+                        "material_type": material.material_type,
+                        "version": material.version,
+                        "size": material.size,
+                        "characters": material.characters,
+                        "extraction_status": material.extraction_status,
+                        "processing_status": material.processing_status,
+                    }
+                    for material in materials
+                ],
+            },
+        }
+
+    def _audit_evidence_process(self) -> dict[str, Any]:
+        case = self._bound_audit_case()
+        if case is None:
+            return _failure("AUDIT_CASE_NOT_AVAILABLE", "当前会话没有可用的审核项目。")
+        from app.audit_cases.evidence import AuditEvidenceProcessor
+        from app.audit_cases.knowledge import AuditKnowledgeOrchestrator
+
+        evidence = AuditEvidenceProcessor(self.db).process_pending_chunks(
+            case, self.model_config
+        )
+        knowledge = AuditKnowledgeOrchestrator(self.db).retrieve(case, self.model_config)
+        return {
+            "success": True,
+            "data": {
+                "audit_case_id": case.id,
+                "evidence": evidence.model_dump(mode="json"),
+                "knowledge": knowledge.model_dump(mode="json"),
+            },
+        }
+
+    def _audit_report_status(self) -> dict[str, Any]:
+        case = self._bound_audit_case()
+        if case is None:
+            return _failure("AUDIT_CASE_NOT_AVAILABLE", "当前会话没有可用的审核项目。")
+        from app.audit_cases.coverage import calculate_coverage
+        from app.db.models import AuditReportSection, AuditReportVersion
+
+        report = self.db.exec(
+            select(AuditReportVersion)
+            .where(
+                AuditReportVersion.tenant_id == case.tenant_id,
+                AuditReportVersion.audit_case_id == case.id,
+            )
+            .order_by(AuditReportVersion.version.desc())
+        ).first()
+        sections = (
+            self.db.exec(
+                select(AuditReportSection)
+                .where(AuditReportSection.report_version_id == report.id)
+                .order_by(AuditReportSection.sequence)
+            ).all()
+            if report is not None
+            else []
+        )
+        return {
+            "success": True,
+            "data": {
+                "audit_case_id": case.id,
+                "coverage": calculate_coverage(self.db, case).model_dump(mode="json"),
+                "report": (
+                    {
+                        "id": report.id,
+                        "version": report.version,
+                        "status": report.status,
+                        "section_statuses": [
+                            {
+                                "section_id": section.section_id,
+                                "status": section.status,
+                                "retry_count": section.retry_count,
+                                "error_code": section.error_code,
+                            }
+                            for section in sections
+                        ],
+                    }
+                    if report is not None
+                    else None
+                ),
+            },
+        }
 
     def _list_published_deliverables(self, arguments: dict[str, Any]) -> dict[str, Any]:
         raw_limit = arguments.get("limit", MAX_PUBLISHED_DELIVERABLES)
@@ -532,6 +651,54 @@ class HarnessCapabilityInvoker:
             },
         }
 
+    def _audit_report_generate(self) -> dict[str, Any]:
+        case = self._bound_audit_case()
+        if case is None:
+            return _failure("AUDIT_CASE_NOT_AVAILABLE", "当前会话没有可用的审核项目。")
+        from app.audit_cases.reporting import AuditReportService
+        from app.db.models import AuditReportSection
+
+        service = AuditReportService(self.db)
+        report = service.create_version(case)
+        generation = service.generate_pending_sections(case, report, self.model_config)
+        sections = self.db.exec(
+            select(AuditReportSection)
+            .where(AuditReportSection.report_version_id == report.id)
+            .order_by(AuditReportSection.sequence)
+        ).all()
+        return {
+            "success": True,
+            "data": {
+                "audit_case_id": case.id,
+                "report": {
+                    "id": report.id,
+                    "version": report.version,
+                    "status": report.status,
+                    "generation": generation.model_dump(mode="json"),
+                    "section_statuses": [
+                        {
+                            "section_id": section.section_id,
+                            "status": section.status,
+                            "retry_count": section.retry_count,
+                            "error_code": section.error_code,
+                        }
+                        for section in sections
+                    ],
+                },
+                "rule_traceability_status": report.rule_traceability_status,
+            },
+        }
+
+    def _bound_audit_case(self) -> Any | None:
+        from app.db.models import AuditCase
+
+        case_id = str(getattr(self.session, "audit_case_id", "") or "").strip()
+        if not case_id:
+            return None
+        case = self.db.get(AuditCase, case_id)
+        if case is None or case.tenant_id != self.tenant_id:
+            return None
+        return case
     def _read_published_deliverable(self, arguments: dict[str, Any]) -> dict[str, Any]:
         task_frame_id = str(arguments.get("task_frame_id") or "").strip()
         path = str(arguments.get("path") or "").strip()

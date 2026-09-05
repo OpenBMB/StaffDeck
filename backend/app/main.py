@@ -4,9 +4,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
+from app.a2a import recover_codex_a2a_tasks, stop_codex_a2a_tasks
+from app.a2a import router as a2a_router
 from app.api import (
     agents,
     app_updates,
+    audit_cases,
     auth,
     channels,
     chat,
@@ -15,10 +18,13 @@ from app.api import (
     general_skills,
     knowledge,
     knowledge_bases,
+    knowledge_retrieval,
     memories,
     mock,
     model_configs,
     persona,
+    project_data,
+    rules,
     scheduled_tasks,
     sessions,
     skills,
@@ -29,7 +35,7 @@ from app.api import (
     wechat_kf,
 )
 from app.async_jobs import shutdown_async_jobs, start_async_jobs
-from app.a2a import recover_codex_a2a_tasks, router as a2a_router, stop_codex_a2a_tasks
+from app.audit_cases.service import recover_pending_material_jobs
 from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
 from app.core.harness_recovery import (
@@ -39,14 +45,16 @@ from app.core.harness_recovery import (
 )
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
+from app.documents.extraction import DocumentExtractionError
+from app.documents.model_manager import RapidDocModelManager
 from app.public_api import create_public_api_app
 from app.public_api.jobs import cleanup_public_api_records, recover_public_jobs
 from app.public_api.maintenance import start_public_api_maintenance, stop_public_api_maintenance
 from app.public_api.webhooks import enqueue_due_webhook_deliveries
 from app.runtime_lock import acquire_runtime_instance_lock, release_runtime_instance_lock
 from app.scheduled_tasks.worker import start_background_worker, stop_background_worker
-from app.tools.a2a_recovery import recover_a2a_client_tasks
 from app.teams.sweeper import start_timeout_sweeper, stop_timeout_sweeper
+from app.tools.a2a_recovery import recover_a2a_client_tasks
 from app.version import app_version
 
 settings = get_settings()
@@ -77,6 +85,7 @@ def on_startup() -> None:
         with Session(engine) as db:
             seed_demo_data(db)
             recover_orphan_harness_runs(db, startup=True)
+        recover_pending_material_jobs(engine)
         recover_codex_a2a_tasks()
         recover_a2a_client_tasks()
         start_background_worker()
@@ -110,8 +119,37 @@ def on_shutdown() -> None:
 
 
 @app.get("/api/health", tags=["health"])
-def health() -> dict[str, str]:
-    return {"status": "ok", "app": "StaffDeck"}
+def health() -> dict[str, object]:
+    structured_pdf: dict[str, object] = {
+        "enabled": settings.structured_pdf_enabled,
+        "engine": settings.structured_pdf_engine,
+        "ready": False,
+        "status": "disabled" if not settings.structured_pdf_enabled else "needs_prepare",
+        "manifest_exists": False,
+        "missing_count": 0,
+        "version": None,
+        "model_dir_configured": bool(settings.rapid_models_dir),
+        "ocr_worker_count": settings.structured_pdf_worker_count,
+        "ocr_worker_status": "disabled" if not settings.structured_pdf_enabled else "blocked_model",
+    }
+    if settings.structured_pdf_enabled:
+        try:
+            readiness = RapidDocModelManager(
+                model_dir=settings.rapid_models_dir or None
+            ).check_readiness()
+            structured_pdf.update(
+                {
+                    "ready": readiness.ready,
+                    "status": "ready" if readiness.ready else "needs_prepare",
+                    "manifest_exists": (readiness.model_dir / "manifest.json").is_file(),
+                    "missing_count": len(readiness.missing),
+                    "version": readiness.version,
+                    "ocr_worker_status": "ready" if readiness.ready else "blocked_model",
+                }
+            )
+        except DocumentExtractionError as exc:
+            structured_pdf.update({"error_code": exc.code, "missing_count": 1})
+    return {"status": "ok", "app": "StaffDeck", "structured_pdf": structured_pdf}
 
 
 app.include_router(app_updates.router)
@@ -119,11 +157,15 @@ app.include_router(chat.router)
 app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)
 app.include_router(auth.router)
+app.include_router(audit_cases.router)
+app.include_router(rules.router)
+app.include_router(project_data.router)
 app.include_router(agents.scope_router)
 app.include_router(agents.enterprise_router)
 app.include_router(general_skills.router)
 app.include_router(knowledge_bases.router)
 app.include_router(knowledge.router)
+app.include_router(knowledge_retrieval.router)
 app.include_router(skills.router)
 app.include_router(model_configs.router)
 app.include_router(memories.router)

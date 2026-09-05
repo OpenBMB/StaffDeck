@@ -213,6 +213,7 @@ class SessionPublic(BaseModel):
 class ChatTurnRequest(BaseModel):
     tenant_id: str
     session_id: Optional[str] = None
+    audit_case_id: Optional[str] = None
     agent_id: Optional[str] = None
     model_config_id: Optional[str] = None
     client_turn_id: Optional[str] = None
@@ -266,6 +267,19 @@ class ChatAttachmentRead(BaseModel):
     sha256: Optional[str] = None
     python_summary: Optional[str] = None
     error: Optional[str] = None
+    extraction_status: Optional[Literal["pending", "succeeded", "failed"]] = None
+    extraction_method: Optional[str] = None
+    extraction_engine: Optional[str] = None
+    extraction_engine_version: Optional[str] = None
+    page_count: Optional[int] = Field(default=None, ge=0)
+    non_empty_page_count: Optional[int] = Field(default=None, ge=0)
+    extracted_characters: Optional[int] = Field(default=None, ge=0)
+    extracted_text_sha256: Optional[str] = None
+    extraction_warnings: list[str] = Field(default_factory=list)
+    # Server-side complete text used by attachment staging only. This field is
+    # excluded from API/model serialization; callers receive only a bounded
+    # preview and can read the full derived text through the typed file path.
+    extracted_text: Optional[str] = Field(default=None, exclude=True, repr=False)
 
 
 class ChatTurnResponse(BaseModel):
@@ -295,6 +309,7 @@ class ChatSessionRead(BaseModel):
     id: str
     tenant_id: str
     user_id: Optional[str]
+    audit_case_id: Optional[str] = None
     agent_id: Optional[str] = None
     title: Optional[str]
     active_skill_id: Optional[str]

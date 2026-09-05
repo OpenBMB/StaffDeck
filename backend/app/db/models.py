@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import JSON, Column, Index, Integer, UniqueConstraint
+from sqlalchemy import JSON, Column, Index, Integer, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -22,6 +22,567 @@ class Tenant(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str
     created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCase(SQLModel, table=True):
+    __tablename__ = "audit_cases"
+
+    id: str = Field(default_factory=lambda: new_id("auditcase"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    owner_user_id: str = Field(index=True)
+    agent_id: str | None = Field(default=None, index=True)
+    member_user_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    organization_name: str = Field(index=True)
+    report_type: str
+    management_systems_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="collecting", index=True)
+    knowledge_scope_mode: str = Field(default="custom")
+    knowledge_base_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    active_report_version_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCaseMaterial(SQLModel, table=True):
+    __tablename__ = "audit_case_materials"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "sha256",
+            "material_type",
+            name="uq_audit_case_material_sha_type",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "material_type",
+            "filename",
+            "version",
+            name="uq_audit_case_material_version_type",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditmat"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    attachment_id: str = Field(index=True)
+    material_type: str = Field(index=True)
+    filename: str = Field(index=True)
+    content_type: str
+    sha256: str = Field(index=True)
+    size: int
+    storage_key: str
+    extracted_text_storage_key: Optional[str] = None
+    characters: int = 0
+    page_count: int = 0
+    extraction_method: Optional[str] = None
+    extraction_engine: Optional[str] = None
+    extraction_engine_version: Optional[str] = None
+    extraction_warnings_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    extracted_text_sha256: Optional[str] = None
+    processing_job_id: Optional[str] = Field(default=None, index=True)
+    extraction_status: str = Field(default="pending", index=True)
+    processing_status: str = Field(default="pending", index=True)
+    version: int = 1
+    is_current: bool = Field(default=True, index=True)
+    supersedes_material_id: Optional[str] = Field(default=None, index=True)
+    error_code: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCaseMaterialChunk(SQLModel, table=True):
+    __tablename__ = "audit_case_material_chunks"
+    __table_args__ = (
+        UniqueConstraint("material_id", "chunk_index", name="uq_audit_material_chunk_index"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditchunk"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    material_id: str = Field(index=True)
+    chunk_index: int = Field(index=True)
+    start_char: int
+    end_char: int
+    content_sha256: str
+    content: str
+    page_refs_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    chunking_status: Optional[str] = Field(default=None, index=True)
+    processing_status: str = Field(default="pending", index=True)
+    extracted_facts_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCaseDocument(SQLModel, table=True):
+    __tablename__ = "audit_case_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "document_key",
+            name="uq_audit_case_document_key",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditdoc"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    document_key: str = Field(index=True)
+    title: str
+    document_type: str = Field(index=True)
+    zone: str = Field(index=True)
+    status: str = Field(default="active", index=True)
+    active_version_id: Optional[str] = Field(default=None, index=True)
+    source_material_id: Optional[str] = Field(default=None, index=True)
+    archive_reason: Optional[str] = None
+    created_by_user_id: str = Field(index=True)
+    updated_by_user_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCaseDocumentVersion(SQLModel, table=True):
+    __tablename__ = "audit_case_document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "version", name="uq_audit_case_document_version"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditdocver"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    document_id: str = Field(index=True)
+    version: int
+    content_format: str
+    content: str
+    content_sha256: str = Field(index=True)
+    characters: int = 0
+    change_note: Optional[str] = None
+    created_by_user_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCaseEvent(SQLModel, table=True):
+    __tablename__ = "audit_case_events"
+
+    id: str = Field(default_factory=lambda: new_id("auditevent"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    actor_user_id: str = Field(index=True)
+    event_type: str = Field(index=True)
+    resource_type: str
+    resource_id: str
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCaseMemberRole(SQLModel, table=True):
+    __tablename__ = "audit_case_member_roles"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "user_id",
+            name="uq_audit_case_member_role",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditrole"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    role: str = Field(default="viewer", index=True)
+    created_by_user_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class RuleSet(SQLModel, table=True):
+    __tablename__ = "rule_sets"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "key", name="uq_rule_set_tenant_key"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("ruleset"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    key: str = Field(index=True)
+    name: str
+    description: str = ""
+    management_systems_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    audit_types_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    business_domain: str = Field(default="", index=True)
+    status: str = Field(default="draft", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class RuleSetVersion(SQLModel, table=True):
+    __tablename__ = "rule_set_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "rule_set_id",
+            "version",
+            name="uq_rule_set_version",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("rulesetver"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    rule_set_id: str = Field(index=True)
+    version: int = Field(index=True)
+    status: str = Field(default="draft", index=True)
+    content_sha256: str = Field(index=True)
+    published_by_user_id: Optional[str] = Field(default=None, index=True)
+    published_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class RuleDefinition(SQLModel, table=True):
+    __tablename__ = "rule_definitions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "rule_set_version_id",
+            "rule_key",
+            name="uq_rule_definition_version_key",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("rule"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    rule_set_version_id: str = Field(index=True)
+    rule_key: str = Field(index=True)
+    name: str
+    description: str = ""
+    workflow_nodes_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    information_domains_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    document_types_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    field_keys_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    execution_level: str = Field(default="guidance", index=True)
+    execution_method: str = Field(default="deterministic", index=True)
+    condition_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    input_requirements_json: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
+    evidence_requirements_json: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
+    source_refs_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    sequence: int = Field(default=0, index=True)
+    enabled: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ProjectRuleBinding(SQLModel, table=True):
+    __tablename__ = "project_rule_bindings"
+
+    id: str = Field(default_factory=lambda: new_id("rulebinding"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    # New bindings can be scoped to one logical project document and the
+    # immutable version that was active when the binding was made.  Both are
+    # nullable so historical project-wide bindings remain readable.
+    document_id: Optional[str] = Field(default=None, index=True)
+    document_version_id: Optional[str] = Field(default=None, index=True)
+    rule_set_id: str = Field(index=True)
+    rule_set_version_id: str = Field(index=True)
+    selection_source: str = Field(default="manual", index=True)
+    status: str = Field(default="active", index=True)
+    priority: int = Field(default=0, index=True)
+    bound_by_user_id: str = Field(index=True)
+    bound_at: datetime = Field(default_factory=utc_now)
+    supersedes_binding_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ProjectDataFieldDefinition(SQLModel, table=True):
+    __tablename__ = "project_data_field_definitions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "field_key",
+            name="uq_project_data_field_definition",
+        ),
+        Index(
+            "uq_project_data_system_field_key",
+            "field_key",
+            unique=True,
+            sqlite_where=text("tenant_id IS NULL"),
+            postgresql_where=text("tenant_id IS NULL"),
+        ).ddl_if(dialect=("sqlite", "postgresql")),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("fielddef"), primary_key=True)
+    tenant_id: Optional[str] = Field(default=None, index=True)
+    field_key: str = Field(index=True)
+    label: str
+    value_type: str = Field(index=True)
+    information_domain: str = Field(index=True)
+    scope: str = Field(index=True)
+    required: bool = False
+    editable: bool = True
+    sync_policy: str = Field(default="manual", index=True)
+    validator_name: Optional[str] = Field(default=None, index=True)
+    source_optional: bool = False
+    status: str = Field(default="active", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ProjectDataValue(SQLModel, table=True):
+    __tablename__ = "project_data_values"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "field_key",
+            name="uq_project_data_value_current",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("fieldvalue"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    field_key: str = Field(index=True)
+    value_json: Any = Field(sa_column=Column(JSON, nullable=False))
+    status: str = Field(default="proposed", index=True)
+    revision: int = Field(default=0, index=True)
+    source_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    approved_by_user_id: Optional[str] = Field(default=None, index=True)
+    approved_at: Optional[datetime] = None
+    updated_by_user_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ProjectDataValueRevision(SQLModel, table=True):
+    __tablename__ = "project_data_value_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "field_key",
+            "revision",
+            name="uq_project_data_value_revision",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("fieldrevision"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    field_key: str = Field(index=True)
+    revision: int = Field(index=True)
+    value_json: Any = Field(sa_column=Column(JSON, nullable=False))
+    status: str = Field(index=True)
+    source_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    operation: str = Field(index=True)
+    actor_user_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ProjectDataCandidate(SQLModel, table=True):
+    __tablename__ = "project_data_candidates"
+
+    id: str = Field(default_factory=lambda: new_id("fieldcandidate"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    field_key: str = Field(index=True)
+    value_json: Any = Field(sa_column=Column(JSON, nullable=False))
+    source_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    status: str = Field(default="pending", index=True)
+    expected_revision: Optional[int] = Field(default=None, index=True)
+    submitted_by_user_id: str = Field(index=True)
+    decided_by_user_id: Optional[str] = Field(default=None, index=True)
+    decision_reason: Optional[str] = None
+    decided_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ProjectDataConflict(SQLModel, table=True):
+    __tablename__ = "project_data_conflicts"
+    __table_args__ = (
+        Index(
+            "uq_project_data_open_conflict_retry",
+            "tenant_id",
+            "audit_case_id",
+            "field_key",
+            "trigger_candidate_id",
+            "current_revision",
+            unique=True,
+            sqlite_where=text("status = 'open' AND trigger_candidate_id IS NOT NULL"),
+            postgresql_where=text("status = 'open' AND trigger_candidate_id IS NOT NULL"),
+        ).ddl_if(dialect=("sqlite", "postgresql")),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("fieldconflict"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    field_key: str = Field(index=True)
+    status: str = Field(default="open", index=True)
+    current_revision: int = Field(default=0, index=True)
+    trigger_candidate_id: Optional[str] = Field(default=None, index=True)
+    candidate_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    resolved_candidate_id: Optional[str] = Field(default=None, index=True)
+    resolved_by_user_id: Optional[str] = Field(default=None, index=True)
+    resolution_reason: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class RuleEvaluation(SQLModel, table=True):
+    __tablename__ = "rule_evaluations"
+
+    id: str = Field(default_factory=lambda: new_id("ruleeval"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    document_id: Optional[str] = Field(default=None, index=True)
+    document_version_id: Optional[str] = Field(default=None, index=True)
+    rule_set_version_id: str = Field(index=True)
+    rule_definition_id: str = Field(index=True)
+    workflow_node: str = Field(index=True)
+    information_domain: str = Field(index=True)
+    target_ref: str = Field(index=True)
+    input_revision: int = Field(default=0, index=True)
+    status: str = Field(default="pending", index=True)
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    evidence_refs_json: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
+    executor_type: str = Field(default="deterministic", index=True)
+    executor_version: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class RuleException(SQLModel, table=True):
+    __tablename__ = "rule_exceptions"
+
+    id: str = Field(default_factory=lambda: new_id("ruleexception"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    rule_evaluation_id: str = Field(index=True)
+    reason: str
+    evidence_refs_json: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+    )
+    granted_by_user_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditEvidenceLedger(SQLModel, table=True):
+    __tablename__ = "audit_evidence_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "audit_element_id",
+            "source_kind",
+            "chunk_id",
+            "extractor_version",
+            name="uq_audit_evidence_source",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditev"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    audit_element_id: str = Field(index=True)
+    source_kind: str = Field(index=True)
+    source_id: str = Field(index=True)
+    source_version_id: str = Field(index=True)
+    chunk_id: str = Field(index=True)
+    source_ref: str
+    evidence_type: str = Field(index=True)
+    evidence_text: str
+    confidence: float
+    extractor_version: str = Field(index=True)
+    report_section_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditElementCoverage(SQLModel, table=True):
+    __tablename__ = "audit_element_coverage"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "audit_element_id",
+            name="uq_audit_element_coverage",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditcov"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    audit_element_id: str = Field(index=True)
+    status: str = Field(default="pending", index=True)
+    material_evidence_count: int = 0
+    knowledge_evidence_count: int = 0
+    gap_reason: Optional[str] = None
+    lead_auditor_confirmed_by: Optional[str] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditReportVersion(SQLModel, table=True):
+    __tablename__ = "audit_report_versions"
+
+    id: str = Field(default_factory=lambda: new_id("auditreport"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    source_document_id: Optional[str] = Field(default=None, index=True)
+    source_document_version_id: Optional[str] = Field(default=None, index=True)
+    version: int = Field(index=True)
+    status: str = Field(default="draft", index=True)
+    material_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    knowledge_base_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    rule_set_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    rule_traceability_status: str = Field(default="not_configured", index=True)
+    coverage_snapshot_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    final_storage_key: Optional[str] = None
+    lead_auditor_confirmed_by: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditReportSection(SQLModel, table=True):
+    __tablename__ = "audit_report_sections"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_version_id",
+            "section_id",
+            name="uq_audit_report_section",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditsection"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    report_version_id: str = Field(index=True)
+    section_id: str = Field(index=True)
+    title: str
+    sequence: int
+    audit_element_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    rule_definition_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="pending", index=True)
+    draft_markdown: str = ""
+    citation_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    model_config_id: Optional[str] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    retry_count: int = 0
+    error_code: Optional[str] = None
     updated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -518,6 +1079,68 @@ class KnowledgeChunk(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class KnowledgeRetrievalConfig(SQLModel, table=True):
+    __tablename__ = "knowledge_retrieval_configs"
+
+    id: str = Field(default_factory=lambda: new_id("retrieval"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    embedding_base_url: str
+    embedding_api_key_encrypted: str
+    embedding_model: str
+    embedding_dimensions: int
+    reranker_mode: str = Field(default="llm", index=True)
+    reranker_model_config_id: Optional[str] = Field(default=None, index=True)
+    candidate_limit: int = 40
+    rerank_limit: int = 12
+    enabled: bool = False
+    schema_version: int = 2
+    revision: int = 1
+    status: str = Field(default="active", index=True)
+    embedding_adapter: str = "openai_compatible_embedding"
+    embedding_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    bm25_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    fusion_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    reranker_adapter: str = ""
+    reranker_base_url: str = ""
+    reranker_api_key_encrypted: str = ""
+    reranker_model: str = ""
+    reranker_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    last_tested_at: Optional[datetime] = None
+    tested_fingerprint: Optional[str] = None
+    activated_at: Optional[datetime] = None
+    last_error_code: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class KnowledgeChunkEmbedding(SQLModel, table=True):
+    __tablename__ = "knowledge_chunk_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "chunk_id",
+            "retrieval_config_id",
+            "content_sha256",
+            name="uq_knowledge_chunk_embedding_version",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("kembed"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
+    knowledge_base_version_id: str = Field(index=True)
+    chunk_id: str = Field(index=True)
+    retrieval_config_id: str = Field(index=True)
+    embedding_model: str
+    content_sha256: str = Field(index=True)
+    dimensions: int
+    vector_json: list[float] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="ready", index=True)
+    error_code: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class KnowledgeConcept(SQLModel, table=True):
     __tablename__ = "knowledge_concepts"
     __table_args__ = (
@@ -600,6 +1223,9 @@ class ModelConfig(SQLModel, table=True):
     model: str
     temperature: float = 0.2
     max_output_tokens: int = 8192
+    context_window_tokens: Optional[int] = None
+    context_window_source: str = Field(default="default", index=True)
+    safe_input_tokens: int = 32_000
     extra_body_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     protocol_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     legacy_unmapped_options_json: dict[str, Any] = Field(
@@ -833,6 +1459,8 @@ class ChatSession(SQLModel, table=True):
     channel_account_key: Optional[str] = Field(default=None, index=True)
     # 团队会话挂接:非空表示该会话属于某团队(TL 对话/任务执行等)
     team_id: Optional[str] = Field(default=None, index=True)
+    # 审核项目绑定:历史会话保持 NULL,不自动归属任何项目
+    audit_case_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1623,3 +2251,4 @@ class TeamTaskBid(SQLModel, table=True):
     score: Optional[float] = None
     score_rationale: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
+

@@ -1,11 +1,13 @@
 import base64
 import json
 import logging
+import os
 import threading
+import tempfile
 import time
 
 import httpx
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import QueuePool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.channels.adapters.wechat import (
@@ -25,11 +27,24 @@ BASE_URL = "https://ilinkai.weixin.qq.com"
 
 
 def _test_engine():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+    # Polling tests access the same in-memory database from both the worker
+    # thread and the assertion thread.  An in-memory StaticPool would share
+    # one sqlite connection between those threads and can produce InterfaceError
+    # or observe a transiently missing row on Windows.  A uniquely named
+    # temporary database with a real pool preserves isolation while allowing
+    # normal SQLite reader/writer concurrency.
+    file_descriptor, database_path = tempfile.mkstemp(
+        prefix="staffdeck-wechat-", suffix=".sqlite3"
     )
+    os.close(file_descriptor)
+    engine = create_engine(
+        f"sqlite:///{database_path}",
+        connect_args={"check_same_thread": False, "timeout": 30.0},
+        poolclass=QueuePool,
+    )
+    with engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+        connection.exec_driver_sql("PRAGMA busy_timeout=30000")
     SQLModel.metadata.create_all(engine)
     return engine
 
@@ -675,13 +690,23 @@ class _ScriptedPollClient:
         self.tail = tail
         self.calls = 0
         self.cursors: list[str] = []
+        self._closed = threading.Event()
 
     def get_updates(self, get_updates_buf: str, *, timeout_seconds: float = 40.0) -> dict:
         self.calls += 1
         self.cursors.append(get_updates_buf)
         if self.responses:
             return self.responses.pop(0)
+        # A real long-poll request blocks while there are no messages.  Keep
+        # the scripted client from spinning on immediate empty responses and
+        # allow stop_binding() to interrupt the wait just like the provider
+        # client does in production.
+        if not (self.tail.get("errcode") or self.tail.get("ret")) and not self.tail.get("msgs"):
+            self._closed.wait(1.0)
         return dict(self.tail)
+
+    def close(self) -> None:
+        self._closed.set()
 
 
 def test_first_minus_14_enters_recovery_without_expired() -> None:

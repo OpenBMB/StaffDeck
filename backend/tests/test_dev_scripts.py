@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT_DIR / "scripts"
@@ -28,6 +29,31 @@ def test_supervisor_uses_platform_specific_executables() -> None:
     assert supervisor._backend_python("linux") == ROOT_DIR / "backend/.venv/bin/python"
     assert supervisor._vite_executable("win32") == ROOT_DIR / "frontend-enterprise/node_modules/.bin/vite.cmd"
     assert supervisor._vite_executable("darwin") == ROOT_DIR / "frontend-enterprise/node_modules/.bin/vite"
+
+
+def test_supervisor_uses_explicit_node_path_when_configured(
+    monkeypatch, tmp_path: Path
+) -> None:
+    supervisor = _load_script("dev_supervisor")
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    monkeypatch.setenv("STAFFDECK_NODE", str(node))
+    monkeypatch.setattr(supervisor.shutil, "which", lambda _name: None)
+
+    assert supervisor._node_executable() == str(node)
+
+
+def test_supervisor_passes_explicit_node_directory_to_services(
+    monkeypatch, tmp_path: Path
+) -> None:
+    supervisor = _load_script("dev_supervisor")
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    monkeypatch.setenv("STAFFDECK_NODE", str(node))
+
+    environment = supervisor._service_environment({"PATH": r"C:\Windows\System32"})
+
+    assert environment["PATH"].split(os.pathsep)[0] == str(node.parent)
 
 
 def test_pid_alive_recognizes_current_process() -> None:
@@ -84,6 +110,31 @@ def test_dev_cli_honors_packaged_app_port_range(monkeypatch) -> None:
     monkeypatch.setattr(dev, "_port_available", lambda _host, port: port == 6202)
 
     assert dev._select_available_port("127.0.0.1", 6200) == 6202
+
+
+def test_dev_cli_uses_explicit_npm_path_when_configured(
+    monkeypatch, tmp_path: Path
+) -> None:
+    dev = _load_script("dev")
+    npm = tmp_path / "npm.cmd"
+    npm.write_bytes(b"")
+    monkeypatch.setenv("STAFFDECK_NPM", str(npm))
+    monkeypatch.setattr(dev.shutil, "which", lambda _name: None)
+
+    assert dev._npm_executable() == str(npm)
+
+
+def test_dev_cli_passes_explicit_node_directory_to_npm(
+    monkeypatch, tmp_path: Path
+) -> None:
+    dev = _load_script("dev")
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"")
+    monkeypatch.setenv("STAFFDECK_NODE", str(node))
+
+    environment = dev._npm_environment()
+
+    assert environment["PATH"].split(os.pathsep)[0] == str(node.parent)
 
 
 def test_dev_cli_keeps_complete_frontend_dependencies(monkeypatch) -> None:
@@ -201,3 +252,49 @@ def test_powershell_launcher_accepts_newer_python_3_versions() -> None:
 
     assert 'Prefix = @("-3.11")' in script
     assert 'Prefix = @("-3")' in script
+
+
+def test_powershell_launcher_prefers_repository_virtualenv() -> None:
+    script = (SCRIPTS_DIR / "dev.ps1").read_text(encoding="utf-8")
+
+    assert '$repositoryPython = Join-Path $root "backend\\.venv\\Scripts\\python.exe"' in script
+    local_candidate = '[pscustomobject]@{ File = $repositoryPython; Prefix = @() }'
+    assert local_candidate in script
+    assert script.index(local_candidate) < script.index('File = "py"')
+
+
+def test_dev_cli_reports_structured_pdf_model_readiness_without_downloading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dev = _load_script("dev")
+    model_dir = tmp_path / "rapiddoc"
+    monkeypatch.setenv("STRUCTURED_PDF_ENABLED", "true")
+    monkeypatch.setenv("RAPID_MODELS_DIR", str(model_dir))
+
+    state = dev._structured_pdf_state()
+
+    assert state["enabled"] is True
+    assert state["ready"] is False
+    assert state["manifest_exists"] is False
+    assert state["missing_count"] >= 1
+
+
+def test_dev_cli_rejects_enabled_structured_pdf_without_prepared_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dev = _load_script("dev")
+    monkeypatch.setenv("STRUCTURED_PDF_ENABLED", "true")
+    monkeypatch.setattr(
+        dev,
+        "_structured_pdf_state",
+        lambda: {
+            "enabled": True,
+            "ready": False,
+            "manifest_exists": False,
+            "missing_count": 1,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="prepare_rapiddoc_models.py"):
+        dev._ensure_structured_pdf_readiness()

@@ -181,6 +181,58 @@ export type KnowledgeSearchResponse = {
   evidence_pack: KnowledgeSearchEvidence[];
 };
 
+export type KnowledgeRetrievalConfigRead = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  embedding_base_url: string;
+  embedding_api_key_masked: string;
+  embedding_model: string;
+  embedding_dimensions: number;
+  reranker_mode: 'llm' | 'none' | 'dedicated_api' | string;
+  reranker_model_config_id?: string | null;
+  candidate_limit: number;
+  rerank_limit: number;
+  enabled: boolean;
+  schema_version: number;
+  revision: number;
+  status: string;
+  embedding_adapter: string;
+  embedding: Record<string, unknown>;
+  bm25: Record<string, unknown>;
+  fusion: Record<string, unknown>;
+  reranker: Record<string, unknown>;
+  reranker_adapter: string;
+  reranker_base_url: string;
+  reranker_model: string;
+  reranker_api_key_masked: string;
+  requires_reindex?: boolean;
+  active_config_id?: string | null;
+  pending_config_id?: string | null;
+  last_tested_at?: string | null;
+  tested_fingerprint?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KnowledgeVectorIndexStatus = {
+  knowledge_base_version_id: string;
+  total_chunks: number;
+  ready_embeddings: number;
+  failed_embeddings: number;
+  missing_embeddings: number;
+  embedding_model: string;
+  updated_at?: string | null;
+};
+
+export type KnowledgeReindexResponse = {
+  status: string;
+  config_id?: string;
+  job_ids: string[];
+  queued_document_ids: string[];
+  skipped_document_ids: string[];
+};
+
 export type AgentResourceType = 'skill' | 'general_skill' | 'knowledge_base' | 'tool';
 
 export type AgentResourceBindingRead = {
@@ -588,6 +640,7 @@ export type ChatSession = {
   id: string;
   tenant_id: string;
   user_id?: string;
+  audit_case_id?: string | null;
   agent_id?: string;
   title?: string;
   active_skill_id?: string;
@@ -600,6 +653,147 @@ export type ChatSession = {
   team_id?: string | null;
   team_name?: string | null;
   updated_at: string;
+};
+
+export type AuditCaseRead = {
+  id: string;
+  tenant_id: string;
+  agent_id?: string | null;
+  knowledge_scope_mode?: 'agent_default' | 'custom';
+  owner_user_id: string;
+  member_user_ids: string[];
+  organization_name: string;
+  report_type: string;
+  management_systems: string[];
+  status: string;
+  knowledge_base_version_ids: string[];
+  active_report_version_id?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AuditCaseMaterialRead = {
+  id: string;
+  audit_case_id: string;
+  attachment_id: string;
+  material_type: string;
+  filename: string;
+  content_type: string;
+  sha256: string;
+  size: number;
+  characters: number;
+  page_count?: number;
+  extraction_method?: string | null;
+  extraction_engine?: string | null;
+  extraction_engine_version?: string | null;
+  extraction_warnings?: string[];
+  extracted_text_sha256?: string | null;
+  processing_job_id?: string | null;
+  extraction_status: 'pending' | 'processing' | 'succeeded' | 'failed' | string;
+  processing_status: string;
+  version: number;
+  is_current: boolean;
+  supersedes_material_id?: string | null;
+  error_code?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AuditCaseDocumentVersionRead = {
+  id: string;
+  document_id: string;
+  version: number;
+  content_format: 'markdown' | 'text';
+  content: string;
+  content_sha256: string;
+  characters: number;
+  change_note?: string | null;
+  created_by_user_id: string;
+  created_at: string;
+};
+
+export type AuditCaseDocumentRead = {
+  id: string;
+  audit_case_id: string;
+  document_key: string;
+  title: string;
+  document_type: string;
+  zone: string;
+  status: string;
+  active_version_id?: string | null;
+  source_material_id?: string | null;
+  archive_reason?: string | null;
+  created_by_user_id: string;
+  updated_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  active_version?: AuditCaseDocumentVersionRead | null;
+};
+
+export type AuditCaseDocumentDetailRead = {
+  document: AuditCaseDocumentRead;
+  versions: AuditCaseDocumentVersionRead[];
+};
+
+export type AuditCaseCoverageRead = {
+  current_material_count: number;
+  successful_material_count: number;
+  failed_material_count: number;
+  total_chunk_count: number;
+  successful_chunk_count: number;
+  file_coverage: number;
+  chunk_coverage: number;
+  element_coverage?: number;
+  publish_allowed?: boolean;
+  blockers?: string[];
+  files_total?: number;
+  files_succeeded?: number;
+  chunks_total?: number;
+  chunks_succeeded?: number;
+  elements_total?: number;
+  elements_resolved?: number;
+  pending_material_ids?: string[];
+  failed_material_ids?: string[];
+  pending_chunk_ids?: string[];
+};
+
+export type AuditCaseProcessRead = {
+  status: string;
+  code?: string | null;
+  materials: AuditCaseMaterialRead[];
+  coverage: AuditCaseCoverageRead;
+  evidence?: Record<string, unknown> | null;
+  knowledge?: Record<string, unknown> | null;
+};
+
+export type AuditReportSectionRead = {
+  id: string;
+  section_id: string;
+  title: string;
+  sequence: number;
+  status: string;
+  retry_count: number;
+  error_code?: string | null;
+  draft_markdown?: string;
+  citation_ids?: string[];
+  rule_definition_ids?: string[];
+};
+
+export type AuditReportRead = {
+  id: string;
+  tenant_id: string;
+  audit_case_id: string;
+  source_document_id?: string | null;
+  source_document_version_id?: string | null;
+  version: number;
+  status: string;
+  material_version_ids: string[];
+  knowledge_base_version_ids: string[];
+  rule_set_version_ids?: string[];
+  rule_traceability_status?: 'complete' | 'incomplete' | 'not_configured' | string;
+  coverage_snapshot: Record<string, unknown>;
+  final_storage_key?: string | null;
+  sections: AuditReportSectionRead[];
 };
 
 export type ChatAttachmentKind = 'text' | 'pdf' | 'image' | 'binary';
@@ -617,6 +811,15 @@ export type ChatAttachmentRead = {
   sha256?: string | null;
   python_summary?: string | null;
   error?: string | null;
+  extraction_status?: 'pending' | 'succeeded' | 'failed' | string | null;
+  extraction_method?: string | null;
+  extraction_engine?: string | null;
+  extraction_engine_version?: string | null;
+  page_count?: number | null;
+  non_empty_page_count?: number | null;
+  extracted_characters?: number | null;
+  extracted_text_sha256?: string | null;
+  extraction_warnings?: string[];
 };
 
 export type ChatSlashCommand = {
@@ -1244,3 +1447,76 @@ export type TeamEventRead = {
   payload: Record<string, unknown>;
   created_at: string;
 };
+
+// ---------------------------------------------------------------------------
+// Certification projects (认证项目)
+// ---------------------------------------------------------------------------
+
+export type AuditCaseManagementRead = AuditCaseRead & {
+  material_total: number;
+  material_ready: number;
+  material_failed: number;
+  file_coverage: number;
+  chunk_coverage: number;
+};
+
+export type AuditCaseManagementPage = {
+  items: AuditCaseManagementRead[];
+  total: number;
+};
+
+export type AuditCaseKnowledgeVersionOption = {
+  id: string;
+  knowledge_base_id: string;
+  name: string;
+  version: string;
+  description?: string | null;
+  status: string;
+  document_count?: number;
+  chunk_count?: number;
+  is_agent_branch?: boolean;
+  recommended?: boolean;
+  duplicate_group?: string | null;
+};
+
+export type AuditCaseAgentOption = {
+  id: string;
+  name: string;
+  description?: string | null;
+  knowledge_base_version_ids: string[];
+};
+
+export type AuditCaseChoiceOption = {
+  value: string;
+  label: string;
+  code?: string | null;
+};
+
+export type AuditCaseMaterialTypeOption = {
+  value: string;
+  label: string;
+  group: string;
+  description: string;
+};
+
+export type AuditCaseManagementOptions = {
+  agent_options?: AuditCaseAgentOption[];
+  knowledge_versions: AuditCaseKnowledgeVersionOption[];
+  audit_types?: AuditCaseChoiceOption[];
+  management_systems?: AuditCaseChoiceOption[];
+  material_types?: AuditCaseMaterialTypeOption[];
+  supported_extensions: string[];
+  max_material_bytes: number;
+};
+
+export type AuditCaseEventRead = {
+  id: string;
+  audit_case_id: string;
+  actor_user_id: string;
+  event_type: string;
+  resource_type: string;
+  resource_id: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+

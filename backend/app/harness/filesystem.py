@@ -18,11 +18,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.documents.extraction import DocumentExtractionError
 from app.harness.contracts import HarnessToolContext
 from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
 from app.harness.registry import HarnessRegistry
-from app.knowledge.parser import KnowledgeParseError, extract_text
+from app.knowledge.parser import KnowledgeParseError, extract_document
 
 _TRASH_DIRECTORY = ".harness-trash"
 _SHA256_PATTERN = r"^[A-Fa-f0-9]{64}$"
@@ -524,7 +525,19 @@ def extract_document_text(
         raise _io_error("Document could not be read.", exc) from exc
 
     try:
-        text, document_format = extract_text(source.name, source_bytes)
+        parsed = extract_document(source.name, source_bytes)
+        extraction = parsed.extraction
+        text = extraction.text
+        document_format = parsed.file_type
+    except DocumentExtractionError as exc:
+        raise HarnessExecutionError(
+            "DOCUMENT_EXTRACTION_FAILED",
+            str(exc),
+            details={
+                "path": workspace.relative(source),
+                "source_code": exc.code,
+            },
+        ) from exc
     except KnowledgeParseError as exc:
         raise HarnessExecutionError(
             "DOCUMENT_EXTRACTION_FAILED",
@@ -560,15 +573,29 @@ def extract_document_text(
         new_bytes=len(content_bytes),
     )
     _atomic_write(output, content_bytes)
-    return {
+    digest = _sha256(output)
+    result = {
         "source_path": workspace.relative(source),
         "extracted_text_path": workspace.relative(output),
         "format": document_format,
         "characters": len(text),
         "size": len(content_bytes),
         "empty": not bool(text.strip()),
-        "sha256": _sha256(output),
+        "sha256": digest,
+        "page_count": extraction.source_page_count,
+        "non_empty_page_count": sum(1 for page in extraction.pages if page.text.strip()),
+        "extraction_method": extraction.method,
+        "extraction_engine": extraction.engine,
+        "extraction_engine_version": extraction.engine_version,
+        "warnings": list(extraction.warnings),
     }
+    if text:
+        result["continuation_token"] = _encode_read_continuation(
+            path=workspace.relative(output),
+            sha256=digest,
+            offset=0,
+        )
+    return result
 
 
 def write_file(

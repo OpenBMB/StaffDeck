@@ -157,6 +157,22 @@ DEMO_MODEL_API_KEY="你的API-Key"
 
 API Key 用于创建初始模型配置，存入数据库前会被加密。请勿提交 `backend/.env`。服务启动后也可以在**管理员 → 模型配置**中管理模型服务。
 
+#### 可选：启用混合知识检索
+
+如需在知识库中启用 BM25 + Embedding + reranker，先在 `backend/.env` 设置并重启服务：
+
+```dotenv
+HYBRID_KNOWLEDGE_RETRIEVAL_ENABLED="true"
+```
+
+然后进入**管理员 → 知识库**，在“混合检索配置”中填写 OpenAI-compatible Embedding 地址、模型名和准确的向量维度，选择候选数、reranker 模式及模型并保存。地址填写到 `/v1` 这一层即可，系统会调用其 `/embeddings` 接口。API Key 只允许写入，数据库中加密保存，读取时只返回掩码。
+
+开启配置后可以在同一面板查看每个知识库版本的向量总数、就绪数、失败数和缺失数，并点击“重建缺失向量”。文档内容变化会按内容哈希重新向量化，未变化的块不会重复调用 Embedding 服务。Embedding 失败时自动回退 BM25，reranker 失败时保留 RRF 融合结果；关闭全局开关或配置开关都不会改变原有词法检索路径。
+
+#### 可选：在 StaffDeck 内处理扫描型 PDF
+
+带文字层的 PDF 默认由原生解析器处理；扫描型 PDF 可在本机启用官方 `rapid-doc==0.9.10` + ONNX Runtime CPU 结构化提取，不启用 OpenVINO、GPU 或云端 OCR。该能力默认关闭，启动时不会自动下载模型。请先阅读[离线 RapidDoc 操作说明](./docs/rapiddoc-offline-operations.md)，安装项目 `.[ocr]` extra，使用 `--check-only` 检查模型，再明确执行 `--prepare`，最后在 `backend/.env` 设置 `STRUCTURED_PDF_ENABLED="true"`。启用但未准备模型时，启动会明确提示准备命令，不会静默丢失文本或云端 OCR。
+
 ### 3. 启动 Web Demo
 
 | 平台 | 推荐命令 |
@@ -165,6 +181,23 @@ API Key 用于创建初始模型配置，存入数据库前会被加密。请勿
 | Windows PowerShell | `.\scripts\dev_up.ps1 --detach` |
 
 两套包装脚本最终都会调用同一个跨平台 Python 生命周期入口 `scripts/dev.py`。启动过程会构建 StaffDeck 前端，并由一个 FastAPI 进程在 `5173` 端口同时提供 UI、API 与 Swagger 文档。默认管理员账号为 `admin` / `admin`，请在首次登录后通过账号配置修改密码。
+
+当前版本的 Harness 可靠性修复支持同一 `TaskFrame` 在后续轮次继续使用已经物化的附件。审核报告场景还支持通过审核项目材料库跨对话复用材料：先在 `POST /api/audit-cases` 创建项目，再通过 `POST /api/audit-cases/{case_id}/materials` 上传材料并等待处理状态为 `succeeded`，新建对话后在页面选择该项目即可继续生成报告。系统会按项目材料清单装载当前版本，不会要求重复上传状态为 `available` 或处理成功的材料；只有缺失、解析失败或版本冲突的材料需要补充。项目材料与会话绑定后不可在同一会话切换到另一个项目，避免证据串用。
+
+#### 审核报告流水线验收样例
+
+仓库提供固定的 4 万字审核记录验收样例。它会逐块处理审核记录全文，检索并登记知识库证据，生成带引用的报告章节，再执行发布门禁。验收必须同时满足：文件、文本块和审核要素覆盖率均为 `1.0`，`publish_allowed` 为 `true`，并且报告返回材料版本 ID 和知识库版本 ID。
+
+Windows PowerShell 可在项目根目录运行：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest .\backend\tests\test_audit_pipeline_acceptance.py -q
+.\scripts\dev_up.ps1 --detach
+curl.exe http://127.0.0.1:5173/api/health
+Start-Process http://127.0.0.1:5173/workspace/gallery
+```
+
+健康检查应返回 `status=ok`；打开技能广场后应能看到数字员工和审核项目选择入口。验收样例使用模拟模型与固定知识库响应，不会调用真实模型或修改生产知识库。
 
 ### 4. 验证安装
 
@@ -180,7 +213,7 @@ Windows PowerShell：
 curl.exe http://127.0.0.1:5173/api/health
 ```
 
-预期输出：
+预期至少包含 `"status":"ok"`；同时会返回 `structured_pdf` 子对象，说明结构化 PDF 是 `disabled`、`needs_prepare` 还是 `ready`：
 
 ```json
 {"status":"ok"}

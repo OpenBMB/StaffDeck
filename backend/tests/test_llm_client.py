@@ -1157,6 +1157,64 @@ def test_internal_output_budget_never_increases_smaller_model_config():
     assert operation_output_tokens("router.scene", 256) == 256
 
 
+def _budget_model_config(**overrides):
+    values = {
+        "api_key_encrypted": "encrypted",
+        "base_url": "https://example.test/v1",
+        "model": "demo-model",
+        "temperature": 0.2,
+        "max_output_tokens": 8192,
+        "extra_body_json": {},
+        "protocol_options": {},
+        "trust_status": "verified",
+        "context_window_tokens": 128_000,
+        "context_window_source": "admin_attested",
+        "safe_input_tokens": 96_000,
+    }
+    values.update(overrides)
+    return type("ModelConfig", (), values)()
+
+
+def _budget_client(monkeypatch, **overrides):
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "api-key")
+    monkeypatch.setattr("app.llm.client.OpenAI", lambda **_kwargs: _FakeOpenAIClient())
+    monkeypatch.setattr(
+        "app.llm.client.get_settings",
+        lambda: type("Settings", (), {"model_api_timeout_seconds": 30.0})(),
+    )
+    return LLMClient(_budget_model_config(**overrides))
+
+
+def test_llm_client_uses_verified_safe_input_budget(monkeypatch) -> None:
+    client = _budget_client(monkeypatch)
+
+    assert client.input_token_budget == 96_000
+
+
+def test_llm_client_defaults_unknown_context_to_32000(monkeypatch) -> None:
+    client = _budget_client(
+        monkeypatch,
+        trust_status="unverified",
+        context_window_tokens=None,
+        context_window_source="default",
+        safe_input_tokens=32_000,
+    )
+
+    assert client.input_token_budget == 32_000
+
+
+def test_llm_client_ignores_stale_large_budget_after_security_change(monkeypatch) -> None:
+    client = _budget_client(
+        monkeypatch,
+        trust_status="unverified",
+        context_window_tokens=128_000,
+        context_window_source="admin_attested",
+        safe_input_tokens=96_000,
+    )
+
+    assert client.input_token_budget == 32_000
+
+
 def test_knowledge_router_does_not_retry_empty_control_plane_responses():
     assert operation_empty_response_retries("knowledge.bucket_route", 2) == 0
     assert operation_empty_response_retries("response.generate", 2) == 2

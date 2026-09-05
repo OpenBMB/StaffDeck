@@ -1,0 +1,86 @@
+[
+  {
+    "id": "4.3",
+    "management_system": "GB/T 23331-2020",
+    "title": "能源方针",
+    "requirement": "组织应建立、实施、保持和改进能源方针，并确保其与组织的战略方向相一致。",
+    "query_templates": [
+      "请查找组织现行能源方针、批准记录及向员工传达的证据。",
+      "请核对能源方针是否包含持续改进能源绩效和能源管理体系的承诺。"
+    ],
+    "report_section_id": "energy_policy",
+    "required": true
+  },
+  {
+    "id": "4.4.2",
+    "management_system": "GB/T 23331-2020",
+    "title": "法律法规及其他要求",
+    "requirement": "组织应确定、获取并定期评审适用的能源法律法规及其他要求，并确定其如何适用于能源管理体系。",
+    "query_templates": [
+      "请查找适用能源法律法规和其他要求清单及其定期评审记录。",
+      "请核对适用要求是否已传达到相关部门并用于合规性评价。"
+    ],
+    "report_section_id": "legal_requirements",
+    "required": true
+  },
+  {
+    "id": "4.4.3",
+    "management_system": "GB/T 23331-2020",
+    "title": "能源评审",
+    "requirement": "组织应开展能源评审，分析能源使用和能源消耗，识别主要能源使用，并确定改进能源绩效的机会。",
+    "query_templates": [
+      "请查找最近一次能源评审报告、能源流向分析和主要能源使用识别证据。",
+      "请核对能源评审是否使用了能源数据，并形成能源绩效改进机会。"
+    ],
+    "report_section_id": "energy_review",
+    "required": true
+  },
+  {
+    "id": "4.4.4",
+    "management_system": "GB/T 23331-2020",
+    "title": "能源绩效参数与能源基准",
+    "requirement": "组织应确定适宜的能源绩效参数和能源基准，并保持其适宜性和有效性。",
+    "query_templates": [
+      "请查找能源绩效参数、能源基准的确定依据、计算方法和批准记录。",
+      "请核对能源绩效参数是否用于监视能源绩效变化并在条件变化时更新。"
+    ],
+    "report_section_id": "energy_performance",
+    "required": true
+  },
+  {
+    "id": "4.6.1",
+    "management_system": "GB/T 23331-2020",
+    "title": "运行策划和控制",
+    "requirement": "组织应策划、实施和控制与主要能源使用有关的运行过程，并确保运行准则得到满足。",
+    "query_templates": [
+      "请查找主要能源使用相关的运行准则、操作规程和现场执行记录。",
+      "请核对运行控制是否覆盖能源绩效相关的变更、异常和关键参数。"
+    ],
+    "report_section_id": "operation_control",
+    "required": true
+  },
+  {
+    "id": "4.7.1",
+    "management_system": "GB/T 23331-2020",
+    "title": "能源绩效和能源管理体系的监视、测量、分析与评价",
+    "requirement": "组织应监视、测量、分析和评价能源绩效及能源管理体系的有效性。",
+    "query_templates": [
+      "请查找能源数据监视测量记录、能源绩效分析报告和异常处置记录。",
+      "请核对监视测量结果是否用于评价能源目标、指标和改进措施的实现情况。"
+    ],
+    "report_section_id": "performance_evaluation",
+    "required": true
+  },
+  {
+    "id": "4.8.1",
+    "management_system": "GB/T 23331-2020",
+    "title": "不符合、不合格和纠正措施",
+    "requirement": "组织应对不符合和不合格进行处理，并采取纠正措施以消除原因，防止再次发生。",
+    "query_templates": [
+      "请查找审核发现、不符合项、原因分析和纠正措施的记录。",
+      "请核对纠正措施是否经过实施、验证并保留改进效果证据。"
+    ],
+    "report_section_id": "improvements",
+    "required": true
+  }
+]

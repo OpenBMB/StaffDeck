@@ -38,6 +38,8 @@ import {
   preferredEmployeeAgent,
 } from "./employee";
 import AccountsPage from "./pages/AccountsPage";
+import AuditCasesPage from "./pages/audit-cases/AuditCasesPage";
+import AuditCaseDetailPage from "./pages/audit-cases/AuditCaseDetailPage";
 import AgentsPage from "./pages/AgentsPage";
 import ChannelsPage from "./pages/ChannelsPage";
 import ChatPage from "./pages/chat/ChatPage";
@@ -53,6 +55,7 @@ import KnowledgeManagePage, { KnowledgeAddPage } from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import ModelsPage from "./pages/ModelsPage";
 import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
+import RuleLibraryPage from "./pages/rules/RuleLibraryPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
 import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
@@ -167,13 +170,15 @@ function Shell({
             ? "/enterprise/general-skills"
             : location.pathname.startsWith("/enterprise/tools")
               ? "/enterprise/tools"
-              : location.pathname.startsWith("/enterprise/teams")
-                ? "/enterprise/teams"
-                : location.pathname.startsWith("/enterprise/scheduled-tasks")
-                ? "/enterprise/scheduled-tasks"
-                : isDistillRoute
-                  ? "/enterprise/skills"
-                  : location.pathname;
+                : location.pathname.startsWith("/enterprise/teams")
+                  ? "/enterprise/teams"
+                  : location.pathname.startsWith("/enterprise/audit-cases")
+                    ? EnterpriseRoute.AuditCases
+                    : location.pathname.startsWith("/enterprise/scheduled-tasks")
+                      ? "/enterprise/scheduled-tasks"
+                      : isDistillRoute
+                        ? "/enterprise/skills"
+                        : location.pathname;
   const isAgentRosterRoute = location.pathname.startsWith("/enterprise/agents");
   const [lastDistillSearch, setLastDistillSearch] = useState(() =>
     isDistillRoute ? location.search : "",
@@ -748,6 +753,36 @@ function Shell({
                 element={
                   isAdmin ? (
                     <AccountsPage currentUser={auth.user} onLogout={onLogout} />
+                  ) : (
+                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                  )
+                }
+              />
+              <Route
+                path="/enterprise/audit-cases"
+                element={
+                  isAdmin ? (
+                    <AuditCasesPage currentUser={auth.user} onLogout={onLogout} />
+                  ) : (
+                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                  )
+                }
+              />
+              <Route
+                path="/enterprise/audit-cases/:caseId"
+                element={
+                  isAdmin ? (
+                    <AuditCaseDetailPage currentUser={auth.user} onLogout={onLogout} />
+                  ) : (
+                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                  )
+                }
+              />
+              <Route
+                path={EnterpriseRoute.Rules}
+                element={
+                  isAdmin ? (
+                    <RuleLibraryPage currentUser={auth.user} onLogout={onLogout} />
                   ) : (
                     <Navigate to={EnterpriseRoute.Gallery} replace />
                   )

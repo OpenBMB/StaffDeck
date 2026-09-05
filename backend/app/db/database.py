@@ -1,15 +1,19 @@
 import hashlib
 import json
+import logging
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import Engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
 from app.db.models import new_id, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_database_url(url: str) -> str:
@@ -27,6 +31,7 @@ _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID = "20260712_default_model_output_tokens
 _LEGACY_DEFAULT_MODEL_OUTPUT_TOKENS = 2048
 _MODEL_API_PROTOCOLS_MIGRATION_ID = "20260722_model_api_protocols_v1"
 _DEFAULT_MODEL_OUTPUT_TOKENS = 8192
+_DEFAULT_SAFE_INPUT_TOKENS = 32_000
 _MODEL_API_PROTOCOL_COLUMNS = {
     "extra_body_json",
     "api_protocol",
@@ -50,6 +55,9 @@ _CHANNEL_SCOPE_REBUILD_MIGRATION_ID = "20260719_channel_scope_rebuild"
 _CHANNEL_BINDINGS_MULTI_MIGRATION_ID = "20260721_channel_bindings_multi"
 _CHANNEL_ACCOUNT_KEY_MIGRATION_ID = "20260723_channel_account_key_v1"
 _FEISHU_CHANNEL_SCHEMA_MIGRATION_ID = "20260724_feishu_channel_schema_v1"
+_AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID = "audit_case_material_unique_type_v1"
+_AUDIT_REPORT_RUNTIME_TRACEABILITY_MIGRATION_ID = "audit_report_runtime_traceability_v1"
+_DOCUMENT_SCOPED_RULE_BINDINGS_MIGRATION_ID = "document_scoped_rule_bindings_v1"
 _CAPABILITY_SCOPE_TABLES = (
     "general_skills",
     "tools",
@@ -65,6 +73,7 @@ def init_db() -> None:
     _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
     _migrate_sqlite_skill_schema()
+    run_project_data_backfill(engine)
     _purge_orphaned_chat_sessions()
 
 
@@ -123,8 +132,9 @@ def _migrate_sqlite_skill_schema() -> None:
     legacy_table = f"{legacy_key}_skills"
     legacy_id_column = f"{legacy_key}_id"
     legacy_id_prefix = f"{legacy_key}_"
-    with _sqlite_immediate_connection() as conn:
+    with _sqlite_immediate_connection(engine) as conn:
         _migrate_model_api_protocols(conn, tables)
+        _migrate_model_context_budget(conn, tables)
         _migrate_default_model_output_limit(conn, tables)
         _migrate_channel_binding_agents_backfill(conn, tables)
         _migrate_channel_scope_rebuild(conn, inspector, tables)
@@ -136,6 +146,11 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_wechat_kf_accounts(conn, tables)
         _migrate_capability_scope_schema(conn, inspector, tables)
         _migrate_harness_v2_schema(conn, inspector, tables)
+        _migrate_audit_case_schema(conn, inspector, tables)
+        _migrate_audit_case_material_schema(conn, inspector, tables)
+        _migrate_audit_report_traceability_schema(conn, inspector, tables)
+        _migrate_document_scoped_rule_bindings_schema(conn, inspector, tables)
+        _migrate_knowledge_retrieval_schema(conn, inspector, tables)
 
         if "api_jobs" in tables:
             job_columns = {column["name"] for column in inspector.get_columns("api_jobs")}
@@ -623,8 +638,9 @@ def _migrate_sqlite_skill_schema() -> None:
 
 
 @contextmanager
-def _sqlite_immediate_connection():
-    conn = engine.connect()
+def _sqlite_immediate_connection(target_engine: Engine | None = None):
+    target_engine = target_engine or engine
+    conn = target_engine.connect()
     try:
         conn.exec_driver_sql("BEGIN IMMEDIATE")
         yield conn
@@ -634,6 +650,55 @@ def _sqlite_immediate_connection():
         raise
     finally:
         conn.close()
+
+
+def _migrate_knowledge_retrieval_schema(conn, inspector, tables: set[str]) -> None:
+    if "knowledge_retrieval_configs" not in tables:
+        return
+
+    columns = {
+        column["name"]
+        for column in inspector.get_columns("knowledge_retrieval_configs")
+    }
+    column_sql = {
+        "schema_version": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 2",
+        "revision": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
+        "status": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN status VARCHAR NOT NULL DEFAULT 'active'",
+        "embedding_adapter": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN embedding_adapter VARCHAR NOT NULL DEFAULT 'openai_compatible_embedding'",
+        "embedding_options_json": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN embedding_options_json JSON",
+        "bm25_options_json": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN bm25_options_json JSON",
+        "fusion_options_json": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN fusion_options_json JSON",
+        "reranker_adapter": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN reranker_adapter VARCHAR NOT NULL DEFAULT ''",
+        "reranker_base_url": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN reranker_base_url VARCHAR NOT NULL DEFAULT ''",
+        "reranker_api_key_encrypted": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN reranker_api_key_encrypted VARCHAR NOT NULL DEFAULT ''",
+        "reranker_model": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN reranker_model VARCHAR NOT NULL DEFAULT ''",
+        "reranker_options_json": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN reranker_options_json JSON",
+        "last_tested_at": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN last_tested_at DATETIME",
+        "tested_fingerprint": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN tested_fingerprint VARCHAR",
+        "activated_at": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN activated_at DATETIME",
+        "last_error_code": "ALTER TABLE knowledge_retrieval_configs ADD COLUMN last_error_code VARCHAR",
+    }
+    for column_name, ddl in column_sql.items():
+        if column_name not in columns:
+            conn.execute(text(ddl))
+
+    conn.execute(
+        text(
+            "UPDATE knowledge_retrieval_configs "
+            "SET schema_version = COALESCE(schema_version, 2), "
+            "revision = COALESCE(revision, 1), "
+            "status = COALESCE(NULLIF(status, ''), 'active'), "
+            "embedding_adapter = COALESCE(NULLIF(embedding_adapter, ''), 'openai_compatible_embedding'), "
+            "embedding_options_json = COALESCE(embedding_options_json, '{}'), "
+            "bm25_options_json = COALESCE(bm25_options_json, '{}'), "
+            "fusion_options_json = COALESCE(fusion_options_json, '{}'), "
+            "reranker_adapter = COALESCE(reranker_adapter, ''), "
+            "reranker_base_url = COALESCE(reranker_base_url, ''), "
+            "reranker_api_key_encrypted = COALESCE(reranker_api_key_encrypted, ''), "
+            "reranker_model = COALESCE(reranker_model, ''), "
+            "reranker_options_json = COALESCE(reranker_options_json, '{}')"
+        )
+    )
 
 
 def _migrate_default_model_output_limit(conn, tables: set[str]) -> None:
@@ -1196,9 +1261,15 @@ def _migrate_wechat_kf_accounts(conn, tables: set[str]) -> None:
         )
     )
     if "channel_bindings" in tables:
+        binding_columns = {
+            str(row[1])
+            for row in conn.execute(text("PRAGMA table_info(channel_bindings)")).all()
+        }
+        team_id_expression = "team_id" if "team_id" in binding_columns else "NULL"
         rows = conn.execute(
             text(
-                "SELECT id, tenant_id, agent_id, team_id, config_json "
+                "SELECT id, tenant_id, agent_id, "
+                f"{team_id_expression} AS team_id, config_json "
                 "FROM channel_bindings WHERE channel = 'wechat_kf'"
             )
         ).mappings().all()
@@ -1619,6 +1690,42 @@ def _migrate_model_api_protocols(conn, tables: set[str]) -> None:
     _normalize_model_default_rows(conn)
     if repairing_applied_migration:
         return
+
+
+def _migrate_model_context_budget(conn, tables: set[str]) -> None:
+    if "model_configs" not in tables:
+        return
+
+    columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(model_configs)")).all()
+    }
+    column_ddl = {
+        "context_window_tokens": "ALTER TABLE model_configs ADD COLUMN context_window_tokens INTEGER",
+        "context_window_source": (
+            "ALTER TABLE model_configs ADD COLUMN context_window_source VARCHAR "
+            "NOT NULL DEFAULT 'default'"
+        ),
+        "safe_input_tokens": (
+            "ALTER TABLE model_configs ADD COLUMN safe_input_tokens INTEGER "
+            f"NOT NULL DEFAULT {_DEFAULT_SAFE_INPUT_TOKENS}"
+        ),
+    }
+    for column_name, ddl in column_ddl.items():
+        if column_name not in columns:
+            conn.execute(text(ddl))
+    conn.execute(
+        text(
+            "UPDATE model_configs SET context_window_source = 'default' "
+            "WHERE context_window_source IS NULL OR context_window_source = ''"
+        )
+    )
+    conn.execute(
+        text(
+            "UPDATE model_configs SET safe_input_tokens = :default_tokens "
+            "WHERE safe_input_tokens IS NULL OR safe_input_tokens < 1"
+        ),
+        {"default_tokens": _DEFAULT_SAFE_INPUT_TOKENS},
+    )
 
 
 def _normalize_model_default_rows(conn) -> None:
@@ -2173,7 +2280,579 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
             "ix_harness_invocations_logical_action_key "
             "ON harness_invocations(logical_action_key) "
             "WHERE logical_action_key IS NOT NULL"
+            )
         )
+
+
+def _migrate_audit_case_schema(conn, inspector, tables: set[str]) -> None:
+    """Add audit project references and employee knowledge-scope metadata."""
+
+    if "sessions" in tables:
+        # The caller's Inspector may have cached the pre-migration column list.
+        # Re-inspect the active connection so repeated startup migrations are safe.
+        columns = {column["name"] for column in inspect(conn).get_columns("sessions")}
+        if "audit_case_id" not in columns:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN audit_case_id VARCHAR"))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_sessions_audit_case_id "
+                "ON sessions(audit_case_id)"
+            )
+        )
+
+    if "audit_cases" in tables:
+        columns = {column["name"] for column in inspect(conn).get_columns("audit_cases")}
+        if "agent_id" not in columns:
+            conn.execute(text("ALTER TABLE audit_cases ADD COLUMN agent_id VARCHAR"))
+        if "knowledge_scope_mode" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE audit_cases ADD COLUMN knowledge_scope_mode "
+                    "VARCHAR NOT NULL DEFAULT 'custom'"
+                )
+            )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_audit_cases_agent_id "
+                "ON audit_cases(agent_id)"
+            )
+        )
+
+
+def run_project_data_backfill(target_engine: Engine) -> None:
+    """Run the idempotent legacy project-role backfill against an engine."""
+
+    if target_engine.dialect.name == "sqlite":
+        with _sqlite_immediate_connection(target_engine) as conn:
+            target_inspector = inspect(conn)
+            tables = set(target_inspector.get_table_names())
+            _migrate_project_data_schema(conn, target_inspector, tables)
+        return
+
+    with target_engine.begin() as conn:
+        target_inspector = inspect(conn)
+        tables = set(target_inspector.get_table_names())
+        _migrate_project_data_schema(conn, target_inspector, tables)
+
+
+def _migrate_project_data_schema(conn, inspector, tables: set[str]) -> None:
+    """Backfill explicit project roles from legacy owner/member fields."""
+
+    current_tables = set(inspect(conn).get_table_names())
+    if (
+        "project_data_field_definitions" in current_tables
+        and conn.dialect.name in {"sqlite", "postgresql"}
+    ):
+        field_definition_columns = {
+            column["name"]
+            for column in inspect(conn).get_columns("project_data_field_definitions")
+        }
+        if "source_optional" not in field_definition_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE project_data_field_definitions "
+                    "ADD COLUMN source_optional BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_project_data_system_field_key "
+                "ON project_data_field_definitions(field_key) "
+                "WHERE tenant_id IS NULL"
+            )
+        )
+
+    if "project_data_conflicts" in current_tables:
+        conflict_columns = {
+            column["name"]
+            for column in inspect(conn).get_columns("project_data_conflicts")
+        }
+        if "trigger_candidate_id" not in conflict_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE project_data_conflicts "
+                    "ADD COLUMN trigger_candidate_id VARCHAR"
+                )
+            )
+        if conn.dialect.name in {"sqlite", "postgresql"}:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_project_data_open_conflict_retry "
+                    "ON project_data_conflicts("
+                    "tenant_id, audit_case_id, field_key, trigger_candidate_id, current_revision"
+                    ") WHERE status = 'open' AND trigger_candidate_id IS NOT NULL"
+                )
+            )
+
+    required_tables = {"audit_cases", "audit_case_member_roles", "users"}
+    if not required_tables.issubset(tables):
+        return
+
+    marker_available = "app_data_migrations" in current_tables
+    marker_id = "project_data_member_roles_v1"
+    if marker_available:
+        applied = conn.execute(
+            text("SELECT id FROM app_data_migrations WHERE id = :id"),
+            {"id": marker_id},
+        ).first()
+        if applied:
+            return
+
+    cases = conn.execute(
+        text(
+            "SELECT id, tenant_id, owner_user_id, member_user_ids_json "
+            "FROM audit_cases"
+        )
+    ).mappings().all()
+    for case in cases:
+        case_id = str(case["id"])
+        tenant_id = str(case["tenant_id"])
+        owner_user_id = _legacy_project_user_id(
+            case["owner_user_id"],
+            case_id=case_id,
+            source="owner_user_id",
+        )
+        role_candidates: list[tuple[str, str]] = []
+        if owner_user_id is not None:
+            role_candidates.append((owner_user_id, "project_admin"))
+        role_candidates.extend(
+            (user_id, "editor")
+            for user_id in _legacy_project_member_ids(
+                case["member_user_ids_json"],
+                case_id=case_id,
+            )
+        )
+
+        seen_user_ids: set[str] = set()
+        for user_id, role in role_candidates:
+            if user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(user_id)
+
+            user_tenant_id = conn.execute(
+                text("SELECT tenant_id FROM users WHERE id = :user_id"),
+                {"user_id": user_id},
+            ).scalar_one_or_none()
+            if user_tenant_id is None:
+                logger.warning(
+                    "Skipping legacy project role for missing user %s in audit case %s",
+                    user_id,
+                    case_id,
+                )
+                continue
+            if str(user_tenant_id) != tenant_id:
+                logger.warning(
+                    "Skipping legacy project role for cross-tenant user %s in audit case %s",
+                    user_id,
+                    case_id,
+                )
+                continue
+
+            role_id_seed = f"{tenant_id}\x1f{case_id}\x1f{user_id}".encode()
+            role_id = f"auditrole_{hashlib.sha256(role_id_seed).hexdigest()[:16]}"
+            _execute_conflict_safe_insert(
+                conn,
+                insert_sql=(
+                    "INSERT INTO audit_case_member_roles ("
+                    "id, tenant_id, audit_case_id, user_id, role, created_by_user_id, "
+                    "created_at, updated_at"
+                    ") VALUES ("
+                    ":id, :tenant_id, :audit_case_id, :user_id, :role, NULL, "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP"
+                    ")"
+                ),
+                params={
+                    "id": role_id,
+                    "tenant_id": tenant_id,
+                    "audit_case_id": case_id,
+                    "user_id": user_id,
+                    "role": role,
+                },
+                conflict_columns="tenant_id, audit_case_id, user_id",
+            )
+
+    if marker_available:
+        _execute_conflict_safe_insert(
+            conn,
+            insert_sql="INSERT INTO app_data_migrations (id) VALUES (:id)",
+            params={"id": marker_id},
+            conflict_columns="id",
+        )
+
+
+def _execute_conflict_safe_insert(
+    conn,
+    *,
+    insert_sql: str,
+    params: dict[str, object],
+    conflict_columns: str,
+) -> None:
+    dialect_name = conn.dialect.name
+    if dialect_name == "sqlite":
+        conn.execute(text(insert_sql.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)), params)
+        return
+    if dialect_name == "postgresql":
+        conn.execute(
+            text(f"{insert_sql} ON CONFLICT ({conflict_columns}) DO NOTHING"),
+            params,
+        )
+        return
+
+    try:
+        with conn.begin_nested():
+            conn.execute(text(insert_sql), params)
+    except IntegrityError:
+        logger.info(
+            "Ignoring concurrent project data migration insert conflict on %s",
+            conflict_columns,
+        )
+
+
+def _legacy_project_user_id(value: object, *, case_id: str, source: str) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    logger.warning(
+        "Skipping malformed legacy project role identifier from %s in audit case %s: %r",
+        source,
+        case_id,
+        value,
+    )
+    return None
+
+
+def _legacy_project_member_ids(value: object, *, case_id: str) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Skipping malformed legacy member_user_ids_json in audit case %s",
+                case_id,
+            )
+            return []
+    if not isinstance(value, list):
+        logger.warning(
+            "Skipping malformed legacy member_user_ids_json in audit case %s: %r",
+            case_id,
+            value,
+        )
+        return []
+
+    member_ids: list[str] = []
+    for item in value:
+        user_id = _legacy_project_user_id(
+            item,
+            case_id=case_id,
+            source="member_user_ids_json",
+        )
+        if user_id is not None:
+            member_ids.append(user_id)
+    return member_ids
+
+
+def _migrate_audit_case_material_schema(conn, inspector, tables: set[str]) -> None:
+    """Make material uniqueness include its classification without losing versions."""
+
+    if "audit_case_materials" not in tables:
+        return
+
+    # These columns are additive so old audit material rows remain readable;
+    # create_all handles new databases and startup adds them to SQLite stores.
+    material_columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(audit_case_materials)"))
+    }
+    additive_columns = {
+        "page_count": "INTEGER NOT NULL DEFAULT 0",
+        "extraction_method": "VARCHAR",
+        "extraction_engine": "VARCHAR",
+        "extraction_engine_version": "VARCHAR",
+        "extraction_warnings_json": "JSON",
+        "extracted_text_sha256": "VARCHAR",
+        "processing_job_id": "VARCHAR",
+    }
+    for column_name, column_ddl in additive_columns.items():
+        if column_name not in material_columns:
+            conn.execute(
+                text(
+                    f"ALTER TABLE audit_case_materials ADD COLUMN {column_name} "
+                    f"{column_ddl}"
+                )
+            )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_audit_case_materials_processing_job_id "
+            "ON audit_case_materials(processing_job_id)"
+        )
+    )
+    if "audit_case_material_chunks" in tables:
+        chunk_columns = {
+            str(row[1])
+            for row in conn.execute(text("PRAGMA table_info(audit_case_material_chunks)"))
+        }
+        if "chunking_status" not in chunk_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE audit_case_material_chunks ADD COLUMN "
+                    "chunking_status VARCHAR"
+                )
+            )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_audit_case_material_chunks_chunking_status "
+                "ON audit_case_material_chunks(chunking_status)"
+            )
+        )
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_data_migrations (
+                id VARCHAR PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied = conn.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": _AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID},
+    ).first()
+    if applied:
+        return
+
+    unique_constraints = {
+        item["name"]: tuple(item["column_names"])
+        for item in inspect(conn).get_unique_constraints("audit_case_materials")
+    }
+    expected_constraints = {
+        "uq_audit_case_material_sha_type": (
+            "tenant_id",
+            "audit_case_id",
+            "sha256",
+            "material_type",
+        ),
+        "uq_audit_case_material_version_type": (
+            "tenant_id",
+            "audit_case_id",
+            "material_type",
+            "filename",
+            "version",
+        ),
+    }
+    if all(unique_constraints.get(name) == columns for name, columns in expected_constraints.items()):
+        conn.execute(
+            text(
+                "INSERT INTO app_data_migrations (id) VALUES (:id)"
+            ),
+            {"id": _AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID},
+        )
+        return
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE audit_case_materials_new (
+                id VARCHAR PRIMARY KEY,
+                tenant_id VARCHAR NOT NULL,
+                audit_case_id VARCHAR NOT NULL,
+                attachment_id VARCHAR NOT NULL,
+                material_type VARCHAR NOT NULL,
+                filename VARCHAR NOT NULL,
+                content_type VARCHAR NOT NULL,
+                sha256 VARCHAR NOT NULL,
+                size INTEGER NOT NULL,
+                storage_key VARCHAR NOT NULL,
+                extracted_text_storage_key VARCHAR,
+                characters INTEGER NOT NULL DEFAULT 0,
+                page_count INTEGER NOT NULL DEFAULT 0,
+                extraction_method VARCHAR,
+                extraction_engine VARCHAR,
+                extraction_engine_version VARCHAR,
+                extraction_warnings_json JSON,
+                extracted_text_sha256 VARCHAR,
+                processing_job_id VARCHAR,
+                extraction_status VARCHAR NOT NULL DEFAULT 'pending',
+                processing_status VARCHAR NOT NULL DEFAULT 'pending',
+                version INTEGER NOT NULL DEFAULT 1,
+                is_current BOOLEAN NOT NULL DEFAULT 1,
+                supersedes_material_id VARCHAR,
+                error_code VARCHAR,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                CONSTRAINT uq_audit_case_material_sha_type
+                    UNIQUE (tenant_id, audit_case_id, sha256, material_type),
+                CONSTRAINT uq_audit_case_material_version_type
+                    UNIQUE (tenant_id, audit_case_id, material_type, filename, version)
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            INSERT INTO audit_case_materials_new (
+                id, tenant_id, audit_case_id, attachment_id, material_type, filename,
+                content_type, sha256, size, storage_key, extracted_text_storage_key,
+                characters, page_count, extraction_method, extraction_engine,
+                extraction_engine_version, extraction_warnings_json, extracted_text_sha256,
+                processing_job_id, extraction_status, processing_status, version, is_current,
+                supersedes_material_id, error_code, created_at, updated_at
+            )
+            SELECT
+                id, tenant_id, audit_case_id, attachment_id, material_type, filename,
+                content_type, sha256, size, storage_key, extracted_text_storage_key,
+                characters, page_count, extraction_method, extraction_engine,
+                extraction_engine_version, extraction_warnings_json, extracted_text_sha256,
+                processing_job_id, extraction_status, processing_status, version, is_current,
+                supersedes_material_id, error_code, created_at, updated_at
+            FROM audit_case_materials
+            """
+        )
+    )
+    conn.execute(text("DROP TABLE audit_case_materials"))
+    conn.execute(text("ALTER TABLE audit_case_materials_new RENAME TO audit_case_materials"))
+    for column_name in (
+        "tenant_id",
+        "audit_case_id",
+        "attachment_id",
+        "material_type",
+        "filename",
+        "sha256",
+        "extraction_status",
+        "processing_status",
+        "version",
+        "is_current",
+        "supersedes_material_id",
+        "error_code",
+    ):
+        conn.execute(
+            text(
+                f"CREATE INDEX IF NOT EXISTS ix_audit_case_materials_{column_name} "
+                f"ON audit_case_materials({column_name})"
+            )
+        )
+    conn.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID},
+    )
+
+
+def _migrate_audit_report_traceability_schema(conn, inspector, tables: set[str]) -> None:
+    """Add immutable rule traceability columns to existing report tables."""
+
+    report_tables = {"audit_report_versions", "audit_report_sections"}
+    if not report_tables.intersection(tables):
+        return
+
+    if "audit_report_versions" in tables:
+        columns = {
+            str(row[1])
+            for row in conn.execute(text("PRAGMA table_info(audit_report_versions)"))
+        }
+        if "rule_set_version_ids_json" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE audit_report_versions ADD COLUMN "
+                    "rule_set_version_ids_json JSON NOT NULL DEFAULT '[]'"
+                )
+            )
+        if "rule_traceability_status" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE audit_report_versions ADD COLUMN "
+                    "rule_traceability_status VARCHAR NOT NULL DEFAULT 'not_configured'"
+                )
+            )
+        conn.execute(
+            text(
+                "UPDATE audit_report_versions SET rule_set_version_ids_json = '[]' "
+                "WHERE rule_set_version_ids_json IS NULL"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE audit_report_versions SET rule_traceability_status = 'not_configured' "
+                "WHERE rule_traceability_status IS NULL OR rule_traceability_status = ''"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_audit_report_versions_rule_traceability_status "
+                "ON audit_report_versions(rule_traceability_status)"
+            )
+        )
+
+    if "audit_report_sections" in tables:
+        columns = {
+            str(row[1])
+            for row in conn.execute(text("PRAGMA table_info(audit_report_sections)"))
+        }
+        if "rule_definition_ids_json" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE audit_report_sections ADD COLUMN "
+                    "rule_definition_ids_json JSON NOT NULL DEFAULT '[]'"
+                )
+            )
+        conn.execute(
+            text(
+                "UPDATE audit_report_sections SET rule_definition_ids_json = '[]' "
+                "WHERE rule_definition_ids_json IS NULL"
+            )
+        )
+
+    conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS app_data_migrations ("
+            "id VARCHAR PRIMARY KEY, "
+            "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+    )
+    conn.execute(
+        text("INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _AUDIT_REPORT_RUNTIME_TRACEABILITY_MIGRATION_ID},
+    )
+
+
+def _migrate_document_scoped_rule_bindings_schema(conn, inspector, tables: set[str]) -> None:
+    """Add optional document/version scope to rules, evaluations, and reports."""
+
+    target_columns = {
+        "project_rule_bindings": ("document_id", "document_version_id"),
+        "rule_evaluations": ("document_id", "document_version_id"),
+        "audit_report_versions": ("source_document_id", "source_document_version_id"),
+    }
+    current_tables = set(inspect(conn).get_table_names())
+    for table_name, column_names in target_columns.items():
+        if table_name not in current_tables:
+            continue
+        columns = {column["name"] for column in inspect(conn).get_columns(table_name)}
+        for column_name in column_names:
+            if column_name not in columns:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} VARCHAR"
+                    )
+                )
+            conn.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_{table_name}_{column_name} "
+                    f"ON {table_name}({column_name})"
+                )
+            )
+
+    conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS app_data_migrations ("
+            "id VARCHAR PRIMARY KEY, "
+            "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+    )
+    conn.execute(
+        text("INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _DOCUMENT_SCOPED_RULE_BINDINGS_MIGRATION_ID},
     )
 
 
@@ -3019,3 +3698,4 @@ def _agent_resource_binding_id(tenant_id: str, agent_id: str, resource_type: str
 def get_session() -> Generator[Session, None, None]:
     with Session(engine) as session:
         yield session
+

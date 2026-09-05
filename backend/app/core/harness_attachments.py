@@ -25,6 +25,7 @@ from app.session.attachments import (
 )
 from app.session.attachment_store import (
     read_staged_chat_attachment,
+    read_staged_chat_attachment_text,
     sandbox_attachment_path,
 )
 from app.session.session_schema import ChatAttachmentRead
@@ -80,6 +81,21 @@ def materialize_task_attachments(
             "size": attachment.size,
             "preview": attachment.preview,
         }
+        for metadata_key in (
+            "extraction_status",
+            "extraction_method",
+            "extraction_engine",
+            "extraction_engine_version",
+            "page_count",
+            "non_empty_page_count",
+            "extracted_characters",
+            "extracted_text_sha256",
+            "extraction_warnings",
+            "error",
+        ):
+            metadata_value = getattr(attachment, metadata_key, None)
+            if metadata_value is not None:
+                descriptor[metadata_key] = metadata_value
         if attachment.kind == "image" and attachment.data_url:
             image_data_url, image_error = _validated_image_data_url(attachment)
             if image_data_url:
@@ -113,7 +129,12 @@ def materialize_task_attachments(
                         "error": f"附件写入失败：{type(exc).__name__}",
                     }
                 )
-            if attachment.kind == "pdf" and attachment.text:
+            staged_text = read_staged_chat_attachment_text(
+                attachment,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            ) if attachment.kind == "pdf" else None
+            if attachment.kind == "pdf" and (staged_text or attachment.text):
                 extracted_path = f"{sandbox_path}.extracted.txt"
                 extracted_result = executor.execute(
                     context,
@@ -122,7 +143,7 @@ def materialize_task_attachments(
                         name="write_file",
                         arguments={
                             "path": extracted_path,
-                            "content": attachment.text,
+                            "content": staged_text or attachment.text or "",
                             "create_parents": True,
                         },
                     ),

@@ -55,6 +55,17 @@ class Settings(BaseSettings):
     # 一张独立卡片展示智能体每一步（SOP/工具/知识检索），与正文回复互不影响。
     # 仅影响飞书渠道；关闭时退化为仅发最终回复。
     channel_feishu_trace_enabled: bool = True
+    # Vector indexing is opt-in. The existing lexical knowledge search remains
+    # the safe default until an administrator configures and enables embedding.
+    hybrid_knowledge_retrieval_enabled: bool = False
+    structured_pdf_enabled: bool = False
+    structured_pdf_engine: str = "rapiddoc"
+    rapid_models_dir: str = ""
+    structured_pdf_max_pages: int = 64
+    structured_pdf_max_pixels: int = 20_000_000
+    structured_pdf_timeout_seconds: float = 180.0
+    structured_pdf_worker_count: int = 1
+    structured_pdf_allow_ocr_fallback: bool = False
     # 飞书 trace 卡片 SOP 紧凑展示开关：开启后匹配 SOP（判断意图/进入流程）之后的
     # 中间步骤不再逐行展示，仅显示"翻书动画 + 正在推进SOP"，等待用户补充信息时
     # 定格为"📖 流程已暂停"，SOP 结束时定格为"✅ 流程已结束"。设为 False 可整体

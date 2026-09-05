@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.db.models import new_id
+from app.knowledge.parser import KnowledgeParseError, extract_document
 from app.session.attachment_store import sandbox_attachment_path
 from app.session.session_schema import ChatAttachmentRead
 
@@ -212,6 +213,7 @@ def validate_chat_turn_attachments(
                     "data_url": data_url,
                     "sandbox_path": sandbox_path,
                     "sha256": sha256,
+                    "extracted_text": None,
                     "python_summary": _round_trip_summary(
                         filename,
                         content_type,
@@ -306,24 +308,50 @@ def _path_only_attachment(
         kind=kind,
         preview="文件已上传，请通过沙箱路径读取。",
         python_summary=_python_file_summary(filename, content_type, data, ""),
+        extraction_status="pending" if kind == "pdf" else None,
     )
 
 
 def _pdf_attachment(filename: str, content_type: str, data: bytes) -> ChatAttachmentRead:
-    text = ""
-    error: str | None = None
     try:
-        from pypdf import PdfReader
+        result = extract_document(filename, data).extraction
+    except (KnowledgeParseError, ValueError) as exc:
+        return ChatAttachmentRead(
+            id=new_id("file"),
+            filename=filename,
+            content_type=content_type or "application/pdf",
+            size=len(data),
+            kind="pdf",
+            preview="文件已上传，请通过沙箱路径读取。",
+            python_summary=_python_file_summary(filename, content_type, data, ""),
+            error=str(exc),
+            extraction_status="failed",
+        )
 
-        reader = PdfReader(io.BytesIO(data))
-        pages = []
-        for page in reader.pages[:30]:
-            pages.append(page.extract_text() or "")
-        text = "\n\n".join(page.strip() for page in pages if page.strip())
-        if len(reader.pages) > 30:
-            text += f"\n\n... PDF 共 {len(reader.pages)} 页，仅提取前 30 页。"
-    except Exception as exc:  # noqa: BLE001 - return readable parse error to caller.
-        error = f"PDF 解析失败：{exc}"
+    text = result.text
+    if not text.strip() and result.source_page_count and result.engine == "pypdf":
+        return ChatAttachmentRead(
+            id=new_id("file"),
+            filename=filename,
+            content_type=content_type or "application/pdf",
+            size=len(data),
+            kind="pdf",
+            preview="文件已上传，请通过沙箱路径读取。",
+            python_summary=_python_file_summary(filename, content_type, data, ""),
+            error="OCR_DEPENDENCY_MISSING: 扫描 PDF 未提取到文字，请先准备离线 OCR 模型。",
+            extraction_status="failed",
+            extraction_method=result.method,
+            extraction_engine=result.engine,
+            extraction_engine_version=result.engine_version,
+            page_count=result.source_page_count,
+            non_empty_page_count=0,
+            extracted_characters=0,
+            extraction_warnings=list(result.warnings),
+        )
+    try:
+        text_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    except UnicodeError:
+        text_sha256 = None
     trimmed = _trim_text(text, MAX_EXTRACTED_TEXT_CHARS)
     return ChatAttachmentRead(
         id=new_id("file"),
@@ -332,9 +360,18 @@ def _pdf_attachment(filename: str, content_type: str, data: bytes) -> ChatAttach
         size=len(data),
         kind="pdf",
         text=trimmed or None,
-        preview=_trim_text(trimmed, MAX_PREVIEW_CHARS) if trimmed else None,
-        python_summary=_python_file_summary(filename, content_type, data, trimmed),
-        error=error,
+        preview=_trim_text(text, MAX_PREVIEW_CHARS) if text else None,
+        python_summary=_python_file_summary(filename, content_type, data, text),
+        extraction_status="succeeded",
+        extraction_method=result.method,
+        extraction_engine=result.engine,
+        extraction_engine_version=result.engine_version,
+        page_count=result.source_page_count,
+        non_empty_page_count=sum(1 for page in result.pages if page.text.strip()),
+        extracted_characters=len(text),
+        extracted_text_sha256=text_sha256,
+        extraction_warnings=list(result.warnings),
+        extracted_text=text,
     )
 
 
