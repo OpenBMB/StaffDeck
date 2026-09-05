@@ -153,10 +153,19 @@ class HarnessV3Engine(HarnessV2Engine):
         # loop reaches _ensure_turn_context on the non-stream path).
         if hasattr(self.events, "execution_engine"):
             self.events.execution_engine = "harness_v3"
+        # The write half: the v2 skeleton ends a visible turn with
+        # ``owner._enqueue_memory_capture(...)``. Point that at the provider too (built-in →
+        # the legacy async job via ctx.legacy_enqueue; swapped → the provider's own store;
+        # disabled → no write). Restored after the turn.
+        had_own_enqueue = "_enqueue_memory_capture" in vars(owner)
+        v2_enqueue = getattr(owner, "_enqueue_memory_capture", None)
         try:
             from staffdeck_harness.memory import ProviderMemoryFacade, resolve_memory_provider
 
-            owner.memory = ProviderMemoryFacade(self.db, resolve_memory_provider())
+            facade = ProviderMemoryFacade(self.db, resolve_memory_provider())
+            owner.memory = facade
+            if callable(v2_enqueue):
+                owner._enqueue_memory_capture = facade.bind_capture(self.events, v2_enqueue)
         except Exception:  # pragma: no cover - a broken memory module must not take the turn down
             logger.exception("memory provider could not be resolved; running the turn without memory")
         try:
@@ -164,6 +173,11 @@ class HarnessV3Engine(HarnessV2Engine):
         finally:
             if v2_memory is not None:
                 owner.memory = v2_memory
+            if callable(v2_enqueue):
+                if had_own_enqueue:
+                    owner._enqueue_memory_capture = v2_enqueue
+                else:
+                    vars(owner).pop("_enqueue_memory_capture", None)  # class method resumes
             if self._v2_response_generator is not None:
                 owner.response_generator = self._v2_response_generator
             if self._pooled is not None:

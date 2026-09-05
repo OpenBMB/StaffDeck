@@ -14,23 +14,57 @@ deployment can swap recall/capture, or disable memory entirely:
   the v3 engine is the one running the turn. The facade is per-turn and only installed for a
   turn that runs on the v3 path.
 
-Which half is a real provider hook today, and which is a thin default:
-- ``recall`` is the real seam. The provider returns ``list[dict]`` in ``memory_read`` shape;
-  the v3 pre_step ``memory.recall`` hook renders those into the step prompt exactly as before.
-- ``capture`` is the async tail: the engine calls ``_enqueue_memory_capture`` which schedules a
-  background job. The provider's ``capture`` is offered as a synchronous override for providers
-  that keep their own store; the built-in provider falls back to … nothing (it does not own the
-  background queue), so a swapping provider owns both halves. Drivers that want to keep the
-  legacy job can leave ``capture`` as the shipped default and only replace recall.
+Both halves are provider seams:
+- ``recall`` returns ``list[dict]`` in ``memory_read`` shape; the v3 pre_step ``memory.recall``
+  hook renders those into the step prompt exactly as before.
+- ``capture(ctx)`` is called where the v2 skeleton used to call
+  ``owner._enqueue_memory_capture(...)`` (end of a visible turn). ``ctx.legacy_enqueue()`` is
+  that original method, captured for the turn, so the built-in provider keeps the legacy async
+  background job — events, commit and all — without replicating it. A swapping provider writes
+  to its own store synchronously (and may still call ``legacy_enqueue`` if it wants both). With
+  the module disabled nothing is written and nothing fails.
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping
 
 from app.memory.service import MemoryService
 from staffdeck_harness.contracts.manifest import SlotName
 from staffdeck_harness.modules.registry import ModuleRegistry
+
+
+@dataclass
+class CaptureContext:
+    """Everything the end-of-turn write sees. ``legacy_enqueue`` is the original
+    ``AgentLoop._enqueue_memory_capture`` bound for this call: invoking it schedules the legacy
+    background capture job (and records its events / commits) exactly as before."""
+
+    db: Any
+    events: Any
+    request: Any
+    session: Any
+    step_result: Any
+    tool_result: Any
+    model_config: Any
+    legacy_enqueue: Callable[[], list[dict[str, Any]]]
+
+    @property
+    def tenant_id(self) -> str:
+        return str(getattr(self.request, "tenant_id", "") or "")
+
+    @property
+    def user_id(self) -> str:
+        return str(getattr(self.request, "user_id", "") or "")
+
+    @property
+    def agent_id(self) -> str | None:
+        return getattr(self.session, "agent_id", None)
+
+    @property
+    def session_id(self) -> str:
+        return str(getattr(self.session, "id", "") or "")
 
 
 class MemoryProvider:
@@ -39,9 +73,12 @@ class MemoryProvider:
     def recall(self, db: Any, tenant_id: str, user_id: str, agent_id: str | None = None, *, session_id: str | None = None, query: str = "") -> list[dict[str, Any]]:
         raise NotImplementedError
 
-    def capture(self, db: Any, tenant_id: str, user_id: str, agent_id: str | None, *, session_id: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        """Synchronous write. The built-in provider ignores it (the legacy path is async); a
-        swapping provider owns its own write semantics here."""
+    def capture(self, ctx: CaptureContext) -> list[dict[str, Any]]:
+        """Persist what this turn taught us about the user. Return receipts (dicts) for the trace.
+
+        Default: nothing. The built-in provider returns ``ctx.legacy_enqueue()``; a provider with
+        its own store writes synchronously here.
+        """
         return []
 
 
@@ -61,6 +98,10 @@ class MemoryDefaultModule:
         rows = self.service(db).context_memories(tenant_id, user_id, agent_id=agent_id)
         return [memory_read(r) for r in rows]
 
+    def capture(self, ctx: CaptureContext) -> list[dict[str, Any]]:
+        # The legacy path: schedule the background capture job. Same events, same commit.
+        return ctx.legacy_enqueue()
+
 
 class ProviderMemoryFacade:
     """What ``owner.memory`` becomes for a Harness v3 turn: the same ``context_memories`` surface
@@ -78,6 +119,35 @@ class ProviderMemoryFacade:
 
     def recall(self, tenant_id: str, user_id: str, query: str = "", limit: int | None = None, agent_id: str | None = None) -> list[Any]:
         return self.context_memories(tenant_id, user_id, agent_id=agent_id)
+
+    # -- write seam ------------------------------------------------------------------------
+
+    def bind_capture(self, events: Any, legacy_enqueue: Callable[..., list[dict[str, Any]]]) -> Callable[..., list[dict[str, Any]]]:
+        """Return the callable that replaces ``owner._enqueue_memory_capture`` for this turn.
+
+        Same signature as the original: ``(request, session, step_result, tool_result,
+        model_config)``. Routes to ``provider.capture``; the built-in provider forwards to
+        ``legacy_enqueue``. A provider that raises records ``memory_error`` and the turn goes on,
+        which is what the legacy method did for a failed enqueue.
+        """
+
+        def enqueue(request: Any, session: Any, step_result: Any, tool_result: Any, model_config: Any) -> list[dict[str, Any]]:
+            if self.provider is None or not getattr(request, "user_id", None):
+                return []
+            ctx = CaptureContext(
+                db=self.db, events=events, request=request, session=session, step_result=step_result, tool_result=tool_result, model_config=model_config,
+                legacy_enqueue=lambda: legacy_enqueue(request, session, step_result, tool_result, model_config),
+            )
+            try:
+                out = self.provider.capture(ctx)
+            except Exception as exc:  # noqa: BLE001 - a memory write must never take the turn down
+                record = getattr(events, "record", None)
+                if callable(record):
+                    record(ctx.tenant_id, ctx.session_id, "memory_error", {"message": str(exc), "provider": getattr(self.provider, "module_id", type(self.provider).__name__)})
+                return []
+            return list(out or [])
+
+        return enqueue
 
 
 class _RowLike:
@@ -128,7 +198,7 @@ def resolve_memory_provider(*, registry: ModuleRegistry | None = None) -> Memory
 
 def install(registry: ModuleRegistry, settings: Any = None, *, enabled: bool = True) -> None:
     registry.install(
-        _manifest(summary="内置记忆：按用户与员工召回已有记忆，写入走后台任务；关闭则本轮不带记忆。", enabled=enabled),
+        _manifest(summary="内置记忆：按用户与员工召回已有记忆，对话后由后台任务提炼并写入；关闭则本轮既不带记忆也不写入。", enabled=enabled),
         MemoryDefaultModule(),
         slot=SlotName.RUNTIME_MEMORY,
         enabled=enabled,

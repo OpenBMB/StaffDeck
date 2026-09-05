@@ -185,3 +185,119 @@ def test_engine_tolerates_disabled_memory(db, monkeypatch, profile, enabled):
     monkeypatch.setattr(engine_host.HarnessV2Engine, "run", lambda self, r: seen.setdefault("n", len(self.owner.memory.context_memories("t1", "u1", agent_id="a1"))))
     engine_host.HarnessV3Engine(owner, runtime=SimpleNamespace(worker_config=None, settings=None, release_process=lambda p: None), profile=profile).run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[]))
     assert seen["n"] == (1 if enabled else 0)
+
+
+# --------------------------------------------------------------------------- 7. the write half is a seam too
+
+def _turn_args():
+    request = SimpleNamespace(tenant_id="t1", user_id="u1", message="hi", client_turn_id=None, message_visibility="visible")
+    session = SimpleNamespace(id="s1", agent_id="a1")
+    return request, session, SimpleNamespace(reply="ok"), None, SimpleNamespace(id="m1")
+
+
+def test_builtin_capture_forwards_to_the_legacy_enqueue(db):
+    calls = []
+    legacy = lambda *a: calls.append(a) or [{"job_id": "job1", "job_name": "memory.capture_turn"}]  # noqa: E731
+    facade = ProviderMemoryFacade(db, MemoryDefaultModule())
+    enqueue = facade.bind_capture(SimpleNamespace(record=lambda *a, **k: None), legacy)
+    out = enqueue(*_turn_args())
+    assert out == [{"job_id": "job1", "job_name": "memory.capture_turn"}]
+    assert len(calls) == 1 and calls[0][0].user_id == "u1", "the legacy job is scheduled with the same arguments"
+
+
+class _StoreMemory(_VectorMemory):
+    """A provider that owns its writes: synchronous, no background job."""
+
+    def __init__(self):
+        self.written = []
+
+    def capture(self, ctx):
+        self.written.append({"tenant": ctx.tenant_id, "user": ctx.user_id, "agent": ctx.agent_id, "session": ctx.session_id, "reply": ctx.step_result.reply})
+        return [{"receipt": "store-1"}]
+
+
+def test_swapped_provider_owns_the_write_and_legacy_job_is_not_scheduled(db):
+    provider = _StoreMemory()
+    legacy_calls = []
+    enqueue = ProviderMemoryFacade(db, provider).bind_capture(SimpleNamespace(record=lambda *a, **k: None), lambda *a: legacy_calls.append(a) or [])
+    assert enqueue(*_turn_args()) == [{"receipt": "store-1"}]
+    assert provider.written == [{"tenant": "t1", "user": "u1", "agent": "a1", "session": "s1", "reply": "ok"}]
+    assert legacy_calls == [], "a provider with its own store replaces the background job"
+
+
+def test_disabled_memory_writes_nothing_and_anonymous_turns_skip_capture(db):
+    legacy_calls = []
+    legacy = lambda *a: legacy_calls.append(a) or [{"job_id": "x"}]  # noqa: E731
+    assert ProviderMemoryFacade(db, None).bind_capture(SimpleNamespace(record=lambda *a, **k: None), legacy)(*_turn_args()) == []
+    request, session, step, tool, mc = _turn_args()
+    request.user_id = None
+    assert ProviderMemoryFacade(db, MemoryDefaultModule()).bind_capture(SimpleNamespace(record=lambda *a, **k: None), legacy)(request, session, step, tool, mc) == []
+    assert legacy_calls == []
+
+
+def test_failing_provider_capture_records_memory_error_and_turn_continues(db):
+    class _Boom(_VectorMemory):
+        module_id = "memory.boom"
+
+        def capture(self, ctx):
+            raise RuntimeError("store down")
+
+    recorded = []
+    enqueue = ProviderMemoryFacade(db, _Boom()).bind_capture(SimpleNamespace(record=lambda *a: recorded.append(a)), lambda *a: [])
+    assert enqueue(*_turn_args()) == []
+    assert recorded and recorded[0][2] == "memory_error" and recorded[0][3] == {"message": "store down", "provider": "memory.boom"}
+
+
+def test_harness_v3_engine_routes_the_v2_write_call_to_the_provider(db, monkeypatch, profile):
+    """The v2 skeleton calls ``self.owner._enqueue_memory_capture(...)``; on the v3 path that lands on
+    the runtime.memory provider, and the owner's own method is back after the turn."""
+
+    from staffdeck_harness.bridge import engine_host
+
+    provider = _StoreMemory()
+    reg = _registry_with(provider)
+    monkeypatch.setattr(registry_mod, "_active", reg)
+    legacy_calls = []
+
+    class _Owner:
+        def __init__(self):
+            self.db = db
+            self.events = SimpleNamespace(execution_engine=None, record=lambda *a, **k: None)
+            self.memory = object()
+            self.response_generator = object()
+
+        def _enqueue_memory_capture(self, *a):
+            legacy_calls.append(a)
+            return [{"job_id": "legacy"}]
+
+    owner = _Owner()
+    seen = {}
+
+    def fake_run(self, request):
+        seen["during"] = self.owner._enqueue_memory_capture(*_turn_args())
+        return "done"
+
+    monkeypatch.setattr(engine_host.HarnessV2Engine, "run", fake_run)
+    engine = engine_host.HarnessV3Engine(owner, runtime=SimpleNamespace(worker_config=None, settings=None, release_process=lambda p: None), profile=profile)
+    assert engine.run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[])) == "done"
+    assert seen["during"] == [{"receipt": "store-1"}] and provider.written and legacy_calls == []
+    assert "_enqueue_memory_capture" not in vars(owner), "instance override removed; the class method is back"
+    assert owner._enqueue_memory_capture(*_turn_args()) == [{"job_id": "legacy"}] and len(legacy_calls) == 1
+
+
+def test_harness_v3_engine_builtin_provider_still_schedules_the_legacy_job(db, monkeypatch, profile):
+    from staffdeck_harness.bridge import engine_host
+    from tests_harness.modules.conftest import FakeSettings
+
+    reg = discover_and_install(ModuleRegistry(), FakeSettings())
+    for slot in SlotName:
+        reg.mark_guarded(slot)
+    reg.seal()
+    monkeypatch.setattr(registry_mod, "_active", reg)
+    legacy_calls = []
+    owner = SimpleNamespace(db=db, events=SimpleNamespace(execution_engine=None, record=lambda *a, **k: None), memory=object(), response_generator=object(), _enqueue_memory_capture=lambda *a: legacy_calls.append(a) or [{"job_id": "legacy"}])
+    seen = {}
+    monkeypatch.setattr(engine_host.HarnessV2Engine, "run", lambda self, r: seen.setdefault("out", self.owner._enqueue_memory_capture(*_turn_args())))
+    engine_host.HarnessV3Engine(owner, runtime=SimpleNamespace(worker_config=None, settings=None, release_process=lambda p: None), profile=profile).run(SimpleNamespace(tenant_id="t1", session_id="s1", agent_id="a1", user_id="u1", attachments=[]))
+    assert seen["out"] == [{"job_id": "legacy"}] and len(legacy_calls) == 1, "built-in provider = the legacy async job, unchanged"
+    assert legacy_calls[0][0].user_id == "u1"
