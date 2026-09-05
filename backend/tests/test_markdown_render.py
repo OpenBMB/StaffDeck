@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import signal
 
+import pytest
+
 from app.channels.markdown_render import (
     CodeBlock,
     Heading,
@@ -76,6 +78,10 @@ def test_parse_inline_code():
     assert code_span.text == "printf"
 
 
+@pytest.mark.skipif(
+    not hasattr(signal, "SIGALRM"),
+    reason="SIGALRM is unavailable on this platform",
+)
 def test_parse_multiple_inline_code_no_infinite_loop():
     """Regression: multiple inline code segments caused an infinite loop because
     the code-placeholder regex searched text[pos:] but used the relative match.end()

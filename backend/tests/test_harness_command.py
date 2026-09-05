@@ -226,7 +226,9 @@ def test_exec_command_allows_newline_separated_statements_inside_sandbox(
     assert argv[-1] == script
 
 
-def test_non_mount_sandbox_rewrites_model_visible_workspace_paths() -> None:
+def test_non_mount_sandbox_rewrites_model_visible_workspace_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     command = (
         "python /workspace/generate.py --input '/workspace/attachments/a.png'\n"
         "printf '%s' /workspace/output.png"
@@ -236,6 +238,7 @@ def test_non_mount_sandbox_rewrites_model_visible_workspace_paths() -> None:
         "python ./generate.py --input './attachments/a.png'\n"
         "printf '%s' ./output.png"
     )
+    monkeypatch.setattr(command_module.sys, "platform", "linux")
     assert command_module._command_for_sandbox_workspace(command, "bubblewrap") == command
 
 
@@ -357,7 +360,11 @@ def test_exec_command_accepts_other_absolute_paths(
     assert result.success is True
 
 
-def test_exec_command_validates_every_line_of_multiline_script(tmp_path: Path) -> None:
+def test_exec_command_validates_every_line_of_multiline_script(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(command_module.sys, "platform", "linux")
     result = _execute(
         tmp_path,
         {"command": "printf safe\nsleep 1 &"},
@@ -776,8 +783,14 @@ def test_bounded_subprocess_caps_output_and_terminates_timeout(tmp_path: Path) -
     assert output.stdout_bytes == 4096
     assert len(output.stdout) == 128
     assert output.output_truncated is True
-    assert output.isolation_mode == "posix_session"
-    assert output.isolation_details == {}
+    if sys.platform == "win32":
+        assert output.isolation_mode in {
+            "windows_job",
+            "windows_process_group_fallback",
+        }
+    else:
+        assert output.isolation_mode == "posix_session"
+        assert output.isolation_details == {}
 
     timeout = command_module._run_bounded_process(
         [sys.executable, "-c", "import time; time.sleep(2)"],

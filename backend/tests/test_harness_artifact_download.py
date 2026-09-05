@@ -153,7 +153,7 @@ def test_publisher_builds_relative_hashed_metadata(tmp_path: Path) -> None:
     workspace = tmp_path / "task"
     artifact = workspace / "outputs" / "report.csv"
     artifact.parent.mkdir(parents=True)
-    artifact.write_text("a,b\n1,2\n", encoding="utf-8")
+    artifact.write_bytes(b"a,b\n1,2\n")
 
     published = publish_harness_artifacts(
         workspace.resolve(),
