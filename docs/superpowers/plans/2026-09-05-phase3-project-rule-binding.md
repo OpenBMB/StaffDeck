@@ -146,4 +146,4 @@
 - Task 1 focused API tests: 5/5 passed; independent review was unavailable after two interrupted attempts, so the contract was additionally checked locally against the backend routes.
 - Task 2 initial order regression: RED at 1 failed/6 passed; order fix GREEN at 9/9. Load-failure regression: RED at 4 failed/9 passed; load-lock fix GREEN at 11/11. Final independent review: PASS.
 - Task 3 related tests: 3 files/19 tests passed under Node.js 20.19.5. Independent integration review: PASS.
-- Full frontend regression: 60 files/271 tests passed. Production build (`tsc -b && vite build`) passed under Node.js 20.19.5. Vite emitted only the existing large-chunk warning.
+- Full frontend regression after the final fix: 60 files/273 tests passed. Production build (`tsc -b && vite build`) passed under Node.js 20.19.5. Vite emitted only the existing large-chunk warning.

@@ -44,6 +44,8 @@
 
 ## Cross-task final verification
 
-- Full frontend regression under Node.js `20.19.5`: 60 test files and 271 tests passed.
+- Full frontend regression after the final fix under Node.js `20.19.5`: 60 test files and 273 tests passed.
 - Frontend production build under Node.js `20.19.5`: `tsc -b && vite build` passed. Vite reported only the pre-existing large-chunk advisory.
+- Backend rule API/binding regression: 32 tests passed when `PYTHONPATH` was explicitly set to this worktree's `backend` directory. Without that explicit path, the junctioned virtual environment resolved the root worktree's installed `app` package and produced a misleading model-import collection error; this is an environment setup issue, not a Phase 3 code failure.
+- Full-repository Ruff was not a clean gate: it reported 2,063 existing diagnostics across unrelated backend files; Phase 3 introduced no backend source changes.
 - This phase changes only the administrator project rule-binding UI/client and one test typing issue; it does not change backend endpoints, knowledge retrieval, OCR, ONLYOFFICE, materials processing, or report generation.
