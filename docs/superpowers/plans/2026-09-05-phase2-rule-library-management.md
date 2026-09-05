@@ -35,23 +35,23 @@
 - `RuleDefinitionRead` exposes the stable key, labels, scope, execution level/method, condition, requirements, source references, sequence, and enabled state.
 - Requests for another tenant, a missing rule set/version, or a published version return the existing stable error conventions and never mutate data.
 
-- [ ] **Step 1: Write failing API tests**
+- [x] **Step 1: Write failing API tests**
 
   Add tests for listing a created rule set, reading its draft rules, replacing a draft rule list, rejecting replacement of a published version, and rejecting a cross-tenant version read.
 
-- [ ] **Step 2: Run the focused tests and verify the expected RED failures**
+- [x] **Step 2: Run the focused tests and verify the expected RED failures**
 
   Run `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_rule_api.py -q` and confirm failures are missing routes/response models, not fixture errors.
 
-- [ ] **Step 3: Implement the minimal routes and read model**
+- [x] **Step 3: Implement the minimal routes and read model**
 
   Reuse `RuleLibraryService.replace_rules`; add tenant-scoped lookup helpers and map `RuleVersionImmutableError`, `RuleAccessDenied`, and not-found cases to the established HTTP errors.
 
-- [ ] **Step 4: Run focused API and Phase 1 regression tests**
+- [x] **Step 4: Run focused API and Phase 1 regression tests**
 
   Run `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_rule_api.py backend/tests/test_rule_service.py backend/tests/test_rule_binding_service.py -q`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   `git add backend/app/api/rules.py backend/app/rules/service.py backend/tests/test_rule_api.py && git commit -m "feat: expose rule library management api"`
 
@@ -74,36 +74,36 @@
 - The UI has a rule-set list, new rule-set dialog, version selector, draft rule editor, add/remove rule controls, validate button, publish button, and read-only published-version view.
 - A failed request leaves the previous server state visible and shows an actionable notification; it never clears a list to pretend that a request succeeded.
 
-- [ ] **Step 1: Write failing API-client and page tests**
+- [x] **Step 1: Write failing API-client and page tests**
 
   Test URL/query/body mapping for every client function; test that the page loads rule sets, opens a selected draft, adds a rule, saves it, validates, and publishes; test that published versions show read-only controls and non-admins are redirected by the route guard.
 
-- [ ] **Step 2: Run the focused Vitest tests and verify RED**
+- [x] **Step 2: Run the focused Vitest tests and verify RED**
 
   Run `npm --prefix frontend-enterprise run test -- src/pages/rules/ruleLibraryApi.test.ts src/pages/rules/RuleLibraryPage.test.tsx` and confirm failures are missing modules/route behavior.
 
-- [ ] **Step 3: Implement the typed client and page**
+- [x] **Step 3: Implement the typed client and page**
 
   Follow existing page patterns (`AuditCasesPage`, `KnowledgePage`, `AppHeader`, `UIButton`, `Dialog`, `Select`, `Textarea`, `notify`) and keep rule JSON editing structured through explicit fields rather than an unvalidated raw JSON textarea.
 
-- [ ] **Step 4: Add the admin sidebar item and route**
+- [x] **Step 4: Add the admin sidebar item and route**
 
   Add `EnterpriseRoute.Rules`, show “规则库” in `SYSTEM_NAV`, mark `/enterprise/rules` selected, and render the page only when `isAdmin` is true.
 
-- [ ] **Step 5: Run focused tests, full frontend tests, and build**
+- [x] **Step 5: Run focused tests, full frontend tests, and build**
 
   Run `npm --prefix frontend-enterprise run test -- src/pages/rules/ruleLibraryApi.test.ts src/pages/rules/RuleLibraryPage.test.tsx`, then `npm --prefix frontend-enterprise run test`, then `npm --prefix frontend-enterprise run build` using the prepared Node.js 20.19.5 runtime.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
   `git add frontend-enterprise/src/pages/rules frontend-enterprise/src/enums/routes.ts frontend-enterprise/src/components/AppSidebar.tsx frontend-enterprise/src/App.tsx && git commit -m "feat: add rule library management page"`
 
 ## Acceptance Checklist
 
-- [ ] An administrator can create a rule set from the browser.
-- [ ] An administrator can create and edit a draft version with structured rule fields.
-- [ ] Validation errors are shown without publishing.
-- [ ] Publishing a version makes it read-only in the page and backend.
-- [ ] Cross-tenant reads and non-admin writes are rejected.
-- [ ] Existing Phase 1 rule and project-data tests remain green.
-- [ ] The frontend build succeeds with the documented Node.js 20.19.5 runtime.
+- [x] An administrator can create a rule set from the browser.
+- [x] An administrator can create and edit a draft version with structured rule fields.
+- [x] Validation errors are shown without publishing.
+- [x] Publishing a version makes it read-only in the page and backend.
+- [x] Cross-tenant reads and non-admin writes are rejected.
+- [x] Existing Phase 1 rule and project-data tests remain green.
+- [x] The frontend build succeeds with the documented Node.js 20.19.5 runtime.
