@@ -13,6 +13,10 @@ ELEMENT_FIXTURE = (
     / "energy_management.json"
 )
 
+MANAGEMENT_SYSTEM_ELEMENT_KEYS = {
+    "能源管理体系": "GB/T 23331-2020",
+}
+
 
 class AuditElement(BaseModel):
     id: str
@@ -25,7 +29,10 @@ class AuditElement(BaseModel):
 
 
 def load_required_elements(management_systems: list[str]) -> list[AuditElement]:
-    selected = set(management_systems)
+    selected = {
+        MANAGEMENT_SYSTEM_ELEMENT_KEYS.get(system, system)
+        for system in management_systems
+    }
     rows = json.loads(ELEMENT_FIXTURE.read_text(encoding="utf-8"))
     result = [
         AuditElement.model_validate(row)

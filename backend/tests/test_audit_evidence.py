@@ -78,6 +78,20 @@ def test_required_elements_are_stable_and_unique() -> None:
     assert all(item.report_section_id for item in elements)
 
 
+def test_required_elements_accept_energy_management_system_ui_value() -> None:
+    elements = load_required_elements(["能源管理体系"])
+
+    assert [item.id for item in elements] == [
+        "4.3",
+        "4.4.2",
+        "4.4.3",
+        "4.4.4",
+        "4.6.1",
+        "4.7.1",
+        "4.8.1",
+    ]
+
+
 class _FakeEvidenceClient:
     def __init__(self) -> None:
         self.chunk_ids: list[str] = []
