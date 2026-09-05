@@ -2933,6 +2933,7 @@
   "调用能力": "Call capability",
   "第 {1} 个动作": "Action {1}",
   "整理任务结果": "Compile task results",
+  "提交步骤结果": "Submit step result",
   "展示 MCP App {1}": "Display MCP App {1}",
   "展示 MCP App": "Display MCP App",
   "隔离视图；加载失败时保留文本结果": "Isolated view. Text results remain available if loading fails.",

@@ -22,9 +22,10 @@ Lifecycle
 Isolation
 ---------
 A process is reused only within the same tenant *and* the same model route (model name +
-thinking policy), because those are baked into the engine's profile patch at boot. Each turn
-still gets a fresh engine *session* (``session_id`` is per turn); the process is shared, the
-conversation is not.
+thinking policy), because those are baked into the engine's profile patch at boot.
+Execution sessions are keyed by tenant, staff, chat and logical general/SOP loop;
+they are reused only when their revision matches the durable checkpoint. Planning
+and reply phases retain separate sessions, never the execution conversation.
 """
 
 from __future__ import annotations
@@ -61,6 +62,7 @@ class PooledProcess:
     created_at: float = field(default_factory=time.monotonic)
     last_used_at: float = field(default_factory=time.monotonic)
     uses: int = 0
+    context_sessions: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @property
     def alive(self) -> bool:

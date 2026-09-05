@@ -106,25 +106,6 @@ PROXY_TOOLS: dict[str, dict[str, Any]] = {
         "description": "列出当前可用的知识库、技能与工具及其 schema。",
         "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["knowledge_base", "general_skill", "tool", "all"]}}},
     },
-    "finish_task": {
-        "operation": "task.finish/v1",
-        "description": (
-            "结束当前任务步骤并向 StaffDeck 提交结构化结果。完成本步骤、需要用户补充信息、"
-            "需要转人工或任务失败时都必须调用一次本工具，然后停止。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "status": {"type": "string", "enum": ["completed", "awaiting_user", "handoff", "failed"]},
-                "reply_fragment": {"type": "string", "description": "给用户的回复正文（可含 [N] 引用）"},
-                "slot_updates": {"type": "object", "description": "本步骤收集到的槽位值"},
-                "next_step_id": {"type": "string", "description": "SOP 下一步 node_id（仅在允许的转移中选择）"},
-                "task_summary": {"type": "string", "description": "一句话总结本步骤做了什么"},
-                "structured_result": {"description": "可选的结构化结果"},
-            },
-            "required": ["status", "reply_fragment"],
-        },
-    },
 }
 
 
@@ -293,8 +274,6 @@ class CapabilityHost:
             return self.invoke(ModuleInvocation(invocation_id=ctx.trace_id or f"hcall_{time.time_ns()}", module_id=operation.split(".")[0], operation=operation, arguments=args, context=ctx, binding_id=str(arguments.get("resource_id") or ""), side_effecting=contract.side_effecting))
         if op == "capability.describe/v1":
             return ModuleResult.ok(self.describe(str(arguments.get("kind") or "all"))), None
-        if op == "task.finish/v1":
-            return self._finish_task(dict(arguments)), None
         args = dict(arguments)
         binding_id: str | None = None
         side_effecting = False
@@ -453,28 +432,6 @@ class CapabilityHost:
 
     # -- internals ----------------------------------------------------------------
 
-    def _finish_task(self, args: dict[str, Any]) -> ModuleResult:
-        status = str(args.get("status") or "completed")
-        if status not in {"completed", "awaiting_user", "handoff", "failed"}:
-            return ModuleResult.fail("INVALID_ARGUMENTS", "status 必须是 completed/awaiting_user/handoff/failed 之一。")
-        next_step = str(args.get("next_step_id") or "").strip() or None
-        if next_step and self.slot.allowed_next_steps and next_step not in self.slot.allowed_next_steps:
-            next_step = None
-        envelope = {
-            "status": status,
-            "reply_fragment": str(args.get("reply_fragment") or "").strip(),
-            "slot_updates": dict(args.get("slot_updates") or {}),
-            "next_step_id": next_step,
-            "task_summary": str(args.get("task_summary") or "").strip(),
-            "structured_result": args.get("structured_result"),
-        }
-        self.slot.finish = envelope
-        # A finished step is a closed step: later tool calls must fail. Closing now (rather than in
-        # the agent's finally) means the *next* model action in the same turn is refused instead of
-        # being executed, and capability calls after this one return ACTIVATION_FENCED.
-        self.slot.closed = True
-        self._emit("harness_v3_task_finished", {"status": status, "next_step_id": next_step})
-        return ModuleResult.ok({"accepted": True, "status": status, "notice": "已记录本步骤结果，请立即停止，不要再调用其他工具。"})
 
     def _fence_resource(self, inv: ModuleInvocation) -> None:
         allowed = self.slot.allowed()

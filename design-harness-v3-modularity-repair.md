@@ -1,5 +1,7 @@
 # StaffDeck / DSH 模块化修订与接入契约
 
+> 后续周期修订：[DSH 与 v2 执行语义对齐](design-harness-v3-execution-parity.md)。上下文不再按用户轮次重建；普通对话不再调用 `finish_task`，SOP 的结果提交移入固定运行控制层。
+
 本文件描述 `codex/dsh-pluggable-runtime` 本次九项审查修复后的实现。
 旧两份设计文档保留为历史方案；发生冲突时以本文件和可执行测试为准。
 

@@ -19,14 +19,14 @@ Turn shape on Harness v3:
 
 1. pre_step hooks build the step prompt (persona + memory + SOP ExecutionSlice
    + TaskRequirement) — one user message to the engine.
-2. The Harness v3 agent loop runs; every tool call is an MCP call into ``CapabilityHost``.
-3. The model ends by calling ``finish_task`` (captured on the ActivationSlot).
-   If it stops without calling it, ``turn_stopping`` hooks may steer once; if
-   it still does not, the assistant text becomes ``reply_fragment`` and the
-   status is inferred (``awaiting_user`` when required slots are missing,
-   otherwise ``completed``).
+2. The Harness v3 agent loop runs with the logical general/SOP loop's context;
+   business calls use ``CapabilityHost``, fixed controls use ``StepCompletionPort``.
+3. Ordinary conversation returns native final output; SOP steps submit structured
+   results through ``submit_step_result``. ``turn_stopping`` hooks supervise both
+   paths, and v2's result normalizer retains the existing state semantics.
 4. ``post_tool`` hooks collected receipts/citations; artifacts come from the
-   sandbox facade's workspace discovery.
+   sandbox facade's workspace discovery. Public history is checkpointed across
+   user turns; cold workers reconstruct it without replaying old permissions.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from sqlmodel import Session
+from pydantic import ValidationError
 
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.harness_agent import HarnessExecutionCancelled
@@ -177,9 +178,9 @@ class IdlePhaseHost:
     trace = None
 
     def tool_schemas(self) -> list[dict[str, Any]]:
-        from staffdeck_harness.capabilities.host import proxy_tool_schemas
+        from staffdeck_harness.bridge.control import all_tool_schemas
 
-        return proxy_tool_schemas()
+        return all_tool_schemas()
 
     def invoke_proxy(self, proxy_name: str, arguments: Any, ctx: Any) -> tuple[ModuleResult, None]:
         return ModuleResult.fail("ACTIVATION_FENCED", "当前没有正在执行的任务步骤，不能调用能力"), None
@@ -250,9 +251,16 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
         "# 执行规则\n"
         "- 只用 mcp__staffdeck__* 工具获取信息或执行动作；不要臆造工具结果。\n"
         "- 知识检索结果带 [N] 标签，引用时保留标签。\n"
-        "- 完成、需要用户补充信息、需要转人工或失败时，必须调用 mcp__staffdeck__finish_task 提交结果，然后停止。\n"
-        "- reply_fragment 是直接给用户看的回复，用用户的语言写。"
+        + ("- 这是 SOP 步骤：使用运行控制接口 mcp__staffdeck__submit_step_result 提交结构化结果，然后停止。reply_fragment 是给用户的回复。\n"
+           if requirement.kind == "sop" else
+           "- 这是普通对话：直接输出给用户的最终回复；需要补充信息时直接提问，不调用结束或步骤提交接口。\n")
     )
+    if requirement.kind == "conversation":
+        parts.append('如需表达等待用户、转人工、失败或槽位更新，可直接在最终输出返回 v2 结果报文：'
+                     '{"action":"finish","status":"awaiting_user|handoff|failed|completed",'
+                     '"reply_fragment":"给用户的回复","slot_updates":{}}。这不是工具调用。')
+    if requirement.current_user_message:
+        parts.append("# 本次用户输入\n" + requirement.current_user_message)
     return "\n\n".join(parts)
 
 
@@ -312,6 +320,13 @@ class HarnessV3TaskAgent:
     ) -> TaskExecutionResult:
         trace = trace_sink or self.trace_sink or (lambda *_: None)
         t = self.turn
+        from staffdeck_harness.runtime.execution_context import ExecutionContext
+        from staffdeck_harness.bridge.control import ExecutionHost, ExecutionBudgetExceeded
+
+        context = ExecutionContext.restore(requirement, checkpoint, tenant_id=t.tenant_id,
+                                           agent_id=t.agent_id, session_id=t.session_id)
+        self._step_deadline = step_deadline_monotonic
+        self._native_result = None
         # The engine's ``is_cancelled`` closes over its ORM session and is only
         # safe on the engine thread. MCP callbacks arrive on worker threads, so
         # the host gets an id-based check backed by its own DB session; the
@@ -371,7 +386,13 @@ class HarnessV3TaskAgent:
         hook_lock = threading.Lock()
         host.hooks = hooks
         self._host = host
-        state = PipelineState(snapshot=t.snapshot, memory_context=list(t.memory_context), session_slots=dict(t.session_slots), active_sop_id=sop_id, active_node_id=step_id)
+        host.results = list(context.capability_results)
+        host.citations = list(context.citations)
+        host.evidence = list(context.evidence)
+        restored_results = len(host.results)
+        execution_host = ExecutionHost(host, requirement, max_actions=max_actions)
+        self._execution_host = execution_host
+        state = PipelineState(snapshot=t.snapshot, memory_context=list(t.memory_context), session_slots=dict(requirement.known_slots), active_sop_id=sop_id, active_node_id=step_id)
         if t.module_registry is not None:
             from staffdeck_harness.composition.compiler import compile_hooks
 
@@ -402,12 +423,24 @@ class HarnessV3TaskAgent:
         workspace = host._workspace_root(inv_ctx("ws"))
         actions = 0
         pooled = self._pooled
+        engine_session = ""
+
+        def finish(result):
+            result.capability_results = result.capability_results or list(host.results)
+            result.citations = result.citations or list(host.citations)
+            result.evidence_results = result.evidence_results or list(host.evidence)
+            artifacts = [*context.artifacts, *result.artifacts, *host.discover_artifacts(inv_ctx("checkpoint-artifacts"))]
+            result.artifacts = list({json.dumps(item, sort_keys=True, default=str): item for item in artifacts}.values())[-20:]
+            result.loop_checkpoint = context.complete(pooled if engine_session else None, engine_session,
+                                                      result, host.results[restored_results:])
+            return result
+
         try:
             # 1. pre_step
             ctx1 = HookContext(point="pre_step", tenant_id=t.tenant_id, agent_id=t.agent_id, session_id=t.session_id, turn_id=t.turn_id, step=1, snapshot_id=t.snapshot.snapshot_id, payload={"requirement": requirement.model_dump(mode="json")}, generation=t.generation)
             pre = self.pipeline.run("pre_step", ctx1, state)
             if pre.kind == "deny":
-                return self._failed(requirement, "PRE_STEP_DENIED", pre.reason or "pre-step denied", actions=0)
+                return finish(self._failed(requirement, "PRE_STEP_DENIED", pre.reason or "pre-step denied", actions=0))
             prompt = _step_prompt(requirement, state, list(pre.contexts), t.attachments_text)
             notice = _attachment_notice(list(image_payloads or []) or list(t.image_payloads))
             content_blocks = [{"type": "text", "text": prompt + ("\n\n" + notice if notice else "")}]
@@ -418,33 +451,55 @@ class HarnessV3TaskAgent:
             if pooled is None:
                 pooled = self.runtime.acquire_process(cfg, t.tenant_id, cwd=workspace)
                 self._pooled = pooled
-            self.runtime.registry.rebind(pooled.token, host, inv_ctx)
+            self.runtime.registry.rebind(pooled.token, execution_host, inv_ctx)
             self._activation_token = pooled.token
             proc = pooled.process
             self._process = proc
             trace("harness_v3_frame_bound", {"model": model, "model_config_id": getattr(model_config, "id", None), "via": "staffdeck-model-gateway", "thinking": thinking or "provider_default", "reasoning_effort": effort or "provider_default", "workspace": str(workspace), "process_uses": pooled.uses})
 
             # 3. run turn (+ optional single steer)
-            session_id = f"sd-{t.session_id}-{t.turn_id}-{t.task_frame_id}"
-            events, final_text, finish_reason = self._run_engine_turn(proc, session_id, content_blocks, cancelled, trace, finished=lambda: slot.finish is not None)
+            engine_session, recovery = context.prepare(pooled)
+            if recovery:
+                content_blocks.insert(0, {"type": "text", "text": recovery})
+            trace("harness_v3_context_bound", {"execution_loop_id": context.logical_id,
+                  "engine_session_id": engine_session, "restored": bool(recovery),
+                  "history_entries": len(context.history), "loop_kind": requirement.kind})
+            events, final_text, finish_reason = self._run_engine_turn(proc, engine_session, content_blocks, cancelled, trace)
+            if execution_host.exhausted:
+                raise ExecutionBudgetExceeded("action budget exhausted")
+            if requirement.kind == "conversation":
+                from staffdeck_harness.runtime.completion import native_result
+
+                self._native_result = native_result(final_text)
+                if self._native_result is not None:
+                    final_text = self._native_result["reply_fragment"]
             actions = sum(1 for e in events if e.get("type") == "tool/call")
             for supervision_attempt in range(2):
                 final_text = str((slot.finish or {}).get("reply_fragment") or final_text)
                 ctx_stop = HookContext(point="turn_stopping", tenant_id=t.tenant_id, agent_id=t.agent_id, session_id=t.session_id, turn_id=t.turn_id, step=1, snapshot_id=t.snapshot.snapshot_id, payload={"final_text": final_text, "finish_reason": finish_reason}, generation=t.generation)
                 stop = self.pipeline.run("turn_stopping", ctx_stop, state)
                 if stop.kind == "deny":
-                    return self._failed(requirement, "OUTPUT_DENIED", stop.reason or "output denied", actions=actions)
+                    return finish(self._failed(requirement, "OUTPUT_DENIED", stop.reason or "output denied", actions=actions))
+                if requirement.kind == "sop" and slot.finish is None and stop.kind == "pass":
+                    if supervision_attempt == 1:
+                        return finish(self._failed(requirement, "HARNESS_ACTION_INVALID", "SOP 步骤未提交有效的结构化结果。", actions=actions))
+                    stop = HookDecision(kind="steer", steer_message="请使用 mcp__staffdeck__submit_step_result 提交当前步骤结果。")
                 if stop.kind == "steer" and supervision_attempt == 1:
-                    return self._failed(requirement, "OUTPUT_DENIED", "output still requires revision after supervision", actions=actions)
+                    return finish(self._failed(requirement, "OUTPUT_DENIED", "output still requires revision after supervision", actions=actions))
                 if stop.kind == "steer" and stop.steer_message and not cancelled():
                     slot.finish = None
                     slot.closed = False
                     trace("harness_v3_turn_steered", {"reason": stop.reason, "message": stop.steer_message[:200]})
-                    events2, final_text2, finish_reason = self._run_engine_turn(proc, session_id, [{"type": "text", "text": stop.steer_message + "\n\n完成后调用 mcp__staffdeck__finish_task。"}], cancelled, trace, finished=lambda: slot.finish is not None)
+                    suffix = "\n完成后提交 SOP 步骤结果。" if requirement.kind == "sop" else "\n请直接返回修正后的回复。"
+                    events2, final_text2, finish_reason = self._run_engine_turn(proc, engine_session, [{"type": "text", "text": stop.steer_message + suffix}], cancelled, trace)
                     events.extend(events2)
                     actions += sum(1 for e in events2 if e.get("type") == "tool/call")
                     if final_text2.strip():
                         final_text = final_text2
+                        if requirement.kind == "conversation":
+                            self._native_result = native_result(final_text)
+                            if self._native_result is not None:
+                                final_text = self._native_result["reply_fragment"]
                     continue
                 if stop.handoff:
                     slot.finish = {"status": "handoff", "reply_fragment": final_text, "slot_updates": {}, "next_step_id": None, "task_summary": "SOP 步骤请求转人工", "structured_result": None}
@@ -452,7 +507,16 @@ class HarnessV3TaskAgent:
 
             # 4. assemble result
             artifacts = host.discover_artifacts(inv_ctx("artifacts"))
-            return self._result(requirement, slot, state, final_text, finish_reason, actions, artifacts, events)
+            actions = execution_host.actions + (0 if slot.finish is not None else 1)
+            return finish(self._result(requirement, slot, state, final_text, finish_reason, actions, artifacts, events))
+        except ExecutionBudgetExceeded:
+            return finish(TaskExecutionResult(task_frame_id=requirement.task_frame_id, status="action_budget",
+                          reply_fragment="本次执行预算已用完，已保存执行上下文。", action_count=execution_host.actions,
+                          task_summary="等待后续推进"))
+        except TimeoutError as exc:
+            return finish(self._failed(requirement, "HARNESS_STEP_TIMEOUT", str(exc), actions=execution_host.actions))
+        except ValidationError as exc:
+            return finish(self._failed(requirement, "HARNESS_ACTION_INVALID", str(exc), actions=execution_host.actions))
         except HarnessExecutionCancelled:
             raise
         except Exception as exc:
@@ -460,7 +524,7 @@ class HarnessV3TaskAgent:
                 raise HarnessExecutionCancelled("Harness v3 turn cancelled") from exc
             logger.exception("Harness v3 task agent failed")
             trace("harness_v3_turn_failed", {"error": str(exc)})
-            return self._failed(requirement, "HARNESS_V3_ENGINE_ERROR", str(exc), actions=actions)
+            return finish(self._failed(requirement, "HARNESS_V3_ENGINE_ERROR", str(exc), actions=actions))
         finally:
             slot.closed = True
             if pooled is not None:
@@ -516,26 +580,38 @@ class HarnessV3TaskAgent:
 
     def _run_engine_turn(self, proc, session_id, content_blocks, cancelled, trace, *, finished=None):
         from staffdeck_harness.bridge.session_runner import run_session
+        from staffdeck_harness.bridge.control import ExecutionBudgetExceeded
+        import time
 
-        return run_session(proc, session_id, content_blocks, cancelled, trace,
+        def check():
+            if cancelled():
+                return True
+            if self._execution_host.exhausted:
+                raise ExecutionBudgetExceeded("action budget exhausted")
+            if self._step_deadline is not None and time.monotonic() >= self._step_deadline:
+                raise TimeoutError("SOP step deadline expired")
+            return False
+
+        return run_session(proc, session_id, content_blocks, check, trace,
                            tenant_id=self.turn.tenant_id, host_session_id=self.turn.session_id,
                            timeout_seconds=self.runtime.worker_config.request_timeout_seconds or 600)
 
     def _result(self, requirement: TaskRequirement, slot: ActivationSlot, state: PipelineState, final_text: str, finish_reason: str | None, actions: int, artifacts: list[dict[str, Any]], events: list[dict[str, Any]]) -> TaskExecutionResult:
-        fin = slot.finish
+        from app.core.harness_agent import HarnessAction, finish_execution_result
+        from staffdeck_harness.runtime.completion import native_result
+
+        fin = slot.finish or (getattr(self, "_native_result", None) or native_result(final_text) if requirement.kind == "conversation" else None)
         if fin is None:
+            if requirement.kind == "sop" or not final_text.strip():
+                return self._failed(requirement, "HARNESS_ACTION_INVALID", "缺少有效的执行结果。", actions=actions)
             merged = {**requirement.known_slots}
             missing = [f for f in requirement.required_slots if merged.get(f) in (None, "", [], {})]
-            status = "awaiting_user" if missing else ("completed" if finish_reason in (None, "completed", "end_turn", "stop") else "failed")
+            status = "awaiting_user" if missing else (requirement.default_result_status if finish_reason in (None, "completed", "end_turn", "stop") else "failed")
             fin = {"status": status, "reply_fragment": final_text.strip(), "slot_updates": {}, "next_step_id": None, "task_summary": "Harness v3 turn ended without finish_task", "structured_result": None}
         reply = str(fin.get("reply_fragment") or "").strip() or final_text.strip()
-        # Mirror legacy _finish_result's handoff-node rule.
-        step = (requirement.sop_context or {}).get("step") or {}
-        if str(step.get("type") or "") == "handoff" and not fin.get("next_step_id"):
-            fin["status"] = "handoff"
         host = self._host
         results = list(host.results) if host is not None else []
-        if fin["status"] == "completed":
+        if fin.get("status") in {None, "completed"}:
             succeeded = {r.get("tool_name") for r in results if r.get("success")}
             missing = [name for name in requirement.required_capability_names if name not in succeeded]
             kb_ids = {str(c.get("knowledge_base_id")) for c in (host.citations if host else []) if c.get("knowledge_base_id")}
@@ -546,21 +622,11 @@ class HarnessV3TaskAgent:
             missing.extend(f"knowledge_search:{rid}" for rid in requirement.required_knowledge_base_ids if rid not in kb_ids)
             if missing:
                 return self._failed(requirement, "REQUIRED_CAPABILITY_MISSING", "未成功完成必需能力：" + "、".join(missing), actions=actions)
-        return TaskExecutionResult(
-            task_frame_id=requirement.task_frame_id,
-            status=fin["status"],
-            reply_fragment=reply,
-            slot_updates=dict(fin.get("slot_updates") or {}),
-            next_step_id=fin.get("next_step_id"),
-            citations=list(host.citations) if host is not None else self._citations(events, state),
-            evidence_results=list(host.evidence) if host is not None else self._evidence(events),
-            capability_results=results,
-            artifacts=list(artifacts),
-            task_summary=str(fin.get("task_summary") or ""),
-            action_count=max(1, actions),
-            structured_result=fin.get("structured_result"),
-            loop_checkpoint={"version": 1, "engine": "harness_v3", "task_frame_id": requirement.task_frame_id, "snapshot_id": slot.snapshot.snapshot_id, "artifacts": list(artifacts)[-20:]},
-        )
+        action = HarnessAction.model_validate({**fin, "action": "finish", "reply_fragment": reply})
+        return finish_execution_result(requirement, action,
+            list(host.citations) if host is not None else self._citations(events, state),
+            list(host.evidence) if host is not None else self._evidence(events),
+            results, list(artifacts), action_count=max(1, actions))
 
     @staticmethod
     def _tool_results(events: list[dict[str, Any]]) -> list[dict[str, Any]]:

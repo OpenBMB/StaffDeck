@@ -42,6 +42,8 @@ TraceSink = Callable[[str, dict[str, Any]], None]
 
 @dataclass
 class PhaseHost:
+    def model_tool_names(self):
+        return set()
     """A phase binding: the model gateway works, capability calls are refused (tools stay listed)."""
 
     model_config: Any
@@ -52,9 +54,9 @@ class PhaseHost:
     evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def tool_schemas(self) -> list[dict[str, Any]]:
-        from staffdeck_harness.capabilities.host import proxy_tool_schemas
+        from staffdeck_harness.bridge.control import all_tool_schemas
 
-        return proxy_tool_schemas()
+        return all_tool_schemas()
 
     def invoke_proxy(self, proxy_name: str, arguments: Any, ctx: Any) -> tuple[ModuleResult, None]:
         hint = "请直接输出符合 output_contract 的 JSON object，不要调用工具。" if self.phase == "plan" else "请直接输出回复正文，不要调用工具。"

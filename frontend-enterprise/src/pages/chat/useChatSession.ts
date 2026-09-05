@@ -101,6 +101,7 @@ import {
   mergeTurnTraceSnapshot,
   modelStorageKey,
   normalizeMessageText,
+  normalizePersistedTraceLine,
   normalizeSessionEventForStream,
   normalizeTraceSkill,
   normalizeTraceTool,
@@ -1292,7 +1293,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         rows.forEach((row) => {
           const hasFinalAssistant = hasAssistantMessageForTurn(slot, row.turn_id);
           const hasAssistantCarrier = hasAssistantCarrierForTurn(slot, row.turn_id);
-          const traceLines = row.lines.map((line) => ({
+          const traceLines = row.lines.map((line) => normalizePersistedTraceLine({
             id: line.id,
             kind: line.kind,
             text: line.text,

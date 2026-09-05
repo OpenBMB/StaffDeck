@@ -12,6 +12,7 @@ import {
   harnessWorkspaceArtifacts,
   knowledgeCitations,
   messageAttachments,
+  normalizePersistedTraceLine,
   renderInlineMarkdown,
   scheduledDraftForMessage,
   shouldDeferPersistedEventToLiveStream,
@@ -30,6 +31,16 @@ function message(patch: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 describe('chat history consumer contract', () => {
+  it('normalizes persisted completion labels without rewriting business tool traces', () => {
+    const oldControl = { id: 'old', kind: 'tool' as const,
+      text: '调用能力 mcp__staffdeck__finish_task', state: 'completed' as const };
+    expect(normalizePersistedTraceLine(oldControl)).toMatchObject({
+      id: 'old', kind: 'decision', text: '提交步骤结果', state: 'completed',
+    });
+    const business = { ...oldControl, text: '调用能力 general_skill.weather' };
+    expect(normalizePersistedTraceLine(business)).toBe(business);
+  });
+
   it('keeps inline citations but removes duplicate trailing citation summaries', () => {
     const content = [
       '请假制度按员工手册执行[1]，办公用品按行政手册执行[5]。',
@@ -378,6 +389,19 @@ describe('chat history consumer contract', () => {
       text: '任务执行完成',
       state: 'completed',
     });
+  });
+
+  it('renders runtime completion controls separately from business capabilities', () => {
+    for (const toolName of ['mcp__staffdeck__finish_task', 'mcp__staffdeck__submit_step_result']) {
+      const line = harnessEventTraceLine('harness_action_created', {
+        task_frame_id: 'frame-sop', action: 'tool', tool_name: toolName,
+      });
+      expect(line).toMatchObject({ kind: 'decision', text: '提交步骤结果' });
+      expect(line?.text).not.toContain('调用能力');
+    }
+    expect(harnessEventTraceLine('harness_action_created', {
+      action: 'finish', control: 'submit_step_result',
+    })).toMatchObject({ kind: 'decision', text: '提交步骤结果' });
   });
 
   it('keeps a switched SOP visible while it waits for user input', () => {

@@ -118,6 +118,13 @@ class ModelGateway:
             return _error(400, "UNSUPPORTED_PROTOCOL", f"Harness v3 无法使用该模型协议：{exc}")
 
         wire = self._wire_request(client, model_config, body)
+        allowed_names = getattr(act.host, "model_tool_names", None)
+        if callable(allowed_names) and "tools" in wire:
+            allowed = {f"mcp__staffdeck__{name}" for name in allowed_names()}
+            wire["tools"] = [tool for tool in wire["tools"] if (tool.get("function") or {}).get("name") in allowed]
+            if not wire["tools"]:
+                wire.pop("tools")
+                wire.pop("tool_choice", None)
         stream = bool(body.get("stream", True))
         driver = getattr(client, "driver", None)
         trace = getattr(act.host, "trace", None)

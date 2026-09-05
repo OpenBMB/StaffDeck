@@ -93,13 +93,16 @@ def relay_event(ev: Mapping[str, Any]) -> list[RuntimeEvent]:
         if text:
             out.append(("stream_delta", {"content": text, "execution_engine": "harness_v3"}))
     elif kind == "tool/call":
+        from staffdeck_harness.bridge.control import is_control_tool
+
         args = data.get("arguments")
         if isinstance(args, str):
             try:
                 args = json.loads(args)
             except Exception:
                 pass
-        out.append(("harness_action_created", {"action": "tool", "tool_name": data.get("name"), "arguments": args, "call_id": data.get("callId"), "execution_engine": "harness_v3"}))
+        control = is_control_tool(str(data.get("name") or ""))
+        out.append(("harness_action_created", {"action": "finish" if control else "tool", "tool_name": data.get("name"), "arguments": args, "call_id": data.get("callId"), "execution_engine": "harness_v3", **({"control": "submit_step_result"} if control else {})}))
     elif kind == "tool/result":
         message = data.get("message") if isinstance(data.get("message"), dict) else {}
         for block in message.get("content") or []:
@@ -124,9 +127,17 @@ class SessionEventRelay:
         self.session_id = session_id
         self.trace = trace
         self.count = 0
+        self.control_calls: set[str] = set()
 
     def __call__(self, ev: Mapping[str, Any]) -> None:
+        from staffdeck_harness.bridge.control import is_control_tool
+
+        data = ev.get("data") or {}
+        if ev.get("type") == "tool/call" and is_control_tool(str(data.get("name") or "")):
+            self.control_calls.add(str(data.get("callId") or ""))
         for event_type, payload in relay_event(ev):
+            if event_type == "harness_tool_result" and str(payload.get("call_id") or "") in self.control_calls:
+                event_type = "harness_control_result"
             self.count += 1
             if self.trace:
                 try:

@@ -767,6 +767,11 @@ def _finish_result(
     )
 
 
+def finish_execution_result(*args, **kwargs) -> TaskExecutionResult:
+    """Public v2 result normalization shared by pluggable execution engines."""
+    return _finish_result(*args, **kwargs)
+
+
 def _extend_dict_list(target: list[dict[str, Any]], value: object) -> None:
     if not isinstance(value, list):
         return
@@ -967,6 +972,11 @@ def _transcript_for_model(
     return [
         entry for index, entry in projected if index in selected_indexes
     ]
+
+
+def project_execution_history(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Public checkpoint projection shared with alternative execution engines."""
+    return _transcript_for_model(transcript)
 
 
 def _is_general_skill_instruction_entry(entry: dict[str, Any]) -> bool:

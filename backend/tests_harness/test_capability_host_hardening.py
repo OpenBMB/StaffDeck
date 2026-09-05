@@ -232,7 +232,12 @@ def test_finish_task_closes_slot_and_fences_next_call(db, monkeypatch):
     _install_registry(monkeypatch, provider)
     snap = CompositionCompiler(hooks=()).compile(_staff([_cap("tool", tool.id)]))
     host = _host(db, snap)
-    fin, _ = host.invoke_proxy("finish_task", {"status": "completed", "reply_fragment": "done"}, _ctx(trace_id="hcall_fin"))
+    from staffdeck_harness.bridge.control import ExecutionHost
+    from app.core.task_request_compiler import TaskRequirement
+
+    runtime = ExecutionHost(host, TaskRequirement(task_frame_id="tf1", kind="sop", goal="finish"))
+    assert not host.invoke_proxy("finish_task", {}, _ctx())[0].success, "completion is not a capability"
+    fin, _ = runtime.invoke_proxy("submit_step_result", {"status": "completed", "reply_fragment": "done"}, _ctx(trace_id="hcall_fin"))
     assert fin.success and host.slot.finish["status"] == "completed"
     assert host.slot.closed is True
     later, receipt = host.invoke_proxy("tool_invoke", {"tool_id": tool.id, "arguments": {}}, _ctx(trace_id="hcall_late"))

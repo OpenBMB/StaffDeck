@@ -100,6 +100,53 @@ class TaskFrameStore:
             loop.finished_at = None
         self.db.add(loop)
 
+    def execution_checkpoint(self, row, loop):
+        """Upgrade the old DSH marker-only checkpoint from this loop's public audit data.
+
+        This is a read projection, not a state transition. It never mixes another SOP's
+        runs, and cannot recover private engine reasoning that was never stored by SD.
+        """
+        cp = dict(loop.checkpoint_json or {})
+        if cp.get("engine") not in {"harness_v3", "dsh"} or cp.get("transcript"):
+            return cp
+        from app.db.models import Message
+        from app.core.harness_agent import project_execution_history
+
+        runs = self.db.exec(select(HarnessRunRecord).where(
+            HarnessRunRecord.tenant_id == row.tenant_id,
+            HarnessRunRecord.session_id == row.session_id,
+            HarnessRunRecord.agent_loop_id == loop.id,
+            HarnessRunRecord.status != "running",
+        ).order_by(HarnessRunRecord.created_at.desc()).limit(20)).all()
+        history = []
+        for run in reversed(runs):
+            message = self.db.get(Message, run.source_turn_id)
+            if message and message.tenant_id == row.tenant_id and message.session_id == row.session_id:
+                history.append({"role": "user", "content": message.content})
+            calls = self.db.exec(select(HarnessInvocationRecord).where(
+                HarnessInvocationRecord.tenant_id == row.tenant_id,
+                HarnessInvocationRecord.session_id == row.session_id,
+                HarnessInvocationRecord.run_id == run.id,
+            ).order_by(HarnessInvocationRecord.created_at)).all()
+            for call in calls:
+                result = dict(call.response_cache_json or call.result_json or {})
+                history.append({"role": "tool", "tool_name": call.tool_name, "result": result})
+            result = dict(run.result_json or {})
+            history.append({"role": "assistant", "content": result.get("reply_fragment", ""),
+                            "known_slots": (run.task_requirement_json or {}).get("known_slots", {}),
+                            "slot_updates": result.get("slot_updates", {}), "status": run.status})
+        cp["transcript"] = project_execution_history(history)
+        cp["history_recovery_source"] = "legacy_public_runs"
+        if runs:
+            latest = runs[0]
+            result = dict(latest.result_json or {})
+            step = ((latest.task_requirement_json or {}).get("sop_context") or {}).get("step") or {}
+            cp["task_frame_id"] = latest.task_id
+            cp["step_id"] = step.get("node_id") or step.get("step_id")
+            for key in ("citations", "evidence_results", "capability_results"):
+                cp[key] = list(result.get(key) or [])
+        return cp
+
     def finish_agent_loop_for_frame(
         self,
         row: HarnessTaskFrameRecord,

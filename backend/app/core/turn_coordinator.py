@@ -909,7 +909,7 @@ class TurnCoordinator:
     ) -> tuple[TaskExecutionResult, StepAgentResult]:
         self.store.mark_running(row)
         agent_loop = self.store.ensure_agent_loop(row)
-        loop_checkpoint = dict(agent_loop.checkpoint_json or {})
+        loop_checkpoint = self.store.execution_checkpoint(row, agent_loop)
         self.active_frame_id = row.id
         self.active_frame_lease_owner = row.lease_owner
         self.active_frame_attempt_no = row.attempt_no
@@ -1002,6 +1002,10 @@ class TurnCoordinator:
                     model_manifest,
                     forced,
                 )
+            requirement = requirement.model_copy(update={
+                "execution_loop_id": agent_loop.id,
+                "current_user_message": request.message,
+            })
             self.store.save_requirement(
                 row,
                 requirement.model_dump(mode="json"),

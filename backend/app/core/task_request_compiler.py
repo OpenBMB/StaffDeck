@@ -56,6 +56,9 @@ class TaskRequirement(BaseModel):
     task_frame_id: str
     kind: Literal["sop", "conversation"]
     goal: str
+    execution_loop_id: str = ""
+    current_user_message: str = ""
+    default_result_status: Literal["completed", "awaiting_user", "handoff"] = "completed"
     source_user_message: str = ""
     out_of_scope_task_intents: list[str] = Field(default_factory=list)
     requirements: list[str] = Field(default_factory=list)
@@ -169,6 +172,7 @@ class TaskRequestCompiler:
             task_frame_id=str(frame.task_id or ""),
             kind=frame.kind,
             goal=goal,
+            default_result_status="handoff" if frame.decision == "handoff_human" else "awaiting_user" if frame.decision == "clarify" else "completed",
             source_user_message=str(source_user_message or "").strip()[:4_000],
             out_of_scope_task_intents=_unique(
                 [str(item or "") for item in out_of_scope_task_intents or []]

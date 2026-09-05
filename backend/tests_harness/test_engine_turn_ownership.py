@@ -105,7 +105,7 @@ def test_pool_close_all_releases_tokens():
 def test_activation_rebind_swaps_host_and_idle_placeholder_refuses_tools():
     reg = ActivationRegistry()
     act = reg.register(IdlePhaseHost(), None, token="tok")
-    assert reg.get("tok") is act and [t["name"] for t in act.host.tool_schemas()] == ["capability_invoke", "knowledge_search", "general_skill_read", "tool_invoke", "sandbox_execute", "capability_describe", "finish_task"]
+    assert reg.get("tok") is act and [t["name"] for t in act.host.tool_schemas()] == ["capability_invoke", "knowledge_search", "general_skill_read", "tool_invoke", "sandbox_execute", "capability_describe", "submit_step_result"]
     assert act.host.invoke_proxy("finish_task", {}, None)[0].error["code"] == "ACTIVATION_FENCED"
     assert reg.live_count() == 0, "an idle placeholder is not a live turn"
 

@@ -87,6 +87,7 @@ const TOOL_LABEL: Record<string, string> = {
   tool_invoke: '调用工具',
   sandbox_execute: '执行命令 / 文件',
   finish_task: '提交结果',
+  submit_step_result: '提交步骤结果',
   exec_command: '执行命令',
   read_file: '读取文件',
   write_file: '写入文件',

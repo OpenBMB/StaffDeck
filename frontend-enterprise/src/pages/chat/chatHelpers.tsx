@@ -1533,6 +1533,18 @@ export function harnessEventTraceLine(
   }
   if (eventName === 'harness_action_created') {
     const action = typeof data.action === 'string' ? data.action : '';
+    const isStepSubmission = data.control === 'submit_step_result'
+      || toolName === 'mcp__staffdeck__submit_step_result'
+      || toolName === 'mcp__staffdeck__finish_task';
+    if (isStepSubmission) {
+      return {
+        id: `harness_finish_${frameId}_${iteration || 'current'}`,
+        kind: 'decision',
+        text: '提交步骤结果',
+        state: 'completed',
+        icon: 'advance',
+      };
+    }
     if (action === 'tool') {
       return {
         id: `harness_action_${frameId}_${iteration || 'current'}`,
@@ -1736,6 +1748,15 @@ export function traceSummary(trace: TurnTrace, lines: TraceLine[]): { text: stri
     return { text: '执行遇到问题', state: 'failed' };
   }
   return { text: '执行记录', state: 'completed' };
+}
+
+export function normalizePersistedTraceLine(line: TraceLine): TraceLine {
+  // Old snapshots store rendered text rather than the original control event.
+  // Normalize only the exact legacy labels, keeping the underlying audit intact.
+  if (/^调用能力 mcp__staffdeck__(?:finish_task|submit_step_result)$/.test(line.text)) {
+    return { ...line, kind: 'decision', text: '提交步骤结果', icon: 'advance' };
+  }
+  return line;
 }
 
 export function traceDetails(lines: TraceLine[]): TraceLine[] {
