@@ -5,7 +5,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.models import AuditCase, AuditCaseMaterial
+from app.db.models import (
+    AuditCase,
+    AuditCaseDocument,
+    AuditCaseDocumentVersion,
+    AuditCaseMaterial,
+)
 
 
 class AuditCaseCreate(BaseModel):
@@ -134,6 +139,58 @@ class AuditCaseMaterialRead(BaseModel):
     updated_at: datetime
 
 
+class AuditCaseDocumentCreate(BaseModel):
+    document_key: str = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=1, max_length=200)
+    document_type: str = Field(min_length=1, max_length=100)
+    zone: str = Field(min_length=1, max_length=100)
+    content_format: str
+    content: str
+    change_note: str | None = Field(default=None, max_length=500)
+    source_material_id: str | None = None
+
+
+class AuditCaseDocumentVersionCreate(BaseModel):
+    expected_version: int = Field(ge=1)
+    content_format: str
+    content: str
+    change_note: str | None = Field(default=None, max_length=500)
+
+
+class AuditCaseDocumentVersionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    document_id: str
+    version: int
+    content_format: str
+    content: str
+    content_sha256: str
+    characters: int
+    change_note: str | None = None
+    created_by_user_id: str
+    created_at: datetime
+
+
+class AuditCaseDocumentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    audit_case_id: str
+    document_key: str
+    title: str
+    document_type: str
+    zone: str
+    status: str
+    active_version_id: str | None = None
+    source_material_id: str | None = None
+    archive_reason: str | None = None
+    created_by_user_id: str
+    updated_by_user_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class AuditCaseCoverageRead(BaseModel):
     current_material_count: int
     successful_material_count: int
@@ -213,6 +270,22 @@ class AuditCaseReadOnly(RuntimeError):
     pass
 
 
+class AuditCaseDocumentConflict(RuntimeError):
+    pass
+
+
+class AuditCaseDocumentFormatError(ValueError):
+    pass
+
+
+class AuditCaseDocumentNotFound(LookupError):
+    pass
+
+
+class AuditCaseDocumentReadOnly(RuntimeError):
+    pass
+
+
 class AuditMaterialProcessingError(RuntimeError):
     pass
 
@@ -277,3 +350,13 @@ def audit_case_material_read(row: AuditCaseMaterial) -> AuditCaseMaterialRead:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def audit_case_document_read(row: AuditCaseDocument) -> AuditCaseDocumentRead:
+    return AuditCaseDocumentRead.model_validate(row)
+
+
+def audit_case_document_version_read(
+    row: AuditCaseDocumentVersion,
+) -> AuditCaseDocumentVersionRead:
+    return AuditCaseDocumentVersionRead.model_validate(row)

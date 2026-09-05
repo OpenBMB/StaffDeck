@@ -114,6 +114,54 @@ class AuditCaseMaterialChunk(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class AuditCaseDocument(SQLModel, table=True):
+    __tablename__ = "audit_case_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "audit_case_id",
+            "document_key",
+            name="uq_audit_case_document_key",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditdoc"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    document_key: str = Field(index=True)
+    title: str
+    document_type: str = Field(index=True)
+    zone: str = Field(index=True)
+    status: str = Field(default="active", index=True)
+    active_version_id: Optional[str] = Field(default=None, index=True)
+    source_material_id: Optional[str] = Field(default=None, index=True)
+    archive_reason: Optional[str] = None
+    created_by_user_id: str = Field(index=True)
+    updated_by_user_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditCaseDocumentVersion(SQLModel, table=True):
+    __tablename__ = "audit_case_document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "version", name="uq_audit_case_document_version"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("auditdocver"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    document_id: str = Field(index=True)
+    version: int
+    content_format: str
+    content: str
+    content_sha256: str = Field(index=True)
+    characters: int = 0
+    change_note: Optional[str] = None
+    created_by_user_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class AuditCaseEvent(SQLModel, table=True):
     __tablename__ = "audit_case_events"
 
