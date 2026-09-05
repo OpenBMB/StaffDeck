@@ -574,3 +574,7 @@ git commit -m "test: verify audit report runtime traceability"
 
 - Plan created after root-cause investigation and approval of the Phase 5A design.
 - Existing baseline before implementation: backend audit/rule focused tests 45 passed; frontend audit-case tests 47 passed; worktree clean at detached `3948add`.
+- 2026-09-05 verification: focused backend acceptance command passed 11 tests in 14.49s; backend full regression passed 2376 tests with 5 skipped and 66 warnings in 1091.69s.
+- 2026-09-05 verification: frontend full Vitest passed 66 test files / 295 tests in 39.14s after one earlier transient run reported two existing RuleLibraryPage failures; the final rerun was clean. Evidence/report/detail focused tests passed 3 files / 12 tests in 4.60s.
+- 2026-09-05 verification: `npm run build` passed (`tsc -b && vite build`, 2180 modules transformed); `config:check` passed. `i18n:check` remains a pre-existing baseline failure with 499 missing English translations. Full Ruff remains a baseline failure with 56 B008/BLE001 findings; changed-path `ruff --select I,UP` passed.
+- 2026-09-05 runtime: documented `dev_up.ps1 --detach`, `dev_status.ps1`, `/api/health`, and `/workspace/gallery` checks succeeded (HTTP 200; RapidDoc ready), then `dev_down.ps1` stopped supervisor/app and released port 5173. Admin API inspection confirmed the current project has file/chunk coverage 1.0, 14 pending chunks, element coverage 0, and no initialized rule binding; no user data was changed by runtime verification.

@@ -26,7 +26,9 @@ afterEach(() => {
 
 describe('audit report api', () => {
   it('posts evidence processing with the tenant and optional model config', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ status: 'succeeded', materials: [], coverage: {} }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ status: 'succeeded', materials: [], coverage: {} }),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     await processAuditCaseEvidence('case/one', 'model-1');
@@ -41,7 +43,9 @@ describe('audit report api', () => {
   });
 
   it('lists, creates, publishes, and downloads report versions with scoped paths', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ id: 'report-1', sections: [] }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ id: 'report-1', sections: [] }),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     await listAuditCaseReports('case/one');
