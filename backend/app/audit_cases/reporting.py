@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from io import BytesIO
 
 from docx import Document
@@ -19,6 +20,9 @@ from app.db.models import (
     AuditReportSection,
     AuditReportVersion,
     ModelConfig,
+    ProjectRuleBinding,
+    RuleDefinition,
+    RuleSetVersion,
 )
 from app.llm.client import LLMClient, LLMError
 
@@ -54,10 +58,75 @@ class AuditReportBlocked(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class ReportRuleSnapshot:
+    version_ids: list[str] = field(default_factory=list)
+    definition_ids_by_section: dict[str, list[str]] = field(default_factory=dict)
+    definitions: list[dict[str, object]] = field(default_factory=list)
+    status: str = "not_configured"
+
+
 class AuditReportService:
     def __init__(self, db: Session, client_factory: ClientFactory = LLMClient) -> None:
         self.db = db
         self.client_factory = client_factory
+
+    def rule_snapshot(self, case: AuditCase) -> ReportRuleSnapshot:
+        bindings = list(
+            self.db.exec(
+                select(ProjectRuleBinding)
+                .where(
+                    ProjectRuleBinding.tenant_id == case.tenant_id,
+                    ProjectRuleBinding.audit_case_id == case.id,
+                    ProjectRuleBinding.status == "current",
+                )
+                .order_by(ProjectRuleBinding.priority, ProjectRuleBinding.bound_at)
+            ).all()
+        )
+        section_ids = [spec.id for spec in _report_section_specs(case.management_systems_json)]
+        section_rules = {section_id: [] for section_id in section_ids}
+        if not bindings:
+            return ReportRuleSnapshot(definition_ids_by_section=section_rules)
+
+        version_ids: list[str] = []
+        definitions: list[RuleDefinition] = []
+        incomplete = False
+        for binding in bindings:
+            version = self.db.get(RuleSetVersion, binding.rule_set_version_id)
+            if (
+                version is None
+                or version.tenant_id != case.tenant_id
+                or version.status != "published"
+            ):
+                incomplete = True
+                continue
+            version_ids.append(version.id)
+            definitions.extend(
+                self.db.exec(
+                    select(RuleDefinition)
+                    .where(
+                        RuleDefinition.tenant_id == case.tenant_id,
+                        RuleDefinition.rule_set_version_id == version.id,
+                        RuleDefinition.enabled,
+                    )
+                ).all()
+            )
+
+        applicable = [
+            rule
+            for rule in definitions
+            if _rule_applies_to_report(rule)
+        ]
+        applicable.sort(key=lambda rule: (rule.rule_key, rule.sequence, rule.id))
+        definition_payloads = [_rule_public_payload(rule) for rule in applicable]
+        definition_ids = [rule.id for rule in applicable]
+        section_rules = {section_id: list(definition_ids) for section_id in section_ids}
+        return ReportRuleSnapshot(
+            version_ids=sorted(set(version_ids)),
+            definition_ids_by_section=section_rules,
+            definitions=definition_payloads,
+            status="incomplete" if incomplete else "complete",
+        )
 
     def create_version(self, case: AuditCase) -> AuditReportVersion:
         latest = self.db.exec(
@@ -69,6 +138,7 @@ class AuditReportService:
             .order_by(AuditReportVersion.version.desc())
         ).first()
         version = (latest.version + 1) if latest else 1
+        rule_snapshot = self.rule_snapshot(case)
         materials = list(
             self.db.exec(
                 select(AuditCaseMaterial).where(
@@ -84,6 +154,8 @@ class AuditReportService:
             version=version,
             material_version_ids_json=[f"{row.id}:v{row.version}" for row in materials],
             knowledge_base_version_ids_json=list(case.knowledge_base_version_ids_json),
+            rule_set_version_ids_json=list(rule_snapshot.version_ids),
+            rule_traceability_status=rule_snapshot.status,
         )
         self.db.add(report)
         self.db.flush()
@@ -97,6 +169,9 @@ class AuditReportService:
                     title=spec.title,
                     sequence=spec.sequence,
                     audit_element_ids_json=list(spec.audit_element_ids),
+                    rule_definition_ids_json=list(
+                        rule_snapshot.definition_ids_by_section.get(spec.id, [])
+                    ),
                 )
             )
         self.db.commit()
@@ -121,6 +196,7 @@ class AuditReportService:
                         "section_id": section.section_id,
                         "title": section.title,
                         "evidence": [ledger_public_payload(item) for item in evidence],
+                        "rules": self._section_rules(report, section),
                         "citation_rule": "每项事实使用 [EVIDENCE:<id>] 引用",
                     },
                 )
@@ -158,6 +234,8 @@ class AuditReportService:
     def publish(
         self, case: AuditCase, report: AuditReportVersion, confirmed_by: str | None
     ) -> AuditReportVersion:
+        if confirmed_by and report.rule_traceability_status != "complete":
+            raise AuditReportBlocked("RULE_BINDING_REQUIRED_FOR_PUBLISH")
         snapshot = calculate_coverage(self.db, case)
         require_publishable(snapshot)
         markdown = self.assemble_draft(report)
@@ -213,6 +291,23 @@ class AuditReportService:
             ).all()
         )
 
+    def _section_rules(
+        self, report: AuditReportVersion, section: AuditReportSection
+    ) -> list[dict[str, object]]:
+        allowed_ids = set(section.rule_definition_ids_json or [])
+        if not allowed_ids:
+            return []
+        rules = list(
+            self.db.exec(
+                select(RuleDefinition).where(
+                    RuleDefinition.tenant_id == report.tenant_id,
+                    RuleDefinition.id.in_(allowed_ids),
+                )
+            ).all()
+        )
+        rules.sort(key=lambda rule: (rule.rule_key, rule.sequence, rule.id))
+        return [_rule_public_payload(rule) for rule in rules]
+
     def _section_evidence(
         self, case_id: str, audit_element_ids: list[str]
     ) -> list[AuditEvidenceLedger]:
@@ -246,6 +341,28 @@ def _report_section_specs(management_systems: list[str]) -> list[ReportSectionSp
         )
         for sequence, (section_id, element_ids) in enumerate(sorted(grouped.items()), start=1)
     ]
+
+
+def _rule_applies_to_report(rule: RuleDefinition) -> bool:
+    workflow_nodes = set(rule.workflow_nodes_json or [])
+    document_types = set(rule.document_types_json or [])
+    workflow_match = not workflow_nodes or "generate_report_sections" in workflow_nodes
+    document_match = not document_types or "audit_report" in document_types
+    return workflow_match and document_match
+
+
+def _rule_public_payload(rule: RuleDefinition) -> dict[str, object]:
+    return {
+        "id": rule.id,
+        "rule_key": rule.rule_key,
+        "name": rule.name,
+        "execution_level": rule.execution_level,
+        "execution_method": rule.execution_method,
+        "workflow_nodes": list(rule.workflow_nodes_json or []),
+        "information_domains": list(rule.information_domains_json or []),
+        "document_types": list(rule.document_types_json or []),
+        "source_refs": [dict(item) for item in (rule.source_refs_json or [])],
+    }
 
 
 def ledger_public_payload(row: AuditEvidenceLedger) -> dict[str, object]:

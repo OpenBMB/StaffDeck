@@ -179,12 +179,13 @@ def test_fixed_40k_audit_pipeline_is_publishable_and_version_traceable(
 
         monkeypatch.setattr(
             "app.audit_cases.reporting.write_case_blob",
-            lambda **_kwargs: "audit_cases/case-40k-acceptance/审核报告.docx",
+            lambda **_kwargs: "audit_cases/case-40k-acceptance/审核报告-待确认草稿.docx",
         )
-        published = report_service.publish(case, report, confirmed_by="user-1")
+        published = report_service.publish(case, report, confirmed_by=None)
         api_report = _audit_report_read(db, published)
 
-        assert published.status == "published"
+        assert published.status == "review"
+        assert published.rule_traceability_status == "not_configured"
         assert published.material_version_ids_json
         assert published.knowledge_base_version_ids_json
         assert api_report.material_version_ids == published.material_version_ids_json
