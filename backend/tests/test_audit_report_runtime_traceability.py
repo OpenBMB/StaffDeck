@@ -12,6 +12,8 @@ from app.audit_cases.reporting import AuditReportBlocked, AuditReportService
 from app.db import database
 from app.db.models import (
     AuditCase,
+    AuditCaseDocument,
+    AuditCaseDocumentVersion,
     AuditEvidenceLedger,
     AuditReportSection,
     AuditReportVersion,
@@ -128,6 +130,52 @@ def test_report_traceability_migration_is_additive_and_idempotent(tmp_path) -> N
         ).scalar_one() == 1
 
 
+def test_document_scoped_rule_migration_is_additive_and_idempotent(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-document-rules.db'}")
+    with engine.begin() as conn:
+        for table_name in ("project_rule_bindings", "rule_evaluations", "audit_report_versions"):
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE {table_name} (
+                        id VARCHAR PRIMARY KEY,
+                        tenant_id VARCHAR NOT NULL,
+                        audit_case_id VARCHAR NOT NULL
+                    )
+                    """
+                )
+            )
+
+    with engine.begin() as conn:
+        database._migrate_document_scoped_rule_bindings_schema(
+            conn,
+            inspect(conn),
+            {"project_rule_bindings", "rule_evaluations", "audit_report_versions"},
+        )
+        database._migrate_document_scoped_rule_bindings_schema(
+            conn,
+            inspect(conn),
+            {"project_rule_bindings", "rule_evaluations", "audit_report_versions"},
+        )
+
+    assert {"document_id", "document_version_id"} <= {
+        column["name"] for column in inspect(engine).get_columns("project_rule_bindings")
+    }
+    assert {"document_id", "document_version_id"} <= {
+        column["name"] for column in inspect(engine).get_columns("rule_evaluations")
+    }
+    assert {"source_document_id", "source_document_version_id"} <= {
+        column["name"] for column in inspect(engine).get_columns("audit_report_versions")
+    }
+    with engine.connect() as conn:
+        assert conn.execute(
+            text(
+                "SELECT COUNT(*) FROM app_data_migrations "
+                "WHERE id = 'document_scoped_rule_bindings_v1'"
+            )
+        ).scalar_one() == 1
+
+
 class _RuleAwareReportClient:
     def __init__(self) -> None:
         self.payloads: dict[str, dict[str, object]] = {}
@@ -235,6 +283,55 @@ def test_report_version_freezes_current_published_bindings_and_section_rule_ids(
         db.close()
 
 
+def test_report_version_freezes_source_document_and_document_rules() -> None:
+    db, case, version = _bound_report_context()
+    document = AuditCaseDocument(
+        id="report-document-1",
+        tenant_id=case.tenant_id,
+        audit_case_id=case.id,
+        document_key="report-policy",
+        title="报告制度文件",
+        document_type="policy",
+        zone="system",
+        active_version_id="report-document-version-1",
+        created_by_user_id="user-1",
+        updated_by_user_id="user-1",
+    )
+    document_version = AuditCaseDocumentVersion(
+        id="report-document-version-1",
+        tenant_id=case.tenant_id,
+        audit_case_id=case.id,
+        document_id=document.id,
+        version=1,
+        content_format="markdown",
+        content="# 报告制度",
+        content_sha256="b" * 64,
+        created_by_user_id="user-1",
+    )
+    binding = db.exec(
+        select(ProjectRuleBinding).where(
+            ProjectRuleBinding.audit_case_id == case.id,
+            ProjectRuleBinding.status == "current",
+        )
+    ).one()
+    binding.document_id = document.id
+    binding.document_version_id = document_version.id
+    db.add_all([document, document_version, binding])
+    db.commit()
+
+    try:
+        report = AuditReportService(db).create_version(
+            case,
+            source_document_id=document.id,
+            source_document_version_id=document_version.id,
+        )
+        assert report.source_document_id == document.id
+        assert report.source_document_version_id == document_version.id
+        assert report.rule_set_version_ids_json == [version.id]
+    finally:
+        db.close()
+
+
 def test_later_binding_migration_does_not_mutate_existing_report_snapshot() -> None:
     db, case, version = _bound_report_context()
     try:
@@ -290,3 +387,4 @@ def test_confirmed_publish_is_blocked_without_rule_binding() -> None:
             service.publish(case, report, confirmed_by="lead-auditor")
     finally:
         db.close()
+

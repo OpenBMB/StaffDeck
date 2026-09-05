@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { ApiError } from '@/api/client';
 import { Button, Card, CardContent, Textarea, notify } from '@/components/ui';
+import type { AuditCaseDocumentRead } from '@/types';
 
 import {
   loadCurrentRuleBindings,
@@ -15,6 +16,7 @@ import {
 } from '../ruleBindingApi';
 
 const NOT_INITIALIZED_CODE = 'RULE_BINDING_NOT_INITIALIZED';
+const EMPTY_DOCUMENTS: AuditCaseDocumentRead[] = [];
 
 function selectionKey(ids: string[]): string {
   return ids.join('|');
@@ -39,14 +41,19 @@ function listOrEmpty(values: string[]): string {
 
 export function RuleBindingPanel({
   caseId,
+  documents = EMPTY_DOCUMENTS,
   disabled = false,
 }: {
   caseId: string;
+  documents?: AuditCaseDocumentRead[];
   disabled?: boolean;
 }) {
   const [candidates, setCandidates] = useState<PublishedRuleVersionOption[]>([]);
   const [currentBindings, setCurrentBindings] = useState<RuleBindingRead[]>([]);
   const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
+  const [selectedDocumentId, setSelectedDocumentId] = useState(
+    () => documents.find((document) => document.status === 'active' && document.active_version_id)?.id || '',
+  );
   const [preview, setPreview] = useState<RuleMigrationPreviewRead | null>(null);
   const [previewSelection, setPreviewSelection] = useState('');
   const [reason, setReason] = useState('');
@@ -59,10 +66,17 @@ export function RuleBindingPanel({
     () => new Map(candidates.map((candidate) => [candidate.version.id, candidate])),
     [candidates],
   );
+  const activeDocuments = useMemo(
+    () => documents.filter((document) => document.status === 'active' && document.active_version_id),
+    [documents],
+  );
+  const selectedDocument = activeDocuments.find((document) => document.id === selectedDocumentId);
   const currentVersionIds = useMemo(
     () => currentBindings.map((binding) => binding.rule_set_version_id),
     [currentBindings],
   );
+  const scopedMode = documents.length > 0;
+  const scopeRequired = scopedMode && !selectedDocument;
   const isBound = currentBindings.length > 0;
   const hasSelectionChanged = isBound && !sameSelection(selectedVersionIds, currentVersionIds);
   const canConfirmPreview = Boolean(
@@ -70,13 +84,24 @@ export function RuleBindingPanel({
   );
 
   useEffect(() => {
+    setSelectedDocumentId((current) => (
+      activeDocuments.some((document) => document.id === current)
+        ? current
+        : activeDocuments[0]?.id || ''
+    ));
+  }, [activeDocuments]);
+
+  useEffect(() => {
     let active = true;
     setLoading(true);
     setLoadFailed(false);
 
+    const bindingRequest = selectedDocumentId
+      ? loadCurrentRuleBindings(caseId, selectedDocumentId, selectedDocument?.active_version_id)
+      : loadCurrentRuleBindings(caseId);
     void Promise.allSettled([
       loadPublishedRuleVersionOptions(),
-      loadCurrentRuleBindings(caseId),
+      bindingRequest,
     ]).then(([candidateResult, bindingResult]) => {
       if (!active) return;
       let failed = false;
@@ -110,7 +135,7 @@ export function RuleBindingPanel({
     return () => {
       active = false;
     };
-  }, [caseId]);
+  }, [caseId, selectedDocumentId, selectedDocument?.active_version_id]);
 
   function toggleVersion(versionId: string) {
     if (disabled || loadFailed || busy) return;
@@ -122,11 +147,13 @@ export function RuleBindingPanel({
   }
 
   async function handleBind() {
-    if (disabled || loadFailed || busy || !selectedVersionIds.length) return;
+    if (disabled || loadFailed || busy || scopeRequired || !selectedVersionIds.length) return;
     setBusy('bind');
     setError('');
     try {
-      const bindings = await replaceCurrentRuleBindings(caseId, selectedVersionIds, 'manual');
+      const bindings = selectedDocument
+        ? await replaceCurrentRuleBindings(caseId, selectedVersionIds, 'manual', selectedDocument.id, selectedDocument.active_version_id)
+        : await replaceCurrentRuleBindings(caseId, selectedVersionIds, 'manual');
       setCurrentBindings(bindings);
       setSelectedVersionIds(bindings.map((binding) => binding.rule_set_version_id));
       notify.success('规则版本绑定成功');
@@ -140,11 +167,13 @@ export function RuleBindingPanel({
   }
 
   async function handlePreview() {
-    if (disabled || loadFailed || busy || !hasSelectionChanged) return;
+    if (disabled || loadFailed || busy || scopeRequired || !hasSelectionChanged) return;
     setBusy('preview');
     setError('');
     try {
-      const nextPreview = await previewRuleBindingMigration(caseId, selectedVersionIds);
+      const nextPreview = selectedDocument
+        ? await previewRuleBindingMigration(caseId, selectedVersionIds, selectedDocument.id, selectedDocument.active_version_id)
+        : await previewRuleBindingMigration(caseId, selectedVersionIds);
       setPreview(nextPreview);
       setPreviewSelection(selectionKey(selectedVersionIds));
     } catch (previewError) {
@@ -157,11 +186,13 @@ export function RuleBindingPanel({
   }
 
   async function handleMigrate() {
-    if (disabled || loadFailed || busy || !canConfirmPreview) return;
+    if (disabled || loadFailed || busy || scopeRequired || !canConfirmPreview) return;
     setBusy('migrate');
     setError('');
     try {
-      const bindings = await migrateRuleBindings(caseId, selectedVersionIds, reason.trim());
+      const bindings = selectedDocument
+        ? await migrateRuleBindings(caseId, selectedVersionIds, reason.trim(), selectedDocument.id, selectedDocument.active_version_id)
+        : await migrateRuleBindings(caseId, selectedVersionIds, reason.trim());
       setCurrentBindings(bindings);
       setSelectedVersionIds(bindings.map((binding) => binding.rule_set_version_id));
       setPreview(null);
@@ -191,6 +222,35 @@ export function RuleBindingPanel({
       )}
       <Card>
         <CardContent className="grid gap-[12px] p-[14px]">
+          {scopedMode && (
+            <label className="grid gap-[5px] text-[12px] font-medium text-[#464c5e]">
+              规则文件
+              <select
+                aria-label="规则文件"
+                value={selectedDocumentId}
+                onChange={(event) => setSelectedDocumentId(event.currentTarget.value)}
+                disabled={disabled || loading || Boolean(busy) || !activeDocuments.length}
+                className="rounded-[8px] border border-[#dfe3eb] bg-white px-[10px] py-[8px] text-[12px] font-normal"
+              >
+                {!activeDocuments.length && <option value="">暂无可用文件</option>}
+                {activeDocuments.map((document) => (
+                  <option key={document.id} value={document.id}>
+                    {document.title} · {document.document_key}
+                  </option>
+                ))}
+              </select>
+              {selectedDocument && (
+                <span className="text-[11px] font-normal text-[#858b9c]">
+                  固定当前版本 v{selectedDocument.active_version?.version ?? '?'}，文件更新后需重新绑定
+                </span>
+              )}
+            </label>
+          )}
+          {scopeRequired && (
+            <p className="rounded-[9px] bg-[#fff8e7] px-[12px] py-[10px] text-[12px] text-[#8a5a00]">
+              请先在项目文件库中创建一个可用文件，才能配置文件范围规则
+            </p>
+          )}
           <div>
             <h2 className="text-[14px] font-medium text-[#464c5e]">规则版本候选</h2>
             <p className="mt-[3px] text-[11px] text-[#a0a6b5]">仅展示已发布版本，项目绑定后不会自动切换到更新版本。</p>
@@ -221,15 +281,15 @@ export function RuleBindingPanel({
             );
           })}
           {!isBound ? (
-            <Button type="button" disabled={disabled || loading || loadFailed || Boolean(busy) || !selectedVersionIds.length} onClick={() => void handleBind()}>
+            <Button type="button" disabled={disabled || loading || loadFailed || Boolean(busy) || scopeRequired || !selectedVersionIds.length} onClick={() => void handleBind()}>
               {busy === 'bind' ? '绑定中…' : '绑定选中版本'}
             </Button>
           ) : (
             <div className="flex flex-wrap gap-[8px]">
-              <Button type="button" disabled={disabled || loading || loadFailed || Boolean(busy) || !hasSelectionChanged} onClick={() => void handlePreview()}>
+              <Button type="button" disabled={disabled || loading || loadFailed || Boolean(busy) || scopeRequired || !hasSelectionChanged} onClick={() => void handlePreview()}>
                 {busy === 'preview' ? '预览中…' : '预览迁移影响'}
               </Button>
-              <Button type="button" disabled={disabled || loading || loadFailed || Boolean(busy) || !canConfirmPreview} onClick={() => void handleMigrate()}>
+              <Button type="button" disabled={disabled || loading || loadFailed || Boolean(busy) || scopeRequired || !canConfirmPreview} onClick={() => void handleMigrate()}>
                 {busy === 'migrate' ? '迁移中…' : '确认迁移'}
               </Button>
             </div>
@@ -241,7 +301,9 @@ export function RuleBindingPanel({
         <CardContent className="grid gap-[10px] p-[14px]">
           <div>
             <h2 className="text-[14px] font-medium text-[#464c5e]">当前绑定</h2>
-            <p className="mt-[3px] text-[11px] text-[#a0a6b5]">当前绑定是项目实际使用的固定版本，不会自动切换。</p>
+            <p className="mt-[3px] text-[11px] text-[#a0a6b5]">
+              {selectedDocument ? `文件“${selectedDocument.title}”的当前绑定，不会自动切换。` : '当前绑定是项目实际使用的固定版本，不会自动切换。'}
+            </p>
           </div>
           {!isBound ? (
             <p className="rounded-[9px] bg-[#f7f8fb] px-[12px] py-[10px] text-[12px] text-[#858b9c]">
@@ -275,3 +337,4 @@ export function RuleBindingPanel({
     </div>
   );
 }
+

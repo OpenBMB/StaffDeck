@@ -94,6 +94,8 @@ _CASE_EVENT_METADATA_KEYS = {
     "candidate_id",
     "conflict_id",
     "rule_set_version_id",
+    "document_id",
+    "document_version_id",
     "rule_evaluation_id",
     "revision",
 }
@@ -1423,3 +1425,4 @@ def recover_pending_material_jobs(db_bind: Any | None = None) -> int:
             AuditCaseService(db).enqueue_material_processing(case, owner, material.id)
             queued += 1
     return queued
+

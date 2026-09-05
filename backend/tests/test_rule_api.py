@@ -10,7 +10,15 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import paths
 from app.db import get_session
-from app.db.models import AuditCase, RuleDefinition, RuleEvaluation, Tenant, User
+from app.db.models import (
+    AuditCase,
+    AuditCaseDocument,
+    AuditCaseDocumentVersion,
+    RuleDefinition,
+    RuleEvaluation,
+    Tenant,
+    User,
+)
 from app.main import app
 from app.security.auth import create_access_token
 
@@ -335,6 +343,60 @@ def test_project_binding_requires_published_version_and_pins_it(api_context) -> 
     assert bound.json()[0]["rule_set_version_id"] == published["id"]
 
 
+def test_document_scoped_binding_requires_and_returns_file_snapshot(api_context) -> None:
+    client, admin_headers, member_headers, case, engine = api_context
+    with Session(engine) as db:
+        document = AuditCaseDocument(
+            id="api-document-1",
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            document_key="policy-1",
+            title="能源方针",
+            document_type="policy",
+            zone="system",
+            active_version_id="api-document-version-1",
+            created_by_user_id=case.owner_user_id,
+            updated_by_user_id=case.owner_user_id,
+        )
+        version = AuditCaseDocumentVersion(
+            id="api-document-version-1",
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            document_id=document.id,
+            version=1,
+            content_format="markdown",
+            content="# 能源方针",
+            content_sha256="a" * 64,
+            created_by_user_id=case.owner_user_id,
+        )
+        db.add_all([document, version])
+        db.commit()
+        document_id = document.id
+        document_version_id = version.id
+
+    _rule_set, published = _create_and_publish(client, admin_headers)
+    bound = client.put(
+        f"/api/audit-cases/{case.id}/rule-bindings?tenant_id=tenant_demo",
+        json={
+            "version_ids": [published["id"]],
+            "document_id": document_id,
+            "document_version_id": document_version_id,
+        },
+        headers=member_headers,
+    )
+    assert bound.status_code == 200, bound.text
+    assert bound.json()[0]["document_id"] == document_id
+    assert bound.json()[0]["document_version_id"] == document_version_id
+
+    listed = client.get(
+        f"/api/audit-cases/{case.id}/rule-bindings?tenant_id=tenant_demo"
+        f"&document_id={document_id}&document_version_id={document_version_id}",
+        headers=member_headers,
+    )
+    assert listed.status_code == 200
+    assert listed.json()[0]["document_id"] == document_id
+
+
 def test_project_api_does_not_leak_cross_tenant_case(api_context) -> None:
     client, _admin_headers, member_headers, case, _engine = api_context
     response = client.get(
@@ -439,3 +501,4 @@ def test_rule_exception_requires_explicit_rule_opt_in(api_context) -> None:
     )
     assert response.status_code == 422
     assert response.json()["detail"] == "RULE_EXCEPTION_NOT_ALLOWED"
+

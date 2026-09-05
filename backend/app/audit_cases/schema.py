@@ -275,6 +275,8 @@ class AuditReportRead(BaseModel):
     id: str
     tenant_id: str
     audit_case_id: str
+    source_document_id: str | None = None
+    source_document_version_id: str | None = None
     version: int
     status: str
     material_version_ids: list[str] = Field(default_factory=list)
@@ -288,6 +290,8 @@ class AuditReportRead(BaseModel):
 
 class AuditReportCreateRequest(BaseModel):
     model_config_id: str | None = None
+    source_document_id: str | None = None
+    source_document_version_id: str | None = None
     publish: bool = False
     confirmed_by: str | None = None
 
@@ -408,3 +412,4 @@ def audit_case_document_version_read(
     row: AuditCaseDocumentVersion,
 ) -> AuditCaseDocumentVersionRead:
     return AuditCaseDocumentVersionRead.model_validate(row)
+

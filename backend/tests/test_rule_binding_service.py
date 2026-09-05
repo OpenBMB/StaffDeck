@@ -7,6 +7,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.db.models import (
     AuditCase,
+    AuditCaseDocument,
+    AuditCaseDocumentVersion,
     AuditCaseEvent,
     RuleEvaluation,
     User,
@@ -118,6 +120,154 @@ def _context(**overrides: Any) -> RuleEvaluationContext:
     }
     values.update(overrides)
     return RuleEvaluationContext(**values)
+
+
+def _document_context(db: Session, case: AuditCase, suffix: str = "one") -> tuple[AuditCaseDocument, AuditCaseDocumentVersion]:
+    document = AuditCaseDocument(
+        id=f"document-{suffix}",
+        tenant_id=case.tenant_id,
+        audit_case_id=case.id,
+        document_key=f"policy-{suffix}",
+        title=f"制度文件 {suffix}",
+        document_type="policy",
+        zone="system",
+        created_by_user_id=case.owner_user_id,
+        updated_by_user_id=case.owner_user_id,
+    )
+    version = AuditCaseDocumentVersion(
+        id=f"document-version-{suffix}",
+        tenant_id=case.tenant_id,
+        audit_case_id=case.id,
+        document_id=document.id,
+        version=1,
+        content_format="markdown",
+        content=f"# {suffix}",
+        content_sha256="a" * 64,
+        created_by_user_id=case.owner_user_id,
+    )
+    document.active_version_id = version.id
+    db.add_all([document, version])
+    db.commit()
+    return document, version
+
+
+def test_file_scoped_binding_freezes_document_version(binding_context) -> None:
+    db, _engine, admin, _reviewer, case, _rule_set, _draft, published = binding_context
+    document, version = _document_context(db, case)
+
+    binding = RuleBindingService(db).bind_published_version(
+        case,
+        published.id,
+        admin,
+        "manual",
+        document_id=document.id,
+        document_version_id=version.id,
+    )
+
+    assert binding.document_id == document.id
+    assert binding.document_version_id == version.id
+
+
+def test_file_scoped_bindings_are_isolated_between_documents(binding_context) -> None:
+    db, _engine, admin, reviewer, case, _rule_set, _draft, published = binding_context
+    first, first_version = _document_context(db, case, "one")
+    second, _second_version = _document_context(db, case, "two")
+    service = RuleBindingService(db)
+    service.bind_published_version(
+        case,
+        published.id,
+        admin,
+        "manual",
+        document_id=first.id,
+        document_version_id=first_version.id,
+    )
+
+    with pytest.raises(RuleBindingError, match="RULE_BINDING_NOT_INITIALIZED"):
+        service.list_current_bindings(case, reviewer, document_id=second.id)
+
+
+def test_file_scoped_evaluation_records_document_scope(binding_context) -> None:
+    db, _engine, admin, reviewer, case, _rule_set, _draft, published = binding_context
+    document, version = _document_context(db, case)
+    RuleBindingService(db).bind_published_version(
+        case,
+        published.id,
+        admin,
+        "manual",
+        document_id=document.id,
+        document_version_id=version.id,
+    )
+
+    evaluations = RuleLibraryService(db).evaluate_project(
+        case,
+        reviewer,
+        _context(),
+        document_id=document.id,
+        document_version_id=version.id,
+    )
+
+    assert evaluations[0].document_id == document.id
+    assert evaluations[0].document_version_id == version.id
+
+
+def test_file_scoped_binding_is_not_reused_after_document_version_changes(binding_context) -> None:
+    db, _engine, admin, reviewer, case, _rule_set, _draft, published = binding_context
+    document, version = _document_context(db, case)
+    service = RuleBindingService(db)
+    service.bind_published_version(
+        case,
+        published.id,
+        admin,
+        "manual",
+        document_id=document.id,
+        document_version_id=version.id,
+    )
+    newer = AuditCaseDocumentVersion(
+        id="document-version-two",
+        tenant_id=case.tenant_id,
+        audit_case_id=case.id,
+        document_id=document.id,
+        version=2,
+        content_format="markdown",
+        content="# 更新",
+        content_sha256="b" * 64,
+        created_by_user_id=case.owner_user_id,
+    )
+    document.active_version_id = newer.id
+    db.add_all([newer, document])
+    db.commit()
+
+    with pytest.raises(RuleBindingError, match="RULE_BINDING_NOT_INITIALIZED"):
+        service.list_current_bindings(
+            case,
+            reviewer,
+            document_id=document.id,
+            document_version_id=newer.id,
+        )
+
+
+def test_file_scoped_binding_rejects_a_document_from_another_case(binding_context) -> None:
+    db, _engine, admin, _reviewer, case, _rule_set, _draft, published = binding_context
+    other_case = AuditCase(
+        id="case-2",
+        tenant_id=case.tenant_id,
+        owner_user_id=case.owner_user_id,
+        organization_name="乙公司",
+        report_type="认证审核",
+    )
+    db.add(other_case)
+    db.commit()
+    foreign_document, foreign_version = _document_context(db, other_case, "foreign")
+
+    with pytest.raises(RuleBindingError, match="RULE_DOCUMENT_NOT_FOUND"):
+        RuleBindingService(db).bind_published_version(
+            case,
+            published.id,
+            admin,
+            "manual",
+            document_id=foreign_document.id,
+            document_version_id=foreign_version.id,
+        )
 
 
 def test_project_can_bind_only_published_rule_versions(binding_context) -> None:
@@ -395,3 +545,4 @@ def test_current_bindings_are_visible_only_to_authorized_project_users(binding_c
     bindings = RuleBindingService(db).list_current_bindings(case, reviewer)
     assert len(bindings) == 1
     assert bindings[0].status == "current"
+

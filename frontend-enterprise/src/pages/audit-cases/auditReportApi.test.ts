@@ -64,4 +64,26 @@ describe('audit report api', () => {
     const publishCall = fetchMock.mock.calls[2] as unknown as [RequestInfo | URL, RequestInit];
     expect(publishCall[1].body).toBe('{}');
   });
+
+  it('sends the selected document snapshot when creating a scoped report', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ id: 'report-1', sections: [] }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createAuditCaseReport(
+      'case/one',
+      undefined,
+      'document/1',
+      'document-version/2',
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      source_document_id: 'document/1',
+      source_document_version_id: 'document-version/2',
+      publish: false,
+    });
+  });
 });
+

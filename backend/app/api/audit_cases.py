@@ -95,6 +95,9 @@ def _case_error(exc: Exception) -> HTTPException:
     if isinstance(exc, AuditReportDownloadNotReady):
         return HTTPException(status_code=409, detail="AUDIT_REPORT_DOWNLOAD_NOT_READY")
     if isinstance(exc, AuditReportBlocked):
+        code = str(exc)
+        if code == "REPORT_DOCUMENT_NOT_FOUND":
+            return HTTPException(status_code=404, detail=code)
         return HTTPException(status_code=409, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
 
@@ -658,7 +661,11 @@ def create_audit_case_report(
     model_config = _model_config_for_case(db, case, request.model_config_id)
     try:
         service = AuditReportService(db)
-        report = service.create_version(case)
+        report = service.create_version(
+            case,
+            source_document_id=request.source_document_id,
+            source_document_version_id=request.source_document_version_id,
+        )
         service.generate_pending_sections(case, report, model_config)
         if request.publish:
             report = service.publish(case, report, request.confirmed_by)
@@ -837,6 +844,8 @@ def _audit_report_read(db: Session, row: AuditReportVersion) -> AuditReportRead:
         id=row.id,
         tenant_id=row.tenant_id,
         audit_case_id=row.audit_case_id,
+        source_document_id=row.source_document_id,
+        source_document_version_id=row.source_document_version_id,
         version=row.version,
         status=row.status,
         material_version_ids=list(row.material_version_ids_json or []),
@@ -861,3 +870,4 @@ def _audit_report_read(db: Session, row: AuditReportVersion) -> AuditReportRead:
             for section in sections
         ],
     )
+

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import type { AuditCaseCoverageRead, AuditReportRead } from '@/types';
+import type { AuditCaseCoverageRead, AuditCaseDocumentRead, AuditReportRead } from '@/types';
 import { Button, Card, CardContent } from '@/components/ui';
 
 import { processAuditCaseEvidence } from '../auditCaseApi';
@@ -16,6 +16,7 @@ import { CoveragePanel } from './CoveragePanel';
 type BusyAction = '' | 'process' | 'generate' | 'publish' | 'download';
 
 const REPORT_READY_STATUSES = new Set(['draft', 'review']);
+const EMPTY_DOCUMENTS: AuditCaseDocumentRead[] = [];
 
 function reportCanBeConfirmed(report: AuditReportRead | null): boolean {
   return Boolean(
@@ -40,11 +41,13 @@ function actionError(error: unknown, fallback: string): string {
 
 export function EvidenceReportPanel({
   caseId,
+  documents = EMPTY_DOCUMENTS,
   coverage,
   disabled = false,
   onChanged,
 }: {
   caseId: string;
+  documents?: AuditCaseDocumentRead[];
   coverage: AuditCaseCoverageRead | null;
   disabled?: boolean;
   onChanged?: () => void | Promise<void>;
@@ -53,6 +56,23 @@ export function EvidenceReportPanel({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<BusyAction>('');
   const [error, setError] = useState('');
+  const [selectedDocumentId, setSelectedDocumentId] = useState(
+    () => documents.find((document) => document.status === 'active' && document.active_version_id)?.id || '',
+  );
+
+  const activeDocuments = documents.filter(
+    (document) => document.status === 'active' && document.active_version_id,
+  );
+  const selectedDocument = activeDocuments.find((document) => document.id === selectedDocumentId);
+  const scopeRequired = documents.length > 0 && !selectedDocument;
+
+  useEffect(() => {
+    setSelectedDocumentId((current) => (
+      activeDocuments.some((document) => document.id === current)
+        ? current
+        : activeDocuments[0]?.id || ''
+    ));
+  }, [documents]);
 
   useEffect(() => {
     let active = true;
@@ -72,7 +92,12 @@ export function EvidenceReportPanel({
     };
   }, [caseId]);
 
-  const latestReport = reports[0] ?? null;
+  const scopedReports = reports.filter((report) => report.source_document_id === selectedDocumentId);
+  const legacyReports = reports.filter((report) => !report.source_document_id);
+  const visibleReports = documents.length > 0
+    ? (scopedReports.length ? scopedReports : legacyReports)
+    : reports;
+  const latestReport = visibleReports[0] ?? null;
   const pendingEvidence = Boolean(
     coverage
     && coverage.pending_chunk_ids?.length
@@ -105,11 +130,13 @@ export function EvidenceReportPanel({
   }
 
   async function handleGenerate() {
-    if (!canGenerate || actionDisabled) return;
+    if (!canGenerate || actionDisabled || scopeRequired) return;
     setBusy('generate');
     setError('');
     try {
-      const nextReport = await createAuditCaseReport(caseId);
+      const nextReport = selectedDocument
+        ? await createAuditCaseReport(caseId, undefined, selectedDocument.id, selectedDocument.active_version_id)
+        : await createAuditCaseReport(caseId);
       setReports((current) => [nextReport, ...current.filter((item) => item.id !== nextReport.id)]);
     } catch (generateError) {
       setError(actionError(generateError, '报告草稿生成失败，请稍后重试'));
@@ -169,6 +196,28 @@ export function EvidenceReportPanel({
       )}
       <Card>
         <CardContent className="grid gap-[12px] p-[14px]">
+          {documents.length > 0 && (
+            <label className="grid gap-[5px] text-[12px] font-medium text-[#464c5e]">
+              报告规则文件
+              <select
+                aria-label="报告规则文件"
+                value={selectedDocumentId}
+                onChange={(event) => setSelectedDocumentId(event.currentTarget.value)}
+                disabled={actionDisabled || !activeDocuments.length}
+                className="rounded-[8px] border border-[#dfe3eb] bg-white px-[10px] py-[8px] text-[12px] font-normal"
+              >
+                {!activeDocuments.length && <option value="">暂无可用文件</option>}
+                {activeDocuments.map((document) => (
+                  <option key={document.id} value={document.id}>
+                    {document.title} · {document.document_key}
+                  </option>
+                ))}
+              </select>
+              {scopeRequired && (
+                <span className="text-[11px] font-normal text-[#a15c00]">请先选择一个可用文件</span>
+              )}
+            </label>
+          )}
           <div>
             <h2 className="text-[14px] font-medium text-[#464c5e]">证据处理</h2>
             <p className="mt-[3px] text-[11px] text-[#a0a6b5]">只处理已完成提取和分块的当前材料，保留证据台账与知识库版本。</p>
@@ -197,7 +246,7 @@ export function EvidenceReportPanel({
           </div>
           <Button
             type="button"
-            disabled={actionDisabled || !canGenerate}
+            disabled={actionDisabled || !canGenerate || scopeRequired}
             onClick={() => void handleGenerate()}
           >
             {busy === 'generate' ? '生成中…' : '生成待确认草稿'}
@@ -233,3 +282,4 @@ export function EvidenceReportPanel({
     </div>
   );
 }
+

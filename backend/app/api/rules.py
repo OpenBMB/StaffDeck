@@ -94,11 +94,15 @@ class RuleBindingReplaceRequest(BaseModel):
 
     version_ids: list[str] = Field(min_length=1, alias="rule_set_version_ids")
     selection_source: Literal["recommended", "manual"] = "manual"
+    document_id: str | None = None
+    document_version_id: str | None = None
 
 
 class RuleMigrationRequest(BaseModel):
     version_ids: list[str] = Field(min_length=1)
     reason: str = Field(min_length=1)
+    document_id: str | None = None
+    document_version_id: str | None = None
 
 
 class RuleMigrationPreviewRead(BaseModel):
@@ -123,6 +127,8 @@ class RuleBindingRead(BaseModel):
     priority: int
     bound_by_user_id: str
     supersedes_binding_id: str | None = None
+    document_id: str | None = None
+    document_version_id: str | None = None
 
 
 class RuleEvaluationRead(BaseModel):
@@ -131,6 +137,8 @@ class RuleEvaluationRead(BaseModel):
     id: str
     tenant_id: str
     audit_case_id: str
+    document_id: str | None = None
+    document_version_id: str | None = None
     rule_set_version_id: str
     rule_definition_id: str
     workflow_node: str
@@ -213,6 +221,8 @@ def _evaluation_read(row: RuleEvaluation) -> RuleEvaluationRead:
         id=row.id,
         tenant_id=row.tenant_id,
         audit_case_id=row.audit_case_id,
+        document_id=row.document_id,
+        document_version_id=row.document_version_id,
         rule_set_version_id=row.rule_set_version_id,
         rule_definition_id=row.rule_definition_id,
         workflow_node=row.workflow_node,
@@ -251,8 +261,12 @@ def _rule_error(exc: Exception) -> HTTPException:
             "PROJECT_ROLE_REQUIRED",
         }:
             return HTTPException(status_code=403, detail=code)
+        if code in {"RULE_DOCUMENT_NOT_FOUND"}:
+            return HTTPException(status_code=404, detail=code)
         if code in {
             "RULE_MIGRATION_CONFIRMATION_REQUIRED",
+            "RULE_DOCUMENT_ARCHIVED",
+            "RULE_DOCUMENT_VERSION_STALE",
         }:
             return HTTPException(status_code=409, detail=code)
         return HTTPException(status_code=422, detail=code)
@@ -502,6 +516,8 @@ def publish_rule_set_version(
 def list_rule_bindings(
     case_id: str,
     tenant_id: str = Query(...),
+    document_id: str | None = Query(None),
+    document_version_id: str | None = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> list[RuleBindingRead]:
@@ -509,7 +525,12 @@ def list_rule_bindings(
         db, tenant_id=tenant_id, case_id=case_id, current_user=current_user
     )
     try:
-        rows = RuleBindingService(db).list_current_bindings(case, current_user)
+        rows = RuleBindingService(db).list_current_bindings(
+            case,
+            current_user,
+            document_id=document_id,
+            document_version_id=document_version_id,
+        )
         return [RuleBindingRead.model_validate(row) for row in rows]
     except Exception as exc:
         raise _rule_error(exc) from exc
@@ -535,6 +556,8 @@ def replace_rule_bindings(
             request.version_ids,
             current_user,
             request.selection_source,
+            document_id=request.document_id,
+            document_version_id=request.document_version_id,
         )
         return [RuleBindingRead.model_validate(row) for row in rows]
     except Exception as exc:
@@ -557,7 +580,11 @@ def preview_rule_binding_migration(
     )
     try:
         preview = RuleBindingService(db).preview_migration(
-            case, request.version_ids, current_user
+            case,
+            request.version_ids,
+            current_user,
+            document_id=request.document_id,
+            document_version_id=request.document_version_id,
         )
         return RuleMigrationPreviewRead.model_validate(vars(preview))
     except Exception as exc:
@@ -584,6 +611,8 @@ def migrate_rule_bindings(
             request.version_ids,
             current_user,
             request.reason,
+            document_id=request.document_id,
+            document_version_id=request.document_version_id,
         )
         return [RuleBindingRead.model_validate(row) for row in rows]
     except Exception as exc:
@@ -597,6 +626,8 @@ def migrate_rule_bindings(
 def list_rule_evaluations(
     case_id: str,
     tenant_id: str = Query(...),
+    document_id: str | None = Query(None),
+    document_version_id: str | None = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> list[RuleEvaluationRead]:
@@ -609,14 +640,17 @@ def list_rule_evaluations(
         current_user,
         {"project_admin", "reviewer", "editor", "viewer"},
     )
-    rows = db.exec(
-        select(RuleEvaluation)
-        .where(
-            RuleEvaluation.tenant_id == tenant_id,
-            RuleEvaluation.audit_case_id == case_id,
-        )
-        .order_by(RuleEvaluation.created_at.desc())
-    ).all()
+    statement = select(RuleEvaluation).where(
+        RuleEvaluation.tenant_id == tenant_id,
+        RuleEvaluation.audit_case_id == case_id,
+    )
+    if document_id is None:
+        statement = statement.where(RuleEvaluation.document_id.is_(None))
+    else:
+        statement = statement.where(RuleEvaluation.document_id == document_id)
+    if document_version_id is not None:
+        statement = statement.where(RuleEvaluation.document_version_id == document_version_id)
+    rows = db.exec(statement.order_by(RuleEvaluation.created_at.desc())).all()
     return [_evaluation_read(row) for row in rows]
 
 
@@ -691,3 +725,4 @@ def grant_rule_exception(
         raise
     except Exception as exc:
         raise _rule_error(exc) from exc
+

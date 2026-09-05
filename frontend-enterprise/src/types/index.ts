@@ -783,6 +783,8 @@ export type AuditReportRead = {
   id: string;
   tenant_id: string;
   audit_case_id: string;
+  source_document_id?: string | null;
+  source_document_version_id?: string | null;
   version: number;
   status: string;
   material_version_ids: string[];
@@ -1517,3 +1519,4 @@ export type AuditCaseEventRead = {
   metadata: Record<string, unknown>;
   created_at: string;
 };
+
