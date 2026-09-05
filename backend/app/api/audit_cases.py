@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from sqlmodel import Session, select
 
 from app.audit_cases.coverage import calculate_coverage
+from app.audit_cases.documents import AuditCaseDocumentService
 from app.audit_cases.evidence import AuditEvidenceProcessor
 from app.audit_cases.knowledge import AuditKnowledgeOrchestrator
 from app.audit_cases.reporting import AuditReportService
@@ -38,12 +39,11 @@ from app.audit_cases.schema import (
     AuditReportCreateRequest,
     AuditReportRead,
     AuditReportSectionRead,
-    audit_case_material_read,
     audit_case_document_read,
     audit_case_document_version_read,
+    audit_case_material_read,
     audit_case_read,
 )
-from app.audit_cases.documents import AuditCaseDocumentService
 from app.audit_cases.service import AuditCaseService
 from app.db import get_session
 from app.db.models import (

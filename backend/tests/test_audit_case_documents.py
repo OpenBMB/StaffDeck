@@ -8,8 +8,6 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import paths
-from app.db import get_session
-from app.main import app
 from app.audit_cases.documents import AuditCaseDocumentService
 from app.audit_cases.schema import (
     AuditCaseAccessDenied,
@@ -19,6 +17,7 @@ from app.audit_cases.schema import (
     AuditCaseDocumentVersionCreate,
     AuditCaseReadOnly,
 )
+from app.db import get_session
 from app.db.models import (
     AuditCase,
     AuditCaseDocumentVersion,
@@ -28,6 +27,7 @@ from app.db.models import (
     Tenant,
     User,
 )
+from app.main import app
 from app.security.auth import create_access_token
 
 
