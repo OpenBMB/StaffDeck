@@ -175,13 +175,14 @@ export default function AuditCaseDetailPage({
         {tab === 'evidence-report' && (
           <EvidenceReportPanel
             caseId={detail.project.id}
+            documents={detail.documents}
             coverage={detail.coverage}
             disabled={Boolean(archived)}
             onChanged={detail.reloadMaterials}
           />
         )}
         {tab === 'documents' && <ProjectDocumentWorkspace caseId={detail.project.id} documents={detail.documents} disabled={Boolean(archived)} onChanged={detail.reloadDocuments} />}
-        {tab === 'rules' && <RuleBindingPanel caseId={detail.project.id} disabled={Boolean(archived)} />}
+        {tab === 'rules' && <RuleBindingPanel caseId={detail.project.id} documents={detail.documents} disabled={Boolean(archived)} />}
         {tab === 'events' && <AuditCaseEventTimeline events={detail.events} />}
       </main>
     </div>

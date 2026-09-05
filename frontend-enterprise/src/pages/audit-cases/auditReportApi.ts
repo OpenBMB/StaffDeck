@@ -12,9 +12,17 @@ export function listAuditCaseReports(caseId: string): Promise<AuditReportRead[]>
 export function createAuditCaseReport(
   caseId: string,
   modelConfigId?: string,
+  sourceDocumentId?: string,
+  sourceDocumentVersionId?: string | null,
 ): Promise<AuditReportRead> {
   return api.post<AuditReportRead>(reportPath(caseId), {
     model_config_id: modelConfigId,
+    ...(sourceDocumentId
+      ? {
+          source_document_id: sourceDocumentId,
+          source_document_version_id: sourceDocumentVersionId || undefined,
+        }
+      : {}),
     publish: false,
   });
 }

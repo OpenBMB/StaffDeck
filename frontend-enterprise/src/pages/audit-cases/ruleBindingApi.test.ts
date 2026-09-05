@@ -186,4 +186,27 @@ describe('rule binding api', () => {
       reason: '更新认证范围',
     });
   });
+
+  it('includes the selected document and immutable version in scoped writes', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await replaceCurrentRuleBindings(
+      'case/one',
+      ['version-1'],
+      'manual',
+      'document/1',
+      'document-version/2',
+    );
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      '/api/audit-cases/case%2Fone/rule-bindings?tenant_id=tenant_demo',
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      version_ids: ['version-1'],
+      selection_source: 'manual',
+      document_id: 'document/1',
+      document_version_id: 'document-version/2',
+    });
+  });
 });

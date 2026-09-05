@@ -12,6 +12,8 @@ from sqlmodel import Session, func, select
 from app.audit_cases.service import record_case_event
 from app.db.models import (
     AuditCase,
+    AuditCaseDocument,
+    AuditCaseDocumentVersion,
     ProjectDataFieldDefinition,
     ProjectRuleBinding,
     RuleDefinition,
@@ -384,18 +386,87 @@ class RuleBindingService:
         )
         return versions
 
-    def _current_bindings(self, case: AuditCase) -> list[ProjectRuleBinding]:
+    def _document_scope(
+        self,
+        case: AuditCase,
+        document_id: str | None,
+        document_version_id: str | None,
+        *,
+        for_write: bool,
+    ) -> tuple[str | None, str | None]:
+        if document_id is None:
+            if document_version_id is not None:
+                raise RuleBindingError("RULE_DOCUMENT_SCOPE_REQUIRED")
+            return None, None
+        document = self.db.exec(
+            select(AuditCaseDocument).where(
+                AuditCaseDocument.id == document_id,
+                AuditCaseDocument.tenant_id == case.tenant_id,
+                AuditCaseDocument.audit_case_id == case.id,
+            )
+        ).first()
+        if document is None:
+            raise RuleBindingError("RULE_DOCUMENT_NOT_FOUND")
+        if for_write and document.status == "archived":
+            raise RuleBindingError("RULE_DOCUMENT_ARCHIVED")
+        active_version_id = document.active_version_id
+        if not active_version_id:
+            raise RuleBindingError("RULE_DOCUMENT_VERSION_REQUIRED")
+        selected_version_id = document_version_id or active_version_id
+        version = self.db.exec(
+            select(AuditCaseDocumentVersion).where(
+                AuditCaseDocumentVersion.id == selected_version_id,
+                AuditCaseDocumentVersion.tenant_id == case.tenant_id,
+                AuditCaseDocumentVersion.audit_case_id == case.id,
+                AuditCaseDocumentVersion.document_id == document.id,
+            )
+        ).first()
+        if version is None:
+            raise RuleBindingError("RULE_DOCUMENT_VERSION_REQUIRED")
+        if version.id != active_version_id:
+            raise RuleBindingError("RULE_DOCUMENT_VERSION_STALE")
+        return document.id, version.id
+
+    def _current_bindings(
+        self,
+        case: AuditCase,
+        document_id: str | None = None,
+        document_version_id: str | None = None,
+    ) -> list[ProjectRuleBinding]:
+        statement = select(ProjectRuleBinding).where(
+            ProjectRuleBinding.tenant_id == case.tenant_id,
+            ProjectRuleBinding.audit_case_id == case.id,
+            ProjectRuleBinding.status == "current",
+        )
+        if document_id is None:
+            statement = statement.where(ProjectRuleBinding.document_id.is_(None))
+        else:
+            statement = statement.where(ProjectRuleBinding.document_id == document_id)
+            if document_version_id is not None:
+                statement = statement.where(
+                    ProjectRuleBinding.document_version_id == document_version_id
+                )
         return list(
             self.db.exec(
-                select(ProjectRuleBinding)
-                .where(
-                    ProjectRuleBinding.tenant_id == case.tenant_id,
-                    ProjectRuleBinding.audit_case_id == case.id,
-                    ProjectRuleBinding.status == "current",
-                )
-                .order_by(ProjectRuleBinding.priority, ProjectRuleBinding.bound_at)
+                statement.order_by(ProjectRuleBinding.priority, ProjectRuleBinding.bound_at)
             ).all()
         )
+
+    def _supersede_stale_document_bindings(
+        self,
+        case: AuditCase,
+        document_id: str | None,
+        document_version_id: str | None,
+    ) -> None:
+        if document_id is None or document_version_id is None:
+            return
+        now = utc_now()
+        for binding in self._current_bindings(case, document_id):
+            if binding.document_version_id == document_version_id:
+                continue
+            binding.status = "superseded"
+            binding.updated_at = now
+            self.db.add(binding)
 
     @staticmethod
     def _validate_source(selection_source: str) -> None:
@@ -408,15 +479,23 @@ class RuleBindingService:
         version_id: str,
         actor: User,
         selection_source: Literal["recommended", "manual"],
+        *,
+        document_id: str | None = None,
+        document_version_id: str | None = None,
     ) -> ProjectRuleBinding:
         self._authorize_write(case, actor)
         self._validate_source(selection_source)
+        document_id, document_version_id = self._document_scope(
+            case, document_id, document_version_id, for_write=True
+        )
+        self._supersede_stale_document_bindings(case, document_id, document_version_id)
         version = self._published_version(case, version_id)
-        current = self._current_bindings(case)
+        current = self._current_bindings(case, document_id, document_version_id)
         for binding in current:
             if binding.rule_set_id != version.rule_set_id:
                 continue
             if binding.rule_set_version_id == version.id:
+                self.db.commit()
                 return binding
             raise RuleBindingMigrationRequired()
         _validate_mandatory_rule_conflicts(
@@ -427,6 +506,8 @@ class RuleBindingService:
         binding = ProjectRuleBinding(
             tenant_id=case.tenant_id,
             audit_case_id=case.id,
+            document_id=document_id,
+            document_version_id=document_version_id,
             rule_set_id=version.rule_set_id,
             rule_set_version_id=version.id,
             selection_source=selection_source,
@@ -444,6 +525,8 @@ class RuleBindingService:
             resource_id=binding.id,
             metadata={
                 "rule_set_version_id": binding.rule_set_version_id,
+                "document_id": binding.document_id,
+                "document_version_id": binding.document_version_id,
                 "status": "current",
             },
         )
@@ -457,19 +540,29 @@ class RuleBindingService:
         version_ids: list[str],
         actor: User,
         selection_source: Literal["recommended", "manual"],
+        *,
+        document_id: str | None = None,
+        document_version_id: str | None = None,
     ) -> list[ProjectRuleBinding]:
         self._authorize_write(case, actor)
         self._validate_source(selection_source)
+        document_id, document_version_id = self._document_scope(
+            case, document_id, document_version_id, for_write=True
+        )
+        self._supersede_stale_document_bindings(case, document_id, document_version_id)
         versions = self._published_versions(case, version_ids)
-        current = self._current_bindings(case)
+        current = self._current_bindings(case, document_id, document_version_id)
         if current:
             if [row.rule_set_version_id for row in current] == version_ids:
+                self.db.commit()
                 return current
             raise RuleBindingMigrationRequired()
         bindings = [
             ProjectRuleBinding(
                 tenant_id=case.tenant_id,
                 audit_case_id=case.id,
+                document_id=document_id,
+                document_version_id=document_version_id,
                 rule_set_id=version.rule_set_id,
                 rule_set_version_id=version.id,
                 selection_source=selection_source,
@@ -490,6 +583,8 @@ class RuleBindingService:
                 resource_id=bindings[0].id,
                 metadata={
                     "rule_set_version_id": bindings[0].rule_set_version_id,
+                    "document_id": bindings[0].document_id,
+                    "document_version_id": bindings[0].document_version_id,
                     "status": "current",
                     "count": len(bindings),
                 },
@@ -503,9 +598,15 @@ class RuleBindingService:
         self,
         case: AuditCase,
         actor: User,
+        *,
+        document_id: str | None = None,
+        document_version_id: str | None = None,
     ) -> list[ProjectRuleBinding]:
         self._authorize_read(case, actor)
-        bindings = self._current_bindings(case)
+        document_id, document_version_id = self._document_scope(
+            case, document_id, document_version_id, for_write=False
+        )
+        bindings = self._current_bindings(case, document_id, document_version_id)
         if not bindings:
             raise RuleBindingNotInitialized()
         return bindings
@@ -515,9 +616,15 @@ class RuleBindingService:
         case: AuditCase,
         target_version_ids: list[str],
         actor: User,
+        *,
+        document_id: str | None = None,
+        document_version_id: str | None = None,
     ) -> RuleMigrationPreview:
         self._authorize_write(case, actor)
-        current = self._current_bindings(case)
+        document_id, document_version_id = self._document_scope(
+            case, document_id, document_version_id, for_write=True
+        )
+        current = self._current_bindings(case, document_id, document_version_id)
         if not current:
             raise RuleBindingNotInitialized()
         target_versions = self._published_versions(case, target_version_ids)
@@ -571,12 +678,18 @@ class RuleBindingService:
         target_version_ids: list[str],
         actor: User,
         reason: str,
+        *,
+        document_id: str | None = None,
+        document_version_id: str | None = None,
     ) -> list[ProjectRuleBinding]:
         self._authorize_write(case, actor)
         normalized_reason = reason.strip()
         if not normalized_reason:
             raise RuleBindingError("RULE_MIGRATION_REASON_REQUIRED")
-        current = self._current_bindings(case)
+        document_id, document_version_id = self._document_scope(
+            case, document_id, document_version_id, for_write=True
+        )
+        current = self._current_bindings(case, document_id, document_version_id)
         if not current:
             raise RuleBindingNotInitialized()
         versions = self._published_versions(case, target_version_ids)
@@ -593,6 +706,8 @@ class RuleBindingService:
             ProjectRuleBinding(
                 tenant_id=case.tenant_id,
                 audit_case_id=case.id,
+                document_id=document_id,
+                document_version_id=document_version_id,
                 rule_set_id=version.rule_set_id,
                 rule_set_version_id=version.id,
                 selection_source="manual",
@@ -627,6 +742,8 @@ class RuleBindingService:
             resource_id=bindings[0].id if bindings else case.id,
             metadata={
                 "rule_set_version_id": migrated_version_id,
+                "document_id": document_id,
+                "document_version_id": document_version_id,
                 "status": "migrated",
                 "count": len(bindings),
             },
@@ -850,6 +967,9 @@ class RuleLibraryService:
         case: AuditCase,
         actor: User,
         context: RuleEvaluationContext,
+        *,
+        document_id: str | None = None,
+        document_version_id: str | None = None,
     ) -> list[RuleEvaluation]:
         """Evaluate the exact rule versions currently pinned to a project.
 
@@ -859,7 +979,12 @@ class RuleLibraryService:
         """
 
         binding_service = RuleBindingService(self.db)
-        bindings = binding_service.list_current_bindings(case, actor)
+        bindings = binding_service.list_current_bindings(
+            case,
+            actor,
+            document_id=document_id,
+            document_version_id=document_version_id,
+        )
         version_ids = [binding.rule_set_version_id for binding in bindings]
         rules_by_version = {
             version_id: binding_service._rules_for_versions([version_id])
@@ -886,6 +1011,8 @@ class RuleLibraryService:
                     RuleEvaluation(
                         tenant_id=case.tenant_id,
                         audit_case_id=case.id,
+                        document_id=binding.document_id,
+                        document_version_id=binding.document_version_id,
                         rule_set_version_id=binding.rule_set_version_id,
                         rule_definition_id=rule.id,
                         workflow_node=context.workflow_node

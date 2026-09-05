@@ -4,7 +4,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AuditCaseCoverageRead, AuditReportRead } from '@/types';
+import type { AuditCaseCoverageRead, AuditCaseDocumentRead, AuditReportRead } from '@/types';
 
 import { processAuditCaseEvidence } from '../auditCaseApi';
 import {
@@ -72,6 +72,21 @@ function report(overrides: Partial<AuditReportRead> = {}): AuditReportRead {
   };
 }
 
+const reportDocument: AuditCaseDocumentRead = {
+  id: 'document-1',
+  audit_case_id: 'case-1',
+  document_key: 'policy-1',
+  title: '能源方针',
+  document_type: 'policy',
+  zone: 'system',
+  status: 'active',
+  active_version_id: 'document-version-1',
+  created_by_user_id: 'user-1',
+  updated_by_user_id: 'user-1',
+  created_at: '2026-09-01T00:00:00Z',
+  updated_at: '2026-09-01T00:00:00Z',
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
@@ -93,6 +108,25 @@ afterEach(() => {
 });
 
 describe('EvidenceReportPanel', () => {
+  it('creates a report with the selected project document snapshot', async () => {
+    const user = userEvent.setup();
+    render(
+      <EvidenceReportPanel
+        caseId="case-1"
+        documents={[reportDocument]}
+        coverage={coverage()}
+      />,
+    );
+
+    await user.click(await screen.findByRole('button', { name: '生成待确认草稿' }));
+    expect(createAuditCaseReport).toHaveBeenCalledWith(
+      'case-1',
+      undefined,
+      'document-1',
+      'document-version-1',
+    );
+  });
+
   it('offers evidence processing when chunks are pending and preserves state on failure', async () => {
     vi.mocked(processAuditCaseEvidence).mockRejectedValueOnce(new Error('network'));
     const user = userEvent.setup();

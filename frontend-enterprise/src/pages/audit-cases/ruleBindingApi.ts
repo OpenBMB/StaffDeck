@@ -17,6 +17,8 @@ export type RuleBindingRead = {
   priority: number;
   bound_by_user_id: string;
   supersedes_binding_id: string | null;
+  document_id?: string | null;
+  document_version_id?: string | null;
 };
 
 export type RuleMigrationPreviewRead = {
@@ -36,9 +38,16 @@ export type PublishedRuleVersionOption = {
 const tenantQuery = `tenant_id=${encodeURIComponent(TENANT_ID)}`;
 const segment = (value: string) => encodeURIComponent(value);
 
-export function loadCurrentRuleBindings(caseId: string): Promise<RuleBindingRead[]> {
+export function loadCurrentRuleBindings(
+  caseId: string,
+  documentId?: string,
+  documentVersionId?: string | null,
+): Promise<RuleBindingRead[]> {
+  const scope = documentId
+    ? `&document_id=${segment(documentId)}${documentVersionId ? `&document_version_id=${segment(documentVersionId)}` : ''}`
+    : '';
   return api.get<RuleBindingRead[]>(
-    `/api/audit-cases/${segment(caseId)}/rule-bindings?${tenantQuery}`,
+    `/api/audit-cases/${segment(caseId)}/rule-bindings?${tenantQuery}${scope}`,
   );
 }
 
@@ -66,20 +75,33 @@ export function replaceCurrentRuleBindings(
   caseId: string,
   versionIds: string[],
   selectionSource: 'recommended' | 'manual' = 'manual',
+  documentId?: string,
+  documentVersionId?: string | null,
 ): Promise<RuleBindingRead[]> {
+  const payload = {
+    version_ids: versionIds,
+    selection_source: selectionSource,
+    ...(documentId ? { document_id: documentId, document_version_id: documentVersionId || undefined } : {}),
+  };
   return api.put<RuleBindingRead[]>(
     `/api/audit-cases/${segment(caseId)}/rule-bindings?${tenantQuery}`,
-    { version_ids: versionIds, selection_source: selectionSource },
+    payload,
   );
 }
 
 export function previewRuleBindingMigration(
   caseId: string,
   versionIds: string[],
+  documentId?: string,
+  documentVersionId?: string | null,
 ): Promise<RuleMigrationPreviewRead> {
+  const payload = {
+    version_ids: versionIds,
+    ...(documentId ? { document_id: documentId, document_version_id: documentVersionId || undefined } : {}),
+  };
   return api.post<RuleMigrationPreviewRead>(
     `/api/audit-cases/${segment(caseId)}/rule-bindings/migration-preview?${tenantQuery}`,
-    { version_ids: versionIds },
+    payload,
   );
 }
 
@@ -87,9 +109,16 @@ export function migrateRuleBindings(
   caseId: string,
   versionIds: string[],
   reason: string,
+  documentId?: string,
+  documentVersionId?: string | null,
 ): Promise<RuleBindingRead[]> {
+  const payload = {
+    version_ids: versionIds,
+    reason,
+    ...(documentId ? { document_id: documentId, document_version_id: documentVersionId || undefined } : {}),
+  };
   return api.post<RuleBindingRead[]>(
     `/api/audit-cases/${segment(caseId)}/rule-bindings/migrate?${tenantQuery}`,
-    { version_ids: versionIds, reason },
+    payload,
   );
 }

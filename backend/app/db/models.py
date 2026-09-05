@@ -286,6 +286,11 @@ class ProjectRuleBinding(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("rulebinding"), primary_key=True)
     tenant_id: str = Field(index=True)
     audit_case_id: str = Field(index=True)
+    # New bindings can be scoped to one logical project document and the
+    # immutable version that was active when the binding was made.  Both are
+    # nullable so historical project-wide bindings remain readable.
+    document_id: Optional[str] = Field(default=None, index=True)
+    document_version_id: Optional[str] = Field(default=None, index=True)
     rule_set_id: str = Field(index=True)
     rule_set_version_id: str = Field(index=True)
     selection_source: str = Field(default="manual", index=True)
@@ -440,6 +445,8 @@ class RuleEvaluation(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("ruleeval"), primary_key=True)
     tenant_id: str = Field(index=True)
     audit_case_id: str = Field(index=True)
+    document_id: Optional[str] = Field(default=None, index=True)
+    document_version_id: Optional[str] = Field(default=None, index=True)
     rule_set_version_id: str = Field(index=True)
     rule_definition_id: str = Field(index=True)
     workflow_node: str = Field(index=True)
@@ -534,6 +541,8 @@ class AuditReportVersion(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("auditreport"), primary_key=True)
     tenant_id: str = Field(index=True)
     audit_case_id: str = Field(index=True)
+    source_document_id: Optional[str] = Field(default=None, index=True)
+    source_document_version_id: Optional[str] = Field(default=None, index=True)
     version: int = Field(index=True)
     status: str = Field(default="draft", index=True)
     material_version_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))

@@ -15,6 +15,8 @@ from app.audit_cases.elements import load_required_elements
 from app.audit_cases.storage import read_case_blob, write_case_blob
 from app.db.models import (
     AuditCase,
+    AuditCaseDocument,
+    AuditCaseDocumentVersion,
     AuditCaseMaterial,
     AuditEvidenceLedger,
     AuditReportSection,
@@ -71,16 +73,68 @@ class AuditReportService:
         self.db = db
         self.client_factory = client_factory
 
-    def rule_snapshot(self, case: AuditCase) -> ReportRuleSnapshot:
+    def _document_scope(
+        self,
+        case: AuditCase,
+        document_id: str | None,
+        document_version_id: str | None,
+    ) -> tuple[str | None, str | None]:
+        if document_id is None:
+            if document_version_id is not None:
+                raise AuditReportBlocked("REPORT_DOCUMENT_SCOPE_REQUIRED")
+            return None, None
+        document = self.db.exec(
+            select(AuditCaseDocument).where(
+                AuditCaseDocument.id == document_id,
+                AuditCaseDocument.tenant_id == case.tenant_id,
+                AuditCaseDocument.audit_case_id == case.id,
+            )
+        ).first()
+        if document is None:
+            raise AuditReportBlocked("REPORT_DOCUMENT_NOT_FOUND")
+        if document.status == "archived":
+            raise AuditReportBlocked("REPORT_DOCUMENT_ARCHIVED")
+        if not document.active_version_id:
+            raise AuditReportBlocked("REPORT_DOCUMENT_VERSION_REQUIRED")
+        selected_version_id = document_version_id or document.active_version_id
+        version = self.db.exec(
+            select(AuditCaseDocumentVersion).where(
+                AuditCaseDocumentVersion.id == selected_version_id,
+                AuditCaseDocumentVersion.tenant_id == case.tenant_id,
+                AuditCaseDocumentVersion.audit_case_id == case.id,
+                AuditCaseDocumentVersion.document_id == document.id,
+            )
+        ).first()
+        if version is None:
+            raise AuditReportBlocked("REPORT_DOCUMENT_VERSION_REQUIRED")
+        if version.id != document.active_version_id:
+            raise AuditReportBlocked("REPORT_DOCUMENT_VERSION_STALE")
+        return document.id, version.id
+
+    def rule_snapshot(
+        self,
+        case: AuditCase,
+        source_document_id: str | None = None,
+        source_document_version_id: str | None = None,
+    ) -> ReportRuleSnapshot:
+        source_document_id, _source_document_version_id = self._document_scope(
+            case, source_document_id, source_document_version_id
+        )
+        statement = select(ProjectRuleBinding).where(
+            ProjectRuleBinding.tenant_id == case.tenant_id,
+            ProjectRuleBinding.audit_case_id == case.id,
+            ProjectRuleBinding.status == "current",
+        )
+        if source_document_id is None:
+            statement = statement.where(ProjectRuleBinding.document_id.is_(None))
+        else:
+            statement = statement.where(
+                ProjectRuleBinding.document_id == source_document_id,
+                ProjectRuleBinding.document_version_id == _source_document_version_id,
+            )
         bindings = list(
             self.db.exec(
-                select(ProjectRuleBinding)
-                .where(
-                    ProjectRuleBinding.tenant_id == case.tenant_id,
-                    ProjectRuleBinding.audit_case_id == case.id,
-                    ProjectRuleBinding.status == "current",
-                )
-                .order_by(ProjectRuleBinding.priority, ProjectRuleBinding.bound_at)
+                statement.order_by(ProjectRuleBinding.priority, ProjectRuleBinding.bound_at)
             ).all()
         )
         section_ids = [spec.id for spec in _report_section_specs(case.management_systems_json)]
@@ -128,7 +182,13 @@ class AuditReportService:
             status="incomplete" if incomplete else "complete",
         )
 
-    def create_version(self, case: AuditCase) -> AuditReportVersion:
+    def create_version(
+        self,
+        case: AuditCase,
+        *,
+        source_document_id: str | None = None,
+        source_document_version_id: str | None = None,
+    ) -> AuditReportVersion:
         latest = self.db.exec(
             select(AuditReportVersion)
             .where(
@@ -138,7 +198,12 @@ class AuditReportService:
             .order_by(AuditReportVersion.version.desc())
         ).first()
         version = (latest.version + 1) if latest else 1
-        rule_snapshot = self.rule_snapshot(case)
+        source_document_id, source_document_version_id = self._document_scope(
+            case, source_document_id, source_document_version_id
+        )
+        rule_snapshot = self.rule_snapshot(
+            case, source_document_id, source_document_version_id
+        )
         materials = list(
             self.db.exec(
                 select(AuditCaseMaterial).where(
@@ -151,6 +216,8 @@ class AuditReportService:
         report = AuditReportVersion(
             tenant_id=case.tenant_id,
             audit_case_id=case.id,
+            source_document_id=source_document_id,
+            source_document_version_id=source_document_version_id,
             version=version,
             material_version_ids_json=[f"{row.id}:v{row.version}" for row in materials],
             knowledge_base_version_ids_json=list(case.knowledge_base_version_ids_json),

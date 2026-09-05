@@ -57,6 +57,7 @@ _CHANNEL_ACCOUNT_KEY_MIGRATION_ID = "20260723_channel_account_key_v1"
 _FEISHU_CHANNEL_SCHEMA_MIGRATION_ID = "20260724_feishu_channel_schema_v1"
 _AUDIT_CASE_MATERIAL_UNIQUE_TYPE_MIGRATION_ID = "audit_case_material_unique_type_v1"
 _AUDIT_REPORT_RUNTIME_TRACEABILITY_MIGRATION_ID = "audit_report_runtime_traceability_v1"
+_DOCUMENT_SCOPED_RULE_BINDINGS_MIGRATION_ID = "document_scoped_rule_bindings_v1"
 _CAPABILITY_SCOPE_TABLES = (
     "general_skills",
     "tools",
@@ -148,6 +149,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_audit_case_schema(conn, inspector, tables)
         _migrate_audit_case_material_schema(conn, inspector, tables)
         _migrate_audit_report_traceability_schema(conn, inspector, tables)
+        _migrate_document_scoped_rule_bindings_schema(conn, inspector, tables)
         _migrate_knowledge_retrieval_schema(conn, inspector, tables)
 
         if "api_jobs" in tables:
@@ -2811,6 +2813,46 @@ def _migrate_audit_report_traceability_schema(conn, inspector, tables: set[str])
     conn.execute(
         text("INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"),
         {"id": _AUDIT_REPORT_RUNTIME_TRACEABILITY_MIGRATION_ID},
+    )
+
+
+def _migrate_document_scoped_rule_bindings_schema(conn, inspector, tables: set[str]) -> None:
+    """Add optional document/version scope to rules, evaluations, and reports."""
+
+    target_columns = {
+        "project_rule_bindings": ("document_id", "document_version_id"),
+        "rule_evaluations": ("document_id", "document_version_id"),
+        "audit_report_versions": ("source_document_id", "source_document_version_id"),
+    }
+    current_tables = set(inspect(conn).get_table_names())
+    for table_name, column_names in target_columns.items():
+        if table_name not in current_tables:
+            continue
+        columns = {column["name"] for column in inspect(conn).get_columns(table_name)}
+        for column_name in column_names:
+            if column_name not in columns:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} VARCHAR"
+                    )
+                )
+            conn.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_{table_name}_{column_name} "
+                    f"ON {table_name}({column_name})"
+                )
+            )
+
+    conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS app_data_migrations ("
+            "id VARCHAR PRIMARY KEY, "
+            "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+    )
+    conn.execute(
+        text("INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": _DOCUMENT_SCOPED_RULE_BINDINGS_MIGRATION_ID},
     )
 
 

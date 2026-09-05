@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/api/client';
 import { notify } from '@/components/ui/app-toast';
 import { I18nProvider } from '@/i18n';
+import type { AuditCaseDocumentRead } from '@/types';
 
 import {
   loadCurrentRuleBindings,
@@ -38,6 +39,34 @@ const ruleSet = {
   id: 'rule-set-1',
   key: 'iso-50001',
   name: '能源管理体系规则',
+};
+
+const documentOne: AuditCaseDocumentRead = {
+  id: 'document-1',
+  audit_case_id: 'case-1',
+  document_key: 'policy-1',
+  title: '能源方针',
+  document_type: 'policy',
+  zone: 'system',
+  status: 'active',
+  active_version_id: 'document-version-1',
+  source_material_id: null,
+  archive_reason: null,
+  created_by_user_id: 'user-1',
+  updated_by_user_id: 'user-1',
+  created_at: '2026-09-01T00:00:00Z',
+  updated_at: '2026-09-01T00:00:00Z',
+  active_version: {
+    id: 'document-version-1',
+    document_id: 'document-1',
+    version: 1,
+    content_format: 'markdown',
+    content: '# 能源方针',
+    content_sha256: 'a'.repeat(64),
+    characters: 6,
+    created_by_user_id: 'user-1',
+    created_at: '2026-09-01T00:00:00Z',
+  },
 };
 
 function option(
@@ -87,10 +116,10 @@ function notInitializedError(): ApiError {
   );
 }
 
-function renderPanel(props: { caseId?: string; disabled?: boolean } = {}) {
+function renderPanel(props: { caseId?: string; disabled?: boolean; documents?: AuditCaseDocumentRead[] } = {}) {
   return render(
     <I18nProvider>
-      <RuleBindingPanel caseId={props.caseId || 'case-1'} disabled={props.disabled} />
+      <RuleBindingPanel caseId={props.caseId || 'case-1'} documents={props.documents} disabled={props.disabled} />
     </I18nProvider>,
   );
 }
@@ -123,6 +152,25 @@ beforeEach(() => {
 });
 
 describe('RuleBindingPanel', () => {
+  it('requires and sends the selected project document scope for new bindings', async () => {
+    const user = userEvent.setup();
+    mockLoadedState([publishedV1], notInitializedError());
+
+    renderPanel({ documents: [documentOne] });
+
+    expect((await screen.findByRole('combobox', { name: '规则文件' }) as HTMLSelectElement).value).toBe('document-1');
+    await user.click(screen.getByLabelText('能源管理体系规则 · 版本 1'));
+    await user.click(screen.getByRole('button', { name: '绑定选中版本' }));
+
+    await waitFor(() => expect(replaceCurrentRuleBindings).toHaveBeenCalledWith(
+      'case-1',
+      ['version-1'],
+      'manual',
+      'document-1',
+      'document-version-1',
+    ));
+  });
+
   it('shows an explicit empty state for an uninitialized project and only published candidates', async () => {
     mockLoadedState([publishedV1, publishedV2, draftV3], notInitializedError());
 

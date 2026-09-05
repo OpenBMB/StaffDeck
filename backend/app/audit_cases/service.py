@@ -94,6 +94,8 @@ _CASE_EVENT_METADATA_KEYS = {
     "candidate_id",
     "conflict_id",
     "rule_set_version_id",
+    "document_id",
+    "document_version_id",
     "rule_evaluation_id",
     "revision",
 }
