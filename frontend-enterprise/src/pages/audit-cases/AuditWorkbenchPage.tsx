@@ -4,7 +4,7 @@ import type { EnterpriseAuthUser } from '@/auth';
 import AppHeader from '@/components/AppHeader';
 import type { AuditCaseCoverageRead, AuditCaseDocumentRead, AuditCaseRead } from '@/types';
 import { loadAuditCase, loadAuditCaseCoverage, loadAuditCaseDocuments } from './auditCaseApi';
-import { createWorkIssue, loadWorkbench, loadWorkbenchEvents, setWorkbenchRole, type ProjectRole, type WorkbenchEvent, type WorkbenchSnapshot } from './workbenchApi';
+import { createWorkIssue, loadProcessGates, loadWorkbench, loadWorkbenchEvents, setWorkbenchRole, type ProcessGate, type ProjectRole, type WorkbenchEvent, type WorkbenchSnapshot } from './workbenchApi';
 import { ProjectDocumentWorkspace } from './components/ProjectDocumentWorkspace';
 import { RuleBindingPanel } from './components/RuleBindingPanel';
 import { EvidenceReportPanel } from './components/EvidenceReportPanel';
@@ -19,7 +19,7 @@ const EVENT_LABELS: Record<string, string> = { 'item.created': '建立工作项'
 export default function AuditWorkbenchPage({ currentUser, onLogout }: { currentUser?: EnterpriseAuthUser; onLogout?: () => void }) {
   const { caseId = '' } = useParams(); const [search] = useSearchParams();
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null); const [project, setProject] = useState<AuditCaseRead | null>(null);
-  const [documents, setDocuments] = useState<AuditCaseDocumentRead[]>([]); const [coverage, setCoverage] = useState<AuditCaseCoverageRead | null>(null);
+  const [documents, setDocuments] = useState<AuditCaseDocumentRead[]>([]); const [coverage, setCoverage] = useState<AuditCaseCoverageRead | null>(null); const [processGates, setProcessGates] = useState<ProcessGate[]>([]);
   const [selectedId, setSelectedId] = useState(search.get('document') || ''); const [process, setProcess] = useState(Number(search.get('process')) || 15);
   const [tab, setTab] = useState<Tab>('content'); const [dirty, setDirty] = useState(false); const [reviewDirty, setReviewDirty] = useState(false); const [reviewKey, setReviewKey] = useState(0); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [events, setEvents] = useState<WorkbenchEvent[]>([]);
   const confirmLeave = useWorkbenchDirtyGuard(dirty || reviewDirty);
@@ -42,6 +42,13 @@ export default function AuditWorkbenchPage({ currentUser, onLogout }: { currentU
   }, [caseId]);
   const document = documents.find((d) => d.id === selectedId);
   const item = snapshot?.work_items.find((i) => i.document_id === selectedId && i.process_number === process);
+  const processGate = processGates.find((gate) => gate.process_number === process);
+  useEffect(() => {
+    let active = true;
+    if (!selectedId) { setProcessGates([]); return () => { active = false; }; }
+    void loadProcessGates(caseId, selectedId).then((gates) => { if (active) setProcessGates(gates); }).catch((e) => { if (active) setError(e instanceof Error ? e.message : '加载流程门槛失败'); });
+    return () => { active = false; };
+  }, [caseId, selectedId]);
   const locked = snapshot?.work_items.some((i) => i.document_id === selectedId && (i.status === 'submitted' || i.status === 'approved'));
   useEffect(() => {
     let active = true; setEvents([]);
@@ -77,7 +84,7 @@ export default function AuditWorkbenchPage({ currentUser, onLogout }: { currentU
       {document && tab === 'rules' && <RuleBindingPanel key={`${document.id}-${reviewKey}`} caseId={caseId} documents={documents} selectedDocumentId={selectedId} disabled={fileReadOnly || busy || !canReview} onDirtyChange={setDirty} />}
       {document && tab === 'checks' && <WorkbenchChecks key={`${selectedId}-${document.active_version_id}`} caseId={caseId} documentId={selectedId} documents={documents} canRun={canEdit && !busy && document.status !== 'archived'} onRegister={canEdit && item ? async (finding) => { await run(() => createWorkIssue(caseId, { work_item_id: item.id, kind: 'document_check', title: finding.title, detail: `${finding.detail}\n${finding.evidence_excerpt}\n${finding.document_id} / ${finding.document_version_id}`, blocking: finding.severity === 'error', assigned_to_user_id: item.assigned_to_user_id })); } : undefined} />}
       {document && tab === 'reports' && <EvidenceReportPanel caseId={caseId} documents={documents} selectedDocumentId={selectedId} coverage={coverage} disabled={!canEdit || busy || document.status === 'archived'} canPublish={canReview} onWorkDocumentCreated={async (created) => { await reload(); setSelectedId(created.id); setProcess(26); setTab('content'); }} onChanged={async () => { setCoverage(await loadAuditCaseCoverage(caseId)); await reload(); }} />}
-    </section><aside className="wb-review"><WorkbenchReview key={reviewKey} caseId={caseId} userId={currentUser?.id || ''} snapshot={snapshot} documentId={selectedId} documents={documents} processNumber={process} item={item} blocked={busy || dirty || !canEdit || document?.status === 'archived'} run={run} onDirtyChange={setReviewDirty} />
+    </section><aside className="wb-review"><WorkbenchReview key={reviewKey} caseId={caseId} userId={currentUser?.id || ''} snapshot={snapshot} documentId={selectedId} documents={documents} processNumber={process} gate={processGate} item={item} blocked={busy || dirty || !canEdit || document?.status === 'archived'} run={run} onDirtyChange={setReviewDirty} />
       {snapshot.role === 'project_admin' && <section className="wb-card"><h2>项目成员角色</h2><p className="wb-muted">仅现有项目成员。所有者及待办复核的约束由服务端校验。</p>{snapshot.members.map((member) => <label key={member.user_id}>{member.display_name}<select aria-label={`角色 ${member.display_name}`} value={member.role} disabled={busy || project.status === 'archived'} onChange={(e) => void run(() => setWorkbenchRole(caseId, member.user_id, e.target.value as ProjectRole))}>{Object.entries(ROLE_LABELS).map(([role, label]) => <option key={role} value={role}>{label}</option>)}</select></label>)}</section>}
       <section className="wb-card"><h2>流转记录</h2>{events.length === 0 && <p className="wb-muted">尚无流转记录</p>}{events.map((event) => {
         const detail = (event.detail && typeof event.detail === 'object' ? event.detail : {}) as Record<string, unknown>;
@@ -86,3 +93,4 @@ export default function AuditWorkbenchPage({ currentUser, onLogout }: { currentU
     </aside></main>
   </div>;
 }
+
