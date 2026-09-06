@@ -4,6 +4,21 @@ import type { PublishedRuleVersionOption } from './ruleBindingApi';
 
 export type ProjectRole = 'project_admin' | 'reviewer' | 'editor' | 'viewer';
 export type WorkbenchMember = { user_id: string; display_name: string; role: ProjectRole };
+export type ProcessDefinition = {
+  number: number; name: string; stage: number; enabled: boolean;
+  predecessor_numbers?: number[]; required_reference_process_numbers?: number[];
+  requires_fresh_check?: boolean; guidance?: string;
+};
+export type ProcessGateBlocker = { code: string; message: string; process_number?: number };
+export type ProcessGatePredecessor = {
+  number: number; name: string; status: string; approved: boolean;
+  work_item_id: string | null; document_id: string | null; document_version_id: string | null;
+};
+export type ProcessGate = {
+  process_number: number; enabled: boolean; ready: boolean; blockers: ProcessGateBlocker[];
+  predecessors: ProcessGatePredecessor[]; required_reference_document_ids: string[];
+  check: { status: string; stale: boolean; has_errors: boolean } | null;
+};
 export type VersionReference = { document_id: string; document_version_id: string };
 export type WorkItem = {
   id: string; audit_case_id: string; document_id: string; document_version_id: string;
@@ -22,7 +37,7 @@ export type WorkIssue = {
 };
 export type WorkbenchSnapshot = {
   case_id: string; role: ProjectRole; members: WorkbenchMember[];
-  processes: { number: number; name: string; stage: number; enabled: boolean }[];
+  processes: ProcessDefinition[];
   work_items: WorkItem[]; issues: WorkIssue[];
 };
 export type WorkbenchEvent = { id: string; work_item_id: string; event_type: string; actor_user_id: string; detail: unknown; created_at: string };
@@ -41,6 +56,7 @@ function url(path: string, query: Record<string, string> = {}) {
 const casePath = (id: string) => `/cases/${encode(id)}`;
 export const requestKey = (): string => crypto.randomUUID();
 export const loadWorkbench = (id: string) => api.get<WorkbenchSnapshot>(url(casePath(id)));
+export const loadProcessGates = (id: string, documentId: string) => api.get<ProcessGate[]>(url(`${casePath(id)}/process-gates`, { document_id: documentId }));
 export const loadWorkbenchRuleOptions = (id: string) => api.get<PublishedRuleVersionOption[]>(url(`${casePath(id)}/rule-options`));
 export const loadWorkbenchInbox = () => api.get<WorkbenchInbox>(url('/inbox'));
 export const loadWorkbenchEvents = (id: string, itemId?: string) => api.get<WorkbenchEvent[]>(url(`${casePath(id)}/events`, itemId ? { work_item_id: itemId } : {}));
@@ -53,3 +69,4 @@ export const loadDocumentChecks = (id: string, documentId: string) => api.get<Ch
 export const createDocumentCheck = (id: string, documentId: string, references: string[], key = requestKey()) => api.post<CheckJob>(url(`${casePath(id)}/checks`), { document_id: documentId, reference_document_ids: references, request_key: key });
 export const retryDocumentCheck = (id: string, jobId: string, key = requestKey()) => api.post<CheckJob>(url(`${casePath(id)}/checks/${encode(jobId)}/retry`), { request_key: key });
 export const reportToWorkDocument = (id: string, reportId: string) => api.post<AuditCaseDocumentRead>(url(`${casePath(id)}/reports/${encode(reportId)}/work-document`));
+
