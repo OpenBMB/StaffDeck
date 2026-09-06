@@ -1,0 +1,34 @@
+{
+  "chunks": [
+    {
+      "id": "eval-c1",
+      "content": "能源方针、能源目标和能源指标应在审核记录中保留检查证据。"
+    },
+    {
+      "id": "eval-c2",
+      "content": "采购流程应记录供应商评价、合同审批和付款凭证。"
+    },
+    {
+      "id": "eval-c3",
+      "content": "能源评审的输入输出、边界确认和能源基准应记录在审核计划中。"
+    },
+    {
+      "id": "eval-c4",
+      "content": "内审不符合项应完成原因分析、纠正措施和关闭验证。"
+    }
+  ],
+  "queries": [
+    {
+      "query": "能源评审边界",
+      "relevant_chunk_ids": ["eval-c3"]
+    },
+    {
+      "query": "供应商合同付款",
+      "relevant_chunk_ids": ["eval-c2"]
+    },
+    {
+      "query": "内审纠正措施",
+      "relevant_chunk_ids": ["eval-c4"]
+    }
+  ]
+}

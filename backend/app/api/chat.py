@@ -19,6 +19,8 @@ from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
 from app.agents.branching import model_for_agent, visible_published_skills
+from app.audit_cases.schema import AuditCaseNotFound
+from app.audit_cases.service import AuditCaseService
 from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
@@ -191,6 +193,7 @@ def session_read(
         id=row.id,
         tenant_id=row.tenant_id,
         user_id=row.user_id,
+        audit_case_id=row.audit_case_id,
         agent_id=row.agent_id,
         title=row.title,
         active_skill_id=row.active_skill_id,
@@ -989,7 +992,7 @@ async def upload_chat_attachments(
             file.filename or "uploaded-file",
             file.content_type,
             data,
-            extract_text=False,
+            extract_text=True,
         )
         parsed.append(
             stage_chat_attachment(
@@ -1018,6 +1021,7 @@ def chat_turn(
     )
     request = _validate_chat_turn_attachments(request)
     team_tl_team: Team | None = None
+    chat_session: ChatSession | None = None
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
         _ensure_team_session_human_writable(chat_session)
@@ -1025,6 +1029,7 @@ def chat_turn(
         team_tl_team = _team_tl_session_team(db, chat_session)
     else:
         _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user)
+    _validate_audit_case_request(db, request, current_user, chat_session)
     ensure_tenant(db, request.tenant_id)
     if not request.message.strip() and not request.attachments:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
@@ -1094,6 +1099,7 @@ def chat_stream(
     request = _validate_chat_turn_attachments(request)
     ensure_tenant(db, request.tenant_id)
     team_tl_team_id: str | None = None
+    chat_session: ChatSession | None = None
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
         _ensure_team_session_human_writable(chat_session)
@@ -1102,6 +1108,7 @@ def chat_stream(
         team_tl_team_id = team_tl_team.id if team_tl_team is not None else None
     else:
         _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user)
+    _validate_audit_case_request(db, request, current_user, chat_session)
     if not request.message.strip() and not request.attachments:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     original_message = request.message
@@ -3371,6 +3378,29 @@ def _harness_event_trace_line(
 def _ensure_request_tenant(tenant_id: str, current_user: User) -> None:
     if tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
+
+
+def _validate_audit_case_request(
+    db: Session,
+    request: ChatTurnRequest,
+    current_user: User,
+    chat_session: ChatSession | None = None,
+) -> None:
+    requested_case_id = str(request.audit_case_id or "").strip() or None
+    bound_case_id = str(getattr(chat_session, "audit_case_id", "") or "").strip() or None
+    case_id = requested_case_id or bound_case_id
+    if not case_id:
+        return
+    try:
+        AuditCaseService(db).get_case_for_user(
+            request.tenant_id,
+            case_id,
+            current_user,
+        )
+    except AuditCaseNotFound as exc:
+        raise HTTPException(status_code=404, detail="Audit case not found") from exc
+    if requested_case_id and bound_case_id and requested_case_id != bound_case_id:
+        raise HTTPException(status_code=409, detail="Session is already bound to another audit case")
 
 
 def _chat_agent_visible_to_user(row: AgentProfile, user: User) -> bool:

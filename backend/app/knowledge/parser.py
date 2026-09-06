@@ -1,11 +1,19 @@
 from __future__ import annotations
 
-import re
-from html.parser import HTMLParser
+import hashlib
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from zipfile import ZipFile
 
+from app.config import Settings, get_settings
+from app.documents.extraction import (
+    DocumentExtractionError,
+    DocumentExtractionResult,
+    DocumentExtractor,
+    ExtractedPage,
+)
+from app.documents.model_manager import RapidDocModelManager
+from app.documents.rapiddoc_adapter import RapidDocStructuredPdfAdapter
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown", ".html", ".htm", ".pdf", ".docx", ".doc"}
 
@@ -14,124 +22,109 @@ class KnowledgeParseError(ValueError):
     pass
 
 
-def extract_text(filename: str, content: bytes) -> tuple[str, str]:
+@dataclass(frozen=True)
+class ParsedKnowledgeDocument:
+    extraction: DocumentExtractionResult
+    file_type: str
+
+    @property
+    def text(self) -> str:
+        return self.extraction.text
+
+
+def extract_document(filename: str, content: bytes) -> ParsedKnowledgeDocument:
     suffix = Path(filename).suffix.lower()
-    if suffix not in SUPPORTED_EXTENSIONS:
-        raise KnowledgeParseError(f"暂不支持 {suffix or 'unknown'} 文件格式。")
-    if suffix == ".doc":
-        raise KnowledgeParseError("暂不支持旧版 .doc 二进制格式，请转换为 .docx 后上传。")
-    if suffix in {".txt", ".md", ".markdown"}:
-        return _decode_text(content), suffix.lstrip(".")
-    if suffix in {".html", ".htm"}:
-        return _extract_html(content), "html"
-    if suffix == ".pdf":
-        return _extract_pdf(content), "pdf"
-    if suffix == ".docx":
-        return _extract_docx(content), "docx"
-    raise KnowledgeParseError(f"暂不支持 {suffix} 文件格式。")
-
-
-def _decode_text(content: bytes) -> str:
-    for encoding in ("utf-8", "utf-8-sig", "gb18030", "latin-1"):
-        try:
-            return content.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return content.decode("utf-8", errors="ignore")
-
-
-def _extract_html(content: bytes) -> str:
-    text = _decode_text(content)
+    file_type = suffix.lstrip(".") if suffix != ".htm" else "html"
+    settings = get_settings()
     try:
-        from bs4 import BeautifulSoup
+        result = _build_document_extractor(settings).extract(filename, content)
+    except DocumentExtractionError as exc:
+        # The legacy parser is a compatibility fallback only while structured
+        # PDF OCR is disabled, or when an administrator explicitly opts in.
+        # In strict mode, a missing OCR dependency must remain visible instead
+        # of being converted into an empty native result.
+        allow_legacy_fallback = (
+            suffix == ".pdf"
+            and exc.code == "OCR_DEPENDENCY_MISSING"
+            and (
+                not settings.structured_pdf_enabled
+                or settings.structured_pdf_allow_ocr_fallback
+            )
+        )
+        if allow_legacy_fallback:
+            result = _extract_pdf_legacy_result(content)
+        else:
+            raise KnowledgeParseError(str(exc)) from exc
+    return ParsedKnowledgeDocument(extraction=result, file_type=file_type)
 
-        soup = BeautifulSoup(text, "html.parser")
-        for item in soup(["script", "style", "noscript"]):
-            item.decompose()
-        return soup.get_text("\n")
-    except Exception:
-        parser = _HTMLTextExtractor()
-        parser.feed(text)
-        return parser.text
+
+def extract_text(filename: str, content: bytes) -> tuple[str, str]:
+    result = extract_document(filename, content)
+    return result.text, result.file_type
 
 
-def _extract_pdf(content: bytes) -> str:
+def _build_document_extractor(settings: Settings | None = None) -> DocumentExtractor:
+    resolved_settings = settings or get_settings()
+    if not resolved_settings.structured_pdf_enabled:
+        return DocumentExtractor()
+
+    if resolved_settings.structured_pdf_engine != "rapiddoc":
+        raise DocumentExtractionError(
+            "OCR_DEPENDENCY_MISSING",
+            f"unsupported structured pdf engine: {resolved_settings.structured_pdf_engine}",
+        )
+
+    adapter = RapidDocStructuredPdfAdapter(
+        model_manager=RapidDocModelManager(model_dir=resolved_settings.rapid_models_dir or None),
+        timeout_seconds=resolved_settings.structured_pdf_timeout_seconds,
+        worker_count=resolved_settings.structured_pdf_worker_count,
+        max_pages=resolved_settings.structured_pdf_max_pages,
+        max_pixels=resolved_settings.structured_pdf_max_pixels,
+    )
+    return DocumentExtractor(
+        structured_pdf_enabled=True,
+        structured_pdf_adapter=adapter,
+    )
+
+
+def _extract_pdf_legacy(content: bytes) -> str:
+    return _extract_pdf_legacy_result(content).text
+
+
+def _extract_pdf_legacy_result(content: bytes) -> DocumentExtractionResult:
     try:
         from pypdf import PdfReader
     except Exception as exc:  # pragma: no cover - dependency availability differs by env.
         raise KnowledgeParseError("缺少 pypdf，无法解析 PDF。") from exc
     reader = PdfReader(BytesIO(content))
-    pages: list[str] = []
+    pages: list[ExtractedPage] = []
     for index, page in enumerate(reader.pages):
         page_text = page.extract_text() or ""
         if page_text.strip():
-            pages.append(f"## 第 {index + 1} 页\n\n{page_text}")
+            pages.append(
+                ExtractedPage(
+                    page_number=index + 1,
+                    text=page_text,
+                    char_count=len(page_text),
+                )
+            )
+    text = ""
     if not pages:
-        return ""
-    return "# PDF 文档\n\n" + "\n\n".join(pages)
-
-
-def _extract_docx(content: bytes) -> str:
-    try:
-        from docx import Document
-
-        document = Document(BytesIO(content))
-        rows: list[str] = []
-        for paragraph in document.paragraphs:
-            text = paragraph.text.strip()
-            if not text:
-                continue
-            heading_level = _docx_heading_level(paragraph.style.name if paragraph.style else "")
-            rows.append(f"{'#' * heading_level} {text}" if heading_level else text)
-        for table in document.tables:
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if cells:
-                    rows.append(" | ".join(cells))
-        return "\n".join(rows)
-    except Exception:
-        return _extract_docx_with_zip(content)
-
-
-def _docx_heading_level(style_name: str) -> int | None:
-    match = re.match(r"^(?:Heading|标题)\s*([1-6])$", style_name.strip(), re.IGNORECASE)
-    return int(match.group(1)) if match else None
-
-
-def _extract_docx_with_zip(content: bytes) -> str:
-    try:
-        with ZipFile(BytesIO(content)) as archive:
-            xml = archive.read("word/document.xml").decode("utf-8", errors="ignore")
-    except Exception as exc:
-        raise KnowledgeParseError("无法解析 docx 文档。") from exc
-    parser = _DocxTextExtractor()
-    parser.feed(xml)
-    return parser.text
-
-
-class _HTMLTextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self._parts: list[str] = []
-
-    @property
-    def text(self) -> str:
-        return "\n".join(part.strip() for part in self._parts if part.strip())
-
-    def handle_data(self, data: str) -> None:
-        if data.strip():
-            self._parts.append(data)
-
-
-class _DocxTextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self._parts: list[str] = []
-
-    @property
-    def text(self) -> str:
-        return "\n".join(part.strip() for part in self._parts if part.strip())
-
-    def handle_data(self, data: str) -> None:
-        if data.strip():
-            self._parts.append(data)
+        text = ""
+    else:
+        text = "# PDF 文档\n\n" + "\n\n".join(
+            f"## 第 {page.page_number} 页\n\n{page.text}" for page in pages
+        )
+    return DocumentExtractionResult(
+        text=text,
+        pages=pages,
+        page_refs=[page.ref for page in pages],
+        source_sha256=hashlib.sha256(content).hexdigest(),
+        source_page_count=len(reader.pages),
+        method="native",
+        engine="pypdf",
+        engine_version="builtin",
+        warnings=[],
+        char_count=sum(page.char_count for page in pages),
+        table_count=0,
+    )

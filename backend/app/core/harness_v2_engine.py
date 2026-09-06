@@ -21,6 +21,7 @@ from app.core.harness_attachments import (
     materialize_task_attachments,
     validated_task_image_payloads,
 )
+from app.core.harness_audit_cases import materialize_audit_case_materials
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
 from app.core.published_deliverables import list_published_deliverables
 from app.core.harness_session_lease import (
@@ -54,6 +55,7 @@ from app.core.task_request_compiler import (
 )
 from app.core.turn_planner import TurnPlanner, turn_plan_router_decision
 from app.db.models import (
+    AuditCase,
     ChatSession,
     HarnessRunRecord,
     HarnessTaskFrameRecord,
@@ -174,6 +176,57 @@ def _turn_slash_selection(request: ChatTurnRequest) -> SlashCommandSelection | N
             "定时任务执行不能从任务文本解析斜杠指令，请使用结构化 SOP 选择。",
         )
     return selection
+
+
+def _task_attachment_descriptors(
+    row: HarnessTaskFrameRecord,
+) -> list[dict[str, Any]]:
+    raw = (row.task_requirement_json or {}).get("attachments")
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("workspace_path") or "")
+        if path.startswith("/workspace/attachments/") and item.get("materialized") is True:
+            result.append(dict(item))
+    return result
+
+
+def _resolve_task_attachment_descriptors(
+    row: HarnessTaskFrameRecord,
+    current: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return current if current else _task_attachment_descriptors(row)
+
+
+def _merge_task_material_descriptors(
+    *groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep current, project, and historical material in deterministic priority order."""
+
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for group in groups:
+        for raw in group:
+            if not isinstance(raw, dict):
+                continue
+            descriptor = dict(raw)
+            source = str(descriptor.get("source") or "chat_attachment")
+            identity = str(
+                descriptor.get("material_id")
+                or descriptor.get("attachment_id")
+                or descriptor.get("filename")
+                or ""
+            )
+            sha256 = str(descriptor.get("sha256") or "")
+            key = (source, identity, sha256)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(descriptor)
+    return merged
 
 
 class HarnessV2Engine:
@@ -334,6 +387,7 @@ class HarnessV2Engine:
                     session.agent_id,
                     None,
                     None,
+                    audit_case_id=session.audit_case_id,
                 )
                 resolve_capability(self.slash_command, direct_manifest)
             plan = build_slash_turn_plan(
@@ -797,13 +851,31 @@ class HarnessV2Engine:
         self.active_frame_id = row.id
         self.active_frame_lease_owner = row.lease_owner
         self.active_frame_attempt_no = row.attempt_no
-        attachment_descriptors = materialize_task_attachments(
+        current_attachment_descriptors = materialize_task_attachments(
             request.attachments,
             tenant_id=request.tenant_id,
             session_id=session.id,
             task_frame_id=row.task_id,
             user_id=request.user_id or "",
             db=self.db,
+        )
+        project_material_descriptors: list[dict[str, Any]] = []
+        if session.audit_case_id:
+            audit_case = self.db.get(AuditCase, session.audit_case_id)
+            if audit_case is None or audit_case.tenant_id != session.tenant_id:
+                raise HarnessExecutionFenced(
+                    "Harness session audit case does not match the tenant."
+                )
+            project_material_descriptors = materialize_audit_case_materials(
+                db=self.db,
+                case=audit_case,
+                session_id=session.id,
+                task_frame_id=row.task_id,
+            )
+        attachment_descriptors = _merge_task_material_descriptors(
+            current_attachment_descriptors,
+            project_material_descriptors,
+            _task_attachment_descriptors(row),
         )
         image_payloads = validated_task_image_payloads(request.attachments)
         published_deliverables = list_published_deliverables(
@@ -852,6 +924,7 @@ class HarnessV2Engine:
                 session.agent_id,
                 active_skill,
                 frame.target_step_id,
+                audit_case_id=session.audit_case_id,
             )
             # Keep the complete frozen manifest server-side for authorization,
             # while compiling the TaskRequirement only from the safe model
@@ -875,6 +948,7 @@ class HarnessV2Engine:
                     else _source_user_message(self.db, row)
                 ),
                 out_of_scope_task_intents=_sibling_task_intents(self.db, row),
+                audit_case_id=session.audit_case_id,
             )
             if (
                 self.slash_command
@@ -1940,6 +2014,17 @@ def get_or_create_harness_session(
         )
     if request.agent_id and not session.agent_id:
         session.agent_id = request.agent_id
+        db.add(session)
+        db.commit()
+    requested_audit_case_id = str(request.audit_case_id or "").strip() or None
+    if (
+        requested_audit_case_id
+        and session.audit_case_id
+        and session.audit_case_id != requested_audit_case_id
+    ):
+        raise HarnessExecutionFenced("SESSION_AUDIT_CASE_CONFLICT")
+    if requested_audit_case_id and not session.audit_case_id:
+        session.audit_case_id = requested_audit_case_id
         db.add(session)
         db.commit()
     db.refresh(session)

@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import ensure_open_gallery_binding
+from app.audit_cases.storage import write_case_blob
 from app.core import harness_agent as harness_agent_module
 from app.core import harness_v2_engine as harness_v2_engine_module
 from app.core import turn_planner as turn_planner_module
@@ -46,7 +47,9 @@ from app.core.harness_v2_engine import (
     _turn_planner_message,
     _turn_skill_projection,
     _with_recoverable_first_session,
+    get_or_create_harness_session,
 )
+from app.core.harness_audit_cases import materialize_audit_case_materials
 from app.core.task_frame_store import (
     MAX_TASK_FRAMES_PER_TURN,
     TaskFrameClaimConflict,
@@ -64,6 +67,8 @@ from app.core.turn_planner import TurnPlanner
 from app.db.models import (
     AgentEvent,
     AgentProfile,
+    AuditCase,
+    AuditCaseMaterial,
     ChatSession,
     GeneralSkill,
     HarnessAgentLoopRecord,
@@ -105,6 +110,172 @@ from app.session.attachment_store import stage_chat_attachment
 from app.skills.nesting import expand_sop_for_execution
 from app.skills.skill_schema import SkillCapabilityRefs
 from app.tools.tool_schema import ToolResult
+
+
+def test_bounded_read_file_result_preserves_continuation_metadata() -> None:
+    token = "continuation-token-that-must-remain-complete"
+    result = harness_agent_module._bounded_capability_result(
+        "read_file",
+        {
+            "success": True,
+            "data": {
+                "path": "attachments/audit.txt",
+                "content": "能" * 20_000,
+                "offset": 0,
+                "next_offset": 25_600,
+                "continuation_token": token,
+                "eof": False,
+                "size": 120_000,
+                "sha256": "a" * 64,
+            },
+        },
+    )
+    assert result["data"]["continuation_token"] == token
+    assert result["data"]["next_offset"] == 25_600
+    assert result["data"]["content_truncated_for_model"] is True
+    assert result["data"]["content_total_chars"] == 20_000
+    assert len(json.dumps(result, ensure_ascii=False)) <= 12_000
+
+
+def test_same_task_frame_reuses_persisted_attachment_descriptors() -> None:
+    row = HarnessTaskFrameRecord(
+        tenant_id="tenant_demo",
+        session_id="session-1",
+        source_turn_id="turn-1",
+        task_id="task-1",
+        kind="sop",
+        user_intent="生成审核报告",
+        task_requirement_json={
+            "attachments": [
+                {
+                    "attachment_id": "file-1",
+                    "filename": "审核记录.pdf",
+                    "workspace_path": "/workspace/attachments/file-1.pdf",
+                    "sha256": "b" * 64,
+                    "materialized": True,
+                }
+            ]
+        },
+    )
+    assert harness_v2_engine_module._resolve_task_attachment_descriptors(row, []) == (
+        row.task_requirement_json["attachments"]
+    )
+
+
+def test_audit_case_materials_are_added_to_task_requirement_manifest() -> None:
+    frame = PlannedTaskFrame(
+        task_id="task-audit-case",
+        kind="conversation",
+        user_intent="继续生成审核报告",
+    )
+    requirement = TaskRequestCompiler().compile(
+        frame,
+        _chat_session(audit_case_id="auditcase-1"),
+        None,
+        CapabilityManifest(),
+        audit_case_id="auditcase-1",
+        audit_case_materials=[
+            {
+                "source": "audit_case",
+                "audit_case_id": "auditcase-1",
+                "material_id": "material-1",
+                "filename": "审核记录.txt",
+                "sha256": "a" * 64,
+                "version": 1,
+                "status": "succeeded",
+                "workspace_path": "/workspace/audit-case/material-1/审核记录.txt",
+                "materialized": True,
+            }
+        ],
+    )
+
+    assert requirement.audit_case_id == "auditcase-1"
+    assert requirement.attachments[0]["source"] == "audit_case"
+    assert requirement.material_manifest[0].source == "audit_case"
+    assert requirement.material_manifest[0].material_id == "material-1"
+    assert requirement.material_manifest[0].status == "available"
+
+
+def test_materialize_audit_case_materials_writes_to_task_workspace(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("app.paths.user_data_dir", lambda: tmp_path)
+    database = _test_engine()
+    data = "审核记录全文".encode("utf-8")
+    with Session(database) as db:
+        case = AuditCase(
+            id="auditcase-materialize",
+            tenant_id="tenant-demo",
+            owner_user_id="user-1",
+            organization_name="示例企业",
+            report_type="再认证",
+        )
+        material = AuditCaseMaterial(
+            id="material-1",
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            attachment_id="attachment-1",
+            material_type="audit_record",
+            filename="审核记录.txt",
+            content_type="text/plain",
+            sha256="a" * 64,
+            size=len(data),
+            storage_key="",
+            processing_status="succeeded",
+            extraction_status="succeeded",
+        )
+        db.add_all([case, material])
+        db.flush()
+        material.storage_key = write_case_blob(
+            tenant_id=case.tenant_id,
+            audit_case_id=case.id,
+            material_id=material.id,
+            name="raw",
+            data=data,
+        )
+        db.add(material)
+        db.commit()
+
+        descriptors = materialize_audit_case_materials(
+            db=db,
+            case=case,
+            session_id="session-new",
+            task_frame_id="task-audit-case",
+        )
+
+    assert len(descriptors) == 1
+    descriptor = descriptors[0]
+    assert descriptor["source"] == "audit_case"
+    assert descriptor["material_id"] == "material-1"
+    assert descriptor["materialized"] is True
+    workspace_path = tmp_path / "harness_workspaces"
+    assert list(workspace_path.rglob("审核记录.txt"))[0].read_bytes() == data
+
+
+def test_harness_session_binds_audit_case_and_rejects_switching() -> None:
+    database = _test_engine()
+    with Session(database) as db:
+        owner = AgentLoop(db)
+        first = get_or_create_harness_session(
+            owner,
+            ChatTurnRequest(
+                tenant_id="tenant-demo",
+                user_id="user-1",
+                audit_case_id="auditcase-1",
+                message="开始审核",
+            ),
+        )
+        assert first.audit_case_id == "auditcase-1"
+
+        with pytest.raises(harness_v2_engine_module.HarnessExecutionFenced, match="SESSION_AUDIT_CASE_CONFLICT"):
+            get_or_create_harness_session(
+                owner,
+                ChatTurnRequest(
+                    tenant_id="tenant-demo",
+                    user_id="user-1",
+                    session_id=first.id,
+                    audit_case_id="auditcase-2",
+                    message="切换项目",
+                ),
+            )
 
 
 def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
@@ -1356,6 +1527,82 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     assert shared_descriptor.metadata["script_execution"] == "use_harness_tools"
 
 
+def test_audit_capabilities_exist_only_for_bound_audit_case() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant-demo", name="Demo"))
+        db.commit()
+
+        builder = CapabilityManifestBuilder(db)
+        ordinary = builder.build("tenant-demo", None, None, None, audit_case_id=None)
+        bound = builder.build("tenant-demo", None, None, None, audit_case_id="case-1")
+
+    assert "audit_case_manifest" not in ordinary.allowed_names()
+    assert "audit_case_manifest" in bound.allowed_names()
+    assert "audit_report_generate" not in ordinary.allowed_names()
+    assert "audit_report_generate" in bound.allowed_names()
+
+
+def test_report_generate_capability_returns_scoped_draft_status(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from app.audit_cases.reporting import ReportGenerationSummary
+
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        case = AuditCase(
+            id="case-harness-report",
+            tenant_id="tenant-demo",
+            owner_user_id="user-1",
+            organization_name="Harness 报告企业",
+            report_type="再认证",
+        )
+        db.add(case)
+        db.commit()
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant-demo", None, None, None, audit_case_id=case.id
+        )
+
+        class _FakeReportService:
+            def __init__(self, _db):
+                pass
+
+            def create_version(self, _case):
+                return SimpleNamespace(
+                    id="report-harness-1",
+                    version=1,
+                    status="draft",
+                    rule_traceability_status="not_configured",
+                )
+
+            def generate_pending_sections(self, _case, _report, _model_config):
+                return ReportGenerationSummary(
+                    status="succeeded",
+                    generated_section_ids=["summary"],
+                    regenerated_section_ids=[],
+                )
+
+        monkeypatch.setattr(
+            "app.audit_cases.reporting.AuditReportService", _FakeReportService
+        )
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(audit_case_id=case.id),
+            task_frame_id="task-report-generate",
+            model_config=_model_config(),
+            manifest=manifest,
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        result = invoker._invoke_internal("audit_report_generate", {})
+
+    assert result["success"] is True
+    assert set(result["data"]) >= {"audit_case_id", "report", "rule_traceability_status"}
+    assert result["data"]["report"]["status"] == "draft"
+    assert "evidence_text" not in json.dumps(result, ensure_ascii=False)
 def test_nested_sop_tool_grant_survives_parent_expansion() -> None:
     engine = _test_engine()
     with Session(engine) as db:
@@ -1957,7 +2204,9 @@ def test_harness_reads_published_deliverable_from_an_earlier_task_frame(
             db=db,
         )
         (workspace / "results").mkdir(parents=True)
-        (workspace / "results" / "schedule.md").write_text(content, encoding="utf-8")
+        # Keep the fixture bytes identical to the recorded SHA-256 on Windows,
+        # where Path.write_text() transparently converts LF to CRLF.
+        (workspace / "results" / "schedule.md").write_bytes(encoded)
         db.add(
             Message(
                 tenant_id="tenant-demo",

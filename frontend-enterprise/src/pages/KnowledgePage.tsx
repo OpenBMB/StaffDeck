@@ -85,6 +85,17 @@ import {
 import { useClientPagination } from '../hooks/useClientPagination';
 import { renderMarkdownBlocks } from './chat/chatHelpers';
 import { getDateLocale } from '@/i18n';
+import { EmbeddingSettingsDialog } from './knowledge-retrieval/EmbeddingSettingsDialog';
+import { Bm25SettingsDialog } from './knowledge-retrieval/Bm25SettingsDialog';
+import { FusionSettingsDialog } from './knowledge-retrieval/FusionSettingsDialog';
+import { RerankerSettingsDialog } from './knowledge-retrieval/RerankerSettingsDialog';
+import {
+  classifyRetrievalChange,
+  defaultRetrievalDraft,
+  mergeRetrievalConfig,
+  retrievalDraftPayload,
+  type RetrievalDraft,
+} from './knowledge-retrieval/retrievalSettings';
 import type {
   CapabilityScope,
   KnowledgeBaseRead,
@@ -94,7 +105,10 @@ import type {
   KnowledgeDiscoveryRead,
   KnowledgeDocumentRead,
   KnowledgeIngestJobRead,
+  KnowledgeReindexResponse,
+  KnowledgeRetrievalConfigRead,
   KnowledgeSearchResponse,
+  KnowledgeVectorIndexStatus,
   AgentProfileRead,
   ModelConfigRead,
 } from '../types';
@@ -168,6 +182,185 @@ function resolveKnowledgeAgentScope(
 function effectiveKnowledgeAgentId(rows: AgentProfileRead[], agentId: string): string {
   const agent = rows.find((item) => item.id === agentId);
   return agent && !agent.is_overall ? agent.id : '';
+}
+
+export function KnowledgeRetrievalPanel({
+  tenantId = TENANT_ID,
+}: {
+  tenantId?: string;
+  modelConfigs?: ModelConfigRead[];
+}) {
+  const [config, setConfig] = useState<KnowledgeRetrievalConfigRead | null>(null);
+  const [statuses, setStatuses] = useState<KnowledgeVectorIndexStatus[]>([]);
+  const [draft, setDraft] = useState<RetrievalDraft>(() => defaultRetrievalDraft());
+  const [capabilities, setCapabilities] = useState<Record<string, unknown>>({});
+  const [pendingConfigId, setPendingConfigId] = useState<string | null>(null);
+  const [openDialog, setOpenDialog] = useState<'embedding' | 'bm25' | 'fusion' | 'reranker' | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [reindexing, setReindexing] = useState(false);
+  const [error, setError] = useState('');
+
+  async function loadPanel(resetDraft = true) {
+    setLoading(true);
+    setError('');
+    const [configResult, statusResult, capabilitiesResult] = await Promise.allSettled([
+      api.get<KnowledgeRetrievalConfigRead>(
+        `/api/enterprise/knowledge-retrieval/config?tenant_id=${encodeURIComponent(tenantId)}`,
+      ),
+      api.get<KnowledgeVectorIndexStatus[]>(
+        `/api/enterprise/knowledge-retrieval/index-status?tenant_id=${encodeURIComponent(tenantId)}`,
+      ),
+      api.get<Record<string, unknown>>(
+        `/api/enterprise/knowledge-retrieval/capabilities?tenant_id=${encodeURIComponent(tenantId)}`,
+      ),
+    ]);
+    if (configResult.status === 'fulfilled') {
+      const next = configResult.value;
+      setConfig(next);
+      if (resetDraft) setDraft((current) => mergeRetrievalConfig(current, next));
+    } else if (!(configResult.reason instanceof ApiError && configResult.reason.status === 404)) {
+      setError(configResult.reason instanceof Error ? configResult.reason.message : '加载检索配置失败');
+    }
+    if (statusResult.status === 'fulfilled') {
+      setStatuses(statusResult.value);
+    } else if (!error) {
+      setError(statusResult.reason instanceof Error ? statusResult.reason.message : '加载索引状态失败');
+    }
+    if (capabilitiesResult.status === 'fulfilled') setCapabilities(capabilitiesResult.value);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    void loadPanel();
+  }, [tenantId]);
+
+  async function saveConfig() {
+    setSaving(true);
+    setError('');
+    try {
+      const response = await api.put<KnowledgeRetrievalConfigRead>(
+        '/api/enterprise/knowledge-retrieval/config',
+        retrievalDraftPayload(draft, tenantId),
+      );
+      setConfig(response);
+      setDraft((current) => mergeRetrievalConfig(current, response));
+      setPendingConfigId(response.pending_config_id || null);
+      notify.success(response.requires_reindex ? '已保存，等待向量索引重建' : '已热应用检索配置');
+      await loadPanel(false);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '保存检索配置失败');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function reindex() {
+    setReindexing(true);
+    setError('');
+    try {
+      const response = await api.post<KnowledgeReindexResponse>(
+        '/api/enterprise/knowledge-retrieval/reindex',
+        { tenant_id: tenantId, ...(pendingConfigId ? { config_id: pendingConfigId } : {}) },
+      );
+      notify.success(`已排队 ${response.queued_document_ids.length} 个文档的向量化`);
+      await loadPanel();
+    } catch (reindexError) {
+      setError(reindexError instanceof Error ? reindexError.message : '重建向量索引失败');
+    } finally {
+      setReindexing(false);
+    }
+  }
+
+  async function testConnection(kind: 'embedding' | 'reranker', nextDraft: RetrievalDraft) {
+    setError('');
+    try {
+      const response = await api.post<{ ok: boolean; error_code?: string | null; dimensions?: number | null }>(
+        `/api/enterprise/knowledge-retrieval/test/${kind}`,
+        retrievalDraftPayload(nextDraft, tenantId),
+      );
+      if (response.ok) {
+        if (kind === 'embedding' && response.dimensions && nextDraft.embedding.options.dimension_mode === 'auto') {
+          setDraft((current) => ({ ...current, embedding: { ...nextDraft.embedding, options: { ...nextDraft.embedding.options, dimensions: response.dimensions ?? null } } }));
+        }
+        notify.success(kind === 'embedding' ? `Embedding 连接成功，维度 ${response.dimensions}` : 'Reranker 连接成功');
+      }
+      else setError(response.error_code || '连接测试失败');
+    } catch (testError) {
+      setError(testError instanceof Error ? testError.message : '连接测试失败');
+    }
+  }
+
+  async function activatePending() {
+    if (!pendingConfigId) return;
+    try {
+      await api.post('/api/enterprise/knowledge-retrieval/activate', { tenant_id: tenantId, config_id: pendingConfigId });
+      setPendingConfigId(null);
+      notify.success('已切换到新的向量索引');
+      await loadPanel();
+    } catch (activateError) {
+      setError(activateError instanceof Error ? activateError.message : '激活新索引失败');
+    }
+  }
+
+  function updateDraft<K extends keyof RetrievalDraft>(key: K, value: RetrievalDraft[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  const change = config ? classifyRetrievalChange(mergeRetrievalConfig(defaultRetrievalDraft(), config), draft) : null;
+  const capabilityState = Object.keys(capabilities).length ? '插件参数已加载' : '使用内置默认参数';
+
+  return (
+    <KCard title="混合检索配置" extra={config?.enabled ? <KTag color="green">已启用</KTag> : <KTag>未启用</KTag>}>
+      <div className="flex flex-col gap-[14px]" data-testid="knowledge-retrieval-panel">
+        <p className="m-0 text-[12px] leading-[1.6] text-[#858b9c]">
+          BM25 负责关键词命中，Embedding 负责语义召回，候选集合再交给 reranker 重排。四组参数独立维护；API Key 只写入不回显，保存后即时生效。Embedding 身份变化会先创建待重建索引，原索引保持可用。{capabilityState}。
+        </p>
+        {error ? <p className="m-0 rounded-[8px] bg-[#fff1f0] px-[10px] py-[8px] text-[12px] text-[#d20b0b]">{error}</p> : null}
+        <label className="flex items-center gap-[8px] text-[12px] text-[#5b6273]"><input type="checkbox" checked={draft.enabled} onChange={(event) => updateDraft('enabled', event.target.checked)} />启用混合检索（保存后新入库文档会自动排队向量化）</label>
+        <div className="grid gap-[10px] md:grid-cols-4">
+          {[
+            ['embedding', 'Embedding 向量化', `${draft.embedding.adapter} · ${draft.embedding.model} · ${draft.embedding.options.dimensions ?? '自动'} 维`],
+            ['bm25', 'BM25 关键词检索', `k1 ${draft.bm25.options.k1} · b ${draft.bm25.options.b} · 候选 ${draft.bm25.options.candidate_limit}`],
+            ['fusion', '融合与候选集', `${draft.fusion.options.mode} · RRF ${draft.fusion.options.rrf_k} · 最终 ${draft.fusion.options.final_limit}`],
+            ['reranker', 'Reranker 重排', `${draft.reranker.options.mode} · 候选 ${draft.reranker.options.candidate_limit} · 重排 ${draft.reranker.options.rerank_limit}`],
+          ].map(([key, title, summary]) => <button key={key} type="button" onClick={() => setOpenDialog(key as typeof openDialog)} className="rounded-[10px] border border-[#e3e7f1] bg-white p-[12px] text-left transition hover:border-[#1677ff]" data-testid={`${key}-settings-card`}><span className="block text-[13px] font-medium text-[#18181a]">{title}</span><span className="mt-[6px] block text-[11px] leading-[1.5] text-[#858b9c]">{summary}</span><span className="mt-[8px] block text-[11px] text-[#1677ff]">打开详细设置 →</span></button>)}
+        </div>
+        {change?.requiresReindex ? <p className="m-0 rounded-[8px] bg-[#fff8e6] px-[10px] py-[8px] text-[12px] text-[#8a5a00]">当前草稿会触发新的向量索引，BM25、融合和 Reranker 参数仍可热应用。</p> : null}
+        {pendingConfigId ? <div className="flex flex-wrap items-center justify-between gap-[8px] rounded-[8px] bg-[#eef6ff] px-[10px] py-[8px] text-[12px] text-[#245b9e]"><span>新 Embedding 配置等待索引完成，原配置仍在使用。</span><div className="flex gap-[8px]"><UIButton variant="outline" onClick={() => void reindex()} disabled={reindexing}>{reindexing ? '排队中…' : '重建向量'}</UIButton><UIButton onClick={() => void activatePending()}>索引完成后激活</UIButton></div></div> : null}
+        <div className="flex flex-wrap items-center gap-[8px]">
+          <UIButton onClick={() => void saveConfig()} disabled={loading || saving} className="h-[34px] rounded-[8px] px-[14px] text-[12px]">
+            {saving ? '保存中…' : '保存并热应用'}
+          </UIButton>
+          <UIButton variant="outline" onClick={() => void reindex()} disabled={loading || reindexing || !config?.enabled} className="h-[34px] rounded-[8px] px-[14px] text-[12px]">
+            {reindexing ? '排队中…' : '重建缺失向量'}
+          </UIButton>
+          {loading ? <span className="text-[12px] text-[#858b9c]">加载中…</span> : null}
+        </div>
+        <EmbeddingSettingsDialog open={openDialog === 'embedding'} value={draft.embedding} capabilities={capabilities} onOpenChange={(open) => setOpenDialog(open ? 'embedding' : null)} onChange={(value) => setDraft((current) => ({ ...current, embedding: value }))} onTest={(value) => void testConnection('embedding', { ...draft, embedding: value })} />
+        <Bm25SettingsDialog open={openDialog === 'bm25'} value={draft.bm25} onOpenChange={(open) => setOpenDialog(open ? 'bm25' : null)} onChange={(value) => setDraft((current) => ({ ...current, bm25: value }))} />
+        <FusionSettingsDialog open={openDialog === 'fusion'} value={draft.fusion} onOpenChange={(open) => setOpenDialog(open ? 'fusion' : null)} onChange={(value) => setDraft((current) => ({ ...current, fusion: value }))} />
+        <RerankerSettingsDialog open={openDialog === 'reranker'} value={draft.reranker} onOpenChange={(open) => setOpenDialog(open ? 'reranker' : null)} onChange={(value) => setDraft((current) => ({ ...current, reranker: value, candidateLimit: value.options.candidate_limit, rerankLimit: value.options.rerank_limit }))} onTest={(value) => void testConnection('reranker', { ...draft, reranker: value, candidateLimit: value.options.candidate_limit, rerankLimit: value.options.rerank_limit })} />
+        <div className="overflow-x-auto rounded-[10px] border border-[#eceef1]">
+          <table className="w-full min-w-[620px] text-left text-[12px]">
+            <thead className="bg-[#fafbfc] text-[#858b9c]"><tr><th className="px-[10px] py-[8px] font-normal">知识库版本</th><th className="px-[10px] py-[8px] font-normal">向量模型</th><th className="px-[10px] py-[8px] font-normal">就绪</th><th className="px-[10px] py-[8px] font-normal">失败</th><th className="px-[10px] py-[8px] font-normal">缺失</th><th className="px-[10px] py-[8px] font-normal">更新时间</th></tr></thead>
+            <tbody>
+              {statuses.length ? statuses.map((status) => (
+                <tr key={status.knowledge_base_version_id} className="border-t border-[#f0f1f4] text-[#5b6273]">
+                  <td className="px-[10px] py-[8px] font-mono">{status.knowledge_base_version_id}</td>
+                  <td className="px-[10px] py-[8px]">{status.embedding_model || '未配置'}</td>
+                  <td className="px-[10px] py-[8px] text-[#018434]">{status.ready_embeddings}/{status.total_chunks}</td>
+                  <td className="px-[10px] py-[8px] text-[#d20b0b]">{status.failed_embeddings}</td>
+                  <td className="px-[10px] py-[8px]">{status.missing_embeddings}</td>
+                  <td className="px-[10px] py-[8px]">{status.updated_at ? new Date(status.updated_at).toLocaleString() : '—'}</td>
+                </tr>
+              )) : <tr><td colSpan={6} className="px-[10px] py-[14px] text-center text-[#858b9c]">暂无知识库版本索引状态</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </KCard>
+  );
 }
 
 export default function KnowledgeManagePage({ currentUser, onLogout }: KnowledgePageProps = {}) {
@@ -1157,6 +1350,8 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
           <StatCard label="已下线" value={stats.archived} />
           <StatCard label="文档总数" value={stats.documents} />
         </div>
+
+        {isEnterpriseAdmin(currentUser) ? <KnowledgeRetrievalPanel tenantId={TENANT_ID} modelConfigs={modelConfigs} /> : null}
 
         <div className="flex flex-col gap-[18px]">
           <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">

@@ -14,6 +14,7 @@ from app.agents.branching import (
     visible_tool_rows,
 )
 from app.capabilities.local_general_skill import package_from_row
+from app.core.harness_audit_capabilities import audit_capability_descriptors
 from app.core.task_request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
@@ -44,6 +45,9 @@ RESERVED_HARNESS_CAPABILITY_NAMES = {
     "exec_command",
     "run_skill_script",
     "knowledge_search",
+    "audit_case_manifest",
+    "audit_evidence_process",
+    "audit_report_status",
 }
 
 
@@ -61,6 +65,8 @@ class CapabilityManifestBuilder:
         agent_id: str | None,
         skill: Skill | None,
         step_id: str | None,
+        *,
+        audit_case_id: str | None = None,
     ) -> CapabilityManifest:
         if agent_id and get_agent(self.db, tenant_id, agent_id) is None:
             raise CapabilityAuthorizationError("当前员工不存在、已归档或不属于该租户。")
@@ -70,6 +76,7 @@ class CapabilityManifestBuilder:
         unavailable: list[CapabilityDescriptor] = []
 
         available.extend(_internal_capability_descriptors())
+        available.extend(audit_capability_descriptors(audit_case_id))
         ui_config = self.db.get(UIConfig, tenant_id)
         sandbox_enabled = bool(getattr(ui_config, "sandbox_enabled", False))
 

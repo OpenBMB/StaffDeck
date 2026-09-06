@@ -14,6 +14,7 @@ export type PreparedChatTurn = {
   turnId: string;
   text: string;
   attachments: ChatAttachmentRead[];
+  auditCaseId?: string;
   interactionMode: ComposerInteractionMode;
   modelConfigId?: string;
   createdAt: string;
@@ -44,6 +45,7 @@ function isPreparedChatTurn(value: unknown): value is PreparedChatTurn {
     && typeof value.text === 'string'
     && Array.isArray(value.attachments)
     && value.attachments.every(isQueuedAttachment)
+    && (value.auditCaseId === undefined || typeof value.auditCaseId === 'string')
     && typeof value.interactionMode === 'string'
     && INTERACTION_MODES.has(value.interactionMode as ComposerInteractionMode)
     && (value.modelConfigId === undefined || typeof value.modelConfigId === 'string')

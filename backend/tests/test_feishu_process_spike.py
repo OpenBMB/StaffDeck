@@ -4,6 +4,7 @@ import asyncio
 import json
 import multiprocessing
 import sqlite3
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -390,11 +391,51 @@ def _reconfigure_parent_for_crash_window(
 
 
 def _pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        synchronize = 0x00100000
+        wait_timeout = 0x00000102
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(
+            process_query_limited_information | synchronize,
+            False,
+            pid,
+        )
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         __import__("os").kill(pid, 0)
         return True
     except OSError:
         return False
+
+
+def test_pid_alive_reports_terminated_process_as_dead() -> None:
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(target=time.sleep, args=(60.0,))
+    process.start()
+    try:
+        process.terminate()
+        process.join(timeout=2.0)
+        assert process.exitcode is not None
+        assert not _pid_alive(process.pid)
+    finally:
+        if process.is_alive():
+            process.kill()
+        process.join(timeout=2.0)
 
 
 def test_real_sdk_wire_ack_is_after_visible_commit(
@@ -919,16 +960,28 @@ def test_parent_watchdog_escalates_from_ignored_terminate_to_kill(
         terminate_grace_seconds=0.1,
     )
     record = supervisor.start_binding("binding-parent-watchdog", 1)
-    started_event = supervisor.wait_for_event(
-        "binding-parent-watchdog", "DISPATCH_STARTED"
-    )
-    exit_code = _wait_for_process_exit(supervisor, "binding-parent-watchdog")
-    elapsed = time.monotonic() - float(started_event["deadline_monotonic"])
+    try:
+        started_event = supervisor.wait_for_event(
+            "binding-parent-watchdog", "DISPATCH_STARTED"
+        )
+        exit_code = _wait_for_process_exit(supervisor, "binding-parent-watchdog")
+        elapsed = time.monotonic() - float(started_event["deadline_monotonic"])
 
-    assert exit_code != 0
-    assert record.termination_phase == "kill"
-    assert elapsed < 0.6
-    assert supervisor.stop(timeout=2.0)
+        assert exit_code != 0
+        if sys.platform == "win32":
+            # Windows maps terminate() to TerminateProcess(), so the child
+            # cannot ignore the first termination phase.
+            assert record.termination_phase == "terminate"
+        else:
+            # POSIX preserves the contract runtime's ignored SIGTERM and
+            # exercises the real terminate -> kill escalation path.
+            assert record.termination_phase == "kill"
+        assert elapsed < 0.6
+    finally:
+        stopped = supervisor.stop(timeout=2.0)
+
+    assert stopped
+    assert not supervisor.monitor_alive()
 
 
 def test_repeated_watchdog_crashes_enter_and_can_reset_circuit_breaker(

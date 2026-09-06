@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.async_jobs import AsyncJob, enqueue_async_job
@@ -152,14 +153,20 @@ def _conversation_messages_for_turn(
 ) -> list[dict[str, str]]:
     if not turn_id:
         return []
-    rows = list(
-        db.exec(
-            select(Message)
-            .where(Message.tenant_id == tenant_id, Message.session_id == session_id)
-            .order_by(Message.created_at.desc())
-            .limit(100)
-        ).all()
+    statement = (
+        select(Message)
+        .where(Message.tenant_id == tenant_id, Message.session_id == session_id)
+        .order_by(Message.created_at.desc())
+        .limit(100)
     )
+    # created_at has microsecond precision but can still collide when a turn
+    # is inserted in one transaction. SQLite's rowid preserves insertion
+    # order for tied timestamps; use a deterministic key for other databases.
+    if db.get_bind().dialect.name == "sqlite":
+        statement = statement.order_by(text("rowid DESC"))
+    else:
+        statement = statement.order_by(Message.id.desc())
+    rows = list(db.exec(statement).all())
     rows.reverse()
     target_index = next(
         (

@@ -12,6 +12,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.agents.branching import ensure_open_gallery_binding
 from app.api.knowledge import (
     confirm_discovery as confirm_discovery_api,
+)
+from app.api.knowledge import (
     list_documents,
     search_knowledge,
     update_chunk,
@@ -28,6 +30,7 @@ from app.db.models import (
     KnowledgeDiscoverySuggestion,
     KnowledgeDocument,
     KnowledgeIngestJob,
+    KnowledgeRetrievalConfig,
     ModelConfig,
     Skill,
     Tenant,
@@ -35,9 +38,15 @@ from app.db.models import (
     User,
     utc_now,
 )
-from app.knowledge.schema import KnowledgeChunkUpdateRequest, KnowledgeDocumentUpdateRequest, KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.knowledge.okf import search_concepts
 from app.knowledge.parser import extract_text
+from app.knowledge.retrieval.contracts import RetrievalCandidate, RetrievalResult
+from app.knowledge.schema import (
+    KnowledgeChunkUpdateRequest,
+    KnowledgeDocumentUpdateRequest,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
+)
 from app.knowledge.service import (
     IngestPayload,
     KnowledgeDiscoveryConflictError,
@@ -310,6 +319,46 @@ def test_pdf_pages_receive_stable_section_labels(monkeypatch) -> None:
     assert sections[-1]["path"] == "PDF 文档 / 第 3 页"
 
 
+def test_native_pdf_ingest_preserves_legacy_text_and_file_type(monkeypatch) -> None:
+    class FakePage:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+        def extract_text(self) -> str:
+            return self.text
+
+    class FakeReader:
+        pages = [FakePage("第一章 原生文本"), FakePage("第二章 原生文本")]
+
+    monkeypatch.setattr("pypdf.PdfReader", lambda _stream: FakeReader())
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        db.commit()
+        service = KnowledgeService(db)
+        job = service.create_ingest_job(
+            IngestPayload(
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
+                filename="native.pdf",
+                content_base64=_b64("%PDF-1.4 native"),
+            )
+        )
+
+        expected_text, expected_type = extract_text("native.pdf", b"%PDF-1.4 native")
+
+        service._run_ingest_job(job.id)  # noqa: SLF001 - exercise persistent job logic synchronously.
+
+        refreshed_job = db.get(KnowledgeIngestJob, job.id)
+        assert refreshed_job is not None
+        document = db.get(KnowledgeDocument, refreshed_job.document_id)
+        assert document is not None
+        assert expected_type == "pdf"
+        assert document.file_type == expected_type
+        assert document.metadata_json["raw_text"] == expected_text
+
+
 def test_long_section_continuations_share_one_related_section() -> None:
     paragraphs = [f"{index}. 流程内容" + ("说明" * 150) for index in range(1, 9)]
 
@@ -561,6 +610,86 @@ def test_knowledge_search_without_model_uses_relevance_rank_order() -> None:
         )
 
         assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_frontend"]
+
+
+def test_knowledge_search_uses_hybrid_retriever_only_when_enabled(monkeypatch) -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        document = KnowledgeDocument(
+            id="kdoc_hybrid",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            filename="energy.md",
+            file_type="md",
+            title="能源评审资料",
+            status="ready",
+        )
+        bucket = KnowledgeBucket(
+            id="kbucket_hybrid",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            bucket_key="energy_review",
+            title="能源评审",
+            summary="能源评审要求和证据。",
+        )
+        chunk = KnowledgeChunk(
+            id="kchunk_hybrid",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=document.id,
+            bucket_id=bucket.id,
+            chunk_index=0,
+            content="能源评审应保留审核证据。",
+            summary="能源评审审核证据。",
+            source_ref="energy.md#chunk=0",
+        )
+        db.add_all(
+            [
+                document,
+                bucket,
+                chunk,
+                KnowledgeRetrievalConfig(
+                    id="retrieval_hybrid",
+                    tenant_id="tenant_demo",
+                    name="测试混合检索",
+                    embedding_base_url="https://embedding.example/v1",
+                    embedding_api_key_encrypted="",
+                    embedding_model="text-embedding-model",
+                    embedding_dimensions=3,
+                    enabled=True,
+                ),
+            ]
+        )
+        db.commit()
+
+        class FakeHybrid:
+            def retrieve(self, _query, chunks, _candidate_limit, _rerank_limit):
+                return RetrievalResult(
+                    candidates=[RetrievalCandidate(chunks[0], 1.0, "reranker", 1)],
+                    trace=[{"strategy": "rrf", "selected_count": 1}],
+                )
+
+        monkeypatch.setattr(
+            "app.knowledge.service.get_settings",
+            lambda: type("Settings", (), {"hybrid_knowledge_retrieval_enabled": True})(),
+        )
+        monkeypatch.setattr(KnowledgeService, "_build_hybrid_retriever", lambda *args: FakeHybrid())
+
+        response = KnowledgeService(db).search(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_ids=["kb_demo"],
+                query="能源评审审核证据",
+                mode="chat",
+                max_buckets=1,
+                max_chunks=1,
+            )
+        )
+
+        assert [chunk.id for chunk in response.chunks] == ["kchunk_hybrid"]
+        assert any(item.get("strategy") == "rrf" for item in response.trace)
 
 
 def test_model_driven_document_route_does_not_fall_back_to_lexical_matching(monkeypatch) -> None:

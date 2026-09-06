@@ -44,10 +44,11 @@ class AsyncJobQueue:
         name: str,
         func: Callable[..., Any],
         *args: Any,
+        job_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> AsyncJob:
-        job = AsyncJob(id=new_id("job"), name=name, metadata=metadata or {})
+        job = AsyncJob(id=job_id or new_id("job"), name=name, metadata=metadata or {})
         with self._lock:
             if not self._accepting:
                 raise RuntimeError("AsyncJobQueue is shutting down and no longer accepts jobs")
@@ -156,12 +157,13 @@ def enqueue_async_job(
     name: str,
     func: Callable[..., Any],
     *args: Any,
+    job_id: str | None = None,
     metadata: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> AsyncJob:
     with _default_queue_lock:
         queue = _default_queue
-    return queue.enqueue(name, func, *args, metadata=metadata, **kwargs)
+    return queue.enqueue(name, func, *args, job_id=job_id, metadata=metadata, **kwargs)
 
 
 def get_async_job_queue() -> AsyncJobQueue:

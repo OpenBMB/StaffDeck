@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -10,34 +11,31 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import delete
+from sqlalchemy import and_, delete, or_
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.capability_scope import normalize_capability_scope
 from app import paths
+from app.async_jobs import enqueue_async_job
+from app.capability_scope import normalize_capability_scope
+from app.config import get_settings
 from app.db import engine
 from app.db.models import (
-    KnowledgeBucket,
     KnowledgeBase,
+    KnowledgeBucket,
     KnowledgeChunk,
+    KnowledgeChunkEmbedding,
     KnowledgeConcept,
     KnowledgeDiscoverySuggestion,
     KnowledgeDocument,
     KnowledgeIngestJob,
+    KnowledgeRetrievalConfig,
     ModelConfig,
     Skill,
     Tool,
     utc_now,
 )
-from app.knowledge.parser import KnowledgeParseError, extract_text
-from app.llm.model_config_resolver import resolve_model_config_for_runtime
-from app.knowledge.schema import (
-    KnowledgeBucketRead,
-    KnowledgeChunkRead,
-    KnowledgeSearchRequest,
-    KnowledgeSearchResponse,
-)
+from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
 from app.knowledge.okf import (
     build_okf_for_document,
     okf_citations_for_concepts,
@@ -45,11 +43,37 @@ from app.knowledge.okf import (
     selected_concept_cards,
     upsert_concepts,
 )
-from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
+from app.knowledge.parser import KnowledgeParseError, extract_document
+from app.knowledge.retrieval.bm25 import BM25Retriever
+from app.knowledge.retrieval.hybrid import (
+    HybridKnowledgeRetriever,
+    PassthroughReranker,
+)
+from app.knowledge.retrieval.indexer import KnowledgeVectorIndexer
+from app.knowledge.retrieval.options import BM25Options, FusionOptions
+from app.knowledge.retrieval.providers import (
+    DedicatedRerankProvider,
+    OpenAICompatibleChatRerankClient,
+    embedding_options_for_config,
+    reranker_options_for_config,
+)
+from app.knowledge.retrieval.reranker import DedicatedApiReranker, LLMReranker
+from app.knowledge.retrieval.vector import (
+    EmbeddingError,
+    OpenAICompatibleEmbeddingProvider,
+    VectorRetriever,
+)
+from app.knowledge.schema import (
+    KnowledgeBucketRead,
+    KnowledgeChunkRead,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
+)
 from app.llm import LLMClient, LLMError
+from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.observability.spans import llm_operation, observed_span
+from app.security.encryption import decrypt_secret
 from app.skills.skill_schema import SkillCard, SkillGraphEdge, SkillGraphNode
-
 
 PROMPT_DIR = paths.resource_dir() / "app" / "llm" / "prompts"
 BUCKET_PROMPT = PROMPT_DIR / "knowledge_bucket_prompt.md"
@@ -102,6 +126,28 @@ INGEST_STAGES: list[dict[str, Any]] = [
 
 INGEST_STAGE_BY_KEY = {stage["key"]: stage for stage in INGEST_STAGES}
 logger = logging.getLogger(__name__)
+
+
+def _retrieval_config_is_valid(config: KnowledgeRetrievalConfig) -> bool:
+    if (
+        not config.embedding_base_url.strip()
+        or not config.embedding_model.strip()
+        or config.embedding_dimensions < 1
+    ):
+        return False
+    try:
+        # Local OpenAI-compatible servers may intentionally use an empty key;
+        # only a key that cannot be decrypted makes the config invalid here.
+        decrypt_secret(config.embedding_api_key_encrypted)
+    except ValueError:
+        return False
+    return True
+
+
+def _retrieval_error_code(exc: Exception) -> str:
+    if isinstance(exc, EmbeddingError) and exc.args and isinstance(exc.args[0], str):
+        return str(exc.args[0])
+    return "HYBRID_RETRIEVAL_FAILED"
 
 
 @dataclass
@@ -417,25 +463,70 @@ class KnowledgeService:
             )
             metadata = job.metadata_json or {}
             content = base64.b64decode(str(metadata.get("content_base64") or ""))
-            text, file_type = extract_text(job.filename, content)
+            parsed = extract_document(job.filename, content)
+            extraction = parsed.extraction
+            file_type = parsed.file_type
             self._raise_if_ingest_cancelled(job)
             self._update_ingest_stage(
                 job,
                 "normalizing",
                 detail=f"已抽取 {file_type} 文本，正在清理空行和段落",
             )
-            normalized_text = _normalize_text(text)
+            normalized_text = _normalize_text(parsed.text)
             if not normalized_text:
                 raise KnowledgeParseError("文档没有可用文本内容。")
             self._raise_if_ingest_cancelled(job)
+            source_metadata = _build_source_metadata(
+                filename=job.filename,
+                knowledge_base_version_id=job.knowledge_base_version_id,
+                normalized_text=normalized_text,
+                extraction=extraction,
+            )
+            exact_document = self._find_document_by_source_hashes(
+                job.tenant_id,
+                job.knowledge_base_id,
+                job.knowledge_base_version_id,
+                str(source_metadata.get("source_sha256") or ""),
+                str(source_metadata.get("text_sha256") or ""),
+            )
+            if (
+                exact_document is not None
+                and exact_document.status == "ready"
+                and exact_document.bucket_count > 0
+                and exact_document.chunk_count > 0
+            ):
+                self._update_ingest_stage(
+                    job,
+                    "done",
+                    status="succeeded",
+                    finished_at=utc_now(),
+                    detail="检测到相同 source SHA-256 与正文 SHA-256，已复用现有入库结果",
+                    document_id=exact_document.id,
+                    stats={
+                        "source_sha256": source_metadata["source_sha256"],
+                        "text_sha256": source_metadata["text_sha256"],
+                        "bucket_count": exact_document.bucket_count,
+                        "chunk_count": exact_document.chunk_count,
+                    },
+                )
+                self._clear_embedded_content(job)
+                return
 
             self._update_ingest_stage(
                 job,
                 "documenting",
                 detail=f"已获得 {len(normalized_text):,} 字符，正在识别章节导航树",
-                stats={"char_count": len(normalized_text), "file_type": file_type},
+                stats={
+                    "char_count": len(normalized_text),
+                    "file_type": file_type,
+                    "source_sha256": source_metadata["source_sha256"],
+                    "text_sha256": source_metadata["text_sha256"],
+                },
             )
-            section_nodes = _build_section_nodes(normalized_text)
+            section_nodes = _attach_page_refs(
+                _build_section_nodes(normalized_text),
+                extraction.page_refs,
+            )
             self._raise_if_ingest_cancelled(job)
             document_card = _build_document_card(
                 title=str(metadata.get("title") or Path(job.filename).stem),
@@ -444,26 +535,30 @@ class KnowledgeService:
                 text=normalized_text,
                 section_nodes=section_nodes,
             )
-            document = KnowledgeDocument(
-                tenant_id=job.tenant_id,
-                knowledge_base_id=job.knowledge_base_id,
-                knowledge_base_version_id=job.knowledge_base_version_id,
-                filename=job.filename,
-                file_type=file_type,
-                title=str(metadata.get("title") or Path(job.filename).stem),
-                status="processing",
-                metadata_json={
-                    **(metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}),
-                    "ingest_schema_version": KNOWLEDGE_INGEST_SCHEMA_VERSION,
-                    "char_count": len(normalized_text),
-                    "document_card": document_card,
-                    "section_tree": section_nodes,
-                    "section_stats": {
-                        "section_count": len(section_nodes),
-                        "paragraph_count": len(_paragraph_blocks(normalized_text)),
-                    },
+            document = self._resolve_document_for_ingest(job, exact_document)
+            document.tenant_id = job.tenant_id
+            document.knowledge_base_id = job.knowledge_base_id
+            document.knowledge_base_version_id = job.knowledge_base_version_id
+            document.filename = job.filename
+            document.file_type = file_type
+            document.title = str(metadata.get("title") or Path(job.filename).stem)
+            document.status = "processing"
+            document.error = None
+            document.metadata_json = {
+                **(metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}),
+                "ingest_schema_version": KNOWLEDGE_INGEST_SCHEMA_VERSION,
+                "char_count": len(normalized_text),
+                "raw_text": normalized_text,
+                "document_card": document_card,
+                "section_tree": section_nodes,
+                "section_stats": {
+                    "section_count": len(section_nodes),
+                    "paragraph_count": len(_paragraph_blocks(normalized_text)),
                 },
-            )
+                "extraction": _build_extraction_metadata(extraction),
+                "source": source_metadata,
+            }
+            document.updated_at = utc_now()
             self.db.add(document)
             self.db.commit()
             self.db.refresh(document)
@@ -504,6 +599,15 @@ class KnowledgeService:
             self._raise_if_ingest_cancelled(job)
             okf_concepts = build_okf_for_document(document, section_nodes, buckets)
             self._raise_if_ingest_cancelled(job)
+            self.db.exec(
+                delete(KnowledgeConcept).where(
+                    KnowledgeConcept.tenant_id == job.tenant_id,
+                    KnowledgeConcept.knowledge_base_id == job.knowledge_base_id,
+                    KnowledgeConcept.knowledge_base_version_id == document.knowledge_base_version_id,
+                    KnowledgeConcept.document_id == document.id,
+                )
+            )
+            self.db.commit()
             concept_rows = upsert_concepts(
                 self.db,
                 job.tenant_id,
@@ -553,6 +657,7 @@ class KnowledgeService:
             )
 
             self._discover_from_document(job.tenant_id, job.knowledge_base_id, document, buckets, job)
+            self._queue_vector_index_if_enabled(job, document)
             self._update_ingest_stage(
                 job,
                 "done",
@@ -570,12 +675,7 @@ class KnowledgeService:
             self._finalize_cancelled_job(job, str(exc) or "入库任务已取消")
         except Exception as exc:  # noqa: BLE001 - persist stable job failure.
             if job.document_id:
-                document = self.db.get(KnowledgeDocument, job.document_id)
-                if document:
-                    document.status = "failed"
-                    document.error = str(exc)
-                    document.updated_at = utc_now()
-                    self.db.add(document)
+                self._mark_partial_ingest_failed(job, str(exc))
             self._update_ingest_stage(
                 job,
                 "failed",
@@ -584,7 +684,95 @@ class KnowledgeService:
                 finished_at=utc_now(),
                 detail=str(exc),
             )
-            self._clear_embedded_content(job)
+
+    def _queue_vector_index_if_enabled(
+        self,
+        job: KnowledgeIngestJob,
+        document: KnowledgeDocument,
+    ) -> None:
+        config = self.db.exec(
+            select(KnowledgeRetrievalConfig)
+            .where(
+                KnowledgeRetrievalConfig.tenant_id == document.tenant_id,
+                KnowledgeRetrievalConfig.enabled == True,
+            )
+            .order_by(KnowledgeRetrievalConfig.updated_at.desc())
+        ).first()
+        if config is None or not _retrieval_config_is_valid(config):
+            logger.warning(
+                "hybrid retrieval enabled but no valid embedding configuration is available",
+                extra={"tenant_id": document.tenant_id},
+            )
+            return
+
+        enqueue_async_job(
+            "knowledge_vector_index",
+            KnowledgeService.run_vector_index_job,
+            document.tenant_id,
+            document.knowledge_base_version_id,
+            document.id,
+            config.id,
+            metadata={
+                "tenant_id": document.tenant_id,
+                "knowledge_base_version_id": document.knowledge_base_version_id,
+                "document_id": document.id,
+            },
+        )
+        job.metadata_json = {
+            **(job.metadata_json or {}),
+            "vector_index": {
+                "status": "queued",
+                "retrieval_config_id": config.id,
+            },
+        }
+        self.db.add(job)
+        self.db.commit()
+        self.db.refresh(job)
+
+    @staticmethod
+    def run_vector_index_job(
+        tenant_id: str,
+        knowledge_base_version_id: str,
+        document_id: str,
+        retrieval_config_id: str,
+    ) -> None:
+        with Session(engine) as db:
+            config = db.get(KnowledgeRetrievalConfig, retrieval_config_id)
+            if (
+                config is None
+                or config.tenant_id != tenant_id
+                or (not config.enabled and config.status != "pending_index")
+                or not _retrieval_config_is_valid(config)
+            ):
+                return
+            chunks = db.exec(
+                select(KnowledgeChunk)
+                .where(
+                    KnowledgeChunk.tenant_id == tenant_id,
+                    KnowledgeChunk.knowledge_base_version_id == knowledge_base_version_id,
+                    KnowledgeChunk.document_id == document_id,
+                )
+                .order_by(KnowledgeChunk.chunk_index)
+            ).all()
+            if not chunks:
+                return
+            provider = OpenAICompatibleEmbeddingProvider(config)
+            summary = KnowledgeVectorIndexer(db, config, provider).index_version(
+                tenant_id,
+                knowledge_base_version_id,
+                chunks,
+            )
+            logger.info(
+                "knowledge vector index completed",
+                extra={
+                    "tenant_id": tenant_id,
+                    "knowledge_base_version_id": knowledge_base_version_id,
+                    "document_id": document_id,
+                    "indexed": summary.indexed,
+                    "skipped": summary.skipped,
+                    "failed": summary.failed,
+                },
+            )
 
     def search(self, request: KnowledgeSearchRequest, model_config: ModelConfig | None = None) -> KnowledgeSearchResponse:
         with observed_span(
@@ -816,9 +1004,36 @@ class KnowledgeService:
         with observed_span(
             "knowledge_span", "knowledge.rank_chunks", candidate_count=len(chunks)
         ) as span:
-            ranked_candidates = _rank_chunks(
-                query, chunks, selected_buckets, expanded_sections
-            )
+            retrieval_config = self._active_retrieval_config(request.tenant_id)
+            if retrieval_config is None:
+                ranked_candidates = _rank_chunks(
+                    query, chunks, selected_buckets, expanded_sections
+                )
+            else:
+                try:
+                    hybrid_result = self._build_hybrid_retriever(
+                        retrieval_config,
+                        model_config,
+                    ).retrieve(
+                        query,
+                        chunks,
+                        max(1, retrieval_config.candidate_limit),
+                        max(1, retrieval_config.rerank_limit),
+                    )
+                    ranked_candidates = [
+                        item.chunk for item in hybrid_result.candidates
+                    ]
+                    route_trace.extend(hybrid_result.trace)
+                except Exception as exc:  # noqa: BLE001 - preserve lexical fallback.
+                    ranked_candidates = _rank_chunks(
+                        query, chunks, selected_buckets, expanded_sections
+                    )
+                    route_trace.append(
+                        {
+                            "strategy": "hybrid",
+                            "fallback_reason": _retrieval_error_code(exc),
+                        }
+                    )
             ranked_hits = _select_diverse_chunk_hits(
                 ranked_candidates, selected_buckets, request.max_chunks
             )
@@ -919,13 +1134,13 @@ class KnowledgeService:
         self.db.exec(delete(KnowledgeBucket).where(KnowledgeBucket.document_id == document.id))
         self.db.exec(delete(KnowledgeChunk).where(KnowledgeChunk.document_id == document.id))
         self.db.exec(delete(KnowledgeDiscoverySuggestion).where(KnowledgeDiscoverySuggestion.document_id == document.id))
+        section_by_id = {str(node.get("section_id")): node for node in section_nodes}
         rows: list[KnowledgeBucket] = []
         for index, spec in enumerate(bucket_specs):
             self._raise_if_ingest_cancelled(job)
             content = str(spec.get("content") or "")
             section_ids = [str(item) for item in spec.get("section_ids", []) if item]
             if not content and section_ids:
-                section_by_id = {str(node.get("section_id")): node for node in section_nodes}
                 content = "\n\n".join(
                     str(section_by_id[section_id].get("content") or "")
                     for section_id in section_ids
@@ -933,6 +1148,19 @@ class KnowledgeService:
                 )
             content = content or text[:BUCKET_SECTION_CHARS]
             quality = _bucket_quality(spec, section_ids, content)
+            section_page_refs = _unique_strings(
+                [
+                    str(page_ref)
+                    for section_id in section_ids
+                    if section_id in section_by_id
+                    for page_ref in (
+                        section_by_id[section_id].get("page_refs")
+                        if isinstance(section_by_id[section_id].get("page_refs"), list)
+                        else []
+                    )
+                    if page_ref
+                ]
+            )
             row = KnowledgeBucket(
                 tenant_id=tenant_id,
                 knowledge_base_id=knowledge_base_id,
@@ -949,6 +1177,7 @@ class KnowledgeService:
                     "concept_type": str(spec.get("concept_type") or "Topic"),
                     "section_ids": section_ids,
                     "section_paths": spec.get("section_paths") if isinstance(spec.get("section_paths"), list) else [],
+                    "page_refs": section_page_refs,
                     "representative_chunk_ids": [],
                     "applicable_query_types": spec.get("applicable_query_types") if isinstance(spec.get("applicable_query_types"), list) else [],
                     "quality": quality,
@@ -1010,6 +1239,9 @@ class KnowledgeService:
                     for part in parts:
                         self._raise_if_ingest_cancelled(job)
                         source_path = f"{document.filename} / {section.get('path') or bucket.title} / evidence {local_index + 1}"
+                        page_refs = _unique_strings(
+                            [str(item) for item in section.get("page_refs", []) if item]
+                        )
                         row = KnowledgeChunk(
                             tenant_id=tenant_id,
                             knowledge_base_id=knowledge_base_id,
@@ -1029,6 +1261,7 @@ class KnowledgeService:
                                 "section_path": section.get("path"),
                                 "section_title": section.get("title"),
                                 "bucket_title": bucket.title,
+                                "page_refs": page_refs,
                                 "source_span": section.get("source_span") or {},
                                 "context_window": _summarize_text(content, 260),
                             },
@@ -1118,7 +1351,7 @@ class KnowledgeService:
                 raw = LLMClient(model_config).generate_json(
                     DISCOVERY_PROMPT.read_text(encoding="utf-8"), payload
                 )
-        except (LLMError, Exception):
+        except (LLMError, AttributeError, KeyError, OSError, TypeError, ValueError):
             return
         self._raise_if_ingest_cancelled(job)
         discoveries = raw.get("discoveries") if isinstance(raw, dict) else None
@@ -1193,7 +1426,7 @@ class KnowledgeService:
                 raw = LLMClient(model_config).generate_json(
                     BUCKET_PROMPT.read_text(encoding="utf-8"), payload
                 )
-        except (LLMError, Exception):
+        except (LLMError, AttributeError, KeyError, OSError, TypeError, ValueError):
             return []
         buckets = raw.get("buckets") if isinstance(raw, dict) else None
         return [item for item in buckets if isinstance(item, dict)] if isinstance(buckets, list) else []
@@ -1212,9 +1445,21 @@ class KnowledgeService:
         return self.db.exec(stmt.order_by(KnowledgeDocument.updated_at.desc())).all()
 
     def _load_concepts_for_search(self, request: KnowledgeSearchRequest) -> list[KnowledgeConcept]:
-        stmt = select(KnowledgeConcept).where(
-            KnowledgeConcept.tenant_id == request.tenant_id,
-            KnowledgeConcept.status == "active",
+        stmt = (
+            select(KnowledgeConcept)
+            .join(
+                KnowledgeDocument,
+                and_(
+                    KnowledgeDocument.id == KnowledgeConcept.document_id,
+                    KnowledgeDocument.tenant_id == KnowledgeConcept.tenant_id,
+                ),
+                isouter=True,
+            )
+            .where(
+                KnowledgeConcept.tenant_id == request.tenant_id,
+                KnowledgeConcept.status == "active",
+                or_(KnowledgeConcept.document_id.is_(None), KnowledgeDocument.status == "ready"),
+            )
         )
         if request.knowledge_base_ids:
             stmt = stmt.where(KnowledgeConcept.knowledge_base_id.in_(request.knowledge_base_ids))
@@ -1255,7 +1500,7 @@ class KnowledgeService:
                 raw = LLMClient(model_config).generate_json(
                     DOCUMENT_ROUTE_PROMPT.read_text(encoding="utf-8"), payload
                 )
-        except (LLMError, Exception) as exc:
+        except (LLMError, AttributeError, KeyError, OSError, TypeError, ValueError) as exc:
             trace.append({"phase": "document_route_failed", "message": str(exc)})
             return None
         ids = raw.get("selected_document_ids") if isinstance(raw, dict) else None
@@ -1301,7 +1546,7 @@ class KnowledgeService:
                 raw = LLMClient(model_config).generate_json(
                     SEARCH_PROMPT.read_text(encoding="utf-8"), payload
                 )
-        except (LLMError, Exception) as exc:
+        except (LLMError, AttributeError, KeyError, OSError, TypeError, ValueError) as exc:
             trace.append({"phase": "bucket_selection_failed", "message": str(exc)})
             return None
         ids = raw.get("selected_bucket_ids") if isinstance(raw, dict) else None
@@ -1387,13 +1632,143 @@ class KnowledgeService:
         row = self.db.exec(
             select(ModelConfig).where(
                 ModelConfig.tenant_id == tenant_id,
-                ModelConfig.is_default == True,  # noqa: E712 - SQLModel expression.
-                ModelConfig.enabled == True,  # noqa: E712
+                ModelConfig.is_default == True,
+                ModelConfig.enabled == True,
             )
         ).first()
         if row is None:
             return None
         return resolve_model_config_for_runtime(self.db, tenant_id, row.id)
+
+    def _resolve_document_for_ingest(
+        self,
+        job: KnowledgeIngestJob,
+        matched_document: KnowledgeDocument | None,
+    ) -> KnowledgeDocument:
+        if job.document_id:
+            existing = self.db.get(KnowledgeDocument, job.document_id)
+            if existing is not None:
+                return existing
+        if matched_document is not None:
+            return matched_document
+        return KnowledgeDocument(
+            tenant_id=job.tenant_id,
+            knowledge_base_id=job.knowledge_base_id,
+            knowledge_base_version_id=job.knowledge_base_version_id,
+            filename=job.filename,
+            file_type="",
+            title=str(Path(job.filename).stem),
+            status="processing",
+        )
+
+    def _find_document_by_source_hashes(
+        self,
+        tenant_id: str,
+        knowledge_base_id: str,
+        knowledge_base_version_id: str | None,
+        source_sha256: str,
+        text_sha256: str,
+    ) -> KnowledgeDocument | None:
+        documents = self.db.exec(
+            select(KnowledgeDocument)
+            .where(
+                KnowledgeDocument.tenant_id == tenant_id,
+                KnowledgeDocument.knowledge_base_id == knowledge_base_id,
+            )
+            .order_by(KnowledgeDocument.updated_at.desc())
+        ).all()
+        for document in documents:
+            if document.knowledge_base_version_id != knowledge_base_version_id:
+                continue
+            source = _document_source_metadata(document)
+            if (
+                str(source.get("source_sha256") or "") == source_sha256
+                and str(source.get("text_sha256") or "") == text_sha256
+            ):
+                return document
+        return None
+
+    def _active_retrieval_config(self, tenant_id: str) -> KnowledgeRetrievalConfig | None:
+        return self.db.exec(
+            select(KnowledgeRetrievalConfig)
+            .where(
+                KnowledgeRetrievalConfig.tenant_id == tenant_id,
+                KnowledgeRetrievalConfig.enabled == True,
+                KnowledgeRetrievalConfig.status == "active",
+            )
+            .order_by(KnowledgeRetrievalConfig.updated_at.desc())
+        ).first()
+
+    def _pending_retrieval_config(self, tenant_id: str) -> KnowledgeRetrievalConfig | None:
+        return self.db.exec(
+            select(KnowledgeRetrievalConfig)
+            .where(
+                KnowledgeRetrievalConfig.tenant_id == tenant_id,
+                KnowledgeRetrievalConfig.status == "pending_index",
+            )
+            .order_by(KnowledgeRetrievalConfig.updated_at.desc())
+        ).first()
+
+    def _build_hybrid_retriever(
+        self,
+        retrieval_config: KnowledgeRetrievalConfig,
+        model_config: ModelConfig | None,
+    ) -> HybridKnowledgeRetriever:
+        embedding_options = embedding_options_for_config(retrieval_config)
+        bm25_options = BM25Options(**(retrieval_config.bm25_options_json or {}))
+        fusion_options = FusionOptions(**(retrieval_config.fusion_options_json or {}))
+        reranker_options = reranker_options_for_config(retrieval_config)
+        reranker = PassthroughReranker()
+        if reranker_options.mode == "dedicated_api" or retrieval_config.reranker_mode == "dedicated_api":
+            try:
+                reranker = DedicatedApiReranker(
+                    DedicatedRerankProvider(retrieval_config, reranker_options),
+                    reranker_options,
+                )
+            except Exception:  # noqa: BLE001 - model setup must not break retrieval.
+                reranker = PassthroughReranker("RERANKER_MODEL_UNAVAILABLE")
+        elif reranker_options.mode == "llm" or retrieval_config.reranker_mode == "llm":
+            if reranker_options.base_url and reranker_options.model:
+                try:
+                    rerank_client = OpenAICompatibleChatRerankClient(
+                        retrieval_config,
+                        reranker_options,
+                    )
+                    reranker = LLMReranker(rerank_client, reranker_options)
+                except Exception:  # noqa: BLE001 - model setup must not break retrieval.
+                    reranker = PassthroughReranker("RERANKER_MODEL_UNAVAILABLE")
+                reranker_config = None
+            else:
+                reranker_config = model_config
+            if retrieval_config.reranker_model_config_id:
+                try:
+                    reranker_config = resolve_model_config_for_runtime(
+                        self.db,
+                        retrieval_config.tenant_id,
+                        retrieval_config.reranker_model_config_id,
+                    )
+                except Exception:  # noqa: BLE001 - use deterministic passthrough fallback.
+                    reranker_config = None
+            if reranker_config is not None:
+                try:
+                    reranker = LLMReranker(
+                        LLMClient(reranker_config),
+                        reranker_options,
+                    )
+                except Exception:  # noqa: BLE001 - model setup must not break retrieval.
+                    reranker = PassthroughReranker("RERANKER_MODEL_UNAVAILABLE")
+
+        embedding_provider = OpenAICompatibleEmbeddingProvider(
+            retrieval_config,
+            embedding_options,
+        )
+        return HybridKnowledgeRetriever(
+            bm25=BM25Retriever(bm25_options),
+            vector=VectorRetriever(self.db, retrieval_config, embedding_options),
+            reranker=reranker,
+            embedding_provider=embedding_provider,
+            fusion_options=fusion_options,
+        )
 
     def ensure_default_knowledge_base(self, tenant_id: str) -> KnowledgeBase:
         existing = self.db.exec(
@@ -1457,14 +1832,44 @@ class KnowledgeService:
         document_id = job.document_id
         if not document_id:
             return
-        for model in (KnowledgeDiscoverySuggestion, KnowledgeConcept, KnowledgeChunk, KnowledgeBucket):
-            self.db.exec(delete(model).where(model.document_id == document_id))
+        self._delete_partial_ingest_rows(document_id)
         document = self.db.get(KnowledgeDocument, document_id)
         if document:
             self.db.delete(document)
         job.document_id = None
         self.db.add(job)
         self.db.commit()
+
+    def _mark_partial_ingest_failed(self, job: KnowledgeIngestJob, error: str) -> None:
+        document_id = job.document_id
+        if not document_id:
+            return
+        self._delete_partial_ingest_rows(document_id)
+        document = self.db.get(KnowledgeDocument, document_id)
+        if document is None:
+            return
+        metadata = dict(document.metadata_json or {})
+        metadata.pop("chunk_stats", None)
+        metadata.pop("bucket_quality", None)
+        metadata.pop("okf", None)
+        document.status = "failed"
+        document.error = error
+        document.bucket_count = 0
+        document.chunk_count = 0
+        document.metadata_json = metadata
+        document.updated_at = utc_now()
+        self.db.add(document)
+        self.db.commit()
+
+    def _delete_partial_ingest_rows(self, document_id: str) -> None:
+        chunk_ids = self.db.exec(
+            select(KnowledgeChunk.id).where(KnowledgeChunk.document_id == document_id)
+        ).all()
+        normalized_chunk_ids = [str(chunk_id) for chunk_id in chunk_ids if chunk_id]
+        if normalized_chunk_ids:
+            self.db.exec(delete(KnowledgeChunkEmbedding).where(KnowledgeChunkEmbedding.chunk_id.in_(normalized_chunk_ids)))
+        for model in (KnowledgeDiscoverySuggestion, KnowledgeConcept, KnowledgeChunk, KnowledgeBucket):
+            self.db.exec(delete(model).where(model.document_id == document_id))
 
     def _update_ingest_stage(
         self,
@@ -1545,6 +1950,78 @@ def _normalize_text(text: str) -> str:
         compact.append(line)
         blank = False
     return "\n".join(compact).strip()
+
+
+def _build_extraction_metadata(extraction: Any) -> dict[str, Any]:
+    return {
+        "method": str(extraction.method),
+        "engine": str(extraction.engine),
+        "engine_version": str(extraction.engine_version),
+        "warnings": [str(item) for item in extraction.warnings],
+        "page_refs": [str(item) for item in extraction.page_refs],
+        "source_page_count": int(extraction.source_page_count),
+        "char_count": int(extraction.char_count),
+        "table_count": int(extraction.table_count),
+    }
+
+
+def _build_source_metadata(
+    *,
+    filename: str,
+    knowledge_base_version_id: str | None,
+    normalized_text: str,
+    extraction: Any,
+) -> dict[str, Any]:
+    return {
+        "filename": filename,
+        "knowledge_base_version_id": knowledge_base_version_id,
+        "source_sha256": str(extraction.source_sha256),
+        "text_sha256": hashlib.sha256(normalized_text.encode("utf-8")).hexdigest(),
+        "source_page_count": int(extraction.source_page_count),
+        "page_refs": [str(item) for item in extraction.page_refs],
+        "ingest_schema_version": KNOWLEDGE_INGEST_SCHEMA_VERSION,
+    }
+
+
+def _document_source_metadata(document: KnowledgeDocument) -> dict[str, Any]:
+    metadata = document.metadata_json if isinstance(document.metadata_json, dict) else {}
+    source = metadata.get("source") if isinstance(metadata.get("source"), dict) else {}
+    return dict(source)
+
+
+def _attach_page_refs(
+    section_nodes: list[dict[str, Any]],
+    document_page_refs: list[str],
+) -> list[dict[str, Any]]:
+    all_page_refs = _unique_strings([str(item) for item in document_page_refs if item])
+    if not all_page_refs:
+        return section_nodes
+    attached: list[dict[str, Any]] = []
+    for node in section_nodes:
+        copy = dict(node)
+        title = str(copy.get("title") or "")
+        path = str(copy.get("path") or "")
+        page_refs = _page_refs_for_section_title(title, path, all_page_refs)
+        if not page_refs and len(all_page_refs) == 1:
+            page_refs = list(all_page_refs)
+        copy["page_refs"] = page_refs
+        attached.append(copy)
+    return attached
+
+
+def _page_refs_for_section_title(
+    title: str,
+    path: str,
+    all_page_refs: list[str],
+) -> list[str]:
+    haystack = f"{title} {path}"
+    match = re.search(r"第\s*([0-9]+)\s*页", haystack)
+    if match:
+        page_ref = f"page:{int(match.group(1))}"
+        return [page_ref] if page_ref in all_page_refs else []
+    if title.strip() == "PDF 文档" or path.strip() == "PDF 文档":
+        return list(all_page_refs)
+    return []
 
 
 def _split_sections(text: str) -> list[str]:
@@ -2333,6 +2810,7 @@ def _build_evidence_pack(
                 "bucket_id": chunk.bucket_id,
                 "source_path": chunk.source_ref,
                 "section_path": metadata.get("section_path"),
+                "page_refs": metadata.get("page_refs") if isinstance(metadata.get("page_refs"), list) else [],
                 "summary": chunk.summary,
                 "content": chunk.content[:CITATION_EXCERPT_CHAR_LIMIT],
                 "excerpt": chunk.content[:CITATION_EXCERPT_CHAR_LIMIT],
@@ -2426,7 +2904,7 @@ def _query_terms(query: str) -> list[str]:
             for size in (4, 3, 2):
                 if len(normalized) <= size:
                     continue
-                terms.extend(normalized[index : index + size] for index in range(0, len(normalized) - size + 1))
+                terms.extend(normalized[index : index + size] for index in range(len(normalized) - size + 1))
     result: list[str] = []
     seen: set[str] = set()
     for term in terms:

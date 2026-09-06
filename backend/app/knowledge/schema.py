@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -10,18 +10,18 @@ from app.capability_scope import CapabilityScope
 class KnowledgeBaseCreateRequest(BaseModel):
     tenant_id: str
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     capability_scope: CapabilityScope = "general"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class KnowledgeBaseUpdateRequest(BaseModel):
     tenant_id: str
-    name: Optional[str] = None
-    description: Optional[str] = None
-    status: Optional[Literal["active", "archived"]] = None
-    capability_scope: Optional[CapabilityScope] = None
-    metadata: Optional[dict[str, Any]] = None
+    name: str | None = None
+    description: str | None = None
+    status: Literal["active", "archived"] | None = None
+    capability_scope: CapabilityScope | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class KnowledgeBaseRollbackRequest(BaseModel):
@@ -34,13 +34,13 @@ class KnowledgeBaseRead(BaseModel):
     id: str
     tenant_id: str
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     status: str
     capability_scope: CapabilityScope
-    version: Optional[str] = None
-    branch_sync_state: Optional[str] = None
-    branch_base_version: Optional[str] = None
-    branch_head_version: Optional[str] = None
+    version: str | None = None
+    branch_sync_state: str | None = None
+    branch_base_version: str | None = None
+    branch_head_version: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     document_count: int = 0
     bucket_count: int = 0
@@ -53,10 +53,10 @@ class KnowledgeBaseRead(BaseModel):
 
 class KnowledgeDocumentUploadRequest(BaseModel):
     tenant_id: str
-    knowledge_base_id: Optional[str] = None
+    knowledge_base_id: str | None = None
     filename: str
     content_base64: str
-    title: Optional[str] = None
+    title: str | None = None
     capability_scope: CapabilityScope = "general"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -65,16 +65,19 @@ class KnowledgeIngestJobRead(BaseModel):
     id: str
     tenant_id: str
     knowledge_base_id: str
-    document_id: Optional[str] = None
+    document_id: str | None = None
     filename: str
     status: str
     stage: str
     progress: float
-    error: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Job metadata, including retained upload blob on failed ingestion jobs.",
+    )
     created_at: str
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
+    started_at: str | None = None
+    finished_at: str | None = None
     updated_at: str
 
     model_config = ConfigDict(from_attributes=True)
@@ -84,15 +87,18 @@ class KnowledgeDocumentRead(BaseModel):
     id: str
     tenant_id: str
     knowledge_base_id: str
-    knowledge_base_version_id: Optional[str] = None
+    knowledge_base_version_id: str | None = None
     filename: str
     file_type: str
-    title: Optional[str] = None
+    title: str | None = None
     status: str
     bucket_count: int
     chunk_count: int
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    error: Optional[str] = None
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Document metadata, including raw_text, source provenance, and extraction details.",
+    )
+    error: str | None = None
     created_at: str
     updated_at: str
 
@@ -101,11 +107,11 @@ class KnowledgeDocumentRead(BaseModel):
 
 class KnowledgeDocumentUpdateRequest(BaseModel):
     tenant_id: str
-    title: Optional[str] = None
-    status: Optional[Literal["ready", "processing", "failed", "archived"]] = None
-    metadata: Optional[dict[str, Any]] = None
-    content_md: Optional[str] = Field(default=None, max_length=2_000_000)
-    expected_updated_at: Optional[str] = None
+    title: str | None = None
+    status: Literal["ready", "processing", "failed", "archived"] | None = None
+    metadata: dict[str, Any] | None = None
+    content_md: str | None = Field(default=None, max_length=2_000_000)
+    expected_updated_at: str | None = None
 
 
 class KnowledgeBucketRead(BaseModel):
@@ -128,9 +134,9 @@ class KnowledgeBucketRead(BaseModel):
 
 class KnowledgeBucketUpdateRequest(BaseModel):
     tenant_id: str
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    metadata: Optional[dict[str, Any]] = None
+    title: str | None = None
+    summary: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class KnowledgeChunkRead(BaseModel):
@@ -141,9 +147,12 @@ class KnowledgeChunkRead(BaseModel):
     bucket_id: str
     chunk_index: int
     content: str
-    summary: Optional[str] = None
-    source_ref: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    summary: str | None = None
+    source_ref: str | None = None
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Chunk metadata, including page_refs and section provenance for citations.",
+    )
     created_at: str
     updated_at: str
 
@@ -152,21 +161,21 @@ class KnowledgeChunkRead(BaseModel):
 
 class KnowledgeChunkUpdateRequest(BaseModel):
     tenant_id: str
-    content: Optional[str] = None
-    summary: Optional[str] = None
-    metadata: Optional[dict[str, Any]] = None
+    content: str | None = None
+    summary: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class KnowledgeConceptRead(BaseModel):
     id: str
     tenant_id: str
     knowledge_base_id: str
-    knowledge_base_version_id: Optional[str] = None
-    document_id: Optional[str] = None
+    knowledge_base_version_id: str | None = None
+    document_id: str | None = None
     concept_id: str
     concept_type: str
     title: str
-    description: Optional[str] = None
+    description: str | None = None
     content_md: str
     frontmatter: dict[str, Any] = Field(default_factory=dict)
     links: list[dict[str, Any]] = Field(default_factory=list)
@@ -182,26 +191,26 @@ class KnowledgeConceptRead(BaseModel):
 class KnowledgeConceptUpdateRequest(BaseModel):
     tenant_id: str
     content_md: str
-    document_id: Optional[str] = None
+    document_id: str | None = None
     status: Literal["active", "archived"] = "active"
 
 
 class KnowledgeOkfImportRequest(BaseModel):
     tenant_id: str
-    knowledge_base_id: Optional[str] = None
+    knowledge_base_id: str | None = None
     filename: str
     content_base64: str
-    agent_id: Optional[str] = None
+    agent_id: str | None = None
 
 
 class KnowledgeSearchRequest(BaseModel):
     tenant_id: str
-    agent_id: Optional[str] = None
+    agent_id: str | None = None
     query: str
     query_type: Literal["answer", "policy_check", "tool_discovery", "skill_discovery"] = "answer"
-    desired_evidence: Optional[str] = None
+    desired_evidence: str | None = None
     scope: dict[str, Any] = Field(default_factory=dict)
-    model_config_id: Optional[str] = None
+    model_config_id: str | None = None
     mode: Literal["chat", "skill_discovery", "debug"] = "chat"
     knowledge_base_ids: list[str] = Field(default_factory=list)
     knowledge_base_version_ids: list[str] = Field(default_factory=list)
@@ -231,13 +240,13 @@ class KnowledgeDiscoveryRead(BaseModel):
     tenant_id: str
     knowledge_base_id: str
     document_id: str
-    bucket_id: Optional[str] = None
+    bucket_id: str | None = None
     suggestion_type: Literal["skill", "tool", "warning"]
     title: str
     status: str
     payload: dict[str, Any] = Field(default_factory=dict)
     source_refs: list[dict[str, Any]] = Field(default_factory=list)
-    reason: Optional[str] = None
+    reason: str | None = None
     created_at: str
     updated_at: str
 

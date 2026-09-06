@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 import sys
+from itertools import pairwise
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -11,24 +14,140 @@ from app.config import get_settings
 from app.db.models import (
     AgentProfile,
     GeneralSkill,
+    HarnessTaskFrameRecord,
     MCPServer,
     ModelConfig,
     PersonaConfig,
     Skill,
+    SkillVersion,
     Tenant,
     Tool,
     User,
     utc_now,
 )
-from app.security.encryption import encrypt_secret
-from app.security.auth import hash_password
 from app.db.staffdeck_seed import seed_staffdeck_admin_gallery
-
+from app.security.auth import hash_password
+from app.security.encryption import encrypt_secret
+from app.skills.skill_schema import SkillCard
 
 ADAPTIVE_FLOW_RULE = (
     "步骤是可自适应推进的目标，不是固定问答脚本；已由当前用户消息、历史信息或路由意图满足的内容"
     "不得重复追问，应直接推进到下一缺失信息、工具调用或最终回复。"
 )
+
+AUDIT_REPORT_SOP_V2_SKILL_ID = "audit_report_generation_sop"
+AUDIT_REPORT_SOP_V2_VERSION = "2.0.0"
+AUDIT_REPORT_SOP_V2_FIXTURE_PATH = (
+    Path(__file__).resolve().parent / "seed_fixtures" / "audit_report_generation_sop_v2.json"
+)
+AUDIT_REPORT_SOP_V2_SEED_ENV = "STAFFDECK_SEED_AUDIT_REPORT_SOP_V2"
+_NON_TERMINAL_TASK_FRAME_STATUSES = {
+    "queued",
+    "running",
+    "awaiting_user",
+    "blocked",
+    "action_budget",
+}
+
+
+def load_audit_report_sop_v2() -> SkillCard:
+    payload = json.loads(AUDIT_REPORT_SOP_V2_FIXTURE_PATH.read_text(encoding="utf-8"))
+    return SkillCard.model_validate(payload)
+
+
+def seed_audit_report_sop_v2(session: Session) -> Skill:
+    """Publish the project-driven audit-report SOP without replacing active work."""
+
+    card = load_audit_report_sop_v2()
+    content = card.model_dump(mode="json")
+    existing_version = session.exec(
+        select(SkillVersion).where(
+            SkillVersion.tenant_id == "tenant_demo",
+            SkillVersion.skill_id == AUDIT_REPORT_SOP_V2_SKILL_ID,
+            SkillVersion.version == AUDIT_REPORT_SOP_V2_VERSION,
+        )
+    ).first()
+    if existing_version is None:
+        session.add(
+            SkillVersion(
+                tenant_id="tenant_demo",
+                skill_id=card.skill_id,
+                version=card.version,
+                name=card.name,
+                business_domain=card.business_domain,
+                description=card.description,
+                content_json=content,
+                status="published",
+            )
+        )
+
+    current = session.exec(
+        select(Skill).where(
+            Skill.tenant_id == "tenant_demo",
+            Skill.skill_id == AUDIT_REPORT_SOP_V2_SKILL_ID,
+        )
+    ).first()
+    if current is None:
+        current = Skill(
+            tenant_id="tenant_demo",
+            skill_id=card.skill_id,
+            version=card.version,
+            name=card.name,
+            business_domain=card.business_domain,
+            description=card.description,
+            content_json=content,
+            status="published",
+        )
+        session.add(current)
+        session.flush()
+        return current
+
+    active_frame_exists = session.exec(
+        select(HarnessTaskFrameRecord).where(
+            HarnessTaskFrameRecord.tenant_id == "tenant_demo",
+            HarnessTaskFrameRecord.skill_id == AUDIT_REPORT_SOP_V2_SKILL_ID,
+            HarnessTaskFrameRecord.status.in_(_NON_TERMINAL_TASK_FRAME_STATUSES),
+        )
+    ).first()
+    if active_frame_exists is None and current.version != AUDIT_REPORT_SOP_V2_VERSION:
+        previous_version = session.exec(
+            select(SkillVersion).where(
+                SkillVersion.tenant_id == "tenant_demo",
+                SkillVersion.skill_id == current.skill_id,
+                SkillVersion.version == current.version,
+            )
+        ).first()
+        if previous_version is None:
+            previous_content = dict(current.content_json or {})
+            previous_content.setdefault("skill_id", current.skill_id)
+            previous_content.setdefault("name", current.name)
+            previous_content.setdefault("version", current.version)
+            session.add(
+                SkillVersion(
+                    tenant_id="tenant_demo",
+                    skill_id=current.skill_id,
+                    version=current.version,
+                    name=current.name,
+                    business_domain=current.business_domain,
+                    description=current.description,
+                    content_json=previous_content,
+                    status=current.status,
+                )
+            )
+        current.version = card.version
+        current.name = card.name
+        current.business_domain = card.business_domain
+        current.description = card.description
+        current.content_json = content
+        current.status = "published"
+        current.updated_at = utc_now()
+        session.add(current)
+    return current
+
+
+def _audit_report_sop_v2_seed_enabled() -> bool:
+    value = os.environ.get(AUDIT_REPORT_SOP_V2_SEED_ENV, "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
 
 
 REFUND_SKILL = {
@@ -986,6 +1105,9 @@ def seed_demo_data(session: Session) -> None:
         else:
             _sync_demo_skill_if_stale(existing, content)
 
+    if _audit_report_sop_v2_seed_enabled():
+        seed_audit_report_sop_v2(session)
+
     for tool_config in DEMO_TOOLS:
         tool_config = _tool_config_with_base_url(tool_config, settings.normalized_tool_base_url)
         tool = session.exec(
@@ -1033,7 +1155,7 @@ def seed_demo_data(session: Session) -> None:
     default_model = session.exec(
         select(ModelConfig).where(
             ModelConfig.tenant_id == "tenant_demo",
-            ModelConfig.is_default == True,  # noqa: E712
+            ModelConfig.is_default == True,
         )
     ).first()
     if not default_model and settings.demo_model_api_key:
@@ -1078,6 +1200,7 @@ def _publish_seeded_system_resources(session: Session) -> None:
             GRAPH_VISUAL_DEMO_SKILL,
         )
     }
+    seeded_skill_ids.add(AUDIT_REPORT_SOP_V2_SKILL_ID)
     for skill in session.exec(
         select(Skill).where(Skill.tenant_id == tenant_id, Skill.skill_id.in_(seeded_skill_ids))
     ).all():
@@ -1392,7 +1515,7 @@ def _skill_content_graph(content: dict) -> dict:
                     "priority": index,
                     "label": "",
                 }
-                for index, (source, target) in enumerate(zip(node_ids, node_ids[1:]))
+                for index, (source, target) in enumerate(pairwise(node_ids))
             ],
         )
     else:

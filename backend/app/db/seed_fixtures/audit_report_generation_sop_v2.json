@@ -1,0 +1,244 @@
+{
+  "skill_id": "audit_report_generation_sop",
+  "name": "项目驱动的审核报告生成",
+  "version": "2.0.0",
+  "business_domain": "能源管理体系审核",
+  "description": "基于审核项目材料清单、完整证据台账、模板和知识库引用生成可追溯的审核报告。",
+  "capability_scope": "general",
+  "step_timeout_seconds": 600,
+  "trigger_intents": [
+    "生成审核报告",
+    "编写审核报告",
+    "根据审核资料形成审核报告"
+  ],
+  "user_utterance_examples": [
+    "请根据这个审核项目的全部资料生成审核报告",
+    "继续生成上次项目的审核报告"
+  ],
+  "goal": [
+    "复用已登记的审核项目材料，不因跨对话而要求用户重复上传当前有效文件",
+    "覆盖项目材料全文并建立可追溯的审核证据台账",
+    "结合已授权的知识库内容生成结构完整、覆盖可核验的审核报告"
+  ],
+  "required_info": [
+    "audit_case_id",
+    "report_type",
+    "management_systems",
+    "organization_name",
+    "material_manifest_status",
+    "evidence_coverage_status",
+    "knowledge_coverage_status"
+  ],
+  "slot_filling_policy": {
+    "enabled": true,
+    "mode": "multi_slot",
+    "target_info": [
+      "audit_case_id",
+      "report_type",
+      "management_systems",
+      "organization_name",
+      "material_manifest_status",
+      "evidence_coverage_status",
+      "knowledge_coverage_status"
+    ],
+    "skip_satisfied": true,
+    "ask_only_missing": true
+  },
+  "response_rules": [
+    "先读取当前审核项目及其材料清单，再决定是否需要用户补充材料。",
+    "不得把已登记且当前版本有效的项目材料要求用户重复上传。",
+    "审核报告中的事实、证据和引用必须能够回溯到项目材料或已授权知识库内容。",
+    "发现材料解析失败、版本冲突、证据缺口或知识库覆盖不足时，明确列出缺口，不得编造内容。",
+    "输出前检查报告章节、审核条款、材料覆盖和知识库引用的一致性。"
+  ],
+  "nodes": [
+    {
+      "node_id": "select_or_create_audit_case",
+      "type": "collect_info",
+      "name": "选择或创建审核项目",
+      "instruction": "根据当前会话绑定的 audit_case_id 读取审核项目；若没有绑定项目，创建或选择一个可访问的审核项目并记录其 ID。",
+      "expected_user_info": ["audit_case_id"],
+      "allowed_actions": [],
+      "knowledge_scope": {},
+      "capability_refs": {
+        "general_skill_ids": [],
+        "tool_ids": [],
+        "knowledge_base_ids": [],
+        "required_general_skill_ids": [],
+        "required_tool_ids": [],
+        "required_knowledge_base_ids": []
+      }
+    },
+    {
+      "node_id": "collect_materials",
+      "type": "collect_info",
+      "name": "核对项目材料清单",
+      "instruction": "先读取 audit_case_id 对应的结构化材料清单；只询问缺失、失败或版本冲突的材料。清单中 status=available 或 processing_status=succeeded 的当前版本不得要求用户重复上传。",
+      "expected_user_info": ["material_manifest_status"],
+      "allowed_actions": ["audit_case_manifest"],
+      "knowledge_scope": {},
+      "capability_refs": {
+        "general_skill_ids": [],
+        "tool_ids": [],
+        "knowledge_base_ids": [],
+        "required_general_skill_ids": [],
+        "required_tool_ids": [],
+        "required_knowledge_base_ids": []
+      }
+    },
+    {
+      "node_id": "ingest_and_validate_materials",
+      "type": "collect_info",
+      "name": "处理并校验项目材料",
+      "instruction": "检查项目材料的当前版本、文件完整性、提取状态和全文可用性；保留原始文件，并将失败项标记为待补充。",
+      "expected_user_info": ["material_manifest_status"],
+      "allowed_actions": [],
+      "knowledge_scope": {},
+      "capability_refs": {
+        "general_skill_ids": [],
+        "tool_ids": [],
+        "knowledge_base_ids": [],
+        "required_general_skill_ids": [],
+        "required_tool_ids": [],
+        "required_knowledge_base_ids": []
+      }
+    },
+    {
+      "node_id": "build_material_evidence_ledger",
+      "type": "collect_info",
+      "name": "建立材料证据台账",
+      "instruction": "按材料、页码或段落、审核条款和证据主题建立完整证据台账，保留证据来源、覆盖状态和无法确认的缺口。",
+      "expected_user_info": ["evidence_coverage_status"],
+      "allowed_actions": ["audit_evidence_process"],
+      "knowledge_scope": {},
+      "capability_refs": {
+        "general_skill_ids": [],
+        "tool_ids": [],
+        "knowledge_base_ids": [],
+        "required_general_skill_ids": [],
+        "required_tool_ids": [],
+        "required_knowledge_base_ids": []
+      }
+    },
+    {
+      "node_id": "retrieve_reference_knowledge",
+      "type": "collect_info",
+      "name": "检索适用知识库",
+      "instruction": "根据审核范围、管理体系和报告章节检索当前授权知识库，记录命中的文档、版本、条款和引用位置；知识库未覆盖时明确标记。",
+      "expected_user_info": ["knowledge_coverage_status"],
+      "allowed_actions": [],
+      "knowledge_scope": {},
+      "capability_refs": {
+        "general_skill_ids": [],
+        "tool_ids": [],
+        "knowledge_base_ids": ["audit_case_knowledge"],
+        "required_general_skill_ids": [],
+        "required_tool_ids": [],
+        "required_knowledge_base_ids": ["audit_case_knowledge"]
+      }
+    },
+    {
+      "node_id": "trim_template",
+      "type": "collect_info",
+      "name": "准备审核报告模板",
+      "instruction": "根据 report_type、management_systems 和组织信息确定报告模板及章节结构；不得删除已建立的证据来源和覆盖标记。",
+      "expected_user_info": ["report_type", "management_systems", "organization_name"],
+      "allowed_actions": [],
+      "knowledge_scope": {},
+      "capability_refs": {
+        "general_skill_ids": [],
+        "tool_ids": [],
+        "knowledge_base_ids": [],
+        "required_general_skill_ids": [],
+        "required_tool_ids": [],
+        "required_knowledge_base_ids": []
+      }
+    },
+    {
+      "node_id": "generate_report_sections",
+      "type": "collect_info",
+      "name": "生成审核报告章节",
+      "instruction": "依据完整项目材料、证据台账、模板和知识库引用逐章生成报告；每个关键判断都要保留可追溯的材料或知识库依据。",
+      "expected_user_info": ["evidence_coverage_status", "knowledge_coverage_status"],
+      "allowed_actions": ["audit_report_generate"],
+      "knowledge_scope": {},
+      "capability_refs": {
+        "general_skill_ids": [],
+        "tool_ids": [],
+        "knowledge_base_ids": [],
+        "required_general_skill_ids": [],
+        "required_tool_ids": [],
+        "required_knowledge_base_ids": []
+      }
+    },
+    {
+      "node_id": "consistency_and_coverage_check",
+      "type": "collect_info",
+      "name": "检查一致性与覆盖率",
+      "instruction": "检查报告章节是否覆盖全部适用审核范围，材料证据与结论是否一致，知识库引用是否对应当前版本，并列出所有未解决缺口。",
+      "expected_user_info": ["evidence_coverage_status", "knowledge_coverage_status"],
+      "allowed_actions": ["audit_report_status"],
+      "knowledge_scope": {},
+      "capability_refs": {
+        "general_skill_ids": [],
+        "tool_ids": [],
+        "knowledge_base_ids": [],
+        "required_general_skill_ids": [],
+        "required_tool_ids": [],
+        "required_knowledge_base_ids": []
+      }
+    },
+    {
+      "node_id": "output_and_confirm",
+      "type": "collect_info",
+      "name": "输出并确认审核报告",
+      "instruction": "输出审核报告及材料、证据和知识库覆盖摘要；若存在缺口或低置信结论，先明确提示并请求确认，不得用推测替代证据。",
+      "expected_user_info": [],
+      "allowed_actions": [],
+      "knowledge_scope": {},
+      "capability_refs": {
+        "general_skill_ids": [],
+        "tool_ids": [],
+        "knowledge_base_ids": [],
+        "required_general_skill_ids": [],
+        "required_tool_ids": [],
+        "required_knowledge_base_ids": []
+      }
+    },
+    {
+      "node_id": "handoff_lead_auditor",
+      "type": "collect_info",
+      "name": "移交审核组长",
+      "instruction": "将最终报告、证据台账、材料清单、知识库引用和未解决缺口整理为可复核交付物，提交审核组长确认。",
+      "expected_user_info": [],
+      "allowed_actions": [],
+      "knowledge_scope": {},
+      "capability_refs": {
+        "general_skill_ids": [],
+        "tool_ids": [],
+        "knowledge_base_ids": [],
+        "required_general_skill_ids": [],
+        "required_tool_ids": [],
+        "required_knowledge_base_ids": []
+      }
+    }
+  ],
+  "edges": [
+    {"source_node_id": "select_or_create_audit_case", "next_node_id": "collect_materials", "priority": 0},
+    {"source_node_id": "collect_materials", "next_node_id": "ingest_and_validate_materials", "priority": 0},
+    {"source_node_id": "ingest_and_validate_materials", "next_node_id": "build_material_evidence_ledger", "priority": 0},
+    {"source_node_id": "build_material_evidence_ledger", "next_node_id": "retrieve_reference_knowledge", "priority": 0},
+    {"source_node_id": "retrieve_reference_knowledge", "next_node_id": "trim_template", "priority": 0},
+    {"source_node_id": "trim_template", "next_node_id": "generate_report_sections", "priority": 0},
+    {"source_node_id": "generate_report_sections", "next_node_id": "consistency_and_coverage_check", "priority": 0},
+    {"source_node_id": "consistency_and_coverage_check", "next_node_id": "output_and_confirm", "priority": 0},
+    {"source_node_id": "output_and_confirm", "next_node_id": "handoff_lead_auditor", "priority": 0}
+  ],
+  "start_node_id": "select_or_create_audit_case",
+  "terminal_node_ids": ["handoff_lead_auditor"],
+  "interruption_policy": {
+    "resume": "reuse_audit_case_material_manifest",
+    "missing_materials": "ask_only_for_missing_or_failed_items",
+    "version_conflict": "pause_and_confirm_current_version"
+  }
+}

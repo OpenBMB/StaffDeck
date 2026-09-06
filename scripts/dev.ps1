@@ -8,8 +8,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+$repositoryPython = Join-Path $root "backend\.venv\Scripts\python.exe"
 $candidates = @(
   [pscustomobject]@{ File = $env:PYTHON; Prefix = @() },
+  [pscustomobject]@{ File = $repositoryPython; Prefix = @() },
   [pscustomobject]@{ File = "py"; Prefix = @("-3.11") },
   [pscustomobject]@{ File = "py"; Prefix = @("-3") },
   [pscustomobject]@{ File = "python"; Prefix = @() }

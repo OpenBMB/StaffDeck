@@ -40,6 +40,9 @@ import { notify } from '@/components/ui/app-toast';
 import { useI18n } from '@/i18n';
 import type {
   AgentProfileRead,
+  AuditCaseCoverageRead,
+  AuditCaseMaterialRead,
+  AuditCaseRead,
   ChatAttachmentRead,
   ChatSlashCommand,
   ChatMessage,
@@ -142,6 +145,11 @@ import {
   type PreparedChatTurn,
 } from './chatQueueStorage';
 import { buildSessionFilterOptions } from './sessionFilterOptions';
+import {
+  listAuditCases,
+  loadAuditCaseCoverage,
+  loadAuditCaseMaterials,
+} from './auditCaseModel';
 
 const CHAT_BASE_PATH = '/workspace/chat';
 const STREAM_TEXT_EVENTS = new Set(['stream_replace', 'stream_delta', 'token']);
@@ -325,6 +333,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   ));
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [auditCases, setAuditCases] = useState<AuditCaseRead[]>([]);
+  const [auditCasesLoading, setAuditCasesLoading] = useState(Boolean(auth));
+  const [selectedAuditCaseId, setSelectedAuditCaseId] = useState<string | null>(null);
+  const [auditCaseMaterials, setAuditCaseMaterials] = useState<AuditCaseMaterialRead[]>([]);
+  const [auditCaseCoverage, setAuditCaseCoverage] = useState<AuditCaseCoverageRead | null>(null);
+  const [auditCaseMaterialsLoading, setAuditCaseMaterialsLoading] = useState(false);
   const [sessionReadTimes, setSessionReadTimes] = useState<Record<string, string>>(() => loadSessionReadTimes(userId));
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
@@ -598,6 +612,75 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const modelSetupNoticeText = canConfigureModels
     ? t('还没有可用模型配置，发送消息前请先完成模型配置。')
     : t('系统管理员尚未配置可用模型，暂时无法发送消息。请联系管理员完成模型配置。');
+
+  useEffect(() => {
+    if (!auth) {
+      setAuditCases([]);
+      setAuditCasesLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setAuditCasesLoading(true);
+    listAuditCases(tenantId)
+      .then((rows) => {
+        if (!cancelled) setAuditCases(rows);
+      })
+      .catch((error) => {
+        if (!cancelled) notifyRequestError('audit-cases', error, '审核项目加载失败');
+      })
+      .finally(() => {
+        if (!cancelled) setAuditCasesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth, notifyRequestError, tenantId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    setSelectedAuditCaseId(currentSession?.audit_case_id || null);
+  }, [currentSession?.audit_case_id, sessionId]);
+
+  useEffect(() => {
+    if (!selectedAuditCaseId) {
+      setAuditCaseMaterials([]);
+      setAuditCaseCoverage(null);
+      setAuditCaseMaterialsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setAuditCaseMaterialsLoading(true);
+    Promise.all([
+      loadAuditCaseMaterials(selectedAuditCaseId, tenantId),
+      loadAuditCaseCoverage(selectedAuditCaseId, tenantId),
+    ])
+      .then(([materials, coverage]) => {
+        if (cancelled) return;
+        setAuditCaseMaterials(materials);
+        setAuditCaseCoverage(coverage);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setAuditCaseMaterials([]);
+        setAuditCaseCoverage(null);
+        notifyRequestError('audit-case-materials', error, '审核项目资料加载失败');
+      })
+      .finally(() => {
+        if (!cancelled) setAuditCaseMaterialsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [notifyRequestError, selectedAuditCaseId, tenantId]);
+
+  const selectAuditCase = useCallback((caseId: string | null) => {
+    const boundCaseId = currentSession?.audit_case_id || null;
+    if (boundCaseId && caseId !== boundCaseId) {
+      notify.warning('当前会话已绑定审核项目，不能切换项目');
+      return;
+    }
+    setSelectedAuditCaseId(caseId);
+  }, [currentSession?.audit_case_id]);
 
   useEffect(() => {
     if (!auth || !displayedAgent?.id) {
@@ -3131,6 +3214,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         client_timezone: getClientTimeZone(),
         model_config_id: prepared.modelConfigId,
       };
+      if (prepared.auditCaseId) {
+        requestBody.audit_case_id = prepared.auditCaseId;
+      }
       if (!startedAsDraftConversation) {
         requestBody.session_id = currentConversationId;
       }
@@ -3305,6 +3391,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       turnId: `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       text: input.trim(),
       attachments: readyComposerAttachments.map(toRequestAttachment),
+      auditCaseId: selectedAuditCaseId || undefined,
       interactionMode: resolvedInteractionMode,
       modelConfigId: selectedModelConfig?.id,
       createdAt: new Date().toISOString(),
@@ -3342,6 +3429,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     readyComposerAttachments,
     replyToHandoff,
     selectedAgentId,
+    selectedAuditCaseId,
     selectedModelConfig?.id,
     sessionId,
     sessions,
@@ -3455,6 +3543,13 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     sessions,
     sessionsLoading,
     visibleSidebarSessions,
+    auditCases,
+    auditCasesLoading,
+    selectedAuditCaseId,
+    auditCaseMaterials,
+    auditCaseCoverage,
+    auditCaseMaterialsLoading,
+    selectAuditCase,
     agents,
     teams,
     sessionId,

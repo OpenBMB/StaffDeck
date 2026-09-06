@@ -1223,10 +1223,15 @@ def process_inbound(
             ):
                 return False
         if event:
-            target = {
-                **target,
-                **dict(event.target_json or {}),
-            }
+            event_target = dict(event.target_json or {})
+            # 飞书事件的 target 是由 webhook 解析阶段固定下来的投递锚点。
+            # 不要把其他渠道通用的 to_user_id/context_token 等运行时上下文
+            # 合并进去，否则会破坏 target 的不可变语义并污染后续通知。
+            target = (
+                event_target
+                if binding.channel == "feishu"
+                else {**target, **event_target}
+            )
         kf_account = None
         if binding.channel == "wechat_kf":
             kf_account = db.exec(

@@ -438,6 +438,10 @@ class _StdioSession(_MCPSession):
         raw_env = self.config.get("env")
         if isinstance(raw_env, Mapping):
             env.update({str(key): str(value) for key, value in raw_env.items()})
+        # MCP's stdio JSON-RPC stream is UTF-8. Python-based servers on
+        # Windows may otherwise encode piped stdout with the active code page.
+        if os.name == "nt":
+            env["PYTHONIOENCODING"] = "utf-8"
         cwd = str(self.config["cwd"]) if self.config.get("cwd") else None
         _validate_stdio_launch(command, cwd)
         try:

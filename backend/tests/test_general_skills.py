@@ -1376,6 +1376,10 @@ def test_general_skill_runner_materializes_folder_package(monkeypatch) -> None:
     assert calls == ["runner", "review", "reply"]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Bash runtime is intentionally unsupported on Windows",
+)
 def test_general_skill_runner_executes_bash_package_command(monkeypatch) -> None:
     calls: list[str] = []
 

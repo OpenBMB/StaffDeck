@@ -556,7 +556,7 @@ def _source_document_concept(
         "description": frontmatter["description"],
         "document_id": document.id,
         "content_md": render_okf_markdown(frontmatter, body),
-        "source_refs": [{"document_id": document.id, "filename": document.filename}],
+        "source_refs": [_document_source_ref(document, filename=document.filename)],
     }
 
 
@@ -598,7 +598,14 @@ def _source_section_concept(document: KnowledgeDocument, document_concept_id: st
         "description": frontmatter["description"],
         "document_id": document.id,
         "content_md": render_okf_markdown(frontmatter, body),
-        "source_refs": [{"document_id": document.id, "section_id": section_id, "section_path": title}],
+        "source_refs": [
+            _document_source_ref(
+                document,
+                section_id=section_id,
+                section_path=title,
+                page_refs=section.get("page_refs") if isinstance(section.get("page_refs"), list) else [],
+            )
+        ],
     }
 
 
@@ -648,7 +655,14 @@ def _bucket_concept(document: KnowledgeDocument, document_concept_id: str, bucke
         "description": bucket.summary,
         "document_id": document.id,
         "content_md": render_okf_markdown(frontmatter, body),
-        "source_refs": [{"document_id": document.id, "bucket_id": bucket.id, "bucket_key": bucket.bucket_key}],
+        "source_refs": [
+            _document_source_ref(
+                document,
+                bucket_id=bucket.id,
+                bucket_key=bucket.bucket_key,
+                page_refs=metadata.get("page_refs") if isinstance(metadata.get("page_refs"), list) else [],
+            )
+        ],
     }
 
 
@@ -656,6 +670,23 @@ def _concept_type_for_bucket(bucket: KnowledgeBucket) -> str:
     metadata = bucket.metadata_json if isinstance(bucket.metadata_json, dict) else {}
     concept_type = str(metadata.get("concept_type") or "Topic").strip()
     return concept_type if concept_type in {"Topic", "Playbook", "Business Rule"} else "Topic"
+
+
+def _document_source_ref(document: KnowledgeDocument, **extra: Any) -> dict[str, Any]:
+    metadata = document.metadata_json if isinstance(document.metadata_json, dict) else {}
+    source = metadata.get("source") if isinstance(metadata.get("source"), dict) else {}
+    extraction = metadata.get("extraction") if isinstance(metadata.get("extraction"), dict) else {}
+    merged = {
+        "document_id": document.id,
+        "filename": document.filename,
+        "source_sha256": source.get("source_sha256"),
+        "text_sha256": source.get("text_sha256"),
+        "knowledge_base_version_id": source.get("knowledge_base_version_id"),
+        "page_refs": source.get("page_refs") if isinstance(source.get("page_refs"), list) else [],
+        "extraction": extraction,
+    }
+    merged.update(extra)
+    return merged
 
 
 def _parse_okf_zip(content: bytes) -> list[ParsedOkfDocument]:

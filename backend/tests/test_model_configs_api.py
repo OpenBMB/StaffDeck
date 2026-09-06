@@ -61,6 +61,102 @@ def test_new_model_config_is_never_enabled_or_default(tmp_path) -> None:
         assert created.enabled is False
         assert created.is_default is False
         assert created.trust_status == "unverified"
+        assert created.context_window_tokens is None
+        assert created.context_window_source == "default"
+        assert created.safe_input_tokens == 32_000
+
+
+def test_unverified_model_cannot_store_attested_non_default_budget(tmp_path) -> None:
+    with _db(tmp_path) as db:
+        db.add(
+            ModelConfig(
+                id="model_budget_unverified",
+                tenant_id="tenant_a",
+                name="Chat",
+                api_key_encrypted=encrypt_secret("secret"),
+                model="model-a",
+                trust_status="unverified",
+                enabled=False,
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            update_model_config(
+                "model_budget_unverified",
+                ModelConfigUpdateRequest(
+                    tenant_id="tenant_a",
+                    context_window_tokens=128_000,
+                    context_window_source="admin_attested",
+                    safe_input_tokens=96_000,
+                ),
+                db=db,
+                current_user=_admin(),
+            )
+
+        assert exc.value.detail == "MODEL_CONTEXT_NOT_ATTESTED"
+
+
+def test_verified_model_can_store_attested_safe_budget(tmp_path) -> None:
+    with _db(tmp_path) as db:
+        db.add(
+            ModelConfig(
+                id="model_budget_verified",
+                tenant_id="tenant_a",
+                name="Chat",
+                api_key_encrypted=encrypt_secret("secret"),
+                model="model-a",
+                trust_status="verified",
+                enabled=False,
+            )
+        )
+        db.commit()
+
+        updated = update_model_config(
+            "model_budget_verified",
+            ModelConfigUpdateRequest(
+                tenant_id="tenant_a",
+                context_window_tokens=128_000,
+                context_window_source="admin_attested",
+                safe_input_tokens=96_000,
+            ),
+            db=db,
+            current_user=_admin(),
+        )
+
+        assert updated.context_window_tokens == 128_000
+        assert updated.context_window_source == "admin_attested"
+        assert updated.safe_input_tokens == 96_000
+
+
+def test_security_change_resets_attested_budget_to_safe_default(tmp_path) -> None:
+    with _db(tmp_path) as db:
+        db.add(
+            ModelConfig(
+                id="model_budget_reset",
+                tenant_id="tenant_a",
+                name="Chat",
+                api_key_encrypted=encrypt_secret("secret"),
+                model="model-a",
+                trust_status="verified",
+                context_window_tokens=128_000,
+                context_window_source="admin_attested",
+                safe_input_tokens=96_000,
+                enabled=False,
+            )
+        )
+        db.commit()
+
+        updated = update_model_config(
+            "model_budget_reset",
+            ModelConfigUpdateRequest(tenant_id="tenant_a", model="model-b"),
+            db=db,
+            current_user=_admin(),
+        )
+
+        assert updated.trust_status == "unverified"
+        assert updated.context_window_source == "default"
+        assert updated.safe_input_tokens == 32_000
 
 
 def test_verified_create_is_atomic_and_activates_only_after_success(tmp_path, monkeypatch) -> None:

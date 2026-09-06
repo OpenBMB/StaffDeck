@@ -1,0 +1,249 @@
+import { api, TENANT_ID } from '@/api/client';
+import type {
+  AuditCaseCoverageRead,
+  AuditCaseProcessRead,
+  AuditCaseDocumentDetailRead,
+  AuditCaseDocumentRead,
+  AuditCaseDocumentVersionRead,
+  AuditCaseEventRead,
+  AuditCaseManagementOptions,
+  AuditCaseManagementPage,
+  AuditCaseMaterialRead,
+  AuditCaseRead,
+} from '@/types';
+
+import type {
+  AuditCaseCreateRequest,
+  AuditCaseListParams,
+  AuditCaseMemberOption,
+  AuditCaseUpdateRequest,
+  AuditCaseDocumentCreateRequest,
+  AuditCaseDocumentVersionCreateRequest,
+} from './auditCaseTypes';
+
+function managementSearchParams(params: AuditCaseListParams = {}): string {
+  const search = new URLSearchParams({ tenant_id: TENANT_ID });
+  if (params.query?.trim()) search.set('q', params.query.trim());
+  if (params.status && params.status !== 'all') search.set('status', params.status);
+  if (params.management_system?.trim()) search.set('management_system', params.management_system.trim());
+  if (params.report_type?.trim()) search.set('report_type', params.report_type.trim());
+  search.set('offset', String(Math.max(0, params.offset ?? 0)));
+  search.set('limit', String(Math.min(100, Math.max(1, params.limit ?? 20))));
+  return search.toString();
+}
+
+function cleanList(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+export function listManagedAuditCases(
+  params: AuditCaseListParams = {},
+): Promise<AuditCaseManagementPage> {
+  return api.get<AuditCaseManagementPage>(
+    `/api/audit-cases/management?${managementSearchParams(params)}`,
+  );
+}
+
+export function loadAuditCaseManagementOptions(): Promise<AuditCaseManagementOptions> {
+  const search = new URLSearchParams({ tenant_id: TENANT_ID });
+  return api.get<AuditCaseManagementOptions>(
+    `/api/audit-cases/management-options?${search.toString()}`,
+  );
+}
+
+export function loadAuditCaseMembers(): Promise<AuditCaseMemberOption[]> {
+  const search = new URLSearchParams({ tenant_id: TENANT_ID });
+  return api.get<AuditCaseMemberOption[]>(`/api/auth/users?${search.toString()}`);
+}
+
+export function createAuditCase(request: AuditCaseCreateRequest): Promise<AuditCaseRead> {
+  return api.post<AuditCaseRead>('/api/audit-cases', {
+    ...request,
+    tenant_id: request.tenant_id.trim(),
+    agent_id: request.agent_id?.trim() || null,
+    organization_name: request.organization_name.trim(),
+    report_type: request.report_type.trim(),
+    management_systems: cleanList(request.management_systems),
+    knowledge_base_version_ids: cleanList(request.knowledge_base_version_ids),
+    member_user_ids: cleanList(request.member_user_ids),
+  });
+}
+
+export function updateAuditCase(
+  caseId: string,
+  request: AuditCaseUpdateRequest,
+): Promise<AuditCaseRead> {
+  return api.patch<AuditCaseRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    {
+      ...request,
+      organization_name: request.organization_name?.trim(),
+      report_type: request.report_type?.trim(),
+      management_systems: request.management_systems
+        ? cleanList(request.management_systems)
+        : undefined,
+      knowledge_base_version_ids: request.knowledge_base_version_ids
+        ? cleanList(request.knowledge_base_version_ids)
+        : undefined,
+    },
+  );
+}
+
+export function replaceAuditCaseMembers(
+  caseId: string,
+  memberUserIds: string[],
+): Promise<AuditCaseRead> {
+  return api.put<AuditCaseRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/members?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    { member_user_ids: cleanList(memberUserIds) },
+  );
+}
+
+export function loadAuditCase(caseId: string): Promise<AuditCaseRead> {
+  return api.get<AuditCaseRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function loadAuditCaseMaterials(
+  caseId: string,
+  includeHistory = false,
+): Promise<AuditCaseMaterialRead[]> {
+  const search = new URLSearchParams({ tenant_id: TENANT_ID });
+  if (includeHistory) search.set('include_history', 'true');
+  return api.get<AuditCaseMaterialRead[]>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/materials?${search.toString()}`,
+  );
+}
+
+export function loadAuditCaseCoverage(caseId: string): Promise<AuditCaseCoverageRead> {
+  return api.get<AuditCaseCoverageRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/coverage?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function processAuditCaseEvidence(
+  caseId: string,
+  modelConfigId?: string,
+): Promise<AuditCaseProcessRead> {
+  return api.post<AuditCaseProcessRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/process?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    { model_config_id: modelConfigId },
+  );
+}
+
+export function loadAuditCaseEvents(caseId: string): Promise<AuditCaseEventRead[]> {
+  return api.get<AuditCaseEventRead[]>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/events?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function loadAuditCaseDocuments(caseId: string): Promise<AuditCaseDocumentRead[]> {
+  return api.get<AuditCaseDocumentRead[]>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/documents?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function createAuditCaseDocument(
+  caseId: string,
+  request: AuditCaseDocumentCreateRequest,
+): Promise<AuditCaseDocumentRead> {
+  return api.post<AuditCaseDocumentRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/documents?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    request,
+  );
+}
+
+export function loadAuditCaseDocument(
+  caseId: string,
+  documentId: string,
+): Promise<AuditCaseDocumentDetailRead> {
+  return api.get<AuditCaseDocumentDetailRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(documentId)}?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function createAuditCaseDocumentVersion(
+  caseId: string,
+  documentId: string,
+  request: AuditCaseDocumentVersionCreateRequest,
+): Promise<AuditCaseDocumentVersionRead> {
+  return api.post<AuditCaseDocumentVersionRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(documentId)}/versions?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    request,
+  );
+}
+
+export function archiveAuditCaseDocument(
+  caseId: string,
+  documentId: string,
+  reason: string,
+): Promise<AuditCaseDocumentRead> {
+  return api.post<AuditCaseDocumentRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(documentId)}/archive?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    { reason },
+  );
+}
+
+export type AuditCaseMaterialType =
+  | 'audit_notice'
+  | 'permanent_site_list'
+  | 'temporary_site_list'
+  | 'document_review_report'
+  | 'audit_team_preparation_record'
+  | 'opening_closing_attendance'
+  | 'organization_information_confirmation'
+  | 'opening_meeting_record'
+  | 'closing_meeting_record'
+  | 'audit_record_form'
+  | 'nonconformity_report'
+  | 'improvement_suggestion_report'
+  | 'stage_one_audit_report'
+  | 'stage_one_findings_summary'
+  | 'audit_report'
+  | 'surveillance_audit_plan'
+  | 'audit_performance_tracking'
+  | 'other_material'
+  // Legacy API values remain valid for existing projects and integrations;
+  // they are intentionally absent from the new upload UI.
+  | 'audit_plan'
+  | 'audit_record';
+
+export function uploadAuditCaseMaterials(
+  caseId: string,
+  materialType: AuditCaseMaterialType,
+  files: File[],
+): Promise<AuditCaseMaterialRead[]> {
+  const form = new FormData();
+  files.forEach((file) => form.append('files', file));
+  const search = new URLSearchParams({
+    tenant_id: TENANT_ID,
+    material_type: materialType,
+  });
+  return api.postForm<AuditCaseMaterialRead[]>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/materials?${search.toString()}`,
+    form,
+  );
+}
+
+export function processAuditCaseMaterial(
+  caseId: string,
+  materialId: string,
+): Promise<AuditCaseMaterialRead> {
+  return api.post<AuditCaseMaterialRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/materials/${encodeURIComponent(materialId)}/process?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+  );
+}
+
+export function replaceAuditCaseMaterial(
+  caseId: string,
+  materialId: string,
+  file: File,
+): Promise<AuditCaseMaterialRead> {
+  const form = new FormData();
+  form.append('file', file);
+  return api.postForm<AuditCaseMaterialRead>(
+    `/api/audit-cases/${encodeURIComponent(caseId)}/materials/${encodeURIComponent(materialId)}/replace?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+    form,
+  );
+}
