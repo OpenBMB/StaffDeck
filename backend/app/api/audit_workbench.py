@@ -84,6 +84,19 @@ def snapshot(
     return service.snapshot(service.case(tenant_id, case_id, actor), actor)
 
 
+@router.get("/cases/{case_id}/process-gates")
+def process_gates(
+    case_id: str,
+    document_id: str = Query(...),
+    tenant_id: str = Query(...),
+    actor: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    service = AuditWorkbenchService(db)
+    case = service.case(tenant_id, case_id, actor)
+    return service.process_gates(case, actor, document_id)
+
+
 @router.post("/cases/{case_id}/items")
 def create_item(
     case_id: str,
@@ -161,3 +174,4 @@ def events(
 ):
     service = AuditWorkbenchService(db)
     return service.events(service.case(tenant_id, case_id, actor), actor, work_item_id)
+
