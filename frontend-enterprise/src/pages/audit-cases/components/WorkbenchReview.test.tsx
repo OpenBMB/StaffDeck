@@ -48,4 +48,3 @@ describe('WorkbenchReview process gates', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: '建立工作项' }) as HTMLButtonElement).disabled).toBe(false));
   });
 });
-
