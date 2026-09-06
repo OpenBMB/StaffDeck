@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { AuditCaseDocumentRead } from '@/types';
-import { createWorkItem, createWorkIssue, transitionWorkItem, transitionWorkIssue, type WorkbenchSnapshot, type WorkIssue, type WorkItem } from '../workbenchApi';
+import { createWorkItem, createWorkIssue, transitionWorkItem, transitionWorkIssue, type ProcessGate, type WorkbenchSnapshot, type WorkIssue, type WorkItem } from '../workbenchApi';
 import { ReferenceSelector } from './WorkbenchChecks';
 
 export const ROLE_LABELS = { project_admin: '项目管理员', reviewer: '复核人', editor: '编辑人', viewer: '查看人' };
 export const ITEM_LABELS = { draft: '草稿', submitted: '待复核', changes_requested: '退回修改', approved: '内部复核通过' };
 export const ISSUE_LABELS = { document_check: '文档检查问题', nonconformity: '正式不符合项', review: '复核意见' };
 
-export function WorkbenchReview({ caseId, userId, snapshot, documentId, documents, processNumber, item, blocked, run, onDirtyChange }: { caseId: string; userId: string; snapshot: WorkbenchSnapshot; documentId: string; documents: AuditCaseDocumentRead[]; processNumber: number; item?: WorkItem; blocked: boolean; run: (action: () => Promise<unknown>) => Promise<void>; onDirtyChange?: (value: boolean) => void }) {
+export function WorkbenchReview({ caseId, userId, snapshot, documentId, documents, processNumber, gate, item, blocked, run, onDirtyChange }: { caseId: string; userId: string; snapshot: WorkbenchSnapshot; documentId: string; documents: AuditCaseDocumentRead[]; processNumber: number; gate?: ProcessGate; item?: WorkItem; blocked: boolean; run: (action: () => Promise<unknown>) => Promise<void>; onDirtyChange?: (value: boolean) => void }) {
   const [assignee, setAssignee] = useState(''); const [reviewer, setReviewer] = useState(''); const [references, setReferences] = useState<string[]>([]);
   const [comment, setComment] = useState(''); const [kind, setKind] = useState<WorkIssue['kind']>('document_check'); const [title, setTitle] = useState(''); const [detail, setDetail] = useState(''); const [blocking, setBlocking] = useState(true);
   const [responses, setResponses] = useState<Record<string, string>>({});
@@ -21,11 +21,14 @@ export function WorkbenchReview({ caseId, userId, snapshot, documentId, document
   const blockingOpen = issues.some((issue) => issue.blocking && issue.status !== 'closed');
   const canSubmit = item && item.assigned_to_user_id === userId && canEdit;
   const isReviewer = item?.reviewer_user_id === userId && item.submitted_by_user_id !== userId && canReview;
+  const gateBlocksCreation = !gate || gate.blockers.some((blocker) => !blocker.code.startsWith('CHECK_'));
+  const gateBlocksSubmit = gate?.blockers.some((blocker) => !blocker.code.startsWith('CHECK_')) ?? false;
   useEffect(() => { setAssignee(snapshot.members.find((m) => m.user_id === userId && m.role !== 'viewer')?.user_id || ''); setReviewer(''); setReferences([]); setComment(''); setTitle(''); setDetail(''); setResponses({}); }, [documentId, processNumber, userId]);
   const editableMembers = snapshot.members.filter((m) => m.role !== 'viewer');
   return <>
     <section className="wb-card"><h2>责任与内部复核</h2><p className="wb-muted">本区处理项目文档内部审批，不执行认证决定、证书签署或监管报送。</p>
       {!process?.enabled && <p>该流程当前为目录条目，后续阶段开放。</p>}
+      {process?.enabled && gate && <section className={`wb-process-gate ${gate.ready ? 'is-ready' : 'is-blocked'}`} aria-label="流程门槛"><h3>流程门槛</h3><p>{process.guidance || '按当前流程要求完成前置资料和内部复核。'}</p>{gate.predecessors.map((predecessor) => <p key={predecessor.number}>{predecessor.approved ? '✓' : '○'} 流程 {predecessor.number} · {predecessor.status === 'approved' ? '已内部复核通过' : '尚未完成'}</p>)}{gate.required_reference_document_ids.length > 0 && <p>需关联前置文件：{gate.required_reference_document_ids.join('、')}</p>}{gate.check && <p>文件检查：{gate.check.status === 'completed' && !gate.check.stale && !gate.check.has_errors ? '已完成且无错误' : `状态 ${gate.check.status}`}</p>}{gate.blockers.map((blocker) => <p className="wb-error" key={`${blocker.code}-${blocker.process_number || ''}`}>{blocker.message}</p>)}</section>}
       {item ? <>
         <p><strong>{ITEM_LABELS[item.status]}</strong> · 修订 {item.revision}</p>
         <p className="wb-muted">负责人：{snapshot.members.find((m) => m.user_id === item.assigned_to_user_id)?.display_name || item.assigned_to_user_id}<br />复核人：{snapshot.members.find((m) => m.user_id === item.reviewer_user_id)?.display_name || item.reviewer_user_id}</p>
@@ -34,8 +37,8 @@ export function WorkbenchReview({ caseId, userId, snapshot, documentId, document
         {item.reference_versions.length > 0 && <details><summary>关联版本快照</summary>{item.reference_versions.map((ref) => <p className="wb-muted" key={ref.document_id}>{documents.find((d) => d.id === ref.document_id)?.title || ref.document_id} · {ref.document_version_id}</p>)}</details>}
         <label>流转说明<textarea value={comment} onChange={(e) => setComment(e.target.value)} /></label>
         <div className="wb-actions">
-          {canSubmit && (item.status === 'draft' || item.status === 'changes_requested') && <button disabled={blocked} onClick={() => void perform(() => transitionWorkItem(caseId, item, 'submit', comment))}>提交复核</button>}
-          {isReviewer && item.status === 'submitted' && <><button disabled={blocked || !comment.trim()} onClick={() => void perform(() => transitionWorkItem(caseId, item, 'request_changes', comment))}>退回修改</button><button disabled={blocked || item.stale || blockingOpen} onClick={() => void perform(() => transitionWorkItem(caseId, item, 'approve', comment))}>内部复核通过</button></>}
+          {canSubmit && (item.status === 'draft' || item.status === 'changes_requested') && <button disabled={blocked || gateBlocksSubmit} onClick={() => void perform(() => transitionWorkItem(caseId, item, 'submit', comment))}>提交复核</button>}
+          {isReviewer && item.status === 'submitted' && <><button disabled={blocked || !comment.trim()} onClick={() => void perform(() => transitionWorkItem(caseId, item, 'request_changes', comment))}>退回修改</button><button disabled={blocked || gate?.ready !== true || item.stale || blockingOpen} onClick={() => void perform(() => transitionWorkItem(caseId, item, 'approve', comment))}>内部复核通过</button></>}
           {isReviewer && item.status === 'approved' && <button disabled={blocked} onClick={() => void perform(() => transitionWorkItem(caseId, item, 'reopen', comment))}>重新打开修改</button>}
         </div>{blockingOpen && <p className="wb-muted">仍有未关闭的阻断问题，不能通过复核。</p>}
       </> : process?.enabled && <>
@@ -43,7 +46,7 @@ export function WorkbenchReview({ caseId, userId, snapshot, documentId, document
         <label>工作项负责人<select aria-label="工作项负责人" value={assignee} onChange={(e) => setAssignee(e.target.value)} disabled={!canEdit || blocked}><option value="">请选择</option>{editableMembers.map((m) => <option key={m.user_id} value={m.user_id}>{m.display_name} · {ROLE_LABELS[m.role]}</option>)}</select></label>
         <label>工作项复核人<select aria-label="工作项复核人" value={reviewer} onChange={(e) => setReviewer(e.target.value)} disabled={!canEdit || blocked}><option value="">请选择</option>{snapshot.members.filter((m) => m.user_id !== userId && m.user_id !== assignee && (m.role === 'reviewer' || m.role === 'project_admin')).map((m) => <option key={m.user_id} value={m.user_id}>{m.display_name}</option>)}</select></label>
         <ReferenceSelector documents={documents} selectedId={documentId} values={references} onChange={setReferences} disabled={!canEdit || blocked} />
-        <button disabled={!canEdit || blocked || !documentId || !assignee || !reviewer || assignee === reviewer} onClick={() => void perform(() => createWorkItem(caseId, { document_id: documentId, process_number: processNumber, assigned_to_user_id: assignee, reviewer_user_id: reviewer, reference_document_ids: references }))}>建立工作项</button>
+        <button disabled={!canEdit || blocked || gateBlocksCreation || !documentId || !assignee || !reviewer || assignee === reviewer} onClick={() => void perform(() => createWorkItem(caseId, { document_id: documentId, process_number: processNumber, assigned_to_user_id: assignee, reviewer_user_id: reviewer, reference_document_ids: references }))}>建立工作项</button>
       </>}
     </section>
     {item && <section className="wb-card"><h2>问题闭环 · {issues.length}</h2>
@@ -56,3 +59,4 @@ export function WorkbenchReview({ caseId, userId, snapshot, documentId, document
     </section>}
   </>;
 }
+
