@@ -69,4 +69,3 @@ export const loadDocumentChecks = (id: string, documentId: string) => api.get<Ch
 export const createDocumentCheck = (id: string, documentId: string, references: string[], key = requestKey()) => api.post<CheckJob>(url(`${casePath(id)}/checks`), { document_id: documentId, reference_document_ids: references, request_key: key });
 export const retryDocumentCheck = (id: string, jobId: string, key = requestKey()) => api.post<CheckJob>(url(`${casePath(id)}/checks/${encode(jobId)}/retry`), { request_key: key });
 export const reportToWorkDocument = (id: string, reportId: string) => api.post<AuditCaseDocumentRead>(url(`${casePath(id)}/reports/${encode(reportId)}/work-document`));
-
