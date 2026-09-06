@@ -658,8 +658,13 @@ def create_audit_case_report(
         case_id=case_id,
         current_user=current_user,
     )
-    model_config = _model_config_for_case(db, case, request.model_config_id)
     try:
+        ensure_project_role(db, case, current_user, {"project_admin", "reviewer", "editor"})
+        if case.status == "archived":
+            raise AuditCaseReadOnly("AUDIT_CASE_READ_ONLY")
+        if request.publish:
+            ensure_project_role(db, case, current_user, {"project_admin", "reviewer"})
+        model_config = _model_config_for_case(db, case, request.model_config_id)
         service = AuditReportService(db)
         report = service.create_version(
             case,
@@ -668,7 +673,7 @@ def create_audit_case_report(
         )
         service.generate_pending_sections(case, report, model_config)
         if request.publish:
-            report = service.publish(case, report, request.confirmed_by)
+            report = service.publish(case, report, current_user.id)
         return _audit_report_read(db, report)
     except HTTPException:
         raise

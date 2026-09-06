@@ -2251,3 +2251,65 @@ class TeamTaskBid(SQLModel, table=True):
     score: Optional[float] = None
     score_rationale: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditWorkItem(SQLModel, table=True):
+    __tablename__ = "audit_work_items"
+    __table_args__ = (UniqueConstraint("tenant_id", "audit_case_id", "document_id", "process_number", name="uq_audit_work_item_document_process"),)
+
+    id: str = Field(default_factory=lambda: new_id("auditwork"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    document_id: str = Field(index=True)
+    document_version_id: str
+    process_number: int
+    title: str
+    status: str = Field(default="draft", index=True)
+    revision: int = 0
+    assigned_to_user_id: str = Field(index=True)
+    reviewer_user_id: str = Field(index=True)
+    submitted_by_user_id: str | None = None
+    approved_version_id: str | None = None
+    reference_versions_json: list[dict[str, str]] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditWorkbenchIssue(SQLModel, table=True):
+    __tablename__ = "audit_workbench_issues"
+
+    id: str = Field(default_factory=lambda: new_id("auditissue"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    work_item_id: str = Field(index=True)
+    document_id: str = Field(index=True)
+    document_version_id: str
+    kind: str = Field(index=True)
+    title: str
+    detail: str = ""
+    blocking: bool = True
+    status: str = Field(default="open", index=True)
+    revision: int = 0
+    assigned_to_user_id: str | None = Field(default=None, index=True)
+    response: str | None = None
+    response_version_id: str | None = None
+    created_by_user_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditWorkbenchEvent(SQLModel, table=True):
+    __tablename__ = "audit_workbench_events"
+    __table_args__ = (UniqueConstraint("tenant_id", "audit_case_id", "request_key", name="uq_audit_workbench_event_request"),)
+
+    id: str = Field(default_factory=lambda: new_id("auditworkevent"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    audit_case_id: str = Field(index=True)
+    work_item_id: str | None = Field(default=None, index=True)
+    event_type: str
+    actor_user_id: str
+    request_key: str | None = None
+    payload_hash: str | None = None
+    detail_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)

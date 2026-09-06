@@ -37,14 +37,28 @@ export function ProjectDocumentWorkspace({
   documents,
   disabled = false,
   onChanged,
+  selectedDocumentId,
+  onSelectedDocumentChange,
+  onDirtyChange,
+  compact = false,
 }: {
   caseId: string;
   documents: AuditCaseDocumentRead[];
   disabled?: boolean;
   onChanged?: () => Promise<void> | void;
+  selectedDocumentId?: string;
+  onSelectedDocumentChange?: (id: string) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  compact?: boolean;
 }) {
   const [localDocuments, setLocalDocuments] = useState(documents);
-  const [selectedId, setSelectedId] = useState(documents[0]?.id || '');
+  const [internalSelectedId, setInternalSelectedId] = useState(documents[0]?.id || '');
+  const selectedId = selectedDocumentId ?? internalSelectedId;
+  const setSelectedId = (id: string) => {
+    if (dirtyRef.current && !window.confirm('有未保存修改，确定放弃并切换文件吗？')) return;
+    if (selectedDocumentId === undefined) setInternalSelectedId(id);
+    onSelectedDocumentChange?.(id);
+  };
   const [detail, setDetail] = useState<AuditCaseDocumentDetailRead | null>(null);
   const [content, setContent] = useState('');
   const [dirty, setDirty] = useState(false);
@@ -63,9 +77,11 @@ export function ProjectDocumentWorkspace({
   const dirtyRef = useRef(false);
   const detailRequestRef = useRef(0);
 
+  useEffect(() => { onDirtyChange?.(dirty || Boolean(newDocument.title || newDocument.document_key || newDocument.content)); }, [dirty, newDocument.title, newDocument.document_key, newDocument.content, onDirtyChange]);
+
   useEffect(() => {
     setLocalDocuments(documents);
-    setSelectedId((current) => documents.some((document) => document.id === current) ? current : documents[0]?.id || '');
+    setInternalSelectedId((current) => documents.some((document) => document.id === current) ? current : documents[0]?.id || '');
   }, [documents]);
 
   const selectedDocument = useMemo(
@@ -113,6 +129,7 @@ export function ProjectDocumentWorkspace({
 
   async function handleCreate() {
     if (disabled || busy) return;
+    if (dirtyRef.current && !window.confirm('有未保存修改，确定放弃并切换文件吗？')) return;
     if (!newDocument.document_key.trim() || !newDocument.title.trim()) {
       setError('请填写文档标识和文档标题');
       return;
@@ -126,6 +143,8 @@ export function ProjectDocumentWorkspace({
         title: newDocument.title.trim(),
       });
       setLocalDocuments((current) => replaceDocument(current, created));
+      dirtyRef.current = false;
+      setDirty(false);
       setSelectedId(created.id);
       setNewDocument((current) => ({ ...current, document_key: '', title: '', content: '' }));
       await onChanged?.();
@@ -174,6 +193,7 @@ export function ProjectDocumentWorkspace({
 
   async function handleArchive() {
     if (disabled || busy || !detail || detail.document.status === 'archived') return;
+    if (dirtyRef.current) { setError('请先保存内容，再冻结文档'); return; }
     detailRequestRef.current += 1;
     setBusy('archive');
     setError('');
@@ -202,9 +222,9 @@ export function ProjectDocumentWorkspace({
   return (
     <div className="grid gap-[16px]">
       {error && <p role="alert" className="rounded-[9px] bg-[#fff1f1] px-[12px] py-[10px] text-[12px] text-[#c20d0d]">{error}</p>}
-      {disabled && <p className="rounded-[9px] bg-[#f5f6f8] px-[12px] py-[10px] text-[12px] text-[#858b9c]">项目已归档，项目文件库不可修改</p>}
+      {disabled && <p className="rounded-[9px] bg-[#f5f6f8] px-[12px] py-[10px] text-[12px] text-[#858b9c]">当前文件只读：请检查项目角色、归档或提交状态</p>}
 
-      <Card>
+      {!compact && <Card>
         <CardContent className="grid gap-[10px] p-[14px]">
           <div>
             <h2 className="text-[14px] font-medium text-[#464c5e]">新建工作文档</h2>
@@ -219,10 +239,10 @@ export function ProjectDocumentWorkspace({
           <label className="grid gap-[4px] text-[12px] text-[#464c5e]">初始内容<Textarea aria-label="初始内容" value={newDocument.content} disabled={disabled || Boolean(busy)} onChange={(event) => { const { value } = event.currentTarget; setNewDocument((current) => ({ ...current, content: value })); }} /></label>
           <Button type="button" disabled={disabled || Boolean(busy)} onClick={() => void handleCreate()}>{busy === 'create' ? '创建中…' : '创建文档'}</Button>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <div className="grid gap-[12px] lg:grid-cols-[minmax(180px,0.7fr)_minmax(0,2fr)]">
-        <Card>
+      <div className={compact ? 'grid gap-[12px]' : 'grid gap-[12px] lg:grid-cols-[minmax(180px,0.7fr)_minmax(0,2fr)]'}>
+        {!compact && <Card>
           <CardContent className="grid gap-[10px] p-[14px]">
             <div><h2 className="text-[14px] font-medium text-[#464c5e]">文档分区</h2><p className="mt-[3px] text-[11px] text-[#a0a6b5]">原始材料不会被工作文档覆盖。</p></div>
             {!groupedDocuments.length && <p className="rounded-[9px] border border-dashed border-[#e1e5ed] px-[10px] py-[14px] text-center text-[12px] text-[#858b9c]">暂无工作文档</p>}
@@ -230,7 +250,7 @@ export function ProjectDocumentWorkspace({
               <section key={zone} className="grid gap-[6px]"><h3 className="text-[11px] font-medium text-[#858b9c]">{zone}</h3>{items.map((document) => <button key={document.id} type="button" className={`rounded-[8px] border px-[10px] py-[9px] text-left ${document.id === selectedId ? 'border-[#18181a] bg-[#f7f8fb]' : 'border-[#edf0f5]'}`} onClick={() => setSelectedId(document.id)}><span className="block truncate text-[12px] text-[#464c5e]">{document.title}</span><span className="mt-[3px] block text-[10px] text-[#858b9c]">{document.status === 'archived' ? '已冻结' : '可编辑'}</span></button>)}</section>
             ))}
           </CardContent>
-        </Card>
+        </Card>}
 
         <Card>
           <CardContent className="grid gap-[10px] p-[14px]">

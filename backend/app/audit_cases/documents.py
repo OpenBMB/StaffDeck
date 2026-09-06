@@ -159,6 +159,7 @@ class AuditCaseDocumentService:
         request: AuditCaseDocumentVersionCreate,
     ) -> AuditCaseDocumentVersion:
         self._authorize_write(case, actor)
+        self._assert_review_unlocked(case, document_id, actor)
         self._validate_content_format(request.content_format)
         document = self._document_for_case(case, document_id)
         if document.status == "archived":
@@ -205,6 +206,7 @@ class AuditCaseDocumentService:
         reason: str,
     ) -> AuditCaseDocument:
         self._authorize_write(case, actor)
+        self._assert_review_unlocked(case, document_id, actor)
         document = self._document_for_case(case, document_id)
         if document.status == "archived":
             raise AuditCaseReadOnly("AUDIT_CASE_DOCUMENT_READ_ONLY")
@@ -225,3 +227,11 @@ class AuditCaseDocumentService:
         self.db.commit()
         self.db.refresh(document)
         return document
+
+    def _assert_review_unlocked(self, case: AuditCase, document_id: str, actor: User) -> None:
+        from app.audit_cases.workbench import begin_case_write, is_document_submitted
+
+        begin_case_write(self.db, case)
+        self._authorize_write(case, actor)
+        if is_document_submitted(self.db, case, document_id):
+            raise AuditCaseDocumentConflict("DOCUMENT_REVIEW_LOCKED")

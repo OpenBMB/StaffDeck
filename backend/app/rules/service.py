@@ -335,9 +335,15 @@ class RuleBindingService:
         ensure_project_role(self.db, case, actor, _BINDING_READ_ROLES)
 
     def _authorize_write(self, case: AuditCase, actor: User) -> None:
+        from app.audit_cases.workbench import begin_case_write
+
         if actor.tenant_id != case.tenant_id:
             raise RuleBindingError("RULE_TENANT_ACCESS_DENIED")
         ensure_project_role(self.db, case, actor, _BINDING_WRITE_ROLES)
+        begin_case_write(self.db, case)
+        ensure_project_role(self.db, case, actor, _BINDING_WRITE_ROLES)
+        if case.status == "archived":
+            raise RuleBindingError("AUDIT_CASE_READ_ONLY")
 
     def _rules_for_versions(self, version_ids: list[str]) -> list[RuleDefinition]:
         if not version_ids:
@@ -398,6 +404,19 @@ class RuleBindingService:
             if document_version_id is not None:
                 raise RuleBindingError("RULE_DOCUMENT_SCOPE_REQUIRED")
             return None, None
+        if for_write:
+            from app.db.models import AuditWorkItem
+
+            locked = self.db.exec(
+                select(AuditWorkItem.id).where(
+                    AuditWorkItem.tenant_id == case.tenant_id,
+                    AuditWorkItem.audit_case_id == case.id,
+                    AuditWorkItem.document_id == document_id,
+                    AuditWorkItem.status.in_(["submitted", "approved"]),
+                )
+            ).first()
+            if locked is not None:
+                raise RuleBindingError("DOCUMENT_REVIEW_LOCKED")
         document = self.db.exec(
             select(AuditCaseDocument).where(
                 AuditCaseDocument.id == document_id,

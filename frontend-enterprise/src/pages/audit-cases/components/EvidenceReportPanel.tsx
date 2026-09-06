@@ -12,8 +12,9 @@ import {
   publishAuditCaseReport,
 } from '../auditReportApi';
 import { CoveragePanel } from './CoveragePanel';
+import { reportToWorkDocument } from '../workbenchApi';
 
-type BusyAction = '' | 'process' | 'generate' | 'publish' | 'download';
+type BusyAction = '' | 'process' | 'generate' | 'publish' | 'download' | 'export';
 
 const REPORT_READY_STATUSES = new Set(['draft', 'review']);
 const EMPTY_DOCUMENTS: AuditCaseDocumentRead[] = [];
@@ -45,26 +46,35 @@ export function EvidenceReportPanel({
   coverage,
   disabled = false,
   onChanged,
+  selectedDocumentId: controlledDocumentId,
+  onSelectedDocumentChange,
+  canPublish = true,
+  onWorkDocumentCreated,
 }: {
   caseId: string;
   documents?: AuditCaseDocumentRead[];
   coverage: AuditCaseCoverageRead | null;
   disabled?: boolean;
   onChanged?: () => void | Promise<void>;
+  selectedDocumentId?: string;
+  onSelectedDocumentChange?: (id: string) => void;
+  canPublish?: boolean;
+  onWorkDocumentCreated?: (document: AuditCaseDocumentRead) => void | Promise<void>;
 }) {
   const [reports, setReports] = useState<AuditReportRead[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<BusyAction>('');
   const [error, setError] = useState('');
-  const [selectedDocumentId, setSelectedDocumentId] = useState(
+  const [internalDocumentId, setSelectedDocumentId] = useState(
     () => documents.find((document) => document.status === 'active' && document.active_version_id)?.id || '',
   );
+  const selectedDocumentId = controlledDocumentId ?? internalDocumentId;
 
   const activeDocuments = documents.filter(
     (document) => document.status === 'active' && document.active_version_id,
   );
   const selectedDocument = activeDocuments.find((document) => document.id === selectedDocumentId);
-  const scopeRequired = documents.length > 0 && !selectedDocument;
+  const scopeRequired = (controlledDocumentId !== undefined || documents.length > 0) && !selectedDocument;
 
   useEffect(() => {
     setSelectedDocumentId((current) => (
@@ -94,7 +104,7 @@ export function EvidenceReportPanel({
 
   const scopedReports = reports.filter((report) => report.source_document_id === selectedDocumentId);
   const legacyReports = reports.filter((report) => !report.source_document_id);
-  const visibleReports = documents.length > 0
+  const visibleReports = controlledDocumentId !== undefined ? scopedReports : documents.length > 0
     ? (scopedReports.length ? scopedReports : legacyReports)
     : reports;
   const latestReport = visibleReports[0] ?? null;
@@ -146,7 +156,7 @@ export function EvidenceReportPanel({
   }
 
   async function handlePublish() {
-    if (!latestReport || !reportCanBeConfirmed(latestReport) || actionDisabled) return;
+    if (!latestReport || !reportCanBeConfirmed(latestReport) || actionDisabled || !canPublish) return;
     setBusy('publish');
     setError('');
     try {
@@ -182,11 +192,19 @@ export function EvidenceReportPanel({
     }
   }
 
+  async function handleWorkDocument() {
+    if (!latestReport || actionDisabled || !onWorkDocumentCreated) return;
+    setBusy('export'); setError('');
+    try { const document = await reportToWorkDocument(caseId, latestReport.id); await onWorkDocumentCreated(document); }
+    catch (exportError) { setError(actionError(exportError, '转换复核文件失败')); }
+    finally { setBusy(''); }
+  }
+
   return (
     <div className="grid gap-[16px]">
       {disabled && (
         <p className="rounded-[9px] bg-[#f5f6f8] px-[12px] py-[10px] text-[12px] text-[#858b9c]">
-          项目已归档，证据与报告不可修改
+          {controlledDocumentId === undefined ? '项目已归档，证据与报告不可修改' : '当前证据与报告只读：请检查项目角色或归档状态'}
         </p>
       )}
       {error && (
@@ -196,13 +214,13 @@ export function EvidenceReportPanel({
       )}
       <Card>
         <CardContent className="grid gap-[12px] p-[14px]">
-          {documents.length > 0 && (
+          {documents.length > 0 && controlledDocumentId === undefined && (
             <label className="grid gap-[5px] text-[12px] font-medium text-[#464c5e]">
               报告规则文件
               <select
                 aria-label="报告规则文件"
                 value={selectedDocumentId}
-                onChange={(event) => setSelectedDocumentId(event.currentTarget.value)}
+                onChange={(event) => { setSelectedDocumentId(event.currentTarget.value); onSelectedDocumentChange?.(event.currentTarget.value); }}
                 disabled={actionDisabled || !activeDocuments.length}
                 className="rounded-[8px] border border-[#dfe3eb] bg-white px-[10px] py-[8px] text-[12px] font-normal"
               >
@@ -256,9 +274,10 @@ export function EvidenceReportPanel({
               <p className="text-[12px] font-medium text-[#464c5e]">版本 {latestReport.version} · {latestReport.status}</p>
               <p className="text-[11px] text-[#858b9c]">章节完成 {latestReport.sections.filter((section) => section.status === 'succeeded').length} / {latestReport.sections.length}</p>
               <div className="flex flex-wrap gap-[8px]">
+                {onWorkDocumentCreated && <Button type="button" disabled={actionDisabled || !latestReport.sections.length || latestReport.sections.some((section) => section.status !== 'succeeded')} onClick={() => void handleWorkDocument()}>{busy === 'export' ? '转换中…' : '转为复核文件'}</Button>}
                 <Button
                   type="button"
-                  disabled={actionDisabled || !reportCanBeConfirmed(latestReport)}
+                  disabled={actionDisabled || !canPublish || !reportCanBeConfirmed(latestReport)}
                   onClick={() => void handlePublish()}
                 >
                   {busy === 'publish' ? '发布中…' : '确认发布'}

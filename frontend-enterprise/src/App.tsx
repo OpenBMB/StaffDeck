@@ -40,6 +40,8 @@ import {
 import AccountsPage from "./pages/AccountsPage";
 import AuditCasesPage from "./pages/audit-cases/AuditCasesPage";
 import AuditCaseDetailPage from "./pages/audit-cases/AuditCaseDetailPage";
+import AuditWorkbenchPage from "./pages/audit-cases/AuditWorkbenchPage";
+import AuditWorkbenchInbox from "./pages/audit-cases/AuditWorkbenchInbox";
 import AgentsPage from "./pages/AgentsPage";
 import ChannelsPage from "./pages/ChannelsPage";
 import ChatPage from "./pages/chat/ChatPage";
@@ -172,6 +174,8 @@ function Shell({
               ? "/enterprise/tools"
                 : location.pathname.startsWith("/enterprise/teams")
                   ? "/enterprise/teams"
+                  : location.pathname.endsWith('/workbench') || location.pathname.startsWith('/enterprise/audit-workbench')
+                    ? EnterpriseRoute.AuditWorkbench
                   : location.pathname.startsWith("/enterprise/audit-cases")
                     ? EnterpriseRoute.AuditCases
                     : location.pathname.startsWith("/enterprise/scheduled-tasks")
@@ -758,8 +762,10 @@ function Shell({
                   )
                 }
               />
-              <Route
-                path="/enterprise/audit-cases"
+                <Route path="/enterprise/audit-workbench" element={<AuditWorkbenchInbox currentUser={auth.user} onLogout={onLogout} />} />
+                <Route path="/enterprise/audit-cases/:caseId/workbench" element={<AuditWorkbenchPage currentUser={auth.user} onLogout={onLogout} />} />
+                <Route
+                  path="/enterprise/audit-cases"
                 element={
                   isAdmin ? (
                     <AuditCasesPage currentUser={auth.user} onLogout={onLogout} />

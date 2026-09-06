@@ -514,6 +514,17 @@ class AuditCaseService:
         self._assert_writable(case)
 
         requested_ids = sorted(set(request.member_user_ids))
+        from app.audit_cases.workbench import AuditWorkbenchService, begin_case_write
+
+        begin_case_write(self.db, case)
+        self._assert_writable(case)
+        retained = set(requested_ids) | {case.owner_user_id}
+        workflow = AuditWorkbenchService(self.db)
+        if any(item.assigned_to_user_id not in retained or item.reviewer_user_id not in retained
+               for item in workflow._items(case)) or any(
+                   issue.status != "closed" and issue.assigned_to_user_id not in retained
+                   for issue in workflow._issues(case)):
+            raise AuditCaseAccessDenied("PENDING_ASSIGNMENT_MEMBER_REQUIRED")
         if requested_ids:
             members = self.db.exec(
                 select(User).where(

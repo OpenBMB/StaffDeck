@@ -14,6 +14,9 @@ import {
   publishAuditCaseReport,
 } from '../auditReportApi';
 import { EvidenceReportPanel } from './EvidenceReportPanel';
+import { reportToWorkDocument } from '../workbenchApi';
+
+vi.mock('../workbenchApi', () => ({ reportToWorkDocument: vi.fn() }));
 
 vi.mock('../auditCaseApi', () => ({
   processAuditCaseEvidence: vi.fn(),
@@ -108,6 +111,18 @@ afterEach(() => {
 });
 
 describe('EvidenceReportPanel', () => {
+  it('uses controlled report scope, blocks editor publishing and exports a review document', async () => {
+    const converted = vi.fn();
+    vi.mocked(listAuditCaseReports).mockResolvedValueOnce([report({ source_document_id: 'document-1', rule_traceability_status: 'complete' })]);
+    vi.mocked(reportToWorkDocument).mockResolvedValueOnce(reportDocument);
+    render(<EvidenceReportPanel caseId="case-1" coverage={coverage()} documents={[reportDocument]} selectedDocumentId="document-1" canPublish={false} onWorkDocumentCreated={converted} />);
+    const publish = await screen.findByRole('button', { name: '确认发布' });
+    expect((publish as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('combobox', { name: '报告规则文件' })).toBeNull();
+    await userEvent.setup().click(screen.getByRole('button', { name: '转为复核文件' }));
+    expect(reportToWorkDocument).toHaveBeenCalledWith('case-1', 'report-1');
+    expect(converted).toHaveBeenCalledWith(reportDocument);
+  });
   it('creates a report with the selected project document snapshot', async () => {
     const user = userEvent.setup();
     render(

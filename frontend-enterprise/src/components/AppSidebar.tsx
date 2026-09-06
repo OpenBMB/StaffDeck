@@ -65,6 +65,7 @@ const PRIMARY_NAV: NavItem[] = [
   { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform },
   { route: EnterpriseRoute.Agents, label: '我的数字员工', Icon: IconAgents },
   { route: EnterpriseRoute.Teams, label: '我的团队', Icon: IconTeams },
+  { route: EnterpriseRoute.AuditWorkbench, label: '认证工作台', Icon: IconClipboard },
   { route: EnterpriseRoute.Channels, label: '渠道接入', Icon: IconGlobe },
 ];
 

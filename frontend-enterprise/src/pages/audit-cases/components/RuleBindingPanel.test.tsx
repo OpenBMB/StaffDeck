@@ -19,6 +19,8 @@ import {
   type RuleBindingRead,
 } from '../ruleBindingApi';
 import { RuleBindingPanel } from './RuleBindingPanel';
+import { loadWorkbenchRuleOptions } from '../workbenchApi';
+vi.mock('../workbenchApi', () => ({ loadWorkbenchRuleOptions: vi.fn() }));
 
 vi.mock('../ruleBindingApi', () => ({
   loadCurrentRuleBindings: vi.fn(),
@@ -152,6 +154,18 @@ beforeEach(() => {
 });
 
 describe('RuleBindingPanel', () => {
+  it('uses the parent-selected document and version without an independent selector', async () => {
+    mockLoadedState([publishedV1], []);
+    vi.mocked(loadWorkbenchRuleOptions).mockResolvedValue([publishedV1]);
+    const second = { ...documentOne, id: 'document-2', title: '文件二', active_version_id: 'document-version-2' };
+    const view = render(<I18nProvider><RuleBindingPanel caseId="case-1" documents={[documentOne, second]} selectedDocumentId="document-2" /></I18nProvider>);
+    await waitFor(() => expect(loadCurrentRuleBindings).toHaveBeenCalledWith('case-1', 'document-2', 'document-version-2'));
+    expect(screen.queryByRole('combobox', { name: '规则文件' })).toBeNull();
+    expect(loadWorkbenchRuleOptions).toHaveBeenCalledWith('case-1');
+    expect(loadPublishedRuleVersionOptions).not.toHaveBeenCalled();
+    view.rerender(<I18nProvider><RuleBindingPanel caseId="case-1" documents={[documentOne, second]} selectedDocumentId="document-1" /></I18nProvider>);
+    await waitFor(() => expect(loadCurrentRuleBindings).toHaveBeenCalledWith('case-1', 'document-1', 'document-version-1'));
+  });
   it('requires and sends the selected project document scope for new bindings', async () => {
     const user = userEvent.setup();
     mockLoadedState([publishedV1], notInitializedError());

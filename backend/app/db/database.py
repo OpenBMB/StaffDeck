@@ -69,6 +69,7 @@ _CAPABILITY_SCOPE_TABLES = (
 
 def init_db() -> None:
     import app.db.models  # noqa: F401
+    import app.db.workbench_checks  # noqa: F401
 
     _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)

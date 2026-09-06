@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ApiError } from '@/api/client';
 import { Button, Card, CardContent, Textarea, notify } from '@/components/ui';
 import type { AuditCaseDocumentRead } from '@/types';
+import { loadWorkbenchRuleOptions } from '../workbenchApi';
 
 import {
   loadCurrentRuleBindings,
@@ -43,17 +44,24 @@ export function RuleBindingPanel({
   caseId,
   documents = EMPTY_DOCUMENTS,
   disabled = false,
+  selectedDocumentId: controlledDocumentId,
+  onSelectedDocumentChange,
+  onDirtyChange,
 }: {
   caseId: string;
   documents?: AuditCaseDocumentRead[];
   disabled?: boolean;
+  selectedDocumentId?: string;
+  onSelectedDocumentChange?: (id: string) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [candidates, setCandidates] = useState<PublishedRuleVersionOption[]>([]);
   const [currentBindings, setCurrentBindings] = useState<RuleBindingRead[]>([]);
   const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
-  const [selectedDocumentId, setSelectedDocumentId] = useState(
+  const [internalDocumentId, setSelectedDocumentId] = useState(
     () => documents.find((document) => document.status === 'active' && document.active_version_id)?.id || '',
   );
+  const selectedDocumentId = controlledDocumentId ?? internalDocumentId;
   const [preview, setPreview] = useState<RuleMigrationPreviewRead | null>(null);
   const [previewSelection, setPreviewSelection] = useState('');
   const [reason, setReason] = useState('');
@@ -75,10 +83,11 @@ export function RuleBindingPanel({
     () => currentBindings.map((binding) => binding.rule_set_version_id),
     [currentBindings],
   );
-  const scopedMode = documents.length > 0;
+  const scopedMode = controlledDocumentId !== undefined || documents.length > 0;
   const scopeRequired = scopedMode && !selectedDocument;
   const isBound = currentBindings.length > 0;
   const hasSelectionChanged = isBound && !sameSelection(selectedVersionIds, currentVersionIds);
+  useEffect(() => { onDirtyChange?.(!sameSelection(selectedVersionIds, currentVersionIds) || Boolean(reason)); }, [selectedVersionIds, currentVersionIds, reason, onDirtyChange]);
   const canConfirmPreview = Boolean(
     preview && previewSelection === selectionKey(selectedVersionIds) && reason.trim(),
   );
@@ -100,7 +109,7 @@ export function RuleBindingPanel({
       ? loadCurrentRuleBindings(caseId, selectedDocumentId, selectedDocument?.active_version_id)
       : loadCurrentRuleBindings(caseId);
     void Promise.allSettled([
-      loadPublishedRuleVersionOptions(),
+      controlledDocumentId === undefined ? loadPublishedRuleVersionOptions() : loadWorkbenchRuleOptions(caseId),
       bindingRequest,
     ]).then(([candidateResult, bindingResult]) => {
       if (!active) return;
@@ -135,7 +144,7 @@ export function RuleBindingPanel({
     return () => {
       active = false;
     };
-  }, [caseId, selectedDocumentId, selectedDocument?.active_version_id]);
+  }, [caseId, selectedDocumentId, selectedDocument?.active_version_id, controlledDocumentId]);
 
   function toggleVersion(versionId: string) {
     if (disabled || loadFailed || busy) return;
@@ -212,7 +221,7 @@ export function RuleBindingPanel({
     <div className="grid gap-[16px]">
       {disabled && (
         <p className="rounded-[9px] bg-[#f5f6f8] px-[12px] py-[10px] text-[12px] text-[#858b9c]">
-          项目已归档，规则绑定不可修改
+          {controlledDocumentId === undefined ? '项目已归档，规则绑定不可修改' : '当前规则只读：请检查项目角色、归档或提交状态'}
         </p>
       )}
       {error && (
@@ -222,13 +231,13 @@ export function RuleBindingPanel({
       )}
       <Card>
         <CardContent className="grid gap-[12px] p-[14px]">
-          {scopedMode && (
+          {scopedMode && controlledDocumentId === undefined && (
             <label className="grid gap-[5px] text-[12px] font-medium text-[#464c5e]">
               规则文件
               <select
                 aria-label="规则文件"
                 value={selectedDocumentId}
-                onChange={(event) => setSelectedDocumentId(event.currentTarget.value)}
+                onChange={(event) => { if (!sameSelection(selectedVersionIds, currentVersionIds) && !window.confirm('有未保存修改，确定放弃并切换文件吗？')) return; setSelectedDocumentId(event.currentTarget.value); onSelectedDocumentChange?.(event.currentTarget.value); }}
                 disabled={disabled || loading || Boolean(busy) || !activeDocuments.length}
                 className="rounded-[8px] border border-[#dfe3eb] bg-white px-[10px] py-[8px] text-[12px] font-normal"
               >

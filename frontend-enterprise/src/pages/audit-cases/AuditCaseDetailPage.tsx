@@ -115,6 +115,7 @@ export default function AuditCaseDetailPage({
       />
       <main className="flex flex-1 flex-col gap-[18px] px-[24px] pb-[32px] pt-[8px]">
         <div className="flex flex-wrap items-center justify-between gap-[12px] rounded-[14px] border border-[#edf0f5] bg-white px-[18px] py-[16px]">
+          <UIButton onClick={() => navigate(`/enterprise/audit-cases/${encodeURIComponent(detail.project!.id)}/workbench`)}>进入认证工作台</UIButton>
           <div><p className="text-[12px] text-[#858b9c]">审核类型</p><p className="mt-[4px] text-[14px] font-medium text-[#464c5e]">{detail.project.report_type}</p></div>
           <span className={cn('rounded-full px-[12px] py-[5px] text-[11px]', auditCaseStatusClass(detail.project.status))}>{auditCaseStatusLabel(detail.project.status)}</span>
         </div>

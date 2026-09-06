@@ -10,6 +10,8 @@ from app.api import (
     agents,
     app_updates,
     audit_cases,
+    audit_workbench,
+    audit_workbench_checks,
     auth,
     channels,
     chat,
@@ -36,6 +38,7 @@ from app.api import (
 )
 from app.async_jobs import shutdown_async_jobs, start_async_jobs
 from app.audit_cases.service import recover_pending_material_jobs
+from app.audit_cases.workbench_checks import recover_document_checks
 from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
 from app.core.harness_recovery import (
@@ -82,6 +85,7 @@ def on_startup() -> None:
     try:
         start_async_jobs()
         init_db()
+        recover_document_checks(engine)
         with Session(engine) as db:
             seed_demo_data(db)
             recover_orphan_harness_runs(db, startup=True)
@@ -158,6 +162,8 @@ app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)
 app.include_router(auth.router)
 app.include_router(audit_cases.router)
+app.include_router(audit_workbench.router)
+app.include_router(audit_workbench_checks.router)
 app.include_router(rules.router)
 app.include_router(project_data.router)
 app.include_router(agents.scope_router)
