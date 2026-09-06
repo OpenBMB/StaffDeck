@@ -41,4 +41,3 @@
 .wb-inbox-row { display: flex; justify-content: space-between; gap: 12px; padding: 13px 4px; border-bottom: 1px solid #edf0f4; text-decoration: none; color: inherit; }
 @media (max-width: 1250px) { .wb-shell { grid-template-columns: 190px minmax(280px, 1fr); } .wb-review { grid-column: 2; } }
 @media (max-width: 760px) { .wb-shell { display: block; padding: 12px; } .wb-sidebar { position: static; max-height: 320px; margin-bottom: 12px; } .wb-inbox-row { flex-direction: column; } }
-
