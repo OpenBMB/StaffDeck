@@ -138,4 +138,3 @@ def test_process_21_requires_a_fresh_error_free_document_check(process_db):
     ready = evaluate_process_gate(db, case, 21, "field")
     assert ready["ready"] is True
     assert ready["check"]["status"] == "completed"
-
