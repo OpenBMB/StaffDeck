@@ -59,4 +59,3 @@ export function WorkbenchReview({ caseId, userId, snapshot, documentId, document
     </section>}
   </>;
 }
-
