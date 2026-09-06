@@ -10,6 +10,11 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import inspect, update
 from sqlmodel import Session, select
 
+from app.audit_cases.workbench_processes import (
+    ENABLED_PROCESS_NUMBERS,
+    all_process_definitions,
+    evaluate_process_gate,
+)
 from app.audit_cases.workbench_schema import (
     WorkIssueCreate,
     WorkIssueTransition,
@@ -32,46 +37,8 @@ from app.project_data.permissions import resolve_project_role
 READ_ROLES = {"project_admin", "reviewer", "editor", "viewer"}
 WRITE_ROLES = {"project_admin", "reviewer", "editor"}
 REVIEW_ROLES = {"project_admin", "reviewer"}
-PILOT_PROCESSES = {15, 16, 18, 19, 20, 24, 25, 26}
-# Original names from 认证系统建设与流程再造对照表.xlsx / 认证, B:C rows 4–43.
-PROCESS_NAMES = (
-    "信息收集",
-    "信息交流",
-    "申请受理确认",
-    "申请评审(含转机构申请、初审、再认证、变更）",
-    "审批",
-    "申请受理通知书（审批通过）/申请不予受理通知书（审批不通过）",
-    "合同签订/合同评审",
-    "审核方案策划",
-    "基准人日和结合人日计算",
-    "审核方案审核和批准",
-    "审核方案交底",
-    "审核/审查任务调度",
-    "审核/审查任务发布和接受",
-    "审核任务的CNCA报送和跟踪",
-    "审核计划编制和批准",
-    "审核计划发布和确认",
-    "审核计划实施",
-    "现场审核",
-    "不符合和关闭",
-    "审核报告",
-    "审核方案检查",
-    "审核方案改进",
-    "现场审核结束",
-    "资料完整性校验",
-    "资料内容准确性校验",
-    "认证决定（评定）",
-    "认证决定结果报告",
-    "审核方案调整",
-    "证书制作/制证",
-    "证书签发",
-    "证书信息报送",
-    "监督保持活动",
-    "再认证保持活动",
-    "证书状态变更管理",
-    "全流程记录归档",
-    "认证档案调阅",
-)
+# Compatibility alias kept for existing imports and callers.
+PILOT_PROCESSES = set(ENABLED_PROCESS_NUMBERS)
 
 
 def fail(code: str, status: int = 409):
@@ -256,16 +223,30 @@ class AuditWorkbenchService:
             "members": self.members(case, actor),
             "processes": [
                 {
-                    "number": n,
-                    "name": name,
-                    "stage": 1 if n <= 7 else 2 if n <= 23 else 3,
-                    "enabled": n in PILOT_PROCESSES,
+                    "number": definition.number,
+                    "name": definition.name,
+                    "stage": definition.stage,
+                    "enabled": definition.enabled,
+                    "predecessor_numbers": list(definition.predecessor_numbers),
+                    "required_reference_process_numbers": list(
+                        definition.required_reference_process_numbers
+                    ),
+                    "requires_fresh_check": definition.requires_fresh_check,
+                    "guidance": definition.guidance,
                 }
-                for n, name in enumerate(PROCESS_NAMES, 1)
+                for definition in all_process_definitions()
             ],
             "work_items": [self.item_read(r) for r in self._items(case)],
             "issues": [self.issue_read(r) for r in self._issues(case)],
         }
+
+    def process_gates(self, case, actor, document_id: str):
+        self.authorize(case, actor)
+        self.document(case, document_id)
+        return [
+            evaluate_process_gate(self.db, case, definition.number, document_id)
+            for definition in all_process_definitions()
+        ]
 
     def _event(
         self, case, actor, event_type, item_id, detail, *, key=None, digest=None, result=None
@@ -304,8 +285,14 @@ class AuditWorkbenchService:
 
     def create_item(self, case, actor, request: WorkItemCreate):
         self._write(case, actor)
-        if request.process_number not in PILOT_PROCESSES:
+        gate = evaluate_process_gate(self.db, case, request.process_number, request.document_id)
+        if not gate["enabled"]:
             fail("PROCESS_NOT_ENABLED", 422)
+        if any(blocker["code"] == "PROCESS_PRECONDITION_REQUIRED" for blocker in gate["blockers"]):
+            fail("PROCESS_PRECONDITION_REQUIRED")
+        required_references = set(gate["required_reference_document_ids"])
+        if not required_references.issubset(set(request.reference_document_ids)):
+            fail("PROCESS_REFERENCE_REQUIRED")
         self._member(case, request.assigned_to_user_id, WRITE_ROLES)
         self._member(case, request.reviewer_user_id, REVIEW_ROLES)
         if request.reviewer_user_id in {actor.id, request.assigned_to_user_id}:
@@ -376,6 +363,16 @@ class AuditWorkbenchService:
             self._member(case, row.reviewer_user_id, REVIEW_ROLES)
             if before not in {"draft", "changes_requested"}:
                 fail("INVALID_WORK_ITEM_TRANSITION")
+            gate = evaluate_process_gate(self.db, case, row.process_number, row.document_id)
+            if any(
+                blocker["code"] == "PROCESS_PRECONDITION_REQUIRED"
+                for blocker in gate["blockers"]
+            ):
+                fail("PROCESS_PRECONDITION_REQUIRED")
+            if not set(gate["required_reference_document_ids"]).issubset(
+                {ref["document_id"] for ref in row.reference_versions_json}
+            ):
+                fail("PROCESS_REFERENCE_REQUIRED")
             refs = [self.document(case, ref["document_id"]) for ref in row.reference_versions_json]
             values.update(
                 status="submitted",
@@ -394,6 +391,18 @@ class AuditWorkbenchService:
             if request.action in {"approve", "request_changes"} and before != "submitted":
                 fail("INVALID_WORK_ITEM_TRANSITION")
             if request.action == "approve":
+                gate = evaluate_process_gate(self.db, case, row.process_number, row.document_id)
+                if any(
+                    blocker["code"] == "PROCESS_PRECONDITION_REQUIRED"
+                    for blocker in gate["blockers"]
+                ):
+                    fail("PROCESS_PRECONDITION_REQUIRED")
+                if not set(gate["required_reference_document_ids"]).issubset(
+                    {ref["document_id"] for ref in row.reference_versions_json}
+                ):
+                    fail("PROCESS_REFERENCE_REQUIRED")
+                if any(blocker["code"].startswith("CHECK_") for blocker in gate["blockers"]):
+                    fail("PROCESS_CHECK_REQUIRED")
                 if self.item_read(row)["stale"]:
                     fail("WORK_ITEM_VERSION_STALE")
                 from app.audit_cases.workbench_checks import check_is_stale
@@ -778,3 +787,4 @@ class AuditWorkbenchService:
                         }
                     )
         return {"items": items, "issues": issues}
+
