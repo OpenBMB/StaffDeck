@@ -17,6 +17,11 @@
 .wb-page button[aria-pressed=true], .wb-page button[aria-selected=true] { background: #eaf2f0; border-color: #4b7971; color: #244c44; }
 .wb-muted { color: #737d8c; font-size: 12px; line-height: 1.7; margin: 8px 0; }
 .wb-error { color: #b42318; background: #fff0ed; padding: 10px; border-radius: 8px; }
+.wb-process-gate { margin: 12px 0; padding: 10px 12px; border: 1px solid #d8dee4; border-radius: 8px; background: #f6f8fa; }
+.wb-process-gate.is-ready { border-color: #7ac28a; background: #f2fbf4; }
+.wb-process-gate.is-blocked { border-color: #e0a3a3; background: #fff8f8; }
+.wb-process-gate h3 { margin: 0 0 6px; font-size: 0.95rem; }
+.wb-process-gate p { margin: 4px 0; }
 .wb-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 9px 0; }
 .wb-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
 .wb-summary { padding: 0 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -36,3 +41,4 @@
 .wb-inbox-row { display: flex; justify-content: space-between; gap: 12px; padding: 13px 4px; border-bottom: 1px solid #edf0f4; text-decoration: none; color: inherit; }
 @media (max-width: 1250px) { .wb-shell { grid-template-columns: 190px minmax(280px, 1fr); } .wb-review { grid-column: 2; } }
 @media (max-width: 760px) { .wb-shell { display: block; padding: 12px; } .wb-sidebar { position: static; max-height: 320px; margin-bottom: 12px; } .wb-inbox-row { flex-direction: column; } }
+
