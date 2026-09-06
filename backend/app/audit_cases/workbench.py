@@ -787,4 +787,3 @@ class AuditWorkbenchService:
                         }
                     )
         return {"items": items, "issues": issues}
-
