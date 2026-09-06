@@ -68,10 +68,11 @@ def ctx(tmp_path):
     client = TestClient(app)
 
     def call(method, path="/cases/case", actor="owner", **kw):
+        query = {"tenant_id": "t", **kw.pop("params", {})}
         return client.request(
             method,
             f"/api/audit-workbench{path}",
-            params={"tenant_id": "t"},
+            params=query,
             headers={"Authorization": f"Bearer {create_access_token(users[actor])}"},
             **kw,
         )
@@ -136,6 +137,109 @@ def test_snapshot_is_read_only_and_denies_nonmembers(ctx):
         from app.db.models import AuditWorkItem
 
         assert db.exec(select(AuditWorkItem)).all() == []
+
+
+def test_process_17_requires_approved_process_16_and_reference(ctx):
+    call, _, docs = ctx
+    process_16 = create(
+        ctx,
+        process_number=16,
+        document_id=docs["reference"],
+        reference_document_ids=[],
+    )
+    process_16 = transition(ctx, process_16, "submit", "editor", key="p16-submit").json()
+    assert transition(ctx, process_16, "approve", "reviewer", key="p16-approve").status_code == 200
+
+    missing_reference = call(
+        "POST",
+        "/cases/case/items",
+        json={
+            "document_id": docs["primary"],
+            "process_number": 17,
+            "assigned_to_user_id": "editor",
+            "reviewer_user_id": "reviewer",
+            "reference_document_ids": [],
+        },
+    )
+    assert missing_reference.status_code == 409
+    assert missing_reference.json()["detail"] == "PROCESS_REFERENCE_REQUIRED"
+
+    created = call(
+        "POST",
+        "/cases/case/items",
+        json={
+            "document_id": docs["primary"],
+            "process_number": 17,
+            "assigned_to_user_id": "editor",
+            "reviewer_user_id": "reviewer",
+            "reference_document_ids": [docs["reference"]],
+        },
+    )
+    assert created.status_code == 200, created.text
+
+
+def test_process_21_check_is_required_at_approval_not_submission(ctx):
+    _, engine, docs = ctx
+    process_16 = create(ctx, process_number=16)
+    process_16 = transition(ctx, process_16, "submit", "editor", key="p16-for-p17-submit").json()
+    process_16 = transition(ctx, process_16, "approve", "reviewer", key="p16-for-p17-approve").json()
+    process_17 = create(ctx, process_number=17)
+    process_17 = transition(ctx, process_17, "submit", "editor", key="p17-submit").json()
+    process_17 = transition(ctx, process_17, "approve", "reviewer", key="p17-approve").json()
+    process_21 = create(ctx, process_number=21)
+    submitted = transition(ctx, process_21, "submit", "editor", key="p21-submit")
+    assert submitted.status_code == 200, submitted.text
+
+    blocked = transition(ctx, submitted.json(), "approve", "reviewer", key="p21-approve")
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"] == "PROCESS_CHECK_REQUIRED"
+
+    from app.db.workbench_checks import AuditDocumentCheck
+
+    with Session(engine) as db:
+        db.add(
+            AuditDocumentCheck(
+                id="check-p21",
+                tenant_id="t",
+                audit_case_id="case",
+                document_id=docs["primary"],
+                document_version_id="",
+                created_by_user_id="owner",
+                request_key="check-p21",
+                request_hash="hash",
+                status="completed",
+                findings_json=[],
+            )
+        )
+        document = db.get(AuditCaseDocument, docs["primary"])
+        db.get(AuditDocumentCheck, "check-p21").document_version_id = document.active_version_id
+        db.commit()
+    assert transition(ctx, submitted.json(), "approve", "reviewer", key="p21-approve2").status_code == 200
+
+
+def test_process_23_does_not_require_process_19(ctx):
+    process_18 = create(ctx, process_number=18)
+    process_18 = transition(ctx, process_18, "submit", "editor", key="p18-submit").json()
+    process_18 = transition(ctx, process_18, "approve", "reviewer", key="p18-approve").json()
+    process_23 = create(ctx, process_number=23)
+    assert process_23["process_number"] == 23
+
+
+def test_process_gate_endpoint_reports_selected_document_gate(ctx):
+    call, _, docs = ctx
+    response = call("GET", "/cases/case/process-gates")
+    assert response.status_code == 422
+
+    response = call(
+        "GET",
+        "/cases/case/process-gates",
+        params={"document_id": docs["primary"]},
+    )
+    assert response.status_code == 200, response.text
+    rows = {row["process_number"]: row for row in response.json()}
+    assert rows[17]["enabled"] is True
+    assert rows[17]["ready"] is False
+    assert rows[28]["enabled"] is False
 
 
 def test_submit_approve_idempotency_revision_and_history(ctx):
@@ -463,3 +567,4 @@ def test_approval_cannot_bypass_failed_machine_check(ctx):
         db.add(check)
         db.commit()
     assert transition(ctx, submitted, "approve", "reviewer").status_code == 200
+
