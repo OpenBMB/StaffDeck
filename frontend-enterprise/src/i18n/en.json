@@ -34,6 +34,14 @@
   "文档协作已开放": "Document collaboration available",
   "流程": "Process",
   "文件检查": "Document checks",
+  "文件检查：": "Document check:",
+  "已完成且无错误": "Completed without errors",
+  "加载流程门槛失败": "Failed to load process gates",
+  "尚未完成": "Not completed",
+  "需关联前置文件：": "Required predecessor files:",
+  "已内部复核通过": "Internally approved",
+  "流程门槛": "Process gate",
+  "按当前流程要求完成前置资料和内部复核。": "Complete the required predecessor materials and internal review for this process.",
   "项目成员角色": "Project member roles",
   "流转记录": "Workflow history",
   "持久化文件检查": "Persisted document checks",
@@ -4022,3 +4030,4 @@
   "· 加载中…": "· Loading…",
   "知识库版本": "Knowledge-base version"
 }
+
