@@ -72,4 +72,3 @@ describe('unified workbench', () => {
     expect(diff).toContainEqual({ kind: 'removed', text: '审核：初审' }); expect(diff).toContainEqual({ kind: 'added', text: '审核：再认证' }); expect(diff).toContainEqual({ kind: 'same', text: '相同' });
   });
 });
-
