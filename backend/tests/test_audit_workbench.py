@@ -567,4 +567,3 @@ def test_approval_cannot_bypass_failed_machine_check(ctx):
         db.add(check)
         db.commit()
     assert transition(ctx, submitted, "approve", "reviewer").status_code == 200
-
