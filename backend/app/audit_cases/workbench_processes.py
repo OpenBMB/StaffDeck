@@ -233,4 +233,3 @@ def evaluate_process_gate(
         "required_reference_document_ids": sorted(set(required_reference_document_ids)),
         "check": check,
     }
-
