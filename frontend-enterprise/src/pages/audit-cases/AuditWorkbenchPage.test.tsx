@@ -16,6 +16,7 @@ function mount(snapshot = baseSnapshot, userId = 'editor') {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input); let body: unknown = [];
     if (url.includes('/audit-workbench/cases/case?')) body = snapshot;
+    else if (url.includes('/audit-workbench/cases/case/process-gates?')) body = snapshot.processes.map((process) => ({ process_number: process.number, enabled: process.enabled, ready: process.enabled, blockers: [], predecessors: [], required_reference_document_ids: [], check: null }));
     else if (url.includes('/audit-cases/case?')) body = { id: 'case', organization_name: '测试企业', report_type: '再认证', status: 'active' };
     else if (url.includes('/documents?')) body = files;
     else if (url.includes('/documents/')) { const selected = files.find((f) => url.includes(`/documents/${f.id}?`))!; body = { document: selected, versions: [selected.active_version] }; }
@@ -29,6 +30,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe('unified workbench', () => {
   it('loads a project member without admin-only management options, and protects file/tab/route changes', async () => {
     const fetchMock = mount();
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/process-gates?'))).toBe(true));
     const editor = await screen.findByRole('textbox', { name: '文档内容' });
     await waitFor(() => expect((editor as HTMLTextAreaElement).value).toBe('内容one'));
     fireEvent.change(editor, { target: { value: '未保存草稿' } });
@@ -42,6 +44,14 @@ describe('unified workbench', () => {
     confirm.mockReturnValue(true); fireEvent.click(screen.getByRole('button', { name: /文件two/ }));
     await waitFor(() => expect((screen.getByRole('textbox', { name: '文档内容' }) as HTMLTextAreaElement).value).toBe('内容two'));
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('management-options'))).toBe(false);
+  });
+
+  it('refreshes the document-scoped gate when the selected document changes', async () => {
+    const fetchMock = mount();
+    await screen.findByRole('textbox', { name: '文档内容' });
+    const before = fetchMock.mock.calls.filter(([url]) => String(url).includes('/process-gates?')).length;
+    fireEvent.click(screen.getByRole('button', { name: /文件two/ }));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/process-gates?')).length).toBeGreaterThan(before));
   });
   it('makes viewer content read-only and does not expose formal issue creation', async () => {
     mount({ ...baseSnapshot, role: 'viewer' });
@@ -62,3 +72,4 @@ describe('unified workbench', () => {
     expect(diff).toContainEqual({ kind: 'removed', text: '审核：初审' }); expect(diff).toContainEqual({ kind: 'added', text: '审核：再认证' }); expect(diff).toContainEqual({ kind: 'same', text: '相同' });
   });
 });
+
