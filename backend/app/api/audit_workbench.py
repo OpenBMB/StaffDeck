@@ -174,4 +174,3 @@ def events(
 ):
     service = AuditWorkbenchService(db)
     return service.events(service.case(tenant_id, case_id, actor), actor, work_item_id)
-
