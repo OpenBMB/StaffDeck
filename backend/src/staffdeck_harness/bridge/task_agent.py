@@ -225,10 +225,12 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
         if text:
             parts.append(text)
     task = {
+        "current_time": requirement.current_time,
         "goal": requirement.goal,
         "requirements": requirement.requirements,
         "completion_criteria": requirement.completion_criteria,
         "required_slots": requirement.required_slots,
+        "expected_slots": requirement.expected_slots,
         "known_slots": requirement.known_slots,
         "allowed_transitions": requirement.allowed_transitions,
         "required_capability_names": requirement.required_capability_names,
@@ -470,7 +472,15 @@ class HarnessV3TaskAgent:
             trace("harness_v3_context_bound", {"execution_loop_id": context.logical_id,
                   "engine_session_id": engine_session, "restored": bool(recovery),
                   "history_entries": len(context.history), "loop_kind": requirement.kind})
-            events, final_text, finish_reason = self._run_engine_turn(proc, engine_session, content_blocks, cancelled, trace)
+            def stop_requested():
+                return cancelled() or execution_host.recovery_blocked is not None or execution_host.exhausted
+
+            events, final_text, finish_reason = self._run_engine_turn(proc, engine_session, content_blocks, stop_requested, trace)
+            if execution_host.recovery_blocked:
+                error = execution_host.recovery_blocked
+                return finish(TaskExecutionResult(task_frame_id=requirement.task_frame_id, status="awaiting_user",
+                              reply_fragment=error["message"], error=error, action_count=execution_host.actions,
+                              task_summary="能力调用未取得进展，暂停当前步骤"))
             if execution_host.exhausted:
                 raise ExecutionBudgetExceeded("action budget exhausted")
             if requirement.kind == "conversation":
@@ -497,7 +507,7 @@ class HarnessV3TaskAgent:
                     slot.closed = False
                     trace("harness_v3_turn_steered", {"reason": stop.reason, "message": stop.steer_message[:200]})
                     suffix = "\n完成后提交 SOP 步骤结果。" if requirement.kind == "sop" else "\n请直接返回修正后的回复。"
-                    events2, final_text2, finish_reason = self._run_engine_turn(proc, engine_session, [{"type": "text", "text": stop.steer_message + suffix}], cancelled, trace)
+                    events2, final_text2, finish_reason = self._run_engine_turn(proc, engine_session, [{"type": "text", "text": stop.steer_message + suffix}], stop_requested, trace)
                     events.extend(events2)
                     actions += sum(1 for e in events2 if e.get("type") == "tool/call")
                     if final_text2.strip():
@@ -524,6 +534,14 @@ class HarnessV3TaskAgent:
         except ValidationError as exc:
             return finish(self._failed(requirement, "HARNESS_ACTION_INVALID", str(exc), actions=execution_host.actions))
         except HarnessExecutionCancelled:
+            if not cancelled() and execution_host.recovery_blocked:
+                error = execution_host.recovery_blocked
+                return finish(TaskExecutionResult(task_frame_id=requirement.task_frame_id, status="awaiting_user",
+                              reply_fragment=error["message"], error=error, action_count=execution_host.actions,
+                              task_summary="能力调用未取得进展，暂停当前步骤"))
+            if not cancelled() and execution_host.exhausted:
+                return finish(TaskExecutionResult(task_frame_id=requirement.task_frame_id, status="action_budget",
+                              reply_fragment="本次执行预算已用完，已保存执行上下文。", action_count=execution_host.actions))
             raise
         except Exception as exc:
             if cancelled():

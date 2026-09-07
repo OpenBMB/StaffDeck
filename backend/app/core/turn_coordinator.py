@@ -1038,6 +1038,7 @@ class TurnCoordinator:
                     else _source_user_message(self.db, row)
                 ),
                 out_of_scope_task_intents=_sibling_task_intents(self.db, row),
+                client_timezone=request.client_timezone,
             )
             if (
                 self.slash_command

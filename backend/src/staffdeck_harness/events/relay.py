@@ -137,14 +137,19 @@ class SessionEventRelay:
         self.trace = trace
         self.count = 0
         self.control_calls: set[str] = set()
+        self.action_count = 0
 
     def __call__(self, ev: Mapping[str, Any]) -> None:
         from staffdeck_harness.bridge.control import is_control_tool
 
         data = ev.get("data") or {}
+        if ev.get("type") == "tool/call":
+            self.action_count += 1
         if ev.get("type") == "tool/call" and is_control_tool(str(data.get("name") or "")):
             self.control_calls.add(str(data.get("callId") or ""))
         for event_type, payload in relay_event(ev):
+            if event_type == "harness_action_created":
+                payload["iteration"] = self.action_count
             if event_type == "harness_tool_result" and str(payload.get("call_id") or "") in self.control_calls:
                 event_type = "harness_control_result"
             self.count += 1

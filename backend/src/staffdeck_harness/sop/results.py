@@ -33,20 +33,18 @@ def enforce_required_slots(
     requirement: Any,
     session: ChatSession,
 ) -> TaskExecutionResult:
-    if result.status != "completed" or not requirement.required_slots:
+    if result.status != "completed":
         return result
-    merged = {
-        **dict(session.slots_json or {}),
-        **dict(result.slot_updates or {}),
-    }
-    missing = [
-        field for field in requirement.required_slots if merged.get(field) in (None, "", [], {})
-    ]
+    from app.session.slot_policy import missing_step_slots
+
+    missing = missing_step_slots(requirement, result.slot_updates, session.slots_json or {})
     if not missing:
         return result
     result.status = "awaiting_user"
-    if not result.reply_fragment:
-        result.reply_fragment = "还需要您补充：" + "、".join(missing) + "。"
+    # Do not retain a model's "submitted/completed" claim after rejecting the completion.
+    result.reply_fragment = "当前步骤尚未完成，还需要您补充：" + "、".join(missing) + "。"
+    result.error = {"code": "REQUIRED_SLOT_MISSING", "message": result.reply_fragment,
+                    "details": {"missing_slots": missing}}
     result.next_step_id = None
     return result
 

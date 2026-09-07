@@ -268,6 +268,34 @@ def test_web_sse_entry_projects_only_public_reply_before_completion(db, fake_mod
         assert "7" in public
 
 
+def test_real_engine_interrupts_unavailable_capability_loop_and_keeps_checkpoint(db, fake_model):
+    from app.db.models import HarnessAgentLoopRecord
+
+    model, base = fake_model
+    agent, user = _seed(db, base)
+    original = model.reply
+
+    def unavailable(body):
+        if "TurnPlanner" in json.dumps(body.get("messages"), ensure_ascii=False):
+            return original(body)
+        model.requests.append(body)
+        call_id = f"unavailable-{len(model.requests)}"
+        return [_chunk(call_id, {"tool_calls": [{"index": 0, "id": call_id, "type": "function",
+                "function": {"name": "mcp__staffdeck__capability_invoke", "arguments": json.dumps({
+                    "operation": "missing.operation/v1", "resource_id": "missing", "arguments": {}})}}]}),
+                _chunk(call_id, {}, "tool_calls")]
+
+    model.reply = unavailable
+    response = AgentLoop(db).handle_turn(ChatTurnRequest(tenant_id="tenant_demo", agent_id=agent.id,
+        user_id=user.id, message="执行模拟任务", channel="web", client_turn_id="stuck-loop"))
+    assert "暂停自动重试" in response.reply
+    assert response.runtime_error_code is None
+    assert len(model.requests) <= 5, "do not burn 32 model calls on an unavailable operation"
+    assert not db.exec(select(HarnessInvocationRecord)).all(), "no external business action was executed"
+    loops = db.exec(select(HarnessAgentLoopRecord)).all()
+    assert loops and any(row.checkpoint_json for row in loops)
+
+
 class ContinuityModel:
     """The nonce exists only in a prior assistant response, never in later user input."""
     def __init__(self):

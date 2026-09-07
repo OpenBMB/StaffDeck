@@ -32,6 +32,24 @@ function message(patch: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 describe('chat history consumer contract', () => {
+  it('replaces a pending capability attempt with its actual rejection reason', () => {
+    const started = harnessEventTraceLine('harness_action_created', {
+      task_frame_id: 'quota', iteration: 2, action: 'tool', tool_name: 'compute_quota',
+    });
+    const failed = harnessEventTraceLine('harness_action_failed', {
+      task_frame_id: 'quota', iteration: 2, tool_name: 'compute_quota', executed: false,
+      error: { code: 'TOOL_NOT_AVAILABLE', message: '能力尚未展开' },
+    });
+    expect(failed?.id).toBe(started?.id);
+    expect(failed?.state).toBe('failed');
+    expect(failed?.detail).toContain('能力尚未展开');
+    const recovered = harnessEventTraceLine('harness_action_failed', {
+      task_frame_id: 'quota', iteration: 2, tool_name: 'compute_quota',
+      error: { code: 'CAPABILITY_SCHEMA_LOADED', message: '请使用真实参数' },
+    });
+    expect(recovered?.text).toContain('等待参数校正');
+    expect(recovered?.state).toBe('completed');
+  });
   it('preserves repeated deltas and applies final replacements consistently during replay', () => {
     const events = [
       ['stream_delta', '哈'], ['stream_delta', '哈'], ['stream_delta', '哈哈！'],

@@ -48,6 +48,20 @@ def test_control_cannot_select_an_unlisted_transition(db):
     assert result.error["code"] == "INVALID_TRANSITION" and not cap.slot.closed
 
 
+def test_completed_control_cannot_erase_an_already_filled_required_slot(db):
+    cap = _host(db, CompositionCompiler(hooks=()).compile(_staff()))
+    req = TaskRequirement(task_frame_id="tf1", kind="sop", goal="collect",
+                          expected_slots=["quota"], known_slots={"quota": 4})
+    execution = ExecutionHost(cap, req)
+    result, _ = execution.invoke_proxy("submit_step_result",
+        {"status": "completed", "reply_fragment": "完成", "slot_updates": {"quota": "  "}}, _ctx())
+    assert result.error["code"] == "REQUIRED_SLOT_MISSING"
+    assert not cap.slot.closed and cap.slot.finish is None
+    result, _ = execution.invoke_proxy("submit_step_result",
+        {"status": "completed", "reply_fragment": "完成", "slot_updates": {"quota": 0}}, _ctx())
+    assert result.success and cap.slot.closed
+
+
 @pytest.mark.parametrize("status", ["completed", "awaiting_user", "handoff", "failed"])
 def test_native_conversation_result_uses_v2_status_and_slot_normalization(db, status):
     from app.core.harness_agent import HarnessAction, finish_execution_result

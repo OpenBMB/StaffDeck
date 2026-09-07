@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -58,6 +60,8 @@ class TaskRequirement(BaseModel):
     goal: str
     execution_loop_id: str = ""
     current_user_message: str = ""
+    current_time: str = ""
+    expected_slots: list[str] = Field(default_factory=list)
     default_result_status: Literal["completed", "awaiting_user", "handoff"] = "completed"
     source_user_message: str = ""
     out_of_scope_task_intents: list[str] = Field(default_factory=list)
@@ -118,6 +122,7 @@ class TaskRequestCompiler:
         published_deliverables: list[dict[str, Any]] | None = None,
         source_user_message: str | None = None,
         out_of_scope_task_intents: list[str] | None = None,
+        client_timezone: str | None = None,
     ) -> TaskRequirement:
         current_node = _current_node(skill, frame.target_step_id or session.active_step_id)
         expected_fields = _text_list((current_node or {}).get("expected_user_info"))
@@ -175,6 +180,8 @@ class TaskRequestCompiler:
             task_frame_id=str(frame.task_id or ""),
             kind=frame.kind,
             goal=goal,
+            current_time=_current_time_text(client_timezone),
+            expected_slots=expected_fields,
             default_result_status="handoff" if frame.decision == "handoff_human" else "awaiting_user" if frame.decision == "clarify" else "completed",
             source_user_message=str(source_user_message or "").strip()[:4_000],
             out_of_scope_task_intents=_unique(
@@ -375,4 +382,15 @@ def _unique(values: list[str]) -> list[str]:
 
 
 def _slot_satisfied(value: object) -> bool:
-    return value not in (None, "", [], {})
+    from app.session.slot_policy import slot_is_filled
+
+    return slot_is_filled(value)
+
+
+def _current_time_text(client_timezone: str | None = None) -> str:
+    try:
+        zone = ZoneInfo(client_timezone.strip()) if client_timezone and client_timezone.strip() else None
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = None
+    now = datetime.now(zone) if zone else datetime.now().astimezone()
+    return f"{now.isoformat(timespec='minutes')}（周{'一二三四五六日'[now.weekday()]}）"

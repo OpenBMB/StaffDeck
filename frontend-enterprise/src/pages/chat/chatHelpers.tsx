@@ -1537,6 +1537,18 @@ export function harnessEventTraceLine(
       icon: failed ? 'loading' : 'execute',
     };
   }
+  if (eventName === 'harness_action_failed') {
+    const error = isPlainRecord(data.error) ? data.error : {};
+    const recovered = error.code === 'CAPABILITY_SCHEMA_LOADED';
+    return {
+      id: `harness_action_${frameId}_${iteration || 'current'}`,
+      kind: 'tool',
+      text: recovered ? `已展开能力 ${toolName}，等待参数校正` : `能力调用受阻 ${toolName}`,
+      detail: [typeof error.code === 'string' ? error.code : '', typeof error.message === 'string' ? error.message : ''].filter(Boolean).join(' · '),
+      state: recovered ? 'completed' : 'failed',
+      icon: 'tool',
+    };
+  }
   if (eventName === 'harness_action_created') {
     const action = typeof data.action === 'string' ? data.action : '';
     const isStepSubmission = data.control === 'submit_step_result'

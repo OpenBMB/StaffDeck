@@ -77,6 +77,12 @@ class StepCompletionPort:
         if next_step and next_step not in slot.allowed_next_steps:
             return ModuleResult.fail("INVALID_TRANSITION", "下一步不在当前 SOP 的允许转移中。")
         if arguments["status"] == "completed":
+            from app.session.slot_policy import missing_step_slots
+
+            missing_slots = missing_step_slots(self.requirement, arguments.get("slot_updates"))
+            if missing_slots:
+                return ModuleResult.fail("REQUIRED_SLOT_MISSING", "当前步骤必填字段未齐：" + "、".join(missing_slots),
+                                         extensions={"details": {"missing_slots": missing_slots}})
             from staffdeck_harness.runtime.completion import missing_capabilities
 
             missing = missing_capabilities(
@@ -109,6 +115,10 @@ class ExecutionHost:
         self.max_actions = max(1, min(int(max_actions), 100))
         self.actions = 0
         self.exhausted = False
+        from app.core.capability_recovery import CapabilityRecovery
+
+        self.recovery = CapabilityRecovery()
+        self.recovery_blocked = None
 
     def __getattr__(self, name):
         return getattr(self.capabilities, name)
@@ -131,12 +141,24 @@ class ExecutionHost:
                     return ModuleResult.fail(
                         "ACTION_BUDGET_EXCEEDED", "本次动作预算耗尽，等待下一次推进。"
                     ), None
+                if self.recovery_blocked:
+                    return ModuleResult.fail(self.recovery_blocked["code"], self.recovery_blocked["message"]), None
                 if is_control_tool(name):
                     with host.registry.work_lease() if host.registry else nullcontext():
                         result, receipt = self.completion.submit(dict(arguments)), None
                 else:
                     result, receipt = host.invoke_proxy(name, arguments, ctx)
                 self.actions += 1
+                if not result.success:
+                    host._emit("harness_action_failed", {
+                        "iteration": self.actions, "tool_name": "mcp__staffdeck__" + name,
+                        "error": dict(result.error or {}),
+                    })
+                resource = str(arguments.get("tool_id") or arguments.get("resource_id") or arguments.get("skill_id") or "")
+                self.recovery_blocked = self.recovery.observe(
+                    f"{name}:{resource}", arguments,
+                    {"success": result.success, "error": dict(result.error or {})},
+                )
                 self.exhausted = self.actions >= self.max_actions and host.slot.finish is None
                 return result, receipt
             except ActivationFenced as exc:

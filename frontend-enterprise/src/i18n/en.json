@@ -2930,6 +2930,8 @@
   "任务执行完成": "Task execution completed",
   "执行 {1} 个动作": "Executed {1} actions",
   "调用能力 {1}": "Call capability {1}",
+  "能力调用受阻 {1}": "Capability call blocked: {1}",
+  "已展开能力 {1}，等待参数校正": "Capability {1} expanded; awaiting corrected arguments",
   "调用能力": "Call capability",
   "第 {1} 个动作": "Action {1}",
   "整理任务结果": "Compile task results",

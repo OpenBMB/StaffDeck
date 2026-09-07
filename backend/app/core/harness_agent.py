@@ -79,6 +79,12 @@ class HarnessTaskAgent:
             and str(checkpoint.get("step_id") or "") == current_step_id
         )
         transcript = _dict_items(checkpoint.get("transcript")) if same_frame else []
+        latest_user_message = str(requirement.current_user_message or requirement.source_user_message or "").strip()
+        if same_frame and transcript and latest_user_message:
+            previous = next((str(item.get("content") or "") for item in reversed(transcript)
+                             if item.get("role") == "user"), None)
+            if previous != latest_user_message:
+                transcript.append({"role": "user", "content": latest_user_message})
         citations = _dict_items(checkpoint.get("citations")) if same_frame else []
         evidence_results = (
             _dict_items(checkpoint.get("evidence_results")) if same_frame else []
@@ -111,6 +117,10 @@ class HarnessTaskAgent:
         # after its inputs or external state had changed.
         non_retryable_action_signatures: set[str] = set()
         allowed_names = requirement.capability_manifest.allowed_names()
+        from app.core.capability_recovery import CapabilityRecovery
+
+        recovery = CapabilityRecovery()
+        auto_described: set[str] = set()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
         pending_actions: list[HarnessAction] = []
 
@@ -381,19 +391,46 @@ class HarnessTaskAgent:
 
             tool_name = str(action.tool_name or "").strip()
             if not tool_name or tool_name not in allowed_names:
+                error = {"code": "TOOL_NOT_AVAILABLE", "retryable": False,
+                         "message": "该能力不在当前可调用清单中。请先通过 capability_search/capability_describe 核对名称、绑定和参数；不要直接重复调用。"}
+                catalog_names = {entry.name for entry in requirement.capability_manifest.catalog}
+                if (tool_name in catalog_names or tool_name in requirement.required_capability_names) and (
+                    tool_name not in auto_described and len(auto_described) < 2 and "capability_describe" in allowed_names
+                ):
+                    # Read-only preparation via the existing authorized invoker. Never bypass
+                    # PEP or execute the model's guessed write arguments automatically.
+                    auto_described.add(tool_name)
+                    try:
+                        described = invoke_tool("capability_describe", {"capabilities": [tool_name]})
+                    except (HarnessExecutionCancelled, HarnessExecutionFenced):
+                        raise
+                    except Exception as exc:
+                        described = {"success": False, "error": {"code": "CAPABILITY_NOT_AVAILABLE", "message": str(exc)}}
+                    activated = _activate_described_capabilities(requirement, "capability_describe", described)
+                    allowed_names.update(activated)
+                    transcript.append({"role": "tool", "tool_name": "capability_describe", "result": described})
+                    if trace_sink:
+                        trace_sink("harness_tool_completed", {"iteration": iteration, "tool_name": "capability_describe",
+                                   "success": bool(described.get("success")), "error": described.get("error"), "automatic": True})
+                    if tool_name in activated:
+                        error = {"code": "CAPABILITY_SCHEMA_LOADED", "message": "已通过权限校验展开该能力。本次尚未执行业务调用，请依据返回的 schema 和当前 known_slots 构造真实参数后再调用。"}
                 transcript.append(
                     {
                         "role": "tool",
                         "tool_name": tool_name,
                         "result": {
                             "success": False,
-                            "error": {
-                                "code": "TOOL_NOT_AVAILABLE",
-                                "message": "该能力不在当前 TaskFrame 的冻结清单中。",
-                            },
+                            "error": error,
                         },
                     }
                 )
+                if trace_sink:
+                    trace_sink("harness_action_failed", {"iteration": iteration, "tool_name": tool_name, "error": error, "executed": False})
+                blocked = recovery.observe(tool_name, action.arguments, {"success": False, "error": error})
+                if blocked:
+                    return finish(TaskExecutionResult(task_frame_id=requirement.task_frame_id, status="awaiting_user",
+                                  reply_fragment=blocked["message"], error=blocked, action_count=iteration,
+                                  task_summary="能力调用前置条件未满足，暂停当前步骤"))
                 continue
 
             if (
@@ -479,6 +516,15 @@ class HarnessTaskAgent:
                     },
                 ]
             )
+            blocked = recovery.observe(tool_name, action.arguments, result)
+            if blocked:
+                if trace_sink:
+                    trace_sink("harness_action_failed", {"iteration": iteration, "tool_name": tool_name, "error": blocked})
+                return finish(TaskExecutionResult(task_frame_id=requirement.task_frame_id, status="awaiting_user",
+                              reply_fragment=blocked["message"], error=blocked, action_count=iteration,
+                              capability_results=capability_results, citations=citations,
+                              evidence_results=evidence_results, artifacts=artifacts,
+                              task_summary="能力调用未取得进展，暂停当前步骤"))
             if tool_name not in {"capability_search", "capability_describe"}:
                 capability_results.append(bounded_result)
             if _deadline_expired(step_deadline_monotonic):
