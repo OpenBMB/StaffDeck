@@ -74,7 +74,7 @@ class EnginePhaseRunner:
         self.trace = trace
         self.cancelled = cancelled
 
-    def prompt(self, *, phase: str, model_config: Any, system_text: str, user_text: str, engine_session: str) -> str:
+    def prompt(self, *, phase: str, model_config: Any, system_text: str, user_text: str, engine_session: str, on_text: Callable[[str], None] | None = None) -> str:
         from staffdeck_harness.bridge.task_agent import IdlePhaseHost
 
         host = PhaseHost(model_config=model_config, trace=self.trace, phase=phase)
@@ -85,7 +85,16 @@ class EnginePhaseRunner:
             text = f"{system_text.rstrip()}\n\n{user_text}"
             from staffdeck_harness.bridge.session_runner import run_session
 
-            events, final_text, finish_reason = run_session(self.pooled.process, engine_session, [{"type": "text", "text": text}], self.cancelled, self.trace, tenant_id=self.tenant_id, host_session_id=self.session_id, timeout_seconds=getattr(getattr(self.runtime, "worker_config", None), "request_timeout_seconds", 600) or 600)
+            def phase_trace(event: str, payload: dict[str, Any]) -> None:
+                if event == "model_text_delta":
+                    # Model text is not inherently a public reply. Planning (including repair)
+                    # is always internal; synthesis requires an explicitly authorized sink.
+                    if phase == "reply" and on_text is not None:
+                        on_text(str(payload.get("content") or ""))
+                    return
+                self.trace(event, payload)
+
+            events, final_text, finish_reason = run_session(self.pooled.process, engine_session, [{"type": "text", "text": text}], self.cancelled, phase_trace, tenant_id=self.tenant_id, host_session_id=self.session_id, timeout_seconds=getattr(getattr(self.runtime, "worker_config", None), "request_timeout_seconds", 600) or 600)
             self.trace(f"harness_v3_{phase}_finished", {"engine_session": engine_session, "finish_reason": finish_reason, "duration_ms": int((time.monotonic() - started) * 1000), "events": len(events)})
             if finish_reason == "error" or (not final_text.strip() and finish_reason not in (None, "completed", "end_turn", "stop")):
                 # The engine ended the turn on an error (typically the model provider); say so

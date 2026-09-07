@@ -643,23 +643,30 @@ class HarnessV3TaskAgent:
 
         Assistant text deltas relayed from the engine are forwarded to the stream sink as they
         arrive (ordinary conversation, unsupervised) or dropped; they are never persisted as
-        stream_delta audit rows here. The turn skeleton emits the final reply once, and skips
-        that when it equals what was streamed live (``TaskExecutionResult.streamed_reply``).
+        public stream_delta audit rows here. The coordinator reconciles the final reply using
+        append/replace semantics, and never appends a second full answer after a rewrite.
         """
 
         t = self.turn
         self._streamed_parts: list[str] = []
         live = bool(getattr(t, "live_stream", False) and getattr(t, "stream_sink", None) is not None and requirement.kind == "conversation")
 
+        from app.core.reply_stream import PublicTextProjection
+
+        def emit(text: str) -> None:
+            try:
+                t.stream_sink.on_delta(text)
+                self._streamed_parts.append(text)
+            except Exception:  # a failing transport must not fail execution
+                logger.exception("stream sink rejected a delta")
+
+        projection = PublicTextProjection(emit)
+
         def trace(event: str, payload: dict[str, Any]) -> None:
-            if event == "stream_delta":
+            if event == "model_text_delta":
                 text = str(payload.get("content") or "")
                 if live and text:
-                    self._streamed_parts.append(text)
-                    try:
-                        t.stream_sink.on_delta(text)
-                    except Exception:  # noqa: BLE001 - a client sink must never fail the turn
-                        logger.exception("stream sink rejected a delta")
+                    projection.feed(text)
                 return
             base_trace(event, payload)
 

@@ -100,24 +100,19 @@ def test_relay_turns_engine_text_deltas_into_stream_deltas_and_ignores_the_rest(
     from staffdeck_harness.events.relay import relay_event
 
     text = relay_event({"type": "assistant/chunk", "data": {"turn": 1, "step": 1, "chunk": {"type": "text-delta", "index": 0, "text": "你好"}}})
-    assert text == [("stream_delta", {"content": "你好", "execution_engine": "harness_v3"})]
+    assert text == [("model_text_delta", {"content": "你好", "execution_engine": "harness_v3"})]
     reasoning = relay_event({"type": "assistant/chunk", "data": {"chunk": {"type": "reasoning-delta", "index": 0, "text": "thinking"}}})
     tool = relay_event({"type": "assistant/chunk", "data": {"chunk": {"type": "tool-call-delta", "index": 0, "id": "c1", "argumentsDelta": "{"}}})
     assert reasoning == [] and tool == [], "reasoning and tool-call deltas never reach the client"
     flat = relay_event({"type": "assistant/chunk", "data": {"text": "legacy"}})
-    assert flat == [("stream_delta", {"content": "legacy", "execution_engine": "harness_v3"})]
+    assert flat == [("model_text_delta", {"content": "legacy", "execution_engine": "harness_v3"})]
 
 
-def test_already_streamed_only_when_lone_frame_text_matches():
+def test_streamed_text_is_turn_local_not_persisted_with_the_task_result():
     from app.core.task_request_compiler import TaskExecutionResult
-    from app.core.turn_coordinator import _already_streamed
 
     r = TaskExecutionResult(task_frame_id="tf", status="completed", reply_fragment="你好，老王")
-    assert _already_streamed([r], "你好，老王") is False, "nothing was streamed"
     r.streamed_reply = "你好，老王"
-    assert _already_streamed([r], "你好，老王") is True
-    assert _already_streamed([r], "你好，老王。") is False, "a rewritten reply is emitted again; the client replaces the bubble"
-    assert _already_streamed([r, r], "你好，老王") is False, "multi-frame replies are synthesised, never pre-streamed"
     assert r.model_dump().get("streamed_reply") is None, "never persisted with the result"
 
 
@@ -136,10 +131,10 @@ def test_task_agent_forwards_deltas_live_only_for_unsupervised_conversation():
     audit, sunk = [], []
     a = agent_for(live=True, sink=SimpleNamespace(on_delta=sunk.append))
     trace = a._client_stream_trace(lambda e, p: audit.append(e), SimpleNamespace(kind="conversation"))
-    trace("stream_delta", {"content": "你好"})
-    trace("stream_delta", {"content": ""})
+    trace("model_text_delta", {"content": "你好"})
+    trace("model_text_delta", {"content": ""})
     trace("harness_v3_tool_call", {"name": "x"})
-    trace("stream_delta", {"content": "，老王"})
+    trace("model_text_delta", {"content": "，老王"})
     assert sunk == ["你好", "，老王"] and a._streamed_parts == ["你好", "，老王"]
     assert audit == ["harness_v3_tool_call"], "deltas never become audit rows; other events pass through"
 
@@ -147,12 +142,12 @@ def test_task_agent_forwards_deltas_live_only_for_unsupervised_conversation():
         sunk.clear()
         sink = None if (live and kind == "conversation") else SimpleNamespace(on_delta=sunk.append)
         a = agent_for(live=live, sink=sink)
-        a._client_stream_trace(lambda e, p: None, SimpleNamespace(kind=kind))("stream_delta", {"content": "x"})
+        a._client_stream_trace(lambda e, p: None, SimpleNamespace(kind=kind))("model_text_delta", {"content": "x"})
         assert sunk == [] and a._streamed_parts == [], (live, kind, sink)
 
     def boom(_):
         raise RuntimeError("client gone")
 
     a = agent_for(live=True, sink=SimpleNamespace(on_delta=boom))
-    a._client_stream_trace(lambda e, p: None, SimpleNamespace(kind="conversation"))("stream_delta", {"content": "x"})
-    assert a._streamed_parts == ["x"], "remembered even when the client sink failed"
+    a._client_stream_trace(lambda e, p: None, SimpleNamespace(kind="conversation"))("model_text_delta", {"content": "x"})
+    assert a._streamed_parts == [], "failed delivery must not suppress the final fallback"

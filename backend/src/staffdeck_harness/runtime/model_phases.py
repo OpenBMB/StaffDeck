@@ -212,6 +212,8 @@ class EngineResponseGenerator:
         memory_context,
         conversation_context,
         task_results,
+        *,
+        on_text=None,
     ) -> str | None:
         v2 = self._v2
         direct = v2.direct_reply(step_result, tool_result, task_results, router_decision)
@@ -238,6 +240,7 @@ class EngineResponseGenerator:
             + "\n\n直接输出给用户的最终回复正文，不要调用任何工具。",
             user_text=stage_prompt_text(payload),
             engine_session=f"{self.engine_session}-reply",
+            **({"on_text": on_text} if on_text is not None else {}),
         )
         return v2.normalize_reply(text, session, router_decision, step_result, tool_result, skill)
 
@@ -268,6 +271,14 @@ class EngineResponseGenerator:
             conversation_context,
             task_results,
         )
+        return text if text is not None else ""
+
+    def generate_with_stream(self, *args, on_delta=None) -> str:
+        """Execute on the owning thread while projecting authorized reply deltas live."""
+        from app.core.reply_stream import PublicTextProjection
+
+        projection = PublicTextProjection(on_delta) if on_delta is not None else None
+        text = self._synthesize(*args, on_text=projection.feed if projection else None)
         return text if text is not None else ""
 
     def generate_stream(

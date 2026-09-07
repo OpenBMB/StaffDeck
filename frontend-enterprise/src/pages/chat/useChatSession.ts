@@ -108,6 +108,7 @@ import {
   parseMessageTime,
   persistSessionReadTimes,
   publicStreamPhase,
+  reduceReplyText,
   reflectionTraceDetail,
   routerDecisionTraceLine,
   sameRoleTurn,
@@ -2287,7 +2288,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         window.clearTimeout(eventStream.timer);
         eventStream.timer = null;
       }
-      eventStream.accumulated = next;
+      eventStream.accumulated = reduceReplyText(eventStream.accumulated, item.event, next);
       updateStreaming(eventSessionId, next, getStreamSlot(eventSessionId).turnId || traceTurnId);
       notifyStream();
       return;
@@ -2297,13 +2298,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       const piece = typeof item.data.content === 'string' ? item.data.content : '';
       if (!piece) return;
       const previous = eventStream.accumulated;
-      let next = previous + piece;
-      if (previous) {
-        if (piece === previous) return;
-        if (piece.startsWith(previous)) {
-          next = piece;
-        }
-      }
+      const next = reduceReplyText(previous, item.event, piece);
       if (next === previous) return;
       const hadVisibleText = Boolean(normalizeMessageText(previous));
       eventStream.accumulated = next;
@@ -2577,11 +2572,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     let text = '';
     runningGroup.forEach((event) => {
       const payloadText = eventTextPayload(event);
-      if (event.event === 'stream_replace') {
-        text = payloadText;
-      } else if (event.event === 'stream_delta' || event.event === 'token') {
-        text = text && payloadText.startsWith(text) ? payloadText : text + payloadText;
-      }
+      text = reduceReplyText(text, event.event, payloadText);
     });
 
     const streamChanged = (
@@ -2658,13 +2649,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
           let recoveredText = '';
           recoveryEvents.forEach((event) => {
             const payloadText = eventTextPayload(event);
-            if (event.event === 'stream_replace' || event.event === 'assistant_message_created') {
-              recoveredText = payloadText;
-            } else if (event.event === 'stream_delta' || event.event === 'token') {
-              recoveredText = recoveredText && payloadText.startsWith(recoveredText)
-                ? payloadText
-                : recoveredText + payloadText;
-            }
+            recoveredText = reduceReplyText(recoveredText, event.event, payloadText);
           });
           if (recoveredText && recoveredText !== stream.accumulated) {
             stream.accumulated = recoveredText;

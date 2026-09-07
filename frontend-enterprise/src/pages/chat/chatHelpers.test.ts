@@ -14,6 +14,7 @@ import {
   messageAttachments,
   normalizePersistedTraceLine,
   renderInlineMarkdown,
+  reduceReplyText,
   scheduledDraftForMessage,
   shouldDeferPersistedEventToLiveStream,
   stripTrailingCitationSummary,
@@ -31,6 +32,20 @@ function message(patch: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 describe('chat history consumer contract', () => {
+  it('preserves repeated deltas and applies final replacements consistently during replay', () => {
+    const events = [
+      ['stream_delta', '哈'], ['stream_delta', '哈'], ['stream_delta', '哈哈！'],
+      ['stream_replace', '你好'], ['stream_delta', '你好'],
+      ['assistant_message_created', '最终正文'], ['stream_end', ''],
+    ];
+    const states: string[] = [];
+    let text = '';
+    events.forEach(([event, piece]) => {
+      text = reduceReplyText(text, event, piece);
+      states.push(text);
+    });
+    expect(states).toEqual(['哈', '哈哈', '哈哈哈哈！', '你好', '你好你好', '最终正文', '最终正文']);
+  });
   it('normalizes persisted completion labels without rewriting business tool traces', () => {
     const oldControl = { id: 'old', kind: 'tool' as const,
       text: '调用能力 mcp__staffdeck__finish_task', state: 'completed' as const };

@@ -208,6 +208,66 @@ def test_sealed_turn_on_real_engine_with_scripted_model(db: Session, fake_model)
     assert md.get("knowledge_citations"), "citations must flow back from the host"
 
 
+@pytest.mark.parametrize("native", [False, True])
+def test_web_sse_entry_projects_only_public_reply_before_completion(db, fake_model, monkeypatch, native):
+    """Exercise chat_stream's actual background worker and persisted SSE relay, not a sink stub."""
+    import asyncio
+    from app.api import chat
+    from app.db.models import AgentEvent
+
+    model, base = fake_model
+    agent, user = _seed(db, base)
+    if native:
+        original = model.reply
+
+        def reply(body):
+            if "TurnPlanner" in json.dumps(body.get("messages"), ensure_ascii=False):
+                return original(body)
+            model.requests.append(body)
+            text = json.dumps({"action": "finish", "status": "awaiting_user", "reply_fragment": "请补充订单日期。", "slot_updates": {}}, ensure_ascii=False)
+            return [_chunk("native", {"content": c}) for c in text] + [_chunk("native", {}, "stop")]
+
+        model.reply = reply
+    monkeypatch.setattr(chat, "engine", db.get_bind())
+    monkeypatch.setattr(chat, "_schedule_session_title_summary", lambda *a, **k: None)
+    response = chat.chat_stream(ChatTurnRequest(
+        tenant_id="tenant_demo", agent_id=agent.id, user_id=user.id,
+        message="退货期限是几天？", channel="web", client_turn_id="web-stream-regression",
+    ), current_user=user, db=db)
+
+    async def consume():
+        return [part async for part in response.body_iterator]
+
+    chunks = asyncio.run(consume())
+    frames = []
+    for chunk in chunks:
+        block = chunk.decode() if isinstance(chunk, bytes) else chunk
+        lines = block.splitlines()
+        event = next((line[7:] for line in lines if line.startswith("event: ")), "")
+        data = next((line[6:] for line in lines if line.startswith("data: ")), "{}")
+        frames.append((event, json.loads(data)))
+    final = next(data for event, data in frames if event == "complete")
+    public = ""
+    for event, data in frames:
+        if event == "stream_delta":
+            public += data["content"]
+        elif event == "stream_replace":
+            public = data["content"]
+        assert '"decision"' not in public and '"action"' not in public
+    assert public == final["reply"]
+    assert "model_text_delta" not in [event for event, _ in frames]
+    rows = db.exec(select(AgentEvent).where(AgentEvent.session_id == final["session_id"])).all()
+    deltas = [r for r in rows if r.event_type == "stream_delta"]
+    finished = next(r for r in rows if r.event_type == "task_frame_finished")
+    assert deltas
+    if native:
+        assert public == "请补充订单日期。"
+        assert len(deltas) == 1
+    else:
+        assert min(r.created_at for r in deltas) < finished.created_at
+        assert "7" in public
+
+
 class ContinuityModel:
     """The nonce exists only in a prior assistant response, never in later user input."""
     def __init__(self):

@@ -1,7 +1,7 @@
 """Narrow model-phase transport interface, free of ORM and AgentLoop internals."""
 
 from __future__ import annotations
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 class PhaseRunner(Protocol):
@@ -13,6 +13,7 @@ class PhaseRunner(Protocol):
         system_text: str,
         user_text: str,
         engine_session: str,
+        on_text: Callable[[str], None] | None = None,
     ) -> str: ...
 
 

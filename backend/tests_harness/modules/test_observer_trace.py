@@ -134,10 +134,10 @@ def test_provider_observer_trace_receives_relayed_events(registry, monkeypatch) 
     relay({"type": "tool/call", "data": {"name": "search", "arguments": '{"q": 1}', "callId": "c1"}})
     relay({"type": "unknown/kind", "data": {}})
     assert relay.count == 3
-    assert [et for et, _ in sink] == ["harness_v3_turn_started", "stream_delta", "harness_action_created"]
-    assert [ev[2] for ev in seen] == ["harness_v3_turn_started", "stream_delta", "harness_action_created"]
+    assert [et for et, _ in sink] == ["harness_v3_turn_started", "model_text_delta", "harness_action_created"]
+    assert [ev[2] for ev in seen] == ["harness_v3_turn_started", "harness_action_created"]
     assert seen[0][:2] == ("t1", "s1")
-    assert seen[2][3]["arguments"] == {"q": 1}
+    assert seen[1][3]["arguments"] == {"q": 1}
 
 
 # --------------------------------------------------------------------------- 5. events / pep

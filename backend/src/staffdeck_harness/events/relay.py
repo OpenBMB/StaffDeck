@@ -100,7 +100,7 @@ def relay_event(ev: Mapping[str, Any]) -> list[RuntimeEvent]:
         elif isinstance(data.get("text"), str):
             text = data["text"]
         if text:
-            out.append(("stream_delta", {"content": text, "execution_engine": "harness_v3"}))
+            out.append(("model_text_delta", {"content": text, "execution_engine": "harness_v3"}))
     elif kind == "tool/call":
         from staffdeck_harness.bridge.control import is_control_tool
 
@@ -153,4 +153,7 @@ class SessionEventRelay:
                     self.trace(event_type, payload)
                 except Exception:
                     logger.exception("trace sink failed for %s", event_type)
-            _fanout(self.tenant_id, self.session_id, event_type, payload)
+            # Raw model text is phase-local. Only the reply projector may publish it as
+            # stream_delta; observers must never mistake a planner/control payload for a reply.
+            if event_type != "model_text_delta":
+                _fanout(self.tenant_id, self.session_id, event_type, payload)

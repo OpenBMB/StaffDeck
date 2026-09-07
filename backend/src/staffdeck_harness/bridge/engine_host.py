@@ -292,7 +292,7 @@ class HarnessV3Engine(TurnCoordinator):
             attachments_text="",
             client_turn_id=request.client_turn_id,
             run_id_provider=lambda: self.active_run_id or "",
-            live_stream=not self.supervision_required(active_skill),
+            live_stream=getattr(self, "_allow_frame_stream", True) and not self.supervision_required(active_skill),
             stream_sink=getattr(self.services, "stream_sink", None),
         )
         pooled = self._turn_process(request, session, model_config)

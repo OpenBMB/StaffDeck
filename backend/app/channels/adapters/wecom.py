@@ -374,6 +374,16 @@ class WeComStreamReply:
             self._dirty = True
             self._condition.notify_all()
 
+    def on_replace(self, text: str) -> None:
+        with self._condition:
+            if self._finished or self._failed or text == self._answer:
+                return
+            self._answer = text
+            self._answer_started = True
+            self._animation_enabled = False
+            self._dirty = True
+            self._condition.notify_all()
+
     def on_event(self, event_type: str, payload: dict[str, Any]) -> None:
         """Convert internal execution events to user-safe progress text."""
         progress = self._event_progress(event_type, payload)

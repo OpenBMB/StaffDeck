@@ -399,7 +399,32 @@ class AgentLoop:
             {"execution_engine": "harness_v2"},
             user_message_id=initial_turn_id,
         )
-        response = self.handle_turn(scoped_request)
+        from app.core.reply_stream import ReplyStream
+
+        public_events: list[dict[str, object]] = []
+
+        def publish_reply(event_type: str, payload: dict[str, Any]) -> None:
+            # This callback runs on the same worker as handle_turn. The HTTP relay reads these
+            # committed rows concurrently, before the model finishes, using the bound turn IDs.
+            row = self.events.record(request.tenant_id, chat_session.id, event_type, payload)
+            self.db.commit()
+            public_events.append({
+                "event": event_type,
+                "data": {
+                    "kind": event_type,
+                    "sessionId": chat_session.id,
+                    "timestamp": row.created_at.isoformat(),
+                    **row.payload_json,
+                },
+            })
+
+        previous_sink = self.stream_sink
+        reply_stream = ReplyStream(publish_reply)
+        self.stream_sink = reply_stream
+        try:
+            response = self.handle_turn(scoped_request)
+        finally:
+            self.stream_sink = previous_sink
         chat_session = self.db.get(ChatSession, response.session_id)
         if chat_session is None:
             return
@@ -464,20 +489,10 @@ class AgentLoop:
                 ),
             )
             return
-        for chunk in self.response_generator.chunk_text(response.reply):
-            event = self._stream_event(
-                "stream_delta",
-                chat_session,
-                self._turn_payload(
-                    {
-                        "content": chunk,
-                        "execution_engine": "harness_v2",
-                    },
-                    resolved_turn_id,
-                ),
-            )
-            self.db.commit()
-            yield event
+        # Finalization may normalize citations or supply a direct/fallback answer. Reconcile
+        # once; never append the complete answer again after live deltas.
+        reply_stream.on_replace(response.reply)
+        yield from public_events
         end_event = self._stream_event(
             "stream_end",
             chat_session,

@@ -125,6 +125,12 @@ export function normalizeMessageText(value?: string): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
+export function reduceReplyText(previous: string, event: string, text: string): string {
+  if (event === 'stream_replace' || event === 'assistant_message_created') return text;
+  if (event === 'stream_delta' || event === 'token') return previous + text;
+  return previous;
+}
+
 export function hasRenderableStreamingText(value?: string): boolean {
   return Array.from(normalizeMessageText(value)).length >= 2;
 }
