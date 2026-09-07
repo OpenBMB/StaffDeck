@@ -113,6 +113,22 @@ def _text(payload: Any) -> list[mt.TextContent]:
     return [mt.TextContent(type="text", text=text)]
 
 
+
+class _DropAccessRecordsFromThread(logging.Filter):
+    """Keep the capability server's own request lines out of the main server's access log.
+
+    uvicorn always logs to the shared ``uvicorn.access`` logger; the only thing that tells the
+    two servers apart is the thread the record was created on.
+    """
+
+    def __init__(self, thread_ident: int | None) -> None:
+        super().__init__()
+        self.thread_ident = thread_ident
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.thread != self.thread_ident
+
+
 class CapabilityMcpServer:
     def __init__(self, registry: ActivationRegistry, *, host: str = "127.0.0.1", port: int = 0):
         self.registry = registry
@@ -187,7 +203,12 @@ class CapabilityMcpServer:
         from staffdeck_harness.bridge.model_gateway import ModelGateway
 
         ModelGateway(self.registry).mount(app)
-        config = uvicorn.Config(app, host=self.host, port=self.port, log_level="warning", access_log=False)
+        # ``uvicorn.Config`` applies ``log_config``/``log_level``/``access_log`` to the *process-global*
+        # ``uvicorn.*`` loggers. This server shares a process with the main API server, so any of
+        # those would silence the main server's access log and startup lines. Build the config
+        # without touching logging, and keep this server's own access records out of the shared
+        # access log with a thread-scoped filter instead.
+        config = uvicorn.Config(app, host=self.host, port=self.port, log_config=None, log_level=None, access_log=True)
         self._server = uvicorn.Server(config)
 
         def run() -> None:
@@ -195,8 +216,17 @@ class CapabilityMcpServer:
 
         self._thread = threading.Thread(target=run, name="staffdeck-harness-capability-mcp", daemon=True)
         self._thread.start()
+        self._access_filter = _DropAccessRecordsFromThread(self._thread.ident)
+        logging.getLogger("uvicorn.access").addFilter(self._access_filter)
         if not self._ready.wait(timeout=15):
+            self._remove_access_filter()
             raise RuntimeError("capability MCP server did not start")
+
+    def _remove_access_filter(self) -> None:
+        flt = getattr(self, "_access_filter", None)
+        if flt is not None:
+            logging.getLogger("uvicorn.access").removeFilter(flt)
+            self._access_filter = None
 
     async def _serve(self) -> None:
         assert self._server is not None
@@ -218,3 +248,4 @@ class CapabilityMcpServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
         self._thread = None
+        self._remove_access_filter()
