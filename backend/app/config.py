@@ -70,6 +70,34 @@ class Settings(BaseSettings):
     # 回滚为逐行展示的旧样式；binding 的 config_json.compact_trace=false 可对单个
     # 绑定回滚。
     channel_feishu_trace_compact_sop: bool = True
+    # ---- LDAP / AD 域登录 ----
+    # 开启后登录优先走域认证：先用服务账号检索用户 DN，再用该 DN + 用户口令 bind 校验，
+    # 成功后把域账号信息（显示名/邮箱/部门）同步到本地 users 表（无则新建、有则更新）。
+    ldap_enabled: bool = False
+    # 域控地址，形如 ldap://10.58.140.10:389 或 ldaps://10.58.140.10:636
+    ldap_server_url: str = ""
+    # 检索根：多个 OU 用 "|" 分隔，如 "OU=A,DC=fosun,DC=com|OU=B,DC=fosun,DC=com"
+    ldap_base_dns: str = ""
+    # 域名（fosun.com）：无服务账号时用 userPrincipalName（user@domain）直连 bind
+    ldap_domain: str = ""
+    # 服务账号（建议配置，用于检索用户 DN）；留空时回退为 UPN 直连 bind
+    ldap_bind_dn: str = ""
+    ldap_bind_password: str = ""
+    # 用户检索过滤模板，{username} 占位（默认支持 sAMAccountName / userPrincipalName / mail 三种登录名）
+    ldap_user_filter: str = "(|(sAMAccountName={username})(userPrincipalName={username})(mail={username}))"
+    ldap_attr_username: str = "sAMAccountName"
+    ldap_attr_display_name: str = "displayName"
+    # 部门字段：可填多个，逗号分隔，按顺序取第一个非空值（如 "department,company,division"）
+    ldap_attr_department: str = "department"
+    # 上述属性都为空时，是否从 DN 的 OU 段解析部门（取最靠近 CN 的那个 OU）
+    ldap_department_from_dn: bool = True
+    # DN 回退时跳过的 OU（逗号分隔）：如解析到的是集团名这类粗粒度组织，可填在此处
+    ldap_department_dn_exclude: str = ""
+    ldap_timeout_seconds: int = 8
+    # 域账号首次落库时的默认角色
+    ldap_default_role: str = "member"
+    # LDAP 未命中或不可用时是否回退本地口令（关=强制只走域认证）
+    ldap_local_fallback: bool = True
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),
@@ -96,6 +124,21 @@ class Settings(BaseSettings):
         except (ValueError, TypeError):
             return []
         return [str(item).strip() for item in items if str(item).strip()]
+
+    @property
+    def ldap_base_dn_list(self) -> list[str]:
+        """LDAP_BASE_DNS 按 "|" 切分为检索根列表，忽略空项。"""
+        return [item.strip() for item in (self.ldap_base_dns or "").split("|") if item.strip()]
+
+    @property
+    def ldap_department_attr_list(self) -> list[str]:
+        """LDAP_ATTR_DEPARTMENT 按 "," 切分为部门候选属性（按顺序取第一个非空值）。"""
+        return [item.strip() for item in (self.ldap_attr_department or "").split(",") if item.strip()]
+
+    @property
+    def ldap_department_exclude_list(self) -> list[str]:
+        """DN 回退解析部门时要跳过的 OU（忽略大小写比较）。"""
+        return [item.strip().lower() for item in (self.ldap_department_dn_exclude or "").split(",") if item.strip()]
 
     @property
     def consumer_group_owner_list(self) -> list[str]:

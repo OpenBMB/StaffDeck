@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import secrets
 from datetime import datetime
 from typing import Literal, Optional
 
@@ -9,10 +10,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Res
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
+from app.config import get_settings
 from app.db import get_session
 from app.db.models import APIClient, APICredential, User, UserAvatar, utc_now
 from app.public_api.auth import generate_api_key
 from app.public_api.credential_profiles import USER_FULL_ACCESS_SCOPES
+from app.security import ldap_client
 from app.security.auth import (
     create_access_token,
     ensure_current_user_tenant,
@@ -51,16 +54,6 @@ class UserUpdateRequest(BaseModel):
     role: Optional[Literal["admin", "member"]] = None
 
 
-class RegisterRequest(BaseModel):
-    """开放注册:账号用于登录,名字用于显示,默认普通成员。"""
-
-    tenant_id: str
-    username: str = Field(..., min_length=1, max_length=64)
-    display_name: str = Field(..., min_length=1, max_length=80)
-    department: Optional[str] = None
-    password: str = Field(..., min_length=6, max_length=128)
-
-
 class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str = Field(..., min_length=6)
@@ -87,6 +80,8 @@ class UserRead(BaseModel):
     department: Optional[str] = None
     role: Literal["admin", "member"]
     source: str = "web"
+    email: Optional[str] = None
+    auth_source: Optional[str] = None
     # 仅 /me 与 /login 带出:头像资源指针(存在性标识),不内联二进制——
     # 完整 data_url 可达 2.67MB,内联会把登录/会话刷新响应与前端 localStorage 撑爆
     avatar_url: Optional[str] = None
@@ -138,6 +133,24 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
     if not username or not request.password:
         raise HTTPException(status_code=400, detail="Username and password are required")
 
+    # 域认证优先：校验通过后把域账号信息同步落库（无则新建、有则更新）
+    if ldap_client.is_enabled():
+        try:
+            profile = ldap_client.authenticate(username, request.password)
+        except ldap_client.LdapUnavailable as exc:
+            logger.warning("域认证不可用，回退本地口令：%s", exc)
+            if not get_settings().ldap_local_fallback:
+                raise HTTPException(status_code=503, detail=f"域认证服务不可用：{exc}") from exc
+        else:
+            if profile is not None:
+                user = _upsert_ldap_user(db, request.tenant_id, profile)
+                return LoginResponse(
+                    token=create_access_token(user),
+                    user=_user_read(user, _avatar_pointer_for(db, user.id)),
+                )
+            if not get_settings().ldap_local_fallback:
+                raise HTTPException(status_code=401, detail="域账号或密码不正确")
+
     user = db.exec(
         select(User).where(User.tenant_id == request.tenant_id, User.username == username)
     ).first()
@@ -150,34 +163,53 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
     )
 
 
-@router.post("/register", response_model=UserRead, status_code=201)
-def register(request: RegisterRequest, db: Session = Depends(get_session)) -> UserRead:
-    """开放注册:账号用于登录,名字用于显示,默认普通成员,无需管理员审批。"""
-    ensure_tenant(db, request.tenant_id)
-    username = request.username.strip()
-    if not username:
-        raise HTTPException(status_code=400, detail="账号不能为空")
-    display_name = request.display_name.strip()
-    if not display_name:
-        display_name = username
-    existing = db.exec(
-        select(User).where(User.tenant_id == request.tenant_id, User.username == username)
+def _upsert_ldap_user(db: Session, tenant_id: str, profile: ldap_client.LdapUser) -> User:
+    """域账号落库：用户不存在则新建，已存在则同步显示名/部门。
+
+    password_hash 非空约束：域账号不保存域口令，写入随机不可用哈希，
+    使其既不能用于本地登录，也不会破坏既有校验逻辑。
+    """
+    username = profile.username.strip()[:64] or profile.username
+    user = db.exec(
+        select(User).where(User.tenant_id == tenant_id, User.username == username)
     ).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="该账号已被注册，请更换")
-    department = (request.department or "").strip()[:80] or None
-    user = User(
-        tenant_id=request.tenant_id,
-        username=username[:64],
-        display_name=display_name[:80],
-        department=department,
-        role=MEMBER_ROLE,
-        password_hash=hash_password(request.password),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return _user_read(user)
+    if user is None:
+        display_name = (profile.display_name or "").strip()[:80] or username
+        user = User(
+            tenant_id=tenant_id,
+            username=username,
+            display_name=display_name,
+            department=(profile.department or "").strip()[:80] or None,
+            role=get_settings().ldap_default_role or MEMBER_ROLE,
+            # source 保持 web：成员选择器等处按 source=web 过滤内部成员
+            source="web",
+            auth_source="ldap",
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        logger.info("域账号首次登录，已创建本地账号 %s（%s）", username, profile.dn)
+        return user
+
+    changed = False
+    if profile.display_name and profile.display_name.strip()[:80] != user.display_name:
+        user.display_name = profile.display_name.strip()[:80]
+        changed = True
+    if profile.department is not None:
+        department = profile.department.strip()[:80] or None
+        if department != user.department:
+            user.department = department
+            changed = True
+    if user.auth_source != "ldap":
+        user.auth_source = "ldap"
+        changed = True
+    if changed:
+        user.updated_at = utc_now()
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    return user
 
 
 @router.get("/me", response_model=UserRead)
@@ -561,6 +593,8 @@ def _user_read(
         department=user.department,
         role=user.role,
         source=user.source,
+        email=user.email,
+        auth_source=user.auth_source,
         avatar_url=avatar_url,
         created_at=user.created_at.isoformat() if user.created_at else None,
         updated_at=user.updated_at.isoformat() if user.updated_at else None,

@@ -4,13 +4,11 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.auth import (
     LoginRequest,
-    RegisterRequest,
     UpdateProfileRequest,
     UserCreateRequest,
     UserUpdateRequest,
     create_user,
     login,
-    register,
     update_my_profile,
     update_user,
 )
@@ -169,76 +167,6 @@ def test_display_name_cannot_be_used_to_login() -> None:
             assert error.detail == "Invalid username or password"
         else:
             raise AssertionError("an ambiguous display name must not authenticate any account")
-
-
-def test_register_creates_member_with_account_name_and_department() -> None:
-    with _test_session() as db:
-        db.add(Tenant(id="tenant_demo", name="Demo"))
-        db.commit()
-
-        created = register(
-            RegisterRequest(
-                tenant_id="tenant_demo",
-                username="zhangsan",
-                display_name="张三",
-                department="研发一部",
-                password="123456",
-            ),
-            db,
-        )
-        assert created.username == "zhangsan"
-        assert created.display_name == "张三"
-        assert created.department == "研发一部"
-        assert created.role == "member"
-
-        # 注册成功后可用「账号」登录
-        session = login(
-            LoginRequest(tenant_id="tenant_demo", username="zhangsan", password="123456"),
-            db,
-        )
-        assert session.user.id == created.id
-        assert session.user.department == "研发一部"
-
-        # 名字用于显示,不参与登录匹配
-        try:
-            login(
-                LoginRequest(tenant_id="tenant_demo", username="张三", password="123456"),
-                db,
-            )
-        except HTTPException as error:
-            assert error.status_code == 401
-        else:
-            raise AssertionError("display name must not be used for login")
-
-
-def test_register_rejects_duplicate_account() -> None:
-    with _test_session() as db:
-        db.add(Tenant(id="tenant_demo", name="Demo"))
-        db.commit()
-        register(
-            RegisterRequest(
-                tenant_id="tenant_demo",
-                username="zhangsan",
-                display_name="张三",
-                password="123456",
-            ),
-            db,
-        )
-        try:
-            register(
-                RegisterRequest(
-                    tenant_id="tenant_demo",
-                    username="zhangsan",
-                    display_name="张三二号",
-                    password="654321",
-                ),
-                db,
-            )
-        except HTTPException as error:
-            assert error.status_code == 409
-            assert "已被注册" in error.detail
-        else:
-            raise AssertionError("duplicate username must be rejected")
 
 
 def test_create_user_persists_department() -> None:

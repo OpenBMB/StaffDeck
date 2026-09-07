@@ -41,6 +41,10 @@ class User(SQLModel, table=True):
     role: str = Field(default="member", index=True)
     # 账号来源:web=网页端创建;wechat 等=渠道懒建(用户管理列表默认隐藏)
     source: str = Field(default="web", index=True)
+    # 邮箱:本地注册可为空;域账号登录时由 AD 的 mail 属性同步
+    email: Optional[str] = Field(default=None, index=True)
+    # 认证方式:local=本地口令;ldap=域账号(由 AD 同步落库)
+    auth_source: Optional[str] = None
     password_hash: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

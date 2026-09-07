@@ -65,6 +65,7 @@ def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     _migrate_sqlite_skill_schema()
     _migrate_pg_api_key_schema()
+    _migrate_user_ldap_schema()
     _purge_orphaned_chat_sessions()
 
 
@@ -3105,6 +3106,20 @@ def _migrate_api_key_consumer(conn, tables: set[str]) -> None:
     ]:
         if col_name not in columns:
             conn.execute(text(f"ALTER TABLE api_key_consumers ADD COLUMN {col_name} {col_type}"))
+
+
+def _migrate_user_ldap_schema() -> None:
+    """users 表补齐域账号字段(email / auth_source)，SQLite 与 PostgreSQL 通用。"""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "users" not in tables:
+        return
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    additions = (("email", "VARCHAR"), ("auth_source", "VARCHAR"))
+    with engine.begin() as conn:
+        for col_name, col_type in additions:
+            if col_name not in columns:
+                conn.execute(text(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"))
 
 
 def _migrate_pg_api_key_schema() -> None:
