@@ -133,7 +133,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     <div className="relative flex min-h-screen flex-col bg-white">
       <AppHeader
         className="h-[60px] shrink-0 px-[32px]"
-        left={<BrandLogo markSize={28} />}
+        left={<BrandLogo markSize={44} />}
         right={null}
       />
 

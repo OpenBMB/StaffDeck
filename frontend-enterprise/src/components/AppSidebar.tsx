@@ -676,7 +676,7 @@ function ManagementSidebar({
       <div className="flex h-full w-(--sidebar-width) shrink-0 flex-col">
       <SidebarHeader className="gap-[16px] px-[20px] pt-[32px] group-data-[collapsible=icon]:px-[20px]">
         <div className="flex items-center justify-between">
-          <button type="button" title="开放广场">
+          <button type="button" title="开放广场" className="flex flex-1 justify-center">
             <BrandLogo wordmarkClassName="group-data-[collapsible=icon]:hidden" />
           </button>
           {!brandCollapsed && (
@@ -1342,7 +1342,7 @@ function ChatSidebarVariant({
       <div className="flex h-full w-(--sidebar-width) shrink-0 flex-col">
         <SidebarHeader className="gap-[16px] px-[20px] pt-[32px]">
           <div className="flex items-center justify-between">
-            <button type="button" title="数字员工广场" onClick={onOpenGallery}>
+            <button type="button" title="数字员工广场" onClick={onOpenGallery} className="flex flex-1 justify-center">
               <BrandLogo />
             </button>
             <button

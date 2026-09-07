@@ -378,7 +378,7 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
                 rows={3}
                 value={purpose}
                 disabled={submitting}
-                placeholder="请说明 API Key 的用途，例如：对接自有业务系统调用模型网关"
+                placeholder="申请前请先确认部门内的相关预算，或先与平台管理员(黄松)沟通。\n请说明 API Key 的用途，例如：对接自有业务系统调用模型网关"
                 onChange={(event) => setPurpose(event.target.value)}
                 className="min-h-[72px] resize-y text-[12px]"
               />

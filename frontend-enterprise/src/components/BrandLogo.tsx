@@ -1,44 +1,35 @@
 import { cn } from '@/lib/utils';
-import logoMark from '../assets/LOGO.svg';
+import logoFull from '../assets/fosun-holiday-logo.png';
 
 export type BrandLogoProps = {
-  /** Hide the "OpenBMB / StaffDeck" wordmark and only render the logo mark. */
-
+  /** Collapsed sidebar mode: render a smaller version of the brand image. */
   markOnly?: boolean;
-  /** Size of the square logo mark in pixels. */
+  /** Height of the brand image in pixels (expanded mode default 30px). */
   markSize?: number;
   className?: string;
-  /** Extra classes applied to the wordmark wrapper (e.g. to hide it responsively). */
+  /** Kept for backward compatibility; no longer used (the brand image already contains the wordmark). */
   wordmarkClassName?: string;
 };
 
-/** Brand logo lockup (logo mark + "OpenBMB" / "StaffDeck" wordmark). Figma node 504:7137. */
+/** Fosun Holiday (复星旅文) brand lockup — single horizontal image, transparent background. */
 export default function BrandLogo({
   markOnly = false,
-  markSize = 28,
+  markSize,
   className,
-  wordmarkClassName,
 }: BrandLogoProps) {
+  // 原图 186x60 (3.1:1)，按高度驱动宽度自适应；折叠栏内宽约 40px，缩到 14px 高防溢出
+  const height = markSize ?? (markOnly ? 14 : 30);
   return (
-    <span className={cn('flex items-center gap-[8px] overflow-hidden p-[4px]', className)}>
+    <span
+      className={cn('flex items-center overflow-hidden p-[2px]', className)}
+      style={{ height: height + 4 }}
+    >
       <img
-        src={logoMark}
-        alt="Fosun"
+        src={logoFull}
+        alt="Fosun Holiday 复星旅文"
         className="shrink-0"
-        style={{ width: markSize, height: markSize }}
+        style={{ height, width: Math.round(height * 3.1) }}
       />
-      {!markOnly && (
-        <span
-          className={cn('flex flex-col items-center gap-[2px] leading-none', wordmarkClassName)}
-        >
-          {/* <span className="text-[12px] font-semibold leading-none text-[#0f136c]">
-            OpenBMB
-          </span> */}
-          <strong className="text-[17px] font-semibold leading-none text-[#18181a]">
-            Fosun
-          </strong>
-        </span>
-      )}
     </span>
   );
 }
