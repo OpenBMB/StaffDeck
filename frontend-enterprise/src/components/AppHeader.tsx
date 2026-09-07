@@ -23,7 +23,7 @@ import {
 import LanguageSwitcher from './LanguageSwitcher';
 import AccountApiKeyDialog from './AccountApiKeyDialog';
 import ChangePasswordDialog from './ChangePasswordDialog';
-import EditDisplayNameDialog from './EditDisplayNameDialog';
+import EditDepartmentDialog from './EditDepartmentDialog';
 
 /** 只允许 http/https/data:image/blob 协议的图片地址,其余一律视为无效。 */
 function safeImageUrl(value: string): string {
@@ -87,7 +87,7 @@ export default function AppHeader({
   const [avatarSaving, setAvatarSaving] = useState(false);
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
-  const [editDisplayNameOpen, setEditDisplayNameOpen] = useState(false);
+  const [editDepartmentOpen, setEditDepartmentOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const displayName = user?.display_name || user?.username || '';
@@ -294,25 +294,29 @@ export default function AppHeader({
                         )}
                       </div>
                       <div className="flex min-w-0 flex-col gap-[2px]">
-                        <span className="flex min-w-0 items-center gap-[4px]">
-                          <span className="truncate text-[14px] font-medium text-[#18181a]">
-                            {displayName}
-                          </span>
-                          <button
-                            type="button"
-                            title="修改显示名"
-                            aria-label="修改显示名"
-                            onClick={() => setEditDisplayNameOpen(true)}
-                            className="inline-grid size-[16px] shrink-0 place-items-center text-[#a0a8bd] transition-colors hover:text-[#18181a]"
-                          >
-                            <IconEdit className="size-[11px]" />
-                          </button>
+                        <span className="truncate text-[14px] font-medium text-[#18181a]">
+                          {displayName}
                         </span>
                         {user.username && user.username !== displayName && (
                           <span className="truncate text-[12px] text-[#858b9c]">
                             @{user.username}
                           </span>
                         )}
+                        <span className="mt-[2px] flex min-w-0 items-center gap-[4px]">
+                          <span className="shrink-0 text-[12px] text-[#858b9c]">部门</span>
+                          <span className="truncate text-[12px] text-[#464c5e]">
+                            {user?.department || '未设置'}
+                          </span>
+                          <button
+                            type="button"
+                            title="修改部门名"
+                            aria-label="修改部门名"
+                            onClick={() => setEditDepartmentOpen(true)}
+                            className="inline-grid size-[16px] shrink-0 place-items-center text-[#a0a8bd] transition-colors hover:text-[#18181a]"
+                          >
+                            <IconEdit className="size-[11px]" />
+                          </button>
+                        </span>
                       </div>
                     </div>
                     <div className="flex items-center justify-between gap-[12px]">
@@ -395,10 +399,10 @@ export default function AppHeader({
         open={changePasswordOpen}
         onClose={() => setChangePasswordOpen(false)}
       />
-      <EditDisplayNameDialog
-        open={editDisplayNameOpen}
-        currentDisplayName={displayName}
-        onClose={() => setEditDisplayNameOpen(false)}
+      <EditDepartmentDialog
+        open={editDepartmentOpen}
+        currentDepartment={user?.department || ''}
+        onClose={() => setEditDepartmentOpen(false)}
         onSaved={() => void refreshSessionUser()}
       />
     </header>

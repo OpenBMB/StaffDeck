@@ -60,9 +60,10 @@ class ChangePasswordRequest(BaseModel):
 
 
 class UpdateProfileRequest(BaseModel):
-    """个人资料自改:当前仅允许修改自己的显示名(管理员改他人走 /users/{id})。"""
+    """个人资料自改:允许修改自己的显示名和部门(管理员改他人走 /users/{id})。"""
 
-    display_name: str = Field(..., min_length=1, max_length=80)
+    display_name: Optional[str] = Field(None, min_length=1, max_length=80)
+    department: Optional[str] = Field(None, max_length=80)
 
 
 class UserChannelIdentity(BaseModel):
@@ -517,13 +518,22 @@ def update_my_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> UserRead:
-    """个人修改自己的显示名:置空时回退为用户名(与管理员编辑同规则)。"""
-    display_name = request.display_name.strip()[:80]
-    current_user.display_name = display_name or current_user.username
-    current_user.updated_at = utc_now()
-    db.add(current_user)
-    db.commit()
-    db.refresh(current_user)
+    """个人修改自己的显示名/部门:显示名置空回退为用户名(与管理员编辑同规则),部门置空则清空。"""
+    changed = False
+    if request.display_name is not None:
+        display_name = request.display_name.strip()[:80]
+        current_user.display_name = display_name or current_user.username
+        changed = True
+    if request.department is not None:
+        department = request.department.strip()[:80] or None
+        if department != current_user.department:
+            current_user.department = department
+            changed = True
+    if changed:
+        current_user.updated_at = utc_now()
+        db.add(current_user)
+        db.commit()
+        db.refresh(current_user)
     return _user_read(current_user, _avatar_pointer_for(db, current_user.id))
 
 

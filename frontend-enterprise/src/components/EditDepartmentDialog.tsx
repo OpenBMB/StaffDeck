@@ -11,36 +11,36 @@ import {
   Label,
   notify,
 } from '@/components/ui';
-import { UserRoundPen } from 'lucide-react';
+import { Building2 } from 'lucide-react';
 
 import { api } from '../api/client';
 
-export type EditDisplayNameDialogProps = {
+export type EditDepartmentDialogProps = {
   open: boolean;
-  /** 当前显示名,用于打开时回填输入框。 */
-  currentDisplayName: string;
+  /** 当前部门名,用于打开时回填输入框(可能为空)。 */
+  currentDepartment: string;
   onClose: () => void;
-  /** 保存成功后回调,参数为服务端落库后的显示名。 */
-  onSaved: (displayName: string) => void;
+  /** 保存成功后回调,参数为服务端落库后的部门名(可能为空)。 */
+  onSaved: (department: string) => void;
 };
 
-export default function EditDisplayNameDialog({
+export default function EditDepartmentDialog({
   open,
-  currentDisplayName,
+  currentDepartment,
   onClose,
   onSaved,
-}: EditDisplayNameDialogProps) {
+}: EditDepartmentDialogProps) {
   const [value, setValue] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // 每次打开时回填当前显示名并清空校验状态
+  // 每次打开时回填当前部门名并清空校验状态
   useEffect(() => {
     if (open) {
-      setValue(currentDisplayName);
+      setValue(currentDepartment);
       setError('');
     }
-  }, [open, currentDisplayName]);
+  }, [open, currentDepartment]);
 
   function handleOpenChange(next: boolean) {
     if (!next && !loading) {
@@ -49,12 +49,8 @@ export default function EditDisplayNameDialog({
   }
 
   function validate(): boolean {
-    if (!value.trim()) {
-      setError('请输入显示名');
-      return false;
-    }
     if (value.trim().length > 80) {
-      setError('显示名不能超过 80 个字符');
+      setError('部门名不能超过 80 个字符');
       return false;
     }
     setError('');
@@ -66,15 +62,15 @@ export default function EditDisplayNameDialog({
     if (loading || !validate()) return;
     setLoading(true);
     try {
-      const fresh = await api.put<{ display_name?: string | null }>(
+      const fresh = await api.put<{ department?: string | null }>(
         '/api/auth/me/profile',
-        { display_name: value.trim() },
+        { department: value.trim() },
       );
-      notify.success('显示名已更新');
-      onSaved(fresh.display_name || value.trim());
+      notify.success('部门名已更新');
+      onSaved(fresh.department || '');
       onClose();
     } catch (err) {
-      notify.error(err instanceof Error ? err.message : '修改显示名失败');
+      notify.error(err instanceof Error ? err.message : '修改部门名失败');
     } finally {
       setLoading(false);
     }
@@ -83,18 +79,18 @@ export default function EditDisplayNameDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        aria-describedby="edit-display-name-description"
+        aria-describedby="edit-department-description"
         className="w-[calc(100%-2rem)] max-w-[420px] rounded-[18px] border-0 bg-white p-0 shadow-[0_28px_80px_rgba(24,31,46,0.20)]"
       >
         <DialogHeader className="border-b border-[#e9ecf2] bg-white px-[24px] py-[20px]">
           <div className="flex items-center gap-[12px]">
             <span className="grid size-[36px] place-items-center rounded-[12px] bg-[#18181a] text-white">
-              <UserRoundPen className="size-[16px]" />
+              <Building2 className="size-[16px]" />
             </span>
             <div>
-              <DialogTitle className="text-[16px] font-semibold text-[#18181a]">修改显示名</DialogTitle>
-              <DialogDescription id="edit-display-name-description" className="mt-[4px] text-[12px] text-[#757f9c]">
-                显示名会展示给同租户的其他成员，修改后立即生效。
+              <DialogTitle className="text-[16px] font-semibold text-[#18181a]">修改部门名</DialogTitle>
+              <DialogDescription id="edit-department-description" className="mt-[4px] text-[12px] text-[#757f9c]">
+                部门会展示给同租户的其他成员，修改后立即生效。
               </DialogDescription>
             </div>
           </div>
@@ -102,14 +98,14 @@ export default function EditDisplayNameDialog({
 
         <form onSubmit={submit} className="space-y-[18px] px-[24px] py-[22px]">
           <div className="space-y-2">
-            <Label htmlFor="display_name" className="text-[13px] text-[#18181a]">
-              显示名
+            <Label htmlFor="department" className="text-[13px] text-[#18181a]">
+              部门名
             </Label>
             <Input
-              id="display_name"
-              name="display_name"
+              id="department"
+              name="department"
               value={value}
-              placeholder="请输入显示名"
+              placeholder="请输入部门名"
               maxLength={80}
               autoFocus
               aria-invalid={error ? 'true' : 'false'}

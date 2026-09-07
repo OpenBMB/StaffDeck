@@ -256,6 +256,31 @@ def test_update_my_profile_changes_own_display_name() -> None:
         assert fallback.display_name == "member"
 
 
+def test_update_my_profile_changes_own_department() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        member = User(
+            id="member",
+            tenant_id="tenant_demo",
+            username="member",
+            display_name="成员",
+            department="原部门",
+            role="member",
+            password_hash=hash_password("secret"),
+        )
+        db.add(member)
+        db.commit()
+
+        # 仅传 department:显示名保持不变,部门被更新并裁剪首尾空格
+        updated = update_my_profile(UpdateProfileRequest(department="  新部门  "), member, db)
+        assert updated.display_name == "成员"
+        assert updated.department == "新部门"
+
+        # 传空串:部门被清空
+        cleared = update_my_profile(UpdateProfileRequest(department="  "), member, db)
+        assert cleared.department is None
+
+
 def _test_session() -> Session:
     engine = create_engine(
         "sqlite://",
