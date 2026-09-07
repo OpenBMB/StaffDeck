@@ -1,9 +1,9 @@
-"""DSH engine adapter and deployment/Staff engine selection.
+"""Harness v3 engine adapter and deployment/Staff engine selection.
 
 HarnessV3Engine and the v2 compatibility engine share TurnCoordinator. Business
-planning/reply contracts live in runtime.model_phases; the Bridge supplies DSH
+planning/reply contracts live in runtime.model_phases; the Bridge supplies the Harness v3 engine
 phase transport, activation tokens and worker leasing. Capabilities, memory,
-SOP supervision and handoff are host-side modules outside the DSH core loop.
+SOP supervision and handoff are host-side modules outside the Harness v3 core loop.
 Images retain the explicitly reported v2 fallback until the upstream path supports them.
 """
 
@@ -91,7 +91,7 @@ def _has_image_attachments(request: Any) -> bool:
 
 
 class HarnessV3Engine(TurnCoordinator):
-    """Shared turn scheduling with every model stage on DSH and SOP control in its module.
+    """Shared turn scheduling with every model stage on Harness v3 and SOP control in its module.
 
     ``TurnCoordinator`` owns claims, leases and TaskFrame scheduling. ``SopHost`` resolves
     the registered SOP runtime for lifecycle decisions; neither the Bridge nor the old
@@ -292,6 +292,8 @@ class HarnessV3Engine(TurnCoordinator):
             attachments_text="",
             client_turn_id=request.client_turn_id,
             run_id_provider=lambda: self.active_run_id or "",
+            live_stream=not self.supervision_required(active_skill),
+            stream_sink=getattr(self.services, "stream_sink", None),
         )
         pooled = self._turn_process(request, session, model_config)
         self.task_agent = HarnessV3TaskAgent(self.runtime, turn, pooled=pooled)  # type: ignore[assignment]

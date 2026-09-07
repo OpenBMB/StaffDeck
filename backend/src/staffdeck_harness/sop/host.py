@@ -14,7 +14,7 @@ class SopHost:
         self.guard = None
         self.context = None
         if registry is None:
-            # v2 compatibility uses the same implementation without loading DSH/Node.
+            # v2 compatibility uses the same implementation without loading the Harness v3 engine/Node.
             from staffdeck_harness.sop.module import SopRuntimeModule
 
             provider = SopRuntimeModule()

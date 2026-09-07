@@ -101,7 +101,7 @@ class TaskFrameStore:
         self.db.add(loop)
 
     def execution_checkpoint(self, row, loop):
-        """Upgrade the old DSH marker-only checkpoint from this loop's public audit data.
+        """Upgrade the old Harness v3 marker-only checkpoint from this loop's public audit data.
 
         This is a read projection, not a state transition. It never mixes another SOP's
         runs, and cannot recover private engine reasoning that was never stored by SD.

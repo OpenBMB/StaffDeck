@@ -1,4 +1,4 @@
-"""Module-owned REST boundaries. PEP is not restricted to chat or the DSH bridge.
+"""Module-owned REST boundaries. PEP is not restricted to chat or the Harness v3 bridge.
 
 These guards are additional to the existing OSS endpoint checks. Authentication and
 tenant validation run first; list filtering runs on already-authorized endpoint output.

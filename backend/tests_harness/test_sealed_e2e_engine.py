@@ -218,7 +218,7 @@ class ContinuityModel:
         self.requests.append(body)
         messages = body.get("messages", [])
         text = json.dumps(messages, ensure_ascii=False)
-        # DSH also appends a role=user runtime-policy snapshot. Select the actual SD
+        # The engine also appends a role=user runtime-policy snapshot. Select the actual SD
         # execution input, not whichever auxiliary context block happens to be last.
         user = next((m for m in reversed(messages) if m.get("role") == "user" and "# 本次用户输入" in json.dumps(m.get("content", ""), ensure_ascii=False)), {})
         current = json.dumps(user.get("content", ""), ensure_ascii=False)
@@ -242,7 +242,7 @@ class ContinuityModel:
 
 
 @pytest.mark.parametrize("cold", [False, True])
-def test_real_dsh_sop_context_survives_user_turns_and_worker_replacement(db, fake_model, cold):
+def test_real_engine_sop_context_survives_user_turns_and_worker_replacement(db, fake_model, cold):
     from app.db.models import ChatSession, HarnessTaskFrameRecord, HarnessAgentLoopRecord
     from app.core.task_frame_store import TaskFrameStore
     from app.core.task_request_compiler import TaskRequirement
@@ -308,7 +308,7 @@ def test_real_dsh_sop_context_survives_user_turns_and_worker_replacement(db, fak
     assert not any(e == "harness_action_created" and p.get("action") == "tool" and "submit" in str(p.get("tool_name")) for e, p in traces)
 
 
-def test_real_dsh_general_loop_keeps_context_across_new_task_frames(db, fake_model):
+def test_real_engine_general_loop_keeps_context_across_new_task_frames(db, fake_model):
     # The pure context tests cover scope fencing. This uses the real SDK and model wire,
     # with no completion control in either request's tool list.
     from app.db.models import ChatSession
@@ -352,7 +352,7 @@ def test_full_coordinator_keeps_sop_instance_suspended_then_advances_and_complet
     from staffdeck_harness.bridge.engine_host import reset_runtime
 
     def legacy_sop_forbidden(*args, **kwargs):
-        raise AssertionError("DSH orchestration must not call legacy AgentLoop SOP methods")
+        raise AssertionError("Harness v3 orchestration must not call legacy AgentLoop SOP methods")
 
     for name in ("_apply_step_result", "_finalize_execution_after_reply", "_default_next_step",
                  "_drop_unavailable_skill_state", "_list_published_skills", "_get_active_skill"):
@@ -430,7 +430,7 @@ def test_full_coordinator_keeps_sop_instance_suspended_then_advances_and_complet
         assert replacement_calls == ["same-sop"] * 3
 
 
-def test_real_dsh_budget_exit_preserves_completed_tool_results(db, fake_model):
+def test_real_engine_budget_exit_preserves_completed_tool_results(db, fake_model):
     from app.db.models import ChatSession
     from app.core.task_request_compiler import TaskRequirement
     from staffdeck_harness.bridge.engine_host import get_runtime

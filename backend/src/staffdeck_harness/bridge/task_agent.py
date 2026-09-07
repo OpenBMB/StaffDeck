@@ -88,6 +88,10 @@ class HarnessV3TurnContext:
     # The engine assigns run_id after start_run(), i.e. after this context is built.
     run_id_provider: Callable[[], str] | None = None
     module_registry: Any = None
+    # Live streaming: forward the engine's assistant text deltas to ``stream_sink`` as they arrive.
+    # Off when a supervision hook may refuse/rewrite the final text (the coordinator decides).
+    live_stream: bool = False
+    stream_sink: Any = None
 
     @property
     def current_run_id(self) -> str:
@@ -318,10 +322,12 @@ class HarnessV3TaskAgent:
         step_timeout_seconds: int | None = None,
         checkpoint: dict[str, Any] | None = None,
     ) -> TaskExecutionResult:
-        trace = trace_sink or self.trace_sink or (lambda *_: None)
+        base_trace = trace_sink or self.trace_sink or (lambda *_: None)
         t = self.turn
         from staffdeck_harness.runtime.execution_context import ExecutionContext
         from staffdeck_harness.bridge.control import ExecutionHost, ExecutionBudgetExceeded
+
+        trace = self._client_stream_trace(base_trace, requirement)
 
         context = ExecutionContext.restore(requirement, checkpoint, tenant_id=t.tenant_id,
                                            agent_id=t.agent_id, session_id=t.session_id)
@@ -623,10 +629,41 @@ class HarnessV3TaskAgent:
             if missing:
                 return self._failed(requirement, "REQUIRED_CAPABILITY_MISSING", "未成功完成必需能力：" + "、".join(missing), actions=actions)
         action = HarnessAction.model_validate({**fin, "action": "finish", "reply_fragment": reply})
-        return finish_execution_result(requirement, action,
+        result = finish_execution_result(requirement, action,
             list(host.citations) if host is not None else self._citations(events, state),
             list(host.evidence) if host is not None else self._evidence(events),
             results, list(artifacts), action_count=max(1, actions))
+        streamed = "".join(getattr(self, "_streamed_parts", []) or [])
+        if streamed:
+            result.streamed_reply = streamed
+        return result
+
+    def _client_stream_trace(self, base_trace: TraceSink, requirement: TaskRequirement) -> TraceSink:
+        """Wrap the audit trace so engine text deltas become a *client* stream.
+
+        Assistant text deltas relayed from the engine are forwarded to the stream sink as they
+        arrive (ordinary conversation, unsupervised) or dropped; they are never persisted as
+        stream_delta audit rows here. The turn skeleton emits the final reply once, and skips
+        that when it equals what was streamed live (``TaskExecutionResult.streamed_reply``).
+        """
+
+        t = self.turn
+        self._streamed_parts: list[str] = []
+        live = bool(getattr(t, "live_stream", False) and getattr(t, "stream_sink", None) is not None and requirement.kind == "conversation")
+
+        def trace(event: str, payload: dict[str, Any]) -> None:
+            if event == "stream_delta":
+                text = str(payload.get("content") or "")
+                if live and text:
+                    self._streamed_parts.append(text)
+                    try:
+                        t.stream_sink.on_delta(text)
+                    except Exception:  # noqa: BLE001 - a client sink must never fail the turn
+                        logger.exception("stream sink rejected a delta")
+                return
+            base_trace(event, payload)
+
+        return trace
 
     @staticmethod
     def _tool_results(events: list[dict[str, Any]]) -> list[dict[str, Any]]:

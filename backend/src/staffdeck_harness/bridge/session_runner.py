@@ -1,4 +1,4 @@
-"""Shared DSH session transport; contains no Staff/SOP/planning business policy."""
+"""Shared Harness v3 engine session transport; contains no Staff/SOP/planning business policy."""
 
 from __future__ import annotations
 from typing import Any, Callable

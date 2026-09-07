@@ -89,7 +89,16 @@ def relay_event(ev: Mapping[str, Any]) -> list[RuntimeEvent]:
         # with tokens and duration); this only records what the engine asked for.
         out.append(("harness_v3_model_request", {"provider": data.get("provider"), "model": data.get("model"), "execution_engine": "harness_v3"}))
     elif kind == "assistant/chunk":
-        text = data.get("text") if isinstance(data.get("text"), str) else None
+        # Engine shape (0.1.2): ``data.chunk = {type: text-delta | reasoning-delta | tool-call-delta, text?}``.
+        # Only visible assistant text becomes a stream delta; reasoning and tool-call argument
+        # deltas never reach the client. (``data.text`` is accepted for older/flat shapes.)
+        chunk = data.get("chunk") if isinstance(data.get("chunk"), dict) else None
+        text = None
+        if chunk is not None:
+            if chunk.get("type") == "text-delta" and isinstance(chunk.get("text"), str):
+                text = chunk["text"]
+        elif isinstance(data.get("text"), str):
+            text = data["text"]
         if text:
             out.append(("stream_delta", {"content": text, "execution_engine": "harness_v3"}))
     elif kind == "tool/call":

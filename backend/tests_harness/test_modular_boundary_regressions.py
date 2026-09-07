@@ -545,7 +545,7 @@ def test_legacy_executor_uses_the_same_module_host(db, monkeypatch, tmp_path):
     assert len(receipts) == 1 and receipts[0].approval_json["engine"] == "harness_v2"
 
 
-def test_dsh_finish_requires_real_successful_capability_receipts(db, monkeypatch):
+def test_harness_v3_finish_requires_real_successful_capability_receipts(db, monkeypatch):
     from staffdeck_harness.bridge.task_agent import HarnessV3TaskAgent
     from app.core.task_request_compiler import TaskRequirement
 

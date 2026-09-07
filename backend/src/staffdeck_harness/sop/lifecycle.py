@@ -1,6 +1,6 @@
 """SOP lifecycle implementation owned by the modular runtime, independent of AgentLoop.
 
-No model or DSH dependencies. Session/Skill rows are existing persistence contracts;
+No model or Harness v3 engine dependencies. Session/Skill rows are existing persistence contracts;
 handoff is an injected collaboration port. The coordinator owns the transaction/CAS.
 """
 

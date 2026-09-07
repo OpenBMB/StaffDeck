@@ -98,6 +98,9 @@ class TaskExecutionResult(BaseModel):
     error: dict[str, Any] | None = None
     structured_result: Any | None = None
     loop_checkpoint: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    # Assistant text the engine already streamed to the client while this frame ran. The turn
+    # skeleton compares it with the final reply to avoid emitting the same text twice.
+    streamed_reply: str = Field(default="", exclude=True)
 
 
 class TaskRequestCompiler:

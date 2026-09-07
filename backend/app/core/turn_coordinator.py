@@ -306,6 +306,31 @@ class TurnCoordinator:
         with self.registry.turn_lease():
             return self._run(accept(self.registry, request))
 
+    # Built-in turn_stopping handlers that are no-ops without an active SOP execution slice.
+    _SOP_ONLY_SUPERVISORS = frozenset({"sop.output_supervisor", "handoff.detect"})
+
+    def supervision_required(self, skill) -> bool:
+        """Must the final reply be buffered until output supervision has seen it?
+
+        Only when a turn_stopping hook exists that can actually refuse or rewrite it: any hook
+        while an SOP is active, or a non-built-in hook in ordinary conversation. Otherwise the
+        reply streams to the client as it is generated, exactly as before the module runtime
+        existed. ``supervise_reply`` still runs afterwards (it is a passthrough in that case).
+        """
+
+        if self.registry is None or getattr(self, "snapshot", None) is None:
+            return False
+        from staffdeck_harness.composition.compiler import compile_hooks
+
+        sop_id = skill.skill_id if skill else None
+        plan = compile_hooks(self.registry.hooks(self.snapshot, sop_id=sop_id))
+        handlers = [c.handler for c in plan.order.get("turn_stopping", ())]
+        if not handlers:
+            return False
+        if sop_id:
+            return True
+        return any(h not in self._SOP_ONLY_SUPERVISORS for h in handlers)
+
     def supervise_reply(self, request, session, reply: str, skill, step_result) -> str:
         if self.registry is None or getattr(self, "snapshot", None) is None:
             return reply
@@ -768,11 +793,14 @@ class TurnCoordinator:
             task_count = len(team_publish_result.task_ids)
             reply = f"已完成 {task_count} 个团队任务的拆分与派发。"
         is_handoff = any(result.status == "handoff" for result in execution_results)
+        # Stream as we generate unless a supervision hook may refuse/rewrite the final text; in
+        # that case buffer, supervise, then emit — never stream text that may be withdrawn.
+        supervised = self.supervision_required(response_skill)
         if is_handoff:
             # Handoff is now queued for a human; do not let the execution model
             # describe the missing native channel as if the request failed.
             reply = "已为你提交人工处理请求，请稍候，工作人员会尽快回复。"
-            if self.services.stream_sink is not None and self.registry is None:
+            if self.services.stream_sink is not None and not supervised:
                 for chunk in self.response_generator.chunk_text(reply):
                     self.services.stream_sink.on_delta(chunk)
         elif reply is None:
@@ -793,18 +821,18 @@ class TurnCoordinator:
                 parts: list[str] = []
                 for chunk in self.response_generator.generate_stream(*response_args):
                     parts.append(chunk)
-                    if self.registry is None:
+                    if not supervised:
                         self.services.stream_sink.on_delta(chunk)
                 reply = "".join(parts).strip()
             else:
                 reply = self.response_generator.generate(*response_args)
-        elif self.services.stream_sink is not None and self.registry is None:
+        elif self.services.stream_sink is not None and not supervised and not _already_streamed(execution_results, reply):
             for chunk in self.response_generator.chunk_text(reply):
                 self.services.stream_sink.on_delta(chunk)
         self._renew_session_lease()
         reply, citations = compact_knowledge_citation_labels(reply, citations)
         reply = self.supervise_reply(request, session, reply, response_skill, last_step_result)
-        if self.services.stream_sink is not None and self.registry is not None:
+        if self.services.stream_sink is not None and supervised:
             for chunk in self.response_generator.chunk_text(reply):
                 self.services.stream_sink.on_delta(chunk)
         artifacts = _aggregate_artifacts(execution_results)
@@ -1605,6 +1633,19 @@ def _combine_results(
         action_count=sum(item.action_count for item in results),
         error=last.error,
     )
+
+
+def _already_streamed(results: list[TaskExecutionResult], reply: str | None) -> bool:
+    """True when the lone frame's engine already streamed exactly this reply to the client.
+
+    A differing final reply (an ``action=finish`` envelope, supervision rewrite) is still emitted
+    by the caller; the client replaces the streamed bubble with the persisted assistant message.
+    """
+
+    if len(results) != 1 or not reply:
+        return False
+    streamed = str(getattr(results[0], "streamed_reply", "") or "").strip()
+    return bool(streamed) and streamed == str(reply).strip()
 
 
 def _single_task_reply(results: list[TaskExecutionResult]) -> str | None:

@@ -1,6 +1,6 @@
-# StaffDeck / DSH 模块化修订与接入契约
+# StaffDeck / Harness v3 模块化修订与接入契约
 
-> 后续周期修订：[DSH 与 v2 执行语义对齐](design-harness-v3-execution-parity.md)。上下文不再按用户轮次重建；普通对话不再调用 `finish_task`，SOP 的结果提交移入固定运行控制层。
+> 后续周期修订：[Harness v3 与 v2 执行语义对齐](design-harness-v3-execution-parity.md)。上下文不再按用户轮次重建；普通对话不再调用 `finish_task`，SOP 的结果提交移入固定运行控制层。
 
 本文件描述 `codex/dsh-pluggable-runtime` 本次九项审查修复后的实现。
 旧两份设计文档保留为历史方案；发生冲突时以本文件和可执行测试为准。
@@ -12,7 +12,7 @@
 | 1. 注册不等于实际接线 | 网页、开放 API、定时任务先经过入口模块；定时 worker 调用实际 dispatch；团队通过 TeamHost；渠道的真实 adapter 查询及内置连接器 reconcile 读取模块状态 | `runtime/ingress.py`、`runtime/team_host.py`、`app/channels/adapters/base.py`、`app/scheduled_tasks/worker.py` |
 | 2. Staff/SOP 层次绑定不完整 | Staff 默认模块、SOP 覆盖、节点逻辑槽覆盖；槽可以绑定资源、模块版本与 provider_config；空列表明确表示禁用，不再恢复默认值 | `composition/staff.py`、`slots.py`、`compiler.py` |
 | 3. 插件依赖完整 Host 和私有实现 | 能力、记忆、交互使用纯数据调用对象与窄 Context；内置旧服务封装在 Host 侧；扩展操作通过 register_operation 注册，经稳定的 capability_invoke 代理进入，不再修改 Host 分支 | `contracts/provider.py`、`memory.py`、`interaction.py`、`operations.py`、`capabilities/local_services.py` |
-| 4. Bridge 与旧 AgentLoop 耦合 | 两代引擎复用 TurnCoordinator；显式 TurnServices 适配原 SD 领域服务；不再临时改写 owner.memory、owner.response_generator、owner._enqueue_memory_capture；规划/回复策略在 runtime，DSH 会话传输在 bridge，模型协议在 app.llm | `app/core/turn_coordinator.py`、`turn_services.py`、`runtime/model_phases.py`、`bridge/session_runner.py`、`app/llm/tool_protocols.py` |
+| 4. Bridge 与旧 AgentLoop 耦合 | 两代引擎复用 TurnCoordinator；显式 TurnServices 适配原 SD 领域服务；不再临时改写 owner.memory、owner.response_generator、owner._enqueue_memory_capture；规划/回复策略在 runtime，Harness v3 会话传输在 bridge，模型协议在 app.llm | `app/core/turn_coordinator.py`、`turn_services.py`、`runtime/model_phases.py`、`bridge/session_runner.py`、`app/llm/tool_protocols.py` |
 | 5. Hook 的顺序和监管失效 | 依赖优先于数字顺序；关键 Hook 异常拒绝，非关键观察者可跳过；完成工具也执行输出监管；真实回执/结果参与必需能力检查；重放重新鉴权、重新过后处理，只缓存监管投影 | `interactions/pipeline_host.py`、`capabilities/host.py`、`ledger.py`、`bridge/task_agent.py` |
 | 6. 通知与回复是旁路实现 | 实际 HumanHandoffService 读取指派模块；AgentLoop 的通知入口读取通知模块；网页/渠道回复共享独立回复恢复服务，并调用回复模块；等待请求记录模块引用，配置不一致时拒绝隐式换绑 | `handoff/core.py`、`app/core/human_handoff_service.py`、`handoff_reply_service.py` |
 | 7. 记忆只在 v3 局部可插拔 | v2/v3 共用同一个记忆 Host；召回、写入、管理列表与清理都调用同一 provider；SOP 可覆盖 Staff；外部记忆请求不含数据库、原始请求对象或模型密钥 | `contracts/memory.py`、`staffdeck_harness/memory.py`、`app/api/memories.py` |
@@ -110,18 +110,18 @@ def dispose_module(self): ...         # 失败、预检、卸载后的最终清�
 
 - 配置保存不是热替换；新装配在重启成功后生效。Staff/SOP 资源选择在下一轮生效。
 - 有在途回合时先排空；窗口结束仍未排空就拒绝本次切换，并恢复旧装配的接单能力。
-- DSH 步骤调用 `finish_task` 关闭能力槽，但宿主继续等到引擎 idle。失败、超时、取消不会把忙进程放回池中。
+- Harness v3 步骤调用 `finish_task` 关闭能力槽，但宿主继续等到引擎 idle。失败、超时、取消不会把忙进程放回池中。
 - 后处理拒绝一个已成功执行的写操作，不会释放其幂等键，也不会把该副作用变成可重试。
 - 企业权限配置失效时拒绝启动或切换，不自动改用开源权限。
 - 最终回复在送入输出流之前经过监管；受监管时先缓冲文本，审查通过后再分块输出，避免先流出原文再“拒绝”。执行过程事件仍正常输出。
-- 本次不增加钉钉/微信本来没有的主动私聊能力，不改变 DSH 的原生图片支持范围；原图片回退路径保留。
+- 本次不增加钉钉/微信本来没有的主动私聊能力，不改变 Harness v3 引擎的原生图片支持范围；原图片回退路径保留。
 
 ## 6. 验证
 
 `backend/tests_harness/test_modular_boundary_regressions.py` 覆盖真实接口链路，不只测试类存在。
 原模块测试保留业务结果断言，改为通过新 SDK 和共享服务接线。
-`test_sealed_e2e_engine.py` 使用真实 DSH/Node、本机假模型和临时数据库验证 MCP 往返，不依赖外部模型凭证。
+`test_sealed_e2e_engine.py` 使用真实 Harness v3 引擎/Node、本机假模型和临时数据库验证 MCP 往返，不依赖外部模型凭证。
 企业权限协议和对象/列表边界使用受控假权限服务验证；不能替代真实 Business 部署的联调。
 
-本次验证记录（2026-09-05）：模块套件 539 通过、3 跳过、2 个已有 xfail；真实 DSH 封闭端到端通过；前端 247 通过，生产构建通过；隔离实例的管理员模块页与模型页可正常访问。
+本次验证记录（2026-09-05）：模块套件 539 通过、3 跳过、2 个已有 xfail；真实 Harness v3 引擎封闭端到端通过；前端 247 通过，生产构建通过；隔离实例的管理员模块页与模型页可正常访问。
 后端与模块全量运行 2596 通过，保留 11 个原有失败：9 个旧渠道 SQLite 迁移断言失败，2 个飞书 target 字段断言失败；这 11 项已在修改前 `815f7c8a` 的独立副本复现，不是本次九项模块化修复引入的回归。
