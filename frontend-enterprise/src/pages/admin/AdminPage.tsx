@@ -12,7 +12,7 @@ import SessionLog from '@/components/harness/SessionLog';
 import BaseConnectionPanel from '@/components/harness/BaseConnectionPanel';
 import ExternalModulesPanel from '@/components/harness/ExternalModulesPanel';
 import { api, TENANT_ID } from '../../api/client';
-import { harnessApi, type HarnessAssembly, type HarnessAssemblyState, type HarnessAssemblyUpdate, type HarnessBaseConnectionUpdate, type HarnessEngineChoice, type HarnessLedgerRow, type HarnessLogEntry, type HarnessSessionSummary, type HarnessSnapshot, type HarnessStaffEngine, type HarnessStatus, type HarnessTreeBig, type HarnessTreeOption } from '../../api/harness';
+import { harnessApi, type HarnessAssembly, type HarnessAssemblyState, type HarnessAssemblyUpdate, type HarnessBaseConnectionUpdate, type HarnessLedgerRow, type HarnessLogEntry, type HarnessSessionSummary, type HarnessSnapshot, type HarnessStaffEngine, type HarnessStatus, type HarnessTreeBig, type HarnessTreeOption } from '../../api/harness';
 import type { AgentProfileRead, ChannelBindingRead, ModelConfigRead, TeamRead } from '../../types';
 import type { EnterpriseAuthUser } from '../../auth';
 import { EnterpriseRoute } from '../../enums/routes';
@@ -178,16 +178,6 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     }
   }
 
-  async function setEngine(engine: HarnessEngineChoice) {
-    if (!agentId) return;
-    try {
-      const row = await harnessApi.setStaffEngine(TENANT_ID, agentId, engine);
-      setStaffEngine(row);
-      notify.success(`已切换为 ${engineLabel(row.effective_engine, true)}，下一轮对话生效`);
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '切换失败');
-    }
-  }
 
   const loadLog = useCallback(async (id = sessionId) => {
     if (!id) return;
@@ -358,7 +348,6 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     const b = channels.find((c) => c.id === bindingId);
     return b ? (b.name || b.channel) : bindingId;
   };
-  const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const grantName = (type: string, id: string) => snapshot?.grants.find((g) => g.resource_type === type && g.resource_id === id)?.name ?? id;
 
   const pendingLines = useMemo(() => describePending(assembly), [assembly]);
@@ -470,7 +459,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                           : 'Harness v2 引擎在主进程内运行，不需要单独启动'}
                       </span>
                       {status.harness_v3_enabled && (
-                        <div className="text-[12px] text-[#9aa0ad]">{status.fallback_to_legacy ? 'Harness v3 引擎异常时会自动改用 Harness v2，对话不会中断。' : '未开启自动切换：Harness v3 引擎异常时对话会失败。'}</div>
+                        <div className="text-[12px] text-[#9aa0ad]">仅使用 Harness v3；引擎异常时明确报错，不回退其他执行器。</div>
                       )}
                       {(status.fallback_count ?? 0) > 0 && (
                         <div className="mt-[4px] text-[12px] text-[#b26a00]">
@@ -487,11 +476,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                       <div className="text-[12px] text-[#9aa0ad]">{profileLabel(status.security_profile).hint}</div>
                     </KV>
                     <KV label="使用 Harness v3 的员工">
-                      {!status.harness_v3_enabled
-                        ? <span>当前默认引擎是 Harness v2，所有员工都使用它。<Hint>要启用 Harness v3，请在「功能模块」中选择它并重启运行时</Hint></span>
-                        : status.staff_allowlist.length
-                          ? <span>{status.staff_allowlist.map(agentName).join('、')}<Hint>其余员工使用 Harness v2</Hint></span>
-                          : <span>全部员工<Hint>可在「员工配置」中为单个员工单独指定引擎</Hint></span>}
+                      <span>全部员工<Hint>对话、SOP 和 Skill 执行测试使用同一套运行时</Hint></span>
                     </KV>
                     <KV label="功能模块">
                       {modulesEnabled} / {modulesTotal} 已启用 · 分为 {bigCount} 大类 {subCount} 小类
@@ -551,16 +536,8 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                     <SelectContent>{agents.map((a) => <SelectItem key={a.id} value={a.id}>{a.name}{a.is_overall ? '（整体）' : ''}</SelectItem>)}</SelectContent>
                   </Select>
                   {staffEngine && (
-                    <Select value={staffEngine.engine} onValueChange={(v) => void setEngine(v as HarnessEngineChoice)}>
-                      <SelectTrigger className="h-[34px] w-[280px] rounded-[10px] border-[0.5px] border-[#e3e7f1] text-[12px]"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="default">跟随系统默认（当前 {engineLabel(staffEngine.effective_engine)}）</SelectItem>
-                        <SelectItem value="harness_v3">这位员工使用 Harness v3 引擎</SelectItem>
-                        <SelectItem value="harness_v2">这位员工使用 Harness v2 引擎</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <span className="text-[12px] text-[#757f9c]">{engineLabel(staffEngine.effective_engine)}</span>
                   )}
-                  <span className="text-[12px] text-[#9aa0ad]">引擎选择保存后，下一轮对话生效</span>
                 </div>
                 <div className="text-[12px] text-[#757f9c]">下面是这位员工下一轮对话实际会用到的配置：人设、模型、可用能力和流程。绑定关系变化后会自动更新。</div>
 

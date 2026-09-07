@@ -137,16 +137,18 @@ def test_provider_runtime_coordinator_loop_forwards_kwargs(module, db):
 def test_provider_runtime_coordinator_loop_opens_legacy_engine(module, db, monkeypatch):
     """The loop built here is what the engine host wraps; with Harness v3 disabled it opens Harness v2."""
 
-    from app.core.harness_v2_engine import HarnessV2Engine
+    from staffdeck_harness.bridge.engine_host import EngineHost
     from app.session.session_schema import ChatTurnRequest
     import app.core.agent_loop as agent_loop_mod
 
     monkeypatch.setattr(agent_loop_mod, "get_settings", lambda: SimpleNamespace(harness_v3_enabled=False))
+    sentinel = object()
+    seen = []
+    monkeypatch.setattr(EngineHost, "open", lambda self, loop, request, agent_id: seen.append(loop) or sentinel)
     loop = module(MODULE_ID).provider.loop(db)
     request = ChatTurnRequest(tenant_id="t1", user_id="u1", agent_id="a1", message="hi", channel="web")
     engine = loop._open_engine(request)
-    assert type(engine) is HarnessV2Engine
-    assert engine.owner is loop and engine.db is db
+    assert engine is sentinel and seen == [loop]
 
 
 # --------------------------------------------------------------------------- 5. events / pep

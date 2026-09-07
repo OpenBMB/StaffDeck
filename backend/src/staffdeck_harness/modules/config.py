@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-ENGINES = ("harness_v3", "harness_v2")
+ENGINES = ("harness_v3",)
 SECURITY_PROFILES = ("OSS_LOCAL", "BUSINESS_BASE")
 CONFIG_FILENAME = "staffdeck-runtime.json"
 SECRET_MASK = "••••••••"
@@ -249,7 +249,7 @@ class BaseConnection:
 
 @dataclass
 class RuntimeOverrides:
-    engine: str = "harness_v2"                  # "harness_v3" | "harness_v2"
+    engine: str = "harness_v3"
     security_profile: str = "OSS_LOCAL"
     disabled_modules: list[str] = field(default_factory=list)
     extra_modules: list[str] = field(default_factory=list)   # "pkg.mod:register" specs
@@ -277,7 +277,7 @@ class RuntimeOverrides:
             if k2 and v2:
                 placements[k2] = v2
         return RuntimeOverrides(
-            engine=self.engine if self.engine in ENGINES else "harness_v2",
+            engine="harness_v3",  # migrate saved legacy selections without changing business data
             security_profile=self.security_profile if self.security_profile in SECURITY_PROFILES else "OSS_LOCAL",
             disabled_modules=sorted({str(x).strip() for x in self.disabled_modules if str(x).strip()}),
             extra_modules=[str(x).strip() for x in self.extra_modules if str(x).strip()],
@@ -345,7 +345,7 @@ def defaults_from_settings(settings: Any) -> RuntimeOverrides:
     """What the deployment would run with if the admin never touched anything."""
 
     return RuntimeOverrides(
-        engine="harness_v3" if bool(env_value(settings, "harness_v3_enabled")) else "harness_v2",
+        engine="harness_v3",
         security_profile=str(env_value(settings, "security_profile") or "OSS_LOCAL"),
         disabled_modules=_split(env_value(settings, "harness_disabled_modules")),
         extra_modules=_split(env_value(settings, "harness_modules")),

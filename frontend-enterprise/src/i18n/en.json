@@ -1004,6 +1004,8 @@
   "全部会话": "All",
   "全部会话 · {1}": "All Conversations · {1}",
   "全部员工": "All Employees",
+  "仅使用 Harness v3；引擎异常时明确报错，不回退其他执行器。": "Harness v3 only. Engine failures are reported explicitly; no other executor is used as a fallback.",
+  "对话、SOP 和 Skill 执行测试使用同一套运行时": "Chat, SOPs, and Skill execution tests share one runtime.",
   "全部状态": "All Statuses",
   "全历史调用": "All-time Calls",
   "全选": "Select all",

@@ -1,6 +1,6 @@
 import { api } from './client';
 
-export type HarnessEngineChoice = 'default' | 'harness_v2' | 'harness_v3';
+export type HarnessEngineChoice = 'default' | 'harness_v3';
 
 export type HarnessStatus = {
   harness_v3_enabled: boolean;

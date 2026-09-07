@@ -1,10 +1,10 @@
-"""Harness v3 engine adapter and deployment/Staff engine selection.
+"""Harness v3 engine adapter for every autonomous execution entry.
 
-HarnessV3Engine and the v2 compatibility engine share TurnCoordinator. Business
+HarnessV3Engine reuses the engine-neutral TurnCoordinator. Business
 planning/reply contracts live in runtime.model_phases; the Bridge supplies the Harness v3 engine
 phase transport, activation tokens and worker leasing. Capabilities, memory,
 SOP supervision and handoff are host-side modules outside the Harness v3 core loop.
-Images retain the explicitly reported v2 fallback until the upstream path supports them.
+Validated images are provided by the same model gateway, not a second execution loop.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any
 from sqlmodel import Session
 
 
-from app.core.turn_coordinator import HarnessV2Engine, TurnCoordinator
+from app.core.turn_coordinator import TurnCoordinator
 from app.db.models import ChatSession, HarnessTaskFrameRecord, Skill, User
 from app.session.session_schema import ChatTurnRequest
 from staffdeck_harness.bridge.task_agent import HarnessV3Runtime, HarnessV3TaskAgent, HarnessV3TurnContext
@@ -118,8 +118,8 @@ class HarnessV3Engine(TurnCoordinator):
         self._request: ChatTurnRequest | None = None
         self._memory_context: list[dict[str, Any]] = []
         self._pooled: Any = None
-        self._v2_planner = self.planner
-        self._v2_response_generator: Any = None
+        self._reply_policy = self.response_generator
+        self.response_generator = _LazyResponseGenerator(self)
         # Lazily-bound phase planner: it needs the pooled process, which needs the model config,
         # which the v2 turn resolves after ``run()`` starts. ``_LazyPlanner`` defers to ``_plan``.
         self.planner = _LazyPlanner(self)  # type: ignore[assignment]
@@ -128,13 +128,11 @@ class HarnessV3Engine(TurnCoordinator):
 
     def run(self, request: ChatTurnRequest):
         self._request = request
-        self._v2_response_generator = self.response_generator
         if hasattr(self.events, "execution_engine"):
             self.events.execution_engine = "harness_v3"
         try:
             return super().run(request)
         finally:
-            self.response_generator = self._v2_response_generator
             if self._pooled is not None:
                 self.runtime.release_process(self._pooled)
                 self._pooled = None
@@ -179,34 +177,24 @@ class HarnessV3Engine(TurnCoordinator):
 
     def _phase_runner(self, request: ChatTurnRequest, session: ChatSession, model_config: Any) -> Any:
         from staffdeck_harness.bridge.phases import EnginePhaseRunner
+        from app.core.harness_attachments import validated_task_image_payloads
 
         pooled = self._turn_process(request, session, model_config)
 
         def trace(event: str, payload: dict[str, Any]) -> None:
             self.events.record(request.tenant_id, session.id, event, {**payload, "execution_engine": "harness_v3"})
 
-        return EnginePhaseRunner(self.runtime, pooled, tenant_id=request.tenant_id, session_id=session.id, trace=trace, cancelled=lambda: self._is_cancelled(request, session))
+        return EnginePhaseRunner(self.runtime, pooled, tenant_id=request.tenant_id, session_id=session.id, trace=trace, cancelled=lambda: self._is_cancelled(request, session), image_payloads=validated_task_image_payloads(request.attachments or []))
 
     def _plan(self, message: str, session: ChatSession, available_skills: list[Any], model_config: Any, *args: Any, **kwargs: Any) -> Any:
-        """Turn planning on the engine. Falls back to the v2 planner if the engine cannot be reached
-        *before* any model work happened (so a dead engine degrades, not crashes, the turn)."""
+        """Run planning on the registered engine; unavailable engines fail explicitly."""
 
         request = self._request
         assert request is not None
-        try:
-            runner = self._phase_runner(request, session, model_config)
-        except EngineUnavailable as exc:
-            fallback = str(_settings_value(self.runtime_settings(), "harness_v3_fallback_to_v2", "true")).lower() in {"1", "true", "yes", "on"}
-            if not fallback:
-                raise
-            _note_fallback(self.owner, request, "engine_unavailable", detail=str(exc))
-            return self._v2_planner.plan(message, session, available_skills, model_config, *args, **kwargs)
-        from staffdeck_harness.runtime.model_phases import EngineResponseGenerator, EngineTurnPlanner
+        runner = self._phase_runner(request, session, model_config)
+        from staffdeck_harness.runtime.model_phases import EngineTurnPlanner
 
         engine_session = f"sd-{session.id}-{self.user_message_id or 'turn'}"
-        # Reply synthesis (if the turn needs it) runs on the same process.
-        if self._v2_response_generator is not None:
-            self.response_generator = EngineResponseGenerator(self._v2_response_generator, runner, engine_session=engine_session)
         return EngineTurnPlanner(runner, engine_session=engine_session).plan(message, session, available_skills, model_config, *args, **kwargs)
 
     def runtime_settings(self) -> Any:
@@ -300,6 +288,34 @@ class HarnessV3Engine(TurnCoordinator):
         return super()._run_frame(request, session, row, frame, active_skill, model_config, memory_context, prior_frame_results, max_actions)
 
 
+class _LazyResponseGenerator:
+    """Use the same reply policies but always execute model synthesis on the v3 phase port.
+
+    This also covers resumed/forced tasks which do not need a new planning phase.
+    """
+    def __init__(self, engine):
+        self.engine = engine
+
+    def __getattr__(self, name):
+        return getattr(self.engine._reply_policy, name)
+
+    def _bound(self, args):
+        from staffdeck_harness.runtime.model_phases import EngineResponseGenerator
+
+        e = self.engine
+        return EngineResponseGenerator(e._reply_policy, e._phase_runner(e._request, args[1], args[6]),
+                                       engine_session=f"sd-{args[1].id}-{e.user_message_id or 'turn'}")
+
+    def generate(self, *args, **kwargs):
+        return self._bound(args).generate(*args, **kwargs)
+
+    def generate_stream(self, *args, **kwargs):
+        yield from self._bound(args).generate_stream(*args, **kwargs)
+
+    def generate_with_stream(self, *args, **kwargs):
+        return self._bound(args).generate_with_stream(*args, **kwargs)
+
+
 class _LazyPlanner:
     """``HarnessV2Engine.run`` calls ``self.planner.plan(...)``; route it to the engine-backed planner."""
 
@@ -318,25 +334,16 @@ class EngineHost:
 
     @property
     def harness_v3_enabled(self) -> bool:
-        value = _settings_value(self.settings, "harness_v3_enabled", False)
-        return str(value).lower() in {"1", "true", "yes", "on"} if not isinstance(value, bool) else value
+        return True
 
     def allowlist(self) -> set[str]:
         raw = str(_settings_value(self.settings, "harness_v3_staff_allowlist", "") or "")
         return {x.strip() for x in raw.split(",") if x.strip()}
 
     def selects_harness_v3(self, request: ChatTurnRequest, agent_id: str | None, *, db: Session | None = None) -> bool:
-        """Per-staff persisted choice > allowlist > deployment default (see api.admin.effective_engine_for).
+        """Text and image turns use the same v3 runtime, irrespective of stale legacy flags."""
 
-        Turns carrying image attachments always run on Harness v2: the Harness v3 engine's model
-        adapter cannot carry image content through the bridge's gateway, so the turn would fail
-        instead of seeing the picture. Harness v2's multimodal path is intact. This is decided up
-        front so the very first events of the turn are labelled with the engine that runs it.
-        """
-
-        if _has_image_attachments(request):
-            return False
-        return self._staff_wants_harness_v3(agent_id, db=db)
+        return True
 
     def _staff_wants_harness_v3(self, agent_id: str | None, *, db: Session | None = None) -> bool:
         from staffdeck_harness.api.admin import effective_engine_for
@@ -351,11 +358,9 @@ class EngineHost:
     def engine_fallback_reason(self, request: ChatTurnRequest, agent_id: str | None, *, db: Session | None = None) -> str | None:
         """Why a turn that *would* select Harness v3 is routed to v2 anyway (None when it is not)."""
 
-        if _has_image_attachments(request) and self._staff_wants_harness_v3(agent_id, db=db):
-            return "image_attachments"
         return None
 
-    def open(self, loop: Any, request: ChatTurnRequest, agent_id: str | None) -> HarnessV2Engine:
+    def open(self, loop: Any, request: ChatTurnRequest, agent_id: str | None) -> TurnCoordinator:
         from staffdeck_harness.modules.registry import peek_registry
         from staffdeck_harness.contracts.manifest import SlotName
 
@@ -378,33 +383,17 @@ class EngineHost:
                 ref = runtime_staff_ref(db, ref, session)
             Guard("runtime.engine", profile).require(ctx, "staff.use/v1", ref)
         selected = registry.provider(SlotName.RUNTIME_ENGINE) if registry else None
-        if selected and selected.manifest.module_id not in {"engine.harness_v2", "engine.harness_v3"}:
+        if selected and selected.manifest.module_id == "engine.harness_v2":
+            raise EngineUnavailable("HARNESS_V2_RETIRED: select the Harness v3 runtime")
+        if selected and selected.manifest.module_id != "engine.harness_v3":
             return selected.provider.open(loop, request, agent_id)
-        db = getattr(loop, "db", None)
-        if not self.selects_harness_v3(request, agent_id, db=db):
-            reason = self.engine_fallback_reason(request, agent_id, db=db)
-            if reason:
-                _note_fallback(loop, request, reason, detail="本轮带图片附件，Harness v3 引擎不读取图片，已改用 Harness v2")
-            return HarnessV2Engine(loop)
         from staffdeck_harness.modules.registry import get_registry
 
-        # The staff (or the deployment default) chose Harness v3. Resolve the *v3* engine module by
-        # id rather than "the active RUNTIME_ENGINE provider": when the deployment default is v2 the
-        # registry's active provider is engine.harness_v2, yet a per-staff canary must still run v3.
+        # Resolve the registered v3 provider; there is no implicit in-process fallback.
         installed = get_registry(self.settings).get("engine.harness_v3")
-        try:
-            if installed is not None and callable(getattr(installed.provider, "open", None)):
-                return installed.provider.open(loop, request, agent_id)
-            return HarnessV3Engine(loop, runtime=get_runtime(self.settings))
-        except EngineUnavailable as exc:
-            fallback = str(_settings_value(self.settings, "harness_v3_fallback_to_v2", "true")).lower() in {"1", "true", "yes", "on"}
-            if fallback:
-                logger.warning("Harness v3 unavailable (%s); falling back to Harness v2", exc)
-                # Not silent: the turn gets an event the execution log shows, and the admin
-                # console's runtime status carries the count + last reason.
-                _note_fallback(loop, request, "engine_unavailable", detail=exc.message if hasattr(exc, "message") else str(exc))
-                return HarnessV2Engine(loop)
-            raise
+        if installed is not None and callable(getattr(installed.provider, "open", None)):
+            return installed.provider.open(loop, request, agent_id)
+        raise EngineUnavailable("Harness v3 engine module is not installed")
 
 
 # --------------------------------------------------------------------------- fallback visibility

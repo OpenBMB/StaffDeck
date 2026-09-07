@@ -185,7 +185,7 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
         stage="executing",
         progress=0.1,
         event_type="run.executing",
-        event_data={"session_id": session_id, "engine": "harness_v2"},
+        event_data={"session_id": session_id, "engine": "harness_v3"},
     )
     attachments = [ChatAttachmentRead.model_validate(item) for item in payload.get("attachments") or []]
     request = ChatTurnRequest(

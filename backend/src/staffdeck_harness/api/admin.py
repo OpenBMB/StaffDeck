@@ -50,7 +50,7 @@ from staffdeck_harness.security.profile import get_profile
 
 router = APIRouter(prefix="/api/enterprise/harness", tags=["enterprise:harness"], dependencies=[Depends(get_current_user)])
 
-EngineChoice = Literal["default", "harness_v2", "harness_v3"]
+EngineChoice = Literal["default", "harness_v3"]
 ENGINE_METADATA_KEY = "execution_engine"
 
 
@@ -205,26 +205,17 @@ def _session_allowed(session: ChatSession | None, user: User) -> bool:
 
 
 def _settings_engine(settings: Any) -> EngineChoice:
-    return "harness_v3" if bool(getattr(settings, "harness_v3_enabled", False)) else "harness_v2"
+    return "harness_v3"
 
 
 def staff_engine_choice(row: AgentProfile) -> EngineChoice:
     value = str((row.metadata_json or {}).get(ENGINE_METADATA_KEY) or "default")
-    return value if value in {"default", "harness_v2", "harness_v3"} else "default"  # type: ignore[return-value]
+    return value if value in {"default", "harness_v3"} else "default"  # historical selections no longer route execution
 
 
 def effective_engine_for(settings: Any, row: AgentProfile | None) -> Literal["harness_v2", "harness_v3"]:
     """Per-staff override > allowlist > deployment default. Used by EngineHost."""
 
-    if row is not None:
-        choice = staff_engine_choice(row)
-        if choice != "default":
-            return choice
-    if not bool(getattr(settings, "harness_v3_enabled", False)):
-        return "harness_v2"
-    allow = {x.strip() for x in str(getattr(settings, "harness_v3_staff_allowlist", "") or "").split(",") if x.strip()}
-    if allow and (row is None or row.id not in allow):
-        return "harness_v2"
     return "harness_v3"
 
 
@@ -238,24 +229,19 @@ def harness_status(tenant_id: str = Query(...), user: User = Depends(get_current
 
     state = assembly_state(settings)
     runtime_ok, runtime_error, mcp_url, live = True, None, None, 0
-    if bool(getattr(settings, "harness_v3_enabled", False)):
-        try:
-            from staffdeck_harness.bridge.engine_host import get_runtime
+    try:
+        from staffdeck_harness.bridge.engine_host import get_runtime
 
-            rt = get_runtime(settings)
-            mcp_url, live = rt.mcp_url, len(rt.registry)
-        except EngineUnavailable as exc:
-            runtime_ok, runtime_error = False, exc.to_dict()
-    else:
-        # Harness v2 runs in-process: nothing to be "down".
-        runtime_ok = True
-        runtime_error = None
+        rt = get_runtime(settings)
+        mcp_url, live = rt.mcp_url, len(rt.registry)
+    except EngineUnavailable as exc:
+        runtime_ok, runtime_error = False, exc.to_dict()
     return StatusRead(
-        harness_v3_enabled=bool(getattr(settings, "harness_v3_enabled", False)),
+        harness_v3_enabled=True,
         security_profile=get_profile(settings).name,
         default_engine=_settings_engine(settings),
-        staff_allowlist=[x.strip() for x in str(getattr(settings, "harness_v3_staff_allowlist", "") or "").split(",") if x.strip()],
-        fallback_to_legacy=bool(getattr(settings, "harness_v3_fallback_to_v2", True)),
+        staff_allowlist=[],
+        fallback_to_legacy=False,
         harness_v3_root=str(getattr(settings, "harness_v3_root", "") or "") if is_admin_user(user) else "",
         harness_v3_home=str(getattr(settings, "harness_v3_home", "") or "") if is_admin_user(user) else "",
         runtime_ok=runtime_ok,

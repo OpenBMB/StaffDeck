@@ -52,6 +52,7 @@ class PhaseHost:
     idle: bool = False
     citations: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    image_payloads: tuple[Any, ...] = field(default_factory=tuple, repr=False)
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         from staffdeck_harness.bridge.control import all_tool_schemas
@@ -66,18 +67,19 @@ class PhaseHost:
 class EnginePhaseRunner:
     """Run one tool-less prompt on the turn's engine process and return the assistant text."""
 
-    def __init__(self, runtime: Any, pooled: Any, *, tenant_id: str, session_id: str, trace: TraceSink, cancelled: Callable[[], bool]):
+    def __init__(self, runtime: Any, pooled: Any, *, tenant_id: str, session_id: str, trace: TraceSink, cancelled: Callable[[], bool], image_payloads=()):
         self.runtime = runtime
         self.pooled = pooled
         self.tenant_id = tenant_id
         self.session_id = session_id
         self.trace = trace
         self.cancelled = cancelled
+        self.image_payloads = tuple(image_payloads)
 
     def prompt(self, *, phase: str, model_config: Any, system_text: str, user_text: str, engine_session: str, on_text: Callable[[str], None] | None = None) -> str:
         from staffdeck_harness.bridge.task_agent import IdlePhaseHost
 
-        host = PhaseHost(model_config=model_config, trace=self.trace, phase=phase)
+        host = PhaseHost(model_config=model_config, trace=self.trace, phase=phase, image_payloads=self.image_payloads)
         self.runtime.registry.rebind(self.pooled.token, host, None)
         started = time.monotonic()
         self.trace(f"harness_v3_{phase}_started", {"engine_session": engine_session})

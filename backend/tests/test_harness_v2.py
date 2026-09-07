@@ -190,8 +190,10 @@ def test_agent_loop_has_no_legacy_runtime_switch(monkeypatch) -> None:
         calls.append((request.channel, request.interaction_mode))
         return request.message
 
-    monkeypatch.setattr(HarnessV2Engine, "run", fake_run)
-    monkeypatch.setattr(HarnessV2Engine, "close", lambda self: None)
+    from staffdeck_harness.bridge.engine_host import EngineHost
+    monkeypatch.setattr(EngineHost, "open", lambda self, owner, request, agent_id:
+        SimpleNamespace(run=lambda req: fake_run(None, req), close=lambda: None,
+                        turn_record=None, session=None))
     engine = _test_engine()
     with Session(engine) as db:
         loop = AgentLoop(db)

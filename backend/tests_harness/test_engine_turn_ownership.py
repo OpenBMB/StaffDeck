@@ -176,27 +176,27 @@ def test_image_turn_routes_to_v2_and_records_fallback(monkeypatch):
     host = engine_host.EngineHost(_settings())
     req_img = SimpleNamespace(tenant_id="t1", session_id="s1", agent_id=None, attachments=[SimpleNamespace(kind="image", data_url="data:image/png;base64,AAAA")])
     req_txt = SimpleNamespace(tenant_id="t1", session_id="s1", agent_id=None, attachments=[SimpleNamespace(kind="pdf", data_url=None)])
-    assert host.selects_harness_v3(req_img, None) is False
+    assert host.selects_harness_v3(req_img, None) is True
     assert host.selects_harness_v3(req_txt, None) is True
-    assert host.engine_fallback_reason(req_img, None) == "image_attachments"
+    assert host.engine_fallback_reason(req_img, None) is None
     assert host.engine_fallback_reason(req_txt, None) is None
 
     recorded = []
     events = SimpleNamespace(execution_engine="harness_v3", record=lambda *a: recorded.append(a))
     loop = SimpleNamespace(db=None, events=events)
-    monkeypatch.setattr(engine_host, "HarnessV2Engine", lambda loop: "v2-engine")
-    assert host.open(loop, req_img, None) == "v2-engine"
-    assert events.execution_engine is None, "the turn is labelled v2, not v3"
-    assert recorded and recorded[0][2] == "harness_v3_fallback" and recorded[0][3]["reason"] == "image_attachments"
+    import staffdeck_harness.modules.registry as reg_mod
+    provider = SimpleNamespace(open=lambda *a: "v3-engine")
+    monkeypatch.setattr(reg_mod, "get_registry", lambda s: SimpleNamespace(get=lambda mid: SimpleNamespace(provider=provider)))
+    assert host.open(loop, req_img, None) == "v3-engine"
+    assert events.execution_engine == "harness_v3" and not recorded
     st = engine_host.fallback_state()
-    assert st["fallback_count"] == 1 and st["last_fallback"]["reason"] == "image_attachments"
+    assert st["fallback_count"] == 0
 
 
 def test_engine_unavailable_fallback_is_visible(monkeypatch):
     engine_host.reset_fallback_state()
     host = engine_host.EngineHost(_settings())
     req = SimpleNamespace(tenant_id="t1", session_id="s1", agent_id=None, attachments=[])
-    monkeypatch.setattr(engine_host, "HarnessV2Engine", lambda loop: "v2-engine")
     monkeypatch.setattr(engine_host, "get_registry", lambda s: SimpleNamespace(get=lambda mid: None), raising=False)
 
     from staffdeck_harness.contracts.errors import EngineUnavailable
@@ -210,9 +210,9 @@ def test_engine_unavailable_fallback_is_visible(monkeypatch):
     monkeypatch.setattr(reg_mod, "get_registry", lambda s: SimpleNamespace(get=lambda mid: None))
     recorded = []
     loop = SimpleNamespace(db=None, events=SimpleNamespace(execution_engine="harness_v3", record=lambda *a: recorded.append(a)))
-    assert host.open(loop, req, None) == "v2-engine"
-    assert recorded[0][2] == "harness_v3_fallback" and recorded[0][3]["reason"] == "engine_unavailable"
-    assert engine_host.fallback_state()["last_fallback"]["detail"].startswith("node missing")
+    with pytest.raises(EngineUnavailable):
+        host.open(loop, req, None)
+    assert not recorded and engine_host.fallback_state()["fallback_count"] == 0
 
 
 def test_engine_unavailable_without_fallback_raises(monkeypatch):

@@ -23,8 +23,8 @@ from app.core.graph_rules import GraphRules
 from app.core.harness_agent import HarnessExecutionCancelled
 from app.core.harness_session_lock import HarnessSessionBusy
 from app.core.harness_turn_store import HarnessTurnConflict
-from app.core.harness_v2_engine import (
-    HarnessV2Engine,
+from app.core.turn_coordinator import (
+    TurnCoordinator,
     _with_recoverable_first_session,
     get_or_create_harness_session,
 )
@@ -173,45 +173,20 @@ class AgentLoop:
     def _label_engine_for(self, request: ChatTurnRequest, chat_session: ChatSession | None) -> None:
         """Decide up front which engine this turn will run on so the very first events are labelled right."""
 
-        settings = get_settings()
-        label = "harness_v2"
-        if self._harness_v3_reachable(settings):
-            try:
-                from staffdeck_harness.bridge.engine_host import EngineHost
-
-                agent_id = request.agent_id or (chat_session.agent_id if chat_session is not None else None)
-                if EngineHost(settings).selects_harness_v3(request, agent_id, db=self.db):
-                    label = "harness_v3"
-            except Exception:  # pragma: no cover - labelling must never break a turn
-                label = "harness_v2"
+        label = "harness_v3"
         if hasattr(self.events, "execution_engine"):
-            self.events.execution_engine = None if label == "harness_v2" else label
+            self.events.execution_engine = label
 
     @staticmethod
     def _harness_v3_reachable(settings: Any) -> bool:
-        """Is the Harness v3 package worth consulting for this turn?
+        """All autonomous execution uses the registered v3 runtime."""
 
-        ``harness_v3_enabled`` is the deployment *default* engine; a per-staff choice may still
-        pick Harness v3 while the default is v2 (canary). So the package is consulted whenever the
-        engine is enabled globally *or* the admin console (per-staff choice) is on. A deployment
-        with both off never imports the package, so it never loads Node/MCP dependencies.
-        """
+        return True
 
-        return bool(getattr(settings, "harness_v3_enabled", False)) or bool(getattr(settings, "harness_admin_api_enabled", False))
-
-    def _open_engine(self, request: ChatTurnRequest) -> HarnessV2Engine:
-        # The Harness v3 engine lives in the parallel ``staffdeck_harness`` package and is
-        # only imported when the deployment opts in, so a legacy deployment
-        # never loads Node/MCP dependencies.
+    def _open_engine(self, request: ChatTurnRequest) -> TurnCoordinator:
+        # Fail closed if the runtime is missing; never open an older executor.
         settings = get_settings()
-        from staffdeck_harness.modules.registry import peek_registry
-
-        if not self._harness_v3_reachable(settings) and peek_registry() is None:
-            return HarnessV2Engine(self)
-        try:
-            from staffdeck_harness.bridge.engine_host import EngineHost
-        except ImportError:  # package not installed: legacy deployment
-            return HarnessV2Engine(self)
+        from staffdeck_harness.bridge.engine_host import EngineHost
 
         agent_id = request.agent_id
         if not agent_id and request.session_id and hasattr(self.db, "get"):
@@ -302,18 +277,18 @@ class AgentLoop:
         except Exception as exc:
             chat_session = engine.session
             user_message_id = engine.user_message_id
-            engine.mark_interrupted("HARNESS_V2_ERROR", str(exc))
+            engine.mark_interrupted("HARNESS_V3_ERROR", str(exc))
             chat_session = chat_session or self._get_or_create_session(request)
             self.events.record(
                 request.tenant_id,
                 chat_session.id,
                 "error_occurred",
-                {"code": "HARNESS_V2_ERROR", "message": str(exc)},
+                {"code": "HARNESS_V3_ERROR", "message": str(exc)},
             )
             reply = format_runtime_failure_reply(
-                "Harness v2 执行出错",
+                "Harness v3 执行出错",
                 exc,
-                "HARNESS_V2_ERROR",
+                "HARNESS_V3_ERROR",
                 "请查看执行记录或服务日志定位具体原因。",
             )
         finally:
@@ -377,7 +352,7 @@ class AgentLoop:
                     "sessionId": chat_session.id,
                     "turn_id": initial_turn_id,
                     "client_turn_id": request.client_turn_id,
-                    "execution_engine": "harness_v2",
+                    "execution_engine": "harness_v3",
                 },
             )
         yield self._stream_event(
@@ -387,7 +362,7 @@ class AgentLoop:
                 {
                     "sessionId": chat_session.id,
                     "client_turn_id": request.client_turn_id,
-                    "execution_engine": "harness_v2",
+                    "execution_engine": "harness_v3",
                 },
                 initial_turn_id,
             ),
@@ -396,7 +371,7 @@ class AgentLoop:
             chat_session,
             "planning",
             "正在规划本轮任务",
-            {"execution_engine": "harness_v2"},
+            {"execution_engine": "harness_v3"},
             user_message_id=initial_turn_id,
         )
         from app.core.reply_stream import ReplyStream
@@ -467,7 +442,7 @@ class AgentLoop:
                         "phase": "cancelled",
                         "text": CANCELLED_ASSISTANT_REPLY,
                         "client_turn_id": request.client_turn_id,
-                        "execution_engine": "harness_v2",
+                        "execution_engine": "harness_v3",
                     },
                     user_message_id or initial_turn_id,
                 ),
@@ -483,7 +458,7 @@ class AgentLoop:
                         "code": response.runtime_error_code,
                         "message": response.reply,
                         "client_turn_id": request.client_turn_id,
-                        "execution_engine": "harness_v2",
+                        "execution_engine": "harness_v3",
                     },
                     resolved_turn_id,
                 ),
@@ -496,7 +471,7 @@ class AgentLoop:
         end_event = self._stream_event(
             "stream_end",
             chat_session,
-            self._turn_payload({"execution_engine": "harness_v2"}, resolved_turn_id),
+            self._turn_payload({"execution_engine": "harness_v3"}, resolved_turn_id),
         )
         self.db.commit()
         yield end_event
@@ -506,7 +481,7 @@ class AgentLoop:
             self._turn_payload(
                 {
                     **response.model_dump(mode="json"),
-                    "execution_engine": "harness_v2",
+                    "execution_engine": "harness_v3",
                 },
                 resolved_turn_id,
             ),

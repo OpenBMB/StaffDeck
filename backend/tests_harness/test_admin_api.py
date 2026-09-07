@@ -20,6 +20,12 @@ from staffdeck_harness.security import reset_profile
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    from staffdeck_harness.runtime import assembly
+    from staffdeck_harness.bridge import engine_host
+    runtime = SimpleNamespace(mcp_url="http://127.0.0.1:9999/mcp", registry=[],
+        worker_config=SimpleNamespace(harness_v3_root=tmp_path, harness_v3_home=tmp_path))
+    monkeypatch.setattr(assembly, "get_runtime", lambda settings: runtime)
+    monkeypatch.setattr(engine_host, "get_runtime", lambda settings: runtime)
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("HARNESS_V3_ENABLED", "false")
     monkeypatch.setenv("HARNESS_ADMIN_API_ENABLED", "true")
@@ -64,7 +70,8 @@ def test_status_and_modules(ctx) -> None:
     assert body["modules_total"] >= 20
     assert body["default_engine"] in {"harness_v2", "harness_v3"}
     mods = c.get("/api/enterprise/harness/modules", params={"tenant_id": "tenant_demo"}, headers=headers).json()
-    assert any(m["module_id"] == "engine.harness_v2" for m in mods)
+    assert any(m["module_id"] == "engine.harness_v3" for m in mods)
+    assert not any(m["module_id"] == "engine.harness_v2" for m in mods)
     assert all(m["slot"] for m in mods)
     assert any(m["guarded"] and m["module_id"].startswith("channel.") for m in mods)
 
@@ -112,7 +119,7 @@ def test_assembly_config_save_restart_and_rollback(ctx, tmp_path, monkeypatch) -
     # bring the assembly up the way app.main does, so "applied" is populated
     assembly.start_harness_runtime(settings)
     st = c.get("/api/enterprise/harness/config", params={"tenant_id": "tenant_demo"}, headers=headers).json()
-    assert st["pending"] is False and st["applied"]["engine"] == "harness_v2"
+    assert st["pending"] is False and st["applied"]["engine"] == "harness_v3"
 
     # disabling a core module or an engine via the list is refused
     r = c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "disabled_modules": ["runtime.coordinator"]}, headers=headers)
@@ -407,7 +414,7 @@ def test_global_mutators_require_operator_tenant(ctx, tmp_path, monkeypatch) -> 
     get_settings.cache_clear()
     try:
         assert get_settings().harness_operator_tenants == "tenant_other"
-        r = c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v2"}, headers=headers)
+        r = c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v3"}, headers=headers)
         assert r.status_code == 403, r.text
         assert c.post("/api/enterprise/harness/restart", json={"tenant_id": "tenant_demo"}, headers=headers).status_code == 403
         assert c.post("/api/enterprise/harness/modules/inspect", json={"tenant_id": "tenant_demo", "spec": "x.y:register"}, headers=headers).status_code == 403
@@ -418,7 +425,7 @@ def test_global_mutators_require_operator_tenant(ctx, tmp_path, monkeypatch) -> 
         get_settings.cache_clear()
     # unset (single-operator deployment): the acting admin's tenant may change the runtime.
     # (STAFFDECK_HARNESS_RUNTIME_CONFIG keeps the saved assembly in tmp_path, not the repo.)
-    assert c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v2"}, headers=headers).status_code == 200
+    assert c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v3"}, headers=headers).status_code == 200
 
 
 def test_restart_reports_interrupted_turns_and_accepts_drain_timeout(ctx, tmp_path, monkeypatch) -> None:
@@ -439,17 +446,17 @@ def test_global_mutators_default_closed_when_process_hosts_several_tenants(ctx, 
     c, headers, db = ctx
     monkeypatch.setenv("STAFFDECK_HARNESS_RUNTIME_CONFIG", str(tmp_path / "rt.json"))
     get_settings.cache_clear()
-    assert c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v2"}, headers=headers).status_code == 200, "single tenant: its admin is the operator"
+    assert c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v3"}, headers=headers).status_code == 200, "single tenant: its admin is the operator"
     db.add(Tenant(id="tenant_other", name="Other"))
     db.commit()
-    r = c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v2"}, headers=headers)
+    r = c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v3"}, headers=headers)
     assert r.status_code == 403 and "HARNESS_OPERATOR_TENANTS" in r.text
     assert c.post("/api/enterprise/harness/restart", json={"tenant_id": "tenant_demo"}, headers=headers).status_code == 403
     # naming the operator tenant reopens it — for that tenant only
     monkeypatch.setenv("HARNESS_OPERATOR_TENANTS", "tenant_demo")
     get_settings.cache_clear()
     try:
-        assert c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v2"}, headers=headers).status_code == 200
+        assert c.put("/api/enterprise/harness/config", json={"tenant_id": "tenant_demo", "engine": "harness_v3"}, headers=headers).status_code == 200
     finally:
         monkeypatch.delenv("HARNESS_OPERATOR_TENANTS", raising=False)
         get_settings.cache_clear()

@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from copy import deepcopy
 from typing import Any, AsyncIterator, Callable, Iterator
 
 from starlette.requests import Request
@@ -71,6 +72,28 @@ def _dump(obj: Any) -> dict[str, Any]:
         except TypeError:
             return obj.model_dump()
     return {"raw": str(obj)}
+
+
+def _vision_messages(messages, payloads):
+    """Project validated current-turn images through the existing protocol adapters only.
+
+    Never mutate Node messages, replay old images, or persist raw data URLs in checkpoints.
+    The activation token scopes these bytes to the authorized Staff/turn/phase.
+    """
+    from app.core.harness_attachments import ValidatedTaskImagePayload
+
+    parts = [{"type": "image_url", "image_url": {"url": p.data_url}}
+             for p in payloads if isinstance(p, ValidatedTaskImagePayload)]
+    if not parts:
+        return messages
+    copied = deepcopy(messages)
+    target = next((m for m in reversed(copied) if m.get("role") == "user"), None)
+    if target is None:
+        target = {"role": "user", "content": []}
+        copied.append(target)
+    content = target.get("content")
+    target["content"] = ([{"type": "text", "text": content}] if isinstance(content, str) else list(content or [])) + parts
+    return copied
 
 
 class ModelGateway:
@@ -118,6 +141,7 @@ class ModelGateway:
             return _error(400, "UNSUPPORTED_PROTOCOL", f"Harness v3 无法使用该模型协议：{exc}")
 
         wire = self._wire_request(client, model_config, body)
+        wire["messages"] = _vision_messages(wire["messages"], getattr(act.host, "image_payloads", ()))
         allowed_names = getattr(act.host, "model_tool_names", None)
         if callable(allowed_names) and "tools" in wire:
             allowed = {f"mcp__staffdeck__{name}" for name in allowed_names()}

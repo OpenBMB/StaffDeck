@@ -122,16 +122,8 @@ def _activate(settings: Any, overrides: RuntimeOverrides, reg: ModuleRegistry, p
     install_registry(reg)
     install_profile(profile)
     info: dict[str, Any] = {"security_profile": profile.name, "modules": len(reg.describe()), "registry_generation": reg.generation}
-    if bool(getattr(settings, "harness_v3_enabled", False)):
-        try:
-            runtime = get_runtime(settings)
-            info.update({"mcp_url": runtime.mcp_url, "harness_v3_root": str(runtime.worker_config.harness_v3_root), "harness_v3_home": str(runtime.worker_config.harness_v3_home)})
-        except EngineUnavailable as exc:
-            if bool(getattr(settings, "harness_v3_fallback_to_v2", True)):
-                logger.warning("Harness v3 runtime unavailable (%s); turns fall back to Harness v2", exc)
-                info["runtime_error"] = exc.to_dict()
-            else:
-                raise
+    runtime = get_runtime(settings)
+    info.update({"mcp_url": runtime.mcp_url, "harness_v3_root": str(runtime.worker_config.harness_v3_root), "harness_v3_home": str(runtime.worker_config.harness_v3_home)})
     return info
 
 

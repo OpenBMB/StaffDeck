@@ -59,7 +59,7 @@ from app.general_skills import (
     GeneralSkillRunRequest,
     GeneralSkillRunResponse,
 )
-from app.general_skills.runner import GeneralSkillReader, GeneralSkillRunner
+from app.general_skills.runner import GeneralSkillReader
 from app.general_skills.schema import GeneralSkillFile
 from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.security.auth import get_current_user
@@ -718,12 +718,10 @@ def run_general_skill(
     _ensure_general_skill_visible(db, request.tenant_id, skill, request.agent_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
     skill_snapshot = _general_skill_snapshot(skill)
-    return _run_general_skill_operation(
-        skill_snapshot,
-        request,
-        model_config,
-        current_user.id,
-    )
+    if request.operation == "read":
+        return _run_general_skill_operation(skill_snapshot, request, model_config, current_user.id)
+    harness_request = _prepare_skill_execution(db, skill, request, current_user.id)
+    return _execute_skill_test(db, skill.slug, harness_request)
 
 
 @router.post("/{slug}/run/stream")
@@ -756,31 +754,9 @@ def run_general_skill_stream(
 
         return StreamingResponse(read_stream_events(), media_type="text/event-stream")
 
-    session_id = new_id("session")
-    client_turn_id = f"skill-test-{uuid.uuid4().hex}"
-    debug_session = ChatSession(
-        id=session_id,
-        tenant_id=request.tenant_id,
-        user_id=current_user.id,
-        agent_id=request.agent_id,
-        title=f"技能测试 · {skill.name}",
-        channel=GENERAL_SKILL_DEBUG_CHANNEL,
-    )
-    db.add(debug_session)
-    db.commit()
-
-    harness_request = ChatTurnRequest(
-        tenant_id=request.tenant_id,
-        session_id=session_id,
-        agent_id=request.agent_id,
-        model_config_id=request.model_config_id,
-        client_turn_id=client_turn_id,
-        user_id=current_user.id,
-        message=f"/skill {skill.slug} {request.query.strip()}",
-        channel=GENERAL_SKILL_DEBUG_CHANNEL,
-        message_visibility="internal",
-        debug=True,
-    )
+    harness_request = _prepare_skill_execution(db, skill, request, current_user.id)
+    session_id = harness_request.session_id
+    client_turn_id = harness_request.client_turn_id
 
     def stream_events() -> Iterator[str]:
         terminal: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
@@ -788,97 +764,119 @@ def run_general_skill_stream(
         def worker() -> None:
             try:
                 with Session(engine) as worker_db:
-                    response = AgentLoop(worker_db).handle_turn(harness_request)
-                    assistant = worker_db.exec(
-                        select(Message)
-                        .where(
-                            Message.tenant_id == request.tenant_id,
-                            Message.session_id == session_id,
-                            Message.role == "assistant",
-                        )
-                        .order_by(Message.created_at.desc())
-                    ).first()
-                    terminal.put(
-                        (
-                            "complete",
-                            _harness_skill_run_response(
-                                skill.slug,
-                                response,
-                                dict(assistant.metadata_json or {}) if assistant else {},
-                            ),
-                        )
-                    )
-            except Exception as exc:  # pragma: no cover - defensive stream boundary
+                    terminal.put(("complete", _execute_skill_test(worker_db, skill.slug, harness_request)))
+            except Exception as exc:
                 terminal.put(("error", {"message": str(exc)}))
 
         threading.Thread(target=worker, daemon=True).start()
-        yield _sse(
-            "stream_started",
-            {
-                "skill_slug": skill_snapshot.slug,
-                "operation": request.operation,
-                "execution_engine": "harness_v2",
-                "session_id": session_id,
-                "client_turn_id": client_turn_id,
-                "idle_timeout_seconds": GENERAL_SKILL_STREAM_IDLE_TIMEOUT_SECONDS,
-            },
-        )
-        last_event_at = time.monotonic()
-        last_heartbeat_at = 0.0
-        cursor: tuple[object, str] | None = None
-        pending_terminal: tuple[str, object] | None = None
-        with Session(engine) as poll_db:
-            while True:
-                rows = _skill_debug_events_after(
-                    poll_db,
-                    request.tenant_id,
-                    session_id,
-                    cursor,
-                )
-                for row in rows:
-                    cursor = (row.created_at, row.id)
-                    last_event_at = time.monotonic()
-                    yield _sse("trace", _skill_debug_trace(row))
-
-                if pending_terminal is None:
-                    try:
-                        pending_terminal = terminal.get_nowait()
-                    except queue.Empty:
-                        # The worker is still running; keep polling persisted trace events.
-                        pass
-                if pending_terminal is not None and not rows:
-                    event, payload = pending_terminal
-                    if isinstance(payload, GeneralSkillRunResponse):
-                        payload = payload.model_dump(mode="json")
-                    yield _sse(event, payload)
-                    return
-
-                now = time.monotonic()
-                if now - last_event_at > GENERAL_SKILL_STREAM_IDLE_TIMEOUT_SECONDS:
-                    yield _sse(
-                        "error",
-                        {
-                            "message": "技能测试 10 分钟内未收到新的执行事件，请检查模型配置或稍后重试。",
-                            "code": "general_skill_stream_timeout",
-                            "session_id": session_id,
-                            "client_turn_id": client_turn_id,
-                        },
-                    )
-                    return
-                if now - last_heartbeat_at >= 5:
-                    last_heartbeat_at = now
-                    yield _sse(
-                        "heartbeat",
-                        {
-                            "phase": "harness_v2",
-                            "session_id": session_id,
-                            "client_turn_id": client_turn_id,
-                        },
-                    )
-                time.sleep(0.1)
+        yield from _stream_skill_test_events(terminal, request, skill_snapshot, session_id, client_turn_id)
 
     return StreamingResponse(stream_events(), media_type="text/event-stream")
 
+
+def _prepare_skill_execution(db, skill, request, user_id):
+    session_id = new_id("session")
+    client_turn_id = f"skill-test-{uuid.uuid4().hex}"
+    debug_session = ChatSession(
+        id=session_id,
+        tenant_id=request.tenant_id,
+        user_id=user_id,
+        agent_id=request.agent_id,
+        title=f"技能测试 · {skill.name}",
+        channel=GENERAL_SKILL_DEBUG_CHANNEL,
+    )
+    db.add(debug_session)
+    db.commit()
+
+    return ChatTurnRequest(
+        tenant_id=request.tenant_id,
+        session_id=session_id,
+        agent_id=request.agent_id,
+        model_config_id=request.model_config_id,
+        client_turn_id=client_turn_id,
+        user_id=user_id,
+        message=f"/skill {skill.slug} {request.query.strip()}",
+        channel=GENERAL_SKILL_DEBUG_CHANNEL,
+        message_visibility="internal",
+        debug=True,
+    )
+
+
+
+def _execute_skill_test(db, slug, harness_request):
+    response = AgentLoop(db).handle_turn(harness_request)
+    assistant = db.exec(select(Message).where(
+        Message.tenant_id == harness_request.tenant_id,
+        Message.session_id == harness_request.session_id, Message.role == "assistant",
+    ).order_by(Message.created_at.desc())).first()
+    return _harness_skill_run_response(slug, response, dict(assistant.metadata_json or {}) if assistant else {})
+
+
+def _stream_skill_test_events(terminal, request, skill_snapshot, session_id, client_turn_id):
+    yield _sse(
+        "stream_started",
+        {
+            "skill_slug": skill_snapshot.slug,
+            "operation": request.operation,
+            "execution_engine": "harness_v3",
+            "session_id": session_id,
+            "client_turn_id": client_turn_id,
+            "idle_timeout_seconds": GENERAL_SKILL_STREAM_IDLE_TIMEOUT_SECONDS,
+        },
+    )
+    last_event_at = time.monotonic()
+    last_heartbeat_at = 0.0
+    cursor: tuple[object, str] | None = None
+    pending_terminal: tuple[str, object] | None = None
+    with Session(engine) as poll_db:
+        while True:
+            rows = _skill_debug_events_after(
+                poll_db,
+                request.tenant_id,
+                session_id,
+                cursor,
+            )
+            for row in rows:
+                cursor = (row.created_at, row.id)
+                last_event_at = time.monotonic()
+                yield _sse("trace", _skill_debug_trace(row))
+
+            if pending_terminal is None:
+                try:
+                    pending_terminal = terminal.get_nowait()
+                except queue.Empty:
+                    # The worker is still running; keep polling persisted trace events.
+                    pass
+            if pending_terminal is not None and not rows:
+                event, payload = pending_terminal
+                if isinstance(payload, GeneralSkillRunResponse):
+                    payload = payload.model_dump(mode="json")
+                yield _sse(event, payload)
+                return
+
+            now = time.monotonic()
+            if now - last_event_at > GENERAL_SKILL_STREAM_IDLE_TIMEOUT_SECONDS:
+                yield _sse(
+                    "error",
+                    {
+                        "message": "技能测试 10 分钟内未收到新的执行事件，请检查模型配置或稍后重试。",
+                        "code": "general_skill_stream_timeout",
+                        "session_id": session_id,
+                        "client_turn_id": client_turn_id,
+                    },
+                )
+                return
+            if now - last_heartbeat_at >= 5:
+                last_heartbeat_at = now
+                yield _sse(
+                    "heartbeat",
+                    {
+                        "phase": "harness_v3",
+                        "session_id": session_id,
+                        "client_turn_id": client_turn_id,
+                    },
+                )
+            time.sleep(0.1)
 
 def _skill_debug_events_after(
     db: Session,
@@ -912,7 +910,7 @@ def _skill_debug_trace(row: AgentEvent) -> dict[str, object]:
         "phase": phase,
         "message": message,
         "event_id": row.id,
-        "execution_engine": "harness_v2",
+        "execution_engine": "harness_v3",
     }
 
 
@@ -929,7 +927,7 @@ def _harness_skill_run_response(
         operation="execute",
         structured_result={
             "success": success,
-            "execution_engine": "harness_v2",
+            "execution_engine": "harness_v3",
             "session_id": response.session_id,
             "runtime_error_code": response.runtime_error_code,
             "step_result": (
@@ -958,14 +956,7 @@ def _run_general_skill_operation(
             for trace_item in response.execution_trace:
                 event_sink(trace_item)
         return response
-    return GeneralSkillRunner().run(
-        skill,
-        request.query,
-        model_config,
-        user_id,
-        request.max_attempts,
-        event_sink,
-    )
+    raise RuntimeError("Skill execution must use the unified Harness runtime; this helper only reads skills")
 
 
 def _get_general_skill(db: Session, tenant_id: str, slug: str) -> GeneralSkill:

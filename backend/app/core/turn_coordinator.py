@@ -21,13 +21,11 @@ from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.harness_agent import (
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
-    HarnessTaskAgent,
 )
 from app.core.harness_attachments import (
     materialize_task_attachments,
     validated_task_image_payloads,
 )
-from app.core.harness_capability_invoker import HarnessCapabilityInvoker
 from app.core.published_deliverables import list_published_deliverables
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
@@ -58,7 +56,7 @@ from app.core.task_request_compiler import (
     TaskExecutionResult,
     TaskRequestCompiler,
 )
-from app.core.turn_planner import TurnPlanner, turn_plan_router_decision
+from app.core.turn_planner import turn_plan_router_decision
 from app.db.models import (
     ChatSession,
     HarnessRunRecord,
@@ -209,10 +207,10 @@ class TurnCoordinator:
         self.sop = SopHost(SopDependencies(
             self.db, self.events, self.services.create_human_handoff_request,
         ), self.registry)
-        self.planner = TurnPlanner()
+        self.planner = None  # the runtime supplies model execution; policies remain reusable
         self.compiler = TaskRequestCompiler()
         self.manifests = CapabilityManifestBuilder(self.db)
-        self.task_agent = HarnessTaskAgent()
+        self.task_agent = None  # supplied by the selected runtime engine, never a legacy default
         self.store = TaskFrameStore(self.db)
         self.turn_store = HarnessTurnStore(self.db)
         self.session_leases = HarnessSessionLeaseStore(self.db)
@@ -427,7 +425,7 @@ class TurnCoordinator:
                 "message": request.message,
                 "channel": request.channel,
                 "user_id": request.user_id,
-                "execution_engine": "harness_v2",
+                "execution_engine": "harness_v3",
                 **(
                     {"message_visibility": request.message_visibility}
                     if request.message_visibility != "visible"
@@ -480,7 +478,7 @@ class TurnCoordinator:
                 "memory_recalled",
                 {
                     "memories": memory_context,
-                    "execution_engine": "harness_v2",
+                    "execution_engine": "harness_v3",
                 },
             )
         self.db.commit()
@@ -543,7 +541,7 @@ class TurnCoordinator:
                     **slot_hydration,
                     "source": "memory",
                     "turn_id": user_message.id,
-                    "execution_engine": "harness_v2",
+                    "execution_engine": "harness_v3",
                 },
             )
         router_decision = turn_plan_router_decision(plan)
@@ -554,7 +552,7 @@ class TurnCoordinator:
             {
                 **plan.model_dump(mode="json"),
                 "turn_id": user_message.id,
-                "execution_engine": "harness_v2",
+                "execution_engine": "harness_v3",
             },
         )
         # Keep the old public trace event while making the new planner explicit.
@@ -565,7 +563,7 @@ class TurnCoordinator:
             {
                 **router_decision.model_dump(mode="json"),
                 "turn_id": user_message.id,
-                "execution_engine": "harness_v2",
+                "execution_engine": "harness_v3",
             },
         )
         team_publish_result = None
@@ -612,7 +610,7 @@ class TurnCoordinator:
                 {
                     "selected_task_id": plan.selected_task_id,
                     "reason": plan.reason,
-                    "execution_engine": "harness_v2",
+                    "execution_engine": "harness_v3",
                 },
             )
 
@@ -651,7 +649,7 @@ class TurnCoordinator:
                     "turn_action_budget_exhausted",
                     {
                         "deferred_task_frame_ids": [item.task_id for item in deferred_rows],
-                        "execution_engine": "harness_v2",
+                        "execution_engine": "harness_v3",
                     },
                 )
                 self.db.commit()
@@ -673,7 +671,7 @@ class TurnCoordinator:
                     {
                         "task_frame_id": row.task_id,
                         "depends_on_task_ids": list(row.depends_on_json or []),
-                        "execution_engine": "harness_v2",
+                        "execution_engine": "harness_v3",
                     },
                 )
                 execution_results.append(waiting)
@@ -759,7 +757,7 @@ class TurnCoordinator:
                         {
                             "completed_task_frame_id": row.task_id,
                             "released_task_frame_ids": [item.task_id for item in released],
-                            "execution_engine": "harness_v2",
+                            "execution_engine": "harness_v3",
                         },
                     )
 
@@ -994,7 +992,7 @@ class TurnCoordinator:
                 "harness_max_actions": max_actions,
                 "agent_loop_id": agent_loop.id,
                 "agent_loop_kind": agent_loop.kind,
-                "execution_engine": "harness_v2",
+                "execution_engine": "harness_v3",
             },
         )
         remaining_actions = max_actions
@@ -1095,7 +1093,7 @@ class TurnCoordinator:
                         "task_frame_id": row.task_id,
                         "harness_run_id": run.id,
                         "agent_loop_id": agent_loop.id,
-                        "execution_engine": "harness_v2",
+                        "execution_engine": "harness_v3",
                     },
                 )
                 # Harness runs execute outside the response generator. Commit
@@ -1103,41 +1101,10 @@ class TurnCoordinator:
                 # running TaskFrame instead of revealing it only at the end.
                 self.db.commit()
 
-            invoker = HarnessCapabilityInvoker(
-                self.db,
-                tenant_id=request.tenant_id,
-                session=session,
-                task_frame_id=row.task_id,
-                model_config=model_config,
-                manifest=manifest,
-                active_skill=active_skill,
-                active_step_id=frame.target_step_id,
-                agent_id=session.agent_id,
-                run_id=run.id,
-                initially_activated_names=(requirement.capability_manifest.allowed_names()),
-                is_cancelled=lambda: self._is_cancelled(request, session),
-                ensure_execution_lease=lambda: self._renew_execution_leases(row),
-                trace_sink=trace,
-                step_deadline_monotonic=step_deadline_monotonic,
-            )
-            if self.registry is not None:
-                from staffdeck_harness.capabilities.legacy_adapter import bind
-
-                invoker.module_invoke = bind(
-                    self,
-                    request,
-                    session,
-                    row,
-                    run,
-                    active_skill,
-                    model_config,
-                    trace,
-                    step_deadline_monotonic,
-                )
             result = self.task_agent.run(
                 requirement,
                 model_config,
-                invoker.invoke,
+                None,  # capability dispatch belongs to the runtime's existing CapabilityHost
                 max_actions=remaining_actions,
                 trace_sink=trace,
                 is_cancelled=lambda: self._is_cancelled(request, session),
@@ -1169,7 +1136,6 @@ class TurnCoordinator:
                     )
                     result = deferred_result
             loop_checkpoint = dict(result.loop_checkpoint or {})
-            _merge_discovered_artifacts(result, invoker.discover_artifacts())
             loop_checkpoint["artifacts"] = list(result.artifacts)
             self.store.save_agent_loop_checkpoint(
                 agent_loop,
@@ -1268,7 +1234,7 @@ class TurnCoordinator:
                 "error": combined.error,
                 "agent_loop_id": agent_loop.id,
                 "agent_loop_status": agent_loop.status,
-                "execution_engine": "harness_v2",
+                "execution_engine": "harness_v3",
             },
         )
         self.db.commit()
@@ -1983,4 +1949,7 @@ def _dependency_order(
 
 
 class HarnessV2Engine(TurnCoordinator):
-    """Compatibility entry point for the built-in v2 model collaborators."""
+    """Retired name retained only to fail explicitly for stale imports/configurations."""
+
+    def __init__(self, *args, **kwargs):
+        raise RuntimeError("HARNESS_V2_RETIRED: use the registered Harness v3 runtime")

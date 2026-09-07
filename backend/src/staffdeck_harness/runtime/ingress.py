@@ -18,7 +18,7 @@ def accept(registry: Any, request: Any) -> Any:
         else "public_api"
         if channel == "public_api"
         else "web"
-        if channel in {"web", "human_handoff_resume"}
+        if channel in {"web", "human_handoff_resume", "skill_test", "enterprise_debug", "team"}
         else None
     )
     if name is None:

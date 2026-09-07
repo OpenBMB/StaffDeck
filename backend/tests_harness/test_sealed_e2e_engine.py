@@ -296,6 +296,97 @@ def test_real_engine_interrupts_unavailable_capability_loop_and_keeps_checkpoint
     assert loops and any(row.checkpoint_json for row in loops)
 
 
+def test_image_turn_uses_v3_for_planning_and_execution_without_legacy_fallback(db, fake_model, monkeypatch):
+    import base64
+    from app.core.turn_coordinator import HarnessV2Engine
+    from app.session.session_schema import ChatAttachmentRead
+    from app.db.models import HarnessAgentLoopRecord
+
+    def retired(*a, **k):
+        raise AssertionError("image requests must never open the retired engine")
+
+    monkeypatch.setattr(HarnessV2Engine, "__init__", retired)
+    model, base = fake_model
+    agent, user = _seed(db, base)
+    encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    data_url = "data:image/png;base64," + encoded
+    response = AgentLoop(db).handle_turn(ChatTurnRequest(tenant_id="tenant_demo", agent_id=agent.id,
+        user_id=user.id, message="根据这张图片回答问题", channel="web", client_turn_id="image-v3",
+        attachments=[ChatAttachmentRead(id="image1", filename="pixel.png", kind="image", content_type="image/png",
+                                       size=len(base64.b64decode(encoded)), data_url=data_url)]))
+    assert response.runtime_error_code is None, response.reply
+    assert len(model.requests) >= 2
+    phase_requests = [request for request in model.requests if any(
+        marker in json.dumps(request["messages"], ensure_ascii=False)
+        for marker in ("TurnPlanner", "平台系统工具")
+    )]
+    assert len(phase_requests) >= 2
+    for index, request in enumerate(phase_requests):
+        assert any(part.get("type") == "image_url" and part["image_url"]["url"] == data_url
+                   for msg in request["messages"] if isinstance(msg.get("content"), list)
+                   for part in msg["content"] if isinstance(part, dict)), {
+                       "request": index, "roles": [m.get("role") for m in request["messages"]],
+                       "types": [type(m.get("content")).__name__ for m in request["messages"]],
+                       "planner": "TurnPlanner" in json.dumps(request["messages"]),
+                   }
+    for row in db.exec(select(HarnessAgentLoopRecord)).all():
+        assert encoded not in json.dumps(row.checkpoint_json)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_real_skill_test_modes_use_one_v3_chain_and_never_legacy_runner(db, fake_model, monkeypatch, streaming):
+    import asyncio
+    from app.api import general_skills as api
+    from app.db.models import GeneralSkill
+    from app.general_skills.runner import GeneralSkillRunner
+    from app.general_skills.schema import GeneralSkillRunRequest
+
+    model, base = fake_model
+    agent, user = _seed(db, base)
+    skill = GeneralSkill(id="gs-real", tenant_id="tenant_demo", slug="shared-test", name="Shared test",
+        skill_markdown="# Shared test\nRead this instruction and answer SKILL-V3-OK.", status="published")
+    db.add(skill)
+    db.commit()
+    ensure_private_resource_binding(db, "tenant_demo", agent.id, "general_skill", skill.id)
+    db.commit()
+
+    def retired(*a, **k):
+        raise AssertionError("GeneralSkillRunner cannot be used by either endpoint")
+
+    monkeypatch.setattr(GeneralSkillRunner, "run", retired)
+    monkeypatch.setattr(api, "engine", db.get_bind())
+    original = model.reply
+
+    def reply(body):
+        if "TurnPlanner" in json.dumps(body.get("messages")):
+            return original(body)
+        model.requests.append(body)
+        if not any(m.get("role") == "tool" for m in body["messages"]):
+            return [_chunk("skill", {"tool_calls": [{"index": 0, "id": "skill-read", "type": "function",
+                "function": {"name": "mcp__staffdeck__general_skill_read",
+                    "arguments": json.dumps({"skill_id": skill.id, "query": "follow instructions"})}}]}),
+                    _chunk("skill", {}, "tool_calls")]
+        return [_chunk("reply", {"content": "SKILL-V3-OK"}), _chunk("reply", {}, "stop")]
+
+    model.reply = reply
+    request = GeneralSkillRunRequest(tenant_id="tenant_demo", agent_id=agent.id,
+                                     query="follow instructions", model_config_id="model_1")
+    result = (api.run_general_skill_stream if streaming else api.run_general_skill)(
+        skill.slug, request, db=db, current_user=user)
+    if streaming:
+        async def consume():
+            return [chunk async for chunk in result.body_iterator]
+        chunks = asyncio.run(consume())
+        text = "".join(chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks)
+        assert "SKILL-V3-OK" in text and '"execution_engine": "harness_v3"' in text
+    else:
+        assert result.reply == "SKILL-V3-OK"
+    assert model.requests
+    invocations = db.exec(select(HarnessInvocationRecord)).all()
+    assert any(row.status == "completed" and "general_skill" in row.tool_name for row in invocations)
+    assert all((row.approval_json or {}).get("engine") == "harness_v3" for row in invocations)
+
+
 class ContinuityModel:
     """The nonce exists only in a prior assistant response, never in later user input."""
     def __init__(self):

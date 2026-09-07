@@ -273,18 +273,12 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
 
 
 def _attachment_notice(image_payloads: list[Any]) -> str:
-    """Images never enter the engine subprocess.
-
-    The engine's DeepSeek chat adapter rejects image content unless the model is declared
-    image-capable in *its* catalog and a Files API is reachable — neither is true behind the
-    bridge's gateway. Turns that carry images are routed to Harness v2 by ``EngineHost`` before
-    they get here; this notice only covers the defensive case where one still arrives.
-    """
+    """Validated images reach the selected model through the gateway, outside Node history."""
 
     n = sum(1 for p in image_payloads or [] if p is not None)
     if not n:
         return ""
-    return f"（本轮有 {n} 张图片附件，Harness v3 引擎不读取图片内容；如需看图请使用 Harness v2 引擎。）"
+    return f"（本轮有 {n} 张图片附件，已由 StaffDeck 模型网关作为视觉输入提供给当前模型；不要通过文本推测图片内容。）"
 
 
 class HarnessV3TaskAgent:
@@ -396,6 +390,7 @@ class HarnessV3TaskAgent:
         hook_lock = threading.Lock()
         host.hooks = hooks
         self._host = host
+        host.image_payloads = tuple(image_payloads or t.image_payloads or ())
         host.results = list(context.capability_results)
         host.citations = list(context.citations)
         host.evidence = list(context.evidence)

@@ -61,11 +61,9 @@ class Settings(BaseSettings):
     # 回滚为逐行展示的旧样式；binding 的 config_json.compact_trace=false 可对单个
     # 绑定回滚。
     channel_feishu_trace_compact_sop: bool = True
-    # Harness v3 engine switch. Off keeps the in-process Harness v2
-    # loop untouched. On routes step execution to a Harness v3 worker via the
-    # staffdeck_harness parallel package; harness_v3_staff_allowlist limits the rollout to
-    # specific agent ids (comma separated) for canary testing.
-    harness_v3_enabled: bool = False
+    # Legacy configuration fields are read for migration, not engine selection.
+    # Runtime assembly always enables the registered v3 engine.
+    harness_v3_enabled: bool = True
     # Exposes /api/enterprise/harness (module registry, snapshot preview, ledger
     # reconciliation, per-staff engine) even when turns still run on legacy, so
     # operators can inspect the pluggable tree before switching engines.
@@ -85,7 +83,7 @@ class Settings(BaseSettings):
     harness_v3_node_bin: str = "node"
     harness_v3_permission_mode: str = "danger-full-access"
     harness_v3_staff_allowlist: str = ""
-    harness_v3_fallback_to_v2: bool = True
+    harness_v3_fallback_to_v2: bool = False  # deprecated; no execution path reads this switch
     # Comma-separated tenant ids whose *admins* may mutate process-global runtime state
     # (assembly config, restart, module placement/install, permission-centre test). Empty means
     # the deployment is treated as single-operator: the tenant of the acting admin may change the

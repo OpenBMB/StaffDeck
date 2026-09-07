@@ -95,7 +95,7 @@ def test_manifest_engine_harness_v3(registry, module):
     assert m.hooks == ()
     assert isinstance(item.provider, HarnessV3BridgeEngine)
     assert item.provider.module_id == MODULE_ID
-    assert item.enabled is False, "harness_v3_enabled=False → Harness v3 installed but inactive"
+    assert item.enabled is True, "v3 is the only built-in execution engine"
 
     d = _described(registry)
     assert d["kind"] == "T"
@@ -107,7 +107,7 @@ def test_manifest_engine_harness_v3(registry, module):
     assert d["policy_actions"] == ["staff.use/v1"]
     assert d["requires"] == [] and d["hooks"] == []
     assert d["guarded"] is True, "declares policy actions → must sit under a PEP-bound slot"
-    assert d["enabled"] is False
+    assert d["enabled"] is True
 
 
 def test_manifest_engine_harness_v3_policy_actions_need_guarded_slot(settings):
@@ -165,13 +165,16 @@ def test_disable_engine_harness_v3_activated_by_harness_v3_enabled(settings):
     item = reg.get(MODULE_ID)
     assert item is not None and item.enabled is True
     assert reg.provider(SlotName.RUNTIME_ENGINE).manifest.module_id == MODULE_ID
-    assert reg.get("engine.harness_v2").enabled is False
+    assert reg.get("engine.harness_v2") is None
 
 
 def test_disable_engine_harness_v3_two_active_engines_conflict(settings):
     settings.harness_v3_enabled = True
     reg = discover_and_install(ModuleRegistry(), settings)
-    reg.set_enabled("engine.harness_v2", True)
+    from staffdeck_harness.modules.registry import manifest
+    reg.install(manifest("test.other_engine", "Other", kind=ModuleKind.TRUSTED,
+                         slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"]),
+                SimpleNamespace(open=lambda *a: None), slot=SlotName.RUNTIME_ENGINE)
     with pytest.raises(SlotConflict) as exc:
         reg.seal()
     assert "runtime.engine" in str(exc.value)
@@ -235,11 +238,10 @@ def test_provider_engine_harness_v3_open_returns_harness_v3_engine_with_stub_run
 
 
 def test_provider_engine_harness_v3_engine_host_falls_back_to_legacy_when_unavailable(module, fake_loop, monkeypatch, settings, empty_root_settings):
-    """EngineHost resolves engine.harness_v3 from the registry and falls back to Harness v2 on EngineUnavailable."""
+    """Legacy flags cannot enable a fallback when the v3 runtime is unavailable."""
 
-    from app.core.harness_v2_engine import HarnessV2Engine
     from app.session.session_schema import ChatTurnRequest
-    from staffdeck_harness.bridge.engine_host import HarnessV3Engine, EngineHost
+    from staffdeck_harness.bridge.engine_host import EngineHost
     from staffdeck_harness.modules import registry as registry_mod
 
     settings.harness_v3_enabled = True
@@ -248,8 +250,8 @@ def test_provider_engine_harness_v3_engine_host_falls_back_to_legacy_when_unavai
     request = ChatTurnRequest(tenant_id="t1", user_id="u1", agent_id="a1", message="hi")
 
     settings.harness_v3_fallback_to_v2 = True
-    engine = EngineHost(settings).open(fake_loop, request, "a1")
-    assert type(engine) is HarnessV2Engine and not isinstance(engine, HarnessV3Engine)
+    with pytest.raises(EngineUnavailable):
+        EngineHost(settings).open(fake_loop, request, "a1")
 
     settings.harness_v3_fallback_to_v2 = False
     with pytest.raises(EngineUnavailable):

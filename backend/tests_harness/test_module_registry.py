@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from staffdeck_harness.contracts.manifest import SlotName
 from staffdeck_harness.modules import ModuleRegistry, discover_and_install, get_registry, reset_registry
-from staffdeck_harness.modules.builtin import HarnessV3BridgeEngine, LegacyEngine
+from staffdeck_harness.modules.builtin import HarnessV3BridgeEngine
 from staffdeck_harness.modules.registry import RegistrySealed, SlotConflict, UnsatisfiedRequirement
 
 
@@ -23,7 +24,7 @@ def test_builtin_registry_seals_with_exactly_one_engine_and_pep() -> None:
     reg.mark_guarded(SlotName.RUNTIME_ENGINE)
     reg.seal()
     engines = reg.providers(SlotName.RUNTIME_ENGINE)
-    assert len(engines) == 1 and engines[0].manifest.module_id == "engine.harness_v2"
+    assert len(engines) == 1 and engines[0].manifest.module_id == "engine.harness_v3"
     pep = reg.providers(SlotName.SECURITY_PEP)
     assert len(pep) == 1 and pep[0].manifest.module_id == "security.oss_local"
     # every enabled module with policy_actions is under a guarded slot
@@ -33,7 +34,7 @@ def test_builtin_registry_seals_with_exactly_one_engine_and_pep() -> None:
     from staffdeck_harness.contracts.manifest import ModuleManifest
 
     with pytest.raises(RegistrySealed):
-        reg.install(ModuleManifest(module_id="engine.harness_v2", name="x", version="1", kind="K", contract_version="v1", attaches_to=[SlotName.RUNTIME_ENGINE]), LegacyEngine(), slot=SlotName.RUNTIME_ENGINE)
+        reg.install(ModuleManifest(module_id="test.engine", name="x", version="1", kind="K", contract_version="v1", attaches_to=[SlotName.RUNTIME_ENGINE]), object(), slot=SlotName.RUNTIME_ENGINE)
 
 
 def test_harness_v3_enabled_selects_engine_harness_v3() -> None:
@@ -67,7 +68,7 @@ def test_disabled_module_list_toggles_before_seal() -> None:
 
 def test_conflicting_two_engines_is_rejected() -> None:
     reg = ModuleRegistry()
-    reg.install(__import__("staffdeck_harness.modules.registry", fromlist=["manifest"]).manifest("test.e1", "E1", kind="K", slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"]), LegacyEngine(), slot=SlotName.RUNTIME_ENGINE)
+    reg.install(__import__("staffdeck_harness.modules.registry", fromlist=["manifest"]).manifest("test.e1", "E1", kind="K", slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"]), SimpleNamespace(open=lambda *a: None), slot=SlotName.RUNTIME_ENGINE)
     reg.install(__import__("staffdeck_harness.modules.registry", fromlist=["manifest"]).manifest("test.e2", "E2", kind="T", slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), HarnessV3BridgeEngine(), slot=SlotName.RUNTIME_ENGINE)
     reg.mark_guarded(SlotName.RUNTIME_ENGINE)
     with pytest.raises(SlotConflict):

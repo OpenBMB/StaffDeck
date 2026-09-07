@@ -95,15 +95,6 @@ class FeedbackObserver:
 
 # --------------------------------------------------------------------------- engines
 
-class LegacyEngine:
-    module_id = "engine.harness_v2"
-
-    def open(self, loop: Any, request: Any, agent_id: str | None) -> Any:
-        from app.core.harness_v2_engine import HarnessV2Engine
-
-        return HarnessV2Engine(loop)
-
-
 class HarnessV3BridgeEngine:
     module_id = "engine.harness_v3"
 
@@ -139,7 +130,6 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
 
     settings = ctx.get("settings")
     profile_name = str(getattr(settings, "security_profile", None) or "OSS_LOCAL").upper()
-    harness_v3_enabled = bool(getattr(settings, "harness_v3_enabled", False))
 
     # L3 capability providers (attach to staff.capability; SOP slots reuse them through the compiler)
     registry.install(manifest("knowledge.local", "知识库检索", summary="在员工绑定的知识库中检索资料，并把引用来源带回回答。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_KNOWLEDGE], provides=["knowledge.search/v1"], policy_actions=["knowledge.search/v1"]), KnowledgeProvider(), slot=SlotName.STAFF_CAPABILITY)
@@ -203,8 +193,7 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
     registry.install(manifest("observer.feedback", "反馈收集", summary="收集用户反馈，供后续分析与改进。", kind=ModuleKind.CODE, slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"]), FeedbackObserver(), slot=SlotName.EVENT_OBSERVER)
 
     # engines: exactly one active
-    registry.install(manifest("engine.harness_v2", "Harness v2 引擎", summary="平台内置的上一代执行引擎，在主进程内运行。", kind=ModuleKind.TRUSTED, slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"]), LegacyEngine(), slot=SlotName.RUNTIME_ENGINE, enabled=not harness_v3_enabled)
-    registry.install(manifest("engine.harness_v3", "Harness v3 引擎", summary="新一代执行引擎，以独立进程运行，负责规划步骤和调用能力。", kind=ModuleKind.TRUSTED, slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), HarnessV3BridgeEngine(), slot=SlotName.RUNTIME_ENGINE, enabled=harness_v3_enabled)
+    registry.install(manifest("engine.harness_v3", "Harness v3 引擎", summary="以独立进程执行统一的任务循环。", kind=ModuleKind.TRUSTED, slots=[SlotName.RUNTIME_ENGINE], provides=["runtime.turn/v1"], policy_actions=["staff.use/v1"]), HarnessV3BridgeEngine(), slot=SlotName.RUNTIME_ENGINE)
     registry.mark_guarded(SlotName.RUNTIME_ENGINE)
 
     # security: exactly one active

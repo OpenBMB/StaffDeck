@@ -952,21 +952,20 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
     captured_model_ids: list[str] = []
     read_queries: list[str] = []
 
-    def fake_run(
-        self, skill, query, model_config, user_id="enterprise_demo", max_attempts=5, event_sink=None
-    ):  # noqa: ANN001
+    def fake_run(db, slug, request):
+        model_config = sys.modules[run_general_skill.__module__]._get_request_model(db, request.tenant_id, request.model_config_id)
         captured_model_ids.append(model_config.id)
         return {
-            "skill_slug": skill.slug,
+            "skill_slug": slug,
             "execution_trace": [],
             "generated_code": "",
             "stdout": "",
             "stderr": "",
             "structured_result": {"success": True},
-            "reply": f"{query} ok",
+            "reply": f"{request.message.split(' ', 2)[2]} ok",
         }
 
-    monkeypatch.setattr(GeneralSkillRunner, "run", fake_run)
+    monkeypatch.setattr(sys.modules[run_general_skill.__module__], "_execute_skill_test", fake_run)
 
     def fake_read(self, skill, query, model_config, **kwargs):  # noqa: ANN001
         read_queries.append(query)
@@ -1086,7 +1085,8 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
-async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypatch) -> None:
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_general_skill_test_modes_share_the_harness_execution(monkeypatch, streaming) -> None:
     test_engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -1158,7 +1158,7 @@ async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypat
             db,
             _admin_user(),
         )
-        response = run_general_skill_stream(
+        response = (run_general_skill_stream if streaming else run_general_skill)(
             imported.slug,
             GeneralSkillRunRequest(
                 tenant_id="tenant_demo",
@@ -1169,10 +1169,11 @@ async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypat
             db,
             _admin_user(),
         )
-        chunks = [chunk async for chunk in response.body_iterator]
-        body = "".join(
-            chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk for chunk in chunks
-        )
+        if streaming:
+            chunks = [chunk async for chunk in response.body_iterator]
+            body = "".join(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk for chunk in chunks)
+        else:
+            body = response.model_dump_json()
         debug_session = db.exec(
             select(ChatSession).where(ChatSession.channel == "skill_test")
         ).one()
@@ -1181,10 +1182,11 @@ async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypat
     assert captured_requests[0].message == "/skill weather-harness 北京天气"
     assert captured_requests[0].message_visibility == "internal"
     assert debug_session.id == captured_requests[0].session_id
-    assert '"execution_engine": "harness_v2"' in body
-    assert "已加载技能说明" in body
+    if streaming:
+        assert '"execution_engine": "harness_v3"' in body
+        assert "已加载技能说明" in body
     assert "北京天气晴朗" in body
-    assert '"path": "weather.txt"' in body
+    assert "weather.txt" in body
 
 
 def test_non_overall_agent_delete_hides_general_skill_only_in_branch() -> None:

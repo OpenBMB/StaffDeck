@@ -1417,7 +1417,7 @@ def _execute_team_synthesis(
         reply,
         user_message_id=run.source_turn_id,
         assistant_metadata_override={
-            "execution_engine": "harness_v2",
+            "execution_engine": "harness_v3",
             "team_run_id": run.id,
             "team_synthesis": True,
             "knowledge_citations": member_citations or list(result.citations),
