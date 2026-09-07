@@ -218,8 +218,10 @@ def _model_thinking(model_config: ModelConfig) -> tuple[str, str]:
     return "", effort
 
 
-def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_contexts: list[dict[str, Any]], attachments_text: str) -> str:
-    parts: list[str] = []
+def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_contexts: list[dict[str, Any]], attachments_text: str, *, system_tools: set[str] | None = None) -> str:
+    from staffdeck_harness.bridge.tool_guide import system_tool_guide
+
+    parts: list[str] = [system_tool_guide(requirement.kind, system_tools)]
     for c in decision_contexts:
         text = str(c.get("text") or "").strip()
         if text:
@@ -449,7 +451,8 @@ class HarnessV3TaskAgent:
             pre = self.pipeline.run("pre_step", ctx1, state)
             if pre.kind == "deny":
                 return finish(self._failed(requirement, "PRE_STEP_DENIED", pre.reason or "pre-step denied", actions=0))
-            prompt = _step_prompt(requirement, state, list(pre.contexts), t.attachments_text)
+            prompt = _step_prompt(requirement, state, list(pre.contexts), t.attachments_text,
+                                  system_tools=execution_host.model_tool_names())
             notice = _attachment_notice(list(image_payloads or []) or list(t.image_payloads))
             content_blocks = [{"type": "text", "text": prompt + ("\n\n" + notice if notice else "")}]
 

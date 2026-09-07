@@ -45,6 +45,17 @@ logger = logging.getLogger(__name__)
 
 SIDE_EFFECTING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
+
+def _invalid_arguments(name: str, error: Any) -> ModuleResult:
+    path = list(error.absolute_path)
+    location = ".".join(str(part) for part in path) or "arguments"
+    return ModuleResult(success=False, error={
+        "code": "INVALID_ARGUMENTS", "retryable": False, "executed": False,
+        "message": f"{name} 的参数在 {location} 未通过 {error.validator} 校验，本次未执行业务操作。请对照初始工具定义或 capability_describe 的 schema 修正字段、类型和嵌套层级。",
+        "next_action": "correct_arguments",
+        "details": {"path": path, "rule": error.validator, "expected": error.validator_value},
+    })
+
 # Stable model-facing proxy tools. Names are wire-stable; the engine sees only these.
 PROXY_TOOLS: dict[str, dict[str, Any]] = {
     "capability_invoke": {
@@ -254,23 +265,35 @@ class CapabilityHost:
         try:
             self.fence.check(self.slot)
         except ActivationFenced as exc:
-            return ModuleResult.fail(exc.code, exc.message), None
+            return ModuleResult(success=False, error={"code": exc.code,
+                "message": "当前执行上下文已关闭或失效，本次未执行业务操作。停止使用旧上下文，等待重新装配。",
+                "retryable": False, "executed": False, "next_action": "replan"}), None
         spec = PROXY_TOOLS.get(proxy_name)
         if spec is None:
-            return ModuleResult.fail("TOOL_NOT_AVAILABLE", f"未知能力代理 {proxy_name}"), None
+            return ModuleResult(success=False, error={"code": "TOOL_NOT_AVAILABLE",
+                "message": f"未知系统工具 {proxy_name}，本次未执行业务操作。请使用初始 prompt 中列出的 mcp__staffdeck__ 系统接口；业务名称不能当作代理函数名。",
+                "retryable": False, "executed": False, "next_action": "check_system_tool_guide"}), None
+        from jsonschema import ValidationError, validate
+
+        try:
+            validate(dict(arguments), spec["parameters"])
+        except ValidationError as exc:
+            return _invalid_arguments(proxy_name, exc), None
         op = spec["operation"]
         if op == "capability.invoke/v1":
             operation = str(arguments.get("operation") or "")
             contract = self.registry.operations.get(operation) if self.registry else None
             if contract is None:
-                return ModuleResult.fail("UNSUPPORTED_CAPABILITY", "扩展能力操作未注册"), None
+                return ModuleResult(success=False, error={"code": "UNSUPPORTED_CAPABILITY",
+                    "message": "该扩展操作未注册，本次未执行业务操作。先调用 capability_describe，使用返回的版本化 operation 和资源 id，不要猜测操作名。",
+                    "retryable": False, "executed": False, "next_action": "capability_describe"}), None
             from jsonschema import ValidationError, validate
 
             args = dict(arguments.get("arguments") or {})
             try:
                 validate(args, dict(contract.parameters))
             except ValidationError as exc:
-                return ModuleResult.fail("INVALID_ARGUMENTS", exc.message), None
+                return _invalid_arguments(operation, exc), None
             return self.invoke(ModuleInvocation(invocation_id=ctx.trace_id or f"hcall_{time.time_ns()}", module_id=operation.split(".")[0], operation=operation, arguments=args, context=ctx, binding_id=str(arguments.get("resource_id") or ""), side_effecting=contract.side_effecting))
         if op == "capability.describe/v1":
             return ModuleResult.ok(self.describe(str(arguments.get("kind") or "all"))), None
@@ -328,7 +351,10 @@ class CapabilityHost:
             self.fence.check(self.slot)
             self._fence_resource(inv)
         except ActivationFenced as exc:
-            return ModuleResult.fail(exc.code, exc.message), None
+            return ModuleResult(success=False, error={"code": exc.code, "message": exc.message,
+                "retryable": False, "executed": False,
+                "next_action": "check_binding" if exc.details.get("reason") == "RESOURCE_NOT_BOUND" else "replan",
+                "details": dict(exc.details)}), None
 
         # 1b. pre_tool hooks. The default ``activation.allowlist`` narrows against the frozen
         #     snapshot; a ``capability.pep`` handler marks intent. Hooks can deny a call before it
@@ -449,14 +475,17 @@ class CapabilityHost:
         tool_ops = {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"}
         operation_ids = {g.resource_id for g in self.slot.grants() if g.operation == inv.operation or (inv.operation in tool_ops and g.operation in tool_ops)}
         if not operation_ids or (inv.binding_id and inv.binding_id not in operation_ids):
-            raise ActivationFenced("operation is not activated for this resource")
+            raise ActivationFenced("该资源未绑定到当前步骤的此项操作，本次未执行业务操作。先用 capability_describe 核对资源 id 与 operation；仍未列出时需修正 SOP/员工绑定，不要直接重试。",
+                                   details={"reason": "RESOURCE_NOT_BOUND", "operation": inv.operation, "resource_id": inv.binding_id})
         if rtype == "knowledge_base":
             # knowledge picks from the allowlist inside the facade; only require non-empty
             if not allowed.get("knowledge_base"):
-                raise ActivationFenced("no knowledge base is activated for this turn")
+                raise ActivationFenced("当前步骤没有绑定知识库。请检查 SOP/员工的知识库绑定；capability_describe 不会新增授权。",
+                                       details={"reason": "RESOURCE_NOT_BOUND", "resource_type": "knowledge_base"})
             return
         if not inv.binding_id or inv.binding_id not in allowed.get(rtype, set()):
-            raise ActivationFenced(f"{rtype} {inv.binding_id!r} is not in the activated set for this turn")
+            raise ActivationFenced("资源 id 为空或不在当前步骤的绑定集合中，本次未执行业务操作。请从 capability_describe 返回的 id 选择资源，不使用展示名称代替 id。",
+                                   details={"reason": "RESOURCE_NOT_BOUND", "resource_type": rtype, "resource_id": inv.binding_id})
 
     def _pep(self, inv: ModuleInvocation) -> None:
         """Host-side policy check, run before ``_dispatch``.

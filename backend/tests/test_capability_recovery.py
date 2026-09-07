@@ -92,6 +92,8 @@ def test_automatic_description_never_bypasses_permission_or_snapshot(monkeypatch
         lambda n, a: calls.append(n) or describe_result,
         catalog=[CapabilityCatalogEntry(capability_id="compute", name="compute_quota", kind="tool")])
     assert calls == ["capability_describe"] and result.status == "awaiting_user"
+    expected_code = "PERMISSION_DENIED" if not describe_result["success"] else "CAPABILITY_SNAPSHOT_CHANGED"
+    assert result.error["details"]["cause_code"] == expected_code
 
 
 def test_resume_preserves_original_intent_but_injects_latest_confirmation(monkeypatch):

@@ -121,6 +121,7 @@ class HarnessTaskAgent:
 
         recovery = CapabilityRecovery()
         auto_described: set[str] = set()
+        description_errors: dict[str, dict[str, Any]] = {}
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
         pending_actions: list[HarnessAction] = []
 
@@ -391,9 +392,14 @@ class HarnessTaskAgent:
 
             tool_name = str(action.tool_name or "").strip()
             if not tool_name or tool_name not in allowed_names:
-                error = {"code": "TOOL_NOT_AVAILABLE", "retryable": False,
-                         "message": "该能力不在当前可调用清单中。请先通过 capability_search/capability_describe 核对名称、绑定和参数；不要直接重复调用。"}
                 catalog_names = {entry.name for entry in requirement.capability_manifest.catalog}
+                known = tool_name in catalog_names or tool_name in requirement.required_capability_names
+                error = {"code": "CAPABILITY_NOT_ACTIVATED" if known else "TOOL_NOT_AVAILABLE",
+                         "retryable": False, "executed": False,
+                         "next_action": "capability_describe" if known else "capability_search",
+                         "message": ("该能力尚未展开，本次未执行业务操作。先调用 capability_describe 获取 schema，再构造参数。"
+                                     if known else "当前可见清单中未找到该能力，本次未执行业务操作。先用 capability_search 核对准确名称与绑定，不要原样重试。")}
+                error = description_errors.get(tool_name, error)
                 if (tool_name in catalog_names or tool_name in requirement.required_capability_names) and (
                     tool_name not in auto_described and len(auto_described) < 2 and "capability_describe" in allowed_names
                 ):
@@ -414,6 +420,15 @@ class HarnessTaskAgent:
                                    "success": bool(described.get("success")), "error": described.get("error"), "automatic": True})
                     if tool_name in activated:
                         error = {"code": "CAPABILITY_SCHEMA_LOADED", "message": "已通过权限校验展开该能力。本次尚未执行业务调用，请依据返回的 schema 和当前 known_slots 构造真实参数后再调用。"}
+                    elif described.get("success") is not True and isinstance(described.get("error"), dict):
+                        error = {**described["error"], "executed": False}
+                    elif described.get("success") is True:
+                        error = {"code": "CAPABILITY_SNAPSHOT_CHANGED", "retryable": False, "executed": False,
+                                 "next_action": "replan", "message": "能力描述与当前快照或请求名称不一致，本次未执行业务操作。请重新装配当前步骤，不在旧快照中重复尝试。"}
+                    if tool_name not in activated:
+                        # Keep the authoritative denial/revision error on later attempts. Do not
+                        # downgrade it to "not loaded", or reset the repeated-failure counter.
+                        description_errors[tool_name] = error
                 transcript.append(
                     {
                         "role": "tool",

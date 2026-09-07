@@ -173,18 +173,21 @@ class HarnessCapabilityInvoker:
         if descriptor is None:
             return _failure(
                 "TOOL_NOT_AVAILABLE",
-                "该能力不在当前 TaskFrame 的冻结清单中。",
+                "当前 TaskFrame 的可见清单中未找到该能力。先通过 capability_search 核对准确名称和绑定；本次未执行业务操作。",
+                executed=False, next_action="capability_search",
             )
         if name not in self._activated_names:
             return _failure(
                 "CAPABILITY_NOT_ACTIVATED",
-                "该能力尚未在当前 AgentLoop 中展开；请先调用 capability_describe。",
+                "该能力已在目录中，但尚未展开。先调用 capability_describe 获取完整 schema，再按定义调用；本次未执行业务操作。",
+                executed=False, next_action="capability_describe",
             )
         current_descriptor = self._currently_authorized_descriptor(descriptor)
         if current_descriptor is None:
             return _failure(
                 "CAPABILITY_AUTHORIZATION_REVOKED",
-                "该能力在当前 HarnessRun 执行前已被撤权、归档或改为不可用。",
+                "该能力的授权或配置已变化，当前执行被拒绝。请检查权限或绑定后重新装配，不要通过其他工具绕过；本次未执行业务操作。",
+                executed=False, next_action="check_authorization",
             )
         self._raise_if_cancelled()
         logical_action_key = self._logical_action_key(
@@ -726,8 +729,10 @@ class HarnessCapabilityInvoker:
         )
         if not activated:
             return _failure(
-                "CAPABILITY_NOT_AVAILABLE",
-                "请求的能力不存在或已不可用。",
+                "CAPABILITY_AUTHORIZATION_REVOKED" if revoked else "CAPABILITY_NOT_AVAILABLE",
+                "请求能力的授权或配置已失效，请检查权限或绑定后重新装配。" if revoked else "当前可见目录中未找到请求的能力，请通过 capability_search 核对名称或 ID。",
+                executed=False, next_action="check_authorization" if revoked else "capability_search",
+                not_found=not_found, revoked=revoked,
             )
         return {
             "success": True,
