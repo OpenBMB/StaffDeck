@@ -1528,11 +1528,24 @@ def approve_application(
     #    （凭证来源 Authorization: Bearer；实测云端 System 模式不回带明文，
     #    需要在本系统内展示/管理明文的场景必须由服务端生成并持有）
     api_key = _generate_api_key()
+    # 消费者描述用 users 表的 display_name@username（display_name 缺失时回退 username）
+    applicant = db.get(User, row.user_id) if row.user_id else None
+    if applicant is None and row.username:
+        applicant = db.exec(
+            select(User).where(
+                User.tenant_id == request.tenant_id,
+                User.username == row.username,
+            )
+        ).first()
+    applicant_username = (applicant.username if applicant else None) or row.username or row.user_id
+    applicant_display = (
+        (applicant.display_name or "").strip() if applicant else ""
+    ) or applicant_username
     try:
         consumer_id = client.create_consumer(
             name=consumer_name,
             api_key=api_key,
-            description=f"审批创建 · 申请人 {row.username or row.user_id}",
+            description=f"{applicant_display}@{applicant_username}",
         )
     except (AliyunApigError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail=f"阿里云创建消费者失败：{exc}") from exc
