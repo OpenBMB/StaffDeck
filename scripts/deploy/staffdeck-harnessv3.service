@@ -1,0 +1,21 @@
+[Unit]
+Description=Staffdeck Harness v3 isolated instance (/dsh)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=heli
+Group=staff
+WorkingDirectory=/data/Staffdeck_Harnessv3/backend
+EnvironmentFile=/data/Staffdeck_Harnessv3/deploy/runtime.env
+Environment=PYTHONPATH=/data/Staffdeck_Harnessv3/engine/deepseek-harness-0.1.2-alpha.2/python/sdk-runtime/src
+Environment=PATH=/data/Staffdeck_Harnessv3/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/data/Staffdeck_Harnessv3/.venv/bin/python -m uvicorn single_port_app:app --host 127.0.0.1 --port 10186 --root-path /dsh
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=45
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

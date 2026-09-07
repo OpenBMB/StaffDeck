@@ -1,11 +1,12 @@
 import { getEnterpriseAuthSession } from '../auth';
+import { APP_BASE } from '../lib/app-path';
 
 const resolveApiBase = () => {
   if (import.meta.env.VITE_API_BASE_URL) {
     return import.meta.env.VITE_API_BASE_URL;
   }
 
-  return '';
+  return APP_BASE;
 };
 
 const API_BASE = resolveApiBase();

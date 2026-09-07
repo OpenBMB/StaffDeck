@@ -22,13 +22,14 @@ import {
 } from '../auth';
 import LanguageSwitcher from './LanguageSwitcher';
 import AccountApiKeyDialog from './AccountApiKeyDialog';
+import { APP_BASE, appPath } from '@/lib/app-path';
 
 /** 只允许 http/https/data:image/blob 协议的图片地址,其余一律视为无效。 */
 function safeImageUrl(value: string): string {
   const text = value.trim();
   if (!text) return '';
   try {
-    const parsed = new URL(text, window.location.origin);
+    const parsed = new URL(appPath(text), window.location.origin);
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.href;
     if (parsed.protocol === 'blob:') return parsed.href;
     if (parsed.protocol === 'data:' && /^data:image\//i.test(text)) return text;
@@ -123,7 +124,7 @@ export default function AppHeader({
       return;
     }
     try {
-      const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+      const apiBase = import.meta.env.VITE_API_BASE_URL || APP_BASE;
       const response = await fetch(`${apiBase}/api/auth/me/avatar`, {
         headers: { Authorization: `Bearer ${session.token}` },
       });
@@ -176,7 +177,7 @@ export default function AppHeader({
       const session = getEnterpriseAuthSession();
       const form = new FormData();
       form.append('file', file);
-      const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+      const apiBase = import.meta.env.VITE_API_BASE_URL || APP_BASE;
       const response = await fetch(`${apiBase}/api/auth/me/avatar`, {
         method: 'PUT',
         headers: session?.token ? { Authorization: `Bearer ${session.token}` } : {},
