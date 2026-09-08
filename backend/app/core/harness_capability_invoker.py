@@ -60,8 +60,8 @@ from app.harness import (
     register_skill_script_tools,
     snapshot_harness_workspace,
 )
-from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
+from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
@@ -318,6 +318,25 @@ class HarnessCapabilityInvoker:
         descriptor: CapabilityDescriptor,
         arguments: dict[str, Any],
     ) -> str | None:
+        if descriptor.kind == "internal" and descriptor.name == "lark_cli":
+            from app.lark_cli.policy import logical_write_signature
+
+            signature = logical_write_signature(arguments)
+            if signature is None:
+                return None
+            canonical = json.dumps(
+                {
+                    "tenant_id": self.tenant_id,
+                    "task_frame_id": self.task_frame_id,
+                    "step_id": self.active_step_id,
+                    "tool_id": "builtin.lark_cli",
+                    "signature": signature,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         if descriptor.kind != "tool":
             return None
         tool = self.db.get(Tool, descriptor.capability_id)
@@ -503,6 +522,19 @@ class HarnessCapabilityInvoker:
             return self._list_published_deliverables(arguments)
         if name == "read_published_deliverable":
             return self._read_published_deliverable(arguments)
+        if name == "lark_cli":
+            from app.lark_cli.service import invoke_lark_cli
+
+            return invoke_lark_cli(
+                self.db,
+                tenant_id=self.tenant_id,
+                session=self.session,
+                task_frame_id=self.task_frame_id,
+                agent_id=self.agent_id,
+                arguments=arguments,
+                active_skill=self.active_skill,
+                active_step_id=self.active_step_id,
+            )
         return _failure(
             "UNSUPPORTED_INTERNAL_CAPABILITY",
             "不支持的 Harness 内部能力。",
@@ -1512,9 +1544,24 @@ def _audit_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
             for token in ("content", "secret", "token", "password", "api_key")
         ):
             audited[str(key)] = "<redacted>"
+        elif isinstance(value, list):
+            audited[str(key)] = _redact_secret_flag_values(value)
         else:
             audited[str(key)] = value
     return audited
+
+
+def _redact_secret_flag_values(items: list[Any]) -> list[Any]:
+    """argv 风格列表里跟在敏感 flag（如 --app-secret）后的值不落审计记录。"""
+
+    redacted = list(items)
+    for index, token in enumerate(redacted[:-1]):
+        if not isinstance(token, str) or not token.startswith("-"):
+            continue
+        lowered = token.lower()
+        if any(part in lowered for part in ("secret", "token", "password")):
+            redacted[index + 1] = "<redacted>"
+    return redacted
 
 
 def _audit_result(result: dict[str, Any]) -> dict[str, Any]:

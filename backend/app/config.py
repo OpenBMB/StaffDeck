@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     codex_a2a_workspace_root: str = ""
     codex_a2a_timeout_seconds: float = 1800.0
     codex_a2a_token: str = ""
+    # 飞书官方 lark-cli 集成（app/lark_cli/）。开启即进入能力清单；应用凭据
+    # 与用户登录都在对话中完成（config init / auth login 设备码），无需预置
+    # 配置或飞书渠道绑定。
+    lark_cli_enabled: bool = True
+    # 二进制供给见 lark_cli/provision.py：懒加载（首次调用时装，非启动时），
+    # 装到用户数据目录。关掉自动安装则必须自备二进制并指定 binary_path。
+    lark_cli_auto_install: bool = True
+    lark_cli_binary_path: str = ""
     tool_base_url: str = "http://localhost:5173"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     general_skill_runtime_python: str = ""

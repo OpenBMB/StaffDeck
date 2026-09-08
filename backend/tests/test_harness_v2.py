@@ -4,7 +4,7 @@ import hashlib
 import json
 import sys
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -3378,6 +3378,57 @@ def test_invalid_action_protocol_failure_keeps_sop_loop_recoverable() -> None:
     assert _is_recoverable_action_protocol_failure(business_failure) is False
 
 
+def test_resumed_agent_sees_latest_user_reply(monkeypatch) -> None:
+    """从暂停恢复时，用户的新回复必须出现在内层对话记录里。"""
+
+    actions = iter(
+        [
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "好的",
+                "task_summary": "完成",
+            },
+        ]
+    )
+    payloads: list[dict[str, object]] = []
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            payloads.append(deepcopy(payload))
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    requirement = TaskRequirement(
+        task_frame_id="task-resume",
+        kind="sop",
+        goal="继续",
+        source_user_message="提交",
+        capability_manifest=CapabilityManifest(),
+    )
+    checkpoint = {
+        "task_frame_id": "task-resume",
+        "step_id": "",
+        "transcript": [
+            {"role": "assistant", "action": "finish", "status": "awaiting_user"},
+        ],
+    }
+    HarnessTaskAgent().run(
+        requirement,
+        _model_config(),
+        lambda name, arguments: {"success": True},
+        max_actions=2,
+        checkpoint=checkpoint,
+    )
+    transcript = payloads[0]["harness_transcript"]
+    assert {"role": "user", "content": "提交"} in transcript
+
+
 def test_failed_following_sop_step_keeps_completed_checkpoint_reply() -> None:
     completed = TaskExecutionResult(
         task_frame_id="task-price-compare",
@@ -3401,7 +3452,10 @@ def test_failed_following_sop_step_keeps_completed_checkpoint_reply() -> None:
     )
 
     assert deferred.status == "action_budget"
-    assert deferred.reply_fragment == completed.reply_fragment
+    # 保留已完成节点的回复，但必须说明后续步骤已暂停排队（真实案例：
+    # 前瞻式回复"将进入正式提交步骤"曾让用户误以为会自动继续）。
+    assert deferred.reply_fragment.startswith(completed.reply_fragment)
+    assert "回复任意消息即可继续" in deferred.reply_fragment
     assert deferred.next_step_id is None
     assert deferred.error == failed.error
     assert deferred.action_count == 1
@@ -4115,6 +4169,83 @@ def test_harness_agent_cannot_skip_required_sop_tool(
     transcript = payloads[1]["harness_transcript"]
     assert isinstance(transcript, list)
     assert transcript[-1]["result"]["error"]["code"] == ("REQUIRED_CAPABILITY_NOT_INVOKED")
+
+
+def test_harness_agent_blocks_failed_finish_without_attempting_required_tool(
+    monkeypatch,
+) -> None:
+    """模型未在本节点尝试强制能力就 finish(failed) 时打回一次（真实案例：
+    提交节点带着上一步骤的报错直接宣告失败）；实际尝试后允许如实失败。"""
+
+    actions = iter(
+        [
+            {
+                "action": "finish",
+                "status": "failed",
+                "reply_fragment": "提交被拒绝，任务失败。",
+                "task_summary": "未尝试就失败",
+            },
+            {
+                "action": "tool",
+                "tool_name": "lark_cli",
+                "arguments": {"args": ["approval", "instances", "create"]},
+            },
+            {
+                "action": "finish",
+                "status": "failed",
+                "reply_fragment": "提交经尝试后仍失败。",
+                "task_summary": "尝试后失败",
+            },
+        ]
+    )
+    payloads: list[dict[str, object]] = []
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            payloads.append(deepcopy(payload))
+            return next(actions)
+
+    calls: list[str] = []
+
+    def invoke_tool(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        calls.append(name)
+        return {"success": False, "error": {"code": "SERVER_REJECTED"}}
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    requirement = TaskRequirement(
+        task_frame_id="task-submit-node",
+        kind="sop",
+        goal="完成提交节点",
+        required_capability_names=["lark_cli"],
+        capability_manifest=CapabilityManifest(
+            available=[
+                CapabilityDescriptor(
+                    capability_id="builtin.lark_cli",
+                    name="lark_cli",
+                    kind="internal",
+                )
+            ]
+        ),
+    )
+
+    result = HarnessTaskAgent().run(
+        requirement,
+        _model_config(),
+        invoke_tool,
+        max_actions=5,
+    )
+
+    # 第一次 failed finish 被打回并要求实际调用；尝试失败后允许如实失败。
+    assert calls == ["lark_cli"]
+    assert result.status == "failed"
+    assert result.reply_fragment == "提交经尝试后仍失败。"
+    transcript = payloads[1]["harness_transcript"]
+    assert transcript[-1]["result"]["error"]["code"] == "REQUIRED_CAPABILITY_NOT_ATTEMPTED"
 
 
 def test_harness_agent_requires_the_configured_knowledge_base(monkeypatch) -> None:
@@ -5220,3 +5351,32 @@ def test_agent_loop_transcript_compacts_old_tool_payloads_but_keeps_skill_instru
     assert "content" not in old_read["result"]["data"]
     assert old_read["result"]["data"]["continuation_token"] == "next"
     assert old_read["result"]["history_receipt"]["omitted_chars"] > 20_000
+
+
+def test_current_time_uses_client_timezone_with_safe_fallback() -> None:
+    """注入的时间必须是用户所在时区：错误时区的时间比不注入更危险
+    （看起来权威，模型不会质疑）。非法时区回退服务端本地时区而非报错。"""
+
+    from app.core.task_request_compiler import _current_time_text
+
+    shanghai = _current_time_text("Asia/Shanghai")
+    honolulu = _current_time_text("Pacific/Honolulu")
+    assert "+08:00" in shanghai
+    assert "-10:00" in honolulu
+    # 同一时刻的两个时区可能落在不同日期——这正是必须按用户时区注入的原因。
+    assert shanghai[:10] >= honolulu[:10]
+
+    for bad in ("", "   ", "Not/AZone", "…"):
+        text = _current_time_text(bad)
+        assert datetime.fromisoformat(text.split("（")[0]).tzinfo is not None, bad
+
+
+def test_compile_threads_client_timezone_into_requirement() -> None:
+    requirement = TaskRequestCompiler().compile(
+        PlannedTaskFrame(task_id="task-tz", kind="conversation"),
+        ChatSession(id="s-tz", tenant_id="t1"),
+        None,
+        CapabilityManifest(),
+        client_timezone="Asia/Shanghai",
+    )
+    assert "+08:00" in requirement.current_time

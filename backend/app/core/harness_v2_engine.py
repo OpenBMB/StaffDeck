@@ -869,12 +869,15 @@ class HarnessV2Engine:
                 ],
                 attachment_descriptors,
                 published_deliverables,
+                # 驱动本次执行的是当前这条用户消息。长驻 SOP 帧跨回合恢复
+                # 时若改用创建该帧的老消息，会顶掉用户的最新回复（真实案例：
+                # 「提交」被首句需求顶掉，恢复的 agent 看不到而重复提问）。
+                # 原始意图仍在 user_intent 与 slots 里，不丢。
                 source_user_message=(
-                    request.message
-                    if row.source_turn_id == self.user_message_id
-                    else _source_user_message(self.db, row)
+                    request.message.strip() or _source_user_message(self.db, row)
                 ),
                 out_of_scope_task_intents=_sibling_task_intents(self.db, row),
+                client_timezone=request.client_timezone,
             )
             if (
                 self.slash_command
@@ -1567,10 +1570,17 @@ def _defer_failed_step_after_completed_checkpoint(
         for summary in (checkpoint.task_summary.strip(), failure_summary)
         if summary
     ]
+    # 上一节点的回复可能带有"接下来将…"式的前瞻表述；后续步骤实际已
+    # 暂停排队、要等下一条用户消息才继续，必须向用户说清（真实案例：
+    # 用户看到"将进入正式提交步骤"以为会自动提交，实际什么都没发生）。
+    reply = checkpoint.reply_fragment.rstrip()
+    suffix = "（本轮执行到此暂停，剩余步骤已排队；回复任意消息即可继续。）"
+    if suffix not in reply:
+        reply = f"{reply}\n\n{suffix}"
     return result.model_copy(
         update={
             "status": "action_budget",
-            "reply_fragment": checkpoint.reply_fragment,
+            "reply_fragment": reply,
             "next_step_id": None,
             "task_summary": "；".join(dict.fromkeys(summaries)),
         }

@@ -44,6 +44,7 @@ RESERVED_HARNESS_CAPABILITY_NAMES = {
     "exec_command",
     "run_skill_script",
     "knowledge_search",
+    "lark_cli",
 }
 
 
@@ -70,6 +71,12 @@ class CapabilityManifestBuilder:
         unavailable: list[CapabilityDescriptor] = []
 
         available.extend(_internal_capability_descriptors())
+        lark_descriptor = _lark_cli_descriptor(self.db, tenant_id, agent_id)
+        if lark_descriptor is not None:
+            if lark_descriptor.available:
+                available.append(lark_descriptor)
+            else:
+                unavailable.append(lark_descriptor)
         ui_config = self.db.get(UIConfig, tenant_id)
         sandbox_enabled = bool(getattr(ui_config, "sandbox_enabled", False))
 
@@ -353,6 +360,34 @@ class CapabilityManifestBuilder:
                     )
                 )
         return unavailable
+
+
+def _lark_cli_descriptor(
+    db: Session, tenant_id: str, agent_id: str | None
+) -> CapabilityDescriptor | None:
+    """settings 未开启时返回 None（清单完全不出现，保持既有行为）。
+
+    开启即视为可用：应用凭据除 settings / 渠道绑定外，还可在对话内通过
+    ``config init`` 现场建立（含 ``--new`` 创建新应用），无法在编译清单时
+    预判缺失，缺凭据的具体指引由 service 层以可恢复错误给出。
+    """
+
+    from app.config import get_settings
+    from app.lark_cli.service import LARK_CLI_DESCRIPTION, LARK_CLI_INPUT_SCHEMA
+
+    del db, tenant_id, agent_id  # 凭据可对话内建立后不再需要预检数据库。
+    settings = get_settings()
+    if not settings.lark_cli_enabled:
+        return None
+    return CapabilityDescriptor(
+        capability_id="builtin.lark_cli",
+        name="lark_cli",
+        kind="internal",
+        description=LARK_CLI_DESCRIPTION,
+        input_schema=dict(LARK_CLI_INPUT_SCHEMA),
+        metadata={"provider": "builtin.lark_cli", "side_effect": "write"},
+        available=True,
+    )
 
 
 def _internal_capability_descriptors() -> list[CapabilityDescriptor]:

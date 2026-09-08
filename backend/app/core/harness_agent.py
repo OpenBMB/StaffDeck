@@ -79,6 +79,21 @@ class HarnessTaskAgent:
             and str(checkpoint.get("step_id") or "") == current_step_id
         )
         transcript = _dict_items(checkpoint.get("transcript")) if same_frame else []
+        # 从暂停恢复时，把用户的最新回复显式写进内层对话记录：仅靠
+        # requirement.source_user_message 字段太不显眼，实测模型会忽略它
+        # 而重复上一轮的提问（真实案例：确认暂停点反复索要确认）。
+        latest_user_message = str(requirement.source_user_message or "").strip()
+        if same_frame and transcript and latest_user_message:
+            previous_user_entry = next(
+                (
+                    str(item.get("content") or "")
+                    for item in reversed(transcript)
+                    if item.get("role") == "user"
+                ),
+                None,
+            )
+            if previous_user_entry != latest_user_message:
+                transcript.append({"role": "user", "content": latest_user_message})
         citations = _dict_items(checkpoint.get("citations")) if same_frame else []
         evidence_results = (
             _dict_items(checkpoint.get("evidence_results")) if same_frame else []
@@ -110,6 +125,8 @@ class HarnessTaskAgent:
         # checkpoint made a later user turn inherit an obsolete failure even
         # after its inputs or external state had changed.
         non_retryable_action_signatures: set[str] = set()
+        # 强制能力从未尝试就 finish(failed) 只拦一次，避免与固执模型互相死锁。
+        failed_finish_without_attempt_blocked = False
         allowed_names = requirement.capability_manifest.allowed_names()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
         pending_actions: list[HarnessAction] = []
@@ -369,6 +386,65 @@ class HarnessTaskAgent:
                             },
                         )
                     continue
+                # 真实案例：提交节点的模型带着上一步骤的工具报错直接
+                # finish(failed)，全程没在本节点尝试过强制能力。失败结论
+                # 必须建立在真实尝试之上，先打回一次要求实际调用。
+                if (
+                    action.status == "failed"
+                    and missing_capabilities
+                    and not failed_finish_without_attempt_blocked
+                ):
+                    attempted = {
+                        str(item.get("tool_name") or "")
+                        for item in capability_results
+                        if isinstance(item, dict)
+                    }
+                    unattempted = [
+                        name
+                        for name in missing_capabilities
+                        if not name.startswith("knowledge_search:")
+                        and name not in attempted
+                    ]
+                    if unattempted:
+                        failed_finish_without_attempt_blocked = True
+                        transcript.extend(
+                            [
+                                {
+                                    "role": "assistant",
+                                    "action": "finish",
+                                    "status": "failed",
+                                },
+                                {
+                                    "role": "tool",
+                                    "tool_name": "harness_requirement_check",
+                                    "result": {
+                                        "success": False,
+                                        "error": {
+                                            "code": (
+                                                "REQUIRED_CAPABILITY_NOT_ATTEMPTED"
+                                            ),
+                                            "message": (
+                                                "当前 SOP 节点的强制能力在本节点内"
+                                                "尚未尝试调用，不能直接宣告失败："
+                                                + "、".join(unattempted)
+                                                + "。请先实际调用，再依据其真实"
+                                                "结果决定完成或失败。"
+                                            ),
+                                        },
+                                    },
+                                },
+                            ]
+                        )
+                        if trace_sink:
+                            trace_sink(
+                                "harness_completion_blocked",
+                                {
+                                    "iteration": iteration,
+                                    "reason": "required_capability_not_attempted",
+                                    "missing_capabilities": unattempted,
+                                },
+                            )
+                        continue
                 return finish(_finish_result(
                     requirement,
                     action,
