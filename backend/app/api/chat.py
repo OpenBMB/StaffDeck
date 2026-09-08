@@ -20,6 +20,7 @@ from starlette.background import BackgroundTask
 
 from app.agents.branching import model_for_agent, visible_published_skills
 from app.channels.service_outbox import stage_channel_delivery
+from app.chat_pubsub import RelaySubscriber, publish_relay_wake
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
 from app.core.capability_manifest import CapabilityManifestBuilder
@@ -99,6 +100,8 @@ CANCELLED_ASSISTANT_REPLY = "已停止生成"
 INTERRUPTED_ASSISTANT_REPLY = "本次响应中断，请重试发送。"
 STREAM_REPLY_CHUNK_SIZE = 96
 STREAM_RELAY_POLL_SECONDS = 0.08
+# Redis Pub/Sub 推送模式下的兜底 DB 轮询间隔（推送负责实时性，轮询只兜底丢消息）
+STREAM_RELAY_IDLE_POLL_SECONDS = 1.0
 STREAM_RELAY_HEARTBEAT_SECONDS = 5.0
 STREAM_RELAY_IDLE_TIMEOUT_SECONDS = 660.0
 STREAM_INTERRUPTED_TRACEBACK_CHAR_LIMIT = 6000
@@ -1391,6 +1394,7 @@ def chat_stream(
     def stream_events() -> Iterator[str]:
         nonlocal initial_cursor
         relay_ready.wait(15)
+        subscriber = RelaySubscriber()
         deadline = time.monotonic() + STREAM_RELAY_IDLE_TIMEOUT_SECONDS
         last_heartbeat_at = time.monotonic()
         terminal_sent = False
@@ -1422,8 +1426,10 @@ def chat_stream(
                     deadline = time.monotonic() + STREAM_RELAY_IDLE_TIMEOUT_SECONDS
                     last_heartbeat_at = time.monotonic()
             if terminal_sent and worker_done.is_set() and not emitted:
+                subscriber.close()
                 return
             if worker_done.is_set() and not emitted:
+                subscriber.close()
                 return
             if time.monotonic() > deadline:
                 if session_id:
@@ -1439,6 +1445,7 @@ def chat_stream(
                             )
                             timeout_db.commit()
                     continue
+                subscriber.close()
                 return
             now = time.monotonic()
             if now - last_heartbeat_at >= STREAM_RELAY_HEARTBEAT_SECONDS:
@@ -1450,7 +1457,18 @@ def chat_stream(
                         "sessionId": session_id or request.session_id or "",
                     },
                 )
-            time.sleep(STREAM_RELAY_POLL_SECONDS)
+            # 等待方式二选一：
+            # - Redis 可用且已有会话：阻塞等 Pub/Sub 推送（实时唤醒），
+            #   兜底间隔 STREAM_RELAY_IDLE_POLL_SECONDS 轮询一次防丢消息；
+            #   终态已发但 worker 尚未退出时用短等待尽快收尾；
+            # - Redis 不可用或会话未建立：保持原 0.08s 轮询节奏
+            if subscriber.active and session_id:
+                subscriber.wait(
+                    session_id,
+                    timeout=0.05 if terminal_sent else STREAM_RELAY_IDLE_POLL_SECONDS,
+                )
+            else:
+                time.sleep(STREAM_RELAY_POLL_SECONDS)
 
     return StreamingResponse(stream_events(), media_type="text/event-stream")
 
@@ -1911,6 +1929,9 @@ def _persist_relay_only_event(
         )
     )
     db.commit()
+    # relay 行已提交：通过 Redis Pub/Sub 唤醒监听该会话的 SSE 流
+    # （DB 仍是事实源；Redis 不可用时此调用为 no-op，SSE 走原轮询）
+    publish_relay_wake(session_id)
 
 
 def _relay_event_payload(row: AgentEvent) -> tuple[str, dict[str, object]]:

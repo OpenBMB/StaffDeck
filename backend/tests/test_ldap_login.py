@@ -109,6 +109,68 @@ def test_ldap_login_updates_existing_account(db, ldap_on):
     assert session.user.auth_source == "ldap"
 
 
+def test_ldap_login_respects_manual_department(db, ldap_on):
+    """部门保护：产品里手动改过的部门不被域登录覆盖。"""
+    db.add(
+        User(
+            id="user_chenjiali",
+            tenant_id="tenant_demo",
+            username="chenjiali",
+            display_name="陈佳丽",
+            department="手动部门",
+            department_manual=True,
+            password_hash=hash_password("local-pwd"),
+        )
+    )
+    db.commit()
+    ldap_on(
+        ldap_client.LdapUser(
+            username="chenjiali",
+            display_name="陈佳丽",
+            department="AILab",
+            dn="CN=陈佳丽,OU=AILab,DC=fosun,DC=com",
+        )
+    )
+
+    session = login(
+        LoginRequest(tenant_id="tenant_demo", username="chenjiali", password="domain-pwd"), db
+    )
+
+    # 域里的 AILab 不覆盖手动设置的部门
+    assert session.user.department == "手动部门"
+    assert session.user.department_manual is True
+    # 显示名仍按域同步
+    assert session.user.display_name == "陈佳丽"
+
+
+def test_ldap_login_overwrites_unprotected_department(db, ldap_on):
+    """未打保护标记的部门仍按域同步覆盖（回归）。"""
+    db.add(
+        User(
+            id="user_chenjiali",
+            tenant_id="tenant_demo",
+            username="chenjiali",
+            department="旧部门",
+            password_hash=hash_password("local-pwd"),
+        )
+    )
+    db.commit()
+    ldap_on(
+        ldap_client.LdapUser(
+            username="chenjiali",
+            display_name="陈佳丽",
+            department="AILab",
+            dn="CN=陈佳丽,OU=AILab,DC=fosun,DC=com",
+        )
+    )
+
+    session = login(
+        LoginRequest(tenant_id="tenant_demo", username="chenjiali", password="domain-pwd"), db
+    )
+
+    assert session.user.department == "AILab"
+
+
 class _FakeAttr:
     def __init__(self, value):
         self.value = value

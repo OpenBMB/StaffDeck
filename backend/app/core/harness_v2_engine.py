@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
+from app.aigw_cache import get_json, set_json
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
 from app.core.capability_manifest import CapabilityManifestBuilder
@@ -97,6 +98,45 @@ def _turn_planner_message(
     """Keep server-only execution context out of Planner task requirements."""
 
     return request.message
+
+
+# 意图识别结果会话级缓存 TTL：同一 (会话, 全量 planner 输入) 指纹 10 分钟内
+# 复用同一 TurnPlan，省一次轻量模型调用（省钱 + 降低首字延迟）。
+INTENT_CACHE_TTL_SECONDS = 600
+
+
+def _intent_cache_key(
+    session: ChatSession,
+    routing_skills: list[Skill],
+    request: ChatTurnRequest,
+    conversation_context: dict[str, Any] | None,
+    memory_context: list[dict[str, Any]],
+    planner_state: list[dict[str, Any]],
+    team_context: Any,
+) -> str | None:
+    """按 planner 的**全部输入**计算指纹；不可序列化返回 None（不缓存）。
+
+    指纹必须覆盖 conversation_context/memory_context/planner_state 等易变
+    输入——上下文一变指纹即变，天然不会把旧 plan 用到新轮次上。
+    """
+    try:
+        material = {
+            "agent_id": session.agent_id,
+            "session_id": session.id,
+            "message": _turn_planner_message(request),
+            "interaction_mode": request.interaction_mode,
+            "skills": [[s.skill_id, s.version] for s in routing_skills],
+            "conversation_context": conversation_context,
+            "memory_context": memory_context,
+            "planner_state": planner_state,
+            "team_context": (
+                team_context.model_dump(mode="json") if team_context is not None else None
+            ),
+        }
+        raw = json.dumps(material, ensure_ascii=False, sort_keys=True, default=str)
+        return f"intent:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
+    except Exception:
+        return None
 
 
 def _apply_forced_sop_snapshot(
@@ -353,17 +393,43 @@ class HarnessV2Engine:
                 planner_state,
             )
         else:
-            plan = self.planner.plan(
-                _turn_planner_message(request),
+            # 意图识别缓存：指纹含全部 planner 输入，命中即省一次模型调用；
+            # Redis 不可用/指纹不可算 → 直接走原调用，行为与改造前一致。
+            intent_cache_key = _intent_cache_key(
                 session,
                 routing_skills,
-                planner_model_config,
-                deepcopy(conversation_context),
+                request,
+                conversation_context,
                 memory_context,
                 planner_state,
-                interaction_mode=request.interaction_mode,
-                team_context=team_context,
+                team_context,
             )
+            plan: TurnPlan | None = None
+            if intent_cache_key:
+                cached_plan = get_json(intent_cache_key)
+                if isinstance(cached_plan, dict):
+                    try:
+                        plan = TurnPlan.model_validate(cached_plan)
+                    except Exception:  # noqa: BLE001 - 缓存损坏按未命中处理
+                        plan = None
+            if plan is None:
+                plan = self.planner.plan(
+                    _turn_planner_message(request),
+                    session,
+                    routing_skills,
+                    planner_model_config,
+                    deepcopy(conversation_context),
+                    memory_context,
+                    planner_state,
+                    interaction_mode=request.interaction_mode,
+                    team_context=team_context,
+                )
+                if intent_cache_key:
+                    set_json(
+                        intent_cache_key,
+                        plan.model_dump(mode="json"),
+                        ttl_seconds=INTENT_CACHE_TTL_SECONDS,
+                    )
         self._renew_session_lease()
         self._raise_if_cancelled(request, session)
         slot_hydration = SlotHydrationPolicy.hydrate_plan(

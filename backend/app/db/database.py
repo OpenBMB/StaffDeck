@@ -66,6 +66,7 @@ def init_db() -> None:
     _migrate_sqlite_skill_schema()
     _migrate_pg_api_key_schema()
     _migrate_user_ldap_schema()
+    _migrate_user_department_manual()
     _purge_orphaned_chat_sessions()
 
 
@@ -179,6 +180,13 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN source VARCHAR NOT NULL DEFAULT 'web'"))
             if "department" not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN department VARCHAR"))
+            if "department_manual" not in user_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE users ADD COLUMN department_manual "
+                        "BOOLEAN NOT NULL DEFAULT FALSE"
+                    )
+                )
             if "display_name" in user_columns:
                 conn.execute(
                     text(
@@ -3120,6 +3128,28 @@ def _migrate_user_ldap_schema() -> None:
         for col_name, col_type in additions:
             if col_name not in columns:
                 conn.execute(text(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"))
+
+
+def _migrate_user_department_manual() -> None:
+    """users 表补齐部门保护标记列(department_manual)，SQLite 与 PostgreSQL 通用。
+
+    该列的 SQLite 侧迁移在 _migrate_sqlite_skill_schema 的 users 段内，
+    PG 路径走不到，因此这里独立提供方言无关版本(幂等)。
+    """
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "users" not in tables:
+        return
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    if "department_manual" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN department_manual "
+                "BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        )
 
 
 def _migrate_pg_api_key_schema() -> None:

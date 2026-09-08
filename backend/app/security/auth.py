@@ -15,10 +15,15 @@ from sqlmodel import Session
 from app.config import get_settings
 from app.db import get_session
 from app.db.models import User
+from app.object_cache import cached_model, invalidate_key, store_model
 
 
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 14
 security = HTTPBearer(auto_error=False)
+
+# 用户对象 Redis 缓存 TTL（秒）：写路径（改资料/角色/密码/删除/LDAP 同步）
+# 必须调用 invalidate_user_cache 主动失效，否则最长该窗口内读到旧值
+USER_CACHE_TTL_SECONDS = 30
 
 
 def hash_password(password: str) -> str:
@@ -56,10 +61,31 @@ def get_current_user(
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
     payload = _decode_token(credentials.credentials)
-    user = db.get(User, payload.get("user_id", ""))
+    user_id = str(payload.get("user_id", ""))
+    # 每请求一次 db.get(User) 是全站最高频查询：Redis 可用时走 30s 缓存，
+    # 未命中/不可用回退 DB（行为不变）；写路径负责主动失效
+    cache_key = f"auth:user:{user_id}"
+    # password_hash 不落 Redis：缓存重建时以空串占位
+    user = cached_model(
+        cache_key, User, ttl_seconds=USER_CACHE_TTL_SECONDS,
+        hydrate={"password_hash": ""},
+    )
+    if user is None:
+        user = db.get(User, user_id)
+        if user:
+            store_model(
+                cache_key, user, ttl_seconds=USER_CACHE_TTL_SECONDS,
+                exclude_fields={"password_hash"},
+            )
     if not user or user.tenant_id != payload.get("tenant_id"):
         raise HTTPException(status_code=401, detail="Invalid user token")
     return user
+
+
+def invalidate_user_cache(user_id: str | None) -> None:
+    """用户资料/角色/密码变更或删除后失效其缓存（跨进程生效）。"""
+    if user_id:
+        invalidate_key(f"auth:user:{user_id}")
 
 
 def ensure_current_user_tenant(tenant_id: str, current_user: User) -> None:

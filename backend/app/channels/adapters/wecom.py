@@ -24,6 +24,8 @@ from app.channels.adapters.base import (
     split_channel_text,
 )
 from app.channels.crypto import decrypt_channel_secret
+from app.channels.token_cache import get_cached as _l2_get
+from app.channels.token_cache import store as _l2_store
 from app.channels.media import (
     MAX_CHANNEL_MEDIA_BYTES,
     MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES,
@@ -869,10 +871,19 @@ class WeComTokenProvider:
 
     def get(self, binding: ChannelBinding, *, force_refresh: bool = False) -> str:
         key = self._key(binding)
+        redis_key = json.dumps(list(key), ensure_ascii=False)
         with self._lock:
             cached = self._cache.get(key)
             if cached and not force_refresh and cached[1] > time.monotonic():
                 return cached[0]
+        # 内存 miss → Redis L2（多副本共享同一 token，避免重复刷新互踢）
+        if not force_refresh:
+            l2 = _l2_get("wecom", redis_key)
+            if l2 is not None:
+                token, ttl = l2
+                with self._lock:
+                    self._cache[key] = (token, time.monotonic() + ttl)
+                return token
         config = dict(binding.config_json or {})
         corp_id = str(config.get("corp_id") or "").strip()
         if not corp_id or not binding.credentials_enc:
@@ -900,6 +911,7 @@ class WeComTokenProvider:
                 token,
                 time.monotonic() + max(1, expires_in - WECOM_TOKEN_REFRESH_SKEW_SECONDS),
             )
+        _l2_store("wecom", redis_key, token, max(1, expires_in - WECOM_TOKEN_REFRESH_SKEW_SECONDS))
         return token
 
 

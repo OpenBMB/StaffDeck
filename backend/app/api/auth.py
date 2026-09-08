@@ -21,6 +21,7 @@ from app.security.auth import (
     ensure_current_user_tenant,
     get_current_user,
     hash_password,
+    invalidate_user_cache,
     verify_password,
 )
 from app.security.permissions import MEMBER_ROLE, is_admin_user
@@ -79,6 +80,8 @@ class UserRead(BaseModel):
     username: str
     display_name: Optional[str] = None
     department: Optional[str] = None
+    # 部门保护标记：True=产品里手动改过，域登录不再覆盖（前端可用于展示）
+    department_manual: bool = False
     role: Literal["admin", "member"]
     source: str = "web"
     email: Optional[str] = None
@@ -197,7 +200,8 @@ def _upsert_ldap_user(db: Session, tenant_id: str, profile: ldap_client.LdapUser
     if profile.display_name and profile.display_name.strip()[:80] != user.display_name:
         user.display_name = profile.display_name.strip()[:80]
         changed = True
-    if profile.department is not None:
+    # 部门保护：在产品里被手动改过（本人或管理员）的部门不被域登录覆盖
+    if profile.department is not None and not user.department_manual:
         department = profile.department.strip()[:80] or None
         if department != user.department:
             user.department = department
@@ -210,6 +214,7 @@ def _upsert_ldap_user(db: Session, tenant_id: str, profile: ldap_client.LdapUser
         db.add(user)
         db.commit()
         db.refresh(user)
+        invalidate_user_cache(user.id)
     return user
 
 
@@ -503,12 +508,15 @@ def change_my_password(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> Response:
-    if not verify_password(request.old_password, current_user.password_hash):
+    # 旧密码校验直读 DB：current_user 可能来自 Redis 缓存（password_hash 为占位空串）
+    db_user = db.get(User, current_user.id)
+    if not db_user or not verify_password(request.old_password, db_user.password_hash):
         raise HTTPException(status_code=401, detail="旧密码不正确")
-    current_user.password_hash = hash_password(request.new_password)
-    current_user.updated_at = utc_now()
-    db.add(current_user)
+    db_user.password_hash = hash_password(request.new_password)
+    db_user.updated_at = utc_now()
+    db.add(db_user)
     db.commit()
+    invalidate_user_cache(db_user.id)
     return Response(status_code=204)
 
 
@@ -519,22 +527,32 @@ def update_my_profile(
     db: Session = Depends(get_session),
 ) -> UserRead:
     """个人修改自己的显示名/部门:显示名置空回退为用户名(与管理员编辑同规则),部门置空则清空。"""
+    # 直读 DB 再变更：current_user 可能来自 Redis 缓存（detached 实例），
+    # db.add(detached) 会被当作 INSERT 触发主键冲突（users_pkey UniqueViolation）
+    db_user = db.get(User, current_user.id)
+    if not db_user:
+        raise HTTPException(status_code=401, detail="Invalid user token")
     changed = False
     if request.display_name is not None:
         display_name = request.display_name.strip()[:80]
-        current_user.display_name = display_name or current_user.username
+        db_user.display_name = display_name or db_user.username
         changed = True
     if request.department is not None:
         department = request.department.strip()[:80] or None
-        if department != current_user.department:
-            current_user.department = department
+        if department != db_user.department:
+            db_user.department = department
+            changed = True
+        # 手动改过部门（含清空）→ 打保护标记，域登录不再覆盖
+        if not db_user.department_manual:
+            db_user.department_manual = True
             changed = True
     if changed:
-        current_user.updated_at = utc_now()
-        db.add(current_user)
+        db_user.updated_at = utc_now()
+        db.add(db_user)
         db.commit()
-        db.refresh(current_user)
-    return _user_read(current_user, _avatar_pointer_for(db, current_user.id))
+        db.refresh(db_user)
+        invalidate_user_cache(db_user.id)
+    return _user_read(db_user, _avatar_pointer_for(db, db_user.id))
 
 
 @router.put("/users/{user_id}", response_model=UserRead)
@@ -553,6 +571,8 @@ def update_user(
         user.display_name = display_name or user.username
     if request.department is not None:
         user.department = request.department.strip()[:80] or None
+        # 管理员手动改部门 → 打保护标记，域登录不再覆盖
+        user.department_manual = True
     if request.password is not None:
         password = request.password.strip()
         if password:
@@ -565,6 +585,7 @@ def update_user(
     db.add(user)
     db.commit()
     db.refresh(user)
+    invalidate_user_cache(user.id)
     return _user_read(user)
 
 
@@ -587,6 +608,7 @@ def delete_user(
         db.delete(avatar)
     db.delete(user)
     db.commit()
+    invalidate_user_cache(user_id)
     return {"ok": True}
 
 
@@ -601,6 +623,7 @@ def _user_read(
         username=user.username,
         display_name=user.display_name,
         department=user.department,
+        department_manual=bool(getattr(user, "department_manual", False)),
         role=user.role,
         source=user.source,
         email=user.email,

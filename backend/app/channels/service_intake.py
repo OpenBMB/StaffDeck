@@ -16,6 +16,7 @@ from app.channels.adapters.base import (
     get_channel_adapter,
 )
 from app.channels.adapters.wechat import normalize_wechat_message
+from app.redis_client import get_redis
 from app.channels.service_autoroute import maybe_auto_route, record_auto_route_event
 from app.channels.service_durable_inbox import reaction_target
 from app.channels.service_identity import (
@@ -103,6 +104,61 @@ _BIND_COOLDOWN_TEXT = "尝试次数过多，请 10 分钟后再试。"
 _bind_failures: dict[tuple[str, str, str, str], tuple[int, float]] = {}
 _bind_failures_lock = threading.Lock()
 
+# Redis 跨进程计数 key（多副本下失败计数/冷却共享；Redis 不可用回退内存 dict）
+_BIND_REDIS_PREFIX = "staffdeck:bindfail:"
+
+
+def _bind_redis_key(tenant_id: str, channel: str, account_scope: str, external_id: str) -> str:
+    import json as _json
+
+    return _BIND_REDIS_PREFIX + _json.dumps(
+        [tenant_id, channel, account_scope, external_id], ensure_ascii=False
+    )
+
+
+def _bind_redis_cooldown_remaining(key: str) -> float | None:
+    """Redis 版冷却剩余秒数；Redis 不可用返回 None（调用方回退内存版）。
+
+    计数达到上限后每次失败都把 TTL 重置为冷却窗口，因此 TTL 即剩余冷却。
+    """
+    client = get_redis()
+    if client is None:
+        return None
+    try:
+        count = client.get(key)
+        if count is None or int(count) < _BIND_FAILURE_LIMIT:
+            return 0.0
+        ttl = client.ttl(key)
+        return float(ttl) if ttl and ttl > 0 else 0.0
+    except Exception:
+        return None
+
+
+def _bind_redis_record_failure(key: str) -> None:
+    client = get_redis()
+    if client is None:
+        return
+    try:
+        count = int(client.incr(key))
+        if count == 1:
+            # 首次失败起 1 小时无再失败自动淘汰（对应内存版 TTL）
+            client.expire(key, int(_BIND_FAILURE_TTL_SECONDS))
+        elif count >= _BIND_FAILURE_LIMIT:
+            # 达到上限后进入/延续 10 分钟冷却
+            client.expire(key, int(_BIND_FAILURE_COOLDOWN_SECONDS))
+    except Exception:
+        pass
+
+
+def _bind_redis_reset(key: str) -> None:
+    client = get_redis()
+    if client is None:
+        return
+    try:
+        client.delete(key)
+    except Exception:
+        pass
+
 
 def _prune_bind_failures(now: float) -> None:
     """淘汰 1 小时无再失败的条目;仍超硬上限则按最后失败时间淘汰最旧。
@@ -127,6 +183,10 @@ def _bind_cooldown_remaining(
     tenant_id: str, channel: str, account_scope: str, external_id: str
 ) -> float:
     """冷却剩余秒数;冷却结束自动清零重新计数。"""
+    redis_key = _bind_redis_key(tenant_id, channel, account_scope, external_id)
+    redis_remaining = _bind_redis_cooldown_remaining(redis_key)
+    if redis_remaining is not None:
+        return redis_remaining
     now = time.monotonic()
     with _bind_failures_lock:
         key = (tenant_id, channel, account_scope, external_id)
@@ -141,6 +201,10 @@ def _bind_cooldown_remaining(
 
 
 def _record_bind_failure(tenant_id: str, channel: str, account_scope: str, external_id: str) -> None:
+    redis_key = _bind_redis_key(tenant_id, channel, account_scope, external_id)
+    if get_redis() is not None:
+        _bind_redis_record_failure(redis_key)
+        return
     now = time.monotonic()
     with _bind_failures_lock:
         key = (tenant_id, channel, account_scope, external_id)
@@ -151,6 +215,10 @@ def _record_bind_failure(tenant_id: str, channel: str, account_scope: str, exter
 
 
 def _reset_bind_failures(tenant_id: str, channel: str, account_scope: str, external_id: str) -> None:
+    redis_key = _bind_redis_key(tenant_id, channel, account_scope, external_id)
+    if get_redis() is not None:
+        _bind_redis_reset(redis_key)
+        return
     with _bind_failures_lock:
         _bind_failures.pop((tenant_id, channel, account_scope, external_id), None)
 

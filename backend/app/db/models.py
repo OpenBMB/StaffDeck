@@ -38,6 +38,8 @@ class User(SQLModel, table=True):
     display_name: Optional[str] = None
     # 所属部门:注册/账号管理维护,用于组织维度的用户识别
     department: Optional[str] = None
+    # 部门保护标记:在产品里被手动改过(本人或管理员)后,域登录不再覆盖部门
+    department_manual: bool = Field(default=False)
     role: str = Field(default="member", index=True)
     # 账号来源:web=网页端创建;wechat 等=渠道懒建(用户管理列表默认隐藏)
     source: str = Field(default="web", index=True)

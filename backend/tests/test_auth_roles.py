@@ -281,6 +281,43 @@ def test_update_my_profile_changes_own_department() -> None:
         assert cleared.department is None
 
 
+def test_manual_department_sets_protection_flag() -> None:
+    """部门保护：本人或管理员手动改部门后打标记，供域登录同步判断。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        admin = User(
+            id="admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            role="admin",
+            password_hash=hash_password("secret"),
+        )
+        member = User(
+            id="member",
+            tenant_id="tenant_demo",
+            username="member",
+            department="原部门",
+            password_hash=hash_password("secret"),
+        )
+        db.add(admin)
+        db.add(member)
+        db.commit()
+
+        updated = update_my_profile(UpdateProfileRequest(department="我的部门"), member, db)
+        assert updated.department == "我的部门"
+        assert updated.department_manual is True
+
+        # 管理员手动改同样打标记（含清空）
+        managed = update_user(
+            member.id,
+            UserUpdateRequest(tenant_id="tenant_demo", department=""),
+            admin,
+            db,
+        )
+        assert managed.department is None
+        assert managed.department_manual is True
+
+
 def _test_session() -> Session:
     engine = create_engine(
         "sqlite://",

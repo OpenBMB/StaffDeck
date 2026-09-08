@@ -20,26 +20,49 @@ _connector_pg_lock_conn = None  # PostgreSQL advisory lock 持有的连接
 _connector_lock_pid: int | None = None
 # advisory lock key（任选的稳定 int8；同库多个 connector 进程互斥）
 _PG_CONNECTOR_LOCK_KEY = 749_102_331_977_001
+# Redis 分布式锁（配置了 Redis 时优先使用；替代 advisory lock 的僵死连接问题）
+_connector_redis_lock = None
 _intake_sweep_thread: threading.Thread | None = None
 
 
 def _acquire_connector_process_lock() -> bool:
-    global _connector_lock_pid, _connector_pg_lock_conn
+    global _connector_lock_pid, _connector_pg_lock_conn, _connector_redis_lock
     current_pid = os.getpid()
-    if _connector_pg_lock_conn is not None and _connector_lock_pid == current_pid:
+    if _connector_lock_pid == current_pid and (
+        _connector_pg_lock_conn is not None or _connector_redis_lock is not None
+    ):
         return True
     # 清理旧状态
     if _connector_pg_lock_conn is not None:
         _connector_pg_lock_conn.close()
         _connector_pg_lock_conn = None
         _connector_lock_pid = None
+    if _connector_redis_lock is not None:
+        _connector_redis_lock = None
+        _connector_lock_pid = None
+
     from app.db import engine
 
     backend = engine.url.get_backend_name()
     if backend != "postgresql":
         logger.error("渠道服务仅支持 PostgreSQL，当前：%s", backend)
         return False
-    # PostgreSQL：用 advisory lock 实现跨进程单实例
+
+    # 优先 Redis 分布式锁：进程崩溃后锁在 TTL 内自动过期，且本地开发
+    # （SQLite 库）也能与远端 Redis 配合实现跨进程互斥
+    from app.redis_lock import try_lock
+
+    settings = get_settings()
+    redis_lock = try_lock(
+        "connector", ttl_seconds=float(settings.connector_lock_ttl_seconds)
+    )
+    if redis_lock is not None:
+        _connector_redis_lock = redis_lock
+        _connector_lock_pid = current_pid
+        logger.info("connector 进程锁已通过 Redis 获取（ttl=%ss）", settings.connector_lock_ttl_seconds)
+        return True
+
+    # Redis 不可用/被占用：回退 PG advisory lock（原行为）
     from sqlalchemy import text
     conn = engine.connect()
     try:
@@ -58,7 +81,16 @@ def _acquire_connector_process_lock() -> bool:
 
 
 def _release_connector_process_lock() -> None:
-    global _connector_pg_lock_conn, _connector_lock_pid
+    global _connector_pg_lock_conn, _connector_lock_pid, _connector_redis_lock
+    if _connector_redis_lock is not None:
+        if _connector_lock_pid == os.getpid():
+            try:
+                _connector_redis_lock.release()
+            except Exception:
+                logger.exception("Redis connector 锁释放失败")
+        _connector_redis_lock = None
+        _connector_lock_pid = None
+        return
     pg_conn = _connector_pg_lock_conn
     if pg_conn is not None:
         if _connector_lock_pid == os.getpid():

@@ -29,6 +29,10 @@ dependencies = [
   "wecom-aibot-python-sdk>=1.0.2",
   "dingtalk-stream>=0.24.3,<0.25.0",
   "ldap3>=2.9.1",
+  # Redis 可选底座：缓存 / 分布式锁 / Pub/Sub（REDIS_HOST 未配置时功能自动禁用）
+  "redis>=5.0.0",
+  # 远程 PostgreSQL（DATABASE_URL 指向 PG 时必需）
+  "psycopg2-binary>=2.9.9",
 ]
 
 [project.optional-dependencies]

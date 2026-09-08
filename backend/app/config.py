@@ -99,6 +99,18 @@ class Settings(BaseSettings):
     # LDAP 未命中或不可用时是否回退本地口令（关=强制只走域认证）
     ldap_local_fallback: bool = True
 
+    # ---- Redis（可选底座：缓存 / 分布式锁）----
+    # redis_host 留空 = 完全禁用，所有涉及点回退现状行为（无缓存 / PG advisory 锁）。
+    redis_host: str = ""
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_password: str = ""
+    # 阿里云 APIG 读端点同步节流 / 用量缓存 TTL（秒）
+    aigw_cache_ttl_seconds: int = 30
+    # connector 进程锁（Redis 模式）的 TTL 与续期间隔（秒）；
+    # 持锁进程崩溃后锁在 TTL 内自动过期，替代 PG advisory lock 的僵死连接问题
+    connector_lock_ttl_seconds: int = 30
+
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),
         env_file_encoding="utf-8", extra="ignore",

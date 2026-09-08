@@ -14,6 +14,12 @@ from app.aliyun_aigw import (
     get_gateway_config,
     get_gateway_configs,
 )
+from app.aigw_cache import (
+    acquire_sync_throttle,
+    get_json,
+    invalidate_tenant,
+    set_json,
+)
 from app.config import get_settings
 from app.db import get_session
 from app.db.models import (
@@ -674,6 +680,7 @@ def list_consumer_group_owners(
 @router.get("/consumer-groups", response_model=list[ApiKeyConsumerGroupRead])
 def list_consumer_groups(
     tenant_id: str = Query(...),
+    refresh: bool = Query(False, description="跳过 Redis 同步节流，强制回源阿里云"),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[ApiKeyConsumerGroupRead]:
@@ -683,7 +690,10 @@ def list_consumer_groups(
     if gateways:
         try:
             client = get_apig_client()
-            _sync_consumer_groups_to_local(db, tenant_id, client, gateways)
+            # 隐式同步节流：TTL 内已有同步则跳过（只 upsert 不删，跳过不改变语义）；
+            # 显式「同步阿里云」/refresh=1 会清除节流标记强制回源
+            if refresh or not acquire_sync_throttle(f"{tenant_id}:sync:consumer-groups"):
+                _sync_consumer_groups_to_local(db, tenant_id, client, gateways)
         except (AliyunApigError, RuntimeError):
             pass
 
@@ -766,6 +776,9 @@ def sync_consumer_groups_from_aliyun(
     except (AliyunApigError, RuntimeError) as exc:
         db.rollback()
         raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
+    # 显式同步（mirror，云端为准）成功：清掉该租户的节流/缓存标记，
+    # 让后续隐式 GET 立即回源校准，同时清除节流窗口内的滞后
+    invalidate_tenant(request.tenant_id)
     return ApiKeyAliyunSyncResult(
         synced_at=utc_now().isoformat(),
         groups=groups,
@@ -779,6 +792,7 @@ def sync_consumer_groups_from_aliyun(
 @router.get("/consumers", response_model=list[ApiKeyConsumerRead])
 def list_consumers_endpoint(
     tenant_id: str = Query(...),
+    refresh: bool = Query(False, description="跳过 Redis 同步节流，强制回源阿里云"),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[ApiKeyConsumerRead]:
@@ -788,7 +802,8 @@ def list_consumers_endpoint(
     if gateways:
         try:
             client = get_apig_client()
-            _sync_consumers_to_local(db, tenant_id, client, gateways)
+            if refresh or not acquire_sync_throttle(f"{tenant_id}:sync:consumers"):
+                _sync_consumers_to_local(db, tenant_id, client, gateways)
         except (AliyunApigError, RuntimeError):
             pass
 
@@ -912,6 +927,7 @@ def consumer_change_quota(
 @router.get("/quota-rules", response_model=list[ApiKeyQuotaRuleRead])
 def list_quota_rules(
     tenant_id: str = Query(...),
+    refresh: bool = Query(False, description="跳过 Redis 同步节流，强制回源阿里云"),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[ApiKeyQuotaRuleRead]:
@@ -921,7 +937,8 @@ def list_quota_rules(
     if gateways:
         try:
             client = get_apig_client()
-            _sync_quota_rules_to_local(db, tenant_id, client, gateways)
+            if refresh or not acquire_sync_throttle(f"{tenant_id}:sync:quota-rules"):
+                _sync_quota_rules_to_local(db, tenant_id, client, gateways)
         except (AliyunApigError, RuntimeError):
             pass
 
@@ -1280,6 +1297,7 @@ def list_my_applications(
 @router.get("/mine/usage", response_model=list[ApiKeyApplicationUsageItem])
 def list_my_usage(
     tenant_id: str = Query(...),
+    refresh: bool = Query(False, description="跳过 Redis 用量缓存，强制回源阿里云"),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[ApiKeyApplicationUsageItem]:
@@ -1346,17 +1364,29 @@ def list_my_usage(
             if group_id:
                 subject_id = group_id
                 subject_name = group_name or group_id
+        usage_cache_key = (
+            f"{tenant_id}:usage:{row.gateway_id}:{row.quota_rule_id}:{subject_id}"
+            if (row.gateway_id and row.quota_rule_id and subject_id)
+            else None
+        )
+        cached_used = get_json(usage_cache_key) if (usage_cache_key and not refresh) else None
         if client and row.gateway_id and row.quota_rule_id and subject_id:
-            try:
-                resp = client.get_consumer_quota_usage(
-                    gateway_id=row.gateway_id,
-                    rule_id=row.quota_rule_id,
-                    consumer_id=subject_id,
-                )
-                data = resp.get("data") if isinstance(resp, dict) else {}
-                used_amount = int(data.get("usedAmount") or 0)
-            except (AliyunApigError, RuntimeError, ValueError):
-                used_amount = None  # 标记查询失败，回退快照
+            if cached_used is not None:
+                # TTL 内的用量缓存：跳过云端调用（快照照常 upsert，保持取较大值语义）
+                used_amount = int(cached_used or 0)
+            else:
+                try:
+                    resp = client.get_consumer_quota_usage(
+                        gateway_id=row.gateway_id,
+                        rule_id=row.quota_rule_id,
+                        consumer_id=subject_id,
+                    )
+                    data = resp.get("data") if isinstance(resp, dict) else {}
+                    used_amount = int(data.get("usedAmount") or 0)
+                    if usage_cache_key:
+                        set_json(usage_cache_key, used_amount)
+                except (AliyunApigError, RuntimeError, ValueError):
+                    used_amount = None  # 标记查询失败，回退快照
             if used_amount is not None:
                 _upsert_usage_snapshot(
                     db,
@@ -1549,6 +1579,8 @@ def approve_application(
         )
     except (AliyunApigError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail=f"阿里云创建消费者失败：{exc}") from exc
+    # 云端新增了消费者：清除节流/缓存标记，让消费组/消费者列表立即可见
+    invalidate_tenant(request.tenant_id)
 
     # 3) 绑定消费组（batch-add） + 绑定配额规则
     # 配额规则两种接入方式：
@@ -1966,6 +1998,7 @@ def _usage_suggestion(usage_rate: float) -> str:
 def list_usage(
     tenant_id: str = Query(...),
     month: str | None = Query(None, description="格式 YYYY-MM，缺省为当前月"),
+    refresh: bool = Query(False, description="跳过 Redis 缓存/节流，强制回源阿里云"),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ApiKeyApplicationUsageRead:
@@ -1986,7 +2019,8 @@ def list_usage(
         if gateways:
             try:
                 client = get_apig_client()
-                _sync_consumers_to_local(db, tenant_id, client, gateways)
+                if refresh or not acquire_sync_throttle(f"{tenant_id}:sync:consumers"):
+                    _sync_consumers_to_local(db, tenant_id, client, gateways)
             except (AliyunApigError, RuntimeError):
                 pass
 
@@ -2010,13 +2044,18 @@ def list_usage(
         for rule in rule_rows:
             if not rule.external_rule_id:
                 continue
-            try:
-                subjects = client.list_quota_rule_subjects(
-                    rule.external_rule_id,
-                    gateway_id=rule.gateway_id,
-                )
-            except (AliyunApigError, RuntimeError, ValueError):
-                continue
+            # 规则主体列表短 TTL 缓存（JSON dict 列表，与云端结构一致）
+            subjects_key = f"{tenant_id}:subjects:{rule.gateway_id}:{rule.external_rule_id}"
+            subjects = get_json(subjects_key) if not refresh else None
+            if subjects is None:
+                try:
+                    subjects = client.list_quota_rule_subjects(
+                        rule.external_rule_id,
+                        gateway_id=rule.gateway_id,
+                    )
+                except (AliyunApigError, RuntimeError, ValueError):
+                    continue
+                set_json(subjects_key, subjects)
             for subj in subjects if isinstance(subjects, list) else []:
                 sid = subj.get("id") or ""
                 if sid:

@@ -192,6 +192,10 @@ def resolve_or_provision_user(
                     db.add(user)
                     db.add(identity)
                     db.flush()
+                    # 渠道进程与 backend 进程分离部署：跨进程失效用户缓存
+                    from app.security.auth import invalidate_user_cache
+
+                    invalidate_user_cache(user.id)
             return user
         # 损坏或跨租户 identity 不能继续占据正常 scope 唯一键。
         db.delete(identity)

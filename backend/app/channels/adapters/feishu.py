@@ -16,6 +16,9 @@ from app.channels.adapters.base import (
     stream_download_with_limit,
 )
 from app.channels.crypto import decrypt_channel_secret
+from app.channels.token_cache import invalidate as _l2_invalidate
+from app.channels.token_cache import get_cached as _l2_get
+from app.channels.token_cache import store as _l2_store
 from app.channels.markdown_render import (
     has_markdown,
     parse_markdown,
@@ -35,6 +38,10 @@ _PERMANENT_MESSAGE_CODES = {
     230006,  # message cannot be replied to
     230011,  # bot has no permission in the chat
 }
+
+
+def _redis_key(key: tuple[str, str, int]) -> str:
+    return json.dumps(list(key), ensure_ascii=False)
 
 
 class FeishuSendError(RuntimeError):
@@ -71,7 +78,9 @@ class FeishuTokenProvider:
             if expected_token is not None and cached and cached[0] != expected_token:
                 return False
             self._cache.pop(key, None)
-            return True
+        # 跨进程失效：其他副本的 L2 缓存一并清掉（保留 expected_token 校验语义）
+        _l2_invalidate("feishu", _redis_key(key), expected_token)
+        return True
 
     def get(self, binding: ChannelBinding, *, force_refresh: bool = False) -> str:
         key = self._key(binding)
@@ -89,6 +98,14 @@ class FeishuTokenProvider:
                     not force_refresh or cached[0] != observed_token
                 ):
                     return cached[0]
+            # 内存 miss → Redis L2（多副本共享同一 token，避免重复刷新互踢）
+            if not force_refresh:
+                l2 = _l2_get("feishu", _redis_key(key))
+                if l2 is not None:
+                    token, ttl = l2
+                    with self._lock:
+                        self._cache[key] = (token, time.monotonic() + ttl)
+                    return token
             config = dict(binding.config_json or {})
             app_id = str(config.get("app_id") or "").strip()
             if not app_id or not binding.credentials_enc:
@@ -117,6 +134,7 @@ class FeishuTokenProvider:
             valid_for = max(1, expires_in - TOKEN_REFRESH_SKEW_SECONDS)
             with self._lock:
                 self._cache[key] = (token, time.monotonic() + valid_for)
+            _l2_store("feishu", _redis_key(key), token, valid_for)
             return token
 
 
