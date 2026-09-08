@@ -4603,6 +4603,113 @@ def test_harness_agent_checkpoint_restores_transcript_across_activation(
     assert payloads[2]["agent_loop_memory"]["recent_task_summaries"] == ["已完成"]
 
 
+def test_multi_step_detached_task_resumes_agent_after_external_result(monkeypatch) -> None:
+    """A detached step must pause, then allow the next step after result injection."""
+
+    actions = iter(
+        [
+            {
+                "action": "tool",
+                "tool_name": "orders.submit",
+                "arguments": {"sku": "SKU-1"},
+            },
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "订单已创建，订单号为 ORD-001。",
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt: str, _payload: dict[str, object]):
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    requirement = TaskRequirement(
+        task_frame_id="order-frame",
+        kind="sop",
+        goal="提交订单并在任务完成后确认订单号",
+        capability_manifest=CapabilityManifest(
+            available=[
+                CapabilityDescriptor(
+                    capability_id="tool-order-submit",
+                    name="orders.submit",
+                    kind="tool",
+                )
+            ]
+        ),
+    )
+    accepted = {
+        "success": True,
+        "data": {
+            "detached": True,
+            "accepted": True,
+            "task_id": "exttask-order-1",
+            "status": "queued",
+        },
+    }
+
+    first = HarnessTaskAgent().run(
+        requirement,
+        _model_config(),
+        lambda _name, _arguments: accepted,
+        max_actions=3,
+    )
+
+    assert first.status == "waiting_external_task"
+    assert first.structured_result == {
+        "task_id": "exttask-order-1",
+        "status": "queued",
+    }
+
+    # This is the durable continuation operation performed after the external
+    # task finishes: replace the pending receipt in the checkpoint with the
+    # final business result before re-entering the AgentLoop.
+    checkpoint = dict(first.loop_checkpoint)
+    checkpoint["transcript"] = [
+        {
+            "role": "assistant",
+            "action": "tool",
+            "tool_name": "orders.submit",
+            "arguments": {"sku": "SKU-1"},
+        },
+        {
+            "role": "tool",
+            "tool_name": "orders.submit",
+            "result": {
+                "success": True,
+                "data": {
+                    "task_id": "exttask-order-1",
+                    "status": "completed",
+                    "order_id": "ORD-001",
+                },
+                "pending": False,
+            },
+        },
+    ]
+    checkpoint["external_task_result"] = {
+        "task_id": "exttask-order-1",
+        "status": "completed",
+        "order_id": "ORD-001",
+    }
+
+    resumed = HarnessTaskAgent().run(
+        requirement,
+        _model_config(),
+        lambda _name, _arguments: {"success": True},
+        max_actions=2,
+        checkpoint=checkpoint,
+    )
+
+    assert resumed.status == "completed"
+    assert resumed.reply_fragment == "订单已创建，订单号为 ORD-001。"
+    assert resumed.action_count == 1
+
+
 def test_turn_action_budget_defers_unstarted_frames_as_queued() -> None:
     engine = _test_engine()
     with Session(engine) as db:
