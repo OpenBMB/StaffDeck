@@ -116,8 +116,14 @@ def apply_task_event(
 def _prepare_sop_resume(db: Session, task: ExternalBusinessTask) -> None:
     if not task.task_frame_id or task.status not in PERSISTED_TERMINAL_STATUSES:
         return
-    frame = db.get(HarnessTaskFrameRecord, task.task_frame_id)
-    if frame is None or frame.session_id != task.session_id:
+    frame = db.exec(
+        select(HarnessTaskFrameRecord).where(
+            HarnessTaskFrameRecord.tenant_id == task.tenant_id,
+            HarnessTaskFrameRecord.session_id == task.session_id,
+            HarnessTaskFrameRecord.task_id == task.task_frame_id,
+        )
+    ).first()
+    if frame is None:
         return
     if frame.status in {"completed", "cancelled", "failed"}:
         return

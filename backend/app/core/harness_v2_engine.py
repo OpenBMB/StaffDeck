@@ -1176,6 +1176,11 @@ class HarnessV2Engine:
             ).first()
             if external_task is not None:
                 combined.status = "ready_to_resume"
+                row.step_id = external_task.resume_step_id or row.step_id
+                row.slots_json = {
+                    **dict(row.slots_json or {}),
+                    **dict(external_task.result_json or {}),
+                }
                 combined.structured_result = {
                     "external_task_id": external_task.external_task_id,
                     "external_task_status": external_task.status,
