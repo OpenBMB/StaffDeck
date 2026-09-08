@@ -236,6 +236,8 @@ class ExternalBusinessTask(SQLModel, table=True):
     user_id: str = Field(index=True)
     agent_id: Optional[str] = Field(default=None, index=True)
     session_id: Optional[str] = Field(default=None, index=True)
+    task_frame_id: Optional[str] = Field(default=None, index=True)
+    resume_step_id: Optional[str] = None
     invocation_id: Optional[str] = Field(default=None, index=True)
     tool_id: str = Field(index=True)
     external_task_id: Optional[str] = Field(default=None, index=True)

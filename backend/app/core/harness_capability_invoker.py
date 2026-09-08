@@ -1077,6 +1077,7 @@ class HarnessCapabilityInvoker:
             agent_id=self.agent_id,
             session_id=self.session.id,
             invocation_id=call_id,
+            task_frame_id=self.task_frame_id,
             user_id=self.session.user_id,
             timeout_seconds_override=self._remaining_step_seconds(),
         )

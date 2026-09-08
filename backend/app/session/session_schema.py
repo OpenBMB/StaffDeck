@@ -23,6 +23,8 @@ TaskFrameExecutionTarget = Literal["self", "team_member"]
 TaskFrameRunStatus = Literal[
     "queued",
     "running",
+    "waiting_external_task",
+    "ready_to_resume",
     "awaiting_user",
     "blocked",
     "completed",

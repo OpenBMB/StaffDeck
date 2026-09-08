@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 from app.db.models import (
     ExternalBusinessTask,
     ExternalBusinessTaskEvent,
+    HarnessTaskFrameRecord,
     Tool,
     new_id,
     utc_now,
@@ -107,7 +108,38 @@ def apply_task_event(
     task.updated_at = now
     db.add(task)
     db.commit()
+    if task.status in PERSISTED_TERMINAL_STATUSES:
+        _prepare_sop_resume(db, task)
     return True
+
+
+def _prepare_sop_resume(db: Session, task: ExternalBusinessTask) -> None:
+    if not task.task_frame_id or task.status not in PERSISTED_TERMINAL_STATUSES:
+        return
+    frame = db.get(HarnessTaskFrameRecord, task.task_frame_id)
+    if frame is None or frame.session_id != task.session_id:
+        return
+    if frame.status in {"completed", "cancelled", "failed"}:
+        return
+    result = dict(task.result_json or {})
+    frame.result_json = {
+        **dict(frame.result_json or {}),
+        "external_task_id": task.external_task_id,
+        "external_task_status": task.status,
+        "external_task_result": result,
+    }
+    frame.slots_json = {**dict(frame.slots_json or {}), **result}
+    if task.error_json:
+        frame.error_json = dict(task.error_json)
+    frame.status = "ready_to_resume"
+    if task.resume_step_id:
+        frame.step_id = task.resume_step_id
+    frame.lease_owner = None
+    frame.lease_expires_at = None
+    frame.updated_at = utc_now()
+    frame.state_version += 1
+    db.add(frame)
+    db.commit()
 
 
 def poll_due_external_tasks(db: Session) -> int:

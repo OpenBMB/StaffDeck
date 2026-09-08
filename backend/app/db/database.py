@@ -367,6 +367,12 @@ def _migrate_sqlite_skill_schema() -> None:
                 "expires_at": (
                     "ALTER TABLE external_business_tasks ADD COLUMN expires_at DATETIME"
                 ),
+                "task_frame_id": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN task_frame_id VARCHAR"
+                ),
+                "resume_step_id": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN resume_step_id VARCHAR"
+                ),
             }
             for column_name, ddl in additions.items():
                 if column_name not in task_columns:

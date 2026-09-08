@@ -548,11 +548,11 @@ class HarnessTaskAgent:
                 reply = str(result_data.get("user_reply") or "").strip()
                 return finish(TaskExecutionResult(
                     task_frame_id=requirement.task_frame_id,
-                    status="completed",
+                    status="waiting_external_task",
                     reply_fragment=reply,
                     capability_results=capability_results,
                     action_count=iteration,
-                    task_summary="异步业务任务已受理。",
+                    task_summary="异步业务任务已受理，等待外部任务完成后恢复 SOP。",
                     structured_result={
                         "task_id": result_data.get("task_id"),
                         "status": result_data.get("status"),

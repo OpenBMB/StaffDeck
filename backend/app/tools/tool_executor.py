@@ -5,6 +5,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -51,6 +52,8 @@ class ToolExecutor:
         agent_id: str | None = None,
         session_id: str | None = None,
         invocation_id: str | None = None,
+        task_frame_id: str | None = None,
+        resume_step_id: str | None = None,
         timeout_seconds_override: float | None = None,
         user_id: str | None = None,
     ) -> ToolResult:
@@ -112,6 +115,8 @@ class ToolExecutor:
                 agent_id=agent_id,
                 session_id=session_id,
                 invocation_id=invocation_id,
+                task_frame_id=task_frame_id,
+                resume_step_id=resume_step_id,
                 timeout_seconds_override=timeout_seconds_override,
             )
 
@@ -214,6 +219,8 @@ class ToolExecutor:
         agent_id: str | None,
         session_id: str | None,
         invocation_id: str | None,
+        task_frame_id: str | None,
+        resume_step_id: str | None,
         timeout_seconds_override: float | None,
     ) -> ToolResult:
         if not user_id:
@@ -222,6 +229,9 @@ class ToolExecutor:
                 "USER_CONTEXT_REQUIRED",
                 "Detached tools require an authenticated user or a user-owned session.",
             )
+        execution = tool.config_json.get("execution", {})
+        if not isinstance(execution, dict):
+            execution = {}
         idempotency_key = (
             f"staffdeck:{tool.tenant_id}:{tool.id}:{invocation_id}"
             if invocation_id
@@ -236,18 +246,35 @@ class ToolExecutor:
             if existing is not None and existing.external_task_id:
                 return self._detached_acceptance_result(tool, existing)
         callback_token = new_callback_token()
+        status_url = str(execution.get("status_url") or "").strip() or None
+        poll_interval_seconds = max(
+            1.0, float(execution.get("poll_interval_seconds") or 5)
+        )
+        max_tracking_seconds = max(
+            1, int(execution.get("max_tracking_seconds") or 86400)
+        )
         task = ExternalBusinessTask(
             tenant_id=tool.tenant_id,
             user_id=user_id,
             agent_id=agent_id,
             session_id=session_id,
             invocation_id=invocation_id,
+            task_frame_id=task_frame_id,
+            resume_step_id=resume_step_id,
             idempotency_key=idempotency_key,
             tool_id=tool.id,
             request_json=arguments,
             callback_token_hash=callback_token_hash(callback_token),
             status="queued",
-            poll_interval_seconds=1,
+            status_url=status_url,
+            status_config_json={
+                "status_field": str(execution.get("status_field") or "status"),
+                "result_field": str(execution.get("result_field") or "result"),
+                "status_mapping": dict(execution.get("status_mapping") or {}),
+            },
+            poll_interval_seconds=poll_interval_seconds,
+            next_poll_at=utc_now() if status_url else None,
+            expires_at=utc_now() + timedelta(seconds=max_tracking_seconds),
         )
         self.db.add(task)
         self.db.flush()
