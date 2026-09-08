@@ -171,12 +171,40 @@ def test_tool_config_namespaces_execution_and_preserves_existing_policy() -> Non
         existing={**created, "obsolete": True},
     )
 
-    assert created == {"tool": "sum", "execution": {"timeout_seconds": 20.0}}
+    assert created == {
+        "tool": "sum",
+        "execution": {
+            "timeout_seconds": 20.0,
+            "execution_mode": "sync",
+            "status_url": None,
+            "poll_interval_seconds": 5.0,
+            "task_id_field": "taskId",
+            "status_field": "status",
+            "result_field": "result",
+            "status_mapping": {},
+            "max_tracking_seconds": 86400,
+        },
+    }
     assert updated_by_legacy_client == {
         "tool": "echo",
         "obsolete": False,
-        "execution": {"timeout_seconds": 20.0},
+        "execution": created["execution"],
     }
+
+
+def test_tool_config_round_trips_detached_execution_policy() -> None:
+    policy = ToolExecutionPolicy(
+        timeout_seconds=12,
+        execution_mode="detached",
+        status_url="https://provider.test/tasks/{taskId}",
+        poll_interval_seconds=10,
+    )
+
+    config = _tool_config({}, policy)
+
+    assert config["execution"]["execution_mode"] == "detached"
+    assert config["execution"]["status_url"].endswith("/{taskId}")
+    assert _read_execution_policy(config) == policy
 
 
 def test_tool_config_rejects_untyped_execution_and_reads_invalid_legacy_safely() -> None:

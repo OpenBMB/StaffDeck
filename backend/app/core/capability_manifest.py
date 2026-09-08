@@ -45,6 +45,7 @@ RESERVED_HARNESS_CAPABILITY_NAMES = {
     "run_skill_script",
     "knowledge_search",
     "lark_cli",
+    "external_task_status",
 }
 
 
@@ -392,6 +393,25 @@ def _lark_cli_descriptor(
 
 def _internal_capability_descriptors() -> list[CapabilityDescriptor]:
     return [
+        CapabilityDescriptor(
+            capability_id="builtin.external_task.status",
+            name="external_task_status",
+            kind="internal",
+            description=(
+                "Query a StaffDeck detached business task by task_id. Use this when the user asks "
+                "for the status of a previously submitted #taskid. Only the current user's tasks "
+                "are visible."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "minLength": 1},
+                },
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            metadata={"provider": "harness", "side_effect": "read"},
+        ),
         CapabilityDescriptor(
             capability_id="builtin.deliverables.list",
             name="list_published_deliverables",

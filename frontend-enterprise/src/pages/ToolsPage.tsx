@@ -102,6 +102,14 @@ const TOOL_FORM_INITIAL_VALUES = {
   input_schema: '{}',
   output_schema: '{}',
   timeout_seconds: 8,
+  execution_mode: 'sync' as 'sync' | 'detached',
+  status_url: '',
+  poll_interval_seconds: 5,
+  task_id_field: 'taskId',
+  status_field: 'status',
+  result_field: 'result',
+  status_mapping: '{\n  "queued": "accepted",\n  "processing": "working",\n  "succeeded": "completed",\n  "failed": "failed"\n}',
+  max_tracking_seconds: 86400,
   capability_scope: 'general' as CapabilityScope,
 };
 
@@ -2059,6 +2067,45 @@ function ToolFormFields({
 
       {values.tool_type === 'a2a' && <A2AConnectionFields values={values} setField={setField} />}
 
+      {values.tool_type === 'http' && (
+        <div className="flex flex-col gap-[14px] rounded-[8px] border border-[#eceef1] bg-[#fafbfc] p-[16px]">
+          <Field label="执行模式">
+            <UISelect
+              value={values.execution_mode}
+              onValueChange={(value) => setField('execution_mode', value as 'sync' | 'detached')}
+            >
+              <SelectTrigger className={cn(SELECT_TRIGGER_CLASS, 'w-full')}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="sync">同步等待结果</SelectItem>
+                <SelectItem value="detached">提交后异步跟踪</SelectItem>
+              </SelectContent>
+            </UISelect>
+          </Field>
+          {values.execution_mode === 'detached' && (
+            <div className="grid grid-cols-1 gap-[14px] sm:grid-cols-2">
+              <div className="sm:col-span-2 rounded-[8px] border border-[#e3e7f1] bg-white px-[12px] py-[10px]">
+                <p className={FIELD_LABEL_CLASS}>StaffDeck 托管异步</p>
+                <p className={HINT_CLASS}>StaffDeck 会生成任务号，后台执行当前 HTTP 请求并保存结果。Provider 不需要返回 taskId；用户可通过“查询 #任务号”获取结果。</p>
+              </div>
+              <Field label="轮询间隔（秒）" htmlFor="tool-poll-interval">
+                <Input
+                  id="tool-poll-interval"
+                  type="number"
+                  min={1}
+                  max={3600}
+                  step={1}
+                  value={values.poll_interval_seconds}
+                  onChange={(event) => setField('poll_interval_seconds', Number(event.target.value) || 5)}
+                />
+              </Field>
+              <p className={cn(HINT_CLASS, 'sm:col-span-2')}>提交后当前对话立即结束；任务完成只更新状态，不主动推送消息。用户后续通过任务号查询。</p>
+            </div>
+          )}
+        </div>
+      )}
+
       <Field
         label="调用超时上限（秒）"
         htmlFor="tool-timeout-seconds"
@@ -2411,6 +2458,14 @@ function toolToFormValues(row: ToolRead): ToolFormValues {
     output_schema: JSON.stringify(row.output_schema || {}, null, 2),
     allowed_skills: (row.allowed_skills || []).join(','),
     timeout_seconds: row.execution_policy?.timeout_seconds ?? 8,
+    execution_mode: row.execution_policy?.execution_mode ?? 'sync',
+    status_url: row.execution_policy?.status_url || '',
+    poll_interval_seconds: row.execution_policy?.poll_interval_seconds ?? 5,
+    task_id_field: row.execution_policy?.task_id_field || 'taskId',
+    status_field: row.execution_policy?.status_field || 'status',
+    result_field: row.execution_policy?.result_field || 'result',
+    status_mapping: JSON.stringify(row.execution_policy?.status_mapping || {}, null, 2),
+    max_tracking_seconds: row.execution_policy?.max_tracking_seconds ?? 86400,
     capability_scope: normalizeCapabilityScope(row.capability_scope),
   };
 }
@@ -2431,6 +2486,16 @@ function buildToolPayload(values: ToolFormValues) {
       mcp_config: values.tool_type === 'mcp' || values.tool_type === 'a2a' ? parseJson(values.mcp_config, {}) : {},
       execution_policy: {
         timeout_seconds: Math.max(1, Math.min(3600, Number(values.timeout_seconds) || 8)),
+        execution_mode: values.tool_type === 'http' ? values.execution_mode : 'sync',
+        status_url: values.tool_type === 'http' && values.execution_mode === 'detached'
+          ? String(values.status_url || '').trim() || null
+          : null,
+        poll_interval_seconds: Math.max(1, Math.min(3600, Number(values.poll_interval_seconds) || 5)),
+        task_id_field: String(values.task_id_field || 'taskId').trim(),
+        status_field: String(values.status_field || 'status').trim(),
+        result_field: String(values.result_field || 'result').trim(),
+        status_mapping: parseJson(values.status_mapping, {}),
+        max_tracking_seconds: Math.max(1, Math.min(2592000, Number(values.max_tracking_seconds) || 86400)),
       },
       input_schema: parseJson(values.input_schema, {}),
       output_schema: parseJson(values.output_schema, {}),

@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from app.api.agents import enterprise_router as agents_router
 from app.api.agents import scope_router as agent_scope_router
 from app.api.feedback import router as feedback_router
+from app.api.external_business_tasks import enterprise_router as external_tasks_router
 from app.api.general_skills import router as general_skills_router
 from app.api.knowledge import router as knowledge_router
 from app.api.knowledge_bases import router as knowledge_bases_router
@@ -34,6 +35,7 @@ def test_enterprise_read_endpoints_require_authentication() -> None:
     app.include_router(agents_router)
     app.include_router(agent_scope_router)
     app.include_router(feedback_router)
+    app.include_router(external_tasks_router)
     app.include_router(scheduled_tasks_router)
     app.include_router(sessions_router)
     client = TestClient(app)
@@ -60,6 +62,7 @@ def test_enterprise_read_endpoints_require_authentication() -> None:
         "/api/enterprise/feedback/summary?tenant_id=tenant_demo",
         "/api/enterprise/scheduled-tasks?tenant_id=tenant_demo",
         "/api/enterprise/sessions?tenant_id=tenant_demo",
+        "/api/enterprise/external-business-tasks/provider-1?tenant_id=tenant_demo",
     ]
 
     for path in paths:

@@ -413,6 +413,14 @@ export type ToolRead = {
   mcp_config: Record<string, unknown>;
   execution_policy?: {
     timeout_seconds: number;
+    execution_mode?: 'sync' | 'detached';
+    status_url?: string | null;
+    poll_interval_seconds?: number;
+    task_id_field?: string;
+    status_field?: string;
+    result_field?: string;
+    status_mapping?: Record<string, string>;
+    max_tracking_seconds?: number;
   } | null;
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
