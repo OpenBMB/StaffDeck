@@ -113,8 +113,8 @@ class TaskFrameStore:
         loop = self.db.get(HarnessAgentLoopRecord, row.agent_loop_id)
         if loop is None:
             return
-        if result_status == "awaiting_user":
-            loop_status = "suspended"
+        if result_status in {"awaiting_user", "waiting_external_task"}:
+                loop_status = "suspended"
         elif row.kind != "sop":
             loop_status = "active"
         elif result_status == "completed":
@@ -527,7 +527,7 @@ class TaskFrameStore:
         """Keep unstarted frames durable and resumable after the turn budget ends."""
 
         for row in rows:
-            if row.status in TERMINAL_FRAME_STATUSES:
+            if row.status in TERMINAL_FRAME_STATUSES or row.status == "ready_to_resume":
                 continue
             row.status = "queued"
             row.result_json = {
@@ -733,7 +733,7 @@ class TaskFrameStore:
             if (
                 item.task_id in excluded
                 or not dependency_ids
-                or item.status not in {"queued", "blocked"}
+                or item.status not in {"queued", "blocked", "ready_to_resume"}
             ):
                 continue
             if item.status == "blocked" and str(
@@ -1081,6 +1081,8 @@ def planned_frame_from_record(row: HarnessTaskFrameRecord) -> PlannedTaskFrame:
                 "handoff",
                 "failed",
                 "cancelled",
+                "waiting_external_task",
+                "ready_to_resume",
             }
             else "queued"
         ),
@@ -1099,7 +1101,9 @@ def _legacy_projection(row: HarnessTaskFrameRecord) -> dict[str, Any]:
         "task_id": row.task_id,
         "status": (
             "pending"
-            if row.status in {"queued", "blocked", "action_budget"}
+            if row.status in {
+                "queued", "blocked", "action_budget", "ready_to_resume"
+            }
             else row.status
         ),
         "skill_id": row.skill_id,

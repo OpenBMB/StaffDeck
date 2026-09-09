@@ -538,6 +538,45 @@ class HarnessTaskAgent:
                     if _is_non_retryable_failure(result):
                         non_retryable_action_signatures.add(action_signature)
             bounded_result = _bounded_capability_result(tool_name, result)
+            result_data = result.get("data")
+            if (
+                result.get("success") is True
+                and isinstance(result_data, dict)
+                and result_data.get("detached") is True
+            ):
+                capability_results.append(bounded_result)
+                transcript.extend(
+                    [
+                        {
+                            "role": "assistant",
+                            "action": "tool",
+                            "tool_name": tool_name,
+                            "arguments": action.arguments,
+                        },
+                        {
+                            "role": "tool",
+                            "tool_name": tool_name,
+                            "result": bounded_result,
+                        },
+                    ]
+                )
+                reply = str(result_data.get("user_reply") or "").strip()
+                return finish(TaskExecutionResult(
+                    task_frame_id=requirement.task_frame_id,
+                    status="waiting_external_task",
+                    reply_fragment=reply,
+                    capability_results=capability_results,
+                    action_count=iteration,
+                    task_summary=(
+                        "异步业务任务已受理，等待完成后恢复 SOP。"
+                        if requirement.kind == "sop"
+                        else "异步业务任务已受理，可通过任务号查询进度。"
+                    ),
+                    structured_result={
+                        "task_id": result_data.get("task_id"),
+                        "status": result_data.get("status"),
+                    },
+                ))
             if _is_loaded_general_skill_result(tool_name, result):
                 loaded_general_skill_names.append(tool_name)
             transcript.extend(

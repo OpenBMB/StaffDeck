@@ -590,6 +590,7 @@ def test_tool(
         request.tenant_id,
         ToolCall(name=row.name, arguments=request.arguments),
         agent_id=agent_id,
+        user_id=current_user.id,
     )
 
 

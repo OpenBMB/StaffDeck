@@ -55,6 +55,7 @@ from app.core.task_request_compiler import (
 from app.core.turn_planner import TurnPlanner, turn_plan_router_decision
 from app.db.models import (
     ChatSession,
+    ExternalBusinessTask,
     HarnessRunRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
@@ -72,6 +73,7 @@ from app.session.session_schema import (
     TurnPlan,
 )
 from app.skills.nesting import discoverable_sops, expand_visible_sops
+from app.tools.external_tasks import update_external_task_checkpoint
 
 
 def _turn_skill_projection(
@@ -354,6 +356,37 @@ class HarnessV2Engine:
                 planner_state,
                 interaction_mode=request.interaction_mode,
                 team_context=team_context,
+            )
+        ready_frame = next(
+            (
+                item
+                for item in self.store.planner_state(session)
+                if item.get("status") == "ready_to_resume"
+                and item.get("kind") == "sop"
+            ),
+            None,
+        )
+        if ready_frame is not None and plan.decision not in {
+            "complete_task",
+            "handoff_human",
+        }:
+            resume = planned_frame_from_record(
+                self.db.exec(
+                    select(HarnessTaskFrameRecord).where(
+                        HarnessTaskFrameRecord.session_id == session.id,
+                        HarnessTaskFrameRecord.task_id == ready_frame["task_id"],
+                    )
+                ).one()
+            )
+            plan = plan.model_copy(
+                update={
+                    "decision": "switch_to_pending",
+                    "selected_task_id": resume.task_id,
+                    "target_skill_id": resume.target_skill_id,
+                    "target_step_id": resume.target_step_id,
+                    "task_frames": [resume],
+                    "task_updates": [],
+                }
             )
         self._renew_session_lease()
         self._raise_if_cancelled(request, session)
@@ -976,6 +1009,32 @@ class HarnessV2Engine:
                 # The human reply is already the handoff completion signal. Do not
                 # re-enter the same terminal handoff node during the resume turn.
                 result.status = "completed"
+            if result.status == "waiting_external_task":
+                next_step = (
+                    self.owner._default_next_step(active_skill, frame.target_step_id)
+                    if active_skill is not None
+                    else None
+                )
+                resume_step_id = (
+                    str(
+                        (next_step or {}).get("step_id")
+                        or (next_step or {}).get("node_id")
+                        or ""
+                    ).strip()
+                    or None
+                )
+                external_task = self.db.exec(
+                    select(ExternalBusinessTask).where(
+                        ExternalBusinessTask.task_frame_id == row.task_id,
+                        ExternalBusinessTask.session_id == session.id,
+                        ExternalBusinessTask.status.in_(["queued", "accepted", "working"]),
+                    )
+                ).first()
+                if external_task is not None:
+                    external_task.resume_step_id = resume_step_id
+                    self.db.add(external_task)
+                result.next_step_id = resume_step_id
+                self.db.commit()
             deferred_continuation = False
             if frame.kind == "sop":
                 deferred_result = _defer_failed_step_after_completed_checkpoint(
@@ -1107,6 +1166,43 @@ class HarnessV2Engine:
                 break
 
         combined = _combine_results(row.task_id, results)
+        if combined.status == "waiting_external_task":
+            external_task = self.db.exec(
+                select(ExternalBusinessTask).where(
+                    ExternalBusinessTask.task_frame_id == row.task_id,
+                    ExternalBusinessTask.session_id == session.id,
+                    ExternalBusinessTask.status.in_(
+                        ["completed", "failed", "cancelled", "expired"]
+                    ),
+                )
+            ).first()
+            if external_task is not None:
+                combined.status = (
+                    "ready_to_resume"
+                    if row.kind == "sop"
+                    else (
+                        "completed"
+                        if external_task.status == "completed"
+                        else "failed"
+                    )
+                )
+                if (
+                    row.kind == "sop"
+                    and external_task.status == "completed"
+                    and external_task.resume_step_id
+                ):
+                    row.step_id = external_task.resume_step_id
+                row.slots_json = {
+                    **dict(row.slots_json or {}),
+                    **dict(external_task.result_json or {}),
+                }
+                update_external_task_checkpoint(self.db, row, external_task)
+                loop_checkpoint = dict(agent_loop.checkpoint_json or loop_checkpoint)
+                combined.structured_result = {
+                    "external_task_id": external_task.external_task_id,
+                    "external_task_status": external_task.status,
+                    "external_task_result": dict(external_task.result_json or {}),
+                }
         if run is not None:
             self.store.finish_run(
                 run,

@@ -346,6 +346,52 @@ def _migrate_sqlite_skill_schema() -> None:
                 )
             )
 
+        if "external_business_tasks" in tables:
+            task_columns = {
+                column["name"]
+                for column in inspector.get_columns("external_business_tasks")
+            }
+            additions = {
+                "status_config_json": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN status_config_json JSON"
+                ),
+                "idempotency_key": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN idempotency_key VARCHAR"
+                ),
+                "lease_owner": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN lease_owner VARCHAR"
+                ),
+                "lease_expires_at": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN lease_expires_at DATETIME"
+                ),
+                "expires_at": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN expires_at DATETIME"
+                ),
+                "task_frame_id": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN task_frame_id VARCHAR"
+                ),
+                "resume_step_id": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN resume_step_id VARCHAR"
+                ),
+            }
+            for column_name, ddl in additions.items():
+                if column_name not in task_columns:
+                    conn.execute(text(ddl))
+            conn.execute(
+                text(
+                    "UPDATE external_business_tasks SET status_config_json = '{}' "
+                    "WHERE status_config_json IS NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_external_business_tasks_idempotency_key "
+                    "ON external_business_tasks(idempotency_key) "
+                    "WHERE idempotency_key IS NOT NULL"
+                )
+            )
+
         if "mcp_servers" in tables:
             mcp_server_columns = {
                 column["name"] for column in inspector.get_columns("mcp_servers")

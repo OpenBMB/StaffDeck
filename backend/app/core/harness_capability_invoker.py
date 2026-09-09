@@ -42,6 +42,7 @@ from app.db.models import (
     GeneralSkill,
     HarnessInvocationRecord,
     ModelConfig,
+    ExternalBusinessTask,
     Skill,
     Tool,
     UIConfig,
@@ -518,6 +519,8 @@ class HarnessCapabilityInvoker:
             return self._search_capabilities(arguments)
         if name == "capability_describe":
             return self._describe_capabilities(arguments)
+        if name == "external_task_status":
+            return self._external_task_status(arguments)
         if name == "list_published_deliverables":
             return self._list_published_deliverables(arguments)
         if name == "read_published_deliverable":
@@ -539,6 +542,29 @@ class HarnessCapabilityInvoker:
             "UNSUPPORTED_INTERNAL_CAPABILITY",
             "不支持的 Harness 内部能力。",
         )
+
+    def _external_task_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(arguments.get("task_id") or "").strip().lstrip("#")
+        if not task_id:
+            return _failure("INVALID_ARGUMENTS", "task_id 不能为空。")
+        task = self.db.exec(
+            select(ExternalBusinessTask).where(
+                ExternalBusinessTask.id == task_id,
+                ExternalBusinessTask.tenant_id == self.tenant_id,
+                ExternalBusinessTask.user_id == self.session.user_id,
+            )
+        ).first()
+        if task is None:
+            return _failure("EXTERNAL_TASK_NOT_FOUND", "未找到属于当前用户的该任务。")
+        return {
+            "success": True,
+            "data": {
+                "task_id": task.id,
+                "status": task.status,
+                "result": dict(task.result_json or {}),
+                "error": dict(task.error_json or {}),
+            },
+        }
 
     def _list_published_deliverables(self, arguments: dict[str, Any]) -> dict[str, Any]:
         raw_limit = arguments.get("limit", MAX_PUBLISHED_DELIVERABLES)
@@ -1050,6 +1076,8 @@ class HarnessCapabilityInvoker:
             agent_id=self.agent_id,
             session_id=self.session.id,
             invocation_id=call_id,
+            task_frame_id=self.task_frame_id,
+            user_id=self.session.user_id,
             timeout_seconds_override=self._remaining_step_seconds(),
         )
         payload = result.model_dump(mode="json")
