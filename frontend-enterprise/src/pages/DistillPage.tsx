@@ -1025,7 +1025,12 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     try {
       await streamPost(
         '/api/enterprise/skills/distill/stream',
-        { tenant_id: TENANT_ID, ...payload, model_config_id: selectedRewriteModelId || undefined },
+        {
+          tenant_id: TENANT_ID,
+          agent_id: activeAgentId || undefined,
+          ...payload,
+          model_config_id: selectedRewriteModelId || undefined,
+        },
         (item) => {
           trackActiveJobEvent(item, baseJob);
           if (item.event === 'status') {

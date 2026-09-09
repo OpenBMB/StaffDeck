@@ -359,6 +359,14 @@ export type UIConfigRead = {
   show_tool_trace: boolean;
   reflection_max_rounds: number;
   agent_loop_max_actions: number;
+  context_token_budget: number;
+  context_compaction_trigger_ratio: number;
+  context_recent_round_limit: number;
+  context_long_summary_token_budget: number;
+  context_medium_summary_token_budget: number;
+  context_allowed_roles: Array<'user' | 'assistant'>;
+  context_long_summary_prefix: string;
+  context_medium_summary_prefix: string;
   sandbox_enabled: boolean;
   harness_storage_path: string;
   effective_harness_storage_path: string;
@@ -405,6 +413,15 @@ export type ToolRead = {
   mcp_config: Record<string, unknown>;
   execution_policy?: {
     timeout_seconds: number;
+    execution_mode?: 'sync' | 'detached';
+    async_strategy?: 'staffdeck_worker' | 'provider_task';
+    status_url?: string | null;
+    poll_interval_seconds?: number;
+    task_id_field?: string;
+    status_field?: string;
+    result_field?: string;
+    status_mapping?: Record<string, string>;
+    max_tracking_seconds?: number;
   } | null;
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
@@ -966,6 +983,8 @@ export type ChannelBindingRead = {
   baseurl?: string | null;
   bot_id?: string | null;
   corp_id?: string | null;
+  open_kfid?: string | null;
+  callback_ready?: boolean;
   app_id?: string | null;
   client_id?: string | null;
   bot_open_id?: string | null;
@@ -978,6 +997,7 @@ export type ChannelBindingRead = {
   created_by_name?: string | null;
   config_json?: ChannelBindingConfigJson | null;
   agents: ChannelBindingAgentRead[];
+  wechat_kf_accounts?: WeChatKfAccountRead[];
   /** 团队绑定（与 agent 挂载互斥，后端逐步放开，可能缺省）。 */
   team_id?: string | null;
   team_name?: string | null;
@@ -1002,6 +1022,16 @@ export type ChannelBatchJobRead = {
   succeeded?: number;
   failed?: number;
   errors?: string[];
+};
+
+export type WeChatKfAccountRead = {
+  open_kfid: string;
+  name: string;
+  agent_id?: string | null;
+  team_id?: string | null;
+  status: string;
+  sync_cursor: string;
+  last_error?: string | null;
 };
 
 export type ChannelBindingManagerRead = {

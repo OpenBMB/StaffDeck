@@ -56,6 +56,7 @@ from app.core.task_request_compiler import (
 from app.core.turn_planner import TurnPlanner, turn_plan_router_decision
 from app.db.models import (
     ChatSession,
+    ExternalBusinessTask,
     HarnessRunRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
@@ -73,6 +74,7 @@ from app.session.session_schema import (
     TurnPlan,
 )
 from app.skills.nesting import discoverable_sops, expand_visible_sops
+from app.tools.external_tasks import update_external_task_checkpoint
 
 
 def _turn_skill_projection(
@@ -360,6 +362,37 @@ class HarnessV2Engine:
                 interaction_mode=request.interaction_mode,
                 team_context=team_context,
             )
+        ready_frame = next(
+            (
+                item
+                for item in self.store.planner_state(session)
+                if item.get("status") == "ready_to_resume"
+                and item.get("kind") == "sop"
+            ),
+            None,
+        )
+        if ready_frame is not None and plan.decision not in {
+            "complete_task",
+            "handoff_human",
+        }:
+            resume = planned_frame_from_record(
+                self.db.exec(
+                    select(HarnessTaskFrameRecord).where(
+                        HarnessTaskFrameRecord.session_id == session.id,
+                        HarnessTaskFrameRecord.task_id == ready_frame["task_id"],
+                    )
+                ).one()
+            )
+            plan = plan.model_copy(
+                update={
+                    "decision": "switch_to_pending",
+                    "selected_task_id": resume.task_id,
+                    "target_skill_id": resume.target_skill_id,
+                    "target_step_id": resume.target_step_id,
+                    "task_frames": [resume],
+                    "task_updates": [],
+                }
+            )
         self._renew_session_lease()
         self._raise_if_cancelled(request, session)
         slot_hydration = SlotHydrationPolicy.hydrate_plan(
@@ -644,8 +677,16 @@ class HarnessV2Engine:
             reply = (
                 f"已完成 {task_count} 个团队任务的拆分与派发。"
             )
-        if reply is None:
-            reply = self.owner.response_generator.generate(
+        is_handoff = any(result.status == "handoff" for result in execution_results)
+        if is_handoff:
+            # Handoff is now queued for a human; do not let the execution model
+            # describe the missing native channel as if the request failed.
+            reply = "已为你提交人工处理请求，请稍候，工作人员会尽快回复。"
+            if self.owner.stream_sink is not None:
+                for chunk in self.owner.response_generator.chunk_text(reply):
+                    self.owner.stream_sink.on_delta(chunk)
+        elif reply is None:
+            response_args = (
                 execution_request.message,
                 session,
                 response_skill,
@@ -658,6 +699,17 @@ class HarnessV2Engine:
                 conversation_context,
                 execution_payloads,
             )
+            if self.owner.stream_sink is not None:
+                parts: list[str] = []
+                for chunk in self.owner.response_generator.generate_stream(*response_args):
+                    parts.append(chunk)
+                    self.owner.stream_sink.on_delta(chunk)
+                reply = "".join(parts).strip()
+            else:
+                reply = self.owner.response_generator.generate(*response_args)
+        elif self.owner.stream_sink is not None:
+            for chunk in self.owner.response_generator.chunk_text(reply):
+                self.owner.stream_sink.on_delta(chunk)
         self._renew_session_lease()
         reply, citations = compact_knowledge_citation_labels(reply, citations)
         artifacts = _aggregate_artifacts(execution_results)
@@ -689,6 +741,8 @@ class HarnessV2Engine:
         # Cancellation and normal projection compete for this durable receipt.
         # Only the winner may append a terminal assistant message.
         self._raise_if_cancelled(request, session)
+        if self.owner.stream_sink is not None:
+            self.owner.stream_delivery_succeeded = self.owner.stream_sink.finish()
         self.turn_store.begin_completion(self.turn_record)
         reply = self.owner._finalize_turn(
             session,
@@ -875,12 +929,15 @@ class HarnessV2Engine:
                 ],
                 attachment_descriptors,
                 published_deliverables,
+                # 驱动本次执行的是当前这条用户消息。长驻 SOP 帧跨回合恢复
+                # 时若改用创建该帧的老消息，会顶掉用户的最新回复（真实案例：
+                # 「提交」被首句需求顶掉，恢复的 agent 看不到而重复提问）。
+                # 原始意图仍在 user_intent 与 slots 里，不丢。
                 source_user_message=(
-                    request.message
-                    if row.source_turn_id == self.user_message_id
-                    else _source_user_message(self.db, row)
+                    request.message.strip() or _source_user_message(self.db, row)
                 ),
                 out_of_scope_task_intents=_sibling_task_intents(self.db, row),
+                client_timezone=request.client_timezone,
             )
             if (
                 self.slash_command
@@ -975,6 +1032,36 @@ class HarnessV2Engine:
                 step_timeout_seconds=step_timeout_seconds,
                 checkpoint=loop_checkpoint,
             )
+            if request.channel == "human_handoff_resume" and result.status == "handoff":
+                # The human reply is already the handoff completion signal. Do not
+                # re-enter the same terminal handoff node during the resume turn.
+                result.status = "completed"
+            if result.status == "waiting_external_task":
+                next_step = (
+                    self.owner._default_next_step(active_skill, frame.target_step_id)
+                    if active_skill is not None
+                    else None
+                )
+                resume_step_id = (
+                    str(
+                        (next_step or {}).get("step_id")
+                        or (next_step or {}).get("node_id")
+                        or ""
+                    ).strip()
+                    or None
+                )
+                external_task = self.db.exec(
+                    select(ExternalBusinessTask).where(
+                        ExternalBusinessTask.task_frame_id == row.task_id,
+                        ExternalBusinessTask.session_id == session.id,
+                        ExternalBusinessTask.status.in_(["queued", "accepted", "working"]),
+                    )
+                ).first()
+                if external_task is not None:
+                    external_task.resume_step_id = resume_step_id
+                    self.db.add(external_task)
+                result.next_step_id = resume_step_id
+                self.db.commit()
             deferred_continuation = False
             if frame.kind == "sop":
                 deferred_result = _defer_failed_step_after_completed_checkpoint(
@@ -1106,6 +1193,43 @@ class HarnessV2Engine:
                 break
 
         combined = _combine_results(row.task_id, results)
+        if combined.status == "waiting_external_task":
+            external_task = self.db.exec(
+                select(ExternalBusinessTask).where(
+                    ExternalBusinessTask.task_frame_id == row.task_id,
+                    ExternalBusinessTask.session_id == session.id,
+                    ExternalBusinessTask.status.in_(
+                        ["completed", "failed", "cancelled", "expired"]
+                    ),
+                )
+            ).first()
+            if external_task is not None:
+                combined.status = (
+                    "ready_to_resume"
+                    if row.kind == "sop"
+                    else (
+                        "completed"
+                        if external_task.status == "completed"
+                        else "failed"
+                    )
+                )
+                if (
+                    row.kind == "sop"
+                    and external_task.status == "completed"
+                    and external_task.resume_step_id
+                ):
+                    row.step_id = external_task.resume_step_id
+                row.slots_json = {
+                    **dict(row.slots_json or {}),
+                    **dict(external_task.result_json or {}),
+                }
+                update_external_task_checkpoint(self.db, row, external_task)
+                loop_checkpoint = dict(agent_loop.checkpoint_json or loop_checkpoint)
+                combined.structured_result = {
+                    "external_task_id": external_task.external_task_id,
+                    "external_task_status": external_task.status,
+                    "external_task_result": dict(external_task.result_json or {}),
+                }
         if run is not None:
             self.store.finish_run(
                 run,
@@ -1569,10 +1693,17 @@ def _defer_failed_step_after_completed_checkpoint(
         for summary in (checkpoint.task_summary.strip(), failure_summary)
         if summary
     ]
+    # 上一节点的回复可能带有"接下来将…"式的前瞻表述；后续步骤实际已
+    # 暂停排队、要等下一条用户消息才继续，必须向用户说清（真实案例：
+    # 用户看到"将进入正式提交步骤"以为会自动提交，实际什么都没发生）。
+    reply = checkpoint.reply_fragment.rstrip()
+    suffix = "（本轮执行到此暂停，剩余步骤已排队；回复任意消息即可继续。）"
+    if suffix not in reply:
+        reply = f"{reply}\n\n{suffix}"
     return result.model_copy(
         update={
             "status": "action_budget",
-            "reply_fragment": checkpoint.reply_fragment,
+            "reply_fragment": reply,
             "next_step_id": None,
             "task_summary": "；".join(dict.fromkeys(summaries)),
         }

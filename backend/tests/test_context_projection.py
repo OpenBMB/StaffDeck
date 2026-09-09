@@ -167,6 +167,18 @@ def test_compact_conversation_context_keeps_recent_history_within_control_budget
     assert compacted["metadata"]["compacted"] is True
 
 
+def test_compact_conversation_context_preserves_configured_budget() -> None:
+    context = {
+        "messages": [{"role": "user", "content": "保留原始上下文"}],
+        "metadata": {
+            "token_budget": 64_000,
+            "estimated_tokens": 48_000,
+        },
+    }
+
+    assert compact_conversation_context(context) is context
+
+
 def test_step_skill_context_keeps_only_local_graph_and_complete_instructions() -> None:
     current_instruction = "当前节点业务说明" * 1_000
     target_instruction = "目标节点业务说明" * 1_000

@@ -483,6 +483,11 @@ def _apply_handoff_reply(
     if chat_session and chat_session.tenant_id == row.tenant_id:
         chat_session.status = "active"
         chat_session.awaiting_input_json = None
+        chat_session.slots_json = {
+            **dict(chat_session.slots_json or {}),
+            "handoff_requested": False,
+            "handoff_completed": True,
+        }
         chat_session.summary = f"最近回复：{reply[:120]}"
         chat_session.updated_at = now
         db.add(chat_session)
@@ -522,6 +527,28 @@ def _resume_human_handoff_worker(handoff_id: str) -> None:
             chat_session = db.get(ChatSession, handoff.session_id)
             if not chat_session or chat_session.tenant_id != handoff.tenant_id:
                 return
+            resume_payload = dict(handoff.resume_payload_json or {})
+            original_channel = str(resume_payload.get("channel") or "").strip()
+            original_binding_id = str(
+                resume_payload.get("channel_binding_id") or ""
+            ).strip()
+            original_account_key = str(
+                resume_payload.get("channel_account_key") or ""
+            ).strip()
+            original_target = resume_payload.get("channel_target")
+            if original_channel:
+                chat_session.channel = original_channel
+            if original_binding_id:
+                chat_session.channel_binding_id = original_binding_id
+            if original_account_key:
+                chat_session.channel_account_key = original_account_key
+            if isinstance(original_target, dict) and original_target:
+                chat_session.channel_target_json = dict(original_target)
+            elif chat_session.channel_target_json:
+                # Legacy handoffs predate the target snapshot. Keep the target
+                # already anchored on the session, especially a WeCom group chatid.
+                chat_session.channel_target_json = dict(chat_session.channel_target_json)
+            db.add(chat_session)
             metadata = dict(handoff.metadata_json or {})
             if metadata.get("resume_started_at"):
                 return

@@ -4,7 +4,7 @@ import hashlib
 import json
 import sys
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -102,6 +102,7 @@ from app.session.session_schema import (
     TurnPlan,
 )
 from app.session.attachment_store import stage_chat_attachment
+from app.skills.nesting import expand_sop_for_execution
 from app.skills.skill_schema import SkillCapabilityRefs
 from app.tools.tool_schema import ToolResult
 
@@ -1353,6 +1354,85 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     assert shared_descriptor.input_schema["required"] == ["query", "operation"]
     assert shared_descriptor.metadata["execution_policy"] == "instructions_only"
     assert shared_descriptor.metadata["script_execution"] == "use_harness_tools"
+
+
+def test_nested_sop_tool_grant_survives_parent_expansion() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant-demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent-overall",
+                tenant_id="tenant-demo",
+                name="整体智能体",
+                is_overall=True,
+            )
+        )
+        tool = Tool(
+            id="tool-child",
+            tenant_id="tenant-demo",
+            name="child.lookup",
+            method="POST",
+            url="https://example.test/lookup",
+            capability_scope="sop_specific",
+            allowed_skills_json=["child"],
+        )
+        db.add(tool)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant-demo", "tool", tool.id)
+        db.commit()
+
+        child = Skill(
+            id="skill-child",
+            tenant_id="tenant-demo",
+            skill_id="child",
+            name="子流程",
+            status="published",
+            content_json={
+                "capability_scope": "sop_specific",
+                "start_node_id": "lookup",
+                "terminal_node_ids": ["lookup"],
+                "nodes": [
+                    {
+                        "node_id": "lookup",
+                        "type": "tool_call",
+                        "name": "查询",
+                        "capability_refs": {"tool_ids": [tool.id]},
+                    }
+                ],
+                "edges": [],
+            },
+        )
+        parent = Skill(
+            id="skill-parent",
+            tenant_id="tenant-demo",
+            skill_id="parent",
+            name="父流程",
+            status="published",
+            content_json={
+                "capability_scope": "general",
+                "start_node_id": "nested",
+                "terminal_node_ids": ["nested"],
+                "nodes": [
+                    {
+                        "node_id": "nested",
+                        "type": "subflow",
+                        "name": "调用子流程",
+                        "sub_sop_id": "child",
+                    }
+                ],
+                "edges": [],
+            },
+        )
+        expanded = expand_sop_for_execution(parent, [parent, child])
+        manifest = CapabilityManifestBuilder(db).build(
+            "tenant-demo",
+            "agent-overall",
+            expanded,
+            "nested::child::lookup",
+        )
+
+    assert "child.lookup" in manifest.allowed_names()
 
 
 def test_general_tools_remain_discoverable_across_sop_steps() -> None:
@@ -3298,6 +3378,57 @@ def test_invalid_action_protocol_failure_keeps_sop_loop_recoverable() -> None:
     assert _is_recoverable_action_protocol_failure(business_failure) is False
 
 
+def test_resumed_agent_sees_latest_user_reply(monkeypatch) -> None:
+    """从暂停恢复时，用户的新回复必须出现在内层对话记录里。"""
+
+    actions = iter(
+        [
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "好的",
+                "task_summary": "完成",
+            },
+        ]
+    )
+    payloads: list[dict[str, object]] = []
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            payloads.append(deepcopy(payload))
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    requirement = TaskRequirement(
+        task_frame_id="task-resume",
+        kind="sop",
+        goal="继续",
+        source_user_message="提交",
+        capability_manifest=CapabilityManifest(),
+    )
+    checkpoint = {
+        "task_frame_id": "task-resume",
+        "step_id": "",
+        "transcript": [
+            {"role": "assistant", "action": "finish", "status": "awaiting_user"},
+        ],
+    }
+    HarnessTaskAgent().run(
+        requirement,
+        _model_config(),
+        lambda name, arguments: {"success": True},
+        max_actions=2,
+        checkpoint=checkpoint,
+    )
+    transcript = payloads[0]["harness_transcript"]
+    assert {"role": "user", "content": "提交"} in transcript
+
+
 def test_failed_following_sop_step_keeps_completed_checkpoint_reply() -> None:
     completed = TaskExecutionResult(
         task_frame_id="task-price-compare",
@@ -3321,7 +3452,10 @@ def test_failed_following_sop_step_keeps_completed_checkpoint_reply() -> None:
     )
 
     assert deferred.status == "action_budget"
-    assert deferred.reply_fragment == completed.reply_fragment
+    # 保留已完成节点的回复，但必须说明后续步骤已暂停排队（真实案例：
+    # 前瞻式回复"将进入正式提交步骤"曾让用户误以为会自动继续）。
+    assert deferred.reply_fragment.startswith(completed.reply_fragment)
+    assert "回复任意消息即可继续" in deferred.reply_fragment
     assert deferred.next_step_id is None
     assert deferred.error == failed.error
     assert deferred.action_count == 1
@@ -4037,6 +4171,83 @@ def test_harness_agent_cannot_skip_required_sop_tool(
     assert transcript[-1]["result"]["error"]["code"] == ("REQUIRED_CAPABILITY_NOT_INVOKED")
 
 
+def test_harness_agent_blocks_failed_finish_without_attempting_required_tool(
+    monkeypatch,
+) -> None:
+    """模型未在本节点尝试强制能力就 finish(failed) 时打回一次（真实案例：
+    提交节点带着上一步骤的报错直接宣告失败）；实际尝试后允许如实失败。"""
+
+    actions = iter(
+        [
+            {
+                "action": "finish",
+                "status": "failed",
+                "reply_fragment": "提交被拒绝，任务失败。",
+                "task_summary": "未尝试就失败",
+            },
+            {
+                "action": "tool",
+                "tool_name": "lark_cli",
+                "arguments": {"args": ["approval", "instances", "create"]},
+            },
+            {
+                "action": "finish",
+                "status": "failed",
+                "reply_fragment": "提交经尝试后仍失败。",
+                "task_summary": "尝试后失败",
+            },
+        ]
+    )
+    payloads: list[dict[str, object]] = []
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            payloads.append(deepcopy(payload))
+            return next(actions)
+
+    calls: list[str] = []
+
+    def invoke_tool(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        calls.append(name)
+        return {"success": False, "error": {"code": "SERVER_REJECTED"}}
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    requirement = TaskRequirement(
+        task_frame_id="task-submit-node",
+        kind="sop",
+        goal="完成提交节点",
+        required_capability_names=["lark_cli"],
+        capability_manifest=CapabilityManifest(
+            available=[
+                CapabilityDescriptor(
+                    capability_id="builtin.lark_cli",
+                    name="lark_cli",
+                    kind="internal",
+                )
+            ]
+        ),
+    )
+
+    result = HarnessTaskAgent().run(
+        requirement,
+        _model_config(),
+        invoke_tool,
+        max_actions=5,
+    )
+
+    # 第一次 failed finish 被打回并要求实际调用；尝试失败后允许如实失败。
+    assert calls == ["lark_cli"]
+    assert result.status == "failed"
+    assert result.reply_fragment == "提交经尝试后仍失败。"
+    transcript = payloads[1]["harness_transcript"]
+    assert transcript[-1]["result"]["error"]["code"] == "REQUIRED_CAPABILITY_NOT_ATTEMPTED"
+
+
 def test_harness_agent_requires_the_configured_knowledge_base(monkeypatch) -> None:
     actions = iter(
         [
@@ -4390,6 +4601,105 @@ def test_harness_agent_checkpoint_restores_transcript_across_activation(
     assert payloads[1]["harness_transcript"][1]["tool_name"] == "read_file"
     assert payloads[2]["harness_transcript"] == []
     assert payloads[2]["agent_loop_memory"]["recent_task_summaries"] == ["已完成"]
+
+
+def test_multi_step_detached_task_resumes_agent_after_external_result(monkeypatch) -> None:
+    """A detached step must pause, then allow the next step after result injection."""
+
+    actions = iter(
+        [
+            {
+                "action": "tool",
+                "tool_name": "orders.submit",
+                "arguments": {"sku": "SKU-1"},
+            },
+            {
+                "action": "finish",
+                "status": "completed",
+                "reply_fragment": "订单已创建，订单号为 ORD-001。",
+            },
+        ]
+    )
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt: str, _payload: dict[str, object]):
+            return next(actions)
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+    requirement = TaskRequirement(
+        task_frame_id="order-frame",
+        kind="sop",
+        goal="提交订单并在任务完成后确认订单号",
+        capability_manifest=CapabilityManifest(
+            available=[
+                CapabilityDescriptor(
+                    capability_id="tool-order-submit",
+                    name="orders.submit",
+                    kind="tool",
+                )
+            ]
+        ),
+    )
+    accepted = {
+        "success": True,
+        "data": {
+            "detached": True,
+            "accepted": True,
+            "task_id": "exttask-order-1",
+            "status": "queued",
+        },
+    }
+
+    first = HarnessTaskAgent().run(
+        requirement,
+        _model_config(),
+        lambda _name, _arguments: accepted,
+        max_actions=3,
+    )
+
+    assert first.status == "waiting_external_task"
+    assert first.structured_result == {
+        "task_id": "exttask-order-1",
+        "status": "queued",
+    }
+
+    # This is the durable continuation operation performed after the external
+    # task finishes: replace the pending receipt in the checkpoint with the
+    # final business result before re-entering the AgentLoop.
+    checkpoint = dict(first.loop_checkpoint)
+    transcript = [dict(item) for item in checkpoint["transcript"]]
+    assert [item["role"] for item in transcript] == ["assistant", "tool"]
+    assert transcript[1]["result"]["data"]["task_id"] == "exttask-order-1"
+    transcript[1]["result"] = {
+        "success": True,
+        "data": {
+            "task_id": "exttask-order-1",
+            "status": "completed",
+            "order_id": "ORD-001",
+        },
+        "pending": False,
+    }
+    checkpoint["transcript"] = transcript
+    checkpoint["external_task_result"] = {
+        "task_id": "exttask-order-1",
+        "status": "completed",
+        "order_id": "ORD-001",
+    }
+
+    resumed = HarnessTaskAgent().run(
+        requirement,
+        _model_config(),
+        lambda _name, _arguments: {"success": True},
+        max_actions=2,
+        checkpoint=checkpoint,
+    )
+
+    assert resumed.status == "completed"
+    assert resumed.reply_fragment == "订单已创建，订单号为 ORD-001。"
+    assert resumed.action_count == 1
 
 
 def test_turn_action_budget_defers_unstarted_frames_as_queued() -> None:
@@ -5140,3 +5450,32 @@ def test_agent_loop_transcript_compacts_old_tool_payloads_but_keeps_skill_instru
     assert "content" not in old_read["result"]["data"]
     assert old_read["result"]["data"]["continuation_token"] == "next"
     assert old_read["result"]["history_receipt"]["omitted_chars"] > 20_000
+
+
+def test_current_time_uses_client_timezone_with_safe_fallback() -> None:
+    """注入的时间必须是用户所在时区：错误时区的时间比不注入更危险
+    （看起来权威，模型不会质疑）。非法时区回退服务端本地时区而非报错。"""
+
+    from app.core.task_request_compiler import _current_time_text
+
+    shanghai = _current_time_text("Asia/Shanghai")
+    honolulu = _current_time_text("Pacific/Honolulu")
+    assert "+08:00" in shanghai
+    assert "-10:00" in honolulu
+    # 同一时刻的两个时区可能落在不同日期——这正是必须按用户时区注入的原因。
+    assert shanghai[:10] >= honolulu[:10]
+
+    for bad in ("", "   ", "Not/AZone", "…"):
+        text = _current_time_text(bad)
+        assert datetime.fromisoformat(text.split("（")[0]).tzinfo is not None, bad
+
+
+def test_compile_threads_client_timezone_into_requirement() -> None:
+    requirement = TaskRequestCompiler().compile(
+        PlannedTaskFrame(task_id="task-tz", kind="conversation"),
+        ChatSession(id="s-tz", tenant_id="t1"),
+        None,
+        CapabilityManifest(),
+        client_timezone="Asia/Shanghai",
+    )
+    assert "+08:00" in requirement.current_time

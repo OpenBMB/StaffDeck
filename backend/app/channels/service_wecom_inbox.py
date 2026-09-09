@@ -95,6 +95,15 @@ def stage_wecom_inbound(
                 "to_user_id": inbound.conv_key if inbound.is_group else inbound.from_user_id,
                 "context_token": inbound.context_token,
             }
+            if inbound.is_group:
+                # Preserve the sender so later asynchronous replies can mention
+                # the user who asked the question in the group.
+                target["reply_to_user_id"] = inbound.from_user_id
+                target["is_group"] = True
+                target["reply_quote"] = {
+                    "sender_name": inbound.sender_name or inbound.from_user_id,
+                    "text": inbound.text,
+                }
             event = ChannelInboundEvent(
                 id=new_id("chevt"),
                 tenant_id=binding.tenant_id,

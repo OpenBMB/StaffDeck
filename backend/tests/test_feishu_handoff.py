@@ -759,6 +759,297 @@ def test_notify_handoff_assignee_stages_wecom_delivery_with_chat_id() -> None:
         assert delivery.target_json["handoff_id"] == "handoff_demo"
         assert "指派人" in delivery.text
         assert delivery.status == "pending"
+        assert "发送 /回复反馈" in delivery.text
+        assert "直接回复本条消息" not in delivery.text
+
+
+def test_notify_handoff_assignee_retries_old_delivered_wecom_notice() -> None:
+    from datetime import timedelta
+
+    from app.channels.service_outbox import notify_handoff_assignee
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _wecom_binding()
+        db.add(binding)
+        db.add(
+            _channel_identity(
+                channel="wecom",
+                external_user_id="staff_assignee",
+                scope="corp_1",
+            )
+        )
+        handoff = _pending_handoff()
+        db.add(handoff)
+        old_notice = ChannelDelivery(
+            tenant_id="tenant_demo",
+            binding_id=binding.id,
+            session_id=f"handoff:{handoff.id}",
+            kind="handoff_notice",
+            text="旧通知",
+            target_json={"to_user_id": "staff_assignee"},
+            status="delivered",
+            idempotency_key="old-handoff-notice",
+            created_at=utc_now() - timedelta(seconds=3600),
+        )
+        db.add(old_notice)
+        db.commit()
+
+        notify_handoff_assignee(db, binding, handoff, "新问题", "")
+        notices = db.exec(
+            select(ChannelDelivery).where(
+                ChannelDelivery.kind == "handoff_notice",
+                ChannelDelivery.session_id == f"handoff:{handoff.id}",
+            )
+        ).all()
+        assert len(notices) == 2
+        assert any(row.status == "pending" and row.text != "旧通知" for row in notices)
+
+
+def test_run_wecom_handoff_reply_records_wecom_source(monkeypatch) -> None:
+    import app.channels.service_intake as intake_mod
+    from app.channels.service_intake import _run_handoff_reply_command
+    from app.channels.service_routing import ChannelCommand
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _wecom_binding()
+        db.add(binding)
+        db.add(
+            _channel_identity(
+                channel="wecom",
+                external_user_id="staff_assignee",
+                scope="corp_1",
+            )
+        )
+        session = ChatSession(
+            id="session_wecom_reply",
+            tenant_id="tenant_demo",
+            agent_id="agent_demo",
+            status="handoff",
+        )
+        handoff = _pending_handoff(
+            handoff_id="handoff_wecom_reply",
+            session_id=session.id,
+        )
+        db.add(session)
+        db.add(handoff)
+        db.commit()
+
+        inbound = _inbound(
+            event_id="wecom_reply_1",
+            from_user_id="staff_assignee",
+            text="/回复反馈 已处理",
+        )
+        command = ChannelCommand(kind="handoff_reply", query="已处理")
+        resumed: list[str] = []
+
+        def fake_apply(db_arg, row, reply, *, answered_by_user_id, source="web"):
+            row.status = "answered"
+            row.human_reply = reply
+            row.answered_at = utc_now()
+            db_arg.add(row)
+            db_arg.commit()
+            resumed.append(source)
+
+        import app.api.chat as chat_api
+
+        monkeypatch.setattr(chat_api, "_apply_handoff_reply", fake_apply)
+        original = intake_mod.external_account_scope
+        intake_mod.external_account_scope = lambda _db, _b: "corp_1"
+        try:
+            result = _run_handoff_reply_command(db, binding, inbound, command)
+            assert resumed == ["wecom"]
+            assert result is intake_mod._HANDOFF_REPLY_HANDLED
+            assert db.get(HumanHandoffRequest, handoff.id).status == "answered"
+        finally:
+            intake_mod.external_account_scope = original
+
+
+def test_run_wecom_handoff_reply_uses_latest_delivered_notice(monkeypatch) -> None:
+    from datetime import timedelta
+
+    import app.channels.service_intake as intake_mod
+    from app.channels.service_intake import _run_handoff_reply_command
+    from app.channels.service_routing import ChannelCommand
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _wecom_binding()
+        db.add(binding)
+        db.add(
+            _channel_identity(
+                channel="wecom",
+                external_user_id="staff_assignee",
+                scope="corp_1",
+            )
+        )
+        older = _pending_handoff(handoff_id="handoff_old")
+        newer = _pending_handoff(handoff_id="handoff_new")
+        newer.created_at = older.created_at + timedelta(seconds=10)
+        db.add(older)
+        db.add(newer)
+        db.add(
+            ChannelDelivery(
+                tenant_id="tenant_demo",
+                binding_id=binding.id,
+                session_id=f"handoff:{older.id}",
+                kind="handoff_notice",
+                text="旧通知",
+                target_json={"to_user_id": "staff_assignee", "handoff_id": older.id},
+                status="delivered",
+                created_at=older.created_at,
+                idempotency_key="notice-old",
+            )
+        )
+        db.add(
+            ChannelDelivery(
+                tenant_id="tenant_demo",
+                binding_id=binding.id,
+                session_id=f"handoff:{newer.id}",
+                kind="handoff_notice",
+                text="新通知",
+                target_json={"to_user_id": "staff_assignee", "handoff_id": newer.id},
+                status="delivered",
+                created_at=newer.created_at,
+                idempotency_key="notice-new",
+            )
+        )
+        db.commit()
+
+        inbound = _inbound(
+            event_id="wecom_reply_latest",
+            from_user_id="staff_assignee",
+            text="/回复反馈 已处理最新请求",
+        )
+        inbound.channel = "wecom"
+        command = ChannelCommand(kind="handoff_reply", query="已处理最新请求")
+        resumed: list[str] = []
+
+        def fake_apply(db_arg, row, reply, *, answered_by_user_id, source="web"):
+            row.status = "answered"
+            row.human_reply = reply
+            db_arg.add(row)
+            db_arg.commit()
+            resumed.append(row.id)
+
+        import app.api.chat as chat_api
+
+        monkeypatch.setattr(chat_api, "_apply_handoff_reply", fake_apply)
+        original = intake_mod.external_account_scope
+        intake_mod.external_account_scope = lambda _db, _b: "corp_1"
+        try:
+            result = _run_handoff_reply_command(db, binding, inbound, command)
+            assert resumed == [newer.id]
+            assert result is intake_mod._HANDOFF_REPLY_HANDLED
+            assert db.get(HumanHandoffRequest, older.id).status == "pending"
+        finally:
+            intake_mod.external_account_scope = original
+
+
+def test_run_wecom_handoff_reply_accepts_explicit_handoff_id(monkeypatch) -> None:
+    import app.channels.service_intake as intake_mod
+    from app.channels.service_intake import _run_handoff_reply_command
+    from app.channels.service_routing import ChannelCommand
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _wecom_binding()
+        db.add(binding)
+        db.add(
+            _channel_identity(
+                channel="wecom",
+                external_user_id="staff_assignee",
+                scope="corp_1",
+            )
+        )
+        first = _pending_handoff(handoff_id="handoff_explicit_1")
+        second = _pending_handoff(handoff_id="handoff_explicit_2")
+        db.add(first)
+        db.add(second)
+        db.add(
+            ChannelDelivery(
+                tenant_id="tenant_demo",
+                binding_id=binding.id,
+                session_id=f"handoff:{first.id}",
+                kind="handoff_notice",
+                text="通知 1",
+                target_json={"to_user_id": "staff_assignee", "handoff_id": first.id},
+                status="delivered",
+                idempotency_key="notice-explicit-1",
+            )
+        )
+        db.add(
+            ChannelDelivery(
+                tenant_id="tenant_demo",
+                binding_id=binding.id,
+                session_id=f"handoff:{second.id}",
+                kind="handoff_notice",
+                text="通知 2",
+                target_json={"to_user_id": "staff_assignee", "handoff_id": second.id},
+                status="delivered",
+                idempotency_key="notice-explicit-2",
+            )
+        )
+        db.commit()
+
+        inbound = _inbound(
+            event_id="wecom_reply_explicit",
+            from_user_id="staff_assignee",
+            text=f"/回复反馈 {first.id} 回复第一个请求",
+        )
+        inbound.channel = "wecom"
+        command = ChannelCommand(kind="handoff_reply", query=f"{first.id} 回复第一个请求")
+        resumed: list[str] = []
+
+        def fake_apply(db_arg, row, reply, *, answered_by_user_id, source="web"):
+            row.status = "answered"
+            row.human_reply = reply
+            db_arg.add(row)
+            db_arg.commit()
+            resumed.append(row.id)
+
+        import app.api.chat as chat_api
+
+        monkeypatch.setattr(chat_api, "_apply_handoff_reply", fake_apply)
+        original = intake_mod.external_account_scope
+        intake_mod.external_account_scope = lambda _db, _b: "corp_1"
+        try:
+            result = _run_handoff_reply_command(db, binding, inbound, command)
+            assert resumed == [first.id]
+            assert result is intake_mod._HANDOFF_REPLY_HANDLED
+            assert db.get(HumanHandoffRequest, second.id).status == "pending"
+        finally:
+            intake_mod.external_account_scope = original
+
+
+def test_run_handoff_reply_rejects_notification_placeholder() -> None:
+    from app.channels.service_intake import _run_handoff_reply_command
+    from app.channels.service_routing import ChannelCommand
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        _seed_tenant(db)
+        binding = _wecom_binding()
+        db.add(binding)
+        result = _run_handoff_reply_command(
+            db,
+            binding,
+            _inbound(
+                event_id="wecom_placeholder",
+                from_user_id="staff_assignee",
+                text="/回复反馈 handoff_demo <答复内容> 精确回复此请求。",
+            ),
+            ChannelCommand(
+                kind="handoff_reply",
+                query="handoff_demo <答复内容> 精确回复此请求。",
+            ),
+        )
+        assert "替换成实际回复文本" in result
 
 
 def test_notify_handoff_assignee_skips_when_identity_scope_mismatches() -> None:

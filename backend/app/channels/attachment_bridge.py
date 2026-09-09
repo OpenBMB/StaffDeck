@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 from typing import Any
 
 from app.channels.adapters.base import ChannelInbound
@@ -53,6 +54,14 @@ def inbound_attachments_to_chat(
                 descriptor.filename = filename_with_extension(
                     descriptor.filename or descriptor.media_id,
                     extension,
+                )
+            elif descriptor.filename and (
+                not descriptor.content_type
+                or descriptor.content_type == "application/octet-stream"
+            ):
+                descriptor.content_type = (
+                    mimetypes.guess_type(descriptor.filename)[0]
+                    or descriptor.content_type
                 )
             parsed = parse_chat_attachment(
                 descriptor.filename or descriptor.media_id,

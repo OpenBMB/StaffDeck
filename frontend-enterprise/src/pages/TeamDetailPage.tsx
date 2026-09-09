@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Crown, Download, MessageCircle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Crown, Download, Eye, FileJson, LoaderCircle, MessageCircle } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import {
@@ -27,6 +27,7 @@ import EmployeeAvatar from '../components/EmployeeAvatar';
 import { employeeDisplayName } from '../employee';
 import { EnterpriseRoute } from '../enums/routes';
 import { formatClientDateTime, parseBackendDateTime } from '../lib/timezone';
+import { MarkdownMessage } from './chat/chatHelpers';
 import type {
   AgentProfileRead,
   TeamBlackboardEntryRead,
@@ -90,6 +91,38 @@ const OVERRIDABLE_STATUSES = new Set(['review', 'escalated']);
 const AWARD_OVERRIDABLE_STATUSES = new Set(['bidding', 'pending']);
 
 const POOL_ASSIGNEE_VALUE = '__pool__';
+
+type TeamLogMessage = {
+  id?: string;
+  role?: string;
+  content?: string;
+  created_at?: string;
+};
+
+type TeamLogSession = {
+  session?: Record<string, unknown>;
+  messages?: TeamLogMessage[];
+  feedback?: Array<Record<string, unknown>>;
+  traces?: unknown[];
+  events?: Array<Record<string, unknown>>;
+  tool_invocations?: Array<Record<string, unknown>>;
+};
+
+type TeamLogPayload = {
+  schema_version?: string;
+  exported_at?: string;
+  team?: Record<string, unknown>;
+  summary?: {
+    task_count?: number;
+    wake_event_count?: number;
+    blackboard_entry_count?: number;
+    session_count?: number;
+  };
+  tasks?: unknown[];
+  wake_events?: unknown[];
+  blackboard_entries?: unknown[];
+  sessions?: TeamLogSession[];
+};
 
 export function taskPriorityLabel(priority: string): string {
   if (priority === 'high' || priority === 'urgent') return '高';
@@ -177,9 +210,63 @@ export default function TeamDetailPage({
   const [configBidRounds, setConfigBidRounds] = useState('1');
   const [savingConfig, setSavingConfig] = useState(false);
   const [startingChat, setStartingChat] = useState(false);
-  const [exportingLog, setExportingLog] = useState(false);
+  const [teamLogOpen, setTeamLogOpen] = useState(false);
+  const [teamLog, setTeamLog] = useState<TeamLogPayload | null>(null);
+  const [loadingTeamLog, setLoadingTeamLog] = useState(false);
   const [promotingEntryId, setPromotingEntryId] = useState<string | null>(null);
   const openedTaskParamRef = useRef<string | null>(null);
+  const memberScrollRef = useRef<HTMLDivElement | null>(null);
+  const [memberScrollEdges, setMemberScrollEdges] = useState({
+    overflow: false,
+    left: false,
+    right: false,
+  });
+
+  const teamMemberKey = useMemo(
+    () => (team?.members || []).map((member) => `${member.id}:${member.role}`).join('|'),
+    [team?.members],
+  );
+
+  const updateMemberScrollEdges = useCallback(() => {
+    const node = memberScrollRef.current;
+    if (!node) return;
+    const maxScrollLeft = Math.max(0, node.scrollWidth - node.clientWidth);
+    const overflow = maxScrollLeft > 1;
+    const nextEdges = {
+      overflow,
+      left: overflow && node.scrollLeft > 1,
+      right: overflow && node.scrollLeft < maxScrollLeft - 1,
+    };
+    setMemberScrollEdges((current) => (
+      current.overflow === nextEdges.overflow
+      && current.left === nextEdges.left
+      && current.right === nextEdges.right
+        ? current
+        : nextEdges
+    ));
+  }, []);
+
+  useEffect(() => {
+    const node = memberScrollRef.current;
+    if (!node) return;
+    node.scrollLeft = 0;
+    updateMemberScrollEdges();
+
+    node.addEventListener('scroll', updateMemberScrollEdges, { passive: true });
+    window.addEventListener('resize', updateMemberScrollEdges);
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(updateMemberScrollEdges);
+    resizeObserver?.observe(node);
+    if (node.firstElementChild instanceof HTMLElement) {
+      resizeObserver?.observe(node.firstElementChild);
+    }
+    return () => {
+      node.removeEventListener('scroll', updateMemberScrollEdges);
+      window.removeEventListener('resize', updateMemberScrollEdges);
+      resizeObserver?.disconnect();
+    };
+  }, [teamMemberKey, updateMemberScrollEdges]);
 
   const loadTeam = useCallback(async () => {
     try {
@@ -363,28 +450,36 @@ export default function TeamDetailPage({
     }
   }
 
-  async function downloadTeamLog() {
-    if (!teamId || exportingLog) return;
-    setExportingLog(true);
+  async function openTeamLog() {
+    if (!teamId || loadingTeamLog) return;
+    setTeamLogOpen(true);
+    setLoadingTeamLog(true);
     try {
-      const blob = await api.blob(
+      const payload = await api.get<TeamLogPayload>(
         `/api/enterprise/teams/${teamId}/export?tenant_id=${encodeURIComponent(TENANT_ID)}`,
       );
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      const safeName = (team?.name || teamId).replace(/[^\w\-\u4e00-\u9fff]+/g, '-');
-      anchor.href = url;
-      anchor.download = `staffdeck-team-log-${safeName || teamId}.json`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-      notify.success('群聊完整日志已下载');
+      setTeamLog(payload);
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '下载群聊日志失败');
+      setTeamLogOpen(false);
+      notify.error(error instanceof Error ? error.message : '加载完整日志失败');
     } finally {
-      setExportingLog(false);
+      setLoadingTeamLog(false);
     }
+  }
+
+  function downloadTeamLog() {
+    if (!teamLog) return;
+    const blob = new Blob([JSON.stringify(teamLog, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    const safeName = (team?.name || teamId).replace(/[^\w\-\u4e00-\u9fff]+/g, '-');
+    anchor.href = url;
+    anchor.download = `staffdeck-team-log-${safeName || teamId}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    notify.success('群聊完整日志已下载');
   }
 
   async function addBoardEntry() {
@@ -719,12 +814,12 @@ export default function TeamDetailPage({
           <Button
             type="button"
             variant="outline"
-            disabled={exportingLog || !team}
-            onClick={() => void downloadTeamLog()}
+            disabled={loadingTeamLog || !team}
+            onClick={() => void openTeamLog()}
             className="h-[34px] gap-[6px] rounded-[10px] border-[#e3e7f1] px-[14px] text-[12px] font-normal text-[#464c5e]"
           >
-            <Download className="size-[14px]" />
-            {exportingLog ? '导出中…' : '下载完整日志'}
+            {loadingTeamLog ? <LoaderCircle className="size-[14px] animate-spin" /> : <Eye className="size-[14px]" />}
+            {loadingTeamLog ? '加载中…' : '查看完整日志'}
           </Button>
           <Button
             type="button"
@@ -807,31 +902,66 @@ export default function TeamDetailPage({
                   {leader && memberNode(leader, true)}
                   {leader && others.length > 0 && <div className="h-[14px] w-px bg-[#dbe1ec]" />}
                   {others.length > 0 && (
-                    <div className="flex max-w-full justify-center gap-[12px] overflow-x-auto">
-                      {others.map((member, index) => (
-                        <div key={member.id} className="flex flex-col items-center">
-                          {leader && (
-                            <>
-                              <div className="flex w-full">
-                                <div
-                                  className={cn(
-                                    '-mr-[6px] h-px w-[calc(50%+6px)]',
-                                    index > 0 && 'bg-[#dbe1ec]',
-                                  )}
-                                />
-                                <div
-                                  className={cn(
-                                    '-ml-[6px] h-px w-[calc(50%+6px)]',
-                                    index < others.length - 1 && 'bg-[#dbe1ec]',
-                                  )}
-                                />
-                              </div>
-                              <div className="h-[12px] w-px bg-[#dbe1ec]" />
-                            </>
-                          )}
-                          {memberNode(member, false)}
+                    <div className="relative w-full">
+                      {memberScrollEdges.left && (
+                        <div
+                          aria-hidden="true"
+                          data-scroll-edge="left"
+                          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-[44px] bg-gradient-to-r from-white via-white/85 to-transparent"
+                        />
+                      )}
+                      {memberScrollEdges.right && (
+                        <div
+                          aria-hidden="true"
+                          data-scroll-edge="right"
+                          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-[44px] bg-gradient-to-l from-white via-white/85 to-transparent"
+                        />
+                      )}
+                      <div
+                        ref={memberScrollRef}
+                        role="region"
+                        aria-label="团队成员列表"
+                        aria-describedby={memberScrollEdges.overflow ? 'team-member-scroll-hint' : undefined}
+                        tabIndex={0}
+                        className="max-w-full overflow-x-auto overscroll-x-contain pb-[8px] outline-none [scrollbar-color:#cfd5e2_transparent] [scrollbar-width:thin] focus-visible:ring-2 focus-visible:ring-[#a9c7ff] focus-visible:ring-offset-2 [&::-webkit-scrollbar]:h-[6px] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[#cfd5e2] [&::-webkit-scrollbar-track]:bg-transparent"
+                      >
+                        <div className="flex w-max min-w-full justify-center gap-[12px] px-[4px]">
+                          {others.map((member, index) => (
+                            <div key={member.id} className="flex flex-col items-center">
+                              {leader && (
+                                <>
+                                  <div className="flex w-full">
+                                    <div
+                                      className={cn(
+                                        '-mr-[6px] h-px w-[calc(50%+6px)]',
+                                        index > 0 && 'bg-[#dbe1ec]',
+                                      )}
+                                    />
+                                    <div
+                                      className={cn(
+                                        '-ml-[6px] h-px w-[calc(50%+6px)]',
+                                        index < others.length - 1 && 'bg-[#dbe1ec]',
+                                      )}
+                                    />
+                                  </div>
+                                  <div className="h-[12px] w-px bg-[#dbe1ec]" />
+                                </>
+                              )}
+                              {memberNode(member, false)}
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      </div>
+                      {memberScrollEdges.overflow && (
+                        <p
+                          id="team-member-scroll-hint"
+                          className="mt-[5px] flex items-center justify-center gap-[5px] text-[11px] text-[#858b9c]"
+                        >
+                          <ChevronLeft className="size-[12px]" aria-hidden="true" />
+                          横向滑动查看更多成员
+                          <ChevronRight className="size-[12px]" aria-hidden="true" />
+                        </p>
+                      )}
                     </div>
                   )}
                   {team && members.length === 0 && (
@@ -1307,6 +1437,14 @@ export default function TeamDetailPage({
         </DialogContent>
       </Dialog>
 
+      <TeamLogDialog
+        open={teamLogOpen}
+        loading={loadingTeamLog}
+        log={teamLog}
+        onClose={() => setTeamLogOpen(false)}
+        onDownload={downloadTeamLog}
+      />
+
       <Dialog
         open={taskDialogOpen}
         onOpenChange={(open) => {
@@ -1424,5 +1562,202 @@ export default function TeamDetailPage({
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function TeamLogDialog({
+  open,
+  loading,
+  log,
+  onClose,
+  onDownload,
+}: {
+  open: boolean;
+  loading: boolean;
+  log: TeamLogPayload | null;
+  onClose: () => void;
+  onDownload: () => void;
+}) {
+  const sessions = log?.sessions || [];
+  const summary = log?.summary || {};
+  const teamName = String(log?.team?.name || '');
+  const [expandedSessionIds, setExpandedSessionIds] = useState<Set<string>>(() => new Set());
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="flex max-h-[calc(100dvh-3rem)] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-[14px] p-0 sm:max-w-[1180px]"
+      >
+        <div className="flex shrink-0 items-center justify-between gap-[16px] border-b border-[#edf0f5] px-[24px] py-[18px] pr-[54px]">
+          <div className="flex min-w-0 items-center gap-[10px]">
+            <span className="flex size-[32px] shrink-0 items-center justify-center rounded-[10px] bg-[#eef4ff] text-[#1a71ff]">
+              <FileJson className="size-[16px]" />
+            </span>
+            <div className="min-w-0">
+              <DialogTitle className="truncate text-[15px] font-semibold text-[#18181a]">
+                团队完整日志
+              </DialogTitle>
+              <p className="mt-[2px] truncate text-[11px] text-[#858b9c]">
+                {teamName || '团队'} · 在线查看任务调度、成员会话、模型事件和工具调用
+              </p>
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!log || loading}
+            onClick={onDownload}
+            className="h-[32px] shrink-0 gap-[6px] rounded-[9px] border-[#e3e7f1] px-[12px] text-[12px] font-normal text-[#464c5e]"
+          >
+            <Download className="size-[13px]" />
+            下载 JSON
+          </Button>
+        </div>
+
+        {loading ? (
+          <div className="flex min-h-[360px] flex-1 items-center justify-center gap-[8px] text-[13px] text-[#858b9c]">
+            <LoaderCircle className="size-[18px] animate-spin text-[#1a71ff]" />
+            正在加载完整日志…
+          </div>
+        ) : log ? (
+          <div className="min-h-0 flex-1 overflow-y-auto bg-[#fafbfc] px-[24px] py-[20px]">
+            <div className="grid grid-cols-2 gap-[10px] sm:grid-cols-4">
+              {[
+                ['任务数', summary.task_count ?? log.tasks?.length ?? 0],
+                ['唤醒事件', summary.wake_event_count ?? log.wake_events?.length ?? 0],
+                ['黑板条目', summary.blackboard_entry_count ?? log.blackboard_entries?.length ?? 0],
+                ['成员会话', summary.session_count ?? sessions.length],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="rounded-[12px] border border-[#e7eaf0] bg-white px-[14px] py-[12px]">
+                  <p className="text-[11px] text-[#858b9c]">{label}</p>
+                  <p className="mt-[3px] text-[20px] font-semibold tracking-[-0.02em] text-[#18181a]">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <section className="mt-[16px] rounded-[14px] border border-[#e3e7f1] bg-white p-[14px]">
+              <div className="mb-[10px] flex items-center justify-between gap-[8px]">
+                <div>
+                  <h3 className="text-[13px] font-semibold text-[#18181a]">成员会话</h3>
+                  <p className="mt-[2px] text-[11px] text-[#858b9c]">逐个查看成员消息、模型事件和工具调用</p>
+                </div>
+                <span className="rounded-full bg-[#eef4ff] px-[9px] py-[3px] text-[11px] text-[#1a71ff]">
+                  {sessions.length}
+                </span>
+              </div>
+
+              {sessions.length > 0 ? (
+                <div className="grid gap-[8px]">
+                  {sessions.map((sessionLog, index) => {
+                    const session = sessionLog.session || {};
+                    const messages = sessionLog.messages || [];
+                    const events = sessionLog.events || [];
+                    const invocations = sessionLog.tool_invocations || [];
+                    const sessionId = String(session.id || session.session_id || index);
+                    return (
+                      <details
+                        key={sessionId}
+                        className="group rounded-[10px] border border-[#e7eaf0] bg-[#fcfcfd] open:bg-white"
+                        onToggle={(event) => {
+                          const expanded = event.currentTarget.open;
+                          setExpandedSessionIds((current) => {
+                            const next = new Set(current);
+                            if (expanded) next.add(sessionId);
+                            else next.delete(sessionId);
+                            return next;
+                          });
+                        }}
+                      >
+                        <summary className="cursor-pointer list-none px-[13px] py-[11px] marker:hidden">
+                          <div className="flex items-center justify-between gap-[12px]">
+                            <div className="min-w-0">
+                              <p className="truncate text-[12px] font-medium text-[#303442]">
+                                {String(session.title || sessionId)}
+                              </p>
+                              <p className="mt-[2px] truncate text-[11px] text-[#858b9c]">
+                                {String(session.agent_name || session.agent_id || '未指定员工')}
+                                {session.status ? ` · ${String(session.status)}` : ''}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 flex-wrap justify-end gap-[5px] text-[10px] text-[#697086]">
+                              <span className="rounded-full bg-[#f1f3f7] px-[7px] py-[3px]">消息 {messages.length}</span>
+                              <span className="rounded-full bg-[#f1f3f7] px-[7px] py-[3px]">事件 {events.length}</span>
+                              <span className="rounded-full bg-[#f1f3f7] px-[7px] py-[3px]">工具调用 {invocations.length}</span>
+                            </div>
+                          </div>
+                        </summary>
+
+                        {expandedSessionIds.has(sessionId) && (
+                        <div className="border-t border-[#edf0f5] px-[13px] py-[12px]">
+                          <div className="grid gap-[8px]">
+                            {messages.map((message, messageIndex) => {
+                              const role = String(message.role || 'assistant');
+                              const content = String(message.content || '');
+                              return (
+                                <div
+                                  key={message.id || `${sessionId}-message-${messageIndex}`}
+                                  className={cn('flex', role === 'user' ? 'justify-end' : 'justify-start')}
+                                >
+                                  <div
+                                    className={cn(
+                                      'max-w-[88%] rounded-[10px] px-[12px] py-[9px] text-[12px] leading-[1.65]',
+                                      role === 'user'
+                                        ? 'bg-[#eef4ff] text-[#24456f]'
+                                        : 'border border-[#e7eaf0] bg-white text-[#303442]',
+                                    )}
+                                  >
+                                    <div className="mb-[4px] text-[10px] font-medium text-[#858b9c]">
+                                      {role === 'user' ? '用户' : role === 'assistant' ? '数字员工' : role}
+                                    </div>
+                                    {role === 'assistant'
+                                      ? <MarkdownMessage content={content} />
+                                      : <p className="whitespace-pre-wrap">{content}</p>}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {messages.length === 0 && (
+                              <p className="py-[12px] text-center text-[11px] text-[#a7adbb]">暂无消息</p>
+                            )}
+                          </div>
+
+                          {(events.length > 0 || invocations.length > 0) && (
+                            <details className="mt-[10px] rounded-[9px] border border-[#e7eaf0] bg-[#fafbfc] px-[11px] py-[8px]">
+                              <summary className="cursor-pointer text-[11px] font-medium text-[#60677a]">原始事件与工具调用</summary>
+                              <pre className="mt-[8px] max-h-[420px] overflow-auto rounded-[8px] bg-[#18181a] p-[11px] text-[10px] leading-[1.55] text-[#d8e2f0]">
+                                {JSON.stringify({
+                                  traces: sessionLog.traces || [],
+                                  events,
+                                  tool_invocations: invocations,
+                                }, null, 2)}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
+                        )}
+                      </details>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="py-[24px] text-center text-[12px] text-[#a7adbb]">暂无成员会话</p>
+              )}
+            </section>
+
+            <details className="mt-[12px] rounded-[12px] border border-[#e3e7f1] bg-white px-[14px] py-[11px]">
+              <summary className="cursor-pointer text-[12px] font-medium text-[#464c5e]">查看调度、黑板与完整原始 JSON</summary>
+              <pre className="mt-[10px] max-h-[560px] overflow-auto rounded-[8px] bg-[#18181a] p-[12px] text-[10px] leading-[1.55] text-[#d8e2f0]">
+                {JSON.stringify(log, null, 2)}
+              </pre>
+            </details>
+
+            <p className="mt-[10px] text-right text-[10px] text-[#a7adbb]">
+              导出时间：{log.exported_at ? formatClientDateTime(log.exported_at) : '-'}
+            </p>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
   );
 }
