@@ -19,8 +19,9 @@
 </div>
 
 ## News
+- **2026-09-01**: We present v0.5.0 for faster and more stable execution.
 - **2026-08-18**: We present v0.4.0 for multi-staff cooperation and faster runing.
-- **2026-08-06**: We present  v0.3.0 for SOP editing and sandbox.
+- **2026-08-06**: We present v0.3.0 for SOP editing and sandbox.
 - **2026-08-03**: We present v0.2.0 for harnessv2 and IM system.
 - **2026-07-15**: StaffDeck is now open source! We welcome your feedback and support with a Star.
 
