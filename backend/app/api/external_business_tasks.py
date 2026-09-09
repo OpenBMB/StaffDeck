@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from app.db import get_session
@@ -78,7 +79,10 @@ def get_external_business_task(
     statement = select(ExternalBusinessTask).where(
         ExternalBusinessTask.tenant_id == tenant_id,
         ExternalBusinessTask.user_id == current_user.id,
-        ExternalBusinessTask.external_task_id == external_task_id,
+        or_(
+            ExternalBusinessTask.id == external_task_id,
+            ExternalBusinessTask.external_task_id == external_task_id,
+        ),
     )
     if tool_id:
         statement = statement.where(ExternalBusinessTask.tool_id == tool_id)

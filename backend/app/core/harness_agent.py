@@ -545,6 +545,21 @@ class HarnessTaskAgent:
                 and result_data.get("detached") is True
             ):
                 capability_results.append(bounded_result)
+                transcript.extend(
+                    [
+                        {
+                            "role": "assistant",
+                            "action": "tool",
+                            "tool_name": tool_name,
+                            "arguments": action.arguments,
+                        },
+                        {
+                            "role": "tool",
+                            "tool_name": tool_name,
+                            "result": bounded_result,
+                        },
+                    ]
+                )
                 reply = str(result_data.get("user_reply") or "").strip()
                 return finish(TaskExecutionResult(
                     task_frame_id=requirement.task_frame_id,
@@ -552,7 +567,11 @@ class HarnessTaskAgent:
                     reply_fragment=reply,
                     capability_results=capability_results,
                     action_count=iteration,
-                    task_summary="异步业务任务已受理，等待外部任务完成后恢复 SOP。",
+                    task_summary=(
+                        "异步业务任务已受理，等待完成后恢复 SOP。"
+                        if requirement.kind == "sop"
+                        else "异步业务任务已受理，可通过任务号查询进度。"
+                    ),
                     structured_result={
                         "task_id": result_data.get("task_id"),
                         "status": result_data.get("status"),

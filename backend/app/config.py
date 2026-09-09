@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     model_thinking_models: str = ""
     tool_timeout_seconds: float = 8.0
     external_task_poll_seconds: float = 2.0
+    external_task_callback_base_url: str = ""
     a2a_task_timeout_seconds: float = 600.0
     a2a_poll_interval_seconds: float = 0.5
     codex_a2a_enabled: bool = False

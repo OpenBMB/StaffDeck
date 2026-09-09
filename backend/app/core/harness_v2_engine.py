@@ -73,6 +73,7 @@ from app.session.session_schema import (
     TurnPlan,
 )
 from app.skills.nesting import discoverable_sops, expand_visible_sops
+from app.tools.external_tasks import update_external_task_checkpoint
 
 
 def _turn_skill_projection(
@@ -361,6 +362,7 @@ class HarnessV2Engine:
                 item
                 for item in self.store.planner_state(session)
                 if item.get("status") == "ready_to_resume"
+                and item.get("kind") == "sop"
             ),
             None,
         )
@@ -1175,12 +1177,27 @@ class HarnessV2Engine:
                 )
             ).first()
             if external_task is not None:
-                combined.status = "ready_to_resume"
-                row.step_id = external_task.resume_step_id or row.step_id
+                combined.status = (
+                    "ready_to_resume"
+                    if row.kind == "sop"
+                    else (
+                        "completed"
+                        if external_task.status == "completed"
+                        else "failed"
+                    )
+                )
+                if (
+                    row.kind == "sop"
+                    and external_task.status == "completed"
+                    and external_task.resume_step_id
+                ):
+                    row.step_id = external_task.resume_step_id
                 row.slots_json = {
                     **dict(row.slots_json or {}),
                     **dict(external_task.result_json or {}),
                 }
+                update_external_task_checkpoint(self.db, row, external_task)
+                loop_checkpoint = dict(agent_loop.checkpoint_json or loop_checkpoint)
                 combined.structured_result = {
                     "external_task_id": external_task.external_task_id,
                     "external_task_status": external_task.status,

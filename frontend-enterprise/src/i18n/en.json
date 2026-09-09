@@ -3364,5 +3364,22 @@
   "至少保留一种历史消息角色": "Keep at least one conversation-history role",
   "摘要前缀不能为空": "Summary prefixes cannot be empty",
   "历史的信息可以被总结为：": "Earlier conversation history can be summarized as:",
-  "近期的历史信息总结为：": "Recent conversation history can be summarized as:"
+  "近期的历史信息总结为：": "Recent conversation history can be summarized as:",
+  "异步策略": "Async Strategy",
+  "StaffDeck 托管后台执行": "StaffDeck-managed Background Execution",
+  "Provider 原生异步任务": "Provider-managed Async Task",
+  "Provider 原生异步任务需要状态查询 URL": "Provider-managed async tasks require a status URL.",
+  "StaffDeck 托管异步": "StaffDeck-managed Async Execution",
+  "StaffDeck 会生成任务号，在后台执行普通同步 HTTP 请求并保存最终结果；Provider 不需要返回 taskId。": "StaffDeck generates a task ID, runs the regular synchronous HTTP request in the background, and saves the final result. The provider does not need to return a taskId.",
+  "状态查询 URL": "Status URL",
+  "使用 {taskId} 作为 Provider 任务 ID 占位符。": "Use {taskId} as the provider task ID placeholder.",
+  "任务 ID 字段": "Task ID Field",
+  "状态字段": "Status Field",
+  "结果字段": "Result Field",
+  "状态映射 JSON": "Status Mapping JSON",
+  "最长跟踪时间（秒）": "Maximum Tracking Time (seconds)",
+  "Provider 返回 taskId 后由 StaffDeck 轮询状态；配置外部回调地址后也可接收带任务密钥的回调。": "After the provider returns a taskId, StaffDeck polls its status. When an external callback URL is configured, StaffDeck can also receive callbacks authenticated with a per-task token.",
+  "提交后当前对话立即结束；普通会话通过任务号查询，SOP 会在任务结束后从持久化检查点继续。": "The current turn ends immediately after submission. Regular conversations query by task ID, while SOPs continue from their durable checkpoint after the task finishes.",
+  "客服账号名称": "Customer Service Account Name",
+  "(?:参考来源|参考资料|引用来源|资料来源)": "(?:References|Reference Materials|Citation Sources|Sources)"
 }

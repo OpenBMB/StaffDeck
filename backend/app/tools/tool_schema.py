@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.capability_scope import CapabilityScope
 
@@ -10,6 +10,7 @@ from app.capability_scope import CapabilityScope
 class ToolExecutionPolicy(BaseModel):
     timeout_seconds: float = Field(ge=1, le=3600)
     execution_mode: Literal["sync", "detached"] = "sync"
+    async_strategy: Literal["staffdeck_worker", "provider_task"] = "staffdeck_worker"
     status_url: Optional[str] = None
     poll_interval_seconds: float = Field(default=5, ge=1, le=3600)
     task_id_field: str = "taskId"
@@ -17,6 +18,16 @@ class ToolExecutionPolicy(BaseModel):
     result_field: str = "result"
     status_mapping: dict[str, str] = Field(default_factory=dict)
     max_tracking_seconds: int = Field(default=86400, ge=1, le=2592000)
+
+    @model_validator(mode="after")
+    def validate_provider_tracking(self) -> "ToolExecutionPolicy":
+        if (
+            self.execution_mode == "detached"
+            and self.async_strategy == "provider_task"
+            and not str(self.status_url or "").strip()
+        ):
+            raise ValueError("Provider-managed detached tools require status_url")
+        return self
 
 
 class ToolCreateRequest(BaseModel):

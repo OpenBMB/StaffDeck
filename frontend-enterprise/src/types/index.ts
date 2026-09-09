@@ -414,6 +414,7 @@ export type ToolRead = {
   execution_policy?: {
     timeout_seconds: number;
     execution_mode?: 'sync' | 'detached';
+    async_strategy?: 'staffdeck_worker' | 'provider_task';
     status_url?: string | null;
     poll_interval_seconds?: number;
     task_id_field?: string;

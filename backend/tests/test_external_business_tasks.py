@@ -18,6 +18,7 @@ from app.db.models import (
     ChatSession,
     ExternalBusinessTask,
     ExternalBusinessTaskEvent,
+    HarnessAgentLoopRecord,
     HarnessTaskFrameRecord,
     Tenant,
     Tool,
@@ -72,7 +73,7 @@ def test_detached_submission_persists_task_and_returns_query_guidance(monkeypatc
         assert result.data["task_id"] == task.id
         assert f"/external-business-tasks/{task.id}?" in result.data["status_query"]["path"]
         assert "tenant_id=tenant_demo&tool_id=tool_detached" in result.data["status_query"]["path"]
-        assert task.external_task_id == task.id
+        assert task.external_task_id is None
         assert task.status == "queued"
         assert "下单任务" not in result.data["status_query"]["guidance"]
 
@@ -91,6 +92,73 @@ def test_detached_submission_does_not_require_provider_task_id(monkeypatch) -> N
         assert result.success is True
         assert result.data["task_id"] == task.id
         assert task.status == "queued"
+
+
+def test_provider_submission_persists_provider_task_id_and_enters_polling(monkeypatch) -> None:
+    _Client.response_json = {"taskId": "provider-42", "status": "queued"}
+    _Client.request_headers = {}
+    monkeypatch.setattr("app.tools.tool_executor.httpx.Client", _Client)
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(
+            external_task_callback_base_url="https://staffdeck.example"
+        ),
+    )
+    with _session() as db:
+        user, tool = _seed(db)
+        tool.config_json = {
+            "execution": {
+                **dict(tool.config_json["execution"]),
+                "async_strategy": "provider_task",
+            }
+        }
+        db.add(tool)
+        db.commit()
+
+        result = ToolExecutor(db).execute(
+            "tenant_demo",
+            ToolCall(name=tool.name, arguments={"order": "A-1"}),
+            user_id=user.id,
+        )
+        task = db.exec(select(ExternalBusinessTask)).one()
+        assert result.data["task_id"] == task.id
+
+        assert poll_due_external_tasks(db) == 1
+        db.refresh(task)
+        assert task.external_task_id == "provider-42"
+        assert task.status == "accepted"
+        assert task.next_poll_at is not None
+        assert _Client.request_headers["Idempotency-Key"] == task.idempotency_key
+        assert _Client.request_headers["X-StaffDeck-Callback-URL"] == (
+            f"https://staffdeck.example/api/external-business-tasks/{task.id}/callback"
+        )
+        assert _Client.request_headers["X-StaffDeck-Callback-Token"]
+
+
+def test_provider_submission_rejects_accepted_response_without_task_id(monkeypatch) -> None:
+    _Client.response_json = {"status": "queued"}
+    monkeypatch.setattr("app.tools.tool_executor.httpx.Client", _Client)
+    with _session() as db:
+        user, tool = _seed(db)
+        tool.config_json = {
+            "execution": {
+                **dict(tool.config_json["execution"]),
+                "async_strategy": "provider_task",
+            }
+        }
+        db.add(tool)
+        db.commit()
+        ToolExecutor(db).execute(
+            "tenant_demo",
+            ToolCall(name=tool.name, arguments={"order": "A-1"}),
+            user_id=user.id,
+        )
+        task = db.exec(select(ExternalBusinessTask)).one()
+
+        poll_due_external_tasks(db)
+        db.refresh(task)
+        assert task.status == "failed"
+        assert task.error_json["code"] == "PROVIDER_TASK_ID_MISSING"
 
 
 def test_staffdeck_worker_executes_original_sync_tool(monkeypatch) -> None:
@@ -116,6 +184,36 @@ def test_staffdeck_worker_executes_original_sync_tool(monkeypatch) -> None:
         db.refresh(task)
         assert task.status == "completed"
         assert task.result_json == {"remaining": 20000}
+
+
+def test_expired_submission_lease_does_not_replay_business_request(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def execute_again(_self, _tool, arguments, **_kwargs):
+        calls.append(dict(arguments))
+        return ToolResult(tool_name="orders.submit", success=True, data={"duplicate": True})
+
+    monkeypatch.setattr(ToolExecutor, "execute_sync_http", execute_again)
+    with _session() as db:
+        user, tool = _seed(db)
+        task = ExternalBusinessTask(
+            tenant_id="tenant_demo",
+            user_id=user.id,
+            tool_id=tool.id,
+            status="working",
+            request_json={"sku": "SKU-1"},
+            callback_token_hash=callback_token_hash("token"),
+            lease_owner="dead-worker",
+            lease_expires_at=tool.created_at,
+        )
+        db.add(task)
+        db.commit()
+
+        assert poll_due_external_tasks(db) == 1
+        db.refresh(task)
+        assert calls == []
+        assert task.status == "outcome_unknown"
+        assert task.error_json["code"] == "DETACHED_OUTCOME_UNKNOWN"
 
 
 def test_callback_auth_dedupe_and_user_owned_query() -> None:
@@ -156,6 +254,7 @@ def test_callback_auth_dedupe_and_user_owned_query() -> None:
         result = get_external_business_task("provider-42", "tenant_demo", None, db, user)
         assert result["status"] == "completed"
         assert result["result"] == {"receipt": "ok"}
+        assert get_external_business_task(task.id, "tenant_demo", None, db, user)["id"] == task.id
         try:
             get_external_business_task("provider-42", "tenant_demo", None, db, other)
         except HTTPException as exc:
@@ -219,7 +318,34 @@ def test_completed_external_task_marks_sop_frame_ready_to_resume() -> None:
             step_id="submit_order",
             slots_json={"employee_id": "14534"},
         )
+        loop = HarnessAgentLoopRecord(
+            id="hloop_order",
+            tenant_id="tenant_demo",
+            session_id=session.id,
+            loop_key=f"sop:{frame.id}",
+            kind="sop",
+            owner_task_frame_record_id=frame.id,
+            checkpoint_json={
+                "task_frame_id": frame.task_id,
+                "transcript": [
+                    {
+                        "role": "tool",
+                        "tool_name": "orders.submit",
+                        "result": {
+                            "success": True,
+                            "data": {
+                                "detached": True,
+                                "task_id": "exttask_order_1",
+                                "status": "queued",
+                            },
+                        },
+                    }
+                ],
+            },
+        )
+        frame.agent_loop_id = loop.id
         task = ExternalBusinessTask(
+            id="exttask_order_1",
             tenant_id="tenant_demo",
             user_id=user.id,
             session_id=session.id,
@@ -231,6 +357,7 @@ def test_completed_external_task_marks_sop_frame_ready_to_resume() -> None:
             resume_step_id="confirm_order",
         )
         db.add(session)
+        db.add(loop)
         db.add(frame)
         db.add(task)
         db.commit()
@@ -247,11 +374,112 @@ def test_completed_external_task_marks_sop_frame_ready_to_resume() -> None:
         )
 
         db.refresh(frame)
+        db.refresh(loop)
         assert result["status"] == "completed"
         assert frame.status == "ready_to_resume"
         assert frame.step_id == "confirm_order"
         assert frame.slots_json["order_id"] == "ORD-001"
         assert frame.result_json["external_task_result"] == {"order_id": "ORD-001"}
+        assert loop.checkpoint_json["external_task_result"]["status"] == "completed"
+        assert (
+            loop.checkpoint_json["transcript"][0]["result"]["data"]["result"]
+            == {"order_id": "ORD-001"}
+        )
+
+
+def test_fast_completion_does_not_release_running_frame_lease() -> None:
+    with _session() as db:
+        user, tool = _seed(db)
+        session = ChatSession(
+            id="session_running",
+            tenant_id="tenant_demo",
+            user_id=user.id,
+            agent_id="agent_order",
+        )
+        frame = HarnessTaskFrameRecord(
+            tenant_id="tenant_demo",
+            session_id=session.id,
+            source_turn_id="turn_order",
+            task_id="sop_running",
+            kind="sop",
+            status="running",
+            lease_owner="active-engine",
+            lease_expires_at=tool.updated_at,
+        )
+        task = ExternalBusinessTask(
+            tenant_id="tenant_demo",
+            user_id=user.id,
+            session_id=session.id,
+            task_frame_id=frame.task_id,
+            tool_id=tool.id,
+            status="accepted",
+            callback_token_hash=callback_token_hash("token"),
+        )
+        db.add(session)
+        db.add(frame)
+        db.add(task)
+        db.commit()
+
+        external_business_task_callback(
+            task.id,
+            ExternalTaskCallback(
+                event_id="fast-complete-1",
+                status="completed",
+                result={"order_id": "ORD-001"},
+            ),
+            "token",
+            db,
+        )
+
+        db.refresh(frame)
+        assert frame.status == "running"
+        assert frame.lease_owner == "active-engine"
+
+
+def test_completed_conversation_task_does_not_become_ready_to_resume() -> None:
+    with _session() as db:
+        user, tool = _seed(db)
+        session = ChatSession(
+            id="session_conversation",
+            tenant_id="tenant_demo",
+            user_id=user.id,
+            agent_id="agent_order",
+        )
+        frame = HarnessTaskFrameRecord(
+            tenant_id="tenant_demo",
+            session_id=session.id,
+            source_turn_id="turn_order",
+            task_id="conversation_order",
+            kind="conversation",
+            status="waiting_external_task",
+        )
+        task = ExternalBusinessTask(
+            tenant_id="tenant_demo",
+            user_id=user.id,
+            session_id=session.id,
+            task_frame_id=frame.task_id,
+            tool_id=tool.id,
+            status="accepted",
+            callback_token_hash=callback_token_hash("token"),
+        )
+        db.add(session)
+        db.add(frame)
+        db.add(task)
+        db.commit()
+
+        external_business_task_callback(
+            task.id,
+            ExternalTaskCallback(
+                event_id="conversation-complete-1",
+                status="completed",
+                result={"order_id": "ORD-001"},
+            ),
+            "token",
+            db,
+        )
+
+        db.refresh(frame)
+        assert frame.status == "completed"
 
 
 def test_ready_sop_frame_is_queued_on_the_next_turn() -> None:

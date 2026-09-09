@@ -4670,27 +4670,19 @@ def test_multi_step_detached_task_resumes_agent_after_external_result(monkeypatc
     # task finishes: replace the pending receipt in the checkpoint with the
     # final business result before re-entering the AgentLoop.
     checkpoint = dict(first.loop_checkpoint)
-    checkpoint["transcript"] = [
-        {
-            "role": "assistant",
-            "action": "tool",
-            "tool_name": "orders.submit",
-            "arguments": {"sku": "SKU-1"},
+    transcript = [dict(item) for item in checkpoint["transcript"]]
+    assert [item["role"] for item in transcript] == ["assistant", "tool"]
+    assert transcript[1]["result"]["data"]["task_id"] == "exttask-order-1"
+    transcript[1]["result"] = {
+        "success": True,
+        "data": {
+            "task_id": "exttask-order-1",
+            "status": "completed",
+            "order_id": "ORD-001",
         },
-        {
-            "role": "tool",
-            "tool_name": "orders.submit",
-            "result": {
-                "success": True,
-                "data": {
-                    "task_id": "exttask-order-1",
-                    "status": "completed",
-                    "order_id": "ORD-001",
-                },
-                "pending": False,
-            },
-        },
-    ]
+        "pending": False,
+    }
+    checkpoint["transcript"] = transcript
     checkpoint["external_task_result"] = {
         "task_id": "exttask-order-1",
         "status": "completed",

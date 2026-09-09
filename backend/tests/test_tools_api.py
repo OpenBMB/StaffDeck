@@ -176,6 +176,7 @@ def test_tool_config_namespaces_execution_and_preserves_existing_policy() -> Non
         "execution": {
             "timeout_seconds": 20.0,
             "execution_mode": "sync",
+            "async_strategy": "staffdeck_worker",
             "status_url": None,
             "poll_interval_seconds": 5.0,
             "task_id_field": "taskId",
@@ -196,6 +197,7 @@ def test_tool_config_round_trips_detached_execution_policy() -> None:
     policy = ToolExecutionPolicy(
         timeout_seconds=12,
         execution_mode="detached",
+        async_strategy="provider_task",
         status_url="https://provider.test/tasks/{taskId}",
         poll_interval_seconds=10,
     )
@@ -205,6 +207,15 @@ def test_tool_config_round_trips_detached_execution_policy() -> None:
     assert config["execution"]["execution_mode"] == "detached"
     assert config["execution"]["status_url"].endswith("/{taskId}")
     assert _read_execution_policy(config) == policy
+
+
+def test_provider_detached_policy_requires_status_url() -> None:
+    with pytest.raises(ValueError, match="status_url"):
+        ToolExecutionPolicy(
+            timeout_seconds=12,
+            execution_mode="detached",
+            async_strategy="provider_task",
+        )
 
 
 def test_tool_config_rejects_untyped_execution_and_reads_invalid_legacy_safely() -> None:

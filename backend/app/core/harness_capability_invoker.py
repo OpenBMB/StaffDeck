@@ -556,7 +556,6 @@ class HarnessCapabilityInvoker:
         ).first()
         if task is None:
             return _failure("EXTERNAL_TASK_NOT_FOUND", "未找到属于当前用户的该任务。")
-        status = str(task.status or "").lower()
         return {
             "success": True,
             "data": {

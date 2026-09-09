@@ -39,6 +39,12 @@ class ToolExecutionPolicy:
     timeout_seconds: float
 
 
+@dataclass(frozen=True)
+class HttpExecutionResponse:
+    result: ToolResult
+    status_code: int | None = None
+
+
 class ToolExecutor:
     def __init__(self, db: Session):
         self.db = db
@@ -169,10 +175,26 @@ class ToolExecutor:
         timeout_seconds_override: float | None = None,
     ) -> ToolResult:
         """Execute the HTTP request directly for the detached worker."""
+        return self.execute_http_with_metadata(
+            tool,
+            arguments,
+            timeout_seconds_override=timeout_seconds_override,
+        ).result
+
+    def execute_http_with_metadata(
+        self,
+        tool: Tool,
+        arguments: dict[str, Any],
+        *,
+        timeout_seconds_override: float | None = None,
+        additional_headers: dict[str, str] | None = None,
+    ) -> HttpExecutionResponse:
+        """Execute HTTP while retaining the response status for async protocols."""
         headers = self._request_headers(
             tool.url,
             self._resolve_headers(tool.headers_json or {}, tool.auth_json or {}),
         )
+        headers.update(additional_headers or {})
         policy = self._execution_policy(
             tool,
             timeout_seconds_override=timeout_seconds_override,
@@ -189,26 +211,36 @@ class ToolExecutor:
                         tool.method.upper(), tool.url, headers=headers, json=arguments
                     )
                 response.raise_for_status()
-                return ToolResult(
-                    tool_name=tool.name,
-                    success=True,
-                    data=self._response_data(response),
-                    error=None,
+                return HttpExecutionResponse(
+                    result=ToolResult(
+                        tool_name=tool.name,
+                        success=True,
+                        data=self._response_data(response),
+                        error=None,
+                    ),
+                    status_code=response.status_code,
                 )
         except httpx.TimeoutException:
-            return self._error(
-                tool.name,
-                "TIMEOUT",
-                f"工具调用超过 {policy.timeout_seconds:g} 秒未返回。",
+            return HttpExecutionResponse(
+                result=self._error(
+                    tool.name,
+                    "TIMEOUT",
+                    f"工具调用超过 {policy.timeout_seconds:g} 秒未返回。",
+                )
             )
         except httpx.HTTPStatusError as exc:
-            return self._error(
-                tool.name,
-                "HTTP_ERROR",
-                f"工具返回异常状态码：{exc.response.status_code}",
+            return HttpExecutionResponse(
+                result=self._error(
+                    tool.name,
+                    "HTTP_ERROR",
+                    f"工具返回异常状态码：{exc.response.status_code}",
+                ),
+                status_code=exc.response.status_code,
             )
         except Exception as exc:
-            return self._error(tool.name, "EXECUTION_ERROR", str(exc))
+            return HttpExecutionResponse(
+                result=self._error(tool.name, "EXECUTION_ERROR", str(exc))
+            )
 
     def _execute_detached_http(
         self,
@@ -232,6 +264,7 @@ class ToolExecutor:
         execution = tool.config_json.get("execution", {})
         if not isinstance(execution, dict):
             execution = {}
+        async_strategy = str(execution.get("async_strategy") or "staffdeck_worker")
         idempotency_key = (
             f"staffdeck:{tool.tenant_id}:{tool.id}:{invocation_id}"
             if invocation_id
@@ -243,7 +276,7 @@ class ToolExecutor:
                     ExternalBusinessTask.idempotency_key == idempotency_key
                 )
             ).first()
-            if existing is not None and existing.external_task_id:
+            if existing is not None:
                 return self._detached_acceptance_result(tool, existing)
         callback_token = new_callback_token()
         status_url = str(execution.get("status_url") or "").strip() or None
@@ -268,17 +301,20 @@ class ToolExecutor:
             status="queued",
             status_url=status_url,
             status_config_json={
+                "async_strategy": async_strategy,
+                "task_id_field": str(execution.get("task_id_field") or "taskId"),
                 "status_field": str(execution.get("status_field") or "status"),
                 "result_field": str(execution.get("result_field") or "result"),
                 "status_mapping": dict(execution.get("status_mapping") or {}),
             },
             poll_interval_seconds=poll_interval_seconds,
-            next_poll_at=utc_now() if status_url else None,
+            next_poll_at=None,
             expires_at=utc_now() + timedelta(seconds=max_tracking_seconds),
         )
         self.db.add(task)
         self.db.flush()
-        task.external_task_id = task.id
+        if not task.idempotency_key:
+            task.idempotency_key = f"staffdeck:{tool.tenant_id}:{tool.id}:{task.id}"
         task.accepted_at = utc_now()
         task.updated_at = task.accepted_at
         self.db.add(task)
@@ -298,12 +334,13 @@ class ToolExecutor:
                 "accepted": True,
                 "detached": True,
                 "status": task.status,
-                "task_id": task.external_task_id,
+                "task_id": task.id,
                 "staffdeck_task_id": task.id,
+                "provider_task_id": task.external_task_id,
                 "status_query": {
                     "method": "GET",
                     "path": (
-                        f"/api/enterprise/external-business-tasks/{task.external_task_id}"
+                        f"/api/enterprise/external-business-tasks/{task.id}"
                         f"?tenant_id={tool.tenant_id}&tool_id={tool.id}"
                     ),
                     "tenant_id": tool.tenant_id,
@@ -313,8 +350,8 @@ class ToolExecutor:
                     ),
                 },
                 "user_reply": (
-                    f"已经帮您提交任务，任务号 #{task.external_task_id}，正在后台处理。"
-                    f"您随时可以对我说 “查询 #{task.external_task_id} 状态” 查看结果。"
+                    f"已经帮您提交任务，任务号 #{task.id}，正在后台处理。"
+                    f"您随时可以对我说 “查询 #{task.id} 状态” 查看结果。"
                 ),
             },
             error=None,
