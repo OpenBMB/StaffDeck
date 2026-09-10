@@ -29,16 +29,17 @@ from app.core.capability_manifest import (
     tool_snapshot_digest,
 )
 from app.core.harness_agent import HarnessExecutionCancelled
+from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.published_deliverables import (
     MAX_PUBLISHED_DELIVERABLES,
     find_published_deliverable,
     list_published_deliverables,
 )
-from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
 from app.core.tool_replay_policy import ToolReplayPolicy
 from app.db.models import (
     ChatSession,
+    ExternalBusinessTask,
     GeneralSkill,
     HarnessInvocationRecord,
     ModelConfig,
@@ -60,15 +61,15 @@ from app.harness import (
     register_skill_script_tools,
     snapshot_harness_workspace,
 )
-from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.errors import HarnessExecutionError
+from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import KnowledgeService
+from app.skills.tool_authorization import current_sop_tool_authorization
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
-
 
 _INLINE_JSON_TOOL_RESULT_MAX_CHARS = 2_000
 _INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
@@ -320,6 +321,25 @@ class HarnessCapabilityInvoker:
         descriptor: CapabilityDescriptor,
         arguments: dict[str, Any],
     ) -> str | None:
+        if descriptor.kind == "internal" and descriptor.name == "lark_cli":
+            from app.lark_cli.policy import logical_write_signature
+
+            signature = logical_write_signature(arguments)
+            if signature is None:
+                return None
+            canonical = json.dumps(
+                {
+                    "tenant_id": self.tenant_id,
+                    "task_frame_id": self.task_frame_id,
+                    "step_id": self.active_step_id,
+                    "tool_id": "builtin.lark_cli",
+                    "signature": signature,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         if descriptor.kind != "tool":
             return None
         tool = self.db.get(Tool, descriptor.capability_id)
@@ -502,14 +522,52 @@ class HarnessCapabilityInvoker:
             return self._search_capabilities(arguments)
         if name == "capability_describe":
             return self._describe_capabilities(arguments)
+        if name == "external_task_status":
+            return self._external_task_status(arguments)
         if name == "list_published_deliverables":
             return self._list_published_deliverables(arguments)
         if name == "read_published_deliverable":
             return self._read_published_deliverable(arguments)
+        if name == "lark_cli":
+            from app.lark_cli.service import invoke_lark_cli
+
+            return invoke_lark_cli(
+                self.db,
+                tenant_id=self.tenant_id,
+                session=self.session,
+                task_frame_id=self.task_frame_id,
+                agent_id=self.agent_id,
+                arguments=arguments,
+                active_skill=self.active_skill,
+                active_step_id=self.active_step_id,
+            )
         return _failure(
             "UNSUPPORTED_INTERNAL_CAPABILITY",
             "不支持的 Harness 内部能力。",
         )
+
+    def _external_task_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(arguments.get("task_id") or "").strip().lstrip("#")
+        if not task_id:
+            return _failure("INVALID_ARGUMENTS", "task_id 不能为空。")
+        task = self.db.exec(
+            select(ExternalBusinessTask).where(
+                ExternalBusinessTask.id == task_id,
+                ExternalBusinessTask.tenant_id == self.tenant_id,
+                ExternalBusinessTask.user_id == self.session.user_id,
+            )
+        ).first()
+        if task is None:
+            return _failure("EXTERNAL_TASK_NOT_FOUND", "未找到属于当前用户的该任务。")
+        return {
+            "success": True,
+            "data": {
+                "task_id": task.id,
+                "status": task.status,
+                "result": dict(task.result_json or {}),
+                "error": dict(task.error_json or {}),
+            },
+        }
 
     def _list_published_deliverables(self, arguments: dict[str, Any]) -> dict[str, Any]:
         raw_limit = arguments.get("limit", MAX_PUBLISHED_DELIVERABLES)
@@ -1018,9 +1076,14 @@ class HarnessCapabilityInvoker:
             self.tenant_id,
             ToolCall(name=source_tool_name, arguments=resolved_arguments),
             active_skill_id=self.active_skill_id,
+            sop_authorization=current_sop_tool_authorization(
+                self.tenant_id, self.active_skill, self.active_step_id,
+            ),
             agent_id=self.agent_id,
             session_id=self.session.id,
             invocation_id=call_id,
+            task_frame_id=self.task_frame_id,
+            user_id=self.session.user_id,
             timeout_seconds_override=self._remaining_step_seconds(),
         )
         payload = result.model_dump(mode="json")
@@ -1515,9 +1578,24 @@ def _audit_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
             for token in ("content", "secret", "token", "password", "api_key")
         ):
             audited[str(key)] = "<redacted>"
+        elif isinstance(value, list):
+            audited[str(key)] = _redact_secret_flag_values(value)
         else:
             audited[str(key)] = value
     return audited
+
+
+def _redact_secret_flag_values(items: list[Any]) -> list[Any]:
+    """argv 风格列表里跟在敏感 flag（如 --app-secret）后的值不落审计记录。"""
+
+    redacted = list(items)
+    for index, token in enumerate(redacted[:-1]):
+        if not isinstance(token, str) or not token.startswith("-"):
+            continue
+        lowered = token.lower()
+        if any(part in lowered for part in ("secret", "token", "password")):
+            redacted[index + 1] = "<redacted>"
+    return redacted
 
 
 def _audit_result(result: dict[str, Any]) -> dict[str, Any]:

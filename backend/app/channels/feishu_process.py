@@ -520,7 +520,11 @@ class FeishuProcessSupervisor:
     @staticmethod
     def _binding_lock_is_free(path: Path) -> bool:
         lock = BindingProcessLock(path)
-        if not lock.acquire():
+        try:
+            acquired = lock.acquire()
+        except OSError:
+            return False
+        if not acquired:
             return False
         lock.release()
         return True

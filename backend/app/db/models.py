@@ -217,6 +217,65 @@ class A2ATaskEvent(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ExternalBusinessTask(SQLModel, table=True):
+    """Durable state for an HTTP tool whose business work finishes asynchronously."""
+
+    __tablename__ = "external_business_tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "tool_id",
+            "external_task_id",
+            name="uq_external_business_task",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("exttask"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    agent_id: Optional[str] = Field(default=None, index=True)
+    session_id: Optional[str] = Field(default=None, index=True)
+    task_frame_id: Optional[str] = Field(default=None, index=True)
+    resume_step_id: Optional[str] = None
+    invocation_id: Optional[str] = Field(default=None, index=True)
+    tool_id: str = Field(index=True)
+    external_task_id: Optional[str] = Field(default=None, index=True)
+    idempotency_key: Optional[str] = Field(default=None, unique=True, index=True)
+    status: str = Field(default="submitting", index=True)
+    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    callback_token_hash: str
+    status_url: Optional[str] = None
+    status_config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    poll_interval_seconds: float = 5.0
+    next_poll_at: Optional[datetime] = Field(default=None, index=True)
+    poll_attempts: int = 0
+    lease_owner: Optional[str] = Field(default=None, index=True)
+    lease_expires_at: Optional[datetime] = Field(default=None, index=True)
+    expires_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    accepted_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ExternalBusinessTaskEvent(SQLModel, table=True):
+    __tablename__ = "external_business_task_events"
+    __table_args__ = (
+        UniqueConstraint("task_id", "event_id", name="uq_external_business_task_event"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("exttaskevt"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    task_id: str = Field(index=True)
+    event_id: str = Field(index=True)
+    event_type: str = Field(index=True)
+    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class WebhookEndpoint(SQLModel, table=True):
     __tablename__ = "webhook_endpoints"
 
@@ -875,6 +934,30 @@ class ChannelBinding(SQLModel, table=True):
     # 最近一次成功连上渠道的时间(企微断开超时告警的时间基准)
     last_connected_at: Optional[datetime] = None
     created_by_user_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class WeChatKfAccount(SQLModel, table=True):
+    """客服账号到 StaffDeck 路由的映射；一个 API binding 可管理多个账号。"""
+
+    __tablename__ = "wechat_kf_accounts"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "open_kfid", name="uq_wechat_kf_account_binding_kfid"),
+        UniqueConstraint("tenant_id", "open_kfid", name="uq_wechat_kf_account_tenant_kfid"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("wka"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    binding_id: str = Field(index=True)
+    open_kfid: str = Field(index=True)
+    name: str = ""
+    agent_id: Optional[str] = Field(default=None, index=True)
+    team_id: Optional[str] = Field(default=None, index=True)
+    status: str = Field(default="active", index=True)
+    sync_cursor: str = ""
+    last_error: Optional[str] = None
+    last_sync_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

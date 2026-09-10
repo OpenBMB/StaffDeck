@@ -1,3 +1,5 @@
+import base64
+import json
 import re
 
 from fastapi import FastAPI
@@ -7,18 +9,20 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.api.channels as channels_api
+from app.channels.adapters.wechat_kf import WeChatKfTokenProvider
 from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.channels.schema import channel_binding_read
 from app.db import get_session
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
-    ChannelIdentity,
     ChannelDelivery,
+    ChannelIdentity,
     ChannelInboundEvent,
     Message,
     Tenant,
     User,
+    WeChatKfAccount,
     utc_now,
 )
 from app.security.auth import create_access_token
@@ -71,12 +75,18 @@ def _auth(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(user)}"}
 
 
-def _seed_binding(engine, *, agent_id: str = "agent_1", status: str = "pending") -> str:
+def _seed_binding(
+    engine,
+    *,
+    agent_id: str = "agent_1",
+    status: str = "pending",
+    channel: str = "wechat",
+) -> str:
     with Session(engine) as db:
         binding = ChannelBinding(
             tenant_id="tenant_demo",
             agent_id=agent_id,
-            channel="wechat",
+            channel=channel,
             status=status,
             created_by_user_id="user_owner",
         )
@@ -90,6 +100,144 @@ def test_endpoints_require_authentication() -> None:
     client = _make_client(engine)
     response = client.get("/api/enterprise/channels?tenant_id=tenant_demo")
     assert response.status_code == 401
+
+
+def test_wechat_kf_credentials_bind_account_to_selected_agent(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat_kf",
+            status="pending",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+    monkeypatch.setattr(
+        WeChatKfTokenProvider,
+        "get",
+        lambda self, row: "access-token",
+    )
+    aes_key = base64.b64encode(bytes(range(32))).decode().rstrip("=")
+    client = _make_client(engine)
+
+    response = client.post(
+        f"/api/enterprise/channels/{binding_id}/wechat_kf/credentials",
+        json={
+            "tenant_id": "tenant_demo",
+            "corp_id": "ww1234567890",
+            "secret": "app-secret",
+            "callback_token": "callback-token",
+            "encoding_aes_key": aes_key,
+        },
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["open_kfid"] is None
+    with Session(engine) as db:
+        saved = db.get(ChannelBinding, binding_id)
+        credentials = json.loads(decrypt_channel_secret(saved.credentials_enc))
+        assert saved.agent_id == "agent_1"
+        assert saved.status == "active"
+        assert saved.identity_scope_key == "ww1234567890"
+        assert credentials == {
+            "secret": "app-secret",
+            "callback_token": "callback-token",
+            "encoding_aes_key": aes_key,
+        }
+
+
+def test_wechat_kf_callback_config_can_be_created_before_secret() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat_kf",
+            status="pending",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+    client = _make_client(engine)
+
+    response = client.post(
+        f"/api/enterprise/channels/{binding_id}/wechat_kf/callback-config",
+        json={"tenant_id": "tenant_demo", "corp_id": "ww1234567890"},
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["callback_path"].endswith(f"/{binding_id}/callback")
+    assert len(payload["callback_token"]) == 32
+    assert len(payload["encoding_aes_key"]) == 43
+    assert payload["encoding_aes_key"].isalnum()
+    with Session(engine) as db:
+        saved = db.get(ChannelBinding, binding_id)
+        credentials = json.loads(decrypt_channel_secret(saved.credentials_enc))
+        assert saved.status == "pending"
+        assert saved.config_json["callback_ready"] is True
+        assert credentials["secret"] == ""
+        assert credentials["callback_token"] == payload["callback_token"]
+
+
+def test_wechat_kf_credentials_reuse_prepared_callback_secrets(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    aes_key = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat_kf",
+            status="pending",
+            created_by_user_id="user_owner",
+            config_json={"corp_id": "ww1234567890", "callback_ready": True},
+            credentials_enc=encrypt_channel_secret(
+                json.dumps(
+                    {
+                        "secret": "",
+                        "callback_token": "prepared-token",
+                        "encoding_aes_key": aes_key,
+                    }
+                )
+            ),
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+    monkeypatch.setattr(
+        WeChatKfTokenProvider,
+        "get",
+        lambda self, row: "access-token",
+    )
+    client = _make_client(engine)
+
+    response = client.post(
+        f"/api/enterprise/channels/{binding_id}/wechat_kf/credentials",
+        json={
+            "tenant_id": "tenant_demo",
+            "corp_id": "ww1234567890",
+            "secret": "generated-after-callback",
+            "open_kfid": "wk1234567890",
+        },
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 200, response.text
+    with Session(engine) as db:
+        saved = db.get(ChannelBinding, binding_id)
+        credentials = json.loads(decrypt_channel_secret(saved.credentials_enc))
+        assert credentials["secret"] == "generated-after-callback"
+        assert credentials["callback_token"] == "prepared-token"
+        assert credentials["encoding_aes_key"] == aes_key
 
 
 def test_non_creator_cannot_create_binding() -> None:
@@ -505,6 +653,7 @@ def test_delete_binding(monkeypatch) -> None:
         }
         assert all(row.status == "failed" for row in events)
 
+
     audit = client.get(
         "/api/enterprise/channels/delivery-audit",
         params={"tenant_id": "tenant_demo", "binding_id": binding_id},
@@ -520,6 +669,92 @@ def test_delete_binding(monkeypatch) -> None:
         headers=_auth(users["owner"]),
     )
     assert forbidden_audit.status_code == 403
+
+
+def test_delete_wechat_kf_binding_releases_account_for_rebinding(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    first_id = _seed_binding(engine, status="active")
+    with Session(engine) as db:
+        db.add(
+            WeChatKfAccount(
+                tenant_id="tenant_demo",
+                binding_id=first_id,
+                open_kfid="wk_reusable",
+                agent_id="agent_1",
+            )
+        )
+        db.commit()
+    client = _make_client(engine)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: False)
+
+    assert client.delete(
+        f"/api/enterprise/channels/{first_id}?tenant_id=tenant_demo",
+        headers=_auth(users["owner"]),
+    ).status_code == 204
+
+    with Session(engine) as db:
+        assert db.exec(
+            select(WeChatKfAccount).where(WeChatKfAccount.open_kfid == "wk_reusable")
+        ).first() is None
+        second = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat_kf",
+            status="active",
+            created_by_user_id="user_owner",
+        )
+        db.add(second)
+        db.commit()
+        second_id = second.id
+
+    response = client.post(
+        f"/api/enterprise/channels/{second_id}/wechat_kf/account",
+        json={"tenant_id": "tenant_demo", "open_kfid": "wk_reusable"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+
+
+def test_wechat_kf_account_update_and_delete_api(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine, channel="wechat_kf", status="active")
+    with Session(engine) as db:
+        db.add(
+            WeChatKfAccount(
+                tenant_id="tenant_demo",
+                binding_id=binding_id,
+                open_kfid="wk_edit",
+                agent_id="agent_1",
+            )
+        )
+        db.commit()
+    monkeypatch.setattr(channels_api.WeChatKfAdapter, "update_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(channels_api.WeChatKfAdapter, "delete_account", lambda *args, **kwargs: None)
+    client = _make_client(engine)
+
+    updated = client.patch(
+        f"/api/enterprise/channels/{binding_id}/wechat_kf/account",
+        json={
+            "tenant_id": "tenant_demo",
+            "open_kfid": "wk_edit",
+            "name": "更新后的客服",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["wechat_kf_accounts"][0]["name"] == "更新后的客服"
+
+    deleted = client.delete(
+        f"/api/enterprise/channels/{binding_id}/wechat_kf/account/wk_edit?tenant_id=tenant_demo",
+        headers=_auth(users["owner"]),
+    )
+    assert deleted.status_code == 200
+    with Session(engine) as db:
+        assert db.exec(
+            select(WeChatKfAccount).where(WeChatKfAccount.open_kfid == "wk_edit")
+        ).first() is None
 
 
 def test_deliveries_listing(monkeypatch) -> None:

@@ -61,6 +61,7 @@ import WechatSetup from './channels/WechatSetup';
 import WecomSetup from './channels/WecomSetup';
 import FeishuSetup from './channels/FeishuSetup';
 import DingTalkSetup from './channels/DingTalkSetup';
+import WechatKfSetup from './channels/WechatKfSetup';
 import BindingManagers from './channels/BindingManagers';
 import {
   canDeleteBinding,
@@ -839,7 +840,7 @@ export default function ChannelsPage({
     ? getChannelPresentation(binding.channel, metaFor(binding.channel)?.name)
     : null;
   // bot_id / ilink_bot_id 是 DTO 顶层字段(后端不回传 config_json)
-  const botId = binding?.ilink_bot_id || binding?.bot_id || binding?.app_id || '';
+  const botId = binding?.ilink_bot_id || binding?.bot_id || binding?.open_kfid || binding?.app_id || '';
   const mountedAgents = binding?.agents || [];
   const conversationGroups = groupByDay(conversations, (item) => item.updated_at);
 
@@ -1069,7 +1070,18 @@ export default function ChannelsPage({
         {binding.status === 'expired' && setupKindFor(binding.channel) !== 'qrcode' && (
           <span className="text-[12px] text-[#d20b0b]">当前未连接，请检查凭证或网络</span>
         )}
-        {binding.channel === 'feishu' ? (
+        {binding.channel === 'wechat_kf' ? (
+          <WechatKfSetup
+            key={binding.id}
+            binding={binding}
+            meta={metaFor(binding.channel)}
+            onChanged={(updated) =>
+              setBindings((current) =>
+                current.map((item) => (item.id === updated.id ? updated : item)),
+              )
+            }
+          />
+        ) : binding.channel === 'feishu' ? (
           <FeishuSetup
             key={binding.id}
             binding={binding}

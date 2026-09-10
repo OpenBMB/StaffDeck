@@ -69,6 +69,7 @@
   "保存后可选择并测试": "After saving, can Select and Test",
   "保存技能失败": "Failed to save the skill.",
   "保存设置": "Save Settings",
+  "执行模式": "Execution mode",
   "API 密钥": "API Keys",
   "API 密钥 ·": "API Keys ·",
   "API 密钥已创建，请立即复制保存": "API key created. Copy and save it now.",
@@ -1204,6 +1205,7 @@
   "通过 Trace、反馈、记忆和定时任务沉淀失败原因、稳定口径和长期任务。": "Use Trace, feedback, memory, and scheduled tasks to retain failure reasons, stable standards, and long-running work.",
   "通过商品知识库、比价技能和购买工具，完成推荐、价格解释、下单确认和结果反馈。": "Combine product knowledge, price-comparison skills, and purchase tools for recommendations, price explanations, order confirmation, and result feedback.",
   "同步结果": "Sync Result",
+  "同步等待结果": "Wait for result",
   "同步失败": "Sync Failed",
   "同步完成：新增 {1}，更新 {2}": "Sync Complete: Add {1}, Update {2}",
   "头像读取失败": "Failed to Load Avatar",
@@ -1817,6 +1819,8 @@
   "转为草稿": "Convert to Draft",
   "转为草稿失败": "Failed to Convert to Draft",
   "状态": "Status",
+  "状态查询 URL（可选）": "Status URL (optional)",
+  "使用 {taskId} 作为外部任务 ID 占位符；留空时由回调更新。": "Use {taskId} as the external task ID placeholder. Leave blank to rely on callbacks.",
   "状态：": "Status:",
   "状态筛选": "Status Filter",
   "追问文案": "Follow-up Prompt",
@@ -2525,6 +2529,7 @@
   "任务创建": "Task created",
   "任务开始": "Task started",
   "提交报告": "Report submitted",
+  "提交后异步跟踪": "Submit and track asynchronously",
   "任务升级": "Task escalated",
   "竞标开始": "Bidding started",
   "竞标定标": "Bid awarded",
@@ -3008,6 +3013,80 @@
   "正在整理采购清单": "Organizing the purchase list",
   "正在生成回复": "Generating reply",
   "团队任务:整理采购清单": "Team task: Organize purchase list",
+  "微信客服": "WeChat Customer Service",
+  "客服账号 ID": "Customer Service Account ID",
+  "微信客服用户": "WeChat Customer Service User",
+  "通过微信客服 API 接入外部用户咨询，并由数字员工自动回复。": "Connect external customer inquiries through the WeChat Customer Service API and reply automatically with a digital employee.",
+  "断开后微信客服将停止接收和回复咨询；对话记录保留。确定断开接入吗？": "After disconnecting, WeChat Customer Service will stop receiving and replying to inquiries. Conversation history will be retained. Disconnect now?",
+  "微信客服应用 Secret": "WeChat Customer Service App Secret",
+  "回调 Token": "Callback Token",
+  "回调 URL 已复制": "Callback URL copied",
+  "微信客服 API 已连接到数字员工": "WeChat Customer Service API connected to the digital employee",
+  "保存微信客服凭证失败": "Failed to save WeChat Customer Service credentials",
+  "微信客服回调 URL": "WeChat Customer Service Callback URL",
+  "在微信客服后台开启 API，填入此 URL，并在下方填写同一组 Token 与 EncodingAESKey。": "Enable the API in WeChat Customer Service, enter this URL, and provide the same Token and EncodingAESKey below.",
+  "客服账号：": "Customer service account:",
+  "企业 ID：": "Enterprise ID:",
+  "保存并验证": "Save and Verify",
+  "验证中": "Verifying",
+  "咨询链接已生成并复制": "Consultation link generated and copied",
+  "生成咨询链接失败": "Failed to generate consultation link",
+  "生成中": "Generating",
+  "生成咨询链接": "Generate Consultation Link"
+  ,"请先填写企业 ID": "Enter the enterprise ID first"
+  ,"回调配置已生成": "Callback configuration generated"
+  ,"生成回调配置失败": "Failed to generate callback configuration"
+  ,"先生成回调配置，将 URL、Token、EncodingAESKey 填入微信客服后台；后台创建 API 后再回来填写 Secret 和客服账号 ID。": "Generate the callback configuration first, enter its URL, Token, and EncodingAESKey in WeChat Customer Service, then return to enter the Secret and account ID after creating the API."
+  ,"生成回调配置": "Generate Callback Configuration"
+  ,"请先将以下 Token 和 EncodingAESKey 填入微信客服后台，完成 API 创建：": "Enter the following Token and EncodingAESKey in WeChat Customer Service to create the API:"
+   ,"回调已准备，请填写微信客服后台返回的 Secret；保存后选择已有客服账号或创建新账号。": "The callback is ready. Enter the Secret from WeChat Customer Service, then select an existing account or create a new one."
+   ,"Secret 已保存": "Secret saved"
+  ,"重新配置 Secret": "Reconfigure Secret"
+  ,"必须先选择已有客服账号或创建新账号，绑定完成后才会接收业务回调。": "Select an existing customer service account or create a new one before business callbacks are accepted."
+  ,"加载客服账号失败": "Failed to load customer service accounts"
+  ,"客服账号已绑定": "Customer service account bound"
+  ,"绑定客服账号失败": "Failed to bind customer service account"
+  ,"请输入客服账号名称": "Enter a customer service account name"
+  ,"客服账号已创建并绑定": "Customer service account created and bound"
+  ,"创建客服账号失败": "Failed to create customer service account"
+  ,"加载中": "Loading"
+  ,"选择已有客服账号": "Select Existing Account"
+  ,"新客服账号名称": "New customer service account name"
+  ,"创建并绑定": "Create and Bind"
+  ,"请先上传客服头像": "Upload a customer service avatar first"
+  ,"客服头像上传成功": "Customer service avatar uploaded"
+  ,"上传客服头像失败": "Failed to upload customer service avatar"
+  ,"客服头像仅支持 JPG 或 PNG": "Customer service avatars must be JPG or PNG"
+  ,"客服头像不能超过 2MB": "Customer service avatars cannot exceed 2 MB"
+  ,"上传中": "Uploading"
+  ,"上传客服头像": "Upload customer service avatar"
+  ,"配置详情": "Configuration Details"
+  ,"选择": "Select"
+  ,"关闭": "Close"
+  ,"扫码使用": "Scan to Use"
+  ,"分享链接": "Share Link"
+  ,"已绑定客服账号": "Bound customer service accounts"
+  ,"客服账号 ID：": "Customer service account ID:"
+  ,"绑定渠道：": "Bound channel:"
+  ,"未绑定": "Not bound"
+  ,"已绑定客服账号：": "Bound customer service accounts:"
+  ,"客服二维码": "Customer service QR code"
+  ,"客服二维码已生成": "Customer service QR code generated"
+  ,"绑定数字员工：": "Bound digital employee:"
+  ,"绑定团队：": "Bound team:"
+  ,"咨询链接已生成": "Consultation link generated"
+  ,"咨询链接已复制": "Consultation link copied"
+  ,"复制咨询链接失败": "Failed to copy consultation link"
+  ,"客服账号已更新": "Customer service account updated"
+  ,"修改客服账号失败": "Failed to update customer service account"
+  ,"确定删除这个微信客服账号吗？删除后微信客服后台账号也会被删除。": "Delete this WeChat Customer Service account? It will also be deleted from WeChat Customer Service."
+  ,"删除客服账号失败": "Failed to delete customer service account"
+  ,"客服账号已删除": "Customer service account deleted"
+  ,"编辑": "Edit"
+  ,"删除": "Delete"
+  ,"保存": "Save"
+  ,"取消": "Cancel"
+   ,"更换头像（可选）": "Change avatar (optional)",
   "仅进入所选子 SOP；父子流程共享当前 TaskFrame 字段。": "Only enter the selected child SOP; the parent and child share the current TaskFrame fields.",
   "仅进入所选子 SOP；字段、动作和能力由子 SOP 自己定义。": "Only enter the selected child SOP; its fields, actions, and capabilities are defined by the child SOP.",
   "未找到子 SOP": "Child SOP not found",
@@ -3306,5 +3385,22 @@
   "至少保留一种历史消息角色": "Keep at least one conversation-history role",
   "摘要前缀不能为空": "Summary prefixes cannot be empty",
   "历史的信息可以被总结为：": "Earlier conversation history can be summarized as:",
-  "近期的历史信息总结为：": "Recent conversation history can be summarized as:"
+  "近期的历史信息总结为：": "Recent conversation history can be summarized as:",
+  "异步策略": "Async Strategy",
+  "StaffDeck 托管后台执行": "StaffDeck-managed Background Execution",
+  "Provider 原生异步任务": "Provider-managed Async Task",
+  "Provider 原生异步任务需要状态查询 URL": "Provider-managed async tasks require a status URL.",
+  "StaffDeck 托管异步": "StaffDeck-managed Async Execution",
+  "StaffDeck 会生成任务号，在后台执行普通同步 HTTP 请求并保存最终结果；Provider 不需要返回 taskId。": "StaffDeck generates a task ID, runs the regular synchronous HTTP request in the background, and saves the final result. The provider does not need to return a taskId.",
+  "状态查询 URL": "Status URL",
+  "使用 {taskId} 作为 Provider 任务 ID 占位符。": "Use {taskId} as the provider task ID placeholder.",
+  "任务 ID 字段": "Task ID Field",
+  "状态字段": "Status Field",
+  "结果字段": "Result Field",
+  "状态映射 JSON": "Status Mapping JSON",
+  "最长跟踪时间（秒）": "Maximum Tracking Time (seconds)",
+  "Provider 返回 taskId 后由 StaffDeck 轮询状态；配置外部回调地址后也可接收带任务密钥的回调。": "After the provider returns a taskId, StaffDeck polls its status. When an external callback URL is configured, StaffDeck can also receive callbacks authenticated with a per-task token.",
+  "提交后当前对话立即结束；普通会话通过任务号查询，SOP 会在任务结束后从持久化检查点继续。": "The current turn ends immediately after submission. Regular conversations query by task ID, while SOPs continue from their durable checkpoint after the task finishes.",
+  "客服账号名称": "Customer Service Account Name",
+  "(?:参考来源|参考资料|引用来源|资料来源)": "(?:References|Reference Materials|Citation Sources|Sources)"
 }

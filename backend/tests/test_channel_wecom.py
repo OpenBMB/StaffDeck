@@ -13,10 +13,12 @@ import app.channels.service_intake as intake_module
 import app.core.agent_loop as agent_loop_module
 from app.channels.adapters.wecom import (
     WeComAdapter,
-    WeComTokenProvider,
     WeComStreamManager,
+    WeComStreamReply,
+    WeComTokenProvider,
     is_self_frame,
     normalize_wecom_frame,
+    _split_wecom_text,
 )
 from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.channels.service_durable_inbox import StageDisposition, StageResult
@@ -351,6 +353,26 @@ def test_normalize_group_frame() -> None:
     assert inbound.sender_name == "张三"
 
 
+@pytest.mark.parametrize("mention", ["@StaffDeck", "@机器人", "<@bot-id>"])
+def test_normalize_group_frame_strips_leading_bot_mention(mention: str) -> None:
+    frame = _text_frame(
+        chatid="wr_group",
+        chattype="group",
+        text={"content": f"{mention} /帮助"},
+    )
+    inbound = normalize_wecom_frame(frame)
+    assert inbound is not None
+    assert inbound.text == "/帮助"
+
+
+def test_normalize_single_frame_preserves_leading_mention() -> None:
+    inbound = normalize_wecom_frame(
+        _text_frame(text={"content": "@StaffDeck /帮助"})
+    )
+    assert inbound is not None
+    assert inbound.text == "@StaffDeck /帮助"
+
+
 def test_normalize_drops_self_and_invalid_frames() -> None:
     self_frame = _text_frame(**{"from": {"userid": "aib_bot1"}})
     assert is_self_frame(self_frame) is True
@@ -566,6 +588,15 @@ class _FakeStreamClient:
         self.sent.append((chatid, body))
         return {}
 
+    async def reply_stream(self, frame: dict, stream_id: str, content: str, *, finish: bool = False):
+        self.sent.append(
+            (
+                frame["headers"]["req_id"],
+                {"stream_id": stream_id, "content": content, "finish": finish},
+            )
+        )
+        return {}
+
 
 def _run_loop_in_thread():
     loop = asyncio.new_event_loop()
@@ -596,6 +627,41 @@ def test_send_via_run_coroutine_threadsafe_and_split(monkeypatch) -> None:
     assert all(body["msgtype"] == "markdown" for _, body in client.sent)
 
 
+def test_send_mentions_original_group_sender(monkeypatch) -> None:
+    import app.channels
+
+    client = _FakeStreamClient()
+    loop, _thread = _run_loop_in_thread()
+    fake_manager = SimpleNamespace(get_stream=lambda binding_id: (client, loop))
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: fake_manager)
+    try:
+        adapter = WeComAdapter()
+        binding = ChannelBinding(tenant_id="t", agent_id="a", channel="wecom", status="active")
+        adapter.send(
+            binding,
+            {
+                "to_user_id": "group_chat_1",
+                "context_token": "group_chat_1",
+                "is_group": True,
+                "reply_to_user_id": "zhangsan",
+                "reply_quote": {"sender_name": "张三", "text": "转人工"},
+            },
+            "人工回复内容",
+        )
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+
+    assert client.sent == [
+        (
+            "group_chat_1",
+            {
+                "msgtype": "markdown",
+                "markdown": {"content": "> 张三：转人工\n\n人工回复内容"},
+            },
+        )
+    ]
+
+
 def test_send_raises_when_stream_not_ready(monkeypatch) -> None:
     import app.channels
 
@@ -605,6 +671,161 @@ def test_send_raises_when_stream_not_ready(monkeypatch) -> None:
     binding = ChannelBinding(tenant_id="t", agent_id="a", channel="wecom", status="active")
     with pytest.raises(RuntimeError):
         adapter.send(binding, {"to_user_id": "chat_1"}, "hi")
+
+
+def test_stream_reply_updates_one_stream_and_finishes() -> None:
+    client = _FakeStreamClient()
+    loop, _thread = _run_loop_in_thread()
+    binding = ChannelBinding(id="binding-1", tenant_id="t", agent_id="a", channel="wecom")
+    frame = {
+        "headers": {"req_id": "req-1"},
+        "body": {"msgid": "incoming-1", "from": {"userid": "user-1"}},
+    }
+    reply = WeComStreamReply(binding, frame, (client, loop))
+    try:
+        reply.on_delta("你好")
+        reply.on_delta("，世界")
+        assert reply.finish() is True
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+
+    assert client.sent
+    assert client.sent[-2][1] == {
+        "stream_id": "staffdeck:binding-1:incoming-1:progress",
+        "content": "✅ 流程已结束",
+        "finish": True,
+    }
+    assert client.sent[-1][1] == {
+        "stream_id": "staffdeck:binding-1:incoming-1:answer",
+        "content": "你好，世界",
+        "finish": True,
+    }
+    assert {
+        item[1]["stream_id"] for item in client.sent if "stream_id" in item[1]
+    } == {
+        "staffdeck:binding-1:incoming-1:progress",
+        "staffdeck:binding-1:incoming-1:answer",
+    }
+
+
+def test_split_wecom_text_respects_utf8_mobile_limit() -> None:
+    chunks = _split_wecom_text("年假余额查询" * 500)
+    assert len(chunks) > 1
+    assert "".join(chunks) == "年假余额查询" * 500
+    assert all(len(chunk.encode("utf-8")) <= 1800 for chunk in chunks)
+
+
+def test_stream_reply_marks_failed_when_sdk_rejects_update() -> None:
+    class FailingStreamClient(_FakeStreamClient):
+        async def reply_stream(self, *_args, **_kwargs):
+            raise RuntimeError("reply rejected")
+
+    client = FailingStreamClient()
+    loop, _thread = _run_loop_in_thread()
+    binding = ChannelBinding(id="binding-1", tenant_id="t", agent_id="a", channel="wecom")
+    reply = WeComStreamReply(
+        binding,
+        {
+            "headers": {"req_id": "req-1"},
+            "body": {"msgid": "incoming-1", "from": {"userid": "user-1"}},
+        },
+        (client, loop),
+    )
+    try:
+        reply.on_delta("失败")
+        assert reply.finish() is False
+        assert reply.failed is True
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+
+
+def test_stream_reply_renders_safe_progress_events() -> None:
+    client = _FakeStreamClient()
+    loop, _thread = _run_loop_in_thread()
+    binding = ChannelBinding(id="binding-1", tenant_id="t", agent_id="a", channel="wecom")
+    reply = WeComStreamReply(
+        binding,
+        {
+            "headers": {"req_id": "req-1"},
+            "body": {"msgid": "incoming-1", "from": {"userid": "user-1"}},
+        },
+        (client, loop),
+    )
+    try:
+        reply.on_event("capability_started", {"tool_display_name": "查询订单"})
+        reply.on_delta("结果已整理")
+        assert reply.finish() is True
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+
+    progress_content = next(
+        item[1]["content"]
+        for item in client.sent
+        if item[1].get("stream_id", "").endswith(":progress")
+    )
+    assert "调用工具：查询订单…" in progress_content
+    assert "结果已整理" not in progress_content
+    final_content = client.sent[-1][1]["content"]
+    assert final_content == "结果已整理"
+
+
+def test_stream_reply_renders_intent_skill_and_capability_names() -> None:
+    reply = WeComStreamReply.__new__(WeComStreamReply)
+    reply._skill_names = {}
+    reply._step_names = {}
+    reply._tool_names = {}
+    assert reply._event_message(
+        "router_decision_created", {"user_intent": "查询订单状态"}
+    ) == "✅ 已判断意图：查询订单状态"
+    assert reply._event_message(
+        "skill_started", {"skill_name": "订单查询流程"}
+    ) == "⏳ 进入流程：订单查询流程…"
+    assert reply._event_message(
+        "skill_step_changed", {"to_step_name": "核对订单信息"}
+    ) == "⏳ 推进流程：核对订单信息…"
+    assert reply._event_message(
+        "tool_call_started", {"toolName": "订单查询能力", "arguments": {"order_id": "secret"}}
+    ) == "⏳ 调用工具：订单查询能力…"
+    assert reply._event_message(
+        "tool_call_finished", {"toolName": "订单查询能力", "success": True}
+    ) == "✅ 能力调用完成：订单查询能力"
+    reply._skill_names = {"skill_leave_balance_query": "查询年假余额"}
+    reply._step_names = {"skill_leave_balance_query": {"step_1": "核对员工身份"}}
+    reply._tool_names = {"leave.get_balance": "查询假期余额"}
+    assert reply._event_message(
+        "skill_started", {"to_skill_id": "skill_leave_balance_query"}
+    ) == "⏳ 进入流程：查询年假余额…"
+    assert reply._event_message(
+        "task_frame_started",
+        {"skill_id": "skill_leave_balance_query", "step_id": "step_1"},
+    ) == "⏳ 正在处理：核对员工身份…"
+    assert reply._event_message(
+        "tool_call_started", {"name": "leave.get_balance"}
+    ) == "⏳ 调用工具：查询假期余额…"
+
+
+def test_group_stream_reply_keeps_one_event_driven_progress_line() -> None:
+    client = _FakeStreamClient()
+    loop, _thread = _run_loop_in_thread()
+    binding = ChannelBinding(id="binding-1", tenant_id="t", agent_id="a", channel="wecom")
+    frame = {
+        "headers": {"req_id": "req-1"},
+        "body": {"msgid": "incoming-1", "chatid": "group-1"},
+    }
+    reply = WeComStreamReply(binding, frame, (client, loop))
+    try:
+        assert reply._animation_enabled is False
+        reply.on_event("skill_started", {"skill_name": "订单查询流程"})
+        reply.on_event("task_frame_started", {"name": "核对订单信息"})
+        assert reply._progress == [("status", "⏳ 正在处理：核对订单信息…")]
+
+        reply.on_delta("结果已整理")
+        reply.on_event("tool_call_started", {"name": "查询订单"})
+        assert reply._progress == [("status", "⏳ 正在处理：核对订单信息…")]
+        assert reply._render_content().endswith("结果已整理")
+    finally:
+        reply.abort()
+        loop.call_soon_threadsafe(loop.stop)
 
 
 # ---------- StreamManager 生命周期 ----------

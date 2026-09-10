@@ -29,6 +29,16 @@ class ChannelBindingAgentInput(BaseModel):
     is_default: bool = False
 
 
+class WeChatKfAccountRead(BaseModel):
+    open_kfid: str
+    name: str = ""
+    agent_id: str | None = None
+    team_id: str | None = None
+    status: str = "active"
+    sync_cursor: str = ""
+    last_error: str | None = None
+
+
 class ChannelBindingAgentsUpdate(BaseModel):
     # 为 None 时跳过挂载集替换(仅更新开关);为 [] 时报 400 不允许空列表
     agents: Optional[list[ChannelBindingAgentInput]] = None
@@ -62,6 +72,8 @@ class ChannelBindingRead(BaseModel):
     baseurl: Optional[str] = None
     bot_id: Optional[str] = None
     corp_id: Optional[str] = None
+    open_kfid: Optional[str] = None
+    callback_ready: bool = False
     app_id: Optional[str] = None
     client_id: Optional[str] = None
     bot_open_id: Optional[str] = None
@@ -73,6 +85,7 @@ class ChannelBindingRead(BaseModel):
     created_by_user_id: Optional[str] = None
     created_by_name: Optional[str] = None
     agents: list[ChannelBindingAgentRead] = []
+    wechat_kf_accounts: list[WeChatKfAccountRead] = []
     auto_route: bool = True
     # 渠道默认人工处理人(SOP 节点未指定 assignee 时回退到此值)。
     default_handoff_assignee_user_id: Optional[str] = None
@@ -132,6 +145,37 @@ class WeComCredentialsRequest(BaseModel):
     secret: str
     # 企业 ID 是企微 userid 的真实唯一边界,首次激活即必须提供
     corp_id: str
+
+
+class WeChatKfCredentialsRequest(BaseModel):
+    tenant_id: str
+    corp_id: str
+    secret: str
+    callback_token: str = ""
+    encoding_aes_key: str = ""
+
+
+class WeChatKfCallbackConfigRequest(BaseModel):
+    tenant_id: str
+    corp_id: str
+
+
+class WeChatKfAccountCreateRequest(BaseModel):
+    tenant_id: str
+    name: str
+    media_id: str
+
+
+class WeChatKfAccountSelectRequest(BaseModel):
+    tenant_id: str
+    open_kfid: str
+
+
+class WeChatKfAccountUpdateRequest(BaseModel):
+    tenant_id: str
+    open_kfid: str
+    name: str
+    media_id: str | None = None
 
 
 class FeishuCredentialsRequest(BaseModel):
@@ -307,6 +351,24 @@ def channel_binding_read(
     if binding.team_id:
         team = db.get(Team, binding.team_id)
         team_name = team.name if team else None
+    wechat_kf_accounts: list[WeChatKfAccountRead] = []
+    if binding.channel == "wechat_kf":
+        from app.db.models import WeChatKfAccount
+
+        wechat_kf_accounts = [
+            WeChatKfAccountRead(
+                open_kfid=row.open_kfid,
+                name=row.name,
+                agent_id=binding.agent_id if not binding.team_id else None,
+                team_id=binding.team_id,
+                status=row.status,
+                sync_cursor=row.sync_cursor,
+                last_error=row.last_error,
+            )
+            for row in db.exec(
+                select(WeChatKfAccount).where(WeChatKfAccount.binding_id == binding.id)
+            ).all()
+        ]
     identity_scope_key = binding.identity_scope_key
     if not identity_scope_key and binding.channel == "feishu":
         app_id = str(config.get("app_id") or "").strip()
@@ -329,6 +391,8 @@ def channel_binding_read(
         baseurl=config.get("baseurl"),
         bot_id=config.get("bot_id"),
         corp_id=config.get("corp_id"),
+        open_kfid=config.get("open_kfid"),
+        callback_ready=bool(config.get("callback_ready")),
         app_id=config.get("app_id"),
         client_id=config.get("client_id"),
         bot_open_id=config.get("bot_open_id"),
@@ -340,6 +404,7 @@ def channel_binding_read(
         created_by_user_id=binding.created_by_user_id,
         created_by_name=channel_binding_creator_name(db, binding),
         agents=channel_binding_agents_read(db, binding),
+        wechat_kf_accounts=wechat_kf_accounts,
         auto_route=(binding.config_json or {}).get("auto_route") is not False,
         default_handoff_assignee_user_id=(binding.config_json or {}).get(
             "default_handoff_assignee_user_id"

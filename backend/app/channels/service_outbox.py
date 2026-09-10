@@ -221,6 +221,8 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
             return
         if binding.channel == "feishu":
             valid_target = bool(target.get("message_id") or target.get("receive_id"))
+        elif binding.channel == "wechat_kf":
+            valid_target = bool(target.get("to_user_id") and target.get("open_kfid"))
         else:
             valid_target = bool(target.get("to_user_id") and target.get("context_token"))
         if not valid_target:
@@ -943,6 +945,9 @@ def resolve_assignee_channel_identity(
 # 钉钉/微信适配器只能回会话内消息(依赖 session_webhook/context_token),
 # 无法主动私聊处理人,故不在集合内。
 HANDOFF_NOTIFY_CHANNELS = frozenset({"feishu", "wecom"})
+# 用户重复触发同一个 pending handoff 时,避免短时间内刷屏,但允许长期未处理的
+# 请求重新通知处理人。
+HANDOFF_NOTIFY_RETRY_SECONDS = 300
 
 # 各渠道 handoff 通知的投递 target 构造。
 _HANDOFF_NOTIFY_TARGET_BUILDERS = {
@@ -1107,9 +1112,16 @@ def notify_handoff_assignee(
                 ChannelDelivery.binding_id == binding.id,
                 ChannelDelivery.kind == "handoff_notice",
                 ChannelDelivery.session_id == f"handoff:{handoff.id}",
-            )
+            ).order_by(ChannelDelivery.created_at.desc())
         ).first()
-        if existing_notice:
+        if existing_notice and (
+            existing_notice.status == "pending"
+            or (
+                existing_notice.status == "delivered"
+                and (utc_now() - existing_notice.created_at).total_seconds()
+                < HANDOFF_NOTIFY_RETRY_SECONDS
+            )
+        ):
             return
         identity = resolve_assignee_channel_identity(db, binding, handoff.assignee_user_id)
         external_user_id = identity.external_user_id if identity else None
@@ -1137,7 +1149,15 @@ def notify_handoff_assignee(
             text_parts.append("上下文:")
             text_parts.append(context_summary[:800])
         text_parts.append("")
-        text_parts.append("如需答复，请直接回复本条消息（引用后输入答复内容）；也可发送 /回复反馈 <答复内容>。")
+        if binding.channel == "feishu":
+            text_parts.append(
+                "如需答复，请直接回复本条消息（引用后输入答复内容）；"
+                "也可发送 /回复反馈 <答复内容>。"
+            )
+        else:
+            text_parts.append(
+                f"请发送 /回复反馈 {handoff.id} <答复内容> 精确回复此请求。"
+            )
         text = "\n".join(text_parts)
         build_target = _HANDOFF_NOTIFY_TARGET_BUILDERS[binding.channel]
         target = build_target(external_user_id, handoff.id)
