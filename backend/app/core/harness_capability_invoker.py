@@ -29,20 +29,20 @@ from app.core.capability_manifest import (
     tool_snapshot_digest,
 )
 from app.core.harness_agent import HarnessExecutionCancelled
+from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.published_deliverables import (
     MAX_PUBLISHED_DELIVERABLES,
     find_published_deliverable,
     list_published_deliverables,
 )
-from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
 from app.core.tool_replay_policy import ToolReplayPolicy
 from app.db.models import (
     ChatSession,
+    ExternalBusinessTask,
     GeneralSkill,
     HarnessInvocationRecord,
     ModelConfig,
-    ExternalBusinessTask,
     Skill,
     Tool,
     UIConfig,
@@ -67,9 +67,9 @@ from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import KnowledgeService
+from app.skills.tool_authorization import current_sop_tool_authorization
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
-
 
 _INLINE_JSON_TOOL_RESULT_MAX_CHARS = 2_000
 _INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
@@ -1073,6 +1073,9 @@ class HarnessCapabilityInvoker:
             self.tenant_id,
             ToolCall(name=source_tool_name, arguments=resolved_arguments),
             active_skill_id=self.active_skill_id,
+            sop_authorization=current_sop_tool_authorization(
+                self.tenant_id, self.active_skill, self.active_step_id,
+            ),
             agent_id=self.agent_id,
             session_id=self.session.id,
             invocation_id=call_id,

@@ -17,7 +17,6 @@ from app.capabilities.local_general_skill import package_from_row
 from app.core.task_request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
-    current_step_authorization_skill_ids,
     current_step_capability_refs,
 )
 from app.db.models import (
@@ -35,6 +34,7 @@ from app.harness import (
     register_skill_script_tools,
 )
 from app.harness.sandbox import available_backend
+from app.skills.tool_authorization import current_sop_tool_authorization
 
 RESERVED_HARNESS_CAPABILITY_NAMES = {
     "capability_search",
@@ -67,7 +67,7 @@ class CapabilityManifestBuilder:
         if agent_id and get_agent(self.db, tenant_id, agent_id) is None:
             raise CapabilityAuthorizationError("当前员工不存在、已归档或不属于该租户。")
         refs = current_step_capability_refs(skill, step_id)
-        authorization_skill_ids = current_step_authorization_skill_ids(skill, step_id)
+        authorization = current_sop_tool_authorization(tenant_id, skill, step_id)
         available: list[CapabilityDescriptor] = []
         unavailable: list[CapabilityDescriptor] = []
 
@@ -194,12 +194,10 @@ class CapabilityManifestBuilder:
                     )
                 )
                 continue
-            explicitly_allowed = any(tool_by_ref.get(ref) is row for ref in refs["tool_ids"])
+            explicitly_allowed = authorization.explicitly_allows(row)
             if scope == "sop_specific" and not explicitly_allowed:
                 continue
-            if row.allowed_skills_json and not authorization_skill_ids.intersection(
-                str(value).strip() for value in row.allowed_skills_json if str(value).strip()
-            ):
+            if not authorization.permits_skill(row):
                 if explicitly_allowed:
                     unavailable.append(
                         _unavailable(
