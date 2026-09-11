@@ -61,6 +61,9 @@ import WechatSetup from './channels/WechatSetup';
 import WecomSetup from './channels/WecomSetup';
 import FeishuSetup from './channels/FeishuSetup';
 import DingTalkSetup from './channels/DingTalkSetup';
+import DiscordSetup from './channels/DiscordSetup';
+import DiscordFeatureConfig from './channels/DiscordFeatureConfig';
+import ChannelMessageAttachments from './channels/ChannelMessageAttachments';
 import WechatKfSetup from './channels/WechatKfSetup';
 import BindingManagers from './channels/BindingManagers';
 import {
@@ -1099,6 +1102,14 @@ export default function ChannelsPage({
               setBindings((current) => current.map((item) => (item.id === updated.id ? updated : item)))
             }
           />
+        ) : binding.channel === 'discord' ? (
+          <DiscordSetup
+            key={binding.id}
+            binding={binding}
+            onChanged={(updated) =>
+              setBindings((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+            }
+          />
         ) : setupKindFor(binding.channel) === 'credentials' ? (
           <WecomSetup
             key={binding.id}
@@ -1197,6 +1208,17 @@ export default function ChannelsPage({
           />
         )}
       </div>
+
+      {binding.channel === 'discord' && (
+        <DiscordFeatureConfig
+          key={binding.id}
+          binding={binding}
+          meta={metaFor('discord')}
+          onChanged={(updated) =>
+            setBindings((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+          }
+        />
+      )}
 
       <section aria-label={activeChannel ? `${activeChannel.name}身份绑定` : '身份绑定'}>
         <div className="mb-[16px] flex items-center gap-[6px] px-[12px] text-[#757f9c]">
@@ -1435,22 +1457,10 @@ export default function ChannelsPage({
                       <span className="text-[11px] text-[#a0a6b8]">
                         {shown.label} · {formatTime(msg.created_at)}
                       </span>
-                       <div className="wrap-break-word rounded-[10px] bg-[#f6f6f6] px-[12px] py-[8px] text-[13px] leading-[1.6] text-[#18181a]">
-                         {shown.content}
-                         {msg.attachments?.length ? (
-                           <span className="mt-[8px] flex flex-col gap-[6px]">
-                             {msg.attachments.map((attachment) => (
-                               <ChannelAttachmentView
-                                 key={attachment.id}
-                                 attachment={attachment}
-                                 bindingId={binding?.id || ''}
-                                 sessionId={activeConversation.session_id}
-                                 messageId={msg.id}
-                               />
-                             ))}
-                           </span>
-                         ) : null}
-                       </div>
+                      <span className="wrap-break-word rounded-[10px] bg-[#f6f6f6] px-[12px] py-[8px] text-[13px] leading-[1.6] text-[#18181a]">
+                        {shown.content}
+                      </span>
+                      <ChannelMessageAttachments message={msg} />
                     </div>
                   );
                 })}

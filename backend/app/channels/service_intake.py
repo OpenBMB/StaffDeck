@@ -34,6 +34,7 @@ from app.channels.service_routing import (
     run_command,
 )
 from app.channels.service_session import find_or_create_channel_session
+from app.channels.typing_manager import begin_typing, end_typing
 from app.config import get_settings
 from app.db import engine
 from app.db.models import (
@@ -194,7 +195,7 @@ def claim_staged_inbound(event_id: str, *, db_engine=None) -> bool:
             update(ChannelInboundEvent)
             .where(
                 ChannelInboundEvent.id == event_id,
-                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk", "wechat_kf"}),
+                ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk", "discord", "wechat_kf"}),
                 ChannelInboundEvent.status == "received",
             )
             .values(
@@ -559,6 +560,8 @@ def _build_name_resolver(binding: ChannelBinding):
 def _valid_notice_target(channel: str, target: dict) -> bool:
     if channel == "feishu":
         return bool(target.get("message_id") or target.get("receive_id"))
+    if channel == "discord":
+        return bool(target.get("channel_id"))
     if channel == "wechat_kf":
         return bool(target.get("to_user_id") and target.get("open_kfid"))
     return bool(target.get("to_user_id") and target.get("context_token"))
@@ -1554,6 +1557,8 @@ def process_inbound(
                 interaction_mode=interaction_mode,
             )
             _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 1, db_engine=use_engine)
+            # 周期性 typing:begin 内部做能力门禁,仅 Discord 等声明 TYPING 的渠道生效
+            begin_typing(binding, target)
             stream_sink = None
             if binding.channel == "wecom" and isinstance(inbound.raw, dict):
                 adapter = get_channel_adapter(binding.channel)
@@ -1634,6 +1639,7 @@ def process_inbound(
                 if trace_streamer:
                     trace_streamer.finish()
             finally:
+                end_typing(binding, target)
                 _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 2, db_engine=use_engine)
             runtime_error_code = getattr(response, "runtime_error_code", None)
             response_reply = str(getattr(response, "reply", "") or "")
@@ -1722,7 +1728,7 @@ def process_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
                 update(ChannelInboundEvent)
                 .where(
                     ChannelInboundEvent.id == event_pk,
-                    ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk", "wechat_kf"}),
+                    ChannelInboundEvent.channel.in_({"feishu", "wecom", "dingtalk", "discord", "wechat_kf"}),
                     ChannelInboundEvent.status == "processing",
                     ChannelInboundEvent.processor_run_id == current_processor_run_id(),
                 )
@@ -1820,7 +1826,7 @@ def run_staged_inbound_daemon(
                     select(ChannelInboundEvent.id)
                     .where(
                         ChannelInboundEvent.channel.in_(
-                            {"feishu", "wecom", "dingtalk", "wechat_kf"}
+                            {"feishu", "wecom", "dingtalk", "discord", "wechat_kf"}
                         ),
                         ChannelInboundEvent.status == "received",
                     )
@@ -1917,6 +1923,17 @@ def _decode_and_validate_staged_event(
             or binding.provider_tenant_key != tenant_key
             or binding.identity_scope_key != dingtalk_identity_scope(client_id, tenant_key)
         ):
+            raise ValueError("replay_account_mismatch")
+        return inbound
+    if event.channel == "discord":
+        from app.channels.service_discord_inbox import (
+            decode_replay_envelope,
+            discord_account_key,
+        )
+
+        inbound = decode_replay_envelope(payload)
+        bot_id = str((account or {}).get("bot_id") or "").strip()
+        if not bot_id or binding.external_account_key != discord_account_key(bot_id):
             raise ValueError("replay_account_mismatch")
         return inbound
     if event.channel == "wechat_kf":
@@ -2020,13 +2037,13 @@ def sweep_stale_inbound_events(*, db_engine=None) -> int:
             if not binding:
                 continue
             if (
-                channel not in {"feishu", "wecom", "dingtalk", "wechat_kf"}
+                channel not in {"feishu", "wecom", "dingtalk", "discord", "wechat_kf"}
                 and binding.status != "active"
             ):
                 continue
             db.expunge(binding)
         try:
-            if channel in {"feishu", "wecom", "dingtalk", "wechat_kf"}:
+            if channel in {"feishu", "wecom", "dingtalk", "discord", "wechat_kf"}:
                 if _recover_stale_durable_event(event_pk, db_engine=use_engine):
                     taken += 1
                 continue

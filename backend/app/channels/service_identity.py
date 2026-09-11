@@ -31,6 +31,7 @@ _CHANNEL_LABELS = {
     "wecom": "企业微信",
     "feishu": "飞书",
     "dingtalk": "钉钉",
+    "discord": "Discord",
 }
 
 
@@ -91,6 +92,9 @@ def external_account_key(channel: str, config: dict) -> str | None:
     if channel == "dingtalk":
         client_id = str(config.get("client_id") or "").strip()
         return f"dingtalk:app:{len(client_id)}:{client_id}" if client_id else None
+    if channel == "discord":
+        bot_id = str(config.get("bot_id") or "").strip()
+        return f"discord:bot:{len(bot_id)}:{bot_id}" if bot_id else None
     return None
 
 

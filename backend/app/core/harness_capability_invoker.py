@@ -42,6 +42,7 @@ from app.db.models import (
     ExternalBusinessTask,
     GeneralSkill,
     HarnessInvocationRecord,
+    Message,
     ModelConfig,
     Skill,
     Tool,
@@ -794,6 +795,158 @@ class HarnessCapabilityInvoker:
                 "not_found": not_found,
                 "revoked": revoked,
                 "notice": "以上能力已在当前 TaskFrame AgentLoop 中激活。",
+            },
+        }
+
+    def _list_published_deliverables(
+        self,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw_limit = arguments.get("limit", 50)
+        if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
+            return _failure(
+                "INVALID_ARGUMENTS",
+                "list_published_deliverables limit 必须是整数。",
+            )
+        limit = max(1, min(raw_limit, 100))
+        rows = self.db.exec(
+            select(Message)
+            .where(
+                Message.tenant_id == self.tenant_id,
+                Message.session_id == self.session.id,
+                Message.role == "assistant",
+            )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+        ).all()
+        deliverables: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            if len(deliverables) >= limit:
+                break
+            artifacts = (row.metadata_json or {}).get("harness_artifacts") or []
+            if not isinstance(artifacts, list):
+                continue
+            for artifact in artifacts:
+                if (
+                    not isinstance(artifact, dict)
+                    or artifact.get("type") != "workspace_file"
+                ):
+                    continue
+                key = (
+                    str(artifact.get("task_frame_id") or ""),
+                    str(artifact.get("path") or ""),
+                )
+                if not key[1] or key in seen:
+                    continue
+                if len(deliverables) >= limit:
+                    break
+                seen.add(key)
+                deliverables.append(dict(artifact))
+        self._emit_trace(
+            "list_published_deliverables_completed",
+            {"count": len(deliverables)},
+        )
+        return {
+            "success": True,
+            "data": {"deliverables": deliverables, "count": len(deliverables)},
+        }
+
+    def _read_published_deliverable(
+        self,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw_path = arguments.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return _failure(
+                "INVALID_ARGUMENTS",
+                "read_published_deliverable path 必须是字符串。",
+            )
+        path = raw_path.strip()
+        task_frame_id = arguments.get("task_frame_id")
+        if task_frame_id is not None and not isinstance(task_frame_id, str):
+            return _failure(
+                "INVALID_ARGUMENTS",
+                "read_published_deliverable task_frame_id 必须是字符串。",
+            )
+        raw_max_bytes = arguments.get("max_bytes", 1024 * 1024)
+        if isinstance(raw_max_bytes, bool) or not isinstance(raw_max_bytes, int):
+            return _failure(
+                "INVALID_ARGUMENTS",
+                "read_published_deliverable max_bytes 必须是整数。",
+            )
+        max_bytes = max(1024, min(raw_max_bytes, 8 * 1024 * 1024))
+        rows = self.db.exec(
+            select(Message)
+            .where(
+                Message.tenant_id == self.tenant_id,
+                Message.session_id == self.session.id,
+                Message.role == "assistant",
+            )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+        ).all()
+        match: dict[str, Any] | None = None
+        for row in rows:
+            artifacts = (row.metadata_json or {}).get("harness_artifacts") or []
+            if not isinstance(artifacts, list):
+                continue
+            for artifact in artifacts:
+                if not isinstance(artifact, dict) or artifact.get("type") != "workspace_file":
+                    continue
+                if artifact.get("path") != path:
+                    continue
+                if task_frame_id is not None and artifact.get("task_frame_id") != task_frame_id:
+                    continue
+                match = artifact
+                break
+            if match is not None:
+                break
+        if match is None:
+            return _failure(
+                "ARTIFACT_NOT_FOUND",
+                f"会话中未找到已发布的交付物：{path}",
+            )
+        frame_id = str(match.get("task_frame_id") or "")
+        guessed = mimetypes.guess_type(path)[0]
+        content_type = str(match.get("content_type") or guessed or "application/octet-stream")
+        # 延迟导入避免循环依赖（与 service_outbox 桥接路径同范式）。
+        from app.core.harness_session_cleanup import harness_task_workspace_path
+        from app.harness.artifacts import HarnessArtifactAccessError, open_harness_artifact
+
+        try:
+            workspace_root = harness_task_workspace_path(
+                tenant_id=self.tenant_id,
+                session_id=self.session.id,
+                task_frame_id=frame_id,
+                db=self.db,
+            )
+            opened = open_harness_artifact(workspace_root, path)
+            raw = b"".join(opened.iter_bytes())
+        except (HarnessArtifactAccessError, OSError):
+            return _failure(
+                "ARTIFACT_UNREADABLE",
+                f"已发布交付物无法读取：{path}",
+            )
+        truncated = len(raw) > max_bytes
+        if truncated:
+            raw = raw[:max_bytes]
+        self._emit_trace(
+            "read_published_deliverable_completed",
+            {
+                "path": path,
+                "task_frame_id": frame_id,
+                "size": len(raw),
+                "truncated": truncated,
+            },
+        )
+        return {
+            "success": True,
+            "data": {
+                "path": path,
+                "task_frame_id": frame_id,
+                "size": len(raw),
+                "content_type": content_type,
+                "content_base64": base64.b64encode(raw).decode("ascii"),
+                "truncated": truncated,
             },
         }
 

@@ -19,7 +19,7 @@ from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
 from app.agents.branching import model_for_agent, visible_published_skills
-from app.channels.service_outbox import stage_channel_delivery
+from app.channels.service_outbox import stage_channel_delivery, stage_user_message_mirror
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
 from app.core.capability_manifest import CapabilityManifestBuilder
@@ -663,6 +663,8 @@ def _maybe_handle_scheduled_task_request(
         created_at=now,
     )
     db.add(user_message)
+    if request.channel == "web":
+        stage_user_message_mirror(db, chat_session, user_message, web_origin=True)
     db.flush()
     turn_store.bind_user_message(turn_claim.record, user_message.id)
     draft_payload = draft.model_dump(mode="json")
