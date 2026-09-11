@@ -65,7 +65,7 @@ def build_conversation_context(
     normalized = _normalize_messages(messages, resolved.allowed_roles)
     state = _normalize_state(context_state)
     if compression_mode == "acp":
-        return _build_acp_context(normalized, state, token_budget)
+        return _build_acp_context(normalized, state, resolved.token_budget, resolved)
     unsummarized, summarized_count = _messages_after_cursor(normalized, state)
     projected = _project_messages(state, unsummarized, resolved)
     trigger_tokens = max(
@@ -164,6 +164,7 @@ def _build_acp_context(
     normalized: list[dict[str, Any]],
     state: dict[str, Any],
     token_budget: int,
+    settings: ConversationContextSettings,
 ) -> dict[str, object]:
     """Project the ACP block state into the standard context contract.
 
@@ -177,7 +178,7 @@ def _build_acp_context(
     if not isinstance(blocks, list) or not blocks:
         # Migration path: a legacy 4-key session entering ACP mode projects
         # its existing summaries without triggering a new compaction.
-        return _project_legacy_into_acp(normalized, state, token_budget)
+        return _project_legacy_into_acp(normalized, state, token_budget, settings)
     projected: list[dict[str, Any]] = []
     summary_count = 0
     for block in blocks:
@@ -229,11 +230,12 @@ def _project_legacy_into_acp(
     normalized: list[dict[str, Any]],
     state: dict[str, Any],
     token_budget: int,
+    settings: ConversationContextSettings,
 ) -> dict[str, object]:
     """Project a legacy 4-key state inside ACP mode without compacting."""
     unsummarized, summarized_count = _messages_after_cursor(normalized, state)
-    projected = _project_messages(state, unsummarized)
-    projected = _fit_projected_messages(projected, token_budget)
+    projected = _project_messages(state, unsummarized, settings)
+    projected = _fit_projected_messages(projected, token_budget, settings)
     summary = _joined_existing_history(state)
     return {
         "messages": projected,
