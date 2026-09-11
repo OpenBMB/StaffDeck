@@ -591,6 +591,8 @@ def test_tool(
         ToolCall(name=row.name, arguments=request.arguments),
         agent_id=agent_id,
         user_id=current_user.id,
+        invocation_id=(f"tool-test:{current_user.id}:{request.client_request_id}"
+                       if request.client_request_id else None),
     )
 
 

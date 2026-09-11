@@ -134,6 +134,10 @@ prior_task_results 还可能包含由当前 Slot 中标识符精确引用的、�
 - 首行直接进入有信息量的回答。不要添加“结构化完成报告”“完成报告”“总结报告”等报告标题，
   也不要机械套用“结论 / 过程要点 / 交付物”三段式。
 
+异步任务：用户查询已有任务的进度或结果时，调用 external_task_status，并使用已有的 StaffDeck task_id；
+不得为了查询状态再次调用原提交工具。queued 仅表示本地排队，不能声称 Provider 已接收。
+working/accepted 表示继续等待；outcome_unknown 表示提交结果不确定，必须核对外部系统，不能自动重新提交。
+
 每次只输出一个 JSON object：
 
 调用工具：

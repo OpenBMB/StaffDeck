@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.agents.branching import visible_tool_rows
@@ -294,6 +295,22 @@ class ToolExecutor:
             ).first()
             if existing is not None:
                 return self._detached_acceptance_result(tool, existing)
+        if session_id and task_frame_id:
+            existing = self.db.exec(select(ExternalBusinessTask).where(
+                ExternalBusinessTask.tenant_id == tool.tenant_id,
+                ExternalBusinessTask.user_id == user_id,
+                ExternalBusinessTask.session_id == session_id,
+                ExternalBusinessTask.task_frame_id == task_frame_id,
+                ExternalBusinessTask.tool_id == tool.id,
+                ExternalBusinessTask.status.in_([
+                    "queued", "submitting", "accepted", "working", "outcome_unknown",
+                ]),
+            ).order_by(ExternalBusinessTask.created_at.desc())).first()
+            if existing is not None:
+                if dict(existing.request_json or {}) != arguments:
+                    return self._error(tool.name, "EXTERNAL_TASK_ALREADY_PENDING",
+                                       f"当前 TaskFrame 已有任务 {existing.id}；请先用 external_task_status 查询，不能重复提交。")
+                return self._detached_acceptance_result(tool, existing)
         callback_token = new_callback_token()
         status_url = str(execution.get("status_url") or "").strip() or None
         poll_interval_seconds = max(
@@ -328,7 +345,17 @@ class ToolExecutor:
             expires_at=utc_now() + timedelta(seconds=max_tracking_seconds),
         )
         self.db.add(task)
-        self.db.flush()
+        try:
+            self.db.flush()
+        except IntegrityError:
+            self.db.rollback()
+            if idempotency_key:
+                existing = self.db.exec(select(ExternalBusinessTask).where(
+                    ExternalBusinessTask.idempotency_key == idempotency_key,
+                )).first()
+                if existing is not None:
+                    return self._detached_acceptance_result(tool, existing)
+            raise
         if not task.idempotency_key:
             task.idempotency_key = f"staffdeck:{tool.tenant_id}:{tool.id}:{task.id}"
         task.accepted_at = utc_now()
@@ -343,6 +370,17 @@ class ToolExecutor:
         tool: Tool,
         task: ExternalBusinessTask,
     ) -> ToolResult:
+        state_text = {
+            "queued": "已进入后台队列，尚未提交到外部接口",
+            "submitting": "正在提交到外部接口",
+            "accepted": "外部接口已受理",
+            "working": "正在处理",
+            "completed": "已完成",
+            "failed": "执行失败",
+            "cancelled": "已取消",
+            "expired": "已超时",
+            "outcome_unknown": "提交结果不确定，请核对外部系统，勿重复提交",
+        }.get(task.status, task.status)
         return ToolResult(
             tool_name=tool.name,
             success=True,
@@ -361,12 +399,12 @@ class ToolExecutor:
                     ),
                     "tenant_id": tool.tenant_id,
                     "guidance": (
-                        "Use a separately configured authenticated HTTP status tool or SOP "
-                        "to query this task by task_id."
+                        "Use external_task_status with this StaffDeck task_id to query the "
+                        "existing task. Do not invoke the submission tool again to check status."
                     ),
                 },
                 "user_reply": (
-                    f"已经帮您提交任务，任务号 #{task.id}，正在后台处理。"
+                    f"任务 #{task.id}：{state_text}。"
                     f"您随时可以对我说 “查询 #{task.id} 状态” 查看结果。"
                 ),
             },

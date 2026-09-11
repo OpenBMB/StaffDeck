@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import logging
 from datetime import timedelta
 from typing import Any
 
@@ -34,6 +35,7 @@ PROVIDER_TASK_STRATEGY = "provider_task"
 CALLBACK_URL_HEADER = "X-StaffDeck-Callback-URL"
 CALLBACK_TOKEN_HEADER = "X-StaffDeck-Callback-Token"
 IDEMPOTENCY_HEADER = "Idempotency-Key"
+logger = logging.getLogger(__name__)
 
 
 def new_callback_token() -> str:
@@ -275,21 +277,9 @@ def poll_due_external_tasks(db: Session) -> int:
         if task.status in PERSISTED_TERMINAL_STATUSES:
             _prepare_sop_resume(db, task)
         recovered += 1
-    queued = db.exec(
-        select(ExternalBusinessTask)
-        .where(
-            ExternalBusinessTask.status == "queued",
-            ExternalBusinessTask.lease_owner.is_(None),
-        )
-        .limit(20)
-    ).all()
-    local_count = 0
-    for task in queued:
-        _execute_local_task(db, task)
-        local_count += 1
     expired = db.exec(
         select(ExternalBusinessTask).where(
-            ExternalBusinessTask.status.in_(["accepted", "working", "submitting"]),
+            ExternalBusinessTask.status.in_(["queued", "accepted", "working", "submitting"]),
             ExternalBusinessTask.expires_at.is_not(None),
             ExternalBusinessTask.expires_at <= now,
         )
@@ -348,12 +338,33 @@ def poll_due_external_tasks(db: Session) -> int:
         task = db.get(ExternalBusinessTask, task.id)
         if task is None:
             continue
-        _poll_task(db, task, owner=owner)
+        try:
+            _poll_task(db, task, owner=owner)
+        except Exception:
+            db.rollback()
+            logger.exception("External task polling failed outside provider transport")
         claimed += 1
+    # Poll previously accepted jobs first; a backlog of slow submissions must not
+    # delay every existing Provider status query until after the entire batch.
+    queued = db.exec(select(ExternalBusinessTask.id).where(
+        ExternalBusinessTask.status == "queued",
+        ExternalBusinessTask.lease_owner.is_(None),
+    ).order_by(ExternalBusinessTask.created_at, ExternalBusinessTask.id).limit(20)).all()
+    local_count = 0
+    for task_id in queued:
+        try:
+            task = db.get(ExternalBusinessTask, task_id)
+            if task is not None:
+                _execute_local_task(db, task)
+                local_count += 1
+        except Exception:
+            db.rollback()
+            logger.exception("External task execution failed task=%s", task_id)
     return claimed + local_count + len(expired) + recovered
 
 
 def _execute_local_task(db: Session, task: ExternalBusinessTask) -> None:
+    task_id = task.id
     owner = new_id("exttasklease")
     now = utc_now()
     strategy = _task_strategy(task)
@@ -407,6 +418,20 @@ def _execute_local_task(db: Session, task: ExternalBusinessTask) -> None:
                     data={"error": error},
                 )
     except Exception as exc:
+        db.rollback()
+        task = db.get(ExternalBusinessTask, task_id)
+        if task is None:
+            logger.exception("Detached task disappeared during execution task=%s", task_id)
+            return
+        if strategy == PROVIDER_TASK_STRATEGY and task.external_task_id and task.status_url:
+            # A durable provider receipt means submission must not be repeated.
+            if task.status not in PERSISTED_TERMINAL_STATUSES:
+                task.status = "working"
+                task.next_poll_at = utc_now()
+                db.add(task)
+                db.commit()
+            logger.exception("Provider task tracking interrupted task=%s", task_id)
+            return
         apply_task_event(
             db,
             task,
@@ -424,10 +449,12 @@ def _execute_local_task(db: Session, task: ExternalBusinessTask) -> None:
             data={"error": {"code": "DETACHED_EXECUTION_ERROR", "message": str(exc)}},
         )
     finally:
+        if not db.is_active:
+            db.rollback()
         db.exec(
             update(ExternalBusinessTask)
             .where(
-                ExternalBusinessTask.id == task.id,
+                ExternalBusinessTask.id == task_id,
                 ExternalBusinessTask.lease_owner == owner,
             )
             .values(lease_owner=None, lease_expires_at=None)
@@ -482,8 +509,13 @@ def _submit_provider_task(db: Session, task: ExternalBusinessTask, tool: Tool) -
     provider_task_id = _json_path(payload, str(config.get("task_id_field") or "taskId"))
     raw_status = _json_path(payload, str(config.get("status_field") or "status"))
     status_mapping = dict(config.get("status_mapping") or {})
+    if provider_task_id is not None:
+        if isinstance(provider_task_id, bool) or not isinstance(provider_task_id, (str, int)):
+            raise ValueError("Provider task ID must be a string or integer")
+        elif not str(provider_task_id).strip():
+            raise ValueError("Provider task ID cannot be empty")
     if raw_status is None:
-        raw_status = "accepted" if response.status_code == 202 or provider_task_id else "completed"
+        raw_status = "accepted" if response.status_code == 202 or provider_task_id is not None else "completed"
     mapped_status = status_mapping.get(str(raw_status), raw_status)
     next_status = normalize_status(mapped_status)
 
@@ -573,6 +605,7 @@ def _poll_task(db: Session, task: ExternalBusinessTask, *, owner: str) -> None:
             data=event_data,
         )
     except Exception as exc:
+        db.rollback()
         task.error_json = {"code": "POLL_ERROR", "message": str(exc)}
         task.updated_at = utc_now()
         db.add(task)

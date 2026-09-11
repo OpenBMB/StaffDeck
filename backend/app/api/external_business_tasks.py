@@ -51,6 +51,8 @@ def task_read(task: ExternalBusinessTask, db: Session) -> dict[str, Any]:
         "result": task.result_json or {},
         "error": task.error_json or {},
         "poll_attempts": task.poll_attempts,
+        "next_poll_at": task.next_poll_at.isoformat() if task.next_poll_at else None,
+        "expires_at": task.expires_at.isoformat() if task.expires_at else None,
         "created_at": task.created_at.isoformat(),
         "accepted_at": task.accepted_at.isoformat() if task.accepted_at else None,
         "finished_at": task.finished_at.isoformat() if task.finished_at else None,

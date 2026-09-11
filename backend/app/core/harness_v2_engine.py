@@ -1023,13 +1023,7 @@ class HarnessV2Engine:
                     ).strip()
                     or None
                 )
-                external_task = self.db.exec(
-                    select(ExternalBusinessTask).where(
-                        ExternalBusinessTask.task_frame_id == row.task_id,
-                        ExternalBusinessTask.session_id == session.id,
-                        ExternalBusinessTask.status.in_(["queued", "accepted", "working"]),
-                    )
-                ).first()
+                external_task = _external_task_for_result(self.db, row, result)
                 if external_task is not None:
                     external_task.resume_step_id = resume_step_id
                     self.db.add(external_task)
@@ -1167,16 +1161,10 @@ class HarnessV2Engine:
 
         combined = _combine_results(row.task_id, results)
         if combined.status == "waiting_external_task":
-            external_task = self.db.exec(
-                select(ExternalBusinessTask).where(
-                    ExternalBusinessTask.task_frame_id == row.task_id,
-                    ExternalBusinessTask.session_id == session.id,
-                    ExternalBusinessTask.status.in_(
-                        ["completed", "failed", "cancelled", "expired"]
-                    ),
-                )
-            ).first()
-            if external_task is not None:
+            from app.tools.external_tasks import PERSISTED_TERMINAL_STATUSES
+
+            external_task = _external_task_for_result(self.db, row, combined)
+            if external_task is not None and external_task.status in PERSISTED_TERMINAL_STATUSES:
                 combined.status = (
                     "ready_to_resume"
                     if row.kind == "sop"
@@ -1706,6 +1694,20 @@ def _enforce_required_slots(
         result.reply_fragment = "还需要您补充：" + "、".join(missing) + "。"
     result.next_step_id = None
     return result
+
+
+def _external_task_for_result(db, frame, result):
+    """Use this result's receipt, not an older completed task in the same SOP frame."""
+    data = result.structured_result if isinstance(result.structured_result, dict) else {}
+    task_id = str(data.get("task_id") or "").strip()
+    query = select(ExternalBusinessTask).where(
+        ExternalBusinessTask.tenant_id == frame.tenant_id,
+        ExternalBusinessTask.session_id == frame.session_id,
+        ExternalBusinessTask.task_frame_id == frame.task_id,
+    )
+    if task_id:
+        query = query.where(ExternalBusinessTask.id == task_id)
+    return db.exec(query.order_by(ExternalBusinessTask.created_at.desc(), ExternalBusinessTask.id.desc())).first()
 
 
 def _combine_results(

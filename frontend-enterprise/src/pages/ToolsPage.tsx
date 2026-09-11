@@ -6,6 +6,7 @@ import { Activity, Copy, FlaskConical, RotateCcw, TerminalSquare, Users, XCircle
 import { pinyin } from 'pinyin-pro';
 
 import { api, TENANT_ID } from '../api/client';
+import { useToolTest } from '../hooks/useToolTest';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
 import CapabilityScopeLoading from '@/components/CapabilityScopeLoading';
@@ -2428,14 +2429,14 @@ function ToolProbeCard({ values }: { values: ToolFormValues }) {
   );
 }
 
-function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; standalone?: boolean }) {
+export function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; standalone?: boolean }) {
   const [testJson, setTestJson] = useState(() => JSON.stringify(exampleFromSchema(tool.input_schema), null, 2));
-  const [testResult, setTestResult] = useState('');
-  const [loading, setLoading] = useState(false);
+  const tracking = useToolTest(tool.id, currentAgentQuery(), tool.execution_policy?.poll_interval_seconds);
+  const testResult = tracking.result;
+  const loading = tracking.busy;
 
   useEffect(() => {
     setTestJson(JSON.stringify(exampleFromSchema(tool.input_schema), null, 2));
-    setTestResult('');
   }, [tool.id, tool.input_schema]);
 
   async function test() {
@@ -2446,19 +2447,7 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
       notify.error('测试参数不是合法 JSON');
       return;
     }
-    setLoading(true);
-    try {
-      const agentQuery = currentAgentQuery();
-      const response = await api.post(`/api/enterprise/tools/${tool.id}/test${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, {
-        tenant_id: TENANT_ID,
-        arguments: argumentsJson,
-      });
-      setTestResult(JSON.stringify(response, null, 2));
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '调用失败');
-    } finally {
-      setLoading(false);
-    }
+    await tracking.submit(argumentsJson);
   }
 
   return (
@@ -2472,7 +2461,7 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
         </span>
       )}
       extra={(
-        <UIButton disabled={loading} onClick={() => void test()} className={PRIMARY_BUTTON_CLASS}>
+        <UIButton disabled={loading || Boolean(tracking.taskId)} onClick={() => void test()} className={PRIMARY_BUTTON_CLASS}>
           <ExperimentOutlined />
           调用
         </UIButton>
@@ -2491,6 +2480,7 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
         <Textarea
           rows={8}
           className={MONO_INPUT_CLASS}
+          disabled={tracking.parametersLocked}
           value={testJson}
           onChange={(event) => setTestJson(event.target.value)}
         />
@@ -2498,8 +2488,12 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
       <div className="flex flex-col gap-[10px]">
         <div className="flex items-center justify-between gap-[10px]">
           <span className={SUBSECTION_TITLE_CLASS}>调用结果</span>
-          <StatusBadge tone={testResult ? 'green' : 'gray'}>{testResult ? '已返回' : '等待调用'}</StatusBadge>
+          <StatusBadge tone={tracking.status === '已完成' || tracking.status === '已返回' ? 'green' : 'gray'}>{tracking.status}</StatusBadge>
         </div>
+        {tracking.error && <p role="alert" className="text-sm text-red-600">{tracking.error}</p>}
+        {tracking.taskId && !loading && (
+          <UIButton onClick={tracking.retryStatus}>重新查询状态（不重新提交）</UIButton>
+        )}
         {testResult ? (
           <CodeBlock className="max-h-[340px] whitespace-pre-wrap wrap-break-word" code={testResult} language="json" />
         ) : (

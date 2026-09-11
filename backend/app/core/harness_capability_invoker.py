@@ -561,6 +561,10 @@ class HarnessCapabilityInvoker:
             "data": {
                 "task_id": task.id,
                 "status": task.status,
+                "provider_task_id": task.external_task_id,
+                "poll_attempts": task.poll_attempts,
+                "updated_at": task.updated_at.isoformat(),
+                "notice": "这是已有任务的状态，不需要重新调用提交工具。queued 仅表示本地排队，不代表外部接口已受理。",
                 "result": dict(task.result_json or {}),
                 "error": dict(task.error_json or {}),
             },
