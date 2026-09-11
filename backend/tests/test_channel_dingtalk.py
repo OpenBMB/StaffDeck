@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -11,6 +13,7 @@ from app.channels.adapters.dingtalk import (
     DINGTALK_ACK_EMOTION_NAME,
     DINGTALK_REACTION_HANDLE,
     DINGTALK_TEXT_LIMIT,
+    DINGTALK_TRACE_CARD_TEMPLATE_ID,
     DingTalkAdapter,
     DingTalkPermanentError,
     DingTalkTokenProvider,
@@ -191,6 +194,9 @@ class _RoutingClient:
 
     def post(self, url, json=None, headers=None, **_kwargs):
         return self._route(url, json, headers, "POST")
+
+    def put(self, url, json=None, headers=None, **_kwargs):
+        return self._route(url, json, headers, "PUT")
 
     def get(self, url, headers=None, **_kwargs):
         return self._route(url, None, headers, "GET")
@@ -870,5 +876,294 @@ def test_dingtalk_overlong_fenced_code_block_chunks_are_balanced():
         )
         assert fence_count % 2 == 0, "fenced code block split across messages is unbalanced"
         assert len(md_text) <= DINGTALK_TEXT_LIMIT
+
+
+# ---- 卡片实例（trace 流式卡片）----
+
+
+def _card_binding(**overrides):
+    return _reaction_binding(**overrides)
+
+
+def _card_adapter(routes):
+    client = _RoutingClient(routes)
+    return DingTalkAdapter(client_factory=lambda: client), client
+
+
+_CARD_DATA = {
+    "msgTitle": "正在思考…",
+    "msgContent": "等待执行步骤…",
+    "flowStatus": "1",
+    "sys_full_json_obj": '{"order": ["msgTitle", "msgContent"]}',
+}
+
+
+def test_dingtalk_create_card_delivers_to_robot_space_for_single_chat():
+    adapter, client = _card_adapter(
+        {"oauth2/accessToken": _token_route("token-1"), "card/instances": [_Response(200)]}
+    )
+    out_track_id = adapter.create_card(
+        _card_binding(),
+        {
+            "to_user_id": "staff-1",
+            "conversation_id": "cid-1",
+            "conversation_type": "1",
+            "session_webhook": "https://oapi.dingtalk.com/robot/sendBySession?session=x",
+        },
+        _CARD_DATA,
+        idempotency_key="dingtalk-trace:chan-1:turn-1",
+    )
+    assert out_track_id == hashlib.sha256(b"dingtalk-trace:chan-1:turn-1").hexdigest()
+    create_call = client.calls_to("card/instances/createAndDeliver")[0]
+    assert create_call["method"] == "POST"
+    assert create_call["headers"]["x-acs-dingtalk-access-token"] == "token-1"
+    assert create_call["body"] == {
+        "cardTemplateId": DINGTALK_TRACE_CARD_TEMPLATE_ID,
+        "outTrackId": out_track_id,
+        "cardData": {"cardParamMap": _CARD_DATA},
+        "callbackType": "STREAM",
+        "imGroupOpenSpaceModel": {"supportForward": False},
+        "imRobotOpenSpaceModel": {"supportForward": False},
+        "openSpaceId": "dtv1.card//IM_ROBOT.staff-1",
+        "imRobotOpenDeliverModel": {"spaceType": "IM_ROBOT"},
+    }
+
+
+def test_dingtalk_create_card_delivers_to_group_space():
+    adapter, client = _card_adapter(
+        {"oauth2/accessToken": _token_route("token-1"), "card/instances": [_Response(200)]}
+    )
+    adapter.create_card(
+        _card_binding(),
+        {
+            "to_user_id": "cid-group",
+            "conversation_id": "cid-group",
+            "conversation_type": "2",
+            "session_webhook": "https://oapi.dingtalk.com/robot/sendBySession?session=x",
+        },
+        _CARD_DATA,
+        idempotency_key="dingtalk-trace:chan-1:turn-2",
+    )
+    create_call = client.calls_to("card/instances/createAndDeliver")[0]
+    body = create_call["body"]
+    assert body["openSpaceId"] == "dtv1.card//IM_GROUP.cid-group"
+    assert body["imGroupOpenDeliverModel"] == {"robotCode": "client-1"}
+    assert "imRobotOpenDeliverModel" not in body
+
+
+def test_dingtalk_create_card_uses_custom_template_from_config():
+    adapter, client = _card_adapter(
+        {"oauth2/accessToken": _token_route("token-1"), "card/instances": [_Response(200)]}
+    )
+    adapter.create_card(
+        _card_binding(config_json={"client_id": "client-1", "card_template_id": "tpl-9.schema"}),
+        {"to_user_id": "staff-1", "conversation_type": "1"},
+        _CARD_DATA,
+        idempotency_key="dingtalk-trace:chan-1:turn-3",
+    )
+    create_call = client.calls_to("card/instances/createAndDeliver")[0]
+    assert create_call["body"]["cardTemplateId"] == "tpl-9.schema"
+
+
+def test_dingtalk_create_card_rejects_invalid_input():
+    adapter, _client = _card_adapter(
+        {"oauth2/accessToken": _token_route("token-1"), "card/instances": [_Response(200)]}
+    )
+    with pytest.raises(DingTalkPermanentError, match="幂等键"):
+        adapter.create_card(_card_binding(), {"to_user_id": "staff-1"}, _CARD_DATA, idempotency_key="")
+    with pytest.raises(DingTalkPermanentError, match="卡片数据"):
+        adapter.create_card(_card_binding(), {"to_user_id": "staff-1"}, {}, idempotency_key="k")
+    # 单聊缺少用户标识、群聊缺少会话标识均为永久错误
+    with pytest.raises(DingTalkPermanentError, match="用户标识"):
+        adapter.create_card(_card_binding(), {"conversation_type": "1"}, _CARD_DATA, idempotency_key="k")
+    with pytest.raises(DingTalkPermanentError, match="会话标识"):
+        adapter.create_card(_card_binding(), {"conversation_type": "2"}, _CARD_DATA, idempotency_key="k")
+
+
+def test_dingtalk_create_card_refreshes_token_once_on_401():
+    adapter, client = _card_adapter(
+        {
+            "oauth2/accessToken": _token_route("stale-token", "fresh-token"),
+            "card/instances": [_Response(401), _Response(200)],
+        }
+    )
+    adapter.create_card(
+        _card_binding(),
+        {"to_user_id": "staff-1", "conversation_type": "1"},
+        _CARD_DATA,
+        idempotency_key="dingtalk-trace:chan-1:turn-4",
+    )
+    tokens = [
+        call["headers"]["x-acs-dingtalk-access-token"]
+        for call in client.calls_to("card/instances/createAndDeliver")
+    ]
+    assert tokens == ["stale-token", "fresh-token"]
+    assert len(client.calls_to("oauth2/accessToken")) == 2
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (_Response(500), DingTalkTransientError),
+        (_Response(429), DingTalkTransientError),
+        (_Response(403, {"code": "Forbidden.AccessDenied", "message": "access denied"}), DingTalkPermanentError),
+        (_Response(400, {"code": "invalidParameter.outTrackId"}), DingTalkPermanentError),
+        (_Response(400, {"code": "system.err"}), DingTalkTransientError),
+    ],
+)
+def test_dingtalk_create_card_error_classification(response, expected):
+    adapter, _client = _card_adapter(
+        {"oauth2/accessToken": _token_route("token-1"), "card/instances": [response]}
+    )
+    with pytest.raises(expected):
+        adapter.create_card(
+            _card_binding(),
+            {"to_user_id": "staff-1", "conversation_type": "1"},
+            _CARD_DATA,
+            idempotency_key="dingtalk-trace:chan-1:turn-5",
+        )
+
+
+def test_dingtalk_create_card_403_includes_permission_guidance():
+    """403 时错误信息应携带钉钉原始 code 与开通权限的指引，便于排查。"""
+    adapter, _client = _card_adapter(
+        {
+            "oauth2/accessToken": _token_route("token-1"),
+            "card/instances": [
+                _Response(403, {"code": "Forbidden.AccessDenied", "message": "no permission"})
+            ],
+        }
+    )
+    with pytest.raises(DingTalkPermanentError) as exc_info:
+        adapter.create_card(
+            _card_binding(),
+            {"to_user_id": "staff-1", "conversation_type": "1"},
+            _CARD_DATA,
+            idempotency_key="dingtalk-trace:chan-1:turn-6",
+        )
+    message = str(exc_info.value)
+    assert "Forbidden.AccessDenied" in message
+    assert "no permission" in message
+    assert "Card.Instance.Write" in message
+
+
+def test_dingtalk_update_card_puts_full_card_data():
+    adapter, client = _card_adapter(
+        {"oauth2/accessToken": _token_route("token-1"), "card/instances": [_Response(200)]}
+    )
+    adapter.update_card(_card_binding(), "ot-123", _CARD_DATA)
+    update_calls = [
+        call for call in client.calls_to("card/instances") if call["method"] == "PUT"
+    ]
+    assert len(update_calls) == 1
+    call = update_calls[0]
+    assert call["url"].endswith("/card/instances")
+    assert call["headers"]["x-acs-dingtalk-access-token"] == "token-1"
+    assert call["body"] == {
+        "outTrackId": "ot-123",
+        "cardData": {"cardParamMap": _CARD_DATA},
+    }
+
+
+def test_dingtalk_update_card_rejects_invalid_input():
+    adapter, _client = _card_adapter(
+        {"oauth2/accessToken": _token_route("token-1"), "card/instances": [_Response(200)]}
+    )
+    with pytest.raises(DingTalkPermanentError, match="实例标识"):
+        adapter.update_card(_card_binding(), "", _CARD_DATA)
+    with pytest.raises(DingTalkPermanentError, match="卡片数据"):
+        adapter.update_card(_card_binding(), "ot-123", {})
+
+
+def test_dingtalk_update_card_refreshes_token_once_on_401():
+    adapter, client = _card_adapter(
+        {
+            "oauth2/accessToken": _token_route("stale-token", "fresh-token"),
+            "card/instances": [_Response(401), _Response(200)],
+        }
+    )
+    adapter.update_card(_card_binding(), "ot-123", _CARD_DATA)
+    tokens = [
+        call["headers"]["x-acs-dingtalk-access-token"]
+        for call in client.calls_to("card/instances")
+        if call["method"] == "PUT"
+    ]
+    assert tokens == ["stale-token", "fresh-token"]
+
+
+def test_dingtalk_stream_card_puts_streaming_api():
+    adapter, client = _card_adapter(
+        {"oauth2/accessToken": _token_route("token-1"), "card/streaming": [_Response(200)]}
+    )
+    adapter.stream_card(_card_binding(), "ot-123", "msgContent", "⏳ 判断意图 退款")
+    calls = client.calls_to("card/streaming")
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["method"] == "PUT"
+    assert call["url"].endswith("/card/streaming")
+    assert call["headers"]["x-acs-dingtalk-access-token"] == "token-1"
+    body = call["body"]
+    assert body["outTrackId"] == "ot-123"
+    assert body["key"] == "msgContent"
+    assert body["content"] == "⏳ 判断意图 退款"
+    assert body["isFull"] is True
+    assert body["isFinalize"] is False
+    assert body["isError"] is False
+    # guid 每次唯一，驱动一次渲染
+    assert isinstance(body["guid"], str) and body["guid"]
+
+
+def test_dingtalk_stream_card_finalize_and_error_flags():
+    adapter, client = _card_adapter(
+        {"oauth2/accessToken": _token_route("token-1"), "card/streaming": [_Response(200)]}
+    )
+    adapter.stream_card(
+        _card_binding(), "ot-123", "msgContent", "❌ 失败内容", finalize=True, failed=True
+    )
+    body = client.calls_to("card/streaming")[0]["body"]
+    assert body["isFinalize"] is True
+    assert body["isError"] is True
+
+
+def test_dingtalk_stream_card_rejects_invalid_input():
+    adapter, _client = _card_adapter(
+        {"oauth2/accessToken": _token_route("token-1"), "card/streaming": [_Response(200)]}
+    )
+    with pytest.raises(DingTalkPermanentError, match="实例标识或内容槽位"):
+        adapter.stream_card(_card_binding(), "", "msgContent", "x")
+    with pytest.raises(DingTalkPermanentError, match="实例标识或内容槽位"):
+        adapter.stream_card(_card_binding(), "ot-123", "", "x")
+
+
+def test_dingtalk_stream_card_403_mentions_streaming_permission():
+    """流式接口 403 应提示开通 Card.Streaming.Write（与实例写权限区分）。"""
+    adapter, _client = _card_adapter(
+        {
+            "oauth2/accessToken": _token_route("token-1"),
+            "card/streaming": [
+                _Response(403, {"code": "Forbidden.AccessDenied", "message": "no permission"})
+            ],
+        }
+    )
+    with pytest.raises(DingTalkPermanentError) as exc_info:
+        adapter.stream_card(_card_binding(), "ot-123", "msgContent", "x")
+    message = str(exc_info.value)
+    assert "Card.Streaming.Write" in message
+    assert "Card.Instance.Write" not in message
+
+
+def test_dingtalk_stream_card_refreshes_token_once_on_401():
+    adapter, client = _card_adapter(
+        {
+            "oauth2/accessToken": _token_route("stale-token", "fresh-token"),
+            "card/streaming": [_Response(401), _Response(200)],
+        }
+    )
+    adapter.stream_card(_card_binding(), "ot-123", "msgContent", "x")
+    tokens = [
+        call["headers"]["x-acs-dingtalk-access-token"]
+        for call in client.calls_to("card/streaming")
+    ]
+    assert tokens == ["stale-token", "fresh-token"]
 
 

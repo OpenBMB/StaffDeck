@@ -1958,6 +1958,37 @@ def test_validate_handoff_assignees_scope_level_reachability() -> None:
         _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo")
 
 
+def test_validate_handoff_assignees_feishu_scope_derived_when_unbackfilled() -> None:
+    """飞书绑定 scope 未回填时按 provider_tenant_key 推导,不再误判不可达。
+
+    回归:启动迁移会把非企微绑定的 identity_scope_key 重置为空,直到下一条
+    入站事件才回填;成员身份按推导 scope(app_id + provider_tenant_key)落库。
+    校验若直接按空 scope 匹配,会在重启后编辑 SOP(哪怕只改节点说明)时
+    误报"未绑定渠道身份,无法按该渠道转接"。
+    """
+    from app.channels.service_feishu_inbox import feishu_identity_scope
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_owner", tenant_id="tenant_demo", username="owner", password_hash="x"))
+        binding = _scope_binding(scope="")
+        binding.config_json = {"app_id": "cli_a"}
+        binding.provider_tenant_key = "t_a"
+        db.add(binding)
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope=feishu_identity_scope("cli_a", "t_a"),
+                external_user_id="ou_owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo")
+
+
 def test_validate_handoff_assignees_ignores_team_and_inactive_bindings() -> None:
     """团队绑定与停用绑定的 scope 不参与可达性计算。"""
     with _test_session() as db:

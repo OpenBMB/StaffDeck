@@ -1239,12 +1239,14 @@ export default function ChannelsPage({
               </UIButton>
             </div>
           )}
-          {canManageBinding(binding) && binding.channel === 'feishu' && (
+          {canManageBinding(binding) && (
             <div className="mt-[4px] flex flex-col gap-[10px] border-t border-[#eef0f4] pt-[12px]">
               <div className="flex flex-col gap-[3px]">
-                <span className="text-[12px] font-medium text-[#18181a]">邀请成员绑定飞书身份</span>
+                <span className="text-[12px] font-medium text-[#18181a]">
+                  {`邀请成员绑定${channelName(binding.channel)}身份`}
+                </span>
                 <span className="text-[11px] leading-[1.6] text-[#858b9c]">
-                  每位成员需用自己的飞书账号向当前机器人发送一次性绑定指令。
+                  {`每位成员需用自己的${channelName(binding.channel)}账号向当前机器人发送一次性绑定指令。`}
                 </span>
               </div>
               {identityBoundUsers.length > 0 && (
@@ -1280,7 +1282,9 @@ export default function ChannelsPage({
                   </UIButton>
                 </div>
               ) : (
-                <span className="text-[11px] text-[#858b9c]">所有内部成员均已绑定当前飞书应用</span>
+                <span className="text-[11px] text-[#858b9c]">
+                  {`所有内部成员均已绑定当前${channelName(binding.channel)}渠道`}
+                </span>
               )}
             </div>
           )}

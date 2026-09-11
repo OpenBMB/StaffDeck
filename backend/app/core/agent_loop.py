@@ -228,7 +228,12 @@ class AgentLoop:
             chat_session = engine.session
             engine.mark_interrupted(exc.code, exc.message)
             chat_session = chat_session or self._get_or_create_session(request)
-            return self._finish_with_error(chat_session, exc.code, exc.message)
+            return self._finish_with_error(
+                chat_session,
+                exc.code,
+                exc.message,
+                user_message_id=engine.user_message_id,
+            )
         except LLMError as exc:
             chat_session = engine.session
             user_message_id = engine.user_message_id
@@ -739,6 +744,9 @@ class AgentLoop:
     ) -> HumanHandoffRequest:
         # SOP 节点指定的处理人:从当前 step 的 assignee_user_id 字段读取
         # (handoff 类型节点或 allowed_actions 含 handoff_human 的节点可配置)。
+        # 现行方案(human_handoff_service.HANDOFF_STEP_ASSIGNEE_ENABLED=False)下,
+        # 该值在 HumanHandoffService.create 中被忽略,转人工优先走渠道默认处理人;
+        # 回滚开关打开后此处的节点处理人重新生效。
         # assignee_notify_channel 指定投递渠道:None=默认;"web"=仅网页端;绑定渠道=按渠道转接。
         step_assignee_user_id: str | None = None
         step_notify_channel: str | None = None
@@ -858,13 +866,7 @@ class AgentLoop:
             if session_binding.channel not in HANDOFF_NOTIFY_CHANNELS:
                 return
             binding = session_binding
-        notify_handoff_assignee(
-            self.db,
-            binding,
-            handoff,
-            handoff.pending_question or "",
-            handoff.context_summary or "",
-        )
+        notify_handoff_assignee(self.db, binding, handoff)
 
     def _apply_step_result(
         self,
@@ -1604,7 +1606,12 @@ class AgentLoop:
         return [{"job_id": job.id, "job_name": job.name}]
 
     def _finish_with_error(
-        self, chat_session: ChatSession, code: str, message: str
+        self,
+        chat_session: ChatSession,
+        code: str,
+        message: str,
+        *,
+        user_message_id: str | None = None,
     ) -> ChatTurnResponse:
         reply = format_runtime_failure_reply(
             "系统配置错误",
@@ -1618,7 +1625,12 @@ class AgentLoop:
             "error_occurred",
             {"code": code, "message": message},
         )
-        reply = self._finalize_turn(chat_session, chat_session.tenant_id, reply)
+        reply = self._finalize_turn(
+            chat_session,
+            chat_session.tenant_id,
+            reply,
+            user_message_id=user_message_id,
+        )
         self.db.commit()
         self.db.refresh(chat_session)
         return ChatTurnResponse(

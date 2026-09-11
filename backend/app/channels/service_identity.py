@@ -58,9 +58,22 @@ def scope_from_config(config: dict, binding: ChannelBinding) -> str:
 
 
 def external_account_scope(db: Session, binding: ChannelBinding) -> str:
-    """渠道账号作用域:以绑定当前配置为准(corp_id > bot_id > binding.id)。"""
-    if binding.identity_scope_key is not None:
+    """渠道账号作用域:以绑定当前配置为准(corp_id > bot_id > binding.id)。
+
+    飞书 scope 依赖入站事件学得的 provider_tenant_key:identity_scope_key 未回填
+    (如启动迁移重置后尚无新事件)时按 app_id + provider_tenant_key 推导,与绑定
+    回显(channel_binding_read)及入站回填(stage_feishu_inbox)同一格式,避免
+    scope 短暂退化为空导致身份匹配(转人工可达性校验/通知投递)失效。
+    """
+    if binding.identity_scope_key:
         return binding.identity_scope_key
+    if binding.channel == "feishu":
+        app_id = str((binding.config_json or {}).get("app_id") or "").strip()
+        tenant_key = str(binding.provider_tenant_key or "").strip()
+        if app_id and tenant_key:
+            from app.channels.service_feishu_inbox import feishu_identity_scope
+
+            return feishu_identity_scope(app_id, tenant_key)
     return scope_from_config(dict(binding.config_json or {}), binding)
 
 

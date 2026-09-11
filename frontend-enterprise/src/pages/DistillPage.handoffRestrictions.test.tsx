@@ -2,7 +2,18 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { applyNodeTypeChange, filterActionOptionsForNodeType, handoffAssigneeUserOptions } from './DistillPage';
+import {
+  applyNodeTypeChange,
+  filterActionOptionsForNodeType,
+  handoffAssigneeUserOptions,
+  HANDOFF_ASSIGNEE_SELECTOR_ENABLED,
+} from './DistillPage';
+
+describe('handoff assignee selector rollout', () => {
+  it('keeps the SOP-node assignee selector disabled so handoff routes to the channel default first', () => {
+    expect(HANDOFF_ASSIGNEE_SELECTOR_ENABLED).toBe(false);
+  });
+});
 
 describe('SOP node handoff restrictions', () => {
   it('strips handoff actions and assignee when the node type leaves handoff', () => {

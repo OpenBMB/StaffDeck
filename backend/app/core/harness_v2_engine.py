@@ -7,7 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
@@ -33,6 +33,7 @@ from app.core.harness_session_lock import (
     release_harness_session,
 )
 from app.core.harness_turn_store import HarnessTurnStore
+from app.core.human_handoff_service import HumanHandoffService
 from app.core.slash_commands import (
     SlashCommandError,
     SlashCommandSelection,
@@ -59,9 +60,11 @@ from app.db.models import (
     HarnessRunRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
+    HumanHandoffRequest,
     Message,
     Skill,
     Team,
+    User,
 )
 from app.knowledge.citations import compact_knowledge_citation_labels
 from app.memory.service import memory_read
@@ -1092,6 +1095,7 @@ class HarnessV2Engine:
                             "handoff_id": getattr(handoff, "id", None),
                         }
                     )
+                    _append_unconfigured_assignee_notice(self.db, result, handoff)
                 else:
                     last_step_result = _step_result(result)
                 break
@@ -1140,6 +1144,11 @@ class HarnessV2Engine:
             if finalize_state == "handoff":
                 result.status = "handoff"
                 _append_session_handoff_artifact(result, session)
+                _append_unconfigured_assignee_notice(
+                    self.db,
+                    result,
+                    _session_pending_handoff(self.db, session),
+                )
                 continue_frame = False
             elif result.status == "handoff":
                 result.status = "failed"
@@ -1985,6 +1994,37 @@ def _append_session_handoff_artifact(
             "handoff_id": handoff_id,
         }
     )
+
+
+def _session_pending_handoff(
+    db: Session,
+    session: ChatSession,
+) -> HumanHandoffRequest | None:
+    awaiting = (
+        session.awaiting_input_json
+        if isinstance(session.awaiting_input_json, dict)
+        else {}
+    )
+    handoff_id = str(awaiting.get("handoff_id") or "").strip()
+    if not handoff_id:
+        return None
+    return db.get(HumanHandoffRequest, handoff_id)
+
+
+def _append_unconfigured_assignee_notice(
+    db: Session,
+    result: TaskExecutionResult,
+    handoff: HumanHandoffRequest | None,
+) -> None:
+    """转人工节点未配置处理人时,在用户可见回复末尾说明实际转接对象。"""
+    if handoff is None:
+        return
+    assignee = db.get(User, handoff.assignee_user_id) if handoff.assignee_user_id else None
+    notice = HumanHandoffService.unconfigured_assignee_notice(handoff, assignee)
+    if not notice:
+        return
+    base = result.reply_fragment.strip()
+    result.reply_fragment = f"{base}\n{notice}" if base else notice
 
 
 def _with_recoverable_first_session(

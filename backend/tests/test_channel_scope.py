@@ -140,6 +140,41 @@ def test_external_account_scope_resolution() -> None:
         assert external_account_scope(db, empty) == "chan_fallback"
 
 
+def test_external_account_scope_feishu_derives_from_provider_tenant_key() -> None:
+    """飞书 identity_scope_key 未回填(如启动迁移重置后尚无新入站事件)时,
+    按 app_id + provider_tenant_key 推导生效 scope,与入站回填/绑定回显同格式;
+    学得信息不全时保持空串,不得退化为 binding.id 等猜测值。
+    """
+    engine = _test_engine()
+    with Session(engine) as db:
+        from app.channels.service_feishu_inbox import feishu_identity_scope
+
+        backfilled = ChannelBinding(
+            tenant_id="t",
+            agent_id="a",
+            channel="feishu",
+            config_json={"app_id": "cli_a"},
+            identity_scope_key="app:5:cli_a:tenant:2:t1",
+            provider_tenant_key="t1",
+        )
+        assert external_account_scope(db, backfilled) == "app:5:cli_a:tenant:2:t1"
+        # 重启后 scope 被重置为空,但 provider_tenant_key 已由入站事件学得
+        reset = ChannelBinding(
+            tenant_id="t",
+            agent_id="a2",
+            channel="feishu",
+            config_json={"app_id": "cli_a"},
+            identity_scope_key="",
+            provider_tenant_key="t1",
+        )
+        assert external_account_scope(db, reset) == feishu_identity_scope("cli_a", "t1")
+        # 尚未收到任何事件(provider_tenant_key 未知)时无法推导
+        unlearned = ChannelBinding(
+            tenant_id="t", agent_id="a3", channel="feishu", config_json={"app_id": "cli_a"}
+        )
+        assert external_account_scope(db, unlearned) == ""
+
+
 # ---------- 维护者场景 ----------
 
 

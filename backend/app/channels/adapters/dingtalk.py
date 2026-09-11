@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-import logging
-import threading
 import asyncio
+import hashlib
 import json
+import logging
 import re
+import threading
 import time
-from urllib.parse import quote_plus
-from urllib.parse import urlparse
-from datetime import UTC, datetime
+import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote_plus, urlparse
 
 import httpx
-from sqlmodel import Session, select
 from sqlalchemy import update
+from sqlmodel import Session, select
 
 from app.channels.adapters.base import (
     ChannelInbound,
@@ -40,9 +41,24 @@ DINGTALK_API_BASE = "https://api.dingtalk.com/v1.0"
 DINGTALK_OPEN_CONNECTION_API = f"{DINGTALK_API_BASE}/gateway/connections/open"
 DINGTALK_ACCESS_TOKEN_API = f"{DINGTALK_API_BASE}/oauth2/accessToken"
 DINGTALK_EMOTION_API = f"{DINGTALK_API_BASE}/robot/emotion"
+DINGTALK_CARD_INSTANCE_API = f"{DINGTALK_API_BASE}/card/instances"
+DINGTALK_CARD_CREATE_AND_DELIVER_API = f"{DINGTALK_API_BASE}/card/instances/createAndDeliver"
+DINGTALK_CARD_STREAMING_API = f"{DINGTALK_API_BASE}/card/streaming"
 DINGTALK_TEXT_LIMIT = 2000
 DINGTALK_WEBHOOK_HOSTS = {"oapi.dingtalk.com", "api.dingtalk.com"}
 TOKEN_REFRESH_SKEW_SECONDS = 300
+
+# 卡片接口 403 时提示开通的权限名（实例写入 / 流式输出各不相同）。
+DINGTALK_CARD_INSTANCE_PERMISSION = "『互动卡片实例写权限』(Card.Instance.Write)"
+DINGTALK_CARD_STREAMING_PERMISSION = "『互动卡片流式输出权限』(Card.Streaming.Write)"
+
+# 钉钉 trace 卡片默认模板：官方 dingtalk-stream SDK 内置的通用 AI Markdown
+# 卡片（card_instance.AIMarkdownCardInstance 同款）。自带 flowStatus 状态条
+# （1=处理中/2=输入中/3=执行完成/5=执行失败），msgTitle 为普通变量，
+# msgContent 为流式内容槽——只有走 /card/streaming 接口其实时内容才会渲染，
+# PUT /card/instances 的数据更新只改 flowStatus，内容要等定格后才可见。
+# 若需自定义布局，可在 binding 的 config_json.card_template_id 覆盖。
+DINGTALK_TRACE_CARD_TEMPLATE_ID = "382e4302-551d-4880-bf29-a30acfab2e71.schema"
 
 # 钉钉未开放任意 emoji 的 reaction 接口，只提供固定的“思考中”表情流。
 # 这三个常量取自钉钉机器人实践而非官方文档，真机联调需要复核其是否仍然有效。
@@ -53,7 +69,7 @@ DINGTALK_ACK_EMOTION_TYPE = 2
 # emotion/recall 与 emotion/reply 参数对称、不返回远端表情 ID，因此本地只需记录
 # 一个“已挂上待撤回”的哨兵值，撤回时按同样参数重发即可。
 DINGTALK_REACTION_HANDLE = f"emotion:{DINGTALK_ACK_EMOTION_ID}"
-_TRANSIENT_EMOTION_CODES = {"system.err", "system.error"}
+_TRANSIENT_API_CODES = {"system.err", "system.error"}
 
 
 class DingTalkSendError(RuntimeError):
@@ -361,6 +377,46 @@ def _emotion_body(
     }
 
 
+def _error_detail(response) -> tuple[str, str]:
+    """提取钉钉错误响应中的 code/message（无 JSON 体时返回空串）。"""
+    try:
+        data = response.json() or {}
+    except ValueError:
+        return "", ""
+    return (
+        str(data.get("code") or "").strip(),
+        str(data.get("message") or data.get("msg") or "").strip(),
+    )
+
+
+def _dingtalk_card_delivery(binding: ChannelBinding, target: dict[str, Any]) -> dict[str, Any]:
+    """从投递目标解析卡片投放参数（openSpaceId + 群/机器人投放模型）。
+
+    群聊（conversationType=="2"）投放到 dtv1.card//IM_GROUP.{openConversationId}，
+    单聊投放到 dtv1.card//IM_ROBOT.{senderStaffId}，与官方 dingtalk-stream SDK
+    CardReplier 的投放规则一致。robotCode 即绑定的 client_id。
+    """
+    robot_code, _ = _credential(binding)
+    conversation_type = str(target.get("conversation_type") or "").strip()
+    if conversation_type == "2":
+        conversation_id = str(target.get("conversation_id") or "").strip() or str(
+            target.get("to_user_id") or ""
+        ).strip()
+        if not conversation_id:
+            raise DingTalkPermanentError("钉钉卡片投放缺少群会话标识")
+        return {
+            "openSpaceId": f"dtv1.card//IM_GROUP.{conversation_id}",
+            "imGroupOpenDeliverModel": {"robotCode": robot_code},
+        }
+    staff_id = str(target.get("to_user_id") or "").strip()
+    if not staff_id:
+        raise DingTalkPermanentError("钉钉卡片投放缺少会话用户标识")
+    return {
+        "openSpaceId": f"dtv1.card//IM_ROBOT.{staff_id}",
+        "imRobotOpenDeliverModel": {"spaceType": "IM_ROBOT"},
+    }
+
+
 class DingTalkAdapter:
     # 钉钉不提供“查询我加过的表情”接口，无法在崩溃后回查远端状态；但 emotion/reply
     # 参数固定且可重复提交，因此重试路径直接重发而不是回查。
@@ -423,7 +479,7 @@ class DingTalkAdapter:
                     code = str((response.json() or {}).get("code") or "").strip().lower()
                 except ValueError:
                     code = ""
-                if code in _TRANSIENT_EMOTION_CODES:
+                if code in _TRANSIENT_API_CODES:
                     raise DingTalkTransientError("钉钉表情服务暂时不可用")
                 raise DingTalkPermanentError(
                     f"钉钉拒绝表情回写 HTTP {response.status_code} code={code or '-'}"
@@ -535,6 +591,151 @@ class DingTalkAdapter:
         if response.status_code != 200:
             raise DingTalkTransientError(f"钉钉附件下载失败 HTTP {response.status_code}")
         return response.content
+
+    def _card_request(
+        self,
+        binding: ChannelBinding,
+        method: str,
+        url: str,
+        body: dict[str, Any],
+        *,
+        permission_hint: str = DINGTALK_CARD_INSTANCE_PERMISSION,
+    ) -> None:
+        """卡片 OpenAPI 请求：token 鉴权 + 401 刷新重试 + 错误分类。"""
+        force_refresh = False
+        for attempt in range(2):
+            token = self._tokens.get(binding, force_refresh=force_refresh)
+            force_refresh = False
+            try:
+                with self._client_factory() as client:
+                    headers = {
+                        "x-acs-dingtalk-access-token": token,
+                        "Content-Type": "application/json",
+                    }
+                    if method == "PUT":
+                        response = client.put(url, json=body, headers=headers)
+                    else:
+                        response = client.post(url, json=body, headers=headers)
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                raise DingTalkTransientError("钉钉卡片请求暂时失败") from exc
+            if response.status_code == 401 and attempt == 0:
+                force_refresh = self._tokens.invalidate(binding, expected_token=token)
+                continue
+            if response.status_code == 429 or response.status_code >= 500:
+                raise DingTalkTransientError("钉钉卡片服务暂时不可用")
+            if response.status_code >= 400:
+                code, message = _error_detail(response)
+                if code in _TRANSIENT_API_CODES:
+                    raise DingTalkTransientError("钉钉卡片服务暂时不可用")
+                if response.status_code == 403:
+                    # 403 = 应用未开通对应卡片权限：到钉钉开放平台「权限管理」
+                    # 申请后即恢复，每轮对话都会重试，无需重启服务。
+                    raise DingTalkPermanentError(
+                        f"钉钉应用缺少卡片权限(HTTP 403 code={code or '-'} {message})，"
+                        f"请到钉钉开放平台为应用开通 {permission_hint}"
+                    )
+                raise DingTalkPermanentError(
+                    f"钉钉拒绝卡片请求 HTTP {response.status_code} code={code or '-'} {message}"
+                )
+            return
+        raise DingTalkPermanentError("钉钉 token 刷新后仍无法操作卡片")
+
+    def create_card(
+        self,
+        binding: ChannelBinding,
+        target: dict[str, Any],
+        card_data: dict[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> str:
+        """创建并投放一张卡片实例（POST /card/instances/createAndDeliver）。
+
+        卡片实例标识 outTrackId 由 idempotency_key sha256 派生（64 位十六
+        进制），重试复用同一标识；返回该标识供后续 update_card 使用。
+        模板默认取官方通用 AI Markdown 卡片，binding 的
+        config_json.card_template_id 可覆盖。
+        """
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise DingTalkPermanentError("钉钉卡片创建缺少幂等键")
+        if not isinstance(card_data, dict) or not card_data:
+            raise DingTalkPermanentError("钉钉卡片创建缺少卡片数据")
+        config = binding.config_json if isinstance(binding.config_json, dict) else {}
+        template_id = (
+            str(config.get("card_template_id") or "").strip() or DINGTALK_TRACE_CARD_TEMPLATE_ID
+        )
+        out_track_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        body: dict[str, Any] = {
+            "cardTemplateId": template_id,
+            "outTrackId": out_track_id,
+            "cardData": {"cardParamMap": card_data},
+            # 与官方 SDK AI 卡片路径一致走 STREAM 回调模式；卡片无按钮，
+            # 未订阅的回调主题仅会被 SDK 记 warning，不影响投递。
+            "callbackType": "STREAM",
+            "imGroupOpenSpaceModel": {"supportForward": False},
+            "imRobotOpenSpaceModel": {"supportForward": False},
+            **_dingtalk_card_delivery(binding, target),
+        }
+        self._card_request(binding, "POST", DINGTALK_CARD_CREATE_AND_DELIVER_API, body)
+        return out_track_id
+
+    def update_card(
+        self,
+        binding: ChannelBinding,
+        card_id: str,
+        card_data: dict[str, Any],
+    ) -> None:
+        """全量更新卡片实例数据（PUT /card/instances，语义同飞书卡片 PATCH）。"""
+        out_track_id = str(card_id or "").strip()
+        if not out_track_id:
+            raise DingTalkPermanentError("钉钉卡片更新缺少实例标识")
+        if not isinstance(card_data, dict) or not card_data:
+            raise DingTalkPermanentError("钉钉卡片更新缺少卡片数据")
+        self._card_request(
+            binding,
+            "PUT",
+            DINGTALK_CARD_INSTANCE_API,
+            {"outTrackId": out_track_id, "cardData": {"cardParamMap": card_data}},
+        )
+
+    def stream_card(
+        self,
+        binding: ChannelBinding,
+        card_id: str,
+        key: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        failed: bool = False,
+    ) -> None:
+        """流式更新卡片内容槽位（PUT /v1.0/card/streaming）。
+
+        AI 卡片的流式内容槽（如 msgContent）只有走本接口内容才会实时渲染：
+        PUT /card/instances 的数据更新只影响 flowStatus 等普通变量，流式槽
+        内容要等 isFinalize 定格后才可见。content 始终全量发送（isFull=true），
+        guid 每次唯一以驱动一次渲染；finalize=true 关闭流式通道并定格最终
+        内容（随后通常跟一次 update_card 切换 flowStatus 完成态/失败态）。
+        """
+        out_track_id = str(card_id or "").strip()
+        slot = str(key or "").strip()
+        if not out_track_id or not slot:
+            raise DingTalkPermanentError("钉钉卡片流式更新缺少实例标识或内容槽位")
+        body = {
+            "outTrackId": out_track_id,
+            "guid": uuid.uuid1().hex,
+            "key": slot,
+            "content": str(content or ""),
+            "isFull": True,
+            "isFinalize": bool(finalize),
+            "isError": bool(failed),
+        }
+        self._card_request(
+            binding,
+            "PUT",
+            DINGTALK_CARD_STREAMING_API,
+            body,
+            permission_hint=DINGTALK_CARD_STREAMING_PERMISSION,
+        )
 
     def send(
         self,

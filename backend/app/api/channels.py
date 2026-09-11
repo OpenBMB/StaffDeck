@@ -539,8 +539,8 @@ def create_identity_bind_code(
     target = db.get(User, request.user_id)
     if not target or target.tenant_id != tenant_id or target.source != "web":
         raise HTTPException(status_code=400, detail="身份绑定对象必须是当前租户的内部成员")
-    if binding.channel == "feishu" and not binding.credentials_enc:
-        raise HTTPException(status_code=409, detail="请先完成飞书应用接入，再邀请成员绑定身份")
+    if not binding.credentials_enc:
+        raise HTTPException(status_code=409, detail="请先完成渠道接入，再邀请成员绑定身份")
     if not _check_bind_code_rate(current_user.id):
         raise HTTPException(status_code=429, detail="绑定码生成过于频繁，请稍后再试")
     return _issue_bind_code(db, tenant_id, target.id)

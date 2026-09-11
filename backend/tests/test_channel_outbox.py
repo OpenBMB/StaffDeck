@@ -318,6 +318,97 @@ def test_staging_is_idempotent_per_inbound_turn() -> None:
         assert deliveries[0].target_json["context_token"] == "ctx_turn_1"
 
 
+def test_web_originated_turn_in_channel_session_is_not_staged() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        chat_session = _channel_session(binding)
+        user_message = Message(
+            id="msg_user_web_turn",
+            tenant_id=binding.tenant_id,
+            session_id=chat_session.id,
+            role="user",
+            content="来自网页控制台的消息",
+            metadata_json={"channel": "web", "client_turn_id": "web_turn_1"},
+        )
+        assistant = _assistant_message(chat_session.id, "msg_assistant_web_turn")
+        assistant.metadata_json = {"user_message_id": user_message.id}
+        db.add(chat_session)
+        db.add(user_message)
+        db.add(assistant)
+        db.commit()
+
+        stage_channel_delivery(db, chat_session, assistant)
+        db.commit()
+
+        assert db.exec(select(ChannelDelivery)).all() == []
+
+
+def test_channel_originated_turn_in_channel_session_stages_delivery() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        chat_session = _channel_session(binding)
+        user_message = Message(
+            id="msg_user_channel_turn",
+            tenant_id=binding.tenant_id,
+            session_id=chat_session.id,
+            role="user",
+            content="来自渠道的消息",
+            metadata_json={"channel": binding.channel, "client_turn_id": "event_channel_1"},
+        )
+        assistant = _assistant_message(chat_session.id, "msg_assistant_channel_turn")
+        assistant.metadata_json = {"user_message_id": user_message.id}
+        event = ChannelInboundEvent(
+            tenant_id=binding.tenant_id,
+            binding_id=binding.id,
+            channel=binding.channel,
+            event_id="event_channel_1",
+            target_json={"to_user_id": "u1", "context_token": "ctx_channel_1"},
+        )
+        db.add(chat_session)
+        db.add(user_message)
+        db.add(assistant)
+        db.add(event)
+        db.commit()
+
+        stage_channel_delivery(db, chat_session, assistant)
+        db.commit()
+
+        deliveries = db.exec(select(ChannelDelivery)).all()
+        assert len(deliveries) == 1
+        assert deliveries[0].kind == "reply"
+        assert deliveries[0].status == "pending"
+        assert deliveries[0].idempotency_key == f"channel-reply:{binding.id}:event_channel_1"
+        assert deliveries[0].target_json["context_token"] == "ctx_channel_1"
+
+
+def test_legacy_turn_without_origin_channel_still_stages_delivery() -> None:
+    engine = _test_engine()
+    with Session(engine) as db:
+        binding = _seed_binding(db)
+        chat_session = _channel_session(binding)
+        user_message = Message(
+            id="msg_user_legacy_turn",
+            tenant_id=binding.tenant_id,
+            session_id=chat_session.id,
+            role="user",
+            content="升级前创建的回合",
+            metadata_json={"client_turn_id": "event_legacy_1"},
+        )
+        assistant = _assistant_message(chat_session.id, "msg_assistant_legacy_turn")
+        assistant.metadata_json = {"user_message_id": user_message.id}
+        db.add(chat_session)
+        db.add(user_message)
+        db.add(assistant)
+        db.commit()
+
+        stage_channel_delivery(db, chat_session, assistant)
+        db.commit()
+
+        assert len(db.exec(select(ChannelDelivery)).all()) == 1
+
+
 def test_channel_staging_failure_propagates() -> None:
     class BrokenDb:
         def exec(self, _statement):

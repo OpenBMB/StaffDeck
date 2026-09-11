@@ -101,14 +101,45 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
                         <span>需要人工接续</span>
                       </div>
                     </div>
-                    <div className={CHAT_HANDOFF_BLOCK_CLASS}>
-                      <span>上下文摘要</span>
-                      <p>{handoff.context_summary || '暂无上下文摘要'}</p>
-                    </div>
-                    <div className={CHAT_HANDOFF_BLOCK_CLASS}>
-                      <span>这一步需要你处理</span>
-                      <p>{handoff.pending_question || '请根据当前会话补充人工回复。'}</p>
-                    </div>
+                    {handoff.notice ? (
+                      <>
+                        <div className={CHAT_HANDOFF_BLOCK_CLASS}>
+                          <span>{handoff.notice.title || '转人工'}</span>
+                          {handoff.notice.inquirer_name ? (
+                            <p>提问人：{handoff.notice.inquirer_name}</p>
+                          ) : null}
+                          {handoff.notice.assignee_notice ? (
+                            <p>{handoff.notice.assignee_notice}</p>
+                          ) : null}
+                        </div>
+                        <div className={CHAT_HANDOFF_BLOCK_CLASS}>
+                          <span>
+                            {handoff.notice.scoped ? '对话记录（自进入该SOP起）' : '对话记录'}
+                          </span>
+                          {handoff.notice.conversation.length > 0 ? (
+                            handoff.notice.conversation.map((item, index) => (
+                              <p key={`${handoff.id}-${index}`}>
+                                {item.role === 'user' ? '用户：' : '助手：'}
+                                {item.text}
+                              </p>
+                            ))
+                          ) : (
+                            <p>{handoff.notice.fallback_question || '请根据当前会话补充人工回复。'}</p>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className={CHAT_HANDOFF_BLOCK_CLASS}>
+                          <span>上下文摘要</span>
+                          <p>{handoff.context_summary || '暂无上下文摘要'}</p>
+                        </div>
+                        <div className={CHAT_HANDOFF_BLOCK_CLASS}>
+                          <span>这一步需要你处理</span>
+                          <p>{handoff.pending_question || '请根据当前会话补充人工回复。'}</p>
+                        </div>
+                      </>
+                    )}
                     <Textarea
                       rows={3}
                       value={handoffReplies[handoff.id] || ''}

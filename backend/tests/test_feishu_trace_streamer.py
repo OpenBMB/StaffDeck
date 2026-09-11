@@ -6,8 +6,9 @@ from types import SimpleNamespace
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.channels.adapters.feishu import FeishuPermanentError
-from app.channels.feishu_trace import FeishuTraceStreamer, _SinkEvent, is_feishu_trace_enabled
+from app.channels.adapters.feishu import FeishuPermanentError, FeishuTransientError
+from app.channels.feishu_trace import FeishuTraceStreamer, is_feishu_trace_enabled
+from app.channels.trace_streamer import _SinkEvent
 from app.db.models import Skill, Tenant, Tool
 
 
@@ -48,6 +49,8 @@ def _make_streamer(
     adapter: FakeAdapter | None = None,
     min_update_interval: float = 0.0,
     compact_sop: bool = False,
+    card_retry_delay: float = 0.0,
+    user_message: str | None = None,
 ) -> FeishuTraceStreamer:
     return FeishuTraceStreamer(
         _binding(),
@@ -56,6 +59,8 @@ def _make_streamer(
         adapter=adapter or FakeAdapter(),
         min_update_interval=min_update_interval,
         compact_sop=compact_sop,
+        card_retry_delay=card_retry_delay,
+        user_message=user_message,
     )
 
 
@@ -146,6 +151,108 @@ def test_on_event_renders_line_and_patches_card() -> None:
     assert last_card["header"]["template"] == "green"
 
 
+def test_no_sop_router_line_replaces_internal_english_terms() -> None:
+    """回归：无 SOP 匹配的闲聊轮次，卡片不得出现 conversation 等内部英文枚举。"""
+    adapter = FakeAdapter()
+    streamer = _make_streamer(adapter=adapter, user_message="你好")
+    streamer.start()
+    _wait_for_card(streamer)
+
+    streamer.on_event(
+        "router_decision_created",
+        {
+            "turn_id": "t1",
+            "decision": "answer_only",
+            "user_intent": "闲聊",
+            "reason": "用户输入你好，输入闲聊，无SOP匹配，使用conversation。",
+        },
+    )
+    streamer.finish()
+    _wait_for_worker_done(streamer)
+
+    joined = _card_texts(adapter)
+    assert "conversation" not in joined
+    assert "判断意图 闲聊" in joined
+    assert "无SOP匹配，使用普通对话" in joined
+
+
+def test_no_sop_router_line_keeps_english_from_user_message() -> None:
+    """用户原文中的英文被复述时保留，其余内部枚举仍替换为中文。"""
+    adapter = FakeAdapter()
+    streamer = _make_streamer(adapter=adapter, user_message="hello world 查订单")
+    streamer.start()
+    _wait_for_card(streamer)
+
+    streamer.on_event(
+        "router_decision_created",
+        {
+            "turn_id": "t1",
+            "decision": "answer_only",
+            "user_intent": "查询订单",
+            "reason": "用户输入hello world，无SOP匹配，使用conversation，改用answer_only。",
+        },
+    )
+    streamer.finish()
+    _wait_for_worker_done(streamer)
+
+    joined = _card_texts(adapter)
+    assert "hello world" in joined
+    assert "conversation" not in joined
+    assert "answer_only" not in joined
+    assert "普通对话" in joined
+    assert "直接回答" in joined
+
+
+def test_no_sop_router_line_drops_unknown_english_words() -> None:
+    """映射表外的英文词（如 LLM 自造术语）也一律删除，user_intent 同步净化。"""
+    adapter = FakeAdapter()
+    streamer = _make_streamer(adapter=adapter, user_message="在吗")
+    streamer.start()
+    _wait_for_card(streamer)
+
+    streamer.on_event(
+        "router_decision_created",
+        {
+            "turn_id": "t1",
+            "decision": "answer_only",
+            "user_intent": "chitchat",
+            "reason": "casual talk，无SOP匹配",
+        },
+    )
+    streamer.finish()
+    _wait_for_worker_done(streamer)
+
+    joined = _card_texts(adapter)
+    assert "casual" not in joined
+    assert "talk" not in joined
+    assert "chitchat" not in joined
+    assert "判断意图 闲聊" in joined
+
+
+def test_sop_router_line_keeps_reason_as_is() -> None:
+    """匹配到 SOP 的轮次不净化 reason，技能 ID 等信息原样保留。"""
+    adapter = FakeAdapter()
+    streamer = _make_streamer(adapter=adapter, user_message="退款")
+    streamer.start()
+    _wait_for_card(streamer)
+
+    streamer.on_event(
+        "router_decision_created",
+        {
+            "turn_id": "t1",
+            "decision": "start_new_task",
+            "target_skill_id": "skill_refund",
+            "user_intent": "退款",
+            "reason": "匹配 skill_refund 退款SOP",
+        },
+    )
+    streamer.finish()
+    _wait_for_worker_done(streamer)
+
+    joined = _card_texts(adapter)
+    assert "skill_refund" in joined
+
+
 def test_throttle_merges_rapid_events() -> None:
     adapter = FakeAdapter()
     streamer = _make_streamer(adapter=adapter, min_update_interval=10.0)
@@ -176,6 +283,32 @@ def test_update_failure_does_not_raise() -> None:
     streamer.on_event("router_decision_created", {"turn_id": "t1"})
     streamer.finish()
     _wait_for_worker_done(streamer)
+
+
+def test_final_patch_retries_transient_failure() -> None:
+    """回归：最终定格瞬时失败时按 retryable 重试，避免卡片永远停在"正在思考…"。"""
+
+    class _FlakyFinalAdapter(FakeAdapter):
+        def __init__(self, failures: int) -> None:
+            super().__init__()
+            self.failures = failures
+
+        def update_card(self, binding, message_id, card_json) -> None:
+            template = str(((card_json or {}).get("header") or {}).get("template") or "")
+            if template in ("green", "red") and self.failures > 0:
+                self.failures -= 1
+                raise FeishuTransientError("transient")
+            super().update_card(binding, message_id, card_json)
+
+    adapter = _FlakyFinalAdapter(failures=2)
+    streamer = _make_streamer(adapter=adapter)
+    streamer.start()
+    _wait_for_card(streamer)
+    streamer.on_event("tool_call_started", {"turn_id": "t1", "name": "lookup"})
+    streamer.finish()
+    _wait_for_worker_done(streamer)
+    last_card = adapter.update_calls[-1]["card"]
+    assert last_card["header"]["template"] == "green"
 
 
 def test_finish_marks_running_lines_completed() -> None:

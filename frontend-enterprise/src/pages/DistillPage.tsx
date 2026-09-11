@@ -494,6 +494,12 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
 const DISTILL_REWRITE_MODEL_STORAGE_KEY = 'skill-distill-rewrite-model';
 const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信', web: '网页端' };
 const UNASSIGNED_USER_VALUE = '__unassigned__';
+// 转人工节点「处理人」下拉框开关(现行方案:已下线)。
+// false = 源码/流程图视图均不渲染 handoff 节点的处理人下拉框,转人工统一先走
+// 渠道默认处理人(渠道页配置),其余回退顺序不变(数字员工负责人 → 租户管理员);
+// true  = 回滚开关,恢复处理人下拉框。回滚时需同时把后端
+//         app/core/human_handoff_service.py 的 HANDOFF_STEP_ASSIGNEE_ENABLED 改回 true。
+export const HANDOFF_ASSIGNEE_SELECTOR_ENABLED = false;
 // 渠道转接通知运行时已支持飞书/企微私聊,处理人选项提供对应渠道标注
 // (后端同样拒绝其他渠道)。钉钉/微信适配器只能回会话内消息,不在此列。
 const HANDOFF_NOTIFY_CHANNELS = new Set(['feishu', 'wecom']);
@@ -3683,6 +3689,8 @@ function SkillSource({
           const isSubflow = String(step.type || '') === 'subflow';
           // 处理人仅对 handoff 节点有意义;转人工动作只允许出现在 handoff 节点上,
           // 回复/收集等其他节点一律不展示处理人与转人工动作。
+          // 现行方案:处理人下拉框已通过 HANDOFF_ASSIGNEE_SELECTOR_ENABLED 下线,
+          // 转人工统一先走渠道默认处理人(回滚时改回 true 即可恢复)。
           const isHandoffNode = String(step.type || '') === 'handoff';
           const nodeState = [
             stepId === startNodeId ? '起始节点' : '',
@@ -3749,7 +3757,7 @@ function SkillSource({
                         <EditableCapabilityReferencesLine label="SOP 知识库" values={asStringList(step.knowledge_base_ids)} requiredValues={asStringList(step.required_knowledge_base_ids)} options={knowledgeBaseOptions} emptyText="未指定知识库" onChange={(value) => editStep(index, 'knowledge_base_ids', value)} onRequiredChange={(value) => editStep(index, 'required_knowledge_base_ids', value)} />
                       </>
                     )}
-                    {isHandoffNode && (
+                    {isHandoffNode && HANDOFF_ASSIGNEE_SELECTOR_ENABLED && (
                       <EditableSourceSelectLine
                         label="处理人"
                         value={
@@ -5013,6 +5021,8 @@ function SkillFlowInspector({
   const isSubflow = String(node.type || '') === 'subflow';
   // 处理人仅对 handoff 节点有意义;转人工动作只允许出现在 handoff 节点上,
   // 回复/收集等其他节点一律不展示处理人与转人工动作。
+  // 现行方案:处理人下拉框已通过 HANDOFF_ASSIGNEE_SELECTOR_ENABLED 下线,
+  // 转人工统一先走渠道默认处理人(回滚时改回 true 即可恢复)。
   const isHandoffNode = String(node.type || '') === 'handoff';
   return (
     <aside className={FLOW_INSPECTOR_CLASS} aria-label={`编辑节点 ${String(node.name || nodeId)}`}>
@@ -5043,7 +5053,7 @@ function SkillFlowInspector({
             ) : (
               <EditableSourceTextLine label={fieldLabel('instruction')} value={String(node.instruction || '')} multiline onChange={(value) => onEditNode(nodeIndex, 'instruction', value)} />
             )}
-            {isHandoffNode && (
+            {isHandoffNode && HANDOFF_ASSIGNEE_SELECTOR_ENABLED && (
               <EditableSourceSelectLine
                 label="处理人"
                 value={

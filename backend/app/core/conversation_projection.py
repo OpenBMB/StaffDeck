@@ -93,6 +93,10 @@ class ConversationProjection:
     @staticmethod
     def user_message_metadata(request: ChatTurnRequest) -> dict[str, Any]:
         metadata: dict[str, Any] = {}
+        if request.channel:
+            # 记录回合来源渠道，outbox 依据它判断回复是否需要投递回外部渠道
+            # （web 控制台发起的回合不投递）。
+            metadata["channel"] = request.channel
         if request.client_turn_id:
             metadata["client_turn_id"] = request.client_turn_id
         if request.interaction_mode != "normal":

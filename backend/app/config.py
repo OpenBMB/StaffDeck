@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     # 钉钉 emotion 接口的表情常量与所需权限尚未真机验证，验证通过前默认关闭：
     # 否则常量失效或权限未开时，每条入站消息都会留下一条失败的 reaction 投递。
     channel_dingtalk_reaction_enabled: bool = False
+    # 钉钉渠道实时执行步骤卡片开关：开启后钉钉对话在执行过程中创建并实时更新
+    # 一张钉钉官方通用 AI 卡片（自带"处理中/完成/失败"状态条）展示智能体每一步
+    # （SOP/工具/知识检索），与正文回复互不影响。卡片走服务端 OpenAPI，默认
+    # 使用 dingtalk-stream SDK 内置的通用 AI Markdown 模板，binding 的
+    # config_json.card_template_id 可替换模板；卡片创建/更新失败仅记日志，
+    # 不阻塞 turn。关闭时退化为仅发最终回复。
+    channel_dingtalk_trace_enabled: bool = True
+    # 钉钉 trace 卡片 SOP 紧凑展示开关：语义与 channel_feishu_trace_compact_sop
+    # 一致（翻书动画 + 正在推进SOP，等待用户补充信息定格"流程已暂停"），设为
+    # False 可整体回滚为逐行展示；binding 的 config_json.compact_trace=false
+    # 可对单个绑定回滚。
+    channel_dingtalk_trace_compact_sop: bool = True
     # 出站富文本渲染开关：开启时飞书走 post 富文本、钉钉走 markdown 消息；
     # 关闭时两者回退为纯 text 消息，用于快速回退。
     channel_rich_render_enabled: bool = True

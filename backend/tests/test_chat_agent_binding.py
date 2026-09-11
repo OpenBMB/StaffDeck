@@ -435,10 +435,13 @@ def test_scheduled_task_chat_turn_marks_user_message_metadata() -> None:
         interaction_mode="scheduled_task",
     )
 
-    assert _user_message_metadata(request) == {"interaction_mode": "scheduled_task"}
+    assert _user_message_metadata(request) == {
+        "channel": "web",
+        "interaction_mode": "scheduled_task",
+    }
 
 
-def test_normal_chat_turn_user_message_metadata_is_empty() -> None:
+def test_normal_chat_turn_user_message_metadata_records_web_channel() -> None:
     request = ChatTurnRequest(
         tenant_id="tenant_demo",
         session_id="session_demo",
@@ -447,7 +450,7 @@ def test_normal_chat_turn_user_message_metadata_is_empty() -> None:
         message="每天18点复盘差评",
     )
 
-    assert _user_message_metadata(request) == {}
+    assert _user_message_metadata(request) == {"channel": "web"}
 
 
 def test_chat_turn_can_select_enabled_model_config() -> None:

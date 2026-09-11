@@ -53,8 +53,10 @@ class SkillGraphNode(BaseModel):
     retry_policy: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     sub_sop_id: Optional[str] = None
-    # 人工节点指定处理人(handoff / handoff_human 节点)。None 表示未指定,
-    # 运行时回退到渠道默认处理人 → 数字员工负责人 → 租户管理员。
+    # 人工节点指定处理人(handoff / handoff_human 节点)。历史字段:现行方案下
+    # SOP 编辑器不再展示处理人下拉框,运行时忽略该值(见 human_handoff_service.
+    # HANDOFF_STEP_ASSIGNEE_ENABLED),优先级为 渠道默认处理人 → 数字员工负责人 →
+    # 租户管理员;回滚开关打开后恢复 SOP 节点指定优先。字段保留以兼容历史数据。
     assignee_user_id: Optional[str] = None
     # 处理人通知渠道:None=按默认(能达则通知);"web"=仅网页端收件箱;
     # "feishu" 等=已绑定渠道身份的成员按该渠道转接。需配合 assignee_user_id 使用。

@@ -25,6 +25,7 @@ from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
 from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_turn_store import HarnessTurnStore
+from app.core.handoff_notice import build_handoff_notice_content
 from app.core.slash_commands import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
 from app.db.models import (
@@ -155,6 +156,22 @@ _session_title_summary_jobs: set[str] = set()
 _session_title_summary_jobs_lock = threading.Lock()
 
 
+class HumanHandoffNoticeConversationItem(BaseModel):
+    role: str  # "user" | "assistant"
+    text: str
+
+
+class HumanHandoffNotice(BaseModel):
+    """网页收件箱卡片内容,与渠道 handoff_notice 共用 core.handoff_notice 构建。"""
+
+    title: str = ""  # "法律咨询·转交真人法务"
+    inquirer_name: str = ""
+    assignee_notice: str = ""  # "由于没有配置处理人，已经转接给Administrator。"
+    scoped: bool = False  # 对话窗口是否按 SOP 入口截取
+    conversation: list[HumanHandoffNoticeConversationItem] = []
+    fallback_question: str = ""  # 无会话消息时的兜底文案
+
+
 class HumanHandoffRead(BaseModel):
     id: str
     tenant_id: str
@@ -169,6 +186,7 @@ class HumanHandoffRead(BaseModel):
     status: str
     human_reply: str | None = None
     metadata: dict[str, object]
+    notice: HumanHandoffNotice | None = None
     created_at: str
     updated_at: str
     answered_at: str | None = None
@@ -206,7 +224,31 @@ def session_read(
     )
 
 
-def human_handoff_read(row: HumanHandoffRequest) -> HumanHandoffRead:
+def _handoff_notice_read(
+    db: Session, row: HumanHandoffRequest
+) -> HumanHandoffNotice | None:
+    """网页收件箱的通知内容,与渠道 handoff_notice 同源(见 core.handoff_notice)。
+
+    仅 pending 状态计算:收件箱只展示待处理项,历史项跳过以避免
+    list 接口(上限 200 条)上的批量查询开销。
+    """
+    if row.status != "pending":
+        return None
+    content = build_handoff_notice_content(db, row)
+    return HumanHandoffNotice(
+        title=content.title,
+        inquirer_name=content.inquirer,
+        assignee_notice=content.assignee_notice,
+        scoped=content.scoped,
+        conversation=[
+            HumanHandoffNoticeConversationItem(role=role, text=text)
+            for role, text in content.entries
+        ],
+        fallback_question=content.fallback_question,
+    )
+
+
+def human_handoff_read(db: Session, row: HumanHandoffRequest) -> HumanHandoffRead:
     return HumanHandoffRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -221,6 +263,7 @@ def human_handoff_read(row: HumanHandoffRequest) -> HumanHandoffRead:
         status=row.status,
         human_reply=row.human_reply,
         metadata=row.metadata_json or {},
+        notice=_handoff_notice_read(db, row),
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
         answered_at=row.answered_at.isoformat() if row.answered_at else None,
@@ -229,6 +272,10 @@ def human_handoff_read(row: HumanHandoffRequest) -> HumanHandoffRead:
 
 def _user_message_metadata(request: ChatTurnRequest) -> dict[str, object]:
     metadata: dict[str, object] = {}
+    if request.channel:
+        # 与 ConversationProjection.user_message_metadata 保持一致：记录回合来源渠道，
+        # outbox 依据它跳过 web 控制台回合的渠道投递。
+        metadata["channel"] = request.channel
     if request.client_turn_id:
         metadata["client_turn_id"] = request.client_turn_id
     if request.interaction_mode == "scheduled_task":
@@ -2332,7 +2379,7 @@ def list_human_handoffs(
     if hidden_session_ids:
         stmt = stmt.where(HumanHandoffRequest.session_id.notin_(hidden_session_ids))
     rows = db.exec(stmt.order_by(HumanHandoffRequest.updated_at.desc()).limit(200)).all()
-    return [human_handoff_read(row) for row in rows]
+    return [human_handoff_read(db, row) for row in rows]
 
 
 @router.post("/handoffs/{handoff_id}/reply", response_model=HumanHandoffRead)
@@ -2360,7 +2407,7 @@ def reply_human_handoff(
     _apply_handoff_reply(
         db, row, reply, answered_by_user_id=current_user.id, source="web"
     )
-    return human_handoff_read(row)
+    return human_handoff_read(db, row)
 
 
 @router.post("/messages/{message_id}/feedback")
