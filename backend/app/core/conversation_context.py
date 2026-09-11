@@ -57,12 +57,15 @@ def build_conversation_context(
     settings: ConversationContextSettings | None = None,
     context_state: dict[str, Any] | None = None,
     summary_builder: SummaryBuilder | None = None,
+    compression_mode: str = "legacy",
 ) -> dict[str, object]:
     resolved = (settings or ConversationContextSettings()).normalized()
     if token_budget is not None:
         resolved = replace(resolved, token_budget=token_budget).normalized()
     normalized = _normalize_messages(messages, resolved.allowed_roles)
     state = _normalize_state(context_state)
+    if compression_mode == "acp":
+        return _build_acp_context(normalized, state, resolved.token_budget, resolved)
     unsummarized, summarized_count = _messages_after_cursor(normalized, state)
     projected = _project_messages(state, unsummarized, resolved)
     trigger_tokens = max(
@@ -75,6 +78,19 @@ def build_conversation_context(
         recent = _recent_rounds(unsummarized, resolved.recent_round_limit)
         older_count = len(unsummarized) - len(recent)
         older = unsummarized[:older_count]
+        # Skip already-summarized messages (legacy or ACP summary blocks
+        # carrying the shared prefixes) so they are never destructively
+        # re-summarized when a session switches back to legacy (plan fix F8).
+        # ACP-compressed message ids are excluded too: their content already
+        # lives in ACP summary blocks, so re-summarizing the raw rows would
+        # duplicate the compression work (plan fix F8).
+        compacted_ids = _acp_compacted_message_ids(state)
+        older = [
+            message
+            for message in older
+            if not _is_summary_message(message)
+            and message["_message_id"] not in compacted_ids
+        ]
         if older:
             previous_history = _joined_existing_history(state)
             state["long_term_summary"] = _summarize(
@@ -127,7 +143,7 @@ def build_conversation_context(
 
 def _normalize_state(value: dict[str, Any] | None) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
-    return {
+    normalized = {
         "long_term_summary": str(source.get("long_term_summary") or "").strip(),
         "medium_term_summary": str(source.get("medium_term_summary") or "").strip(),
         "summarized_through_message_id": str(
@@ -135,6 +151,141 @@ def _normalize_state(value: dict[str, Any] | None) -> dict[str, Any]:
         ).strip(),
         "compaction_count": max(0, int(source.get("compaction_count") or 0)),
     }
+    # Preserve and extend: unknown keys (including the ACP sub-state) pass
+    # through untouched so legacy 4-key sessions migrate losslessly and no
+    # future state key is ever dropped.
+    for key, item in source.items():
+        if key not in normalized:
+            normalized[key] = item
+    return normalized
+
+
+def _build_acp_context(
+    normalized: list[dict[str, Any]],
+    state: dict[str, Any],
+    token_budget: int,
+    settings: ConversationContextSettings,
+) -> dict[str, object]:
+    """Project the ACP block state into the standard context contract.
+
+    Summary blocks become user messages using the EXISTING summary prefixes
+    (first summary -> long-term prefix, later summaries -> medium-term
+    prefix) so the request-layer ``_is_history_summary_message`` protection
+    in ``llm/client.py`` treats them exactly like legacy summaries.
+    """
+    acp_state = state.get("acp")
+    blocks = acp_state.get("blocks") if isinstance(acp_state, dict) else None
+    if not isinstance(blocks, list) or not blocks:
+        # Migration path: a legacy 4-key session entering ACP mode projects
+        # its existing summaries without triggering a new compaction.
+        return _project_legacy_into_acp(normalized, state, token_budget, settings)
+    projected: list[dict[str, Any]] = []
+    summary_count = 0
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        content = str(block.get("content") or "").strip()
+        if not content:
+            continue
+        if block.get("is_summary"):
+            prefix = LONG_SUMMARY_PREFIX if summary_count == 0 else MEDIUM_SUMMARY_PREFIX
+            projected.append({"role": "user", "content": f"{prefix}\n{content}"})
+            summary_count += 1
+        else:
+            projected.append(
+                {"role": str(block.get("role") or "user"), "content": content}
+            )
+    projected = _fit_acp_projected_messages(projected, token_budget)
+    summary_text = "\n".join(
+        str(block.get("content") or "").strip()
+        for block in blocks
+        if isinstance(block, dict) and block.get("is_summary")
+    )
+    return {
+        "messages": projected,
+        "compacted_summary": summary_text,
+        "context_state": state,
+        "metadata": {
+            "token_budget": token_budget,
+            "compaction_trigger_ratio": COMPACTION_TRIGGER_RATIO,
+            "compaction_trigger_tokens": max(
+                1, math.floor(token_budget * COMPACTION_TRIGGER_RATIO)
+            ),
+            "estimated_tokens": _messages_tokens(projected),
+            "total_messages": len(normalized),
+            "included_messages": len(projected),
+            "omitted_messages": max(0, len(normalized) - len(projected)),
+            "compacted": summary_count > 0,
+            "compacted_now": False,
+            "long_term_summary": summary_count > 0,
+            "medium_term_summary": summary_count > 1,
+            "recent_round_limit": RECENT_ROUND_LIMIT,
+            "current_turn_time": normalized[-1].get("_created_at") if normalized else None,
+            "compression_mode": "acp",
+        },
+    }
+
+
+def _project_legacy_into_acp(
+    normalized: list[dict[str, Any]],
+    state: dict[str, Any],
+    token_budget: int,
+    settings: ConversationContextSettings,
+) -> dict[str, object]:
+    """Project a legacy 4-key state inside ACP mode without compacting."""
+    unsummarized, summarized_count = _messages_after_cursor(normalized, state)
+    projected = _project_messages(state, unsummarized, settings)
+    projected = _fit_projected_messages(projected, token_budget, settings)
+    summary = _joined_existing_history(state)
+    return {
+        "messages": projected,
+        "compacted_summary": summary,
+        "context_state": state,
+        "metadata": {
+            "token_budget": token_budget,
+            "compaction_trigger_ratio": COMPACTION_TRIGGER_RATIO,
+            "compaction_trigger_tokens": max(
+                1, math.floor(token_budget * COMPACTION_TRIGGER_RATIO)
+            ),
+            "estimated_tokens": _messages_tokens(projected),
+            "total_messages": len(normalized),
+            "included_messages": len(projected),
+            "omitted_messages": summarized_count,
+            "compacted": bool(summary),
+            "compacted_now": False,
+            "long_term_summary": bool(state.get("long_term_summary")),
+            "medium_term_summary": bool(state.get("medium_term_summary")),
+            "recent_round_limit": RECENT_ROUND_LIMIT,
+            "current_turn_time": normalized[-1].get("_created_at") if normalized else None,
+            "compression_mode": "acp",
+        },
+    }
+
+
+def _fit_acp_projected_messages(
+    messages: list[dict[str, Any]], token_budget: int
+) -> list[dict[str, Any]]:
+    """Budget fitter that protects ALL leading summary-prefixed messages.
+
+    ACP can produce more than the two legacy summary messages, so unlike
+    ``_fit_projected_messages`` every leading summary is treated as
+    non-removable.
+    """
+    projected = list(messages)
+    summary_count = sum(
+        1
+        for message in projected
+        if str(message.get("content") or "").startswith(
+            (LONG_SUMMARY_PREFIX, MEDIUM_SUMMARY_PREFIX)
+        )
+    )
+    while len(projected) > summary_count + 1 and _messages_tokens(projected) > token_budget:
+        projected.pop(summary_count)
+    if projected and _messages_tokens(projected) > token_budget:
+        last = projected[-1]
+        remaining = max(1, token_budget - _messages_tokens(projected[:-1]))
+        projected[-1] = _trim_message(last, remaining)
+    return projected
 
 
 def _normalize_messages(
@@ -215,6 +366,23 @@ def _public_message(message: dict[str, Any]) -> dict[str, Any]:
         for key, value in message.items()
         if key in {"role", "content", "images"}
     }
+
+
+def _is_summary_message(message: dict[str, Any]) -> bool:
+    return str(message.get("content") or "").startswith(
+        (LONG_SUMMARY_PREFIX, MEDIUM_SUMMARY_PREFIX)
+    )
+
+
+def _acp_compacted_message_ids(state: dict[str, Any]) -> set[str]:
+    """Message ids already covered by ACP summary blocks in the acp sub-state."""
+    acp_state = state.get("acp")
+    if not isinstance(acp_state, dict):
+        return set()
+    raw = acp_state.get("compacted_message_ids")
+    if not isinstance(raw, list):
+        return set()
+    return {str(item) for item in raw if str(item)}
 
 
 def _recent_rounds(

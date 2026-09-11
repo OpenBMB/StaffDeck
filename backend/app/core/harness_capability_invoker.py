@@ -98,6 +98,7 @@ class HarnessCapabilityInvoker:
         ensure_execution_lease: Any | None = None,
         trace_sink: Callable[[str, dict[str, Any]], None] | None = None,
         step_deadline_monotonic: float | None = None,
+        context_compression_mode: str = "legacy",
     ) -> None:
         self.db = db
         self.tenant_id = tenant_id
@@ -105,6 +106,7 @@ class HarnessCapabilityInvoker:
         self.task_frame_id = task_frame_id
         self.model_config = model_config
         self.manifest = manifest
+        self.context_compression_mode = context_compression_mode
         self.active_skill = active_skill
         self.active_skill_id = (
             active_skill.skill_id if active_skill is not None else None
@@ -410,6 +412,7 @@ class HarnessCapabilityInvoker:
                 self.agent_id,
                 self.active_skill,
                 self.active_step_id,
+                context_compression_mode=self.context_compression_mode,
             )
         except CapabilityAuthorizationError:
             return None

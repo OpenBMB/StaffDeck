@@ -713,6 +713,11 @@ class UIConfig(SQLModel, table=True):
     sandbox_network_mode: str = Field(default="all")
     sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     harness_storage_path: Optional[str] = None
+    context_compression_mode: str = Field(default="legacy")
+    acp_model_context_limit: int = 128000
+    acp_nudge_max_pct: float = 0.70
+    acp_nudge_emergency_pct: float = 0.85
+    acp_nudge_min_pct: float = 0.45
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

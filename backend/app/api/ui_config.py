@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlmodel import Session
 
 from app import paths
+from app.config import get_settings
 from app.db import get_session
 from app.db.models import UIConfig, User, utc_now
 from app.harness.sandbox import diagnostics, windows_install_command
@@ -55,6 +56,12 @@ class UIConfigRead(BaseModel):
     sandbox_status_code: str | None = None
     sandbox_status_message: str | None = None
     sandbox_status_remediation: str | None = None
+    context_compression_mode: Literal["acp", "legacy"] = "legacy"
+    acp_model_context_limit: int = 128000
+    acp_nudge_max_pct: float = 0.70
+    acp_nudge_emergency_pct: float = 0.85
+    acp_nudge_min_pct: float = 0.45
+    acp_enabled: bool = False
     updated_at: str
 
     model_config = ConfigDict(from_attributes=True)
@@ -91,6 +98,23 @@ class UIConfigUpdateRequest(BaseModel):
     harness_storage_path: str = Field(default="", max_length=1024)
     sandbox_network_mode: Literal["all", "allowlist", "deny"] = "all"
     sandbox_allowed_domains: list[str] = Field(default_factory=list, max_length=200)
+    context_compression_mode: Literal["acp", "legacy"] = "legacy"
+    acp_model_context_limit: int = Field(default=128000, ge=1)
+    acp_nudge_max_pct: float = Field(default=0.70, ge=0.0, le=1.0)
+    acp_nudge_emergency_pct: float = Field(default=0.85, ge=0.0, le=1.0)
+    acp_nudge_min_pct: float = Field(default=0.45, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_acp_threshold_order(self) -> "UIConfigUpdateRequest":
+        if not (
+            0.0
+            <= self.acp_nudge_min_pct
+            <= self.acp_nudge_max_pct
+            <= self.acp_nudge_emergency_pct
+            <= 1.0
+        ):
+            raise ValueError("ACP 阈值必须满足 0 ≤ min ≤ max ≤ emergency ≤ 1")
+        return self
 
     @model_validator(mode="after")
     def validate_context_budgets(self) -> UIConfigUpdateRequest:
@@ -176,6 +200,16 @@ def ui_config_read(row: UIConfig, *, restart_scheduled: bool = False) -> UIConfi
             report.message if report is not None else "沙盒已由管理员关闭。"
         ),
         sandbox_status_remediation=report.remediation if report is not None else None,
+        context_compression_mode=(
+            row.context_compression_mode
+            if row.context_compression_mode in {"acp", "legacy"}
+            else "legacy"
+        ),
+        acp_model_context_limit=row.acp_model_context_limit,
+        acp_nudge_max_pct=row.acp_nudge_max_pct,
+        acp_nudge_emergency_pct=row.acp_nudge_emergency_pct,
+        acp_nudge_min_pct=row.acp_nudge_min_pct,
+        acp_enabled=get_settings().acp_enabled,
         updated_at=row.updated_at.isoformat(),
     )
 
@@ -225,6 +259,11 @@ def update_enterprise_ui_config(
     row.harness_storage_path = storage_path
     row.sandbox_network_mode = request.sandbox_network_mode
     row.sandbox_allowed_domains = request.sandbox_allowed_domains
+    row.context_compression_mode = request.context_compression_mode
+    row.acp_model_context_limit = request.acp_model_context_limit
+    row.acp_nudge_max_pct = request.acp_nudge_max_pct
+    row.acp_nudge_emergency_pct = request.acp_nudge_emergency_pct
+    row.acp_nudge_min_pct = request.acp_nudge_min_pct
     row.updated_at = utc_now()
     db.add(row)
     db.commit()

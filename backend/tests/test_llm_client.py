@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -1516,3 +1517,61 @@ def test_generate_text_stream_preserves_budget_above_escalation_ceiling():
     assert len(calls) == 2
     assert calls[0]["max_tokens"] == 65536
     assert calls[1]["max_tokens"] == 65536
+
+
+def test_usage_observation_scoped_per_session() -> None:
+    from app.llm import client as client_module
+
+    client_module._usage_observations.clear()
+    try:
+        client_module._record_usage_observation("session_a", 100, 400)
+        client_module._record_usage_observation("session_b", 200, 800)
+
+        assert client_module.latest_llm_usage_observation("session_a") == {
+            "input_tokens": 100,
+            "source_chars": 400,
+        }
+        assert client_module.latest_llm_usage_observation("session_b") == {
+            "input_tokens": 200,
+            "source_chars": 800,
+        }
+        # Absent usage clears only the owning session.
+        client_module._record_usage_observation("session_a", None, None)
+        assert client_module.latest_llm_usage_observation("session_a") is None
+        assert client_module.latest_llm_usage_observation("session_b") is not None
+        # Unknown sessions never observe another session's usage.
+        assert client_module.latest_llm_usage_observation("session_c") is None
+    finally:
+        client_module._usage_observations.clear()
+
+
+def test_usage_observation_touch_refreshes_ttl_without_overwriting() -> None:
+    from app.llm import client as client_module
+
+    client_module._usage_observations.clear()
+    try:
+        client_module._record_usage_observation("session_a", 100, 400)
+        client_module._touch_usage_observation("session_a")
+        observation = client_module._usage_observations["session_a"]
+        assert observation["input_tokens"] == 100
+        assert observation["source_chars"] == 400
+        # Touch on an unknown session is a no-op.
+        client_module._touch_usage_observation("session_unknown")
+        assert "session_unknown" not in client_module._usage_observations
+    finally:
+        client_module._usage_observations.clear()
+
+
+def test_usage_observation_expires_after_ttl() -> None:
+    from app.llm import client as client_module
+
+    client_module._usage_observations.clear()
+    try:
+        client_module._record_usage_observation("session_a", 100, 400)
+        client_module._usage_observations["session_a"]["observed_at"] = (
+            time.time() - client_module._USAGE_OBSERVATION_TTL_SECONDS - 1
+        )
+        assert client_module.latest_llm_usage_observation("session_a") is None
+        assert "session_a" not in client_module._usage_observations
+    finally:
+        client_module._usage_observations.clear()

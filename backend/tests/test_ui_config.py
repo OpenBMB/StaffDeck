@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy import create_engine as sqlalchemy_create_engine
+from sqlalchemy import inspect, text
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
 from app.api import ui_config as ui_config_module
 from app.api.ui_config import UIConfigUpdateRequest, ui_config_read
 from app.api.ui_config import update_enterprise_ui_config
 from app.core.agent_loop import AgentLoop
+from app.db import database
 from app.db.models import Tenant, UIConfig, User
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
 from app.harness.sandbox import SandboxDiagnostics
 
 
@@ -189,6 +196,208 @@ def test_sandbox_toggle_schedules_application_restart(
     assert scheduled == [True]
 
 
+def test_context_compression_mode_defaults_to_legacy() -> None:
+    request = UIConfigUpdateRequest(tenant_id="tenant_demo")
+
+    assert request.context_compression_mode == "legacy"
+    assert UIConfig(tenant_id="tenant_demo").context_compression_mode == "legacy"
+    assert ui_config_read(UIConfig(tenant_id="tenant_demo")).context_compression_mode == "legacy"
+
+
+def test_context_compression_mode_round_trip() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+        admin = User(
+            id="user_admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            password_hash="unused",
+            role="admin",
+        )
+        result = update_enterprise_ui_config(
+            UIConfigUpdateRequest(tenant_id="tenant_demo", context_compression_mode="acp"),
+            db,
+            admin,
+        )
+
+    assert result.context_compression_mode == "acp"
+    assert ui_config_read(UIConfig(tenant_id="tenant_demo", context_compression_mode="acp")).context_compression_mode == "acp"
+
+
+def test_context_compression_mode_rejects_invalid_value() -> None:
+    with pytest.raises(ValidationError):
+        UIConfigUpdateRequest(
+            tenant_id="tenant_demo",
+            context_compression_mode="auto",  # type: ignore[arg-type]
+        )
+
+
+def test_context_compression_mode_requires_tenant_admin() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+        member = User(
+            id="user_member",
+            tenant_id="tenant_demo",
+            username="member",
+            password_hash="unused",
+            role="member",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            update_enterprise_ui_config(
+                UIConfigUpdateRequest(tenant_id="tenant_demo", context_compression_mode="acp"),
+                db,
+                member,
+            )
+
+    assert exc_info.value.status_code == 403
+
+
+def test_context_compression_mode_migration_defaults_legacy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "ui-config-migration.db"
+    engine = sqlalchemy_create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE ui_configs ("
+                "tenant_id VARCHAR PRIMARY KEY, "
+                "show_thinking_trace BOOLEAN NOT NULL DEFAULT 1, "
+                "show_skill_trace BOOLEAN NOT NULL DEFAULT 1, "
+                "show_tool_trace BOOLEAN NOT NULL DEFAULT 1, "
+                "reflection_max_rounds INTEGER NOT NULL DEFAULT 1, "
+                "agent_loop_max_actions INTEGER NOT NULL DEFAULT 32, "
+                "sandbox_enabled BOOLEAN NOT NULL DEFAULT 0, "
+                "sandbox_network_mode VARCHAR(32) NOT NULL DEFAULT 'all', "
+                "sandbox_allowed_domains JSON NOT NULL DEFAULT '[]', "
+                "harness_storage_path VARCHAR, "
+                "created_at DATETIME, "
+                "updated_at DATETIME)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO ui_configs (tenant_id, created_at, updated_at) "
+                "VALUES ('tenant_legacy', '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+            )
+        )
+    monkeypatch.setattr(database, "database_url", f"sqlite:///{db_path}")
+    monkeypatch.setattr(database, "engine", engine)
+
+    database._migrate_sqlite_skill_schema()
+    database._migrate_sqlite_skill_schema()
+
+    inspector = inspect(engine)
+    ui_columns = {column["name"] for column in inspector.get_columns("ui_configs")}
+    assert {
+        "context_compression_mode",
+        "acp_model_context_limit",
+        "acp_nudge_max_pct",
+        "acp_nudge_emergency_pct",
+        "acp_nudge_min_pct",
+    } <= ui_columns
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT * FROM ui_configs WHERE tenant_id = 'tenant_legacy'")
+        ).mappings().one()
+    assert row["context_compression_mode"] == "legacy"
+    assert row["acp_model_context_limit"] == 128000
+    assert row["acp_nudge_max_pct"] == 0.70
+    assert row["acp_nudge_emergency_pct"] == 0.85
+    assert row["acp_nudge_min_pct"] == 0.45
+
+
+def test_acp_threshold_defaults_round_trip() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+        admin = User(
+            id="user_admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            password_hash="unused",
+            role="admin",
+        )
+        result = update_enterprise_ui_config(
+            UIConfigUpdateRequest(
+                tenant_id="tenant_demo",
+                acp_model_context_limit=256000,
+                acp_nudge_max_pct=0.60,
+                acp_nudge_emergency_pct=0.90,
+                acp_nudge_min_pct=0.30,
+            ),
+            db,
+            admin,
+        )
+
+    assert result.acp_model_context_limit == 256000
+    assert result.acp_nudge_max_pct == 0.60
+    assert result.acp_nudge_emergency_pct == 0.90
+    assert result.acp_nudge_min_pct == 0.30
+    assert ui_config_read(
+        UIConfig(
+            tenant_id="tenant_demo",
+            acp_model_context_limit=256000,
+            acp_nudge_max_pct=0.60,
+            acp_nudge_emergency_pct=0.90,
+            acp_nudge_min_pct=0.30,
+        )
+    ).acp_model_context_limit == 256000
+
+
+def test_acp_enabled_flag_in_get_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ui_config_module, "get_settings", lambda: SimpleNamespace(acp_enabled=True))
+
+    result = ui_config_read(UIConfig(tenant_id="tenant_demo"))
+
+    assert result.acp_enabled is True
+
+
+def test_acp_threshold_order_is_validated() -> None:
+    with pytest.raises(ValidationError):
+        UIConfigUpdateRequest(
+            tenant_id="tenant_demo",
+            acp_nudge_min_pct=0.80,
+            acp_nudge_max_pct=0.70,
+        )
+    with pytest.raises(ValidationError):
+        UIConfigUpdateRequest(
+            tenant_id="tenant_demo",
+            acp_nudge_max_pct=0.90,
+            acp_nudge_emergency_pct=0.85,
+        )
+    with pytest.raises(ValidationError):
+        UIConfigUpdateRequest(
+            tenant_id="tenant_demo",
+            acp_nudge_emergency_pct=1.5,
+        )
+    request = UIConfigUpdateRequest(
+        tenant_id="tenant_demo",
+        acp_nudge_min_pct=0.30,
+        acp_nudge_max_pct=0.70,
+        acp_nudge_emergency_pct=0.85,
+    )
+    assert request.acp_nudge_max_pct == 0.70
 def test_context_runtime_settings_persist_without_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

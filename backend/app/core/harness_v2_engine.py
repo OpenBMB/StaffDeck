@@ -12,6 +12,7 @@ from sqlmodel import select
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
 from app.core.capability_manifest import CapabilityManifestBuilder
+from app.config import get_settings
 from app.core.harness_agent import (
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
@@ -589,6 +590,11 @@ class HarnessV2Engine:
                 continue
 
             last_skill = active_skill or last_skill
+            session_nudge = (
+                conversation_context.get("nudge")
+                if isinstance(conversation_context, dict)
+                else None
+            )
             combined, step_result = self._run_frame(
                 execution_request,
                 session,
@@ -602,6 +608,9 @@ class HarnessV2Engine:
                     *self.store.referenced_session_results(row),
                 ],
                 remaining_turn_actions,
+                session_nudge=(
+                    dict(session_nudge) if isinstance(session_nudge, dict) else None
+                ),
             )
             remaining_turn_actions = max(
                 0,
@@ -823,8 +832,28 @@ class HarnessV2Engine:
         memory_context: list[dict[str, object]],
         prior_frame_results: list[dict[str, Any]],
         max_actions: int,
+        session_nudge: dict[str, Any] | None = None,
     ) -> tuple[TaskExecutionResult, StepAgentResult]:
         self.store.mark_running(row)
+        # Same preference chain as the session layer (U4): the owner resolves
+        # the tenant preference; the ACP_ENABLED flag forces legacy when off.
+        # Lazy import: agent_loop imports this module at module level, so a
+        # top-level import here would be circular.
+        from app.core.agent_loop import _resolve_compression_mode
+
+        context_compression_mode = _resolve_compression_mode(
+            self.owner._get_context_compression_mode(
+                request.tenant_id, session.agent_id
+            ),
+            acp_enabled=get_settings().acp_enabled,
+        )
+        acp_config = None
+        if context_compression_mode == "acp":
+            # Lazy import: agent_loop imports this module at module level, so
+            # a top-level import here would be circular.
+            from app.core.agent_loop import _acp_config_for_tenant
+
+            acp_config = _acp_config_for_tenant(self.db, request.tenant_id)
         agent_loop = self.store.ensure_agent_loop(row)
         loop_checkpoint = dict(agent_loop.checkpoint_json or {})
         self.active_frame_id = row.id
@@ -885,6 +914,7 @@ class HarnessV2Engine:
                 session.agent_id,
                 active_skill,
                 frame.target_step_id,
+                context_compression_mode=context_compression_mode,
             )
             # Keep the complete frozen manifest server-side for authorization,
             # while compiling the TaskRequirement only from the safe model
@@ -991,6 +1021,7 @@ class HarnessV2Engine:
                 ),
                 trace_sink=trace,
                 step_deadline_monotonic=step_deadline_monotonic,
+                context_compression_mode=context_compression_mode,
             )
 
             result = self.task_agent.run(
@@ -1004,6 +1035,11 @@ class HarnessV2Engine:
                 step_deadline_monotonic=step_deadline_monotonic,
                 step_timeout_seconds=step_timeout_seconds,
                 checkpoint=loop_checkpoint,
+                context_compression_mode=context_compression_mode,
+                acp_config=acp_config,
+                session_id=session.id,
+                frame_kind=frame.kind,
+                session_acp_nudge=session_nudge,
             )
             if request.channel == "human_handoff_resume" and result.status == "handoff":
                 # The human reply is already the handoff completion signal. Do not

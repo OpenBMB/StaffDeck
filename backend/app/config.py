@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # 回滚为逐行展示的旧样式；binding 的 config_json.compact_trace=false 可对单个
     # 绑定回滚。
     channel_feishu_trace_compact_sop: bool = True
+    # ACP（Active Context Pruning）上下文压缩机制全局开关：关闭时偏好被忽略、
+    # 强制走 legacy 固定阈值压缩；状态经 ui-config API 暴露给前端置灰 ACP 选项。
+    acp_enabled: bool = False
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),

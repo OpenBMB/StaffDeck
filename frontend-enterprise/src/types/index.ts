@@ -380,6 +380,12 @@ export type UIConfigRead = {
   sandbox_status_code?: string | null;
   sandbox_status_message?: string | null;
   sandbox_status_remediation?: string | null;
+  context_compression_mode: 'acp' | 'legacy';
+  acp_model_context_limit: number;
+  acp_nudge_max_pct: number;
+  acp_nudge_emergency_pct: number;
+  acp_nudge_min_pct: number;
+  acp_enabled: boolean;
   updated_at: string;
 };
 

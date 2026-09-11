@@ -153,6 +153,13 @@ def stage_payload(
             if isinstance(memory_context, list)
             else str(memory_context or "").strip()
         )
+    nudge = None
+    if isinstance(conversation_context, dict):
+        nudge = conversation_context.get("nudge")
+    if isinstance(nudge, dict):
+        message = str(nudge.get("message") or "").strip()
+        if message:
+            instructions = f"{instructions.strip()}\n\n{message}"
     return {
         STAGE_PROTOCOL_KEY: {
             "phase": phase,

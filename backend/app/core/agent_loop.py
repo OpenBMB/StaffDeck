@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterator
+from dataclasses import asdict, is_dataclass
 from time import sleep
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from sqlmodel import Session, select
 
@@ -13,6 +14,10 @@ from app.agents.branching import (
     visible_skill,
 )
 from app.channels.service_outbox import stage_channel_delivery
+from app.config import get_settings
+from app.core.acp import AcpConfig, AcpEngine, AcpError
+from app.core.acp.nudge import NudgeRecommendation
+from app.core.acp.pricing import RealUsageMeter
 from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled
 from app.core.conversation_context import (
@@ -42,6 +47,7 @@ from app.db.models import (
     AgentProfile,
     ChannelBinding,
     ChatSession,
+    HarnessAgentLoopRecord,
     HarnessTurnRecord,
     HumanHandoffRequest,
     Message,
@@ -57,6 +63,7 @@ from app.knowledge.citations import (
     restore_truncated_atomic_references,
 )
 from app.llm import LLMClient, LLMError
+from app.llm.client import latest_llm_usage_observation
 from app.llm.model_config_resolver import (
     resolve_model_config_for_runtime,
 )
@@ -83,6 +90,8 @@ MAX_TOOL_ACTIONS_PER_TURN = 32
 MAX_TOOL_ACTIONS_PER_TURN_LIMIT = 100
 GRAPH_PENDING_STEPS_SLOT = "_graph_pending_steps"
 CANCELLED_ASSISTANT_REPLY = "已停止生成"
+DEFAULT_CONTEXT_COMPRESSION_MODE = "legacy"
+ACP_CHECKPOINT_ORIGINALS_CAP = 5
 ExecutionFinalizeState = Literal["continued", "completed", "handoff"]
 
 
@@ -131,6 +140,218 @@ def _metadata_prompt_text(value: object) -> str:
 
 def _single_line_text(value: object) -> str:
     return AgentIdentityPrompt.single_line(value)
+
+
+def _resolve_compression_mode(preference: str, *, acp_enabled: bool) -> str:
+    """Apply the ACP feature flag: disabled forces legacy regardless of preference."""
+    if preference != "acp" or not acp_enabled:
+        return "legacy"
+    return "acp"
+
+
+def _acp_config_for_tenant(db: Session, tenant_id: str) -> AcpConfig:
+    """Build the kernel config from user thresholds, falling back to upstream defaults."""
+    row = db.get(UIConfig, tenant_id) if hasattr(db, "get") else None
+    if row is None:
+        return AcpConfig()
+    try:
+        return AcpConfig(
+            model_context_limit=max(1, int(row.acp_model_context_limit or 128000)),
+            nudge_max_context_limit_pct=float(row.acp_nudge_max_pct or 0.70),
+            nudge_emergency_threshold_pct=float(row.acp_nudge_emergency_pct or 0.85),
+            nudge_min_context_limit_pct=float(row.acp_nudge_min_pct or 0.45),
+        )
+    except ValueError:
+        logger.error(
+            "invalid ACP thresholds for tenant %s; using defaults", tenant_id
+        )
+        return AcpConfig()
+
+
+def _acp_nudge_message(recommendation: NudgeRecommendation) -> str:
+    """Compose the advisory nudge copy with the reuse-check hint.
+
+    The kernel message already frames compression as model-decided and
+    non-mandatory; the hint reminds the model to reuse previously compressed
+    blocks before compressing again.
+    """
+    hint = (
+        "如之前已压缩过历史消息，可先检查压缩块索引（acp_status）并复用其中仍有效的内容"
+        "（acp_decompress / acp_search_context 可找回细节）。"
+    )
+    return f"{recommendation.message}\n{hint}"
+
+
+def _attach_acp_nudge(
+    context: dict[str, object],
+    engine: AcpEngine,
+    meter: RealUsageMeter,
+) -> None:
+    """Attach an advisory nudge to the session context when pressure crosses a threshold.
+
+    Pressure uses the meter's real usage when available; otherwise the
+    pre-check estimate from the projected context metadata (``_estimate_tokens``
+    stays pre-check only and never writes into the ledger). The nudge is
+    advisory only — the model decides whether to compress (autoNudge).
+    """
+    pressure_tokens = meter.latest_usage_tokens
+    estimated = pressure_tokens is None
+    if pressure_tokens is None:
+        pressure_tokens = int((context.get("metadata") or {}).get("estimated_tokens") or 0)
+    recommendation = engine.nudge(pressure_tokens)
+    if recommendation is None:
+        return
+    context["nudge"] = {
+        "level": recommendation.level,
+        "message": _acp_nudge_message(recommendation),
+        "usage_pct": recommendation.usage_pct,
+        "current_tokens": recommendation.current_tokens,
+        "limit_tokens": recommendation.limit_tokens,
+        "estimated": estimated,
+    }
+
+
+def _acp_state_from_context(context_state: dict[str, Any] | None) -> dict[str, Any]:
+    source = context_state if isinstance(context_state, dict) else {}
+    acp_state = source.get("acp")
+    return dict(acp_state) if isinstance(acp_state, dict) else {}
+
+
+def _restore_acp_engine(engine: AcpEngine, acp_state: dict[str, Any]) -> None:
+    """Rebuild the in-memory kernel from the persisted acp sub-state."""
+    engine.from_state(acp_state)
+
+
+def _serialize_acp_engine(
+    engine: AcpEngine,
+    *,
+    ingested_message_ids: list[str],
+    roles: dict[str, str],
+    compaction_count: int,
+    max_originals: int = ACP_CHECKPOINT_ORIGINALS_CAP,
+    compacted_message_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Persist the kernel state into the acp sub-state.
+
+    Checkpoint ORIGINAL text is bounded: only the ``max_originals`` most
+    recent checkpoints keep their original blocks; older checkpoints keep
+    their index metadata with empty originals so ``context_state_json``
+    cannot grow unboundedly with compression count (plan fix F11).
+    ``compacted_message_ids`` records every message id already covered by an
+    ACP summary so the legacy path never re-summarizes them after a mode
+    switch back (plan fix F8).
+    """
+    state = engine.to_state(max_originals=max_originals)
+    for block in state["blocks"]:
+        block["role"] = roles.get(block["message_id"], "user")
+    for checkpoint in state["checkpoints"]:
+        for block in checkpoint["original_blocks"]:
+            block["role"] = roles.get(block["message_id"], "user")
+    state["roles"] = dict(roles)
+    state["ingested_message_ids"] = list(ingested_message_ids)
+    state["compaction_count"] = compaction_count
+    derived = {
+        block.message_id
+        for record in engine._checkpoints.all()
+        for block in record.original_blocks
+    }
+    state["compacted_message_ids"] = sorted(derived | set(compacted_message_ids or []))
+    return state
+
+
+def _acp_result_to_dict(result: object) -> dict[str, Any]:
+    if not is_dataclass(result):
+        return {"value": str(result)}
+    return asdict(cast(Any, result))
+
+
+def _acp_op_int_argument(arguments: dict[str, Any], key: str) -> int | None:
+    """Parse an integer op argument; bools and non-ints are rejected."""
+    value = arguments.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _execute_acp_ops(
+    engine: AcpEngine, ops: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], bool]:
+    """Execute pending model acp_ops against the session-level engine.
+
+    Each op is a dict mapping op name -> arguments, e.g.
+    ``{"compress": {"seq_start": 0, "seq_end": 2, "summary": "..."}}``.
+    Every op runs: invalid arguments yield structured ``INVALID_ARGUMENTS``
+    errors and engine errors are collected per op, so one failing op never
+    discards the successful mutations of earlier ops. Returns
+    ``(results, ok)`` where ``ok`` is False when any op failed, letting the
+    caller fall back to the legacy summary path without breaking the turn.
+    """
+    results: list[dict[str, Any]] = []
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        for name, arguments in op.items():
+            if not isinstance(arguments, dict):
+                logger.warning("acp op %s ignored: arguments must be a dict", name)
+                continue
+            try:
+                if name == "compress":
+                    seq_start = _acp_op_int_argument(arguments, "seq_start")
+                    seq_end = _acp_op_int_argument(arguments, "seq_end")
+                    summary = str(arguments.get("summary") or "").strip()
+                    if seq_start is None or seq_end is None or not summary:
+                        result: object = AcpError(
+                            "INVALID_ARGUMENTS",
+                            "acp_compress 需要整数 seq_start/seq_end 与非空 summary。",
+                        )
+                    else:
+                        result = engine.compress(seq_start, seq_end, summary)
+                elif name == "decompress":
+                    block_id = _acp_op_int_argument(arguments, "block_id")
+                    if block_id is None:
+                        result = AcpError(
+                            "INVALID_ARGUMENTS", "acp_decompress 需要整数 block_id。"
+                        )
+                    else:
+                        result = engine.decompress(block_id)
+                elif name == "search_context":
+                    query = str(arguments.get("query") or "").strip()
+                    top_k = arguments.get("top_k")
+                    if not query:
+                        result = AcpError(
+                            "INVALID_ARGUMENTS", "acp_search_context 需要非空 query。"
+                        )
+                    elif top_k is not None and (
+                        isinstance(top_k, bool)
+                        or not isinstance(top_k, int)
+                        or not 1 <= top_k <= 100
+                    ):
+                        result = AcpError(
+                            "INVALID_ARGUMENTS",
+                            "acp_search_context top_k 必须是 1-100 的整数。",
+                        )
+                    else:
+                        result = engine.search_context(query, top_k=top_k)
+                elif name == "status":
+                    result = engine.status()
+                else:
+                    logger.warning("unknown acp op %s ignored", name)
+                    continue
+            except Exception as exc:
+                logger.warning("acp op %s raised: %s", name, exc)
+                result = AcpError("INTERNAL_ERROR", str(exc))
+            if isinstance(result, AcpError):
+                logger.warning("acp op %s failed: %s", name, result.message)
+                results.append(
+                    {
+                        "op": name,
+                        "success": False,
+                        "error": {"code": result.code, "message": result.message},
+                    }
+                )
+            else:
+                results.append({"op": name, "success": True, "result": _acp_result_to_dict(result)})
+    return results, all(result.get("success") for result in results)
 
 
 class AgentLoopPreconditionError(Exception):
@@ -1232,6 +1453,37 @@ class AgentLoop:
         value = row.agent_loop_max_actions if row else MAX_TOOL_ACTIONS_PER_TURN
         return max(1, min(int(value), MAX_TOOL_ACTIONS_PER_TURN_LIMIT))
 
+    def _get_context_compression_mode(
+        self, tenant_id: str, agent_id: str | None = None
+    ) -> str:
+        """Resolve the tenant's context compression preference.
+
+        Precedence chain mirrors ``_get_agent_loop_max_actions``:
+        1. AgentProfile-level override — future hook: ``metadata_json`` may
+           carry a per-agent ``context_compression_mode``; read tolerantly
+           when present (no new profile fields are introduced).
+        2. ``UIConfig.context_compression_mode`` (tenant-level preference).
+        3. Constant default ``"legacy"``.
+        The ACP_ENABLED feature flag is applied by the caller via
+        ``_resolve_compression_mode``.
+        """
+        if not hasattr(self.db, "get"):
+            return DEFAULT_CONTEXT_COMPRESSION_MODE
+        agent = self.db.get(AgentProfile, agent_id) if agent_id else None
+        if agent is not None and (
+            agent.tenant_id != tenant_id or agent.status != "active"
+        ):
+            agent = None
+        if agent is not None:
+            metadata = agent.metadata_json
+            if isinstance(metadata, dict):
+                value = str(metadata.get("context_compression_mode") or "").strip()
+                if value in {"acp", "legacy"}:
+                    return value
+        row = self.db.get(UIConfig, tenant_id)
+        value = str(row.context_compression_mode or "").strip() if row else ""
+        return value if value in {"acp", "legacy"} else DEFAULT_CONTEXT_COMPRESSION_MODE
+
     def _get_conversation_context_settings(
         self,
         tenant_id: str,
@@ -1409,25 +1661,168 @@ class AgentLoop:
             ).all()
         )
         visible_rows = visible_message_rows(rows)
-        context = build_conversation_context(
-            [
-                ConversationProjection.message_context_entry(
-                    row,
-                    content=visible_message_content(row),
-                )
-                for row in visible_rows
-            ],
-            settings=self._get_conversation_context_settings(chat_session.tenant_id),
-            context_state=chat_session.context_state_json,
-            summary_builder=self._context_summary_builder(model_config) if model_config else None,
+        entries = [
+            ConversationProjection.message_context_entry(
+                row,
+                content=visible_message_content(row),
+            )
+            for row in visible_rows
+        ]
+        mode = _resolve_compression_mode(
+            self._get_context_compression_mode(
+                chat_session.tenant_id, chat_session.agent_id
+            ),
+            acp_enabled=get_settings().acp_enabled,
         )
+        if mode == "acp":
+            context = self._acp_conversation_context(
+                chat_session, entries, model_config=model_config
+            )
+        else:
+            context = build_conversation_context(
+                entries,
+                settings=self._get_conversation_context_settings(chat_session.tenant_id),
+                context_state=chat_session.context_state_json,
+                summary_builder=(
+                    self._context_summary_builder(model_config, chat_session.id)
+                    if model_config
+                    else None
+                ),
+            )
         next_state = context.get("context_state")
         if isinstance(next_state, dict) and next_state != (chat_session.context_state_json or {}):
             chat_session.context_state_json = next_state
             self.db.add(chat_session)
         return context
 
-    def _context_summary_builder(self, model_config: ModelConfig) -> Callable[[str, str, int], str]:
+    def _acp_conversation_context(
+        self,
+        chat_session: ChatSession,
+        entries: list[dict[str, Any]],
+        *,
+        model_config: ModelConfig | None = None,
+    ) -> dict[str, object]:
+        """ACP-routed context: execute pending model acp_ops against the
+        session-level AcpEngine, then project the resulting blocks.
+
+        Summaries come from the model's ``acp_compress`` op — the legacy
+        ``_context_summary_builder`` (second LLM call) is bypassed here.
+        """
+        acp_state = _acp_state_from_context(chat_session.context_state_json)
+        meter = RealUsageMeter(
+            usage_source=lambda: latest_llm_usage_observation(chat_session.id)
+        )
+        engine = AcpEngine(
+            config=_acp_config_for_tenant(self.db, chat_session.tenant_id),
+            meter=meter,
+        )
+        _restore_acp_engine(engine, acp_state)
+        ingested = set(acp_state.get("ingested_message_ids") or [])
+        roles = dict(acp_state.get("roles") or {})
+        compacted = set(acp_state.get("compacted_message_ids") or [])
+        for entry in entries:
+            message_id = str(entry.get("id") or "")
+            if not message_id or message_id in ingested:
+                continue
+            engine.add_message(message_id, str(entry.get("content") or ""))
+            ingested.add(message_id)
+            roles[message_id] = str(entry.get("role") or "user")
+        pending_ops, loop = self._pending_acp_ops(chat_session)
+        try:
+            results, ok = _execute_acp_ops(engine, pending_ops)
+            if not ok:
+                logger.warning(
+                    "acp ops failed for session %s; falling back to legacy summary path",
+                    chat_session.id,
+                )
+                if any(result.get("success") for result in results):
+                    # Successful ops already mutated the engine; persist the
+                    # state so those mutations survive the legacy fallback.
+                    compaction_count = int(acp_state.get("compaction_count") or 0) + sum(
+                        1
+                        for result in results
+                        if result.get("op") == "compress" and result.get("success")
+                    )
+                    next_acp_state = _serialize_acp_engine(
+                        engine,
+                        ingested_message_ids=sorted(ingested),
+                        roles=roles,
+                        compaction_count=compaction_count,
+                        compacted_message_ids=compacted,
+                    )
+                    next_state = dict(chat_session.context_state_json or {})
+                    next_state["acp"] = next_acp_state
+                    chat_session.context_state_json = next_state
+                    if hasattr(chat_session, "_sa_instance_state"):
+                        self.db.add(chat_session)
+                return build_conversation_context(
+                    entries,
+                    context_state=chat_session.context_state_json,
+                    summary_builder=(
+                        self._context_summary_builder(model_config, chat_session.id)
+                        if model_config
+                        else None
+                    ),
+                )
+            compaction_count = int(acp_state.get("compaction_count") or 0) + sum(
+                1
+                for result in results
+                if result.get("op") == "compress" and result.get("success")
+            )
+            next_acp_state = _serialize_acp_engine(
+                engine,
+                ingested_message_ids=sorted(ingested),
+                roles=roles,
+                compaction_count=compaction_count,
+                compacted_message_ids=compacted,
+            )
+            for op_name, state_key in (("search_context", "last_search"), ("status", "last_status")):
+                for result in results:
+                    if result.get("op") == op_name and result.get("success"):
+                        next_acp_state[state_key] = result["result"]
+                        break
+            next_state = dict(chat_session.context_state_json or {})
+            next_state["acp"] = next_acp_state
+            context = build_conversation_context(
+                entries,
+                context_state=next_state,
+                compression_mode="acp",
+            )
+            _attach_acp_nudge(context, engine, meter)
+            return context
+        finally:
+            if loop is not None:
+                self._clear_pending_acp_ops(loop)
+
+    def _pending_acp_ops(
+        self, chat_session: ChatSession
+    ) -> tuple[list[dict[str, Any]], HarnessAgentLoopRecord | None]:
+        """Read pending acp_ops from the latest general agent-loop checkpoint."""
+        loop = self.db.exec(
+            select(HarnessAgentLoopRecord)
+            .where(
+                HarnessAgentLoopRecord.session_id == chat_session.id,
+                HarnessAgentLoopRecord.loop_key == f"general:{chat_session.id}",
+            )
+            .order_by(HarnessAgentLoopRecord.created_at.desc())
+        ).first()
+        if loop is None or not isinstance(loop.checkpoint_json, dict):
+            return [], loop
+        raw_ops = loop.checkpoint_json.get("acp_ops")
+        if not isinstance(raw_ops, list):
+            return [], loop
+        return [op for op in raw_ops if isinstance(op, dict)], loop
+
+    def _clear_pending_acp_ops(self, loop: HarnessAgentLoopRecord) -> None:
+        checkpoint = dict(loop.checkpoint_json or {})
+        if "acp_ops" in checkpoint:
+            checkpoint.pop("acp_ops", None)
+            loop.checkpoint_json = checkpoint
+            self.db.add(loop)
+
+    def _context_summary_builder(
+        self, model_config: ModelConfig, session_id: str | None = None
+    ) -> Callable[[str, str, int], str]:
         def summarize(label: str, source: str, token_budget: int) -> str:
             payload = stage_payload(
                 phase="Context Compression",
@@ -1444,7 +1839,9 @@ class AgentLoop:
             )
             with llm_operation("context.compact"):
                 return (
-                    LLMClient(model_config).generate_text(unified_system_prompt(), payload).strip()
+                    LLMClient(model_config, session_id=session_id)
+                    .generate_text(unified_system_prompt(), payload)
+                    .strip()
                 )
 
         return summarize

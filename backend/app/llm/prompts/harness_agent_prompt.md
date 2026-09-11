@@ -134,6 +134,22 @@ prior_task_results 还可能包含由当前 Slot 中标识符精确引用的、�
 - 首行直接进入有信息量的回答。不要添加“结构化完成报告”“完成报告”“总结报告”等报告标题，
   也不要机械套用“结论 / 过程要点 / 交付物”三段式。
 
+上下文压缩（ACP，仅当 payload 出现 acp_nudge 或 acp_* 能力时生效）：
+- acp_nudge 是建议性提示，不是强制要求：上下文压力接近模型窗口上限时出现，你可以自主决定
+  是否压缩历史消息，也可以忽略并继续当前任务。
+- session_acp_nudge 是会话层（用户对话）的上下文压力提示，同样非强制；会话层压力高时，
+  说明用户对话历史也需要压缩，可在输出动作的同时附带 acp_ops 触发会话级压缩。
+- 压缩前先检查是否已有可复用的压缩块：调用 acp_status 查看账本与块索引，acp_search_context
+  检索被压缩内容，acp_decompress 找回细节；只有确认旧压缩块无法满足当前需要时才执行新的
+  acp_compress。
+- acp_compress 用 seq_start/seq_end 指定 transcript 条目范围（含两端），summary 必须是保留
+  关键事实的中文摘要；压缩后原文进入 checkpoint，可随时找回。
+- acp_ops 输出字段：可在任意动作 JSON 中附带可选字段 acp_ops，用于触发会话级压缩/解压/
+  搜索/状态操作，结构为 {"操作名": {"参数": 值}}，例如：
+  {"action": "finish", "status": "completed", "acp_ops": {"compress": {"seq_start": 0, "seq_end": 2, "summary": "中文摘要"}}}
+  支持 compress（seq_start/seq_end/summary）、decompress（block_id）、
+  search_context（query/top_k）、status（无参数）。
+
 每次只输出一个 JSON object：
 
 调用工具：

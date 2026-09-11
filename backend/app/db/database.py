@@ -522,6 +522,41 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(
                     text("ALTER TABLE ui_configs ADD COLUMN harness_storage_path VARCHAR")
                 )
+            if "context_compression_mode" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_compression_mode "
+                        "VARCHAR(32) NOT NULL DEFAULT 'legacy'"
+                    )
+                )
+            if "acp_model_context_limit" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN acp_model_context_limit "
+                        "INTEGER NOT NULL DEFAULT 128000"
+                    )
+                )
+            if "acp_nudge_max_pct" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN acp_nudge_max_pct "
+                        "FLOAT NOT NULL DEFAULT 0.70"
+                    )
+                )
+            if "acp_nudge_emergency_pct" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN acp_nudge_emergency_pct "
+                        "FLOAT NOT NULL DEFAULT 0.85"
+                    )
+                )
+            if "acp_nudge_min_pct" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN acp_nudge_min_pct "
+                        "FLOAT NOT NULL DEFAULT 0.45"
+                    )
+                )
 
         if "team_tasks" in tables:
             team_task_columns = {

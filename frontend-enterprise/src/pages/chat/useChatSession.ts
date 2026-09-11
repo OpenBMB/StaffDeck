@@ -398,6 +398,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     effective_harness_storage_path: '',
     sandbox_network_mode: 'all',
     sandbox_allowed_domains: [],
+    context_compression_mode: 'legacy',
+    acp_model_context_limit: 128000,
+    acp_nudge_max_pct: 0.7,
+    acp_nudge_emergency_pct: 0.85,
+    acp_nudge_min_pct: 0.45,
+    acp_enabled: false,
     updated_at: '',
   });
   const chatMessagesRef = useRef<HTMLDivElement>(null);
