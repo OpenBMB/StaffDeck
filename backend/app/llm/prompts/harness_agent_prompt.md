@@ -71,6 +71,10 @@ prior_task_results 还可能包含由当前 Slot 中标识符精确引用的、�
   `arguments.path`，禁止按标点解析、截断、改写扩展名或自行拼接路径；返回 truncated=true 时，把返回的
   `continuation_token` 和同一个 path 原样传给下一次 read_file，禁止猜测 byte offset；
   不得猜测未读取内容，也不得要求系统生成额外摘要或 Schema。
+- 工具结果中的 `found=false` 或 `miss_reason`（含 `employee_not_found`、`source_miss` 等）表示
+  “未命中”，不是查询成功。此时不得把返回的默认额度、占位标识符（如 `UNKNOWN`）或用户自行提供的
+  姓名、工号当作已核实的业务事实对外展示，应明确告知用户未找到对应记录；只有在 `found=true`
+  时才能输出工具返回的业务数据。
 - 如果后续 Tool 需要完整的前序大 JSON，把该 `sandbox_json_file` 引用对象原样放入对应
   参数，Harness 会在执行 Tool 前自动、安全地解引用，并按下游 input schema 还原成 JSON
   object、array 或完整 JSON 字符串；不要把 JSON 手工复制回参数。
