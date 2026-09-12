@@ -695,13 +695,89 @@ def test_team_progress_message_updates_after_each_member_result() -> None:
         db.commit()
 
         db.refresh(progress_message)
-        assert progress_message.content == "已收到 1/2 项成员回复。"
-        assert progress_message.metadata_json["team_progress"] == {
-            "phase": "collecting",
-            "completed_tasks": 1,
-            "total_tasks": 2,
-            "status_text": "正在等待其他成员完成",
-        }
+        assert progress_message.content == (
+            "已收到 1/2 项成员回复。\n"
+            "- Worker｜查询请假制度：已完成\n"
+            "- Worker2｜查询办公用品制度：进行中"
+        )
+        progress = progress_message.metadata_json["team_progress"]
+        assert progress["phase"] == "collecting"
+        assert progress["completed_tasks"] == 1
+        assert progress["total_tasks"] == 2
+        assert progress["status_text"] == "正在等待其他成员完成"
+        assert [
+            (entry["assignee_name"], entry["status"], entry["status_label"])
+            for entry in progress["tasks"]
+        ] == [
+            ("Worker", "done", "已完成"),
+            ("Worker2", "in_progress", "进行中"),
+        ]
+
+
+def test_team_progress_message_labels_review_and_needs_input_tasks() -> None:
+    with _test_session() as db:
+        team = _seed_team(db)
+        tl_session = ChatSession(
+            id="session-progress-review-tl",
+            tenant_id=team.tenant_id,
+            user_id="user_admin",
+            agent_id="agent_tl",
+            team_id=team.id,
+            title=f"团队 {team.name} · TL 对话",
+        )
+        run = TeamRun(
+            id="team-run-progress-review",
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            tl_session_id=tl_session.id,
+            source_turn_id="source-turn-progress-review",
+            created_by_user_id="user_admin",
+            status="running",
+        )
+        progress_message = Message(
+            id="message-progress-review",
+            tenant_id=team.tenant_id,
+            session_id=tl_session.id,
+            role="assistant",
+            content="已完成 2 个团队任务的拆分与派发。",
+            metadata_json={"team_run_id": run.id},
+        )
+        tasks = [
+            TeamTask(
+                team_id=team.id,
+                tenant_id=team.tenant_id,
+                team_run_id=run.id,
+                title="输出迁移方案",
+                status="review",
+                assignee_agent_id="agent_worker",
+            ),
+            TeamTask(
+                team_id=team.id,
+                tenant_id=team.tenant_id,
+                team_run_id=run.id,
+                title="核对合同条款",
+                status="escalated",
+                assignee_agent_id="agent_worker2",
+                report_json={"needs_input": True},
+            ),
+        ]
+        db.add(tl_session)
+        db.add(run)
+        db.add(progress_message)
+        db.add_all(tasks)
+        db.commit()
+
+        wakeup._update_team_run_progress_message(db, run, tasks)
+        db.commit()
+
+        db.refresh(progress_message)
+        assert progress_message.content == (
+            "已收到 1/2 项成员回复。\n"
+            "- Worker｜输出迁移方案：已提交，待验收\n"
+            "- Worker2｜核对合同条款：等待人工补充信息"
+        )
+        db.refresh(tl_session)
+        assert tl_session.summary == "最近回复：已收到 1/2 项成员回复。"
 
 
 def test_tl_chat_rejects_cyclic_dependency_graph(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -953,13 +1029,15 @@ def test_planner_member_completion_skips_review_and_enqueues_one_synthesis(
         assert task.report_json["full_reply"] == "市场分析完成"
         assert run.status == "synthesizing"
         db.refresh(progress_message)
-        assert progress_message.content == "已收到全部 1 项成员回复。"
-        assert progress_message.metadata_json["team_progress"] == {
-            "phase": "synthesizing",
-            "completed_tasks": 1,
-            "total_tasks": 1,
-            "status_text": "正在整理答案",
-        }
+        assert progress_message.content == (
+            "已收到全部 1 项成员回复。\n- Worker｜完成市场分析：已完成"
+        )
+        progress = progress_message.metadata_json["team_progress"]
+        assert progress["phase"] == "synthesizing"
+        assert progress["completed_tasks"] == 1
+        assert progress["total_tasks"] == 1
+        assert progress["status_text"] == "正在整理答案"
+        assert [entry["status_label"] for entry in progress["tasks"]] == ["已完成"]
         assert db.exec(
             select(TeamWakeEvent).where(TeamWakeEvent.trigger_type == "task_report")
         ).all() == []

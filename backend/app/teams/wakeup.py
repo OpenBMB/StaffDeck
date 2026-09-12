@@ -1210,6 +1210,48 @@ def _team_progress_message(db: Session, run: TeamRun) -> Message | None:
     return None
 
 
+_TASK_STATUS_LABELS = {
+    "pending": "待开始",
+    "bidding": "竞标中",
+    "in_progress": "进行中",
+    "review": "已提交，待验收",
+    "rework": "返工中",
+    "done": "已完成",
+    "cancelled": "已取消",
+    "escalated": "已升级，需人工处理",
+}
+
+
+def _task_status_label(task: TeamTask) -> str:
+    report = task.report_json if isinstance(task.report_json, dict) else {}
+    if task.status == "escalated" and bool(report.get("needs_input")):
+        return "等待人工补充信息"
+    return _TASK_STATUS_LABELS.get(task.status, task.status)
+
+
+def _member_task_status_entries(
+    db: Session, tasks: list[TeamTask]
+) -> list[dict[str, str | None]]:
+    agent_ids = {task.assignee_agent_id for task in tasks if task.assignee_agent_id}
+    names: dict[str, str] = {}
+    if agent_ids:
+        profiles = db.exec(
+            select(AgentProfile).where(AgentProfile.id.in_(agent_ids))
+        ).all()
+        names = {profile.id: profile.name for profile in profiles}
+    return [
+        {
+            "task_id": task.id,
+            "title": task.title,
+            "assignee_agent_id": task.assignee_agent_id,
+            "assignee_name": names.get(task.assignee_agent_id or ""),
+            "status": task.status,
+            "status_label": _task_status_label(task),
+        }
+        for task in tasks
+    ]
+
+
 def _update_team_run_progress_message(
     db: Session,
     run: TeamRun,
@@ -1261,18 +1303,27 @@ def _update_team_run_progress_message(
     )
     if current_phase == "completed" and resolved_phase != "completed":
         return message
+    task_entries = _member_task_status_entries(db, tasks)
+    if resolved_phase in {"collecting", "synthesizing"} and task_entries:
+        # 逐成员状态：让交付经理在团队会话里直接看到谁完成了、谁卡在验收或等人 (#229)
+        status_lines = [
+            f"- {entry['assignee_name'] or '未指派'}｜{entry['title']}：{entry['status_label']}"
+            for entry in task_entries
+        ]
+        content = "\n".join([content, *status_lines])
     metadata["team_progress"] = {
         "phase": resolved_phase,
         "completed_tasks": completed,
         "total_tasks": total,
         "status_text": status_text,
+        "tasks": task_entries,
     }
     message.content = content
     message.metadata_json = metadata
     db.add(message)
     session = db.get(ChatSession, run.tl_session_id)
     if session is not None:
-        session.summary = f"最近回复：{content[:120]}"
+        session.summary = f"最近回复：{content.splitlines()[0][:120]}"
         session.updated_at = utc_now()
         db.add(session)
     return message
