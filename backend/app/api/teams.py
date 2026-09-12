@@ -14,6 +14,7 @@ from app.api.sessions import (
 from app.async_jobs import enqueue_async_job
 from app.core import AgentLoop
 from app.db import get_session
+from app.observability import persist_spans
 from app.db.models import (
     AgentEvent,
     AgentProfile,
@@ -418,7 +419,13 @@ def tl_chat_endpoint(
         channel="team",
         interaction_mode="team_tl",
     )
-    response = AgentLoop(db).handle_turn(turn)
+    with persist_spans(
+        db,
+        tenant_id=team.tenant_id,
+        session_id=session.id,
+        client_turn_id=turn.client_turn_id,
+    ):
+        response = AgentLoop(db).handle_turn(turn)
     reply = response.reply or ""
     created = process_tl_reply(
         db,

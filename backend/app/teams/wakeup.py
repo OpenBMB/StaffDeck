@@ -28,6 +28,7 @@ from app.db.models import (
     new_id,
     utc_now,
 )
+from app.observability import persist_spans
 from app.session.session_schema import (
     ChatTurnRequest,
     ChatTurnResponse,
@@ -755,9 +756,15 @@ def run_agent_turn(
         message_visibility=message_visibility,
     )
     result: ChatTurnResponse | None = None
-    for item in AgentLoop(db).handle_turn_stream(request):
-        if item.get("event") in {"complete", "done"} and isinstance(item.get("data"), dict):
-            result = ChatTurnResponse.model_validate(item["data"])
+    with persist_spans(
+        db,
+        tenant_id=team.tenant_id,
+        session_id=session_id,
+        client_turn_id=turn_id,
+    ):
+        for item in AgentLoop(db).handle_turn_stream(request):
+            if item.get("event") in {"complete", "done"} and isinstance(item.get("data"), dict):
+                result = ChatTurnResponse.model_validate(item["data"])
     if result is None:
         raise RuntimeError("团队唤醒执行未返回完整结果")
     outcome = _team_harness_outcome(

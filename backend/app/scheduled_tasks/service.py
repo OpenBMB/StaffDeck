@@ -34,6 +34,7 @@ from app.db.models import (
 )
 from app.llm import LLMClient, LLMError
 from app.observability.spans import llm_operation
+from app.observability import persist_spans
 from app.scheduled_tasks.schema import (
     ScheduledTaskCreateRequest,
     ScheduledTaskDraftRead,
@@ -545,10 +546,16 @@ def _execute_prepared_scheduled_task(
             client_timezone=task.timezone,
         )
         result: ChatTurnResponse | None = None
-        for seq, item in enumerate(AgentLoop(db).handle_turn_stream(request), start=1):
-            _record_scheduled_task_stream_event(db, run, run.session_id, seq, item)
-            if item.get("event") in {"complete", "done"} and isinstance(item.get("data"), dict):
-                result = ChatTurnResponse.model_validate(item["data"])
+        with persist_spans(
+            db,
+            tenant_id=task.tenant_id,
+            session_id=run.session_id,
+            client_turn_id=run.id,
+        ):
+            for seq, item in enumerate(AgentLoop(db).handle_turn_stream(request), start=1):
+                _record_scheduled_task_stream_event(db, run, run.session_id, seq, item)
+                if item.get("event") in {"complete", "done"} and isinstance(item.get("data"), dict):
+                    result = ChatTurnResponse.model_validate(item["data"])
         if result is None:
             raise RuntimeError("自动任务执行未返回完整结果")
         outcome = _scheduled_harness_outcome(db, run, result)

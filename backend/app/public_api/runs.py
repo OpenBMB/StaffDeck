@@ -15,6 +15,7 @@ from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.db import engine, get_session
+from app.observability import persist_spans
 from app.db.models import (
     APIClient,
     APICredential,
@@ -204,7 +205,12 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
 
     def execute_harness() -> None:
         try:
-            with Session(engine) as worker_db:
+            with Session(engine) as worker_db, persist_spans(
+                worker_db,
+                tenant_id=job.tenant_id,
+                session_id=session_id,
+                client_turn_id=job.id,
+            ):
                 for item in AgentLoop(worker_db).handle_turn_stream(request):
                     if item.get("event") != "complete":
                         continue

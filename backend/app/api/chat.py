@@ -51,6 +51,7 @@ from app.harness import (
     open_harness_artifact,
 )
 from app.llm import LLMClient, LLMError
+from app.observability import persist_spans
 from app.observability.spans import (
     bind_span_sink,
     llm_operation,
@@ -584,7 +585,12 @@ def _resume_human_handoff_worker(handoff_id: str) -> None:
                 channel="human_handoff_resume",
                 debug=False,
             )
-            AgentLoop(db).handle_turn(request)
+            with persist_spans(
+                db,
+                tenant_id=handoff.tenant_id,
+                session_id=handoff.session_id,
+            ):
+                AgentLoop(db).handle_turn(request)
             # resume turn 完成后不再写 resume_finished_at 标记:
             # _inject_handoff_context 已改为用 request.channel == "human_handoff_resume"
             # 判定 resume turn,时序可靠,无需事后标记。
