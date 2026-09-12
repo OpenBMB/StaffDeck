@@ -266,8 +266,9 @@ def parse_bid_award(reply: str, candidate_ids: set[str]) -> dict[str, Any] | Non
                     score = float(item.get("score"))
                 except (TypeError, ValueError):
                     continue
+                # 与 parse_bid_scores 一致:裁决分数同样落在 0-10,避免污染血条与看板
                 scores[str(agent_id)] = {
-                    "score": score,
+                    "score": min(10.0, max(0.0, score)),
                     "rationale": str(item.get("rationale") or "").strip(),
                 }
         return {
