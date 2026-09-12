@@ -297,6 +297,12 @@ Yes. The application calls an OpenAI-compatible model endpoint, so GPU requireme
 Marketplace resources are reusable templates. Regular users can copy or bind authorized resources to their own employees, while the original resources remain protected by creator and administrator permissions.
 </details>
 
+<details>
+<summary><strong>How do I upgrade an existing deployment to the latest release?</strong></summary>
+
+For desktop installations, download the latest installer and install it over the existing one; your data directory is preserved and schema changes are applied automatically on first launch. For source deployments, stop the app, back up the database and `backend/.env`, pull the latest code, reinstall dependencies, and restart. See the [Upgrade Guide](docs/upgrade-guide.md) for step-by-step instructions.
+</details>
+
 ## Roadmap
 
 - [ ] Group chat, multi-digital-employee communication, and task division
