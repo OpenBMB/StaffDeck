@@ -13,3 +13,10 @@ class APIResponse:
     request_id: str | None = None
     etag: str | None = None
 
+
+@dataclass(frozen=True)
+class RunEvent:
+    id: str
+    event: str
+    data: Any
+

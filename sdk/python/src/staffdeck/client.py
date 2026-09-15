@@ -13,6 +13,8 @@ import httpx
 
 from .errors import APIError, ProtocolError, TransportError
 from .models import APIResponse
+from .resources import Agents, MCPServers, Sessions, SOPs, Tools
+from .runs import Runs
 
 _RETRY_STATUSES = {429, 502, 503, 504}
 
@@ -72,6 +74,12 @@ class StaffDeck:
             follow_redirects=False,
             transport=transport,
         )
+        self.agents = Agents(self)
+        self.sessions = Sessions(self)
+        self.tools = Tools(self)
+        self.mcp_servers = MCPServers(self)
+        self.sops = SOPs(self)
+        self.runs = Runs(self)
 
     def __enter__(self) -> Self:
         return self

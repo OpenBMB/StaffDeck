@@ -34,3 +34,24 @@ class TransportError(StaffDeckError):
 class ProtocolError(StaffDeckError):
     """The response is not compatible with the expected public API protocol."""
 
+
+class RunFailedError(StaffDeckError):
+    def __init__(self, run_id: str, job: dict[str, Any]) -> None:
+        super().__init__("StaffDeck run did not succeed; inspect the job for details.")
+        self.run_id = run_id
+        self.job = job
+        self.status = job.get("status")
+
+
+class WaitTimeout(StaffDeckError):
+    def __init__(self, run_id: str) -> None:
+        super().__init__("Timed out waiting for StaffDeck; the run was not cancelled.")
+        self.run_id = run_id
+
+
+class StreamError(StaffDeckError):
+    def __init__(self, run_id: str, last_event_id: str | None, message: str) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.last_event_id = last_event_id
+
