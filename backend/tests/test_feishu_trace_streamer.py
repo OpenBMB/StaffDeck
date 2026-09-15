@@ -453,7 +453,7 @@ def test_card_renders_tool_display_names_and_readable_completion_reason() -> Non
     assert "全部步骤已完成" in joined
 
 
-def test_streamer_loads_step_names_from_db() -> None:
+def test_streamer_loads_step_names_from_runtime_composition() -> None:
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -499,6 +499,11 @@ def test_streamer_loads_step_names_from_db() -> None:
         )
         streamer.start()
         _wait_for_card(streamer)
+        streamer.on_event('composition_snapshot_compiled', {'trace_names': {
+            'skills': {'skill_refund': '售后退款流程'},
+            'steps': {'skill_refund': {'collect_order_info': '收集订单信息'}},
+            'tools': {'hr.balance_query': '假期考勤查询'},
+        }})
         streamer.on_event(
             "skill_step_changed",
             {"turn_id": "t1", "to_skill_id": "skill_refund", "to_step_id": "collect_order_info"},

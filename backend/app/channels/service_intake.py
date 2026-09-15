@@ -721,10 +721,17 @@ def _bind_external_identity(
     if not record or record.used_at is not None or record.expires_at <= now:
         _record_bind_failure(binding.tenant_id, binding.channel, scope, external_id)
         return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
-    owner = db.get(User, record.user_id)
-    if not owner:
+    from fastapi import HTTPException
+    from staffdeck_harness.runtime.identity_directory import require_internal_member
+    try:
+        owner = require_internal_member(db, binding.tenant_id, record.user_id, materialize=True)
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            return "成员身份服务暂不可用，绑定码尚未使用，请稍后重试。"
+        if isinstance(exc.detail, dict) and exc.detail.get('code') == 'MEMBER_DISABLED':
+            return "该成员已停用，不能绑定渠道身份。"
         _record_bind_failure(binding.tenant_id, binding.channel, scope, external_id)
-        return "绑定码无效或已过期，请在 StaffDeck 网页端重新生成后再试。"
+        return "绑定对象已不可用，请在 StaffDeck 网页端重新生成绑定码。"
 
     identity = find_channel_identity(db, binding.tenant_id, binding.channel, external_id, scope)
     old_user_id = identity.staffdeck_user_id if identity else None

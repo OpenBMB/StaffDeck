@@ -16,7 +16,7 @@ class SnapshotManifestBuilder:
             active_node_id=step_id, session_id=engine.session.id if engine.session else None)
         host = CapabilityHost(engine.db, engine.guard, engine.security_context, slot,
                               LifecycleFence(engine.registry.generation))
-        available, unavailable = [], []
+        available, unavailable, display_names = [], [], {}
         for grant in slot.grants():
             kind = {"knowledge_base": "knowledge", "general_skill": "general_skill"}.get(grant.resource_type, "tool")
             item = CapabilityDescriptor(capability_id=grant.resource_id, name=grant.name,
@@ -37,10 +37,16 @@ class SnapshotManifestBuilder:
                 elif kind == "knowledge":
                     item.name = "knowledge_search"
                     item.metadata["knowledge_base_ids"] = [grant.resource_id]
+                display_names[item.name] = str(descriptor.metadata.get('display_name') or descriptor.name)
                 available.append(item)
             except ModuleSdkError as exc:
                 item.available = False
                 item.unavailable_reason = exc.code
                 unavailable.append(item)
+        events = getattr(engine, 'events', None)
+        session = getattr(engine, 'session', None)
+        if display_names and session is not None and callable(getattr(events, 'record', None)):
+            events.record(tenant_id, session.id, 'capability_manifest_resolved',
+                          {'turn_id': engine.user_message_id, 'trace_names': {'tools': display_names}})
         return CapabilityManifest(available=available, unavailable_references=unavailable,
                                   snapshot_revision=engine.snapshot.snapshot_id)

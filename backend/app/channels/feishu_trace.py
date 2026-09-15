@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.config import get_settings
-from app.db.models import ChannelBinding, GeneralSkill, Skill, Tool
+from app.db.models import ChannelBinding
 
 logger = logging.getLogger(__name__)
 
@@ -47,45 +47,13 @@ class _SinkEvent:
 def _load_skill_trace_names(
     db, tenant_id: str
 ) -> tuple[dict[str, str], dict[str, dict[str, str]], dict[str, str]]:
-    from sqlmodel import select
-
-    rows = db.exec(select(Skill).where(Skill.tenant_id == tenant_id)).all()
-    skill_names: dict[str, str] = {}
-    step_names: dict[str, dict[str, str]] = {}
-    for row in rows:
-        skill_names[row.skill_id] = row.name
-        content = row.content_json if isinstance(row.content_json, dict) else {}
-        steps: dict[str, str] = {}
-        for node in content.get("nodes") or []:
-            if not isinstance(node, dict):
-                continue
-            node_id = str(node.get("node_id") or "").strip()
-            node_name = str(node.get("name") or "").strip()
-            if node_id and node_name:
-                steps[node_id] = node_name
-        if steps:
-            step_names[row.skill_id] = steps
-    tool_names = _load_tool_display_names(db, tenant_id)
-    return skill_names, step_names, tool_names
+    # Runtime's composition event supplies the names for this exact execution.
+    # A channel must not scan an unrelated local or enterprise resource catalog.
+    return {}, {}, {}
 
 
 def _load_tool_display_names(db, tenant_id: str) -> dict[str, str]:
-    from sqlmodel import select
-
-    tool_names: dict[str, str] = {}
-    for row in db.exec(select(Tool).where(Tool.tenant_id == tenant_id)).all():
-        display = str(row.display_name or "").strip()
-        if not display:
-            display = str(row.description or "").strip()
-        name = str(row.name or "").strip()
-        if name and display:
-            tool_names[name] = display
-    for row in db.exec(select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id)).all():
-        slug = str(row.slug or "").strip()
-        name = str(row.name or "").strip()
-        if slug and name:
-            tool_names[f"general_skill.{slug}"] = name
-    return tool_names
+    return {}
 
 
 class FeishuTraceStreamer:

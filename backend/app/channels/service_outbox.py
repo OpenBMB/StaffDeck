@@ -1145,11 +1145,8 @@ def notify_handoff_assignee(
                 handoff.assignee_user_id,
             )
             return
-        # assignee 显示名:从 User 表取,无则空
-        assignee = db.get(User, handoff.assignee_user_id) if handoff.assignee_user_id else None
-        name = ""
-        if assignee:
-            name = str(assignee.display_name or assignee.username or "").strip()
+        from staffdeck_harness.runtime.identity_directory import user_names
+        name = user_names(db, binding.tenant_id, [handoff.assignee_user_id]).get(handoff.assignee_user_id, '') if handoff.assignee_user_id else ''
         problem_description = _build_handoff_problem_description(db, handoff, binding)
         text_parts = [
             f"【人工介入转接】{'已转接给真人员工 ' + name if name else '有一条人工介入待处理'}",

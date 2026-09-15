@@ -32,7 +32,7 @@ from app.channels.media import (
     ensure_channel_media_size,
 )
 from app.db import engine
-from app.db.models import ChannelBinding, GeneralSkill, Skill, Tool, utc_now
+from app.db.models import ChannelBinding, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -87,31 +87,8 @@ def _split_wecom_text(text: str, max_bytes: int = 1800) -> list[str]:
 def _load_wecom_progress_names(
     binding: ChannelBinding,
 ) -> tuple[dict[str, str], dict[str, dict[str, str]], dict[str, str]]:
-    with channel_session(engine) as db:
-        skill_names: dict[str, str] = {}
-        step_names: dict[str, dict[str, str]] = {}
-        for skill in db.exec(select(Skill).where(Skill.tenant_id == binding.tenant_id)).all():
-            skill_names[skill.skill_id] = skill.name
-            steps = {
-                str(node.get("node_id") or "").strip(): str(node.get("name") or "").strip()
-                for node in (skill.content_json or {}).get("nodes") or []
-                if isinstance(node, dict)
-                and str(node.get("node_id") or "").strip()
-                and str(node.get("name") or "").strip()
-            }
-            if steps:
-                step_names[skill.skill_id] = steps
-        tool_names = {
-            tool.name: str(tool.display_name or tool.description or "").strip()
-            for tool in db.exec(select(Tool).where(Tool.tenant_id == binding.tenant_id)).all()
-            if str(tool.display_name or tool.description or "").strip()
-        }
-        for skill in db.exec(
-            select(GeneralSkill).where(GeneralSkill.tenant_id == binding.tenant_id)
-        ).all():
-            if skill.slug and skill.name:
-                tool_names[f"general_skill.{skill.slug}"] = skill.name
-    return skill_names, step_names, tool_names
+    # The same composition_snapshot_compiled event enriches every trace renderer.
+    return {}, {}, {}
 
 
 async def _download_wecom_media_limited(url: str, aes_key: str) -> tuple[bytes, str | None]:

@@ -15,7 +15,6 @@ from app.core.harness_session_cleanup import stage_harness_session_execution_res
 from app.db import get_session
 from app.db.models import (
     AgentEvent,
-    AgentProfile,
     ChatSession,
     HarnessInvocationRecord,
     Message,
@@ -27,7 +26,7 @@ from app.db.models import (
 from app.feedback import feedback_analysis_read
 from app.observability.session_timings import enrich_turn_traces_with_timings
 from app.security.auth import get_current_user
-from app.security.permissions import agent_owned_by_user, is_admin_user
+from app.security.permissions import is_admin_user
 from app.security.tenant import ensure_tenant
 from app.session.message_visibility import visible_message_content, visible_message_rows
 
@@ -325,17 +324,10 @@ def _can_view_all_agent_sessions(
     agent_id: str | None,
     current_user: User,
 ) -> bool:
-    if is_admin_user(current_user):
-        return True
     if not agent_id:
-        return False
-    agent = db.get(AgentProfile, agent_id)
-    if not agent or agent.tenant_id != tenant_id:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    if agent.is_overall:
-        # is_overall 员工只有 admin 可看全部，创建者永不匹配
-        return False
-    return agent_owned_by_user(agent, current_user)
+        return is_admin_user(current_user)
+    from staffdeck_harness.runtime.staff_directory import can_manage_staff
+    return can_manage_staff(db, tenant_id, agent_id, current_user)
 
 
 def _get_visible_chat_session(
@@ -350,13 +342,8 @@ def _get_visible_chat_session(
         raise HTTPException(status_code=404, detail="Session not found")
     if row.user_id == current_user.id or is_admin_user(current_user):
         return row
-    agent = db.get(AgentProfile, row.agent_id) if row.agent_id else None
-    if (
-        agent
-        and agent.tenant_id == tenant_id
-        and not agent.is_overall
-        and agent_owned_by_user(agent, current_user)
-    ):
+    from staffdeck_harness.runtime.staff_directory import can_manage_staff
+    if row.agent_id and can_manage_staff(db, tenant_id, row.agent_id, current_user):
         return row
     raise HTTPException(status_code=404, detail="Session not found")
 

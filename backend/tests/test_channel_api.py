@@ -1617,7 +1617,8 @@ def test_put_binding_default_handoff_assignee_rejects_unknown_user() -> None:
         json={"default_handoff_assignee_user_id": "user_nonexistent"},
         headers=_auth(users["owner"]),
     )
-    assert response.status_code == 400
+    assert response.status_code == 404
+    assert response.json()['detail']['code'] == 'MEMBER_NOT_FOUND'
 
 
 def test_put_binding_default_handoff_assignee_rejects_channel_customer() -> None:
@@ -1643,7 +1644,8 @@ def test_put_binding_default_handoff_assignee_rejects_channel_customer() -> None
         headers=_auth(users["owner"]),
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 404
+    assert response.json()['detail']['code'] == 'MEMBER_NOT_FOUND'
 
 
 def test_put_feishu_default_handoff_assignee_channel_variant_requires_bound_identity() -> None:

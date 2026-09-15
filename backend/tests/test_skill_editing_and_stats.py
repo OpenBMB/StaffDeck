@@ -2023,7 +2023,8 @@ def test_validate_handoff_assignees_rejects_channel_customer() -> None:
 
         with pytest.raises(HTTPException) as exc_info:
             _validate_handoff_assignees(db, _handoff_skill_card("user_channel"), "tenant_demo")
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail['code'] == 'MEMBER_NOT_FOUND'
 
 
 def test_validate_handoff_assignees_rejects_unsupported_private_message_channel() -> None:

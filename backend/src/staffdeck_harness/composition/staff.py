@@ -158,6 +158,7 @@ def _capabilities(db: Session, tenant_id: str, agent: AgentProfile | None) -> tu
                         **(dict(binding.metadata_json or {}) if binding else {}),
                         "resource_digest": tool_snapshot_digest(db, row) if rtype == "tool" else general_skill_snapshot_digest(row) if rtype == "general_skill" else None,
                         **({"slug": row.slug} if rtype == "general_skill" else {}),
+                        **({"display_name": row.display_name} if rtype == "tool" and row.display_name else {}),
                     },
                 )
             )

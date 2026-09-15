@@ -41,20 +41,23 @@ def run_worker(*, once: bool = False, poll_seconds: float = WORKER_SLEEP_SECONDS
 
 
 def _run_due_tasks() -> None:
+    from staffdeck_harness.modules.registry import peek_registry
+    from staffdeck_harness.contracts.manifest import SlotName
+    registry = peek_registry()
+    if registry is not None:
+        providers = [item for item in registry.providers(SlotName.STAFF_INGRESS)
+                     if item.manifest.metadata.get('ingress', item.manifest.module_id.removeprefix('ingress.')) == 'scheduler']
+        if len(providers) != 1:
+            return  # Disabled modules must not even claim tasks.
+        from staffdeck_harness.runtime.services import maintenance_sessions
+        for db in maintenance_sessions():
+            for task in due_scheduled_tasks(db):
+                providers[0].provider.dispatch(db, task)
+        return
     with Session(engine) as db:
         due = due_scheduled_tasks(db)
         for task in due:
-            from staffdeck_harness.modules.registry import peek_registry
-            from staffdeck_harness.contracts.manifest import SlotName
-
-            registry = peek_registry()
-            if registry is None:
-                execute_scheduled_task(db, task)
-                continue
-            providers = [i for i in registry.providers(SlotName.STAFF_INGRESS)
-                         if i.manifest.metadata.get("ingress", i.manifest.module_id.removeprefix("ingress.")) == "scheduler"]
-            if len(providers) == 1:
-                providers[0].provider.dispatch(db, task)
+            execute_scheduled_task(db, task)
 
 
 def start_background_worker(*, poll_seconds: float = WORKER_SLEEP_SECONDS) -> None:

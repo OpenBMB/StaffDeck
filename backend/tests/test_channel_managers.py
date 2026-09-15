@@ -355,7 +355,7 @@ def test_add_collaborator_validations() -> None:
         json={"user_id": "user_nope"},
         params=params,
         headers=headers,
-    ).status_code == 400
+    ).status_code == 404
     # 正常添加
     assert client.post(
         f"/api/enterprise/channels/{binding_id}/managers",

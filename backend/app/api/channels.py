@@ -105,7 +105,7 @@ from app.security.permissions import (
 )
 from staffdeck_harness.runtime.staff_directory import ensure_staff_manager as ensure_agent_scope_manager
 from staffdeck_harness.runtime.staff_directory import staff_names, staff_profile
-from staffdeck_harness.runtime.identity_directory import is_internal_actor
+from staffdeck_harness.runtime.identity_directory import require_internal_member, user_names
 
 logger = logging.getLogger(__name__)
 
@@ -524,9 +524,7 @@ def create_identity_bind_code(
     ensure_current_user_tenant(tenant_id, current_user)
     binding = _get_binding(db, tenant_id, binding_id)
     _ensure_binding_manager(db, tenant_id, binding, current_user, action=_MANAGER_ACTION_AGENTS)
-    target = db.get(User, request.user_id)
-    if not target or target.tenant_id != tenant_id or not is_internal_actor(target):
-        raise HTTPException(status_code=400, detail="身份绑定对象必须是当前租户的内部成员")
+    target = require_internal_member(db, tenant_id, request.user_id, materialize=True)
     if binding.channel == "feishu" and not binding.credentials_enc:
         raise HTTPException(status_code=409, detail="请先完成飞书应用接入，再邀请成员绑定身份")
     if not _check_bind_code_rate(current_user.id):
@@ -667,12 +665,7 @@ def update_channel_binding_agents(
     handoff_assignee = request.default_handoff_assignee_user_id
     handoff_channel = request.default_handoff_assignee_channel
     if handoff_assignee != "unchanged" and handoff_assignee:
-        user = db.get(User, handoff_assignee)
-        if not user or user.tenant_id != tenant_id or not is_internal_actor(user):
-            raise HTTPException(
-                status_code=400,
-                detail="默认人工处理人必须是当前租户的内部成员",
-            )
+        require_internal_member(db, tenant_id, handoff_assignee, materialize=True)
         handoff_channel = str(handoff_channel or "").strip()
         if handoff_channel and handoff_channel not in ("unchanged", "web"):
             from app.channels.service_outbox import (
@@ -891,10 +884,7 @@ def delete_channel_binding(
 
 def _user_display_name(db: Session, user_id: str, tenant_id: str) -> str | None:
     """租户内用户展示名;用户不存在或不属于该租户时返回 None。"""
-    user = db.get(User, user_id)
-    if not user or user.tenant_id != tenant_id:
-        return None
-    return user.display_name or user.username
+    return user_names(db, tenant_id, [user_id]).get(user_id)
 
 
 @router.get("/{binding_id}/managers", response_model=list[ChannelBindingManagerRead])
@@ -944,9 +934,7 @@ def add_channel_binding_manager(
     ensure_current_user_tenant(tenant_id, current_user)
     binding = _get_binding(db, tenant_id, binding_id)
     _ensure_binding_manager(db, tenant_id, binding, current_user)
-    target = db.get(User, request.user_id)
-    if not target or target.tenant_id != tenant_id or not is_internal_actor(target):
-        raise HTTPException(status_code=400, detail="协作者必须是当前租户的内部成员")
+    target = require_internal_member(db, tenant_id, request.user_id, materialize=True)
     if target.id == binding.created_by_user_id:
         raise HTTPException(status_code=400, detail="创建者已是该渠道拥有者,无需添加")
     if is_admin_user(target):
@@ -2161,8 +2149,8 @@ def list_channel_conversations(
         identity_names = {
             row.staffdeck_user_id: row.display_name for row in identities if row.display_name
         }
-        users = db.exec(select(User).where(User.id.in_(user_ids))).all()
-        user_names = {row.id: row.display_name for row in users if row.display_name}
+        from staffdeck_harness.runtime.identity_directory import user_names as resolve_user_names
+        user_names = resolve_user_names(db, tenant_id, user_ids)
     if agent_ids:
         agent_name_map = staff_names(db, tenant_id, agent_ids)
     if session_ids:

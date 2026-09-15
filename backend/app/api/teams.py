@@ -12,7 +12,7 @@ from app.api.sessions import (
     _session_details_payload,
 )
 from app.core import AgentLoop
-from staffdeck_harness.runtime.staff_directory import optional_staff_profile, staff_names
+from staffdeck_harness.runtime.staff_directory import optional_staff_profile, staff_names, staff_profiles
 from app.db import get_session
 from app.db.models import (
     AgentEvent,
@@ -116,9 +116,12 @@ def _ensure_team_manager(team: Team, user: User) -> None:
         raise HTTPException(status_code=403, detail="Only team owner or administrator can manage this team")
 
 
-def _member_read(db: Session, member) -> TeamMemberRead:
-    team = db.get(Team, member.team_id)
-    agent = optional_staff_profile(db, team.tenant_id, member.agent_id) if team else None
+def _member_read(db: Session, member, profiles=None) -> TeamMemberRead:
+    if profiles is None:
+        team = db.get(Team, member.team_id)
+        agent = optional_staff_profile(db, team.tenant_id, member.agent_id) if team else None
+    else:
+        agent = profiles.get(member.agent_id)
     return TeamMemberRead(
         id=member.id,
         team_id=member.team_id,
@@ -129,8 +132,11 @@ def _member_read(db: Session, member) -> TeamMemberRead:
     )
 
 
-def _team_read(db: Session, team: Team) -> TeamRead:
-    members = [_member_read(db, item) for item in list_team_members(db, team.id)]
+def _team_read(db: Session, team: Team, profiles=None) -> TeamRead:
+    memberships = list_team_members(db, team.id)
+    if profiles is None:
+        profiles = staff_profiles(db, team.tenant_id, [item.agent_id for item in memberships])
+    members = [_member_read(db, item, profiles) for item in memberships]
     return TeamRead(
         id=team.id,
         tenant_id=team.tenant_id,
@@ -251,7 +257,10 @@ def list_teams(
     rows = db.exec(
         select(Team).where(Team.tenant_id == tenant_id).order_by(Team.updated_at.desc())
     ).all()
-    return [_team_read(db, row) for row in rows]
+    from app.db.models import TeamMember
+    memberships = db.exec(select(TeamMember).where(TeamMember.team_id.in_([row.id for row in rows]))).all() if rows else []
+    profiles = staff_profiles(db, tenant_id, [item.agent_id for item in memberships])
+    return [_team_read(db, row, profiles) for row in rows]
 
 
 @router.get("/{team_id}", response_model=TeamRead)

@@ -236,7 +236,7 @@ def list_skills(
 
 
 def _validate_handoff_assignees(db: Session, content: SkillCard, tenant_id: str) -> None:
-    """校验 SOP 人工节点的处理人:必须存在、同租户、source='web'(内部成员)。
+    """校验 SOP 人工节点的处理人:由当前身份目录确认存在、同租户且启用。
 
     assignee_notify_channel 为 None 时按默认投递(网页收件箱,可达则渠道通知);
     为 "web" 时仅网页端;为具体渠道时要求该渠道支持私聊通知(有可用适配器),
@@ -251,26 +251,10 @@ def _validate_handoff_assignees(db: Session, content: SkillCard, tenant_id: str)
     if not assignee_specs:
         return
     assignee_ids = {user_id for user_id, _ in assignee_specs}
-    rows = db.exec(
-        select(User).where(
-            User.tenant_id == tenant_id,
-            User.id.in_(assignee_ids),
-        )
-    ).all()
-    found_ids = {row.id for row in rows}
-    internal_ids = {row.id for row in rows if row.source == "web"}
-    missing = assignee_ids - found_ids
-    if missing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"人工节点处理人不存在或不在当前租户: {', '.join(sorted(missing))}",
-        )
-    non_internal = assignee_ids - internal_ids
-    if non_internal:
-        raise HTTPException(
-            status_code=400,
-            detail=f"人工节点处理人必须是内部成员(web 账号),不可使用渠道客户或群聊虚拟账号: {', '.join(sorted(non_internal))}",
-        )
+    from staffdeck_harness.runtime.identity_directory import require_internal_member, resolve_members
+    members = resolve_members(db, tenant_id, sorted(assignee_ids))
+    for user_id in sorted(assignee_ids):
+        require_internal_member(db, tenant_id, user_id, materialize=True, resolved=members)
     channel_specs = {
         (user_id, channel)
         for user_id, channel in assignee_specs

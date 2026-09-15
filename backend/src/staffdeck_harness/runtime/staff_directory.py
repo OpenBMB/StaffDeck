@@ -71,15 +71,49 @@ def ensure_staff_manager(db, tenant_id, staff_id, current_user):
     return staff_profile(db, tenant_id, staff_id, user=current_user, action="manage", active_only=True)
 
 
+def can_manage_staff(db, tenant_id, staff_id, current_user):
+    """A denied management permission narrows reads; missing sources/services are errors."""
+    if not staff_id:
+        return False
+    if current_user.tenant_id != tenant_id:
+        raise HTTPException(403, 'Tenant mismatch')
+    try:
+        staff_profile(db, tenant_id, staff_id, user=current_user, action='manage')
+        return True
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            return False
+        if exc.status_code == 404:
+            # Deleted employees do not erase tenant-admin access to retained history.
+            return current_user.role == 'admin'
+        raise
+
+
 def staff_names(db, tenant_id, staff_ids):
-    names = {}
-    for staff_id in dict.fromkeys(staff_ids):
-        try:
-            names[staff_id] = staff_profile(db, tenant_id, staff_id).name
-        except HTTPException as exc:
-            if exc.status_code not in (403, 404, 409):
-                raise
-    return names
+    return {key: row.name for key, row in staff_profiles(db, tenant_id, staff_ids).items()}
+
+
+def staff_profiles(db, tenant_id, staff_ids):
+    """Batch display facts only. Execution and writes still authorize each action live."""
+    ids = list(dict.fromkeys(staff_ids))
+    if not ids:
+        return {}
+    from staffdeck_harness.modules.registry import peek_registry
+    from staffdeck_harness.composition.local_sources import LocalStaffSource
+    registry = getattr(db, 'info', {}).get('staffdeck_registry') or peek_registry()
+    source = resolve_source(registry, SlotName.STAFF_SOURCE, db) if registry else LocalStaffSource(db)
+    reader = getattr(source, 'profiles', None)
+    if not callable(reader):
+        return {key: row for key in ids if (row := optional_staff_profile(db, tenant_id, key)) is not None}
+    try:
+        rows = reader(directory_context(db, tenant_id, None), ids)
+        if any(not isinstance(row, StaffProfile) or row.id not in ids
+               or (row.tenant_id, row.ref.tenant_id, row.ref.id, row.ref.type) != (tenant_id, tenant_id, row.id, 'agent')
+               for row in rows) or len({row.id for row in rows}) != len(rows):
+            raise ModuleSdkError('批量员工目录返回了错误的数据归属', code='STAFF_PROFILE_INVALID')
+        return {row.id: row for row in rows}
+    except ModuleSdkError as exc:
+        raise HTTPException(403 if isinstance(exc, PermissionDenied) else 503, exc.to_dict()) from exc
 
 
 def optional_staff_profile(db, tenant_id, staff_id):

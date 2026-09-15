@@ -301,10 +301,8 @@ def channel_binding_creator_name(db: Session, binding: ChannelBinding) -> Option
     """创建者展示名;用户已删除或存量绑定无 created_by_user_id 时返回 None。"""
     if not binding.created_by_user_id:
         return None
-    user = db.get(User, binding.created_by_user_id)
-    if not user:
-        return None
-    return user.display_name or user.username
+    from staffdeck_harness.runtime.identity_directory import user_names
+    return user_names(db, binding.tenant_id, [binding.created_by_user_id]).get(binding.created_by_user_id)
 
 
 def _default_handoff_assignee_name(db: Session, binding: ChannelBinding) -> Optional[str]:
@@ -313,10 +311,8 @@ def _default_handoff_assignee_name(db: Session, binding: ChannelBinding) -> Opti
     user_id = str(config.get("default_handoff_assignee_user_id") or "").strip() or None
     if not user_id:
         return None
-    user = db.get(User, user_id)
-    if not user or user.tenant_id != binding.tenant_id:
-        return None
-    return user.display_name or user.username
+    from staffdeck_harness.runtime.identity_directory import user_names
+    return user_names(db, binding.tenant_id, [user_id]).get(user_id)
 
 
 def channel_binding_my_role(

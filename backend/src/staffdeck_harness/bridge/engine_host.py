@@ -28,6 +28,7 @@ from staffdeck_harness.composition.sources import resolve_staff, source_context
 from staffdeck_harness.contracts.errors import EngineUnavailable
 from staffdeck_harness.contracts.security import SecurityContext
 from staffdeck_harness.security.profile import Guard, get_profile
+from staffdeck_harness.runtime.trace_names import composition_trace_names
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,7 @@ class HarnessV3Engine(TurnCoordinator):
                 "sops": [s.skill_id for s in self.snapshot.sops],
                 "security_profile": self.profile.name,
                 "execution_engine": "harness_v3",
+                "trace_names": composition_trace_names(staff),
                 "bindings": [vars(binding.durable_ref()) for binding in self.snapshot.bindings],
             },
         )

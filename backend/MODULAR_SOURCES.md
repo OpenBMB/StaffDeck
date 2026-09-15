@@ -51,6 +51,16 @@ SOP 内容与能力绑定按 TaskFrame 实例固定，记录在现有 `ChatSessi
 
 ## 验收
 
+### 管理与后台任务的来源边界
+
+- 外部控制身份适配器实现 `MemberDirectoryPort`：声明 `member_identity_source`，批量返回 `MemberRecord`（含明确的启停状态）。渠道绑定、协作者、人工处理人及 SOP 人工节点统一使用该目录，不要求成员先登录以生成本地投影。
+- 本地身份投影仅用于关联渠道和运行记录。不能从投影推断成员仍有效；绑定码兑换和后台执行重新校验。目录不可用不回退本地账号，也不冒用管理员身份。
+- 定时任务、记忆、会话和反馈的员工访问通过 `staff_directory` 与当前 PEP；后台任务沿用接纳时的运行服务和装配租约。
+- 员工来源可提供 `profiles(context, staff_ids)` 批量展示资料。批量名称不是授权缓存，执行和写入仍实时检查权限。
+- Runtime 在 `composition_snapshot_compiled`、`capability_manifest_resolved` 事件中提供白名单式 `trace_names`；渠道不再扫描自己的资源表拼装名称，不输出 Provider 私有配置。
+- 成员错误分别为 `MEMBER_NOT_FOUND`、`MEMBER_DISABLED`、`MEMBER_IDENTITY_CONFLICT`、`MEMBER_DIRECTORY_UNAVAILABLE` 和 `MEMBER_DIRECTORY_INVALID`。
+- 回归：`tests/test_modular_member_directory.py`、`tests/test_modular_management_sources.py`，覆盖无本地投影的外部成员、普通成员权限、跨租户、停用、身份冲突、批量读取、运行服务保留和无本地资源的卡片名称。
+
 - `tests_harness/test_source_boundaries.py`：公开契约无 ORM 导入；无本地资源行调用；错租户、撤权、版本变化和 schema 错误拒绝；SOP 固定版本及隔离状态。
 - `tests_harness/test_sealed_e2e_engine.py`：注册替代员工、SOP 来源及资源目录/Provider，经真实 Node 引擎、模型网关和 MCP 完成执行；默认 SOP 和替代 SOP 生命周期的等待/恢复/完成。
 - 代码模块不做运行中热换。注册表启动后冻结；更换来源/执行实现需要重启工作进程。

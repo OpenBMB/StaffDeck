@@ -3436,6 +3436,11 @@ def _event_trace_lines(
     step_names: dict[str, dict[str, str]] | None = None,
     tool_names: dict[str, str] | None = None,
 ) -> list[dict]:
+    if event.event_type in {'composition_snapshot_compiled', 'capability_manifest_resolved'}:
+        from staffdeck_harness.runtime.trace_names import merge_trace_names
+        merge_trace_names(event.payload_json or {}, skill_names,
+                          step_names if step_names is not None else {},
+                          tool_names if tool_names is not None else {})
     line = _event_trace_line(event, skill_names, skill_hint, step_names, tool_names)
     if not line:
         return []

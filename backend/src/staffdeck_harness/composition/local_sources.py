@@ -61,6 +61,16 @@ class LocalStaffSource:
         return StaffProfile(row.id, row.tenant_id, row.name, row.status, agent_ref(row),
             row.is_overall, row.description, row.persona_prompt, row.harness_max_actions, dict(row.metadata_json or {}))
 
+    def profiles(self, context, staff_ids):
+        from sqlmodel import select
+        from app.db.models import AgentProfile
+        from staffdeck_harness.contracts.staff import StaffProfile
+        from staffdeck_harness.composition.projection import agent_ref
+        rows = self.db.exec(select(AgentProfile).where(AgentProfile.tenant_id == context.tenant_id,
+                                                     AgentProfile.id.in_(staff_ids))).all()
+        return [StaffProfile(row.id, row.tenant_id, row.name, row.status, agent_ref(row),
+                row.is_overall, row.description, metadata_json=dict(row.metadata_json or {})) for row in rows]
+
     def reference(self, context):
         from app.agents.branching import get_agent, get_overall_agent
         from app.db.models import ChatSession

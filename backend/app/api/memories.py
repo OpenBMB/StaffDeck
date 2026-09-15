@@ -4,10 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.db.models import AgentProfile, ChatSession, MemoryRecord, User
+from app.db.models import ChatSession, MemoryRecord, User
 from app.memory.service import memory_agent_id, memory_matches_agent, memory_read, memory_rows_for_read
 from app.security.auth import get_current_user, require_current_tenant
-from app.security.permissions import agent_owned_by_user, is_admin_user
+from app.security.permissions import is_admin_user
 from app.security.tenant import ensure_tenant
 
 
@@ -113,14 +113,10 @@ def _can_view_all_memories(
     agent_id: str | None,
     current_user: User,
 ) -> bool:
-    if is_admin_user(current_user):
-        return True
     if not agent_id:
-        return False
-    agent = db.get(AgentProfile, agent_id)
-    if not agent or agent.tenant_id != tenant_id:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return agent_owned_by_user(agent, current_user)
+        return is_admin_user(current_user)
+    from staffdeck_harness.runtime.staff_directory import can_manage_staff
+    return can_manage_staff(db, tenant_id, agent_id, current_user)
 
 
 def _memory_matches_agent(row: MemoryRecord, agent_id: str, session_agents: dict[str, str | None]) -> bool:
