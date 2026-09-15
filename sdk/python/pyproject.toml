@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Python client for the StaffDeck Open API v1"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "AGPL-3.0-only"}
+license = "AGPL-3.0-only"
 dependencies = ["httpx>=0.27,<0.29"]
 
 [project.scripts]
