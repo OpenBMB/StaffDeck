@@ -4,6 +4,7 @@ import asyncio
 import importlib.metadata
 import json
 import logging
+import hashlib
 from pathlib import Path
 
 from sqlalchemy.pool import NullPool
@@ -17,6 +18,48 @@ from feishu_connector_worker import SDK_CONTRACT_VERSION
 
 
 logger = logging.getLogger(__name__)
+
+
+def _ingress_diagnostic(binding_id, stage, *, event=None, reason=None, payload_bytes=None):
+    """Metadata only: never serialize event bodies, message text, IDs or credentials."""
+    diagnostic = logging.getLogger('staffdeck.feishu.ingress')
+    if not diagnostic.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        diagnostic.addHandler(handler)
+        diagnostic.setLevel(logging.INFO)
+        diagnostic.propagate = False
+    record = {'binding_id': binding_id, 'stage': stage}
+    if reason is not None:
+        allowed = {'missing_structure', 'invalid_event_identity', 'unsupported_message_type',
+                   'bot_sender', 'empty_content', 'group_missing_chat', 'group_not_mentioned',
+                   'group_empty_content', 'binding_fence_mismatch', 'provider_tenant_mismatch',
+                   'identity_scope_mismatch', 'invalid_event_payload', 'event_payload_too_large',
+                   'inbox_integrity_error', 'inbox_database_error', 'staged', 'duplicate',
+                   'security_drop', 'nack', 'handler_exception'}
+        record['reason'] = reason if reason in allowed else 'other'
+    if payload_bytes is not None:
+        record['payload_bytes'] = int(payload_bytes)
+    if event is not None:
+        header = getattr(event, 'header', None)
+        body = getattr(event, 'event', None)
+        message = getattr(body, 'message', None)
+        sender = getattr(body, 'sender', None)
+        sender_id = getattr(sender, 'sender_id', None)
+        for key, obj, allowed in (
+            ('message_type', message, {'text', 'post', 'image', 'file'}),
+            ('chat_type', message, {'p2p', 'group', 'topic_group'}),
+            ('sender_type', sender, {'user', 'app', 'bot'}),
+        ):
+            value = str(getattr(obj, key, '') or '')
+            record[key] = value if value in allowed else 'other'
+        record['has_app_id'] = bool(getattr(header, 'app_id', None))
+        record['has_tenant_key'] = bool(getattr(header, 'tenant_key', None))
+        record['has_sender_open_id'] = bool(getattr(sender_id, 'open_id', None))
+        identifier = str(getattr(header, 'event_id', '') or '')
+        if identifier:
+            record['event_ref'] = hashlib.sha256(identifier.encode()).hexdigest()[:12]
+    diagnostic.info('FEISHU_INGRESS %s', json.dumps(record, ensure_ascii=True))
 
 
 def _text_content(message) -> str:
@@ -159,14 +202,18 @@ def _extract_feishu_attachments(message) -> list[ChannelInboundAttachment]:
     return attachments
 
 
-def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] | None:
+def _normalize_event(event, *, bot_open_id: str, on_drop=None) -> tuple[ChannelInbound, dict] | None:
+    def drop(reason):
+        if on_drop is not None:
+            on_drop(reason)
+        return None
     header = getattr(event, "header", None)
     body = getattr(event, "event", None)
     message = getattr(body, "message", None)
     sender = getattr(body, "sender", None)
     sender_id = getattr(sender, "sender_id", None)
     if not header or not message or not sender or not sender_id:
-        return None
+        return drop('missing_structure')
     app_id = str(header.app_id or "").strip()
     tenant_key = str(header.tenant_key or "").strip()
     message_id = str(message.message_id or "").strip()
@@ -176,16 +223,12 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
     chat_type = str(message.chat_type or "").strip().lower()
     message_type = str(message.message_type or "").strip().lower()
     # 放宽 message_type 过滤:允许 text / image / file / post
-    if (
-        message_type not in {"text", "image", "file", "post"}
-        or not app_id
-        or not tenant_key
-        or not message_id
-        or not open_id
-        or sender_type in {"app", "bot"}
-        or open_id == bot_open_id
-    ):
-        return None
+    if message_type not in {"text", "image", "file", "post"}:
+        return drop('unsupported_message_type')
+    if not app_id or not tenant_key or not message_id or not open_id:
+        return drop('invalid_event_identity')
+    if sender_type in {"app", "bot"} or open_id == bot_open_id:
+        return drop('bot_sender')
 
     # 提取图片/文件附件(image/file 消息)
     attachments = _extract_feishu_attachments(message)
@@ -197,13 +240,13 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
     elif message_type == "post":
         text = _post_text_content(message)
     if not text and not attachments:
-        return None
+        return drop('empty_content')
 
     is_group = chat_type != "p2p"
     mentions = list(message.mentions or [])
     if is_group:
         if not chat_id:
-            return None
+            return drop('group_missing_chat')
         bot_mentions = [
             mention
             for mention in mentions
@@ -211,14 +254,14 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
             == bot_open_id
         ]
         if not bot_mentions and not attachments:
-            return None
+            return drop('group_not_mentioned')
         for mention in bot_mentions:
             key = str(getattr(mention, "key", "") or "")
             if key:
                 text = text.replace(key, " ")
         text = " ".join(text.split())
         if not text and not attachments:
-            return None
+            return drop('group_empty_content')
 
     thread_id = str(message.thread_id or "").strip()
     # 飞书回复消息时,message.parent_id 为被回复消息的 message_id(话题回复时
@@ -316,7 +359,9 @@ def run_feishu_runtime(spec, control, watchdog) -> None:
     from lark_channel.ws.const import HEADER_MESSAGE_ID, HEADER_TRACE_ID
 
     def receive(event) -> None:
-        normalized = _normalize_event(event, bot_open_id=bot_open_id)
+        _ingress_diagnostic(spec.binding_id, 'event_received', event=event)
+        normalized = _normalize_event(event, bot_open_id=bot_open_id,
+            on_drop=lambda reason: _ingress_diagnostic(spec.binding_id, 'normalize_drop', event=event, reason=reason))
         if normalized is None:
             return
         inbound, target = normalized
@@ -329,6 +374,8 @@ def run_feishu_runtime(spec, control, watchdog) -> None:
             inbound=inbound,
             target=target,
         )
+        _ingress_diagnostic(spec.binding_id, 'inbox_result', event=event,
+                            reason=result.error_code or result.disposition.value)
         if result.disposition is StageDisposition.NACK:
             raise RuntimeError(result.error_code or "Feishu inbox staging failed")
         if result.disposition is StageDisposition.STAGED:
@@ -342,6 +389,7 @@ def run_feishu_runtime(spec, control, watchdog) -> None:
             control.emit("CONNECTED")
 
         async def _handle_data_frame(self, frame) -> None:
+            _ingress_diagnostic(spec.binding_id, 'frame_received', payload_bytes=len(frame.payload))
             token = ":".join(
                 (
                     _get_by_key(frame.headers, HEADER_MESSAGE_ID),
@@ -358,6 +406,7 @@ def run_feishu_runtime(spec, control, watchdog) -> None:
             return await super()._disconnect_and_reconnect(expected_conn=expected_conn)
 
     client = ProductionClient(app_id, app_secret, event_handler=dispatcher)
+    _ingress_diagnostic(spec.binding_id, 'diagnostics_ready')
 
     def request_stop() -> None:
         async def shutdown() -> None:
