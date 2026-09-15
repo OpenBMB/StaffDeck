@@ -11,6 +11,13 @@ class IncompleteEvent(Exception):
     """A connection ended mid-frame; resume from the previous delivered ID."""
 
 
+def is_sequence_id(value: str | None) -> bool:
+    return (
+        isinstance(value, str) and 0 < len(value) <= 19
+        and value.isascii() and value.isdecimal() and int(value) <= 2**63 - 1
+    )
+
+
 def parse_events(lines: Iterable[str], *, max_event_chars: int = 1_048_576) -> Iterator[RunEvent]:
     """Parse complete SSE frames, ignoring comments and detecting truncated frames.
 
@@ -26,7 +33,7 @@ def parse_events(lines: Iterable[str], *, max_event_chars: int = 1_048_576) -> I
             line = line.removeprefix("\ufeff")
         if not line:
             if data:
-                if not event_id or not event_id.isascii() or not event_id.isdecimal():
+                if not is_sequence_id(event_id):
                     raise ProtocolError("StaffDeck event is missing a numeric sequence ID.")
                 try:
                     value = json.loads("\n".join(data))

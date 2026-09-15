@@ -216,3 +216,28 @@ def test_stream_transient_http_error_retry_after(monkeypatch):
     with client(handle) as sdk:
         assert len(list(sdk.runs.events("run"))) == 1
     assert sleeps == [3]
+
+
+@pytest.mark.parametrize("data", [{}, {"status": []}, {"status": None}, {"status": "new"}, []])
+def test_invalid_status_raises_protocol_error_instead_of_crashing_or_waiting(data):
+    def handle(request):
+        if request.url.path.endswith("events"):
+            return event_response(Chunks([]))
+        return httpx.Response(200, json=data)
+
+    with client(handle) as sdk:
+        with pytest.raises(ProtocolError):
+            sdk.runs.wait("run")
+        with pytest.raises(StreamError):
+            list(sdk.runs.events("run"))
+
+
+@pytest.mark.parametrize("cursor", ["9" * 5000, str(2**63), "-1", "１２", "", "1\n"])
+def test_invalid_sequence_ids_are_rejected_before_delivery(cursor):
+    with (
+        client(lambda r: pytest.fail("Invalid cursor must not reach HTTP")) as sdk,
+        pytest.raises(ValueError),
+    ):
+        list(sdk.runs.events("run", last_event_id=cursor))
+    with pytest.raises(ProtocolError):
+        list(parse_events([f"id: {cursor}", "data: {}", ""]))

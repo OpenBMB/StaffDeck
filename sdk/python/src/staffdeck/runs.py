@@ -16,9 +16,16 @@ from .errors import (
 )
 from .models import APIResponse, RunEvent
 from .resources import Resource, agent_path, segment
-from .streaming import IncompleteEvent, parse_events
+from .streaming import IncompleteEvent, is_sequence_id, parse_events
 
 _TERMINAL = {"succeeded", "failed", "cancelled"}
+
+
+def _status(data: Any) -> str:
+    status = data.get("status") if isinstance(data, dict) else None
+    if not isinstance(status, str) or status not in _TERMINAL | {"queued", "running"}:
+        raise ProtocolError("Run response has a missing or unsupported status.")
+    return status
 
 
 class Runs(Resource):
@@ -56,9 +63,7 @@ class Runs(Resource):
             response = self._client.request(
                 "GET", path, timeout=min(self._client.timeout, remaining), retry=False
             )
-            if not isinstance(response.data, dict) or "status" not in response.data:
-                raise ProtocolError("Run response is missing its status.")
-            status = response.data["status"]
+            status = _status(response.data)
             if status in {"failed", "cancelled"}:
                 raise RunFailedError(run_id, response.data)
             if status == "succeeded":
@@ -81,9 +86,7 @@ class Runs(Resource):
         """
         if not isinstance(max_reconnects, int) or not 0 <= max_reconnects <= 10:
             raise ValueError("max_reconnects must be an integer between 0 and 10.")
-        if last_event_id is not None and (
-            not last_event_id or not last_event_id.isascii() or not last_event_id.isdecimal()
-        ):
+        if last_event_id is not None and not is_sequence_id(last_event_id):
             raise ValueError("last_event_id must be a numeric sequence ID.")
         path = f"runs/{segment(run_id)}/events"
         cursor = last_event_id
@@ -102,10 +105,9 @@ class Runs(Resource):
                         yield event
                 # EOF alone is not success: proxies may close a healthy but active run.
                 state = self.get(run_id).data
-                if not isinstance(state, dict) or "status" not in state:
-                    raise ProtocolError("Run response is missing its status.")
+                status = _status(state)
                 # If this connection delivered only a prefix, drain again before stopping.
-                if state["status"] in _TERMINAL and (terminal_event or not delivered):
+                if status in _TERMINAL and (terminal_event or not delivered):
                     return
             except APIError as exc:
                 if exc.status_code not in {429, 502, 503, 504}:
