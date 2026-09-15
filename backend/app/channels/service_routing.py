@@ -78,7 +78,8 @@ def mounted_agents(db: Session, binding: ChannelBinding) -> list[ChannelBindingA
     """
     rows = db.exec(
         select(ChannelBindingAgent)
-        .where(ChannelBindingAgent.binding_id == binding.id)
+        .where(ChannelBindingAgent.binding_id == binding.id,
+               ChannelBindingAgent.tenant_id == binding.tenant_id)
         .order_by(ChannelBindingAgent.sort_order, ChannelBindingAgent.created_at)
     ).all()
     if rows:

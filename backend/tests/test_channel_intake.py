@@ -198,6 +198,47 @@ def test_inbound_runs_turn_and_marks_done() -> None:
         assert user.username.startswith("wechat_user_ab12cd34")
 
 
+def test_raw_channel_preparation_failure_releases_claim_and_retry_runs_once(monkeypatch):
+    from fastapi import HTTPException
+    channel_engine = _test_engine()
+    binding = _load_binding(channel_engine, _seed_binding(channel_engine))
+    original = intake_module.resolve_current_agent
+    def unavailable(*args, **kw):
+        raise HTTPException(503, 'Directory temporarily unavailable')
+    monkeypatch.setattr(intake_module, 'resolve_current_agent', unavailable)
+    with pytest.raises(HTTPException):
+        process_inbound(binding, _p2p_message('retry-preparation'), db_engine=channel_engine)
+    with Session(channel_engine) as db:
+        event = db.exec(select(ChannelInboundEvent).where(ChannelInboundEvent.binding_id == binding.id)).one()
+        assert event.status == 'processing' and event.processor_run_id is None
+        assert event.error == 'CHANNEL_PREPARATION_FAILED'
+        assert db.exec(select(Message)).all() == []
+    monkeypatch.setattr(intake_module, 'resolve_current_agent', original)
+    assert process_inbound(binding, _p2p_message('retry-preparation'), db_engine=channel_engine)
+    assert not process_inbound(binding, _p2p_message('retry-preparation'), db_engine=channel_engine)
+    assert len(RecordingAgentLoop.calls) == 1
+
+
+def test_raw_channel_preparation_denial_is_terminal_not_stuck_processing(monkeypatch):
+    from fastapi import HTTPException
+    channel_engine = _test_engine()
+    binding = _load_binding(channel_engine, _seed_binding(channel_engine))
+    def denied(*args, **kw):
+        raise HTTPException(403, 'Private authorization detail')
+    monkeypatch.setattr(intake_module, 'resolve_current_agent', denied)
+    with pytest.raises(HTTPException):
+        process_inbound(binding, _p2p_message('denied-preparation'), db_engine=channel_engine)
+    with Session(channel_engine) as db:
+        event = db.exec(select(ChannelInboundEvent).where(ChannelInboundEvent.binding_id == binding.id)).one()
+        assert event.status == 'failed' and event.processor_run_id is None
+        assert event.error == 'CHANNEL_PREPARATION_DENIED'
+        delivery = db.exec(select(ChannelDelivery).where(ChannelDelivery.binding_id == binding.id)).one()
+        assert 'CHANNEL_PREPARATION_DENIED' in delivery.text
+        assert 'Private authorization detail' not in delivery.text
+    assert not process_inbound(binding, _p2p_message('denied-preparation'), db_engine=channel_engine)
+    assert RecordingAgentLoop.calls == []
+
+
 def test_event_id_replay_is_idempotent() -> None:
     engine = _test_engine()
     binding_id = _seed_binding(engine)

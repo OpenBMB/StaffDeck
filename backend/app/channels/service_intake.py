@@ -1191,6 +1191,63 @@ def process_inbound(
     db_engine=None,
     staged_event_pk: str | None = None,
 ) -> bool:
+    state = {}
+    try:
+        return _process_inbound(binding, msg, db_engine=db_engine, staged_event_pk=staged_event_pk,
+                                _failure_context=state)
+    except Exception as exc:
+        # Durable adapters already have a claim/recovery boundary. Raw polling
+        # adapters need the same protection before a conversation turn starts.
+        if staged_event_pk is None and state.get('event_pk') and state.get('inbound'):
+            _recover_preparation_failure(binding, state, exc, db_engine=db_engine)
+        raise
+
+
+def _recover_preparation_failure(binding, state, exc, *, db_engine=None):
+    from fastapi import HTTPException
+    from staffdeck_harness.contracts.errors import PermissionDenied
+    use_engine = db_engine or engine
+    inbound = state['inbound']
+    with channel_session(use_engine) as db:
+        event = db.get(ChannelInboundEvent, state['event_pk'])
+        # Never release another call's event, even in the same worker process.
+        if (event is None or event.binding_id != binding.id or event.tenant_id != binding.tenant_id
+                or event.status != 'processing' or event.processor_run_id != current_processor_run_id()):
+            return
+        turn = _find_turn_user_message_in_conv(db, binding, inbound.external_conv_id, inbound.event_id)
+        if turn is not None:
+            if _turn_reply_exists(db, binding, turn):
+                _finish_owned_inbound(db, event.id, status='done', processed=True)
+            elif _finish_owned_inbound(db, event.id, status='failed', error='process_exit_incomplete_turn'):
+                _stage_interrupted_notice(db, binding, turn.session_id, dict(event.target_json or {}), inbound.event_id)
+                db.commit()
+            return
+        denied = isinstance(exc, PermissionDenied) or isinstance(exc, HTTPException) and exc.status_code in {400, 401, 403, 404, 422}
+        if denied:
+            if _finish_owned_inbound(db, event.id, status='failed', error='CHANNEL_PREPARATION_DENIED', processed=True):
+                _stage_notice(db, binding, inbound.external_conv_id, dict(event.target_json or {}),
+                    '当前渠道无法处理该请求，请联系管理员检查渠道挂载与访问权限。错误码：CHANNEL_PREPARATION_DENIED',
+                    final_for_event=True, idempotency_key=f'channel-preparation:{event.id}')
+                db.commit()
+            return
+        # No turn has started: release the claim so the existing poll retry or
+        # stale-event sweep can safely retry. Never advance its cursor here.
+        db.exec(update(ChannelInboundEvent).where(
+            ChannelInboundEvent.id == event.id, ChannelInboundEvent.status == 'processing',
+            ChannelInboundEvent.processor_run_id == current_processor_run_id()).values(
+                processor_run_id=None, processor_lease_expires_at=None,
+                error='CHANNEL_PREPARATION_FAILED', updated_at=utc_now()))
+        db.commit()
+
+
+def _process_inbound(
+    binding: ChannelBinding,
+    msg: dict | ChannelInbound,
+    *,
+    db_engine=None,
+    staged_event_pk: str | None = None,
+    _failure_context: dict | None = None,
+) -> bool:
     """处理一条渠道入站消息：幂等登记 → 身份/会话锚定 → 串行执行对话轮。
 
     在 ingress 线程内同步调用；返回是否真正执行了对话轮。
@@ -1202,6 +1259,8 @@ def process_inbound(
         inbound = _normalize_compat(binding, msg)
     if inbound is None:
         return False
+    if _failure_context is not None:
+        _failure_context['inbound'] = inbound
     # 作用域以绑定配置为准(适配器侧可能拿的是启动时旧值):统一覆盖后再使用
     scope = external_account_scope(None, binding)
     if binding.channel == "wechat_kf":
@@ -1266,6 +1325,8 @@ def process_inbound(
                 processor_run_id=current_processor_run_id(),
                 processor_lease_expires_at=_inbound_lease_deadline(),
             )
+            if _failure_context is not None:
+                _failure_context['event_pk'] = event.id
             db.add(event)
             try:
                 db.commit()
