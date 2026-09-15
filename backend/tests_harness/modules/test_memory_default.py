@@ -29,6 +29,81 @@ from staffdeck_harness.modules.taxonomy import tree
 MODULE_ID = "memory.default"
 
 
+def _scoped_facade(db, monkeypatch, *, guest=True, revoked=False):
+    from dataclasses import replace
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.contracts.security import SecurityContext, Decision
+    from staffdeck_harness.security.oss_local import build_oss_local_profile
+    from staffdeck_harness.contracts.errors import PermissionDenied
+    from staffdeck_harness.composition import sources
+
+    seen = []
+    scope = SimpleNamespace(session_id="s1")
+    identity = SecurityContext("u1", "t1", agent_id="a1", session_id="s1",
+        attributes={"channel_scope": scope} if guest else {})
+
+    def resolve(context, _):
+        seen.append(context)
+        if revoked:
+            raise PermissionDenied("channel revoked")
+        return identity
+
+    def decide(ctx, module, action, resource):
+        seen.append((action, resource.id))
+        return Decision.allow()
+
+    profile = replace(build_oss_local_profile(),
+        identity=SimpleNamespace(from_user=lambda *_: pytest.fail("must use selected identity source")),
+        pep=SimpleNamespace(authorize=decide))
+    monkeypatch.setattr(sources, "resolve_source", lambda *args: SimpleNamespace(resolve=resolve))
+    from contextlib import nullcontext
+    registry = SimpleNamespace(work_lease=nullcontext)
+    facade = ProviderMemoryFacade(db, _VectorMemory(), profile=profile, registry=registry,
+        source_context=SourceContext("t1", "a1", "s1", "wechat", "u1"))
+    return facade, seen
+
+
+def test_channel_guest_skips_personal_recall_and_capture_without_web_identity(db, monkeypatch):
+    from staffdeck_harness.contracts.memory import MemoryCall
+    facade, seen = _scoped_facade(db, monkeypatch)
+    assert facade.context_memories("t1", "u1", agent_id="a1") == []
+    assert facade.call(MemoryCall("capture", "t1", "u1", "a1", "s1"), actor_id="u1",
+        local=lambda: pytest.fail("must not enqueue personal memory capture")) == []
+    assert seen[1] == seen[3] == ("read", "s1")
+
+
+def test_web_memory_still_uses_selected_identity_and_provider(db, monkeypatch):
+    facade, seen = _scoped_facade(db, monkeypatch, guest=False)
+    assert facade.context_memories("t1", "u1", agent_id="a1")[0].content == "vector:u1:a1"
+    assert seen[1] == ("read", "memory:u1")
+
+
+def test_revoked_channel_is_not_silently_ignored_by_optional_recall(db, monkeypatch):
+    from staffdeck_harness.contracts.errors import PermissionDenied
+    facade, _ = _scoped_facade(db, monkeypatch, revoked=True)
+    with pytest.raises(PermissionDenied, match="revoked"):
+        facade.context_memories("t1", "u1", agent_id="a1")
+
+
+@pytest.mark.parametrize("operation", ["list", "clear"])
+def test_guest_cannot_manage_personal_memory(db, monkeypatch, operation):
+    from staffdeck_harness.contracts.memory import MemoryCall
+    from staffdeck_harness.contracts.errors import PermissionDenied
+    facade, _ = _scoped_facade(db, monkeypatch)
+    with pytest.raises(PermissionDenied, match="personal memory"):
+        facade.call(MemoryCall(operation, "t1", "u1", "a1", "s1"), actor_id="u1", local=lambda: None)
+
+
+@pytest.mark.parametrize("changes", [{"actor_id": "other"}, {"agent_id": "other"}, {"session_id": "other"}])
+def test_memory_cannot_reuse_turn_context_for_another_scope(db, monkeypatch, changes):
+    from staffdeck_harness.contracts.memory import MemoryCall
+    from staffdeck_harness.contracts.errors import PermissionDenied
+    facade, _ = _scoped_facade(db, monkeypatch)
+    with pytest.raises(PermissionDenied):
+        facade.call(MemoryCall("recall", "t1", "u1", changes.get("agent_id", "a1"), changes.get("session_id", "s1")),
+            actor_id=changes.get("actor_id", "u1"), local=lambda: None)
+
+
 def _patch_run(monkeypatch, engine_host, run):
     def prepared(engine, request):
         engine._prepare_modules(request, SimpleNamespace(id="s1", agent_id="a1", active_skill_id=None))

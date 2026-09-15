@@ -265,6 +265,7 @@ class TurnCoordinator:
             profile=profile,
             config=memory_config(self.registry, snapshot, session.active_skill_id),
             registry=self.registry,
+            source_context=source_ctx,
         )
         self.memory = facade
         if callable(self.capture_memory):

@@ -235,6 +235,39 @@ def test_sealed_turn_on_real_engine_with_scripted_model(db: Session, fake_model,
     assert md.get("knowledge_citations"), "citations must flow back from the host"
 
 
+@pytest.mark.parametrize("channel", ["wechat", "feishu"])
+def test_real_engine_guest_turn_does_not_require_web_identity_for_memory(db, fake_model, monkeypatch, channel):
+    from staffdeck_harness.composition.local_sources import LocalIdentitySource
+    from staffdeck_harness.security.oss_local import LocalIdentity
+    from staffdeck_harness.contracts.security import SecurityContext
+    from staffdeck_harness.contracts.runtime_services import ChannelExecutionScope
+    from app.memory.service import MemoryService
+
+    model, base = fake_model
+    agent, user = _seed(db, base)
+    user.source = channel
+    db.add(user)
+    db.commit()
+    contexts = []
+    def resolve(self, context, identity):
+        assert (context.tenant_id, context.user_id, context.staff_id) == (user.tenant_id, user.id, agent.id)
+        assert context.session_id and context.channel == channel
+        contexts.append(context)
+        scope = ChannelExecutionScope(user.tenant_id, user.id, agent.id, context.session_id,
+            "test-binding", 1, "test-account", "test-event", "test-namespace")
+        return SecurityContext(user.id, user.tenant_id, provider="channel_guest", actor_user_id=user.id,
+            agent_id=agent.id, session_id=context.session_id, attributes={"channel_scope": scope})
+    monkeypatch.setattr(LocalIdentitySource, "resolve", resolve)
+    monkeypatch.setattr(LocalIdentity, "from_user", lambda *a, **kw: pytest.fail("guest became a web user"))
+    monkeypatch.setattr(MemoryService, "context_memories", lambda *a, **kw: pytest.fail("guest read personal memory"))
+    monkeypatch.setattr(MemoryService, "capture_turn", lambda *a, **kw: pytest.fail("guest captured personal memory"))
+    response = AgentLoop(db).handle_turn(ChatTurnRequest(tenant_id=user.tenant_id, agent_id=agent.id,
+        user_id=user.id, message="退货期限是几天？", channel=channel, client_turn_id="guest-memory-turn"))
+    assert response.runtime_error_code is None, response.reply
+    assert "7" in response.reply and "[1]" in response.reply
+    assert len(model.requests) >= 3 and len(contexts) >= 3
+
+
 @pytest.mark.parametrize("detached", [False, True])
 def test_real_engine_repairs_bad_tool_json_without_replaying_business_action(db, fake_model, monkeypatch, detached):
     from app.db.models import Tool, ExternalBusinessTask

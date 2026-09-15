@@ -33,7 +33,7 @@ class MemoryDefaultModule:
 class ProviderMemoryFacade:
     """Engine-independent memory Host. Only this adapter holds database/domain objects."""
 
-    def __init__(self, db: Any, provider: MemoryProvider | None, *, profile: Any = None, config: Mapping[str, Any] | None = None, registry: Any = None):
+    def __init__(self, db: Any, provider: MemoryProvider | None, *, profile: Any = None, config: Mapping[str, Any] | None = None, registry: Any = None, source_context: Any = None):
         self.db = db
         self.provider = provider
         self.profile = profile
@@ -41,8 +41,9 @@ class ProviderMemoryFacade:
         from staffdeck_harness.modules.registry import peek_registry
 
         self.registry = registry or peek_registry()
+        self.source_context = source_context
 
-    def authorize(self, tenant_id: str, user_id: str, operation: str) -> None:
+    def authorize(self, tenant_id: str, user_id: str, operation: str, *, optional: bool = False) -> bool:
         from app.db.models import User
         from staffdeck_harness.contracts.security import ResourceRef
         from staffdeck_harness.security.profile import Guard, peek_profile
@@ -53,11 +54,44 @@ class ProviderMemoryFacade:
         user = self.db.get(User, user_id)
         if user is None or user.tenant_id != tenant_id:
             raise PermissionDenied("memory principal unavailable")
-        ctx = profile.identity.from_user(user)
+        if self.registry is not None:
+            from staffdeck_harness.composition.sources import resolve_source
+            from staffdeck_harness.contracts.sources import SourceContext
+
+            context = self.source_context or SourceContext(tenant_id, None, user_id=user_id)
+            if (context.tenant_id, context.user_id) != (tenant_id, user_id):
+                raise PermissionDenied("memory source identity mismatch")
+            ctx = resolve_source(self.registry, SlotName.IDENTITY_SOURCE, self.db).resolve(context, profile.identity)
+        else:
+            ctx = profile.identity.from_user(user)
+        if (ctx.tenant_id, ctx.actor_user_id or ctx.principal_id) != (tenant_id, user_id):
+            raise PermissionDenied("memory principal mismatch")
+        scope = ctx.execution.channel_scope if ctx.execution is not None else ctx.attributes.get("channel_scope")
+        if scope is not None:
+            # The current provider contract stores account-wide personal memory,
+            # not channel/session-scoped memory. Admission to a published employee
+            # must never grant that broader scope (including background capture).
+            from staffdeck_harness.contracts.security import PolicyActionMapper
+
+            Guard("memory", profile, PolicyActionMapper({"memory.context/v1": ("read", "session")})).require(
+                ctx, "memory.context/v1", ResourceRef(type="session", id=scope.session_id,
+                    tenant_id=tenant_id, attributes={"user_id": user_id}))
+            if optional:
+                return False
+            raise PermissionDenied("channel scope does not grant personal memory access")
         Guard("memory", profile).require(ctx, operation, ResourceRef(type="session", id=f"memory:{user_id}", tenant_id=tenant_id, attributes={"user_id": user_id}))
+        return True
 
     def call(self, request: MemoryCall, *, actor_id: str, local: Callable[[], Any]) -> Any:
-        self.authorize(request.tenant_id, actor_id, "memory.write/v1" if request.operation in {"capture", "clear"} else "memory.read/v1")
+        if self.source_context is not None and (
+                request.agent_id != self.source_context.staff_id
+                or request.session_id is not None and request.session_id != self.source_context.session_id):
+            from staffdeck_harness.contracts.errors import PermissionDenied
+            raise PermissionDenied("memory request scope mismatch")
+        if not self.authorize(request.tenant_id, actor_id,
+                "memory.write/v1" if request.operation in {"capture", "clear"} else "memory.read/v1",
+                optional=request.operation in {"recall", "capture"}):
+            return []
         if self.provider is None:
             return {"deleted": 0} if request.operation == "clear" else []
         from types import MappingProxyType

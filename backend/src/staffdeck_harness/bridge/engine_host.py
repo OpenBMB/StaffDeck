@@ -291,7 +291,8 @@ class HarnessV3Engine(TurnCoordinator):
             from app.memory.service import memory_read
 
             provider = resolve_memory_provider(registry=self.registry, snapshot=self.snapshot, sop_id=active_skill.skill_id if active_skill else None)
-            self.memory = ProviderMemoryFacade(self.db, provider, profile=self.profile, config=memory_config(self.registry, self.snapshot, active_skill.skill_id if active_skill else None), registry=self.registry)
+            self.memory = ProviderMemoryFacade(self.db, provider, profile=self.profile, config=memory_config(self.registry, self.snapshot, active_skill.skill_id if active_skill else None), registry=self.registry,
+                source_context=source_context(request, session_id=session.id, staff_id=session.agent_id))
             memory_context = [memory_read(m) for m in self.memory.context_memories(request.tenant_id, request.user_id, agent_id=session.agent_id)] if request.user_id else []
             if callable(self._legacy_capture):
                 self.capture_memory = self.memory.bind_capture(self.events, self._legacy_capture)
